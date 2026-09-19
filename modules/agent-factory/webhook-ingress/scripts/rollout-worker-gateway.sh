@@ -17,7 +17,8 @@ if [[ " $refs " != *" adp-worker-authority-config "* ]]; then
   exit 0
 fi
 if [[ "$ADP_AUTHORITY_ENABLED" == true ]]; then
-  # Check references, never secret values. An old gateway template may consume
+  # Check references and nonempty key names without emitting secret values.
+  # An old gateway template may consume
   # the ConfigMap but lack the keys needed by the mediated run services.
   secret_refs=$(kubectl --request-timeout=30s get deployment bedrockgateway -n "$ADP_NAMESPACE" \
     -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="bedrockgateway")].env[*]}{.name}={.valueFrom.secretKeyRef.name}/{.valueFrom.secretKeyRef.key}{"\n"}{end}')
@@ -28,6 +29,18 @@ if [[ "$ADP_AUTHORITY_ENABLED" == true ]]; then
     'ADP_DOOR_SERVICE_KEY=bedrockgateway-secrets/internal-api-key'; do
     if ! grep -Fqx -- "$required" <<< "$secret_refs"; then
       echo "Gateway deployment is missing run-service secret reference: ${required%%=*}" >&2
+      exit 1
+    fi
+    secret_path="${required#*=}"
+    secret_name="${secret_path%%/*}"
+    secret_key="${secret_path#*/}"
+    # Optional env references let a pod become Ready even when a key is absent.
+    # The Kubernetes client formats the response to names of nonempty entries;
+    # neither the shell nor its logs receive the Secret data values.
+    available_keys=$(kubectl --request-timeout=30s get secret "$secret_name" -n "$ADP_NAMESPACE" \
+      -o 'go-template={{range $key, $value := .data}}{{if $value}}{{$key}}{{"\n"}}{{end}}{{end}}')
+    if ! grep -Fqx -- "$secret_key" <<< "$available_keys"; then
+      echo "Gateway run-service secret key is missing or empty: $secret_name/$secret_key" >&2
       exit 1
     fi
   done

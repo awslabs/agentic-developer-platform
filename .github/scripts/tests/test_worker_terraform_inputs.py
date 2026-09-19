@@ -102,14 +102,75 @@ def test_invalid_environment_cannot_select_another_states_path(deployment):
     assert not result.stdout
 
 
+@pytest.mark.parametrize("missing", ["environment", "region"])
+def test_missing_target_refuses_before_terraform(deployment, missing):
+    _, _, env = deployment
+    for name in (
+        ("ADP_ENV", "ENVIRONMENT") if missing == "environment" else ("AWS_REGION",)
+    ):
+        env.pop(name, None)
+    result = invoke(deployment, "init")
+    assert result.returncode != 0
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("selected", ["dev", "staging", "prod"])
+def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
+    root, scripts, env = deployment
+    infra = scripts.parent / "infra"
+    shutil.copyfile(
+        SCRIPTS.parent / "infra/terraform.tfvars", infra / "terraform.tfvars"
+    )
+    overlay = ROOT / "environments/dev/modules/webhook-ingress.tfvars"
+    if overlay.exists():
+        target = root / overlay.relative_to(ROOT)
+        target.parent.mkdir(parents=True)
+        shutil.copyfile(overlay, target)
+    # Evaluate the actual input files through the wrapper with provider-free
+    # Terraform. Every declared variable remains production-owned.
+    shutil.copyfile(SCRIPTS.parent / "infra/variables.tf", infra / "variables.tf")
+    real_terraform = shutil.which("terraform")
+    assert real_terraform
+    (root / "bin/terraform").write_text(
+        '#!/usr/bin/env bash\nshift\nexec "$REAL_TERRAFORM" console -no-color "$@"\n'
+    )
+    env.update(ADP_ENV=selected, REAL_TERRAFORM=real_terraform)
+    result = subprocess.run(
+        ["bash", str(scripts / "terraform-webhook.sh"), "plan"],
+        env=env,
+        input="jsonencode({reserved=var.enable_lambda_reserved_concurrency, adversarial=var.enable_adversarial_e2e, repo=var.eventbridge_security_agent_repo, environment=var.environment})\n",
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(json.loads(result.stdout)) == {
+        "reserved": selected != "dev",
+        "adversarial": selected == "dev",
+        "repo": "aws-e/adp" if selected == "dev" else "",
+        "environment": selected,
+    }
+
+
 @pytest.mark.parametrize(
-    "enabled,refs,success,restarts,missing",
+    "enabled,refs,success,restarts,missing,unavailable",
     [
-        ("false", "bedrockgateway-config", True, False, ""),
-        ("true", "bedrockgateway-config", False, False, ""),
-        ("true", "bedrockgateway-config adp-worker-authority-config", True, True, ""),
+        ("false", "bedrockgateway-config", True, False, "", ""),
+        ("false", "adp-worker-authority-config", True, True, "", "missing-secret"),
+        ("true", "bedrockgateway-config", False, False, "", ""),
+        (
+            "true",
+            "bedrockgateway-config adp-worker-authority-config",
+            True,
+            True,
+            "",
+            "",
+        ),
         *[
-            ("true", "adp-worker-authority-config", False, False, key)
+            ("true", "adp-worker-authority-config", False, False, "", reason)
+            for reason in ("missing-secret", "missing-key", "empty-key")
+        ],
+        *[
+            ("true", "adp-worker-authority-config", False, False, key, "")
             for key in (
                 "AGENT_RUN_CREDENTIAL_KEY",
                 "AGENT_CONTROL_ENVELOPE_SIGNING_KEY",
@@ -126,6 +187,7 @@ def test_gateway_rollout_requires_the_terraform_config_before_activation(
     success,
     restarts,
     missing,
+    unavailable,
 ):
     root, scripts, env = deployment
     log = root / "commands.jsonl"
@@ -134,7 +196,12 @@ import json,os,sys
 with open(os.environ['COMMAND_LOG'], 'a') as output:
     output.write(json.dumps(sys.argv) + '\\n')
 if 'get' in sys.argv:
-    print(os.environ['SECRET_REFS'] if 'secretKeyRef' in sys.argv[-1] else os.environ['CONFIG_REFS'])
+    if 'secret' in sys.argv:
+        if os.environ['UNAVAILABLE'] == 'missing-secret': sys.exit(1)
+        if os.environ['UNAVAILABLE'] not in ('missing-key', 'empty-key'):
+            print('run-credential-key\\nenvelope-signing-key\\nmarker-signing-key\\ninternal-api-key')
+    else:
+        print(os.environ['SECRET_REFS'] if 'secretKeyRef' in sys.argv[-1] else os.environ['CONFIG_REFS'])
 """
     for name in ("aws", "kubectl"):
         executable = root / "bin" / name
@@ -157,6 +224,7 @@ if 'get' in sys.argv:
                 if (ref := entry.get("valueFrom", {}).get("secretKeyRef"))
             ),
             "COMMAND_LOG": str(log),
+            "UNAVAILABLE": unavailable,
         }
     )
     if missing:
@@ -178,3 +246,11 @@ if 'get' in sys.argv:
     assert any("restart" in call for call in calls) == restarts
     if restarts:
         assert any("status" in call for call in calls)
+    if enabled == "false":
+        assert not any("secret" in call for call in calls)
+    for call in calls:
+        if "secret" in call:
+            assert (
+                call[-1]
+                == 'go-template={{range $key, $value := .data}}{{if $value}}{{$key}}{{"\\n"}}{{end}}{{end}}'
+            )

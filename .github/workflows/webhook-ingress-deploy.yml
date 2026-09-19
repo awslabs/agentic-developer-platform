@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'modules/agent-factory/webhook-ingress/**'
+      - 'environments/dev/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-deploy.yml'
       - '.github/scripts/detect-webhook-deploy-changes.sh'
       - '.github/deployment-holds/webhook-infra.md'

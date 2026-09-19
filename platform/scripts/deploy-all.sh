@@ -1304,12 +1304,17 @@ if [ "$DEPLOY_WEBHOOK" = true ]; then
   # its prepared tick policy once Terraform can discover those identifiers.
   # This is a bootstrap second pass, like the ALB wire step; ongoing full gateway
   # plans retain ownership of the same policy. Dispatch remains separately gated.
-  (
-    cd "$ROOT_DIR/modules/gateway/infra"
-    terraform_update_apply "gateway-worker-authority" \
-      "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
-      '-target=module.orchestration_tick[0].aws_iam_role_policy.agent_authority'
-  )
+  # Partial webhook/factory upgrades must not enter an uninitialized or
+  # explicitly excluded gateway module.
+  if [ "$DEPLOY_GATEWAY" = true ]; then
+    refresh_credentials
+    (
+      cd "$ROOT_DIR/modules/gateway/infra"
+      terraform_update_apply "gateway-worker-authority" \
+        "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+        '-target=module.orchestration_tick[0].aws_iam_role_policy.agent_authority'
+    )
+  fi
 elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
   step "Step 9/12: Skipping webhook-ingress (--skip-webhook-ingress)"
 else

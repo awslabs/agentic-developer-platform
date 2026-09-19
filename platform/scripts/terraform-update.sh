@@ -7,7 +7,7 @@ terraform_update_apply() {
   local VAR_FILE="$2"
   shift 2
   local CONTEXT_MODULE="$MODULE_NAME"
-  case "$MODULE_NAME" in gateway-alb-wire|gateway-final) CONTEXT_MODULE=gateway ;; esac
+  case "$MODULE_NAME" in gateway-alb-wire|gateway-final|gateway-worker-authority) CONTEXT_MODULE=gateway ;; esac
   local CONTEXT_ARGS=()
   if [ -n "${UPGRADE_RUN_DIR:-}" ] && [ -f "$UPGRADE_RUN_DIR/$CONTEXT_MODULE.tfvars.json" ]; then
     python3 - "$UPGRADE_RUN_DIR/integration-before.json" "${ACCOUNT_ID:-}" <<'PY' || fail "Upgrade context belongs to a different account"
@@ -18,6 +18,20 @@ PY
     CONTEXT_ARGS+=(-var-file="$UPGRADE_RUN_DIR/$CONTEXT_MODULE.tfvars.json")
   fi
 
+  # Repository defaults/overlays precede the observed live context. Explicit
+  # -var inputs (such as a selected release image) remain the final overrides.
+  # Handle both Terraform spellings without splitting paths or values.
+  local OVERLAY_ARGS=() PLAN_ARGS=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -var-file=*) OVERLAY_ARGS+=("$1"); shift ;;
+      -var-file)
+        [ "$#" -ge 2 ] || fail "Missing -var-file value"
+        OVERLAY_ARGS+=("$1" "$2"); shift 2 ;;
+      *) PLAN_ARGS+=("$1"); shift ;;
+    esac
+  done
+
   # 1. Plan to a file (captures the plan for inspection)
   local PLAN_DIR
   PLAN_DIR=$(mktemp -d "${UPGRADE_RUN_DIR:-${TMPDIR:-/tmp}}/adp-plan-${MODULE_NAME}.XXXXXX")
@@ -27,7 +41,8 @@ PY
 
   # Capture detailed-exitcode without letting errexit skip the safety gate.
   local EXIT_CODE=0
-  terraform plan -var-file="$VAR_FILE" ${CONTEXT_ARGS[@]+"${CONTEXT_ARGS[@]}"} ${1+"$@"} \
+  terraform plan -var-file="$VAR_FILE" ${OVERLAY_ARGS[@]+"${OVERLAY_ARGS[@]}"} \
+    ${CONTEXT_ARGS[@]+"${CONTEXT_ARGS[@]}"} ${PLAN_ARGS[@]+"${PLAN_ARGS[@]}"} \
     -out="$PLAN_FILE" -input=false -detailed-exitcode -no-color \
     >"$PLAN_OUTPUT" 2>&1 || EXIT_CODE=$?
   cat "$PLAN_OUTPUT"

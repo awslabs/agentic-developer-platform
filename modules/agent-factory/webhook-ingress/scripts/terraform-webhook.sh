@@ -4,8 +4,8 @@
 set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../../../.." && pwd)"
-deploy_env="${ADP_ENV:-${ENVIRONMENT:-dev}}"
-deploy_region="${AWS_REGION:-us-east-1}"
+deploy_env="${ADP_ENV:-${ENVIRONMENT:?ADP_ENV or ENVIRONMENT required}}"
+deploy_region="${AWS_REGION:?AWS_REGION required}"
 [[ "$deploy_env" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Invalid deployment environment" >&2; exit 2; }
 action="${1:?Terraform action required}"
 shift

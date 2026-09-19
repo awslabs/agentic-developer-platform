@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'modules/agent-factory/webhook-ingress/**'
+      - 'environments/*/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-ci.yml'
       - '.github/workflows/webhook-ingress-deploy.yml'
       - '.github/scripts/detect-webhook-deploy-changes.sh'

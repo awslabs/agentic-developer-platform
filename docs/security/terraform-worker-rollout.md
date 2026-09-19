@@ -24,18 +24,28 @@ the dev-specific preparation overrides in #5176.
 The gateway consumes the Terraform ConfigMap after its base ConfigMap. Terraform
 restarts it when authority configuration changes and checks readiness before
 updating worker launches. Activation refuses a gateway template that cannot read
-this map and its signing/service secret references. Signing secrets remain in the gateway namespace.
+this map and all four signing/service secret references, or whose referenced keys
+are absent or empty. Signing secrets remain in the gateway namespace.
 
 `deploy-all.sh` follows gateway-before-webhook ordering, then performs a second
 Terraform pass for the gateway-owned tick authority policy once webhook resource
-discovery is available. This bootstrap pass targets that policy; full gateway
+discovery is available, only when gateway is also in the resolved deployment
+scope. It refreshes credentials and retains gateway upgrade context. This
+bootstrap pass targets that policy; full gateway
 plans retain its ownership. Preparation does not enable tick dispatch or its
 legacy command bridge.
 
 CLI deploy, CI plan, CI apply and imports share `scripts/terraform-webhook.sh`.
 It loads module defaults followed by optional overlays:
 `environments/<environment>/modules/webhook-ingress.tfvars` and `.tfvars.json`.
-Selected environment and region override the legacy default file. The backend
+The wrapper requires an explicit environment and region. The auto-loaded module
+file contains only portable defaults; dev settings (including concurrency and
+adversarial infrastructure) live in the dev overlay. A fresh non-dev environment
+keeps reserved concurrency and does not require the dev adversarial secret.
+Upgrade precedence is module defaults, selected environment overlays, observed
+live context, then explicitly requested inputs such as a release image.
+Changes to the dev overlay obey the same deployment hold as infrastructure.
+Other environment overlays do not trigger a default dev deployment. The backend
 key is `<environment>/modules/webhook-ingress/terraform.tfstate`;
 `ADP_STATE_REGION` supports centralized state storage. The default cluster is
 `adp-<environment>-eks-cluster`; `eks_cluster_name` supports custom names. A new
@@ -88,8 +98,10 @@ generates a replacement key. Empty, short and public placeholder values refuse
 the plan; preparation neither reads nor projects that key. The value is sensitive
 Terraform state, so the protected backend remains part of the trusted platform.
 Marker version changes trigger gateway rollout. The rollout helper verifies all
-four gateway signing/service secret references before restarting an active
-configuration; it never reads or prints secret values. Worker pods receive none
+four gateway signing/service secret references and the names of their existing,
+nonempty keys before restarting an active configuration. Kubernetes formats each
+Secret response as nonempty key names only; no secret values reach the shell or
+logs. Preparation does not check or require these keys. Worker pods receive none
 of these shared signing/service keys.
 
 The gateway, worker and Door source from #5513 must be deployed and verified
