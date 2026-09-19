@@ -270,7 +270,7 @@ async def test_one_unchanged_snapshot_follows_posture_rollover_within_the_measur
     assert ttl > 0, "the rollover window under test only exists when caching is on"
     policy = snapshot()
     frozen_digest = policy_digest(policy.to_dict())
-    _add_live_posture_setting(db_session, posture="report_only", posture_revision=5)
+    await _add_live_posture_setting(db_session, posture="report_only", posture_revision=5)
     await db_session.commit()
 
     async def hop(label: str, *, at: datetime) -> ModelPolicyDecision:
@@ -1481,8 +1481,8 @@ def _live_policy_record(policy_store, policy: ModelPolicySnapshot):
     )()
 
 
-def _add_live_posture_setting(db_session, *, posture: str = "report_only", posture_revision: int = 1) -> None:
-    """Seed the settings row the per-hop live posture read requires.
+async def _add_live_posture_setting(db_session, *, posture: str = "report_only", posture_revision: int = 1) -> None:
+    """Commit the settings row the per-hop live posture read requires.
 
     Live bootstrap no longer takes the posture from the frozen snapshot — a root
     snapshot must not pin a chain into enforcing after an audited rollback — so a
@@ -1490,6 +1490,12 @@ def _add_live_posture_setting(db_session, *, posture: str = "report_only", postu
     (``runtime_posture_unavailable``) rather than something the snapshot can
     paper over. Tests that exercise live bootstrap therefore have to provision it,
     exactly as a deployed environment does by migration.
+
+    It **commits** rather than flushing, on purpose. The reader requires committed
+    platform authority: a flushed-only row is the test transaction's own pending
+    write, and returning that as live policy was the defect the operator
+    reproduced. Loosening the reader so a flush would satisfy it would be
+    preserving a permissive production fallback to accommodate the fixture.
     """
     db_session.add(
         PersonaModelPolicySetting(
@@ -1501,6 +1507,7 @@ def _add_live_posture_setting(db_session, *, posture: str = "report_only", postu
             enforcement_posture=posture,
         )
     )
+    await db_session.commit()
 
 
 def _add_invocability_evidence(
@@ -1529,19 +1536,51 @@ def _add_invocability_evidence(
     )
 
 
-def _assert_bare_refusal(result: dict, reason: str) -> None:
-    """A refusal raised before any allowlist revision could be computed.
+def _assert_established_posture(result: dict, *, posture: str = "report_only") -> None:
+    """A failed *proposal* must still report the posture it failed under.
 
-    Same honesty requirement as ``_assert_revisioned_refusal``: the result must
-    not report ``report_only``, because nothing verified the live posture on this
-    path.  It simply has no revision evidence to carry, so the shape is exact.
+    The posture is established from trusted snapshot facts before model selection
+    is attempted, so a selection or admission failure does not discard it.  This
+    is the distinction a consumer's failure behaviour depends on: a verified
+    ``report_only`` with an unavailable proposal means legacy behaviour is exactly
+    correct and the evidence says so, whereas an unverified posture means the
+    platform does not know what it is enforcing and nothing may be assumed.
+    Making the worker infer the difference from its own editable configuration
+    would be handing it the decision the gateway is supposed to own.
     """
-    assert result == {"posture": None, "posture_verified": False, "status": "unavailable", "reason": reason}
+    assert result["posture"] == posture, "an established posture must survive a failed proposal"
+    assert result["posture_verified"] is True
+    assert result["posture_evidence"]["runtime_posture"] == posture
+    assert result["posture_evidence"]["posture_source"] in {"live", "cache"}
+    assert result["posture_revision"] >= 1
 
 
-def _assert_revisioned_refusal(result: dict, reason: str) -> None:
+def _assert_unverified_posture(result: dict) -> None:
+    """A failure that happened *before* any posture was established."""
     assert result["posture"] is None, "a refusal must not claim a posture it never established"
     assert result["posture_verified"] is False
+    assert "posture_evidence" not in result
+
+
+def _assert_bare_refusal(result: dict, reason: str, *, posture: str = "report_only") -> None:
+    """A proposal refusal raised before any allowlist revision could be computed.
+
+    It has no revision evidence to carry, so the shape is asserted exactly — but
+    it does carry the established posture, because the posture read succeeded.
+    """
+    assert result == {
+        "posture": posture,
+        "posture_verified": True,
+        "posture_revision": result.get("posture_revision"),
+        "posture_evidence": result.get("posture_evidence"),
+        "status": "unavailable",
+        "reason": reason,
+    }
+    _assert_established_posture(result, posture=posture)
+
+
+def _assert_revisioned_refusal(result: dict, reason: str, *, posture: str = "report_only") -> None:
+    _assert_established_posture(result, posture=posture)
     assert result["status"] == "unavailable"
     assert result["reason"] == reason
     assert result["evidence"]["snapshot_allowlist_policy_revision"]
@@ -1562,7 +1601,7 @@ async def test_live_bootstrap_signs_only_exact_fresh_destination_evidence(
         allowlist_policy_revision=active_allowlist_revision(),
     )
     record = _live_policy_record(policy_store, policy)
-    _add_live_posture_setting(db_session)
+    await _add_live_posture_setting(db_session)
     db_session.add(
         User(
             id="user-a",
@@ -1627,7 +1666,7 @@ async def test_live_bootstrap_signs_permitted_mid_chain_allowlist_drift(
         allowlist_policy_revision=active_allowlist_revision(),
     )
     record = _live_policy_record(policy_store, policy)
-    _add_live_posture_setting(db_session)
+    await _add_live_posture_setting(db_session)
     db_session.add(
         User(
             id="user-a",
@@ -1707,7 +1746,7 @@ async def test_live_bootstrap_refuses_stale_refused_and_wrong_destination_eviden
         expires_at=current + timedelta(hours=2),
     )
     record = _live_policy_record(policy_store, policy)
-    _add_live_posture_setting(db_session)
+    await _add_live_posture_setting(db_session)
     db_session.add(
         User(
             id="user-a",
@@ -1769,7 +1808,7 @@ async def test_live_bootstrap_refuses_missing_or_suspended_service_principal(
         expires_at=current + timedelta(hours=2),
     )
     record = _live_policy_record(policy_store, policy)
-    _add_live_posture_setting(db_session)
+    await _add_live_posture_setting(db_session)
     if principal_status is not None:
         db_session.add(
             ServicePrincipal(
@@ -1827,7 +1866,7 @@ async def test_live_bootstrap_refuses_model_outside_or_unavailable_tenant_policy
         expires_at=current + timedelta(hours=2),
     )
     record = _live_policy_record(policy_store, policy)
-    _add_live_posture_setting(db_session)
+    await _add_live_posture_setting(db_session)
     db_session.add(
         User(
             id="user-a",
@@ -1869,6 +1908,71 @@ async def test_live_bootstrap_refuses_model_outside_or_unavailable_tenant_policy
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("posture", ["disabled", "report_only", "enforcing"])
+async def test_failed_direct_proposal_retains_the_established_live_posture(db_session, policy_store, posture):
+    """A refused proposal reports the posture it was refused under.
+
+    The operator's case: a committed posture plus an unresolvable direct override.
+    Before this, the posture was established only while resolving the decision, so
+    the selection failure discarded it and every posture produced
+    ``posture: None``.  That left the worker unable to tell "report-only, no
+    proposal — carry on exactly as before, and here is truthful evidence" from
+    "we cannot establish what is being enforced", and its only remaining way to
+    guess was its own editable configuration.
+
+    Holds for all three postures, including ``enforcing``: the refusal reason is
+    identical, and what differs is only the posture the consumer must now act
+    under.  No model is called.
+    """
+    await _add_live_posture_setting(db_session, posture=posture, posture_revision=11)
+    policy = live_snapshot()
+    record = _live_policy_record(policy_store, policy)
+    policy_store.client.update_item(
+        TableName=policy_store.table,
+        Key={"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "EXEC#run-live-developer"}},
+        UpdateExpression="SET direct_model_requested = :requested",
+        ExpressionAttributeValues={":requested": {"S": "not-a-canonical-model"}},
+    )
+
+    result = await bootstrap_model_policy_live(
+        db_session,
+        store=policy_store,
+        record=record,
+        grant=_grant("github_event"),
+        env={},
+    )
+
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "direct_override_unresolved"
+    _assert_established_posture(result, posture=posture)
+    assert result["posture_revision"] == 11
+
+
+@pytest.mark.asyncio
+async def test_a_posture_read_failure_reports_no_posture_at_all(db_session, policy_store):
+    """The other half of the distinction: nothing established, nothing claimed.
+
+    With no committed settings row the posture is genuinely unknown, so the
+    response must not name one — not even the snapshot's frozen value, which is
+    exactly what an audited rollback may already have superseded.
+    """
+    policy = live_snapshot()
+    record = _live_policy_record(policy_store, policy)
+
+    result = await bootstrap_model_policy_live(
+        db_session,
+        store=policy_store,
+        record=record,
+        grant=_grant("github_event"),
+        env={},
+    )
+
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "runtime_posture_unavailable"
+    _assert_unverified_posture(result)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("restriction_patterns", "policy_unavailable_reason"),
     [
@@ -1893,7 +1997,7 @@ async def test_live_bootstrap_refuses_registry_allowed_models_or_disabled_row(
         expires_at=current + timedelta(hours=2),
     )
     record = _live_policy_record(policy_store, policy)
-    _add_live_posture_setting(db_session)
+    await _add_live_posture_setting(db_session)
     db_session.add(
         ServicePrincipal(
             canonical_service_principal_id="service-a",

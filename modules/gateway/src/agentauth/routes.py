@@ -26,6 +26,7 @@ from src.agentauth.composition import build_authorization_service, build_control
 from src.agentauth.dispatch import FAN_OUT_CAPABILITY, FAN_OUT_CAPABILITY_FIELD, DispatchRequest, DispatchService
 from src.agentauth.execution import ExecutionStateError, evaluate_execution_state
 from src.agentauth.grants import LIVE_CONTROL_ACTIONS, AgentAction
+from src.agentauth.model_policy import MODEL_POLICY_CONTRACT_VERSION
 from src.agentauth.policy import PolicyError
 from src.agentauth.revalidation import RevalidationRequest, revalidate_command
 from src.agentauth.run_credential import CredentialError, verify_credential
@@ -53,6 +54,14 @@ class BootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     invocation_id: str = Field(min_length=1, max_length=128)
     envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    #: The model-policy contract this client can actually consume.  Absent means
+    #: a previously shipped client: it cannot honour an enforcing decision, so it
+    #: is admitted only under a verified non-enforcing posture.  Declared by the
+    #: client rather than inferred, because the gateway cannot otherwise tell a
+    #: capable worker from one that will ignore the payload — and it is a
+    #: *capability* claim only, never authority: everything it could unlock is
+    #: still decided by the gateway from its own committed state.
+    model_policy_contract: int | None = Field(default=None, ge=1, le=64, strict=True)
 
 
 class AgentRuntime:
@@ -277,6 +286,104 @@ def get_agent_runtime() -> AgentRuntime:
         raise HTTPException(503, "agent authority is not configured") from None
 
 
+#: The only reasons that mean "this run is not enrolled in the model policy at
+#: all", as opposed to "it is enrolled and we could not establish the posture".
+#:
+#: Deliberately a closed allowlist of two exact reason codes rather than a
+#: prefix, a substring or "anything that failed before the posture read".  Every
+#: other unverified outcome is a refusal, so a new failure mode added later fails
+#: closed by default instead of silently joining the admitted set.
+#:
+#: Both are raised by ``_parse_execution_snapshot`` strictly before any
+#: compatibility class exists: ``snapshot_missing`` when the execution carries
+#: neither snapshot nor digest, and ``snapshot_binding_missing`` when it carries
+#: no policy revision/correlation/root binding.  Neither can be produced by a
+#: run that *has* a snapshot, which is what makes admitting them safe: there is
+#: no selected model, no class and therefore no enforcement to bypass.  A worker
+#: cannot induce either one to escape enforcement, because the snapshot is
+#: written by the gateway's own admission path, not by the request.
+_NOT_ENROLLED_REASONS = frozenset({"snapshot_missing", "snapshot_binding_missing"})
+
+
+def _is_not_enrolled(model_policy: dict) -> bool:
+    """True only for an unverified result whose reason means "never enrolled"."""
+    return model_policy.get("status") == "unavailable" and model_policy.get("reason") in _NOT_ENROLLED_REASONS
+
+
+def _refuse_unconsumable_model_policy(
+    model_policy: dict,
+    *,
+    client_contract: int | None,
+    invocation_id: str,
+) -> None:
+    """Withhold run authority when this client cannot honour the live policy.
+
+    The mixed-version case the gateway has to own.  A worker built before the
+    enforcing contract existed ignores the ``model_policy`` payload entirely and
+    launches on its legacy model assignment.  Issuing it an ordinary bound
+    credential would mean the platform believed it was enforcing while that run
+    quietly did whatever it used to — enforcement bypassed by version skew, with
+    nothing in the evidence to show it.  Refusing here is the only place that can
+    prevent it: the decision to withhold authority belongs to the gateway, which
+    alone knows the committed posture.
+
+    Three refusals, and none of them is a fallback:
+
+    * an ``enforcing`` posture (proposal or refusal) for a client that does not
+      declare the contract — it would not act on either;
+    * an unverified posture on a run that *is* enrolled in the policy — the
+      platform does not know what it is enforcing, so it cannot know this client
+      is safe to admit;
+    * an enforcing *refusal* for any client — under enforcement an unavailable
+      proposal must stop the run, not let it continue on legacy.
+
+    A verified ``report_only``/``disabled`` posture admits every client, including
+    an unavailable proposal: that is exactly the current live configuration and
+    legacy behaviour is correct there.  Raised as 409 rather than 404 because the
+    request is well-formed and authorized — the conflict is between the client's
+    capability and the platform's posture, and an operator needs to see that
+    difference.  No detail about the posture leaves the gateway in the message.
+
+    The one thing this must *not* do is refuse a run that was never enrolled in
+    the model policy — see :data:`_NOT_ENROLLED_REASONS`.
+    """
+    posture = model_policy.get("posture")
+    verified = model_policy.get("posture_verified") is True
+    if not verified and _is_not_enrolled(model_policy):
+        # No snapshot was ever attached to this execution, so this run has no
+        # compatibility class, no proposed model and nothing to enforce.  There
+        # is no enforcement to bypass here and never was: this is the pre-PMM
+        # path every run still takes while the rollout is inactive.  Refusing it
+        # would convert "the feature is not enabled for this run" into a total
+        # bootstrap outage, which is strictly worse than the skew this gate
+        # exists to prevent and is not what an unknown posture means.
+        logger.info(
+            "Model policy not enrolled for this run; legacy admission",
+            extra={"invocation_id": invocation_id, "reason": model_policy.get("reason")},
+        )
+        return
+    if not verified:
+        logger.warning(
+            "Withholding run authority: live model policy posture unverified",
+            extra={"invocation_id": invocation_id, "reason": model_policy.get("reason")},
+        )
+        raise HTTPException(409, "model policy unavailable")
+    if posture != "enforcing":
+        return
+    if model_policy.get("status") != "proposed":
+        logger.warning(
+            "Withholding run authority: enforcing posture with no admissible proposal",
+            extra={"invocation_id": invocation_id, "reason": model_policy.get("reason")},
+        )
+        raise HTTPException(409, "model policy unavailable")
+    if client_contract is None or client_contract < MODEL_POLICY_CONTRACT_VERSION:
+        logger.warning(
+            "Withholding run authority: client cannot consume an enforcing decision",
+            extra={"invocation_id": invocation_id, "client_contract": client_contract},
+        )
+        raise HTTPException(409, "model policy contract unsupported")
+
+
 @router.post("/bootstrap")
 async def bootstrap(
     body: BootstrapRequest,
@@ -299,13 +406,19 @@ async def bootstrap(
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
         from src.agentauth.model_policy import bootstrap_model_policy_live
 
-        result["model_policy"] = await bootstrap_model_policy_live(
+        model_policy = await bootstrap_model_policy_live(
             db,
             store=runtime.store,
             record=record,
             grant=grant,
             env=runtime.env,
         )
+        _refuse_unconsumable_model_policy(
+            model_policy,
+            client_contract=body.model_policy_contract,
+            invocation_id=record.invocation_id,
+        )
+        result["model_policy"] = model_policy
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except WorkClaimError as exc:
         if exc.code == "work_waiting":

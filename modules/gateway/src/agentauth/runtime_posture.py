@@ -49,6 +49,24 @@ MAX_POSTURE_CACHE_TTL_SECONDS = 60
 UNCOMMITTED_SESSION_FLAG = "persona_model_posture_uncommitted"
 
 
+class _AbsentInCommittedState:
+    """Sentinel: an independent connection was available and found no row.
+
+    Distinct from ``None``, which means *no independent connection exists* and a
+    guarded session read is the only option.  Collapsing the two is what let a
+    caller's uncommitted insert be returned as live policy: the reader could not
+    tell "the platform has no posture" from "I could not check".
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return "ABSENT_IN_COMMITTED_STATE"
+
+
+ABSENT_IN_COMMITTED_STATE = _AbsentInCommittedState()
+
+
 class RuntimePostureError(Exception):
     """The live posture could not be read, or is not a supported value."""
 
@@ -227,6 +245,14 @@ async def read_live_posture(
         _CACHE.pop(compatibility_class, None)
 
     independent = await _read_independent_committed_posture(session, compatibility_class=compatibility_class)
+    if independent is ABSENT_IN_COMMITTED_STATE:
+        # An independent connection *was* available and reported no row.  The
+        # platform therefore has no committed posture for this class, and the
+        # caller's own uncommitted insert is not a substitute: authority comes
+        # from committed platform state, not from the transaction asking the
+        # question.  Falling through to the session read here is what let an
+        # uncommitted ``report_only`` be returned as live policy.
+        raise RuntimePostureError("runtime_posture_unavailable")
     if independent is not None:
         # Proven committed: read on a connection outside the caller's
         # transaction, so neither a retained identity-map row nor the caller's
@@ -234,16 +260,19 @@ async def read_live_posture(
         posture, revision = independent
         cacheable = True
     else:
-        # No independent connection is available (a session bound to a single
-        # shared connection, as some harnesses use).  Report what the caller's
-        # transaction sees, re-reading attributes rather than trusting retained
-        # ones, and refuse to publish it if this session holds a posture write
-        # that may still roll back.
+        # No independent connection is available at all (a session bound to one
+        # shared connection).  Report what the caller's transaction sees,
+        # re-reading attributes rather than trusting retained ones — but refuse
+        # outright if this session holds a posture write that may still roll
+        # back, rather than reporting it as live-but-uncacheable.  A value that
+        # can still disappear is not the platform's posture even for one hop.
+        if _has_uncommitted_posture_writes(session):
+            raise RuntimePostureError("runtime_posture_unavailable")
         visible = await _read_session_visible_posture(session, compatibility_class=compatibility_class)
         if visible is None:
             raise RuntimePostureError("runtime_posture_unavailable")
         posture, revision = visible
-        cacheable = not _has_uncommitted_posture_writes(session)
+        cacheable = True
 
     ttl = measured_cache_ttl_seconds()
     observation = LivePosture(
@@ -289,7 +318,7 @@ async def _read_independent_committed_posture(
     session: AsyncSession,
     *,
     compatibility_class: str,
-) -> tuple[RuntimePosture, int] | None:
+) -> tuple[RuntimePosture, int] | _AbsentInCommittedState | None:
     """Read durably committed posture state outside the caller's transaction.
 
     Selects columns rather than the mapped entity, so the result can never be
@@ -297,9 +326,13 @@ async def _read_independent_committed_posture(
     returns a retained object with its original attribute values, which is how
     a pre-rollback posture survived past the hard staleness ceiling.
 
-    Returns ``None`` when no independent connection is available, leaving the
-    caller to fall back to an explicitly guarded session read.  The caller's
-    transaction and any savepoint it owns are never touched.
+    Three distinct outcomes, and the distinction is the point:
+
+    * a ``(posture, revision)`` pair — proven committed platform state;
+    * :data:`ABSENT_IN_COMMITTED_STATE` — checked, and the platform has none;
+    * ``None`` — no independent connection is available, so nothing was checked.
+
+    The caller's transaction and any savepoint it owns are never touched.
     """
     engine = _independent_connection_source(session)
     if engine is None:
@@ -311,9 +344,10 @@ async def _read_independent_committed_posture(
     async with engine.connect() as connection:
         result = (await connection.execute(statement)).first()
     if result is None:
-        # Absent in committed state.  It may still exist uncommitted in the
-        # caller's transaction; that is the caller's view, never cacheable.
-        return None
+        # Checked on an independent connection and genuinely absent.  It may
+        # still exist uncommitted in the caller's transaction, but that is the
+        # caller's own pending write, not platform authority.
+        return ABSENT_IN_COMMITTED_STATE
     return (coerce_posture(result[0]), coerce_posture_revision(result[1]))
 
 

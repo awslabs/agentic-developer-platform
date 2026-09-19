@@ -18,7 +18,7 @@ test.  A skip is not a pass: see ``tests/migrations/README-postgres.md``.
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.agentauth import runtime_posture as runtime
@@ -132,6 +132,44 @@ async def test_uncommitted_change_is_never_published_to_another_session(posture_
     async with posture_sessions() as independent:
         cached = await runtime.read_live_posture(independent, compatibility_class=CLASS, now=NOW)
         assert (cached.posture, cached.posture_revision) == ("enforcing", 10)
+
+
+@pytest.mark.integration
+async def test_an_uncommitted_insert_is_refused_when_no_row_is_committed(posture_sessions):
+    """Absent committed authority is a refusal, not the caller's own pending insert.
+
+    The operator's remaining defect at the previous checkpoint: with the committed
+    row deleted, a session that inserts its own ``report_only`` row and flushes got
+    that value back as live policy.  Keeping it out of the shared cache was not
+    sufficient — the return value itself was treated as authority by the caller.
+
+    Real PostgreSQL matters here because the property is transaction visibility:
+    the reader has to distinguish "no committed row exists" from "I cannot check",
+    and on a single-shared-connection harness those are the same observation.
+    """
+    async with posture_sessions() as administrator:
+        await administrator.execute(delete(PersonaModelPolicySetting))
+        await administrator.commit()
+    runtime.reset_posture_cache()
+
+    async with posture_sessions() as caller:
+        caller.add(
+            PersonaModelPolicySetting(
+                compatibility_class=CLASS,
+                enforcement_posture="report_only",
+                posture_revision=1,
+                revision=1,
+            )
+        )
+        await caller.flush()
+        with pytest.raises(runtime.RuntimePostureError, match="runtime_posture_unavailable"):
+            await runtime.read_live_posture(caller, compatibility_class=CLASS, now=NOW)
+        await caller.rollback()
+
+    # And nothing was published: a later reader still finds no posture.
+    async with posture_sessions() as reader:
+        with pytest.raises(runtime.RuntimePostureError, match="runtime_posture_unavailable"):
+            await runtime.read_live_posture(reader, compatibility_class=CLASS, now=NOW)
 
 
 @pytest.mark.integration

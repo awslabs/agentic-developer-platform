@@ -63,6 +63,13 @@ from src.shared.schemas.auth import TokenContext
 logger = logging.getLogger("bedrockgateway.agentauth.model_policy")
 
 SNAPSHOT_SCHEMA_VERSION = 1
+#: The model-policy contract a client must declare to be admitted under an
+#: enforcing posture.  Distinct from ``SNAPSHOT_SCHEMA_VERSION``, which versions
+#: the frozen snapshot's wire format: this versions what a *consumer* promises to
+#: honour.  Bump it only when a client that satisfied the previous version would
+#: mishandle the new payload, since bumping it refuses every older worker under
+#: enforcement.
+MODEL_POLICY_CONTRACT_VERSION = 1
 SNAPSHOT_AUDIENCE = "adp-agent-model-policy"
 SNAPSHOT_SOURCE_LIVE = "live"
 MAX_SNAPSHOT_BYTES = 128 * 1024
@@ -439,6 +446,71 @@ def resolve_decision(
     )
 
 
+def trusted_compatibility_class(snapshot: ModelPolicySnapshot, *, persona: str) -> str:
+    """The compatibility class to read the posture for, from trusted facts only.
+
+    Taken from the gateway-owned snapshot's persona contract, never from
+    anything a worker supplies: the posture is a per-class operational control,
+    so letting a caller nominate the class would let it nominate the posture that
+    governs it.
+    """
+    contract = snapshot.persona_contracts.get(persona)
+    if persona not in VALID_PERSONAS or not isinstance(contract, dict):
+        raise ModelPolicyError("persona_incompatible")
+    compatibility_class = contract.get("compatibility_class", "")
+    if not isinstance(compatibility_class, str) or not compatibility_class:
+        raise ModelPolicyError("persona_incompatible")
+    return compatibility_class
+
+
+async def establish_live_posture(
+    session: AsyncSession,
+    *,
+    snapshot: ModelPolicySnapshot,
+    persona: str,
+    now: datetime | None = None,
+) -> LivePosture:
+    """Read the live posture *before* and independently of model selection.
+
+    Order matters, and it was wrong.  When the posture was established only as
+    part of resolving a decision, any selection failure — an unresolvable direct
+    override, a retired model, stale destination evidence — discarded the posture
+    too, and the response could not distinguish "we are in report-only and could
+    not propose a model" (legacy behaviour is exactly correct, and truthful
+    evidence says so) from "we do not know what posture we are in" (a refusal).
+
+    Both are unavailable proposals; only the second is a posture failure.  The
+    worker's choice of failure behaviour depends entirely on which it is, and it
+    must not have to guess from its own configuration.
+
+    Raises:
+        ModelPolicyError: the persona is not compatible, or the posture is
+            unreadable/unsupported.  Never substituted.
+    """
+    compatibility_class = trusted_compatibility_class(snapshot, persona=persona)
+    try:
+        return await read_live_posture(session, compatibility_class=compatibility_class, now=now)
+    except RuntimePostureError as exc:
+        raise ModelPolicyError(exc.reason) from None
+
+
+def bind_established_posture(decision: ModelPolicyDecision, live: LivePosture) -> ModelPolicyDecision:
+    """Record an already-established live posture onto a resolved decision.
+
+    Refuses a class mismatch rather than reporting a posture read for a
+    different compatibility class as if it governed this hop.
+    """
+    if live.compatibility_class != decision.compatibility_class:
+        raise ModelPolicyError("runtime_posture_unavailable")
+    return replace(
+        decision,
+        runtime_posture=live.posture,
+        posture_revision=live.posture_revision,
+        posture_observed_at=live.observed_at,
+        posture_source=live.source,
+    )
+
+
 async def apply_live_posture(
     session: AsyncSession,
     *,
@@ -488,6 +560,7 @@ async def validate_live_decision(
     *,
     snapshot: ModelPolicySnapshot,
     decision: ModelPolicyDecision,
+    live: LivePosture | None = None,
 ) -> ModelPolicyDecision:
     """Re-evaluate live admission facts for one frozen per-persona choice.
 
@@ -512,11 +585,16 @@ async def validate_live_decision(
         )
         raise ModelPolicyError("not_permitted") from None
 
-    # The live posture is read first, and inside the same isolated read as the
-    # rest of the live facts, so that the posture a decision claims is the one
-    # its admission was evaluated under rather than a later re-read.
-    async with _optional_read_savepoint(session):
-        decision = await apply_live_posture(session, decision=decision)
+    # The posture is bound before the live admission facts are read, so the
+    # posture a decision claims is the one its admission was evaluated under.
+    # ``live`` is normally already established by the caller *before* selection
+    # was attempted, so a selection failure still knows the posture; reading it
+    # here is the fallback for callers that hold only a decision.
+    if live is not None:
+        decision = bind_established_posture(decision, live)
+    else:
+        async with _optional_read_savepoint(session):
+            decision = await apply_live_posture(session, decision=decision)
     # Per-hop bootstrap also shares the caller's session, so this live read is
     # isolated for the same reason: its SQL failure must not abort the caller's
     # transaction.  The handler in bootstrap_model_policy_live() catches outside.
@@ -1248,27 +1326,42 @@ def _sign_policy_decision(
     }
 
 
-def _unavailable(reason: str, *, evidence: dict[str, object] | None = None) -> dict:
-    """A bootstrap failure that does not claim a posture it never established.
+def _unavailable(
+    reason: str,
+    *,
+    evidence: dict[str, object] | None = None,
+    live: LivePosture | None = None,
+) -> dict:
+    """An unavailable proposal, reporting the posture only if one was established.
 
-    The earlier shape hard-coded ``"posture": "report_only"`` in every handler.
-    That was a false statement in two directions at once: under an enforcing
-    class it reported the permissive posture, and in the cases where the posture
-    read itself failed it reported a posture nothing had determined.  A consumer
-    keying off that field would read an enforcing failure as a benign
-    report-only outcome — which is precisely how an enforcing failure silently
-    becomes report_only by exception handling.
+    Two distinct outcomes share this shape, and collapsing them is a defect in
+    either direction:
 
-    ``posture`` is therefore ``None`` and ``posture_verified`` is ``False``.  A
-    caller that cannot see a verified posture must treat the decision as absent,
-    not as permissive.
+    * ``live`` given — the posture was read and verified before selection was
+      attempted, and only the *proposal* failed.  Reporting it is the truth, and
+      it is what lets a consumer keep exact legacy behaviour under a verified
+      ``report_only``/``disabled`` without inferring the posture from its own
+      editable configuration.
+    * ``live`` absent — nothing established a posture (the read itself failed, or
+      the failure preceded it).  ``posture`` is ``None`` and ``posture_verified``
+      is ``False``; a consumer that cannot see a verified posture must treat this
+      as absent, never as permissive.
+
+    The original shape hard-coded ``"posture": "report_only"`` for every failure,
+    which was false in both directions at once: it reported the permissive value
+    under an enforcing class, and reported a posture even when nothing had
+    determined one.  That is precisely how an enforcing failure silently becomes
+    report_only by exception handling.
     """
     response: dict[str, object] = {
-        "posture": None,
-        "posture_verified": False,
+        "posture": live.posture if live is not None else None,
+        "posture_verified": live is not None,
         "status": "unavailable",
         "reason": reason,
     }
+    if live is not None:
+        response["posture_revision"] = live.posture_revision
+        response["posture_evidence"] = live.to_evidence()
     if evidence is not None:
         response["evidence"] = evidence
     return response
@@ -1335,6 +1428,34 @@ async def bootstrap_model_policy_live(
         )
         or {}
     )
+    # Established first, from trusted snapshot facts, and deliberately outside
+    # the try/except below: a posture that was successfully read must survive
+    # every later failure so the response can say which posture the failure
+    # happened under.  A failure *here* is a posture failure and reports none.
+    live: LivePosture | None = None
+    try:
+        snapshot = _parse_execution_snapshot(raw_execution, tenant_id=record.tenant_id)
+        live = await establish_live_posture(
+            session,
+            snapshot=snapshot,
+            persona=raw_execution.get("persona", {}).get("S", ""),
+        )
+    except ModelPolicyError as exc:
+        return _unavailable(exc.reason)
+    except SQLAlchemyError:
+        logger.warning(
+            "Live runtime posture unavailable",
+            extra={"invocation_id": record.invocation_id},
+            exc_info=True,
+        )
+        return _unavailable("runtime_posture_unavailable")
+    except Exception as exc:
+        logger.warning(
+            "Live runtime posture failed",
+            extra={"invocation_id": record.invocation_id, "error_type": type(exc).__name__},
+        )
+        return _unavailable("runtime_posture_unavailable")
+
     try:
         snapshot, decision = _resolve_execution_decision(
             raw_execution=raw_execution,
@@ -1344,6 +1465,7 @@ async def bootstrap_model_policy_live(
             session,
             snapshot=snapshot,
             decision=decision,
+            live=live,
         )
         return _sign_policy_decision(
             decision=decision,
@@ -1353,23 +1475,23 @@ async def bootstrap_model_policy_live(
             env=env,
         )
     except ModelPolicyError as exc:
-        return _unavailable(exc.reason, evidence=exc.evidence)
+        return _unavailable(exc.reason, evidence=exc.evidence, live=live)
     except SQLAlchemyError:
         logger.warning(
             "Live model-policy admission unavailable",
             extra={"invocation_id": record.invocation_id},
             exc_info=True,
         )
-        return _unavailable("model_validation_unavailable")
+        return _unavailable("model_validation_unavailable", live=live)
     except (EnvelopeError, AuthorityStoreError):
-        return _unavailable("decision_unavailable")
+        return _unavailable("decision_unavailable", live=live)
     except Exception as exc:
         # A bootstrap failure must not become an outage — but it must also not
-        # become a *permissive* result.  The response says "no verified posture,
-        # no decision"; whether that is survivable is the consumer's call, made
-        # against the live posture it reads for itself, not a claim made here.
-        # Only the exception type is logged: destination credentials and database
-        # details are not requester-visible evidence.
+        # become a *permissive* result.  The response reports the established
+        # posture (so a verified report_only keeps exact legacy behaviour) and no
+        # decision; whether that is survivable is then the consumer's call under
+        # a posture it did not have to guess.  Only the exception type is logged:
+        # destination credentials and database details are not requester-visible.
         logger.warning(
             "Live model-policy decision failed",
             extra={
@@ -1377,4 +1499,4 @@ async def bootstrap_model_policy_live(
                 "error_type": type(exc).__name__,
             },
         )
-        return _unavailable("decision_unavailable")
+        return _unavailable("decision_unavailable", live=live)

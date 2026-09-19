@@ -265,8 +265,15 @@ class TestBoundedStaleness:
 
 
 class TestUncommittedChangesAreNeverCached:
-    async def test_pending_posture_write_is_not_promoted_into_the_cache(self, db_session):
-        """A change that may still roll back must not become a live decision."""
+    async def test_a_pending_posture_write_refuses_rather_than_reporting_itself(self, db_session):
+        """A change that may still roll back is not a live posture at all.
+
+        Stricter than merely keeping it out of the cache, and deliberately so: the
+        posture describes committed platform state, so a session holding an
+        uncommitted write to it cannot be told what the posture is — not even for
+        one uncached hop.  Returning its own pending value, correctly labelled
+        uncacheable, still let that value govern a signed decision.
+        """
         await _seed(db_session, posture="report_only", revision=2)
         reset_posture_cache()
 
@@ -275,12 +282,12 @@ class TestUncommittedChangesAreNeverCached:
         row.posture_revision = 3
         await db_session.flush()  # visible in-session, NOT committed
 
-        observed = await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
-        assert observed.posture == "enforcing"  # this session's own view
+        with pytest.raises(RuntimePostureError, match="runtime_posture_unavailable"):
+            await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
 
         await db_session.rollback()
 
-        # The rolled-back value must not survive in the shared cache.
+        # And the committed value is readable again once the write is gone.
         after = await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
         assert (after.posture, after.posture_revision) == ("report_only", 2)
 
@@ -294,10 +301,34 @@ class TestUncommittedChangesAreNeverCached:
             row.enforcement_posture = "enforcing"
             row.posture_revision = 3
             await writer.flush()
-            await read_live_posture(writer, compatibility_class=CLASS, now=NOW)
+            with pytest.raises(RuntimePostureError):
+                await read_live_posture(writer, compatibility_class=CLASS, now=NOW)
             await writer.rollback()
 
         async with db_session_factory() as reader:
             observed = await read_live_posture(reader, compatibility_class=CLASS, now=NOW)
             assert observed.posture == "report_only"
             assert observed.posture_revision == 2
+
+    async def test_an_uncommitted_insert_is_not_live_policy_when_no_row_is_committed(self, db_session):
+        """The operator's remaining case: absent committed row, caller inserts one.
+
+        Avoiding the cache was not enough — the reader still *returned* the
+        caller's own uncommitted ``report_only`` as live policy.  A permissive
+        value that the caller could still roll back is the worst possible thing to
+        substitute here, because it is indistinguishable from an audited
+        report-only posture at the point of consumption.
+        """
+        reset_posture_cache()
+        db_session.add(
+            PersonaModelPolicySetting(
+                compatibility_class=CLASS,
+                enforcement_posture="report_only",
+                posture_revision=1,
+                revision=1,
+            )
+        )
+        await db_session.flush()
+
+        with pytest.raises(RuntimePostureError, match="runtime_posture_unavailable"):
+            await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
