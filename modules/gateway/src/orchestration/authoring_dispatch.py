@@ -90,19 +90,34 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.models.base import utcnow
 
 from .models import AmendmentRequestState
-from .pending_amendments import AmendmentRequest, assign_author_run, mark_request_dispatched
+from .pending_amendments import AmendmentRequest, assign_author_run, mark_request_dispatched, owed_authoring_requests
 
 logger = logging.getLogger("bedrockgateway.orchestration.authoring_dispatch")
 
 __all__ = [
     "AUTHORING_PERSONA",
+    "RECOVERY_GRACE_SECONDS",
+    "RECOVERY_LIMIT",
     "PendingAuthoring",
     "authoring_run_id",
     "build_authoring_assignment",
     "message_deduplication_id",
     "message_group_id",
     "publish_authoring",
+    "recover_owed_authoring",
 ]
+
+# How long a request must have been owed before recovery will rebuild it, in seconds.
+# Not a tuning knob so much as a separation between the two paths: the pass that records
+# a request publishes it moments later in its own post-commit flush, so anything younger
+# than this is presumed to be that first attempt still in flight. Recovery is for
+# genuinely stuck work.
+RECOVERY_GRACE_SECONDS = 300
+
+# The per-pass cap on rebuilt assignments. Bounds the tick: `QUEUED` does not expire, so
+# a remainder is picked up next wake rather than lost, and one tenant's backlog cannot
+# make the engine's own pass unbounded.
+RECOVERY_LIMIT = 10
 
 # The persona that authors AI-DLC plans. Fixed rather than configurable: the whole
 # point of the assignment is that an AI-DLC author answers it, and a configurable
@@ -365,6 +380,136 @@ async def build_authoring_assignment(
         group_id=message_group_id(org_id=org_id, request_id=request.id),
         deduplication_id=message_deduplication_id(request_id=request.id, replan_decision_id=request.replan_decision_id),
     )
+
+
+async def recover_owed_authoring(
+    session: AsyncSession,
+    *,
+    limit: int = RECOVERY_LIMIT,
+    grace_seconds: int = RECOVERY_GRACE_SECONDS,
+) -> list[PendingAuthoring]:
+    """Rebuild the assignments for requests still owed an author. **Commits nothing.**
+
+    The other half of commit-then-publish, and the reason this module's claim that "a
+    later pass re-publishes it" is now true. `build_authoring_assignment` is driven by a
+    human's comment; this is driven by the durable row, which is the only thing that
+    survives a publish that did not land. Without it the marker was consumed, the reply
+    said an author had been assigned, and nothing ever looked at the `QUEUED` row again.
+
+    Call inside the engine pass's transaction, before the caller commits, and publish the
+    returned assignments in the same post-commit flush as the pass's own — the ordering
+    argument in the module docstring applies identically here.
+
+    **This cannot produce a second author for one human ask.** The run id is read from
+    the row when one is bound and derived from the request id otherwise, so a rebuild
+    addresses the run the server already commissioned; the FIFO deduplication id is
+    derived from the request and its decision, so the queue collapses a duplicate; and
+    `mark_request_dispatched` is conditional on `QUEUED`, so the first successful publish
+    takes the row out of this query's scope permanently.
+
+    Per-request failures are contained and skipped rather than raised: a tenant whose
+    installation cannot be resolved, or a human who has since been removed, must not stop
+    every other tenant's owed request being recovered. A skipped request stays `QUEUED`
+    and is tried again next wake, which is the honest outcome — it is still owed.
+
+    Returns:
+        The assignments to publish. Empty when nothing is owed, which is the normal case.
+    """
+    repo = (os.environ.get(REPO_ENV) or "").strip()
+    if not repo:
+        # Same fail-closed rule the command pass applies: with no configured repository
+        # an authoring run cannot be addressed at all, so there is nothing to rebuild.
+        # Logged at debug because on a deployment that never enabled the engine this
+        # would otherwise be a warning on every tick.
+        logger.debug("authoring recovery: %s is unset; no owed assignment can be addressed", REPO_ENV)
+        return []
+
+    from datetime import timedelta
+
+    from .dispatch_pass import resolve_installation_id
+
+    try:
+        owed = await owed_authoring_requests(session, limit=limit, older_than=utcnow() - timedelta(seconds=grace_seconds))
+    except Exception:
+        # A read that fails leaves every row `QUEUED`, so the next wake retries. Counted
+        # nowhere and raised nowhere: recovery is a repair pass, and its failure must not
+        # cost the tick the durable work it did this invocation.
+        logger.exception("authoring recovery: could not read owed authoring requests")
+        return []
+
+    if not owed:
+        return []
+
+    logger.info("authoring recovery: %d request(s) still owed an author", len(owed))
+
+    rebuilt: list[PendingAuthoring] = []
+    for org_id, request, intent_ref in owed:
+        try:
+            # Addressed from server state only. The issue comes from the flow's own
+            # intent issue and the installation from the org record through the SAME
+            # fail-closed resolver dispatch uses — never from anything a comment
+            # supplied, which by now is long consumed anyway.
+            issue = _issue_number(intent_ref)
+            if issue is None:
+                logger.warning(
+                    "authoring recovery: flow %s has no usable intent issue; request %s stays queued",
+                    request.flow_id,
+                    request.id,
+                )
+                continue
+
+            installation_id = await resolve_installation_id(session, org_id=org_id)
+            if installation_id is None:
+                logger.warning(
+                    "authoring recovery: org %s has no unambiguous installation; request %s stays queued",
+                    org_id,
+                    request.id,
+                )
+                continue
+
+            assignment = await build_authoring_assignment(
+                session,
+                org_id=org_id,
+                request=request,
+                repo=repo,
+                issue=issue,
+                installation_id=installation_id,
+            )
+        except Exception:
+            # Contained per request, for the reason in the docstring: one tenant's
+            # unresolvable identity must not strand every other tenant's owed work.
+            logger.exception("authoring recovery: could not rebuild an assignment for request %s — it stays queued", request.id)
+            continue
+
+        if assignment is None:
+            # Published between the read and here. Nothing is owed; not an error.
+            continue
+
+        logger.info(
+            "authoring recovery: rebuilt the assignment for request %s flow=%s run=%s org=%s",
+            request.id,
+            request.flow_id,
+            assignment.author_run_id,
+            org_id,
+        )
+        rebuilt.append(assignment)
+
+    return rebuilt
+
+
+def _issue_number(intent_ref: str | None) -> int | None:
+    """The issue number a flow's `intent_ref` names, or None.
+
+    Both `"4527"` and `"#4527"` occur in real proposals — `engine_commands`,
+    `dispatch_pass` and `diagnose` all cope with either spelling — so this strips the
+    `#` rather than matching one form and silently failing on half of all flows.
+
+    None for absent or non-numeric text, which is a skip rather than a guess: a rebuilt
+    envelope addressed at an invented issue would post an authoring run's output
+    somewhere nobody asked for.
+    """
+    text = (intent_ref or "").strip().lstrip("#")
+    return int(text) if text.isdigit() else None
 
 
 async def publish_authoring(

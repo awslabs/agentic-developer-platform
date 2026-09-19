@@ -145,7 +145,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy import select, update
@@ -476,6 +476,20 @@ class EngineCommandReport:
     #: Issue #4529: authoring assignments published to the queue. The field an
     #: operator reads to confirm replan actually summons an author.
     authoring_published: int = 0
+    #: Issue #4529: assignments rebuilt from durable `QUEUED` requests whose earlier
+    #: publish did not land. Deliberately NOT a failure counter — recovery working is
+    #: the system repairing itself — but visible, because a number that stays above
+    #: zero across many ticks means requests are being rebuilt and failing again, and
+    #: that is a different problem from one transient send failure.
+    authoring_recovered: int = 0
+    #: Issue #4529: `request_id -> event_id`, for the replan assignments this pass built
+    #: from a comment. The link between an assignment and the acknowledgement that will
+    #: be posted for it, so that a publish which does not land can correct its OWN reply
+    #: rather than a reply for some other command. Populated in `_handle_row`, where the
+    #: correlation is exact — recovered assignments are absent from it by construction,
+    #: because their comment was answered on an earlier pass and there is nothing left
+    #: to correct.
+    authoring_ack_events: dict[str, str] = field(default_factory=dict)
     pending: list[PendingEngineAck] = field(default_factory=list)
     #: Issue #4529: committed authoring assignments awaiting publication, flushed
     #: after the caller's commit. Separate from `pending` (which carries GitHub acks)
@@ -532,6 +546,7 @@ class EngineCommandReport:
                 "acks_failed": 0,
                 "authoring_published": 0,
                 "authoring_publish_failed": 0,
+                "authoring_recovered": 0,
                 "errors": 0,
             },
         )
@@ -1318,6 +1333,17 @@ async def _handle_row(
     report.record(org_id, "commands_applied" if applied else "commands_refused")
     _queue(message, installation_id=installation_id)
 
+    # Issue #4529: remember which acknowledgement belongs to which assignment, while the
+    # correlation is exact. The reply above is composed BEFORE the publish is attempted —
+    # it has to be, because publishing is post-commit — so on this path alone the reply
+    # can be optimistic. Recording the link lets `_publish_authoring` correct precisely
+    # this comment's reply if the send does not land, instead of the human being told an
+    # author was assigned when none was.
+    for assignment in report.pending_authoring:
+        request_id = getattr(assignment, "request_id", None)
+        if request_id and request_id not in report.authoring_ack_events:
+            report.authoring_ack_events[request_id] = event_id
+
 
 def _quarantine(row: dict[str, Any], report: EngineCommandReport, *, reason: str) -> None:
     """Record one unverifiable row for sealing off, and do nothing else (#4539).
@@ -1530,7 +1556,50 @@ async def run_engine_command_pass(
             logger.exception("orchestration engine commands: failed to handle event %r", row.get("event_id"))
             report.record(str(row.get("tenant_id") or ""), "errors")
 
+    # Issue #4529: and then finish the authoring work this engine already accepted.
+    #
+    # Deliberately AFTER the rows and OUTSIDE the loop, and deliberately not gated on
+    # there being any rows at all. The publish for a replan happens in the post-commit
+    # flush, which also consumes the comment marker that caused it — so a publish that
+    # did not land leaves a durable `QUEUED` request with no marker left to re-read.
+    # Every later pass then found nothing and rebuilt nothing, while the human had
+    # already been told an author was assigned. This call is what makes the reply true:
+    # the pass is no longer only a reaction to new comments, it also finishes owed work.
+    await _recover_authoring(session, report)
+
     return report
+
+
+async def _recover_authoring(session: AsyncSession, report: EngineCommandReport) -> None:
+    """Rebuild the assignments for requests still owed an author. Never raises.
+
+    Appends to the same `pending_authoring` accumulator the replan branch uses, so
+    recovered assignments are published by the same post-commit flush under the same
+    commit-then-publish ordering — there is deliberately no second publish path.
+
+    Contained absolutely: recovery is a repair pass, and an unforeseen failure in it must
+    not cost this tick the commands it correctly applied above. A failure leaves every
+    row `QUEUED`, which is exactly the state that brings them back next wake.
+    """
+    try:
+        from .authoring_dispatch import recover_owed_authoring
+
+        # Requests this pass already built an assignment for, above. Recovery reads the
+        # database inside this same uncommitted transaction, so it can SEE a request the
+        # replan branch just wrote — and rebuilding that one would put two assignments for
+        # one request into the same flush. The grace boundary in `recover_owed_authoring`
+        # already excludes a request that young, so this is a second, exact guard rather
+        # than the only one: the boundary is a time heuristic and this is an identity
+        # check, and the invariant ("one human ask, one author") is worth both.
+        already = {getattr(a, "request_id", None) for a in report.pending_authoring}
+
+        for assignment in await recover_owed_authoring(session):
+            if assignment.request_id in already:
+                continue
+            report.pending_authoring.append(assignment)
+            report.record(assignment.org_id, "authoring_recovered")
+    except Exception:
+        logger.exception("orchestration engine commands: authoring recovery failed; owed requests remain queued")
 
 
 def _consume(table, ack: PendingEngineAck) -> bool:
@@ -1619,6 +1688,43 @@ async def _publish_authoring(report: EngineCommandReport) -> None:
             )
             published = False
         report.record(assignment.org_id, "authoring_published" if published else "authoring_publish_failed")
+        if not published:
+            _correct_optimistic_reply(report, assignment)
+
+
+def _correct_optimistic_reply(report: EngineCommandReport, assignment: Any) -> None:
+    """Downgrade this assignment's not-yet-posted reply from "assigned" to "retryable".
+
+    The one thing the counters could not fix. `_apply_command` composes the replan reply
+    before anything is published, because publishing is post-commit — so the reply says
+    "an AI-DLC author has been assigned" while the send has not been attempted yet. When
+    the send then fails the request is genuinely retryable, and the human must be told
+    that rather than being left waiting for an author nobody commissioned.
+
+    Safe by construction, because this runs FIRST in the flush — before the ack loop
+    posts anything — so the correction always reaches the comment rather than arriving
+    after it. A recovered assignment has no entry here (its comment was answered on an
+    earlier pass), so nothing is rewritten for it: there is no stale reply to correct,
+    and editing an old thread on every failed retry would be noise rather than news.
+
+    Only rewrites an ack still carrying the optimistic success text, so a reply that was
+    already something else — a refusal, or a deliberately silent consume — is untouched.
+    """
+    event_id = report.authoring_ack_events.get(getattr(assignment, "request_id", "") or "")
+    if not event_id:
+        return
+
+    for index, ack in enumerate(report.pending):
+        if ack.event_id == event_id and ack.message == _REPLAN_QUEUED_REPLY:
+            # `PendingEngineAck` is frozen, deliberately — the routing fields must not be
+            # mutable after they were resolved from signed values. So the entry is
+            # replaced with the same routing and a truthful message.
+            report.pending[index] = replace(ack, message=_REPLAN_UNQUEUED_REPLY)
+            logger.warning(
+                "orchestration engine commands: replan reply for event %s downgraded to retryable — no author was queued",
+                event_id,
+            )
+            return
 
 
 async def flush_engine_commands(report: EngineCommandReport, config: EngineCommandConfig | None = None, *, table: Any | None = None) -> None:

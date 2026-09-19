@@ -134,6 +134,7 @@ __all__ = [
     "gate_diff",
     "in_force_plan",
     "mark_request_dispatched",
+    "owed_authoring_requests",
     "record_replan_request",
     "register_amendment_draft",
     "resolve_authoring_request",
@@ -481,6 +482,64 @@ async def mark_request_dispatched(session: AsyncSession, *, org_id: str, request
         )
         .values(state=AmendmentRequestState.DISPATCHED.value, dispatched_at=utcnow())
     )
+
+
+async def owed_authoring_requests(
+    session: AsyncSession,
+    *,
+    limit: int,
+    older_than: datetime,
+) -> list[tuple[str, AmendmentRequest, str | None]]:
+    """Requests still owed an authoring job. **Read-only; the recovery pass's input.**
+
+    The gap this closes. `mark_request_dispatched` is conditional on `QUEUED` and there
+    is deliberately no `FAILED` state, so a publish that did not land leaves the row
+    `QUEUED` — the retryable state. But nothing read that state back. The engine command
+    pass reacts to *pending comment markers*, and the marker for a replan is consumed by
+    the same flush whose publish failed, so the next pass saw nothing and reconstructed
+    nothing. The row sat `QUEUED` forever while the human had already been told an author
+    was assigned. `authoring_dispatch`'s own docstring asserted "a later pass re-publishes
+    it"; this function is what makes that sentence true rather than aspirational.
+
+    Deliberately **not tenant-scoped**, unlike every other read in this module. The
+    recovery pass runs on the tick, which has no tenant of its own — it is the engine
+    finishing work it already accepted on every tenant's behalf. `org_id` is therefore
+    *returned* per row rather than filtered on, and every downstream step (installation
+    resolution, identity resolution, the authority row) re-derives its tenant from it.
+
+    `older_than` is a grace boundary, not an optimisation. The pass that creates a
+    request publishes it moments later in its own post-commit flush, and a recovery
+    running concurrently would otherwise race that first attempt: both would publish,
+    and while the derived deduplication id collapses them in SQS, relying on that for
+    the *ordinary* path would make the dedup window load-bearing for something it should
+    never see. Skipping requests younger than the boundary means recovery only ever sees
+    genuinely stuck work.
+
+    `limit` bounds the pass. A tenant that somehow accrues thousands of unpublishable
+    requests must not make the tick unbounded; the remainder is simply picked up next
+    wake, because `QUEUED` does not expire.
+
+    Ordered oldest-first so the longest-waiting human is answered first, and so the cap
+    cannot indefinitely starve one request behind newer arrivals.
+
+    Returns:
+        `(org_id, request_snapshot, flow_intent_ref)` per owed request. The flow's
+        `intent_ref` is joined in because a rebuilt envelope has to be *addressed* — the
+        request row carries no issue number, and the recovery pass must not invent one.
+    """
+    rows = (
+        await session.execute(
+            select(OrchestrationAmendmentRequest, OrchestrationFlow.intent_ref)
+            .join(OrchestrationFlow, OrchestrationFlow.id == OrchestrationAmendmentRequest.flow_id)
+            .where(
+                OrchestrationAmendmentRequest.state == AmendmentRequestState.QUEUED.value,
+                OrchestrationAmendmentRequest.created_at < older_than,
+            )
+            .order_by(OrchestrationAmendmentRequest.created_at.asc())
+            .limit(limit)
+        )
+    ).all()
+    return [(row[0].org_id, _snapshot(row[0], created=False), row[1]) for row in rows]
 
 
 async def resolve_authoring_request(session: AsyncSession, *, org_id: str, request_id: str, author_run_id: str) -> AmendmentRequest:
