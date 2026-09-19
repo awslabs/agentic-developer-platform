@@ -20,7 +20,7 @@ resource "aws_sqs_queue_policy" "pricing_delivery_failure" {
         Resource  = aws_sqs_queue.pricing_delivery_failure.arn
         Condition = {
           ArnEquals    = { "aws:SourceArn" = aws_cloudwatch_event_rule.pricing_refresh.arn }
-          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+          StringEquals = { "aws:SourceAccount" = var.account_id }
         }
       },
       {
@@ -78,7 +78,7 @@ resource "aws_lambda_function_event_invoke_config" "pricing_refresh" {
 locals {
   create_pricing_alarm_inbox = length(var.alarm_actions) == 0
   pricing_topic_name         = "${var.name_prefix}-pricing-alarms"
-  pricing_topic_arn          = "arn:${data.aws_partition.current.partition}:sns:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:${local.pricing_topic_name}"
+  pricing_topic_arn          = "arn:${data.aws_partition.current.partition}:sns:${var.aws_region}:${var.account_id}:${local.pricing_topic_name}"
   pricing_alarm_actions      = local.create_pricing_alarm_inbox ? [aws_sns_topic.pricing_alarms[0].arn] : var.alarm_actions
 }
 
@@ -93,7 +93,7 @@ resource "aws_kms_key" "pricing_alarms" {
       {
         Sid       = "EnableAccountKeyAdministration"
         Effect    = "Allow"
-        Principal = { AWS = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Principal = { AWS = "arn:${data.aws_partition.current.partition}:iam::${var.account_id}:root" }
         Action    = "kms:*"
         Resource  = "*"
       },
@@ -132,8 +132,8 @@ resource "aws_sns_topic_policy" "pricing_alarms" {
         Action    = "sns:Publish"
         Resource  = aws_sns_topic.pricing_alarms[0].arn
         Condition = {
-          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
-          ArnLike      = { "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:cloudwatch:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:alarm:${var.name_prefix}-*" }
+          StringEquals = { "aws:SourceAccount" = var.account_id }
+          ArnLike      = { "aws:SourceArn" = "arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${var.account_id}:alarm:${var.name_prefix}-*" }
         }
       },
       {
@@ -184,7 +184,7 @@ resource "aws_sqs_queue_policy" "pricing_alarm_inbox" {
         Resource  = aws_sqs_queue.pricing_alarm_inbox[0].arn
         Condition = {
           ArnEquals    = { "aws:SourceArn" = aws_sns_topic.pricing_alarms[0].arn }
-          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+          StringEquals = { "aws:SourceAccount" = var.account_id }
         }
       },
       {

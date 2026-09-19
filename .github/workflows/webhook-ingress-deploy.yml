@@ -5,6 +5,8 @@ on:
     paths:
       - 'modules/agent-factory/webhook-ingress/**'
       - '.github/workflows/webhook-ingress-deploy.yml'
+      - '.github/scripts/detect-webhook-deploy-changes.sh'
+      - '.github/deployment-holds/webhook-infra.md'
     branches:
       - main
   workflow_dispatch:
@@ -29,6 +31,19 @@ on:
         description: 'Deployment environment (dev/staging/prod).'
         required: false
         default: 'dev'
+      enable_agent_authority:
+        description: 'Issue #5365: enable protected agent authority (per-run credentials + pod admission). Requires agent_authority_worker_image_digests. Empty = leave the committed tfvars value alone.'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - 'true'
+          - 'false'
+      agent_authority_worker_image_digests:
+        description: 'Comma-separated sha256:<64 hex> worker image digests to admit. Mutable tags are refused; each digest is verified against ECR before Terraform trusts it.'
+        required: false
+        default: ''
 
 concurrency:
   group: webhook-ingress-deploy-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -50,33 +65,13 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       infra: ${{ steps.filter.outputs.infra }}
+      infra_held: ${{ steps.filter.outputs.infra_held }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
       - id: filter
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "infra=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          CHANGED=$(git diff --name-only HEAD^ HEAD)
-          echo "Changed files:"
-          echo "$CHANGED"
-          # Issue #2203: include scripts/ and requirements.txt — a change to the
-          # packaging script (package-lambdas.sh) or deps must trigger a
-          # repackage, else a packaging fix merges but never re-runs a deploy.
-          if echo "$CHANGED" | grep -qE '^modules/agent-factory/webhook-ingress/(lambda|common|scripts)/|^modules/agent-factory/webhook-ingress/requirements\.txt$'; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "code=false" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$CHANGED" | grep -qE '^modules/agent-factory/webhook-ingress/infra/'; then
-            echo "infra=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "infra=false" >> "$GITHUB_OUTPUT"
-          fi
+        run: bash .github/scripts/detect-webhook-deploy-changes.sh
 
   package:
     name: Package Lambda Code
@@ -258,11 +253,39 @@ jobs:
           fi
           kubectl version --client
 
+      - name: Resolve agent authority rollout
+        id: authority
+        # Issue #5365. Protected dispatch admits a pod only by image digest, and
+        # Terraform cannot tell a typo'd-but-well-formed digest from a real
+        # image — that failure mode is silent (every agent run fails to
+        # bootstrap) rather than a deploy error. This verifies each requested
+        # digest against ECR first, refuses tags outright, and never enables the
+        # feature unless a run explicitly asks. A push leaves the committed
+        # value untouched.
+        env:
+          ENABLE_AGENT_AUTHORITY: ${{ inputs.enable_agent_authority }}
+          AGENT_AUTHORITY_WORKER_IMAGE_DIGESTS: ${{ inputs.agent_authority_worker_image_digests }}
+        run: |
+          set -euo pipefail
+          VARS=$(bash "${GITHUB_WORKSPACE}/.github/scripts/resolve-agent-authority-rollout.sh")
+          {
+            echo 'vars<<TFVARS_EOF'
+            printf '%s\n' "$VARS"
+            echo 'TFVARS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_VAR_lambda_artifact_bucket: ${{ env.STATE_BUCKET }}
-        run: terraform apply -var-file="terraform.tfvars" -auto-approve
+          AUTHORITY_VARS: ${{ steps.authority.outputs.vars }}
+        run: |
+          set -euo pipefail
+          # Unquoted on purpose: AUTHORITY_VARS is newline-separated -var
+          # arguments produced by the guard above, and is empty in the common
+          # case where no rollout was requested.
+          # shellcheck disable=SC2086
+          terraform apply -var-file="terraform.tfvars" ${AUTHORITY_VARS} -auto-approve
 
       - name: Summary
         if: always()

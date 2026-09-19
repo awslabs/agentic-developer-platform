@@ -1,0 +1,67 @@
+---
+# =============================================================================
+# SkyPilot configuration — Issue #5042 (U3), EPIC #4910.
+# =============================================================================
+# WHERE EVERY VALUE COMES FROM
+#
+# `allowed_clouds` is U2's pinned list (releases/superplane.lock.yaml,
+# `skypilot_config.allowed_clouds`), reproduced here because SkyPilot reads a config file and
+# not a lock file. `tests/test_skypilot_manifests.py` asserts this list equals the lock's, so
+# the copy cannot drift silently — which is the only reason a copy is acceptable at all.
+#
+# WHY `kubernetes` IS IN THE LIST BUT CANNOT BE USED HERE
+#
+# The lock pins four clouds including `kubernetes`, and this file keeps that pin honest rather
+# than quietly narrowing it. But SkyPilot can only use the `kubernetes` cloud with credentials
+# for a target cluster, and this deployment supplies none: `workspace_cluster_context` is
+# empty in dev and Terraform publishes the explicit sentinel `none`. The RBAC in
+# 10-skypilot-rbac.yaml grants no pod-create rights on this cluster, so a Kubernetes launch
+# fails with a permission error rather than provisioning on the ADP MANAGEMENT cluster.
+#
+# That ordering is deliberate: fail on a missing credential, never succeed against the wrong
+# cluster. The platform isolation requirement (2026-09-16) says GPU workloads target the
+# intended workspace cluster, not the management cluster, and a live GPU run is not authorized
+# by this story in any case (U19 owns the SkyPilot handover).
+#
+# NO ACCOUNT ID, NO CREDENTIAL, NO `adp-cred` LABEL
+#
+# Upstream's `infra/skypilot-api/config.env` carries UPSTREAM's account (605440105851). U2
+# deliberately recorded `skypilot_config.deployment_target` as unresolved rather than adopt it,
+# and `variables.tf` rejects that account even if supplied explicitly. Nothing here restates an
+# account: AWS identity arrives through IRSA on the ServiceAccount, so there is no access key
+# to place in a ConfigMap and no account literal to get wrong.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: skypilot-config
+  namespace: REPLACE_WITH_SKYPILOT_NAMESPACE
+  labels:
+    app.kubernetes.io/name: skypilot-api
+    app.kubernetes.io/part-of: adp-superplane
+data:
+  # Mounted at ~/.sky/config.yaml by the Deployment. Matches upstream's
+  # infra/skypilot-api/sky-config.yaml shape at the pinned revision.
+  config.yaml: |
+    # Pinned by releases/superplane.lock.yaml (skypilot_config.allowed_clouds).
+    allowed_clouds:
+      - aws
+      - lambda
+      - nebius
+      - kubernetes
+
+    # Postgres-backed, not SQLite. U2 pinned this because SQLite loses SkyPilot's
+    # cluster and job state on pod replacement, and a lost cluster handle means a
+    # running GPU cluster nobody can find to shut down — the concrete way an
+    # assumption about clean redeploys turns into unbounded spend. U19's handover
+    # work needs that state to survive a restart.
+    db:
+      backend: postgres
+
+    kubernetes:
+      # No context is configured. SkyPilot must not fall back to the ambient
+      # in-cluster context, which for this rollout is the ADP management cluster.
+      # Terraform publishes the sentinel `none` for exactly this reason: "unset"
+      # must not be readable as "use whatever cluster is current".
+      remote_identity: SERVICE_ACCOUNT
+      provision_timeout: 600

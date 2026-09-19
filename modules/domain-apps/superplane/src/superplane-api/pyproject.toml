@@ -1,0 +1,59 @@
+[project]
+name = "superplane-api"
+version = "0.1.0"
+description = "Superplane control plane API server"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.30.0",
+    "alembic>=1.13.0",
+    "pydantic[email]>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "boto3>=1.34.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+    "kubernetes>=29.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.20.0",
+    "types-PyYAML>=6.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+# Issue #5055 (U14). `app/auth.py` imports `superplane_auth.policy` — the domain
+# authorization policy owned by this module at `modules/domain-apps/superplane/auth`
+# (issue #5044, U9). It is imported rather than copied so the token and
+# authorization rules have ONE definition; a copy is how the two drift and how a
+# tightened rule silently fails to reach the service enforcing it.
+#
+# It is deliberately NOT listed in `[project.dependencies]` above. That list is
+# resolved from a package index, and this package is not published to one — a
+# named requirement there would make `pip install .` fail looking for it.
+# Instead it is installed from its in-repository path:
+#
+#     pip install -e ../../auth          # CI and local development
+#     scripts/stage-domain-auth.sh       # before `docker build` (see the script)
+#
+# The image needs the staging step because `releases/build-image.sh` pins the
+# Docker build context to this directory, and the policy package lives above it.
+# Nothing has shipped in the gap: `pending_images` in the release lock records
+# that no API image has been built yet.
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

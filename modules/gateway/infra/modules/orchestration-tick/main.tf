@@ -128,6 +128,13 @@ resource "aws_cloudwatch_log_group" "tick" {
 # Lambda Function
 # =============================================================================
 
+# IAM policy attachment is not implied by referencing the role ARN. Allow the
+# initial VPC permissions to propagate before Lambda starts provisioning ENIs.
+resource "time_sleep" "tick_iam_ready" {
+  create_duration = "30s"
+  depends_on      = [aws_iam_role_policy.tick]
+}
+
 resource "aws_lambda_function" "tick" {
   lifecycle {
     precondition {
@@ -211,6 +218,19 @@ resource "aws_lambda_function" "tick" {
       # advertise the bridge to anyone who can comment on an issue.
       FEATURE_ORCHESTRATION_ENGINE_ENABLED = tostring(var.engine_enabled)
       WEBHOOK_EVENTS_TABLE                 = var.webhook_events_table_name
+
+      # Issue #4539 — command attribution. NOT BG_-prefixed, and deliberately the
+      # SAME name the signer reads in the webhook Lambda: one signing key behind two
+      # env-var names drifts silently, and the failure mode of that drift is every
+      # command refused. `command_attribution.py` reads it with a bare
+      # `os.environ.get` for the same reason `engine_commands.py` does.
+      #
+      # Empty means the verifier has no key, so every pending command quarantines
+      # with `no_verification_key` rather than being applied unverified. That is the
+      # fail-closed default: an unwired verifier must never be read as permission to
+      # trust a row whose authority fields could have been authored rather than
+      # delivered.
+      ENGINE_COMMAND_SIGNING_KEY_SECRET_ARN = var.engine_command_signing_key_secret_arn
     }
   }
 
@@ -221,6 +241,7 @@ resource "aws_lambda_function" "tick" {
   })
 
   depends_on = [
+    time_sleep.tick_iam_ready,
     aws_cloudwatch_log_group.tick,
     aws_security_group_rule.tick_to_rds,
     aws_security_group_rule.tick_to_vpc_endpoints,

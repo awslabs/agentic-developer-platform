@@ -36,8 +36,8 @@ resource "aws_eks_cluster" "main" {
 
   vpc_config {
     subnet_ids              = var.private_subnet_ids
-    endpoint_private_access = true
-    endpoint_public_access  = true
+    endpoint_private_access = var.endpoint_private_access
+    endpoint_public_access  = var.endpoint_public_access
     public_access_cidrs     = var.eks_public_access_cidrs
     security_group_ids      = [var.eks_security_group_id]
   }
@@ -168,10 +168,22 @@ resource "aws_iam_role" "gateway_service_irsa" {
   # Issue #33: The gateway pods may run in either the "bedrockgw" namespace
   # (created by Terraform) or "adp-gateway" (created by kubectl/deploy scripts).
   # Use StringLike with both namespace patterns to support both deployments.
+  #
+  # Issue #5051 adds the second statement: the EKS Pod Identity service principal.
+  # Pod identity delivers credentials through the EKS Auth API instead of a
+  # projected OIDC token, so it needs its own trust statement — the federated
+  # statement above does not cover it. Both are present deliberately: IRSA remains
+  # the working path, and this statement makes the pod-identity path *possible*
+  # without switching to it. A trust statement grants nothing on its own; an
+  # association (below) is what actually delivers credentials. sts:TagSession is
+  # required because the EKS Auth API tags the session with the cluster/namespace/
+  # service-account it resolved, and without it every AssumeRole for pod identity
+  # is denied.
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "GatewayIrsaWebIdentity"
         Effect = "Allow"
         Principal = {
           Federated = aws_iam_openid_connect_provider.cluster.arn
@@ -186,6 +198,21 @@ resource "aws_iam_role" "gateway_service_irsa" {
               "system:serviceaccount:bedrockgw:gateway-service",
               "system:serviceaccount:adp-gateway:gateway-service"
             ]
+          }
+        }
+      },
+      {
+        Sid    = "GatewayPodIdentity"
+        Effect = "Allow"
+        Principal = {
+          Service = "pods.eks.amazonaws.com"
+        }
+        Action = ["sts:AssumeRole", "sts:TagSession"]
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/eks-cluster-arn"            = aws_eks_cluster.main.arn
+            "aws:RequestTag/kubernetes-namespace"       = ["bedrockgw", "adp-gateway"]
+            "aws:RequestTag/kubernetes-service-account" = "gateway-service"
           }
         }
       }
@@ -500,6 +527,62 @@ resource "kubernetes_service_account" "gateway_service" {
   depends_on = [
     aws_eks_cluster.main,
     kubernetes_namespace.bedrockgw
+  ]
+}
+
+# =============================================================================
+# EKS Pod Identity for the gateway service account (#5051)
+# =============================================================================
+# The gateway brokers tenant workspace-role assumes. Its own credentials must
+# come from the platform, not from a stored access key — a long-lived key kept as
+# a fallback leaves the credential this design removes still reachable, which
+# makes the improvement cosmetic.
+#
+# Pod identity is the newer of the two keyless mechanisms. Where IRSA projects an
+# OIDC token into the pod and the SDK exchanges it via AssumeRoleWithWebIdentity,
+# pod identity has the node's agent call the EKS Auth API on the pod's behalf and
+# hand back credentials. The practical difference here: the association is an AWS
+# resource, so which service account may assume which role is declared in
+# Terraform rather than encoded in the role's trust-policy `sub` condition, and no
+# annotation on the service account is required.
+#
+# No `eks-pod-identity-agent` addon is declared. On EKS Auto Mode — which this
+# cluster uses (`compute_config.enabled = true` above) — the agent is built in;
+# adding the addon would fail or conflict. The node role already carries
+# AmazonEKSWorkerNodePolicy (platform/infra/modules/iam/main.tf), which grants the
+# eks-auth:AssumeRoleForPodIdentity the agent needs.
+#
+# Default-off: enabling declares associations but does not switch an existing
+# IRSA pod. The SDK checks web-identity credentials before container credentials.
+# A deliberate cutover also removes the IRSA annotation/injected web-identity
+# environment and rolls the pods; both trust paths remain available. Rollback
+# restores the IRSA annotation and rolls pods before removing associations, so a
+# running container-credential pod is never left without its delivery mechanism.
+# No credential cutover or static-key fallback is performed by this module.
+#
+# Two associations because the gateway runs in one of two namespaces depending on
+# how it was deployed (#33): "bedrockgw" when Terraform created it, "adp-gateway"
+# when the deploy workflow did. The IRSA trust policy already accepts both; these
+# match it. An association for a namespace/service-account that does not exist is
+# inert — it resolves nothing until a pod with that identity runs — so covering
+# both is not a grant to anything extra.
+resource "aws_eks_pod_identity_association" "gateway_service" {
+  for_each = var.enable_gateway_pod_identity ? toset(["bedrockgw", "adp-gateway"]) : toset([])
+
+  cluster_name    = aws_eks_cluster.main.name
+  namespace       = each.key
+  service_account = "gateway-service"
+  role_arn        = aws_iam_role.gateway_service_irsa.arn
+
+  tags = merge(var.common_tags, {
+    Name    = "${var.name_prefix}-pod-identity-gateway-${each.key}"
+    Service = "eks"
+    Purpose = "gateway-pod-identity"
+  })
+
+  depends_on = [
+    aws_eks_cluster.main,
+    aws_iam_role.gateway_service_irsa,
   ]
 }
 

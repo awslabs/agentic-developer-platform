@@ -111,6 +111,13 @@ resource "aws_lambda_function" "github_webhook" {
       TENANT_REGISTRY_TABLE         = aws_dynamodb_table.tenant_registry.name
       # Issue #3179 (cred-binding S5): marker signature verification key
       MARKER_SIGNING_KEY_SECRET_ARN = aws_secretsmanager_secret.marker_signing_key.arn
+      # Issue #4539: the DEDICATED engine-command attribution signing keyring.
+      # Deliberately a different secret from MARKER_SIGNING_KEY_SECRET_ARN above —
+      # that one is readable by the agent worker cohort by design, so reusing it
+      # would let any worker mint a command envelope naming any tenant and any
+      # commenter. Same env var name the gateway verifier reads: one key behind two
+      # names drifts silently, and the failure mode is every command refused.
+      ENGINE_COMMAND_SIGNING_KEY_SECRET_ARN = aws_secretsmanager_secret.engine_command_signing_key.arn
       # Issue #4047 (#2724 slice C): TTL for negative-cache rows recording that
       # the gateway authoritatively does not know an installation. Set to 0 to
       # disable the cache (every unknown installation re-asks the gateway).

@@ -12,10 +12,21 @@ name: Agent Worker Image Build
 # modules/agent-factory/webhook-ingress/infra/ (default: adp-agent:latest).
 
 on:
+  pull_request:
+    paths:
+      - 'modules/agent-factory/agent/**'
+      - 'modules/agent-factory/agent-worker-image/**'
+      - 'modules/agent-factory/codex-reviewer/**'
+      - 'modules/agent-factory/rules/personas/**'
+      - 'modules/agent-factory/skills/**'
+      - 'modules/domain-apps/*/agent/**'
+      - 'codebuild/bs-agent-runtime.yml'
+      - '.github/workflows/agent-worker-image.yml'
   push:
     paths:
       - 'modules/agent-factory/agent/**'
       - 'modules/agent-factory/agent-worker-image/**'
+      - 'modules/agent-factory/codex-reviewer/**'
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/**'
       - 'modules/domain-apps/*/agent/**'
@@ -52,8 +63,25 @@ env:
   CODEBUILD_PROJECT: adp-dev-agent-runtime
 
 jobs:
+  codex-tests:
+    name: Codex Adapter Unit Tests
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: modules/agent-factory/codex-reviewer/package-lock.json
+      - name: Build and test Codex adapter
+        working-directory: modules/agent-factory/codex-reviewer
+        run: npm ci && npm test
+
   build:
     name: Build Agent Runtime Image
+    if: github.event_name != 'pull_request'
     runs-on: arc-runner-org
     permissions:
       contents: read

@@ -12,6 +12,17 @@ variables {
   oidc_issuer       = "https://oidc.eks.eu-west-1.amazonaws.com/id/TEST"
 }
 
+run "dedicated_runner_name_avoids_legacy_codebuild_role" {
+  command = plan
+  variables {
+    runner_role_name = "adp-test-agent-factory-runner-role"
+  }
+  assert {
+    condition     = aws_iam_role.runner.name == "adp-test-agent-factory-runner-role"
+    error_message = "The factory must use the selected IRSA role name."
+  }
+}
+
 run "runner_can_manage_logging_within_its_boundary" {
   command = plan
 

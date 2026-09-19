@@ -45,6 +45,11 @@ query in `repository.py` filters on it. There is no cross-tenant read path.
 The node-state vocabulary (`NodeState`, `ActorKind`, `LEGAL_TRANSITIONS`) is
 imported from `state.py` and deliberately NOT redefined here — R-N2a makes a
 second copy of the vocabulary a requirement violation, not a style preference.
+The same rule governs the execution/action vocabulary added for issue #5142:
+`ExecutionPhase`, `ExecutionStatus`, `BlockCode` and `ActionStatus` are declared
+once in `execution_state.py`, and the `OrchestrationExecution` /
+`OrchestrationAction` columns below store their values as strings without
+restating the members.
 
 JSON column note: `plan_document` is declared with a dialect variant so it is real
 `JSONB` on Postgres (GIN-indexable later) and plain `JSON` on SQLite, where the
@@ -55,7 +60,7 @@ forfeit JSONB; the migration declares the identical variant so the two agree.
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Integer, String, Text, event
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, event
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -74,11 +79,17 @@ __all__ = [
     "NodeKind",
     "NodeState",
     "OrchestrationAcceptedPlan",
+    "OrchestrationAction",
     "OrchestrationDecision",
     "OrchestrationEdge",
+    "OrchestrationEnvironmentLease",
+    "OrchestrationExecution",
     "OrchestrationFlow",
     "OrchestrationNode",
+    "OrchestrationPullRequestBinding",
     "OrchestrationWorkClaim",
+    "BindingRole",
+    "BindingState",
     "ClaimState",
     "AppendOnlyViolationError",
 ]
@@ -114,6 +125,7 @@ class DecisionKind(StrEnum):
     NODE_DISPATCHED = "node_dispatched"  # Stable attempt/run binding
     RESULT_CHECKED = "result_checked"
     RESULT_OBSERVED = "result_observed"  # Evidence observed for the current attempt
+    PR_BINDING_CHANGED = "pr_binding_changed"  # Append-only binding revision/provenance
     GATE_REJECTED = "gate_rejected"  # A gate node was refused
     TRANSITION_REJECTED = "transition_rejected"  # An illegal transition attempt
     HALT_OVERRIDDEN = "halt_overridden"  # A human cleared a halt (R-Q9c)
@@ -169,6 +181,37 @@ class ClaimState(StrEnum):
     RELEASED = "released"  # No current owner; the next claim advances generation
 
 
+class BindingRole(StrEnum):
+    """What a bound pull request *is* to its story.
+
+    Two members because the reviewer-artifact PR is the single most dangerous
+    false positive in this whole path. A reviewer run pushes its transcript to the
+    same issue's branch family, so "a merged PR referencing this issue" is
+    satisfied by a PR that contains no implementation at all. Completing a story
+    on one would mark delivery done on the strength of a review log.
+
+    Only `IMPLEMENTATION` can complete a story — enforced in `pr_bindings.py`, not
+    by convention. Stored as `String(32)`, so a further member needs no DDL.
+    """
+
+    IMPLEMENTATION = "implementation"  # Carries the story's delivered code
+    REVIEWER_ARTIFACT = "reviewer_artifact"  # Review output only; completes nothing
+
+
+class BindingState(StrEnum):
+    """Whether this binding is the one reconciliation may read.
+
+    `SUPERSEDED` exists rather than deleting the row for the reason the work-claim
+    row survives release: an authorized replacement must retain provenance, and a
+    deleted row cannot explain who replaced what. It is also the fence — a
+    superseded binding is permanently incapable of completing the new scope, which
+    is what stops an old PR from finishing work it never did.
+    """
+
+    ACTIVE = "active"  # The current binding for its (node, attempt)
+    SUPERSEDED = "superseded"  # Replaced by an authorized later binding
+
+
 class AppendOnlyViolationError(RuntimeError):
     """Raised when something attempts to UPDATE an append-only decision row.
 
@@ -188,7 +231,20 @@ class OrchestrationFlow(Base, TenantMixin):
     """
 
     __tablename__ = "orchestration_flows"
-    __table_args__ = (Index("ix_orchestration_flows_org_id_created_at", "org_id", "created_at"),)
+    __table_args__ = (
+        Index("uq_orchestration_flows_org_id_id", "org_id", "id", unique=True),
+        Index("ix_orchestration_flows_org_id_created_at", "org_id", "created_at"),
+        # Issue #4898: a flow's slug is the first segment of every node's graph
+        # address (`{slug}/{epic}/{wave}/{node}`), and the cost readback groups
+        # `usage_logs` by `(org_id, graph_address)`. Two same-slug flows in one
+        # tenant would therefore merge their model spend into a single total with
+        # nothing in the result revealing that two flows were summed. Enforced by
+        # the database because the resolve-then-create path is a read-then-write
+        # race that concurrent registrations can both pass; see
+        # `OrchestrationRepository.create_flow`. Scoped to `org_id`, so two
+        # tenants keep independent flows of the same name.
+        Index("uq_orchestration_flows_org_slug", "org_id", "slug", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     # The flow segment of the graph address (`flow/epic/wave/node`). Stable and
@@ -234,6 +290,7 @@ class OrchestrationNode(Base, TenantMixin):
 
     __tablename__ = "orchestration_nodes"
     __table_args__ = (
+        Index("uq_orchestration_nodes_org_id_id", "org_id", "id", unique=True),
         # The graph address is unique per flow — it is an address, so a duplicate
         # means two nodes answer to the same name and the rollup double-counts.
         Index("uq_orchestration_nodes_address", "flow_id", "epic_ref", "wave_ref", "node_ref", unique=True),
@@ -514,6 +571,571 @@ class OrchestrationWorkClaim(Base, TenantMixin):
 
     # Why the last release happened, kept on the row so a released claim explains
     # itself without joining the decision log.
+    release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationPullRequestBinding(Base, TenantMixin):
+    """Which pull request implements which story (issue #5301).
+
+    ## What this row is for
+
+    Before it existed, the engine knew a story had been dispatched and knew a
+    worker had exited, but had no durable record of **which pull request carried
+    the work**. Completion therefore had to be inferred from the GitHub issue's
+    closure timeline (`results.GitHubEvidenceSource.merged_story`), which only
+    exists when the PR body used a closing keyword. A body saying `Issue #5049`
+    creates no closing event, so the story waited on evidence that would never
+    arrive while its implementation PR sat merged. This table is the missing
+    association, and reconciliation reads it directly.
+
+    GitHub issue closure remains a *projection* of delivery, never its sole
+    authority.
+
+    ## Why the provider's immutable ids and not `owner/name` + number
+
+    `provider_repository_id` and `provider_pr_node_id` are GitHub's own immutable
+    identifiers. The same reasoning as `OrchestrationWorkClaim`: every name-keyed
+    row is silently re-pointed by a repository rename or transfer, and a binding
+    that a rename can redirect is not an association. `provider_pr_node_id` is the
+    GraphQL node id, which survives even the number being re-used across a
+    transfer. `repo` and `pr_number` are carried alongside for display and for
+    composing provider queries — they are the *mutable* names, and nothing
+    authorizes off them.
+
+    ## What makes a binding trustworthy
+
+    Not the caller's claim. `node_id` / `attempt` are resolved server-side from the
+    `NODE_DISPATCHED` decision belonging to the registering run, so a caller can
+    only ever bind a PR to the story its own run was dispatched for. Title text,
+    branch naming and a plain `Issue #...` mention are discovery hints with no
+    authority anywhere in this path.
+
+    `head_sha` is the head the binding was registered against, and it is what makes
+    review/check evidence *falsifiable*: a new commit changes the head, and a
+    binding whose head has moved cannot inherit the eligibility its previous head
+    earned. Reconciliation compares provider truth against this column rather than
+    trusting that a recorded approval still describes the code.
+
+    ## What this row cannot do
+
+    It authorizes nothing. It records an association; completion still requires
+    provider-verified merge, green required checks and a non-author approving
+    review, none of which the registering agent can fabricate. That is why a run
+    may register its own binding under nothing more than its run credential
+    (`src/agentauth/pr_binding_routes.py`) rather than needing an admin permission
+    — which would have to be granted to `MEMBER` and so to every ordinary user in
+    every tenant.
+    """
+
+    __tablename__ = "orchestration_pr_bindings"
+    __table_args__ = (
+        # One binding per PR per tenant. THE idempotency invariant: a duplicated
+        # registration event, a retried request or a restarted tick must converge on
+        # one row rather than inserting a second binding for the same pull request.
+        # Enforced by the database because two concurrent registrations can both
+        # pass an application-level "is this already bound?" read.
+        Index(
+            "uq_orchestration_pr_bindings_pr",
+            "org_id",
+            "provider_repository_id",
+            "provider_pr_node_id",
+            unique=True,
+        ),
+        # Reconciliation's read path: the active binding for a node.
+        Index("ix_orchestration_pr_bindings_node_id", "org_id", "node_id", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+
+    # --- What story this implements. Server-resolved, never caller-asserted. ---
+    flow_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_flows.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_nodes.id", ondelete="CASCADE"), nullable=False)
+    # The attempt this binding was registered under. A retry increments the node's
+    # attempt counter, so this is what distinguishes "the PR for the current work"
+    # from "the PR for a superseded attempt" without deleting either.
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The run that registered it, for provenance and duplicate-event convergence.
+    run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # --- Immutable provider identity. See the class docstring. ---
+    provider_repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_pr_node_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Mutable display/query names. Nothing authorizes off these.
+    repo: Mapped[str] = mapped_column(String(255), nullable=False)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    # The head this binding describes. A change invalidates prior eligibility.
+    head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # Every mutation appends its full snapshot to orchestration_decisions. The
+    # revision fences a provider read against concurrent repair or replacement.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    accepted_scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default=BindingRole.IMPLEMENTATION.value)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default=BindingState.ACTIVE.value)
+
+    # --- Registration provenance: who established this association. ---
+    # Two columns for the same reason `OrchestrationDecision` carries three: a
+    # recovery performed by a human operator and a self-registration by a worker
+    # must be distinguishable after the fact, and `actor_id` alone cannot do it.
+    registered_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    registered_by_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Set on an attributed recovery of historical unbound work, NULL for an
+    # ordinary self-registration. Non-NULL is what marks a row as human-established
+    # rather than worker-observed, so a backfill can never be mistaken for a
+    # registration the delivering run made itself.
+    recovery_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Why this binding stopped being current, kept on the row so a superseded
+    # binding explains itself without joining the decision log.
+    superseded_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationExecution(Base, TenantMixin):
+    """The durable identity of one node's delivery work (issue #5142).
+
+    ## What this row answers
+
+    A worker keeps "where am I up to" in process memory only. When its pod is
+    evicted or the run ends before the work is finished, nothing outside the
+    process records what already happened — so a later process cannot tell whether
+    the branch was pushed, the pull request was opened, or an external call that
+    was started ever completed. This row is that missing state: one durable record
+    per `(org_id, node_id, cycle)` saying which phase the work reached, whether it
+    is runnable, why not if not, and when it should next be looked at.
+
+    ## Distinct from the run-authentication record
+
+    `src/agentauth/execution.py` owns a protected per-run record used to
+    authenticate a run, keyed on its own run identifiers. This is a *delivery
+    ledger* keyed on graph nodes; the two have different purposes and different
+    ids and neither reads the other's. They are deliberately not merged — a
+    ledger an operator reads and a credential-bearing auth record have different
+    exposure, and one table would give them the same.
+
+    ## Why `cycle` is in the uniqueness key
+
+    A repair or re-delivery of the same node is new work with its own attempts,
+    deadlines and actions. Keyed on `node_id` alone, the second cycle would
+    overwrite the first — destroying the record of what the first cycle already
+    did externally, which is exactly the evidence a recovering process needs. A
+    new cycle therefore gets its own row and the previous one is marked
+    `SUPERSEDED` rather than deleted.
+
+    ## Why the authority columns are stored rather than looked up
+
+    `accepted_plan_version`, `claim_id` and `claim_generation` record the authority
+    this execution was admitted under. They are *stored* so that a write can be
+    checked against them inside its own transaction: between a caller's read and
+    its write the claim generation can advance (#5127) and the accepted plan can be
+    superseded (#5128), and only a comparison inside the writing transaction
+    observes that. A lookup at write time, by contrast, would be a second read
+    racing the same way. Nothing here decides ownership or policy — those stay with
+    `work_claims.py` and `policy_admission.py`; this row only refuses to be written
+    by a caller whose binding no longer matches.
+
+    ## Why `revision` exists
+
+    Compare-and-set. A caller presents the revision it read and the store applies
+    the write only if the row still carries it. Without it, two processes that both
+    read an execution mid-flight would both write, and the later write would
+    silently erase the earlier one's progress — a lost update on the record whose
+    entire job is to survive process loss.
+
+    ## The atomicity this row's columns require
+
+    `phase`/`status` and `next_check_at` must move together. A commit that advanced
+    the phase without recording the next check time would leave work that has moved
+    on and will never be picked up again: a permanent stall that looks like
+    progress in every view. The store writes them in one transaction for that
+    reason, and never makes an external call inside it (a hung request holding this
+    row's lock would block every other writer on the same execution).
+
+    ## What the reference columns may hold
+
+    References only — an S3 key, a PR node id, a comment id, a notification
+    receipt id. Never a credential, never a token, never a complete transcript.
+    These rows are read by operators and surfaced in diagnostics, so a secret
+    written here would be a disclosure with no revocation path.
+    `pending_action_key`, `notification_receipt_ref` and `handoff_receipt_ref` are
+    the initial storage the runner (#5143) and the handoff work (#5144) need; they
+    are deliberately plain references and no phase-handler result is invented here.
+    """
+
+    __tablename__ = "orchestration_executions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "flow_id"],
+            ["orchestration_flows.org_id", "orchestration_flows.id"],
+            name="fk_orchestration_executions_org_flow",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "node_id"],
+            ["orchestration_nodes.org_id", "orchestration_nodes.id"],
+            name="fk_orchestration_executions_org_node",
+            ondelete="CASCADE",
+        ),
+        Index("uq_orchestration_executions_org_id_id", "org_id", "id", unique=True),
+        # THE identity invariant: one execution per node per cycle per tenant. Two
+        # concurrent starts can both pass an application-level "is there one
+        # already?" read, so the database is what refuses the second. Without this
+        # index the whole ledger would be advisory.
+        Index(
+            "uq_orchestration_executions_cycle",
+            "org_id",
+            "node_id",
+            "cycle",
+            unique=True,
+        ),
+        # The due-work read path: "what is runnable now?" A runner (#5143) asks
+        # this on every pass, so it must not be a full scan of the tenant's
+        # history. Status precedes time because status is the more selective
+        # predicate once concluded rows accumulate.
+        Index(
+            "ix_orchestration_executions_due",
+            "org_id",
+            "status",
+            "next_check_at",
+        ),
+        # Operator/read-model path: every execution for one flow.
+        Index("ix_orchestration_executions_flow_id", "org_id", "flow_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+
+    # --- What work this is. Immutable once inserted. ---
+    # Tenant-safe foreign keys: both parents carry org_id, and every query filters
+    # on org_id as well, so a cross-tenant id cannot resolve to a readable row.
+    flow_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_flows.id", ondelete="CASCADE"), nullable=False)
+    node_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_nodes.id", ondelete="CASCADE"), nullable=False)
+    # Which delivery cycle of that node. Starts at 1; a repair cycle is a new row.
+    cycle: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # --- Where the work stands. See ExecutionPhase/ExecutionStatus in
+    # execution_state.py, which is where this vocabulary is declared. String
+    # columns rather than native enums so a new member needs no DDL, matching the
+    # existing orchestration tables.
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # --- The compare-and-set fence. Advanced by exactly one on every applied
+    # write, never reset. A caller presenting a revision the row has passed is
+    # stale by construction.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # --- Authority this execution was admitted under. Re-verified inside each
+    # writing transaction; see the class docstring.
+    # 0 is legal and meaningful: policy_admission reports plan_version=0 when no
+    # accepted plan exists, which is the legacy path that must stay usable.
+    accepted_plan_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    claim_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # --- Attempts and scheduling ---
+    # Counted by the store rather than by callers, who would each count
+    # differently and so disagree about when the existing attempt bound is hit.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # When a runner should next consider this execution. NULL only for a terminal
+    # status — a non-terminal row with no next check is invisible work.
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- Progress and block metadata ---
+    # Last time real progress happened, so "stuck for a minute" and "stuck since
+    # Tuesday" are distinguishable without reconstructing a timeline from logs.
+    progressed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    progress_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A block states its code, who resolves it and what they must supply. All three
+    # are needed for an operator to route it from this row alone; a bare "blocked"
+    # flag sends someone to logs that expire.
+    block_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    block_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    block_required_input: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Human decision points still outstanding, recorded for operator context. The
+    # gates themselves stay with the existing controls.py/graph state; nothing on
+    # this row approves or bypasses one.
+    block_remaining_gates: Mapped[str | None] = mapped_column(Text, nullable=True)
+    block_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Sanitized references. See the class docstring: references only. ---
+    # The action whose external outcome is still unknown, if any. This is what
+    # makes AWAITING_EXTERNAL actionable: a recovering process knows which step to
+    # go and ask the provider about instead of blindly retrying it.
+    pending_action_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notification_receipt_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    handoff_receipt_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationAction(Base, TenantMixin):
+    """One externally-visible step an execution takes (issue #5142).
+
+    ## Why actions are rows and not log lines
+
+    An action is something the outside world can see: a branch pushed, a pull
+    request opened, a comment posted. If the process dies after making the call
+    but before recording it, a retry repeats the side effect — two pull requests
+    for one story, two comments on one issue. So the intent is written *before* the
+    call and the outcome *after*, and the row between the two is what tells a later
+    process "this may already have happened; go and look".
+
+    ## `operation_key` is the idempotency contract
+
+    Uniqueness is `(org_id, execution_id, operation_key)`, and the key is supplied
+    by the caller. It must be derived from the work — `"open_pr:node-7:cycle-1"` —
+    and never generated per attempt: a fresh UUID each time satisfies the column
+    and destroys the protection, because every retry would insert a new row and
+    duplicate its effect. Preparing the same key twice returns the original record.
+
+    The uniqueness is a database index rather than an application check for the
+    usual reason: two concurrent preparations can both read "no action yet" before
+    either writes, and only the index refuses the second.
+
+    ## Why an unobserved outcome stays `unknown`
+
+    `status` may hold `unknown` (see `ActionStatus` in `execution_state.py`) and
+    that is a real answer, not a missing one. Recording an unobserved action as
+    succeeded advances delivery on evidence nobody saw; recording it as failed
+    invites a retry that duplicates an effect which may well have landed. Both are
+    worse than carrying the uncertainty, so the uncertainty is storable.
+
+    ## What the reference columns may hold
+
+    `artifact_ref` and `receipt_ref` hold provider or storage identifiers — a PR
+    node id, a comment id, an S3 key. `receipt_ref` is what makes an observation
+    falsifiable later: an operator can go and look at the thing it names. Neither
+    column ever holds a credential or a complete transcript, for the same
+    disclosure reason as the execution row.
+    """
+
+    __tablename__ = "orchestration_actions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "execution_id"],
+            ["orchestration_executions.org_id", "orchestration_executions.id"],
+            name="fk_orchestration_actions_org_execution",
+            ondelete="CASCADE",
+        ),
+        # THE idempotency invariant: one action per operation key per execution per
+        # tenant. This is what makes a crash-and-retry safe, so it is enforced by
+        # the database and not by a read-then-write in the store.
+        Index(
+            "uq_orchestration_actions_operation",
+            "org_id",
+            "execution_id",
+            "operation_key",
+            unique=True,
+        ),
+        # Recovery's read path: the unresolved actions of one execution.
+        Index(
+            "ix_orchestration_actions_execution_status",
+            "org_id",
+            "execution_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    execution_id: Mapped[str] = mapped_column(String(36), ForeignKey("orchestration_executions.id", ondelete="CASCADE"), nullable=False)
+
+    # The caller-supplied idempotency key. See the class docstring.
+    operation_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    # What kind of step this is, e.g. "open_pr". A string rather than an enum
+    # because the set of steps belongs to the phase handlers a sibling issue owns;
+    # pinning it here would make adding a handler a schema change.
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # Which attempt of the execution prepared this action, so the actions of a
+    # superseded attempt stay distinguishable from the current one's without
+    # deleting either.
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # --- Sanitized references. See the class docstring: references only. ---
+    artifact_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    receipt_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Small non-sensitive operator detail (which repo, which PR number), stored as
+    # JSONB on Postgres and JSON on SQLite via the same variant the rest of this
+    # module uses. Not a payload dump.
+    detail: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    # When the outcome was observed. NULL while prepared/dispatched, and NULL for
+    # an action left `unknown` — the absence of an observation time is itself the
+    # record that nobody managed to look.
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)
+
+
+class OrchestrationEnvironmentLease(Base):
+    """Exclusive hold on one physical deployment target (issue #5150).
+
+    ## What this row prevents
+
+    Two runs deploying incompatible releases to one cluster at the same time. The
+    subtle part is *what* is being locked. A registered environment connection is
+    an **alias**: nothing stops one real AWS account being connected twice — two
+    credential rows, two labels, possibly in two different tenants — all pointing
+    at one cluster. A lease keyed on the connection id would therefore let two
+    runs holding two different aliases each believe they held the cluster
+    exclusively, which is the exact double-deploy this table exists to stop. So the
+    identity locked here is the *physical target*.
+
+    ## Why this table is NOT tenant-scoped, unlike every sibling
+
+    Every other orchestration table uses `TenantMixin` and every query filters
+    `org_id`. This one deliberately does not inherit it, and that is the single
+    most important shape decision in the row. One physical cluster is one physical
+    cluster regardless of which tenant's alias points at it, so **uniqueness must
+    hold across tenants**. An `(org_id, canonical_key)` index — the reflexive
+    choice here — would let two tenants each hold the same cluster simultaneously
+    and would look completely correct in review.
+
+    `owner_org_id` is therefore an ordinary nullable column recording *who
+    currently holds the target*, not a partition key. Tenant isolation is preserved
+    at the answer instead: a caller that does not hold the lease learns only that
+    the target is held, never by whom — see `environment_leases.py`, which is the
+    only module that mutates this table.
+
+    ## Why one durable row per target, freed rather than deleted
+
+    A holder releasing the target empties the holder columns instead of deleting
+    the row. Two reasons, and the second is the load-bearing one:
+
+    - The unique index stays unconditional, so it behaves identically on
+      PostgreSQL and SQLite. A partial/filtered unique index ("unique among held
+      rows") is the alternative, and SQLite's support for it differs enough that
+      the correctness backstop would be dialect-dependent — unacceptable for the
+      one constraint the whole design rests on.
+    - The canonicalization evidence survives the release. "Why did the engine
+      think these two connections were the same place?" stays answerable from the
+      row after the deployment ends, rather than from logs that expire.
+
+    ## Why an expired lease does not license takeover
+
+    `lease_expires_at` records when contact was expected and did not arrive. It is
+    evidence of **lost contact, never of an exit** — the same rule
+    `OrchestrationWorkClaim` holds, for the same reason, and it is more dangerous
+    here: a deployment pipeline partitioned from us is still rolling pods. So
+    expiry alone never permits takeover. Takeover requires
+    `reconciled_terminal_evidence` to be set, which records that the previous
+    action was positively observed to have finished. A row whose lease has lapsed
+    with no reconciled evidence is *stuck on purpose*, and clearing it is an
+    authorized operator action rather than a timeout.
+
+    ## Why `revision` and `owner_generation` are separate
+
+    They fence different things. `revision` is the compare-and-set fence against a
+    **concurrent** writer: a caller presents the revision it read and loses
+    harmlessly if the row moved, which is retryable. `owner_generation` is the
+    authority fence against a **superseded** one: a stale actor whose ownership
+    generation has been overtaken must not release the lease its successor now
+    holds, and that is terminal rather than retryable. Collapsing the two is how a
+    displaced actor keeps acting.
+
+    ## What the reference columns may hold
+
+    References only — a release revision, an action id, a run id, an evidence
+    string naming a workflow conclusion. Never a credential and never a token:
+    these rows are read by operators, so a secret here would be a disclosure with
+    no revocation path.
+    """
+
+    __tablename__ = "orchestration_environment_leases"
+    __table_args__ = (
+        # THE invariant, and note what is absent: org_id. One physical target is
+        # one row, globally. Scoping this index by tenant would let two tenants'
+        # aliases for one cluster both be held at once — the precise bug this
+        # table exists to prevent, and one that reads as correct in review because
+        # every neighbouring index is tenant-scoped.
+        #
+        # A unique index rather than an application-level check because two
+        # concurrent callers can both read "this target is free" before either
+        # writes. On SQLite `SELECT ... FOR UPDATE` is a no-op, so this index is
+        # the only real backstop there.
+        Index(
+            "uq_orchestration_environment_leases_target",
+            "canonical_target_key",
+            unique=True,
+        ),
+        # Operator/read path: which targets a tenant currently holds. Not a
+        # uniqueness constraint — see the class docstring on why that matters.
+        Index("ix_orchestration_environment_leases_owner", "owner_org_id", "state"),
+        # Reconciliation's read path: held leases whose contact window has lapsed
+        # and which therefore need a terminal readback before anyone takes over.
+        Index("ix_orchestration_environment_leases_expiry", "state", "lease_expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+
+    # --- The identity being serialized on. Immutable once inserted. ---
+    # The opaque canonical key derived in deployment_manifest.canonical_target_key
+    # from provider/account/region plus the concrete resource boundary. Opaque
+    # because it is echoed in conflict responses to callers with no standing to
+    # learn another tenant's account id or cluster name.
+    canonical_target_key: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    # --- Canonicalization evidence: why we believe the key identifies this target.
+    # Stored so an operator can re-check the source later rather than trusting a
+    # derivation they cannot see. `evidence_source` names the mechanism that read
+    # the identity back from the provider; a lease can never be acquired without
+    # one, which is what stops a caller-supplied account string becoming an
+    # identity.
+    evidence_source: Mapped[str] = mapped_column(String(255), nullable=False)
+    evidence_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    evidence_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Who holds it. All NULL when the target is free; see the class docstring
+    # on why the row persists instead of being deleted.
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The tenant currently holding the target. An ordinary column, NOT a partition
+    # key — uniqueness above is deliberately global.
+    owner_org_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The action holding it (an execution/action reference from the #5142 ledger).
+    owner_action_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The authority fence. A stale actor at a superseded generation cannot release
+    # the lease its successor holds. Monotonic: raised, never lowered.
+    owner_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The manifest entry this hold was authorized by, so an operator can see which
+    # reviewed approval a live deployment is running under.
+    manifest_entry_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The release/artifact revision being deployed. A reference for operators and
+    # for #5152's verification; nothing here validates it.
+    release_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # --- The compare-and-set fence against a concurrent writer. Advanced by
+    # exactly one per applied write, never reset. Distinct from owner_generation:
+    # losing this is retryable, losing that is terminal.
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    acquired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When contact was expected and did not arrive. Evidence of lost contact only —
+    # never of an exit, and never sufficient for takeover by itself.
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- Terminal reconciliation. THE takeover gate: a lapsed lease with no
+    # reconciled evidence is stuck on purpose, because a pipeline we have lost
+    # contact with may still be deploying. Set only by a reconcile that positively
+    # observed the previous action's outcome.
+    reconciled_terminal_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Why the last release happened, kept on the row so a freed lease explains
+    # itself without joining another table.
     release_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -116,8 +116,8 @@ describe('checkpoint planning and worker integration', () => {
   it('requires verified publication and preserves read-only, approval and readiness boundaries', () => {
     const guidance = developerCheckpointGuidance('developer');
     for (const requirement of ['plan comment', '15-minute cadence', 'git ls-remote',
-      'passed/failed/not run', 'never force-push', 'early draft PR',
-      'treats any PR as a handoff', 'is unknown', 'Read-only tasks', 'bypass AI-DLC approvals']) {
+      'passed/failed/not run', 'never force-push', 'Do not create draft PRs',
+      'branch/commit links', 'Continue the assignment', 'Read-only tasks', 'bypass AI-DLC approvals']) {
       expect(guidance).toContain(requirement);
     }
     const rules = path.resolve(__dirname, '../../rules');
@@ -125,7 +125,7 @@ describe('checkpoint planning and worker integration', () => {
     const phase = fs.readFileSync(path.join(rules, 'phases/construction/code-generation.md'), 'utf8');
     expect(persona).toContain('checkpoint milestones');
     expect(phase).toContain('## Branch Checkpoint Strategy');
-    expect(phase).toContain('An earlier draft checkpoint does not trigger Steps 7–8.');
+    expect(phase).toContain('Branch checkpoints do not trigger Steps 7–8.');
   });
 });
 

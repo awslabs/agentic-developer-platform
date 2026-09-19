@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     # src.shared.schemas.auth.
     from src.budget.reservations import ReservationTarget
     from src.budget.run_binding import RunBinding
+    from src.orchestration.dispatch import GraphAttribution
+    from src.orchestration.provider_quotes import ProviderQuote
 
 
 class AuthExchangeRequest(BaseModel):
@@ -61,6 +63,8 @@ class TokenContext(BaseModel):
     # are never internal-plane principals. Only scopes in INTERNAL_PLANE_SCOPES
     # may act on the internal plane.
     scope: str = ""
+    # Registry-owned requirement, never accepted from a worker request/header.
+    requires_run_identity: bool = False
     # Issue #4131: the credential scopes this caller has actually been granted,
     # resolved server-side from the agent_registry entry. Empty for human/JWT
     # callers and for any agent that has not been granted one. This is the
@@ -87,6 +91,40 @@ class TokenContext(BaseModel):
     # collapse every non-human-rooted request in a tenant into one bogus
     # shared ledger line.
     attributed_user_id: str = ""
+    # Issue #5419 (PMM-02): the canonical service principal this service caller
+    # resolves to, via a registered, tenant-scoped `(org_id, alias_source,
+    # alias_id)` row in `service_principal_aliases`. Server-resolved at
+    # authentication time; there is deliberately no header for it.
+    #
+    # ADDITIVE and OPTIONAL: `user_id` semantics are unchanged, so every existing
+    # caller is unaffected. Empty means "this caller has no registered alias" —
+    # which for a service caller is a refusal, never a fallback to the raw
+    # subject. The raw subject is a different namespace per auth path
+    # (agent_registry `agent_name`, a `service_accounts` UUID, a Cognito
+    # `client_id`), and the approved design is explicit that none of them may
+    # own a preference.
+    #
+    # Empty for human callers, which resolve through `resolve_canonical_user_id`
+    # to a canonical `users.id` instead.
+    canonical_service_principal_id: str = ""
+    # Issue #5419: which alias source the above was resolved through. Needed
+    # because `auth_source` is too coarse to distinguish a Cognito M2M client
+    # from a legacy service-account exchange — both present as
+    # account_type="service", auth_source="jwt".
+    canonical_alias_source: str = ""
+    # Issue #5420 (PMM-03): model restrictions resolved from the authenticated
+    # Agent Registry row.  This is populated only by the IAM authentication
+    # adapter; request headers and bodies have no path to set it.  ``None``
+    # means the caller did not arrive through Agent Registry, while an empty
+    # list means the registry row has no explicit restriction and therefore
+    # inherits the versioned platform baseline.
+    registered_allowed_models: list[str] | None = None
+    # Issue #5420 (PMM-03): immutable primary key of the authenticated Agent
+    # Registry row.  ``user_id`` remains the human-readable ``agent_name`` for
+    # compatibility and is neither immutable nor unique, so privileged
+    # internal routes must bind to this field instead.  Populated only by the
+    # IAM registry adapter; no request header or body can set it.
+    agent_registry_id: str = ""
 
     # Issue #4323: the run/chain reservation targets this request actually
     # reserved against, stashed by the budget check so the reconcile on the way
@@ -119,9 +157,44 @@ class TokenContext(BaseModel):
     # Set only after protected credential, pod, grant and ownership verification.
     # Neither model parsing nor headers can supply a pydantic private attribute.
     _protected_run_binding: "RunBinding | None" = PrivateAttr(default=None)
+    # Issue #4898: the graph node this request's model spend is attributable to,
+    # for `usage_logs.graph_address`. Written ONLY by
+    # `AgentModelIdentityMiddleware`, from the assignment
+    # `validate_engine_authority` just proved against live SQL; read only by the
+    # shared usage writer.
+    #
+    # A PrivateAttr for the same reason as `_protected_run_binding`, and here the
+    # reason is the whole security property rather than tidiness: pydantic does
+    # not populate private attributes from constructor input, so no
+    # `TokenContext(**caller_data)` site, request header, body field or query
+    # parameter can inject one. The address is unforgeable *by construction*
+    # instead of by a validation someone must remember to write — which is what
+    # #3985 (`X-Agent-BudgetConfigId`) and `draft_binding.py`'s refusal of
+    # `attributed_org_id` both established as the rule on this path.
+    #
+    # Request-owned, and that is what makes concurrency and streaming safe: the
+    # value lives on the per-request context object rather than in a contextvar
+    # or any shared map, so two in-flight calls for different nodes have no
+    # common state to exchange, and a stream that finalizes late reads the
+    # assignment verified when it started rather than re-resolving a node that
+    # may since have completed or been reassigned. A contextvar would also need
+    # unconditional per-request reset and is lost across the threadpool boundary
+    # (#1755); this needs neither.
+    #
+    # None is the norm and is honest: human/JWT/CLI/chat traffic, a flow-level or
+    # wave coordinator that owns no single node, and any degraded lookup all
+    # leave it None, which persists as a NULL address meaning "unavailable" —
+    # never zero spend, and never a guessed node.
+    _graph_attribution: "GraphAttribution | None" = PrivateAttr(default=None)
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
     _policy_request_id: str | None = PrivateAttr(default=None)
+    # Issue #5225: the typed quote whose total became _policy_estimated_cost. Kept
+    # alongside the amount so the reservation can be audited against the request
+    # bytes, billing model and pricing revision that were actually priced —
+    # rather than a number whose provenance is gone. A PrivateAttr for the same
+    # reasons as the fields above: no caller can inject one.
+    _policy_quote: "ProviderQuote | None" = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _default_attributed_org_id(self) -> "TokenContext":

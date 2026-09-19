@@ -21,7 +21,12 @@ from typing import Any
 
 import boto3
 
-from channels.base import ChannelAdapter, ChannelType, UnifiedMessage
+from channels.base import (
+    UNUSABLE_ORG_IDS,
+    ChannelAdapter,
+    ChannelType,
+    UnifiedMessage,
+)
 from channels.slack import SlackAdapter
 from channels.webchat import WebChatAdapter
 from classifier import ClassificationResult, classify_message
@@ -728,7 +733,13 @@ def handle_direct_response(session_id, task_id, connection_id, message, classifi
 # when the claim is absent entirely — neither can authorize a dispatch at a
 # repo. NOTE: this gate reads `org_id`, never `tenant_id`. tenant_id is always
 # "" on the github_actions path, so gating on it would be a silent no-op.
-_UNUSABLE_ORG_IDS = frozenset({"", "default"})
+#
+# Issue #5268: now defined once in channels.base, which the adapters can import
+# (they cannot import this module — circular). The webchat adapter needs the
+# same notion of "usable org" to decide whether to substitute the org as the
+# tenant; two copies would drift, which is the bug class #5268 and #5264 both
+# came from. Aliased rather than renamed so the existing gate reads unchanged.
+_UNUSABLE_ORG_IDS = UNUSABLE_ORG_IDS
 
 
 def _tenant_gate_denial(message: UnifiedMessage, repo_owner: str) -> str | None:

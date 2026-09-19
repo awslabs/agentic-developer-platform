@@ -31,7 +31,7 @@ def _subprocess_side_effect_fresh_branch(*args, **kwargs):
 
     The entrypoint calls subprocess.run directly (not run_cmd) for:
       1. `git ls-remote --exit-code --heads origin agent/issue-NNN`
-         → returncode 0 means "branch exists"; we return 1 (doesn't exist)
+         → returncode 0 means "branch exists"; we return 2 (doesn't exist)
          so the fresh-creation path runs (the legacy test default).
       2. `gh pr list ...` (only if branch exists; not reached in fresh case)
       3. `git push --delete origin ...` (only if stale branch reset; not reached)
@@ -42,7 +42,7 @@ def _subprocess_side_effect_fresh_branch(*args, **kwargs):
     """
     cmd = args[0] if args else kwargs.get("args", [])
     if cmd and cmd[0:2] == ["git", "ls-remote"]:
-        return MagicMock(returncode=1, stdout="", stderr="")
+        return MagicMock(returncode=2, stdout="", stderr="")
     return MagicMock(returncode=0, stdout="", stderr="")
 
 
@@ -51,6 +51,12 @@ def ready_gateway_proxy(monkeypatch):
     """Main-sequence tests have a healthy proxy unless explicitly overridden."""
     monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
+    monkeypatch.setattr("entrypoint.BootstrapLogger", MagicMock())
+    # Real durable-receipt behavior is covered in test_invocation_completion.py.
+    monkeypatch.setattr("entrypoint.is_delivery_completed", MagicMock(return_value=False))
+    monkeypatch.setattr("entrypoint.record_delivery_completed", MagicMock())
+    monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
+    monkeypatch.setenv("ADP_GH_TOKEN_BROKER_ENABLED", "0")
 
 
 SAMPLE_ENVELOPE = {
@@ -126,6 +132,31 @@ class TestParseEnvelope:
             parse_envelope("not json")
 
 
+class TestPersonaRuntimeRouting:
+    def test_existing_personas_keep_the_claude_worker(self):
+        from entrypoint import AGENT_BINARY, persona_runtime, worker_command
+
+        assert persona_runtime("reviewer") == "claude"
+        assert worker_command("architect") == ["node", AGENT_BINARY]
+
+    def test_codex_reviewer_uses_the_embedded_adapter(self):
+        from entrypoint import CODEX_REVIEWER_BINARY, persona_runtime, worker_command
+
+        assert persona_runtime("agent-codex-reviewer") == "codex"
+        assert worker_command("agent-codex-reviewer") == [
+            "node",
+            CODEX_REVIEWER_BINARY,
+            "--embedded",
+        ]
+
+    def test_future_codex_personas_are_explicitly_fail_closed(self):
+        from entrypoint import persona_runtime, worker_command
+
+        assert persona_runtime("agent-codex-architect") == "codex"
+        with pytest.raises(ValueError, match="not packaged yet"):
+            worker_command("agent-codex-architect")
+
+
 # --- Test: vault_client ---
 
 
@@ -141,7 +172,9 @@ class TestVaultClient:
         client = VaultClient(region="us-east-1", env="dev")
         result = client.get_secret("tenants/acme-corp/github-app")
 
-        mock_sm.get_secret_value.assert_called_once_with(SecretId="adp/dev/tenants/acme-corp/github-app")
+        mock_sm.get_secret_value.assert_called_once_with(
+            SecretId="adp/dev/tenants/acme-corp/github-app"
+        )
         assert result == {"app_id": "123", "private_key": "fake-key"}
 
 
@@ -314,7 +347,9 @@ class TestEntrypointMain:
         from entrypoint import main
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
-        monkeypatch.setattr("entrypoint._receive_one_message", lambda *_: (json.dumps(SAMPLE_ENVELOPE), "receipt"))
+        monkeypatch.setattr(
+            "entrypoint._receive_one_message", lambda *_: (json.dumps(SAMPLE_ENVELOPE), "receipt")
+        )
         monkeypatch.setattr("entrypoint._delete_message", MagicMock())
         monkeypatch.setattr("entrypoint.create_check_run", MagicMock(return_value={"id": 111}))
         monkeypatch.setattr("entrypoint.update_check_run", MagicMock())
@@ -690,20 +725,20 @@ class TestStaleBranchHandling:
     The agent/issue-NNN branch convention is fixed (A4 auto-merge + reviewer
     workflows depend on it). When the branch already exists from a prior run:
       - if an open PR exists → extend (preserve PR review state)
-      - else → reset to main (avoid carrying merged-since-then commits)
+      - else → preserve substantive work; clean only proven disposable work
       - first run on the issue → fresh `git checkout -b` (existing behavior)
     """
 
     def test_branch_does_not_exist_creates_fresh(self):
-        """ls-remote returns 1 → goes through normal `git checkout -b`."""
+        """ls-remote returns 2 → goes through normal `git checkout -b`."""
         # The fresh-branch helper at module top simulates this case:
-        # ls-remote returncode=1 → remote_branch_exists=False → fresh creation.
+        # ls-remote returncode=2 → remote_branch_exists=False → fresh creation.
         # All other tests in TestEntrypointMain that use
         # _subprocess_side_effect_fresh_branch implicitly cover this.
         result = _subprocess_side_effect_fresh_branch(
             ["git", "ls-remote", "--exit-code", "--heads", "origin", "agent/issue-42"]
         )
-        assert result.returncode == 1
+        assert result.returncode == 2
 
     def test_branch_exists_with_open_pr_extends(self):
         """ls-remote=0 + gh pr list returns a number → fetch+checkout, no delete."""
@@ -727,8 +762,8 @@ class TestStaleBranchHandling:
         # - has_open_pr would be bool("123".strip()) = True → extend path
         assert bool("123\n".strip())
 
-    def test_branch_exists_no_pr_resets_to_main(self):
-        """ls-remote=0 + gh pr list returns empty → delete + fresh checkout."""
+    def test_empty_pr_response_does_not_establish_branch_disposability(self):
+        """An empty PR response supplies no evidence about branch content."""
 
         def side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args", [])
@@ -738,7 +773,7 @@ class TestStaleBranchHandling:
                 return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        # has_open_pr would be bool("".strip()) = False → reset path
+        # An empty PR response only establishes absence of an open PR.
         result = side_effect(["gh", "pr", "list"])
         assert not bool(result.stdout.strip())
 
@@ -752,7 +787,7 @@ class TestAidlcBranchExtend:
     AIDLC stages commit artifacts sequentially on one branch without opening a PR
     until the final stage. The stale-branch reset (case (a) in Step 6b) must NOT
     delete the remote branch for aidlc persona; it must fetch + extend instead.
-    Developer/architect/ops personas retain the existing reset-to-main behavior.
+    Other personas also preserve substantive work, even without an open PR.
     """
 
     @patch("entrypoint._receive_one_message")
@@ -856,7 +891,7 @@ class TestAidlcBranchExtend:
     @patch("entrypoint.VaultClient")
     @patch("entrypoint.shutil.copytree")
     @patch("entrypoint.subprocess.run")
-    def test_developer_persona_existing_branch_no_pr_resets(
+    def test_developer_persona_existing_branch_no_pr_preserves_unknown_content(
         self,
         mock_subprocess_run,
         mock_copytree,
@@ -870,7 +905,7 @@ class TestAidlcBranchExtend:
         monkeypatch,
         tmp_path,
     ):
-        """developer persona + existing remote branch + no open PR → delete + recreate (regression guard)."""
+        """No PR and no proof of disposable content must preserve the work branch."""
         from entrypoint import main
         import entrypoint
 
@@ -915,19 +950,14 @@ class TestAidlcBranchExtend:
 
         main()
 
-        # git push --delete MUST be called for developer persona (stale reset)
-        assert len(delete_called) == 1, (
-            f"Expected exactly one git push --delete for developer persona, got: {delete_called}"
-        )
-        assert "agent/issue-42" in delete_called[0]
-
-        # Verify checkout -b (fresh creation) was called via run_cmd
-        checkout_b_calls = [
+        assert not delete_called
+        checkout_calls = [
             c
             for c in mock_run_cmd.call_args_list
-            if "checkout" in str(c) and "-b" in str(c) and "agent/issue-42" in str(c)
+            if c.args[0] == ["git", "checkout", "agent/issue-42"]
         ]
-        assert len(checkout_b_calls) >= 1, "Expected git checkout -b for developer reset"
+        assert checkout_calls, "Existing content must be checked out, not reset"
+        assert not any(c.args[0][:2] == ["git", "reset"] for c in mock_run_cmd.call_args_list)
 
     @patch("entrypoint._is_already_completed")
     @patch("entrypoint._receive_one_message")
@@ -1641,7 +1671,6 @@ class TestBedrockViaFlag:
 
         assert not any("claude" in str(call.args[0]) for call in mock_subprocess_run.call_args_list)
 
-
     @patch("entrypoint._start_sigv4_proxy")
     @patch("entrypoint._receive_one_message")
     @patch("entrypoint._delete_message")
@@ -2173,6 +2202,12 @@ class TestBedrockViaGateway:
         )
         monkeypatch.setenv("SIGV4_PROXY_PORT", "9090")
         monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", str(protected).lower())
+        if protected:
+            monkeypatch.setattr(
+                entrypoint,
+                "_broker_installation_token",
+                lambda **_: ("ghs_test", "123", "2099-01-01T00:00:00Z"),
+            )
         monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
         monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/projected/worker-token")
         monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)
@@ -2881,7 +2916,11 @@ class TestSqsMessageDeletion:
         mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
         mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
         # Agent exits non-zero
-        mock_subprocess_run.return_value = MagicMock(returncode=1)
+        mock_subprocess_run.side_effect = lambda args, **kwargs: (
+            MagicMock(returncode=1)
+            if args[0] == "node"
+            else _subprocess_side_effect_fresh_branch(args, **kwargs)
+        )
 
         work_dir = tmp_path / "repo"
         work_dir.mkdir(parents=True)
@@ -3116,6 +3155,308 @@ class TestIdempotencyGuard:
         mock_subprocess_run.assert_called()
         # Message deleted after run completion
         mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_idempotency_guard_exempts_persona_extending_branch(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """A persona in PERSONAS_EXTENDING_BRANCH (aidlc) must proceed even when a
+        prior merged PR exists on the branch — that workflow merges a PR at every
+        gate, so a merged PR mid-flow is not "this issue is done" (#39 hit this:
+        PR #41 merged after the reverse-engineering gate, then a follow-up
+        gate-answer comment was skipped as a stale redelivery)."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        aidlc_envelope = {**SAMPLE_ENVELOPE, "persona": "aidlc"}
+        mock_receive_msg.return_value = (json.dumps(aidlc_envelope), "receipt-gate-answer")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        # Idempotency guard would say "already completed" — must be bypassed
+        # for this persona rather than causing a skip.
+        mock_is_completed.return_value = True
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        result = main()
+        assert result == 0
+
+        # Run proceeded despite the merged PR — no idempotency skip.
+        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
+        mock_is_completed.assert_not_called()
+        entrypoint.is_delivery_completed.assert_called_once_with(aidlc_envelope)
+        entrypoint.record_delivery_completed.assert_called_once_with(aidlc_envelope)
+        mock_delete_msg.assert_called_once()
+
+
+class TestClaimBoundWorkIsNotBranchInferred:
+    """Issue #5335: under protected dispatch, replay is decided by the invocation.
+
+    A merged PR on `agent/issue-N` proves somebody finished something on the
+    issue once — not that THIS delivery already ran. Before this change any
+    persona's run was discarded once any PR for its issue merged, so the normal
+    developer -> reviewer -> repair sequence could not proceed past the first
+    merge. Under protected dispatch the run has already been admitted against its
+    own dispatch record, attempt and work claim, so the branch question is both
+    redundant and wrong; without protected dispatch the legacy guard is unchanged.
+    """
+
+    @pytest.mark.parametrize(
+        ("envelope_extra", "env"),
+        [
+            ({"work_claim_required": True}, {}),
+            ({}, {"ADP_WORK_CLAIMS_ENABLED": "true"}),
+            ({}, {"ADP_AGENT_AUTHORITY_ENABLED": "true"}),
+        ],
+        ids=["envelope-claim-required", "claims-enabled", "authority-enabled"],
+    )
+    def test_identity_decides_replay_when_protected_dispatch_is_in_force(
+        self, monkeypatch, envelope_extra, env
+    ):
+        """Each of the three conditions `bootstrap_run_identity` itself uses."""
+        from entrypoint import _invocation_identity_decides_replay
+
+        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+
+        assert _invocation_identity_decides_replay({**SAMPLE_ENVELOPE, **envelope_extra}) is True
+
+    def test_legacy_deployment_still_uses_branch_history(self, monkeypatch):
+        """The deliberate legacy path: no claims, no authority — unchanged."""
+        from entrypoint import _invocation_identity_decides_replay
+
+        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+
+        assert _invocation_identity_decides_replay(SAMPLE_ENVELOPE) is False
+
+    def test_a_claimed_envelope_does_not_read_authority_from_the_message_alone(self, monkeypatch):
+        """`work_claim_required: False` in the envelope must not switch the guard
+        off — a producer cannot opt out of the legacy guard by spelling the flag."""
+        from entrypoint import _invocation_identity_decides_replay
+
+        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+
+        assert (
+            _invocation_identity_decides_replay({**SAMPLE_ENVELOPE, "work_claim_required": False})
+            is False
+        )
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_fresh_authorized_run_proceeds_after_an_older_merged_pr(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """AC1-positive, through the real bootstrap: a claim-bound reviewer run
+        arrives after the developer's PR merged and must execute. The branch does
+        have a merged PR (`_is_already_completed` would say True), and that must
+        no longer decide anything."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        claimed = {**SAMPLE_ENVELOPE, "persona": "reviewer", "work_claim_required": True}
+        mock_receive_msg.return_value = (json.dumps(claimed), "receipt-fresh-authorized")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_run_cmd.return_value = MagicMock(stdout="abc123\n", returncode=0)
+        mock_create_cr.return_value = {"id": 1, "html_url": "http://x"}
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+        # The branch DOES carry a merged PR from the earlier developer run.
+        mock_is_completed.return_value = True
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        # The gateway ADMITS this invocation: its dispatch record is pending, the
+        # attempt matches and it holds the work claim. That admission — not the
+        # branch — is what authorizes the run, so it is stubbed as succeeding
+        # rather than bypassed. (A refused admission is the next test.)
+        with patch(
+            "lib.run_identity.bootstrap_run_identity", return_value=MagicMock()
+        ) as mock_identity:
+            result = main()
+
+        assert result == 0
+        mock_identity.assert_called_once_with(claimed)
+
+        # The agent actually ran: this is work, not a skip.
+        assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
+        # And the branch was never consulted — the invocation decided.
+        mock_is_completed.assert_not_called()
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    def test_legacy_replay_of_completed_work_is_still_skipped(
+        self,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """AC1-negative: with no protected dispatch, a redelivery on a merged
+        branch is still suppressed and still acknowledged. This is the #1864
+        protection, and it must not have been traded away."""
+        from entrypoint import main
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.delenv("ADP_WORK_CLAIMS_ENABLED", raising=False)
+        monkeypatch.delenv("ADP_AGENT_AUTHORITY_ENABLED", raising=False)
+
+        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-redelivery")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_is_completed.return_value = True
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+
+        result = main()
+
+        assert result == 0
+        mock_is_completed.assert_called_once()
+        mock_run_cmd.assert_not_called()
+        mock_delete_msg.assert_called_once_with(
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-redelivery",
+        )
+
+    @patch("entrypoint._is_already_completed")
+    @patch("entrypoint._receive_one_message")
+    @patch("entrypoint._delete_message")
+    @patch("entrypoint.create_check_run")
+    @patch("entrypoint.update_check_run")
+    @patch("entrypoint.run_cmd")
+    @patch("entrypoint.mint_installation_token")
+    @patch("entrypoint.VaultClient")
+    @patch("entrypoint.shutil.copytree")
+    @patch("entrypoint.subprocess.run")
+    def test_an_unadmitted_claimed_run_never_reaches_the_guard(
+        self,
+        mock_subprocess_run,
+        mock_copytree,
+        mock_vault_cls,
+        mock_mint,
+        mock_run_cmd,
+        mock_update_cr,
+        mock_create_cr,
+        mock_delete_msg,
+        mock_receive_msg,
+        mock_is_completed,
+        monkeypatch,
+        tmp_path,
+    ):
+        """The refusal this change relies on. Skipping the branch check is only
+        safe because a claim-bound run that the gateway does NOT admit is stopped
+        earlier, at `bootstrap_run_identity`. If that refusal ever stopped being
+        fatal, an unauthorized fresh identity would reach the work — so assert the
+        run does not proceed and never gets as far as the guard."""
+        from lib.run_identity import RunIdentityError
+        import entrypoint
+
+        monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q.fifo")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        claimed = {**SAMPLE_ENVELOPE, "persona": "developer", "work_claim_required": True}
+        mock_receive_msg.return_value = (json.dumps(claimed), "receipt-refused")
+        mock_vault = MagicMock()
+        mock_vault_cls.return_value = mock_vault
+        mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
+        mock_mint.return_value = "ghs_test"
+        mock_subprocess_run.side_effect = _subprocess_side_effect_fresh_branch
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir(parents=True)
+        monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
+        monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+        monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        with patch(
+            "lib.run_identity.bootstrap_run_identity",
+            side_effect=RunIdentityError("gateway refused run identity"),
+        ):
+            with pytest.raises(RunIdentityError):
+                entrypoint.main()
+
+        mock_is_completed.assert_not_called()
+        assert not any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
 
 
 # --- Test: VisibilityHeartbeat ---
@@ -3505,7 +3846,8 @@ SAMPLE_GITLAB_ENVELOPE = {
             "project_path": "spike-group/test-project",
             "issue_iid": 7,
             "note_id": 100,
-            "gitlab_url": "http://gitlab.dev.adp.internal",
+            # Legacy/untrusted field: the worker must ignore this destination.
+            "gitlab_url": "https://attacker.example",
         },
         "actor": {
             "username": "gitlab-user",
@@ -3635,6 +3977,11 @@ class TestGitLabProviderDetection:
 class TestHandleGitLabMention:
     """Issue #3436: Unit tests for the _handle_gitlab_mention function itself."""
 
+    @pytest.fixture(autouse=True)
+    def trusted_gitlab_url(self, monkeypatch):
+        """Workers receive the trusted URL from deployment-owned configuration."""
+        monkeypatch.setenv("GITLAB_URL", "http://gitlab.dev.adp.internal")
+
     @patch("entrypoint.boto3.client")
     @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
@@ -3645,12 +3992,9 @@ class TestHandleGitLabMention:
         mock_boto_client,
         monkeypatch,
     ):
-        """Full happy path: token read, ack posted, branch created, msg deleted.
-        URL resolved from envelope's payload.source.gitlab_url (primary).
-        Default branch resolved from project API."""
+        """Full happy path uses the trusted URL and completes all API calls."""
         from entrypoint import _handle_gitlab_mention
 
-        # No GITLAB_URL env var — URL comes from the envelope's gitlab_url field
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         # Mock Secrets Manager
@@ -3869,17 +4213,44 @@ class TestHandleGitLabMention:
     @patch("entrypoint.boto3.client")
     @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
-    def test_envelope_gitlab_url_takes_precedence_over_env(
+    def test_missing_trusted_gitlab_url_fails_before_token_read(
         self,
         mock_delete_msg,
         mock_urlopen,
         mock_boto_client,
         monkeypatch,
     ):
-        """Envelope's gitlab_url is primary; GITLAB_URL env var is fallback only."""
+        """No deployment-owned URL means no token read and no outbound call."""
         from entrypoint import _handle_gitlab_mention
 
-        monkeypatch.setenv("GITLAB_URL", "http://fallback-gitlab.internal")
+        monkeypatch.delenv("GITLAB_URL", raising=False)
+
+        result = _handle_gitlab_mention(
+            SAMPLE_GITLAB_ENVELOPE,
+            "https://sqs.us-east-1.amazonaws.com/123/q.fifo",
+            "us-east-1",
+            "receipt-gl-no-url",
+        )
+
+        assert result == 1
+        mock_boto_client.assert_not_called()
+        mock_urlopen.assert_not_called()
+        mock_delete_msg.assert_called_once()
+
+    @patch("entrypoint.boto3.client")
+    @patch("entrypoint.urllib.request.urlopen")
+    @patch("entrypoint._delete_message")
+    def test_envelope_gitlab_url_is_ignored(
+        self,
+        mock_delete_msg,
+        mock_urlopen,
+        mock_boto_client,
+        monkeypatch,
+    ):
+        """A forged envelope URL cannot receive the platform GitLab token."""
+        from entrypoint import _handle_gitlab_mention
+
+        monkeypatch.setenv("GITLAB_URL", "http://trusted-gitlab.internal")
         monkeypatch.setenv("ENVIRONMENT", "dev")
 
         mock_sm = MagicMock()
@@ -3917,22 +4288,23 @@ class TestHandleGitLabMention:
             "receipt-gl-env",
         )
 
-        # Verify the URL used is from envelope (gitlab.dev.adp.internal), not env var
+        # The sample envelope contains https://attacker.example. Every request
+        # must instead use the deployment-owned URL.
         first_call_req = mock_urlopen.call_args_list[0][0][0]
-        assert "gitlab.dev.adp.internal" in first_call_req.full_url
-        assert "fallback-gitlab.internal" not in first_call_req.full_url
+        assert "trusted-gitlab.internal" in first_call_req.full_url
+        assert "attacker.example" not in first_call_req.full_url
 
     @patch("entrypoint.boto3.client")
     @patch("entrypoint.urllib.request.urlopen")
     @patch("entrypoint._delete_message")
-    def test_env_var_used_when_envelope_gitlab_url_empty(
+    def test_configured_url_used_when_legacy_envelope_url_empty(
         self,
         mock_delete_msg,
         mock_urlopen,
         mock_boto_client,
         monkeypatch,
     ):
-        """GITLAB_URL env var is used when envelope's gitlab_url is empty."""
+        """Configured GITLAB_URL is independent of the legacy envelope field."""
         from entrypoint import _handle_gitlab_mention
 
         monkeypatch.setenv("GITLAB_URL", "http://override-gitlab.internal")
@@ -4115,3 +4487,157 @@ class TestHandleGitLabMention:
         branch_payload = json_mod.loads(branch_create_req.data.decode("utf-8"))
         assert branch_payload["ref"] == "develop"
         assert branch_payload["branch"] == "agent/issue-7"
+
+
+# --- Test: Mediated idempotency guard envelope contract (Issue #5223) ---
+
+
+class TestMediatedIdempotencyGuard:
+    """Pin the mediated guard to the envelope the route actually returns.
+
+    This guard shipped unable to fire, for two independent reasons that masked
+    each other: it read `pull_request` off the top level of the route envelope
+    (where it never appears — the route nests it under `repository`), and it
+    compared GitHub's `state` against `"merged"` (a value `state` never holds;
+    mergedness is a separate boolean). Either bug alone yields a permanent
+    false negative, so the only symptom was a duplicate run on SQS redelivery.
+    These tests exist so neither half can regress silently.
+    """
+
+    @staticmethod
+    def _envelope(pull):
+        """The READ_REPOSITORY envelope, shaped as the route emits it."""
+        return {
+            "repository": {
+                "repository_id": 987654321,
+                "repository": "acme-corp/flagship-app",
+                "default_branch": "main",
+                "branch_head": "b" * 40,
+                "pull_request": pull,
+            },
+            "branch": "agent/issue-42",
+            "idempotency_key": "read_repository:acme-corp/flagship-app",
+        }
+
+    def _guard(self, monkeypatch, envelope):
+        from lib import mediated_github
+        from entrypoint import _mediated_already_completed
+
+        def _read_repository(**_kwargs):
+            return envelope
+
+        monkeypatch.setattr(mediated_github, "read_repository", _read_repository)
+        return _mediated_already_completed()
+
+    def test_merged_pull_request_nested_under_repository_is_detected(self, monkeypatch):
+        """A merged PR at the REAL nesting level makes the guard fire.
+
+        Proves the consumer reads `repository.pull_request`. Against the old
+        top-level read this returns False, so the assertion is load-bearing.
+        """
+        envelope = self._envelope(
+            {
+                "number": 4242,
+                "html_url": "https://github.com/acme-corp/flagship-app/pull/4242",
+                "state": "closed",
+                "merged": True,
+            }
+        )
+        assert self._guard(monkeypatch, envelope) is True
+
+    def test_a_top_level_pull_request_is_not_consulted(self, monkeypatch):
+        """A merged PR at the OLD top level must NOT satisfy the guard.
+
+        The wrong level is not merely unhelpful — honouring it would let a shape
+        the gateway never emits decide whether real work gets skipped.
+        """
+        envelope = self._envelope(None)
+        envelope["pull_request"] = {"number": 1, "state": "closed", "merged": True}
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_an_open_pull_request_does_not_skip_the_run(self, monkeypatch):
+        """Work in progress is not completed work."""
+        envelope = self._envelope({"number": 4242, "state": "open", "merged": False})
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_a_closed_unmerged_pull_request_does_not_skip_the_run(self, monkeypatch):
+        """A closed-without-merging PR means the work was abandoned, not delivered.
+
+        Skipping here would silently drop real work — the expensive direction.
+        """
+        envelope = self._envelope({"number": 4242, "state": "closed", "merged": False})
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_state_is_never_trusted_as_a_mergedness_signal(self, monkeypatch):
+        """Even `state == "merged"` cannot skip a run when `merged` is false.
+
+        GitHub never emits that state, so if it ever appears it is a forgery or a
+        provider bug. Mergedness comes from the separate boolean, or not at all.
+        """
+        envelope = self._envelope({"number": 4242, "state": "merged", "merged": False})
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_a_truthy_non_boolean_merged_value_does_not_skip_the_run(self, monkeypatch):
+        """`merged` must be exactly True — schema validation, not truthiness.
+
+        A string like "false" is truthy in Python; accepting it would let a
+        malformed provider answer skip real work.
+        """
+        envelope = self._envelope({"number": 4242, "state": "closed", "merged": "false"})
+        assert self._guard(monkeypatch, envelope) is False
+
+    @pytest.mark.parametrize(
+        "envelope",
+        [
+            {},
+            {"repository": None},
+            {"repository": "acme-corp/flagship-app"},
+            {"repository": {}},
+            {"repository": {"pull_request": None}},
+            {"repository": {"pull_request": "merged"}},
+        ],
+        ids=["empty", "null-repo", "repo-as-string", "no-pull-key", "null-pull", "pull-as-string"],
+    )
+    def test_unusable_envelopes_fail_open(self, monkeypatch, envelope):
+        """Any shape the guard cannot read means "proceed", never "skip".
+
+        Includes `repository` as a bare string, which is what the *inner* payload
+        uses for the slug — so a caller that forgot to unwrap lands here rather
+        than crashing on `.get`.
+        """
+        assert self._guard(monkeypatch, envelope) is False
+
+    def test_a_refused_read_fails_open(self, monkeypatch):
+        """An unreachable or refusing gateway must let the run proceed.
+
+        Duplicate work is recoverable; silently dropping an assignment is not.
+        """
+        from lib import mediated_github
+        from entrypoint import _mediated_already_completed
+
+        def _read_repository(**_kwargs):
+            raise RuntimeError("the operation is not currently authorized")
+
+        monkeypatch.setattr(mediated_github, "read_repository", _read_repository)
+        assert _mediated_already_completed() is False
+
+    def test_the_dispatcher_routes_to_the_authority_the_run_holds(self, monkeypatch):
+        """`mediated=True` must not reach for `gh pr list`, which needs a token."""
+        import entrypoint
+
+        calls = {"mediated": 0, "token": 0}
+        monkeypatch.setattr(
+            entrypoint,
+            "_mediated_already_completed",
+            lambda: calls.__setitem__("mediated", 1) or True,
+        )
+        monkeypatch.setattr(
+            entrypoint, "_is_already_completed", lambda *a: calls.__setitem__("token", 1) or False
+        )
+
+        assert entrypoint._already_completed("acme/repo", 42, "", mediated=True) is True
+        assert calls == {"mediated": 1, "token": 0}
+
+        calls.update({"mediated": 0, "token": 0})
+        assert entrypoint._already_completed("acme/repo", 42, "ghs_x", mediated=False) is False
+        assert calls == {"mediated": 0, "token": 1}

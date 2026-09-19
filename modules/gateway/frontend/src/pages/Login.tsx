@@ -6,6 +6,8 @@
  * 2. "Sign in with Email" — redirects to Cognito hosted UI (default provider selection)
  */
 
+import { deploymentSetting } from '@/config/runtime';
+
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
@@ -21,6 +23,9 @@ import { Button } from '@/components/ui/Button';
 
 export default function Login() {
   const location = useLocation();
+  const apiUrl = new URL(deploymentSetting('VITE_API_URL') || '/api', window.location.origin).href.replace(/\/$/, '');
+  const shellQuote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+  const installCommand = `curl -fsSL ${shellQuote(`${apiUrl}/cli/install.sh`)} | sh -s -- --gateway-url ${shellQuote(apiUrl)}`;
   const [error, setError] = useState<string | null>(null);
   const [isRedirecting, setIsRedirecting] = useState(false);
   // Issue #2746: null = still loading (render enabled, no disabled-flash);
@@ -190,6 +195,14 @@ export default function Login() {
       >
         Sign in with Email
       </Button>
+
+      <details className="mt-6 text-sm text-gray-600 dark:text-gray-300">
+        <summary className="cursor-pointer font-medium">Install the ADP CLI</summary>
+        <p className="mt-3">Download without signing in. Run this command in your terminal:</p>
+        <pre className="mt-2 overflow-x-auto rounded bg-gray-100 p-3 text-xs dark:bg-gray-800" data-testid="cli-install-command">{installCommand}</pre>
+        <p className="mt-2">Developers: run <code>adp login</code>.</p>
+        <p className="mt-2">First-time administrator: run <code>adp admin setup</code> and sign in with your Cognito username and password.</p>
+      </details>
 
       <div className="mt-6 text-center">
         <p className="text-sm text-gray-500 dark:text-gray-400">

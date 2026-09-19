@@ -5,6 +5,8 @@
  * (Proof Key for Code Exchange) for secure authentication with AWS Cognito.
  */
 
+import { deploymentSetting } from '@/config/runtime';
+
 import { apiClient } from './api';
 import { AdminRole, Permission } from '@/types';
 import type {
@@ -191,7 +193,7 @@ export async function buildLoginUrl(): Promise<string> {
  * browser never initiated (login CSRF / session fixation).
  */
 export async function buildGitHubLoginUrl(): Promise<string> {
-  const brokerUrl = import.meta.env.VITE_GITHUB_AUTH_BROKER_URL;
+  const brokerUrl = deploymentSetting('VITE_GITHUB_AUTH_BROKER_URL');
   if (!brokerUrl) {
     throw new Error('GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL not set)');
   }
@@ -274,7 +276,7 @@ export async function exchangeBrokerCode(
   code: string,
   appState: string
 ): Promise<CognitoTokenResponse> {
-  const brokerUrl = import.meta.env.VITE_GITHUB_AUTH_BROKER_URL;
+  const brokerUrl = deploymentSetting('VITE_GITHUB_AUTH_BROKER_URL');
   if (!brokerUrl) {
     throw new Error('GitHub sign-in is not configured (VITE_GITHUB_AUTH_BROKER_URL not set)');
   }

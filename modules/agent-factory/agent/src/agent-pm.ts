@@ -100,7 +100,7 @@ import {
   getToken,
   needsRefresh,
   getTokenStatus,
-  setToken,
+  adoptBootstrapToken,
   forceRefresh,
 } from './token-refresh';
 import { isBrokerEnabled } from './lib/githubTokenBroker';
@@ -166,7 +166,7 @@ configureBeads({
 setBeadsLogger(log);
 
 // Token refresh configuration - GitHub App tokens expire after 1 hour
-const TOKEN_REFRESH_ENABLED = process.env.TOKEN_REFRESH_ENABLED === 'true';
+const TOKEN_REFRESH_ENABLED = process.env.ADP_TOKEN_MODE !== 'pat' && (isBrokerEnabled() || process.env.TOKEN_REFRESH_ENABLED === 'true');
 const GH_APP_ID = process.env.GH_APP_ID || '';
 const GH_APP_PRIVATE_KEY = process.env.GH_APP_PRIVATE_KEY || '';
 
@@ -192,11 +192,10 @@ if (TOKEN_REFRESH_ENABLED && canInitTokenManager()) {
     refreshThresholdMs: 20 * 60 * 1000,
   });
   // Set the initial token (from workflow)
-  if (GH_APP_TOKEN) {
-    setToken(GH_APP_TOKEN, 60 * 60 * 1000); // Assume 1 hour expiry
-  }
+  adoptBootstrapToken();
   console.log('[TokenRefresh] Initialized - tokens will auto-refresh before expiry');
 } else if (TOKEN_REFRESH_ENABLED) {
+  if (GH_TOKEN_BROKER_MODE) throw new Error('Brokered GitHub renewal configuration unavailable');
   console.warn(
     GH_TOKEN_BROKER_MODE
       ? '[TokenRefresh] Enabled but missing GH_APP_ID (broker mode needs no private key)'

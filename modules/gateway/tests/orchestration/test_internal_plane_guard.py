@@ -45,6 +45,10 @@ INTERNAL_ROUTE_MODULES = (
     "src.internal.provenance_routes",
     "src.internal.status_callback_routes",
     "src.internal.admin_routes",
+    # PMM-03 bounded-probe admission and result recording only. Reviewed at
+    # 46b62cf8: it imports no orchestration package/model/table and cannot read
+    # or mutate release-promotion state.
+    "src.internal.persona_model_probe_routes",
 )
 
 # The full internal-plane surface as of this change, as (path, method) pairs.
@@ -65,6 +69,9 @@ EXPECTED_INTERNAL_ROUTES = {
     ("/internal/v1/knowledge-assets/status-callback", "POST"),
     ("/internal/v1/admin/tenant-config/{tenant}", "GET"),
     ("/internal/v1/admin/audit-entries", "GET"),
+    ("/internal/v1/persona-model-probes/claim", "POST"),
+    ("/internal/v1/persona-model-probes/{slot_id}/start", "POST"),
+    ("/internal/v1/persona-model-probes/{slot_id}/complete", "POST"),
 }
 
 # Promotion state: the tables and models this guard protects. A reference to any
@@ -395,6 +402,44 @@ class TestOrchestrationRouterIsOperatorPlane:
             # and reading it under a spend-read permission is the escalation the
             # sibling guard exists to stop.
             ("/orchestration/flows/{flow_id}", "GET"): "Permission.USAGE_READ",
+            # Issue #5145: the delivery ledger's read model — per node and cycle,
+            # the phase, whether it is moving, the next scheduled check and the
+            # typed block naming who must act. USAGE_READ, because this answers
+            # "why is delivery waiting" for the operator watching it, and making
+            # *progress visibility* require approval authority would push people
+            # back to reading logs, which is the problem the ledger exists to fix.
+            #
+            # It surfaces no acceptance record, and that is enforced rather than
+            # asserted: this route deliberately does NOT serve
+            # `accepted_plan_version`, even though the ledger row carries it. An
+            # earlier draft did, and the sibling guard below caught it — which is
+            # the guard working exactly as intended, because "which approved plan
+            # authorized this" is the approval record. The response also carries no
+            # `actor_id`, `actor_role`, `actor_kind`, reason text or plan document.
+            #
+            # It likewise does not publish `claim_id`/`claim_generation`: those are
+            # the authority binding `execution_store`'s fence tests, and the store
+            # withholds them from a refused caller precisely so a refusal cannot
+            # disclose what would satisfy it. Serving them to a browser would undo
+            # that. Asserted on the response body in
+            # `test_execution_read.py::test_the_claim_binding_is_never_published`.
+            ("/orchestration/flows/{flow_id}/execution", "GET"): "Permission.USAGE_READ",
+            # Issue #5301: attributed recovery of a *historically unbound* story —
+            # a human asserting which pull request delivered work that no run ever
+            # registered. PLAN_APPROVE and nothing weaker, for two reasons.
+            #
+            # It establishes the association that completion is then read from, so
+            # under a weaker permission it would be an indirect route to advancing
+            # accepted work without approval authority — the escalation this guard
+            # exists to stop. And it writes an attribution record (*who* established
+            # the binding), which is approval-record material by the same rule the
+            # sibling entries above state.
+            #
+            # A delivering run registering its OWN pull request is deliberately not
+            # here: that path carries no permission at all, because its authority is
+            # the run credential, which is strictly narrower. See
+            # `src/agentauth/pr_binding_routes.py`.
+            ("/orchestration/flows/{flow_id}/nodes/{node_id}/pull-request-recovery", "POST"): "Permission.PLAN_APPROVE",
         }
 
         actual_routes = set()

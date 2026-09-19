@@ -41,13 +41,13 @@ export AWS_PROFILE=<profile> AWS_REGION=us-east-1   # the account everything key
 ./platform/scripts/wire-gateway-alb.sh --apply           # Phase 6b (gateway second pass)
 ./modules/gateway/scripts/deploy-broker.sh --env dev     # Phase 6c (login)
 ./modules/gateway/scripts/bootstrap-admin.sh --env dev   # Phase 6d (seed first admin)
-# Agent path (optional):
+# Agent execution (required for a full deployment):
 ./modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --env dev   # Phase 7
 ./modules/agent-factory/webhook-ingress/scripts/register-github-app.sh <org> --env dev  # Phase 9 (or use the UI — see Phase 9 below)
 ```
 
-`deploy-all.sh` chains Phases 1–6 (incl. the ALB pass) but **not** the webhook
-path / broker / agent-runtime — use the stage-by-stage scripts for those. The
+`deploy-all.sh` chains the infrastructure, gateway, broker, webhook/runtime,
+agent-factory, and frontend stages. GitHub App setup follows deployment. The
 rest of this doc is **what to know before each phase** and **what to do when it
 breaks**.
 
@@ -115,11 +115,13 @@ If you just want to see the platform work with the least setup,
 > from the profile if absent).
 
 > **Updating an existing deployment?** Use `deploy-all.sh --update` instead of
-> re-running the default fresh-deploy path. Update mode plan-gates Terraform
-> (refuses destructive changes), runs alembic migrations before rollout, and
-> SHA-tags images to guarantee Kubernetes rollout triggers. See
-> [`deploy-all-update-mode-design.md`](./deploy-all-update-mode-design.md) for
-> the full design, or `deploy-all.sh --help` for usage.
+> re-running the default fresh-deploy path. Update mode discovers installed
+> modules, includes the required agent factory if missing, preserves existing
+> GitHub integration, plan-gates Terraform, and
+> runs migrations on Ready replicas of the intended SHA-tagged release. See
+> [`platform_upgrades.md`](./platform_upgrades.md) for the current procedure
+> and the narrowly allowed deployment replacements, or `deploy-all.sh --help`
+> for usage.
 
 ---
 

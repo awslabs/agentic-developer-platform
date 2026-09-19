@@ -1,0 +1,17 @@
+{
+  "features": {
+    "chat": true,
+    "knowledge": true,
+    "indexing": true,
+    "connections": true,
+    "credentials": true,
+    "system_dashboard": true,
+    "logs": true,
+    "gitlab": false,
+    "orchestration_engine": false,
+    "budget_spend": false,
+    "agent_control": false,
+    "new_ui": false,
+    "superplane": false
+  }
+}

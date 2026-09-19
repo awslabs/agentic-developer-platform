@@ -236,6 +236,19 @@ function buildUseAdp(features: FeatureFlags, perms: JourneyPermissions): Journey
       currentUi: true,
     });
   }
+  // Issue #5037. Mirrors the sidebar's condition exactly — `features.superplane` and no
+  // role or permission predicate — because the journey model's coverage guard (#5123)
+  // compares this model against Navigation.tsx. A different condition here would show the
+  // destination in one surface and hide it in the other.
+  if (features.superplane) {
+    work.push({
+      id: 'superplane',
+      to: '/superplane',
+      label: 'Superplane',
+      description: 'The Superplane domain app.',
+      currentUi: true,
+    });
+  }
 
   const setup: JourneyEntry[] = [
     {

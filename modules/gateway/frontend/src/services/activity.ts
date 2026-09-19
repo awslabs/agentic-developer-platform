@@ -6,6 +6,8 @@
  * Mirrors the pattern in services/logs.ts.
  */
 
+import { deploymentSetting } from '@/config/runtime';
+
 import { apiClient, buildQueryString } from './api';
 import type {
   ChainListResponse,
@@ -174,7 +176,7 @@ export async function getAdminInvocationDetail(
  */
 export async function getMyTranscript(invocationId: string): Promise<string> {
   const { getAccessToken } = await import('./auth');
-  const baseUrl = import.meta.env.VITE_API_URL || '/api';
+  const baseUrl = deploymentSetting('VITE_API_URL') || '/api';
   const token = getAccessToken();
   // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability
   const response = await fetch(
@@ -198,7 +200,7 @@ export async function getAdminTranscript(
   tenantId?: string,
 ): Promise<string> {
   const { getAccessToken } = await import('./auth');
-  const baseUrl = import.meta.env.VITE_API_URL || '/api';
+  const baseUrl = deploymentSetting('VITE_API_URL') || '/api';
   const token = getAccessToken();
   const query = tenantId ? buildQueryString({ tenant_id: tenantId }) : '';
   // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — browser-side fetch of own API base; SSRF is not a client-side vulnerability

@@ -60,6 +60,13 @@ resource "kubernetes_service_account" "agent_scaledjob_sa" {
 # -----------------------------------------------------------------------------
 
 locals {
+  # GitLab API destination is deployment-owned. Never derive it from the
+  # webhook body or SQS envelope; those are untrusted inputs.
+  gitlab_env_block = var.gitlab_webhook_enabled ? join("\n", [
+    "                  - name: GITLAB_URL",
+    "                    value: ${data.aws_ssm_parameter.gitlab_url[0].value}",
+  ]) : ""
+
   # Knowledge Layer env vars for agent-worker container (#3286).
   # Conditionally included in the ScaledJob YAML when knowledge_layer_enabled=true.
   # Uses join() to avoid nested heredoc syntax issues in HCL ternary.
@@ -185,6 +192,9 @@ locals {
       # diagnostic surface an operator needs to keep.
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 5
+      # Keep existing Jobs running when the worker template changes.
+      rollout:
+        strategy: gradual
       jobTargetRef:
         parallelism: 1
         completions: 1
@@ -231,6 +241,13 @@ locals {
                     value: ${var.environment}
                   - name: QUEUE_URL
                     value: ${aws_sqs_queue.agent_submit.url}
+                  # Persona-name routing keeps Codex on this same queue/image.
+                  - name: CODEX_REVIEWER_APPLY_FIXES
+                    value: "${var.codex_reviewer_apply_fixes}"
+                  - name: CODEX_REVIEWER_MERGE_ENABLED
+                    value: "${var.codex_reviewer_merge_enabled}"
+                  - name: CODEX_REVIEWER_MODEL
+                    value: "${var.codex_reviewer_model}"
                   - name: URL_ANALYSIS_EVIDENCE_BUCKET
                     value: adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}
                   - name: AGENT_RUN_LOGS_BUCKET
@@ -319,6 +336,7 @@ locals {
                         fieldPath: status.podIP
 ${local.agent_control_env_block}
 ${local.agent_authority_env_block}
+${local.gitlab_env_block}
 ${local.otel_env_block}
 ${local.knowledge_layer_env_block}
 ${local.agent_authority_mount_block}
@@ -406,12 +424,10 @@ resource "null_resource" "keda_trigger_auth" {
   }
 
   provisioner "local-exec" {
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig "$KUBECONFIG" >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.keda_trigger_auth_yaml}
 EOF
@@ -427,7 +443,12 @@ EOF
   provisioner "local-exec" {
     when       = destroy
     on_failure = continue
-    command    = "kubectl delete triggerauthentication agent-scaledjob-aws-auth -n ${self.triggers.namespace} --ignore-not-found || true"
+    command    = <<-CMD
+      set -e
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${self.triggers.cluster_name} --region ${self.triggers.cluster_region} --kubeconfig "$KUBECONFIG" >/dev/null
+      kubectl delete triggerauthentication agent-scaledjob-aws-auth -n ${self.triggers.namespace} --ignore-not-found || true
+    CMD
   }
 
   # RBAC must exist before kubectl apply runs as the runner SA.
@@ -448,12 +469,10 @@ resource "null_resource" "keda_scaledjob" {
   }
 
   provisioner "local-exec" {
-    environment = {
-      KUBECONFIG = "/tmp/adp-deploy-kubeconfig"
-    }
     command = <<-CMD
       set -e
-      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig /tmp/adp-deploy-kubeconfig >/dev/null
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${var.eks_cluster_name} --region ${var.aws_region} --kubeconfig "$KUBECONFIG" >/dev/null
       cat <<'EOF' | kubectl apply -f -
 ${local.keda_scaledjob_yaml}
 EOF
@@ -464,7 +483,12 @@ EOF
   provisioner "local-exec" {
     when       = destroy
     on_failure = continue
-    command    = "kubectl delete scaledjob agent-scaledjob -n ${self.triggers.namespace} --ignore-not-found || true"
+    command    = <<-CMD
+      set -e
+      export KUBECONFIG="$${KUBECONFIG:-$(mktemp)}"
+      aws eks update-kubeconfig --name ${self.triggers.cluster_name} --region ${self.triggers.cluster_region} --kubeconfig "$KUBECONFIG" >/dev/null
+      kubectl delete scaledjob agent-scaledjob -n ${self.triggers.namespace} --cascade=orphan --ignore-not-found || true
+    CMD
   }
 
   # RBAC must exist before kubectl apply runs as the runner SA.

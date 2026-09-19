@@ -1158,8 +1158,15 @@ describe('shared surface is provider-free', () => {
     // The single most load-bearing assertion in this file: the moment the shared
     // contract imports a provider SDK, every consumer inherits that dependency
     // and the second harness becomes a rewrite instead of an addition.
-    expect(source).not.toMatch(/from '@anthropic-ai/);
-    expect(source).not.toMatch(/require\('@anthropic-ai/);
+    //
+    // Matched on the package name alone, deliberately. Earlier forms anchored on
+    // `from '@anthropic-ai` and `require('@anthropic-ai`, which pinned the import
+    // *syntax* rather than the dependency: a double-quoted `import type { Options }
+    // from "@anthropic-ai/claude-agent-sdk"` re-exported through this file's public
+    // surface passed the whole suite and `tsc`. The sibling assertion below already
+    // used the broader form for the other shared modules, so this is the narrower
+    // one being brought up to it.
+    expect(source).not.toMatch(/@anthropic-ai/);
   });
 
   it('exposes no provider type and no iterable input requirement', () => {

@@ -20,9 +20,9 @@ import { wrapUntrusted } from './utils/trust-boundary';
 import { resolveInstallationId as sharedResolveInstallationId } from './utils/installation';
 import { TmpSpillStore } from './utils/spill';
 import { createWorkerToolHooks, developerCheckpointGuidance } from './developer-checkpoints';
-import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh } from './token-refresh';
+import { initTokenManager, canInitTokenManager, getToken, getTokenStatus, writeTokenFile, forceRefresh, adoptBootstrapToken, getRuntimeGitHubToken } from './token-refresh';
 import { AuthWatchdog } from './lib/authWatchdog';
-import { fetchBrokeredToken, isBrokerEnabled } from './lib/githubTokenBroker';
+import { isBrokerEnabled } from './lib/githubTokenBroker';
 import { resolveFallbackBucket, buildFallbackKey } from './utils/s3Fallback';
 import { CloudWatchLogsClient, PutLogEventsCommand, CreateLogStreamCommand } from '@aws-sdk/client-cloudwatch-logs';
 import { resolveAgentLogGroup } from './lib/logGroup';
@@ -109,6 +109,10 @@ import {
   KNOWLEDGE_LAYER_PROMPT,
   getKnowledgeLayerMcpConfig,
 } from './knowledge-layer-config';
+
+// Mediated GitHub operations — Issue #5223: this run has no GitHub token, so the
+// agent must be told the helper that replaces `git push`/`gh pr create`.
+import { MEDIATED_GITHUB_ENABLED, MEDIATED_GITHUB_PROMPT, isMediatedRun } from './mediated-github-config';
 
 // Beads module - distributed state management for agents
 import {
@@ -441,31 +445,14 @@ async function refreshAppToken(): Promise<void> {
   const appId = process.env.GH_APP_ID;
   const privateKey = process.env.GH_APP_PRIVATE_KEY;
 
-  // Issue #4272: broker mode — no private key in this process, so the local mint
-  // below cannot run. Route through the gatekeeper instead. Without this branch
-  // the function would hit the `!privateKey` early-return and silently stop
-  // refreshing the token that every gh/git call in the run depends on.
+  if (process.env.ADP_TOKEN_MODE === 'pat') return;
+  // #5223: mediated runs hold no token, so there is nothing to refresh. Returning
+  // rather than throwing keeps the auth watchdog's recovery attempt a no-op: a 401
+  // in a mediated run means a call that should have gone through the gateway, and
+  // re-minting is neither possible nor the fix.
+  if (isMediatedRun()) return;
   if (isBrokerEnabled()) {
-    const installationId = process.env.GH_APP_INSTALLATION_ID;
-    const repoOwner = process.env.REPO_OWNER;
-    if (!appId || !installationId || !repoOwner) return; // Not using app auth
-    try {
-      const brokered = await fetchBrokeredToken({
-        installationId,
-        repoOwner,
-        repoName: process.env.REPO_NAME || '',
-      });
-      process.env.GH_TOKEN = brokered.token;
-      process.env.GITHUB_TOKEN = brokered.token;
-      process.env.GH_APP_TOKEN = brokered.token;
-      // Keep the token file in step too: git-askpass-helper prefers the file and
-      // only falls back to $GITHUB_TOKEN, so refreshing env alone would leave
-      // git authenticating with the stale file contents.
-      writeTokenFile(brokered.token);
-      log('INFO', 'Refreshed GitHub App token via gatekeeper for gh CLI');
-    } catch (err) {
-      log('WARN', `Brokered token refresh failed: ${(err as Error).message}`);
-    }
+    await getRuntimeGitHubToken();
     return;
   }
 
@@ -989,7 +976,10 @@ You have access to skills in \`.claude/skills/\`. Each skill has a \`SKILL.md\` 
 ${KNOWLEDGE_LAYER_ENABLED ? `
 ---
 
-${KNOWLEDGE_LAYER_PROMPT}` : ''}
+${KNOWLEDGE_LAYER_PROMPT}` : ''}${MEDIATED_GITHUB_ENABLED ? `
+---
+
+${MEDIATED_GITHUB_PROMPT}` : ''}
 
 ---
 
@@ -1032,10 +1022,42 @@ If the task is hypothetical, assess its stated premises; do not replace them wit
 today's implementation. A missing review target calls for a brief blocked outcome.
 
 For implementation, substantial investigation or a workflow that requires a plan,
-post a short plan before substantive work using
+post a self-contained plan before substantive work using
 \`gh issue comment ${ISSUE_NUMBER} --body-file <plan-file>\`.
-Use a few sentences for the intended outcome, main steps and verification.
+Explain the requested change, main steps and verification in enough detail for
+the reader to understand the work without opening another document.
 Match the plan to your role; do not announce implementation for an assessment.
+For an implementation plan, lead with two clearly labelled parts:
+
+- **My understanding of the task:** explain the requested change in simple
+  language and good detail. Start with how it should work when complete, then
+  explain the relevant current behavior and what must keep working. Focus on
+  the change itself; no required "who needs this" section. Do not open with
+  file paths or internal mechanisms unless they are the requested change.
+- **How I plan to implement it:** explain the proposed approach in logical order,
+  leading each step with what it accomplishes, why it is needed and how it
+  connects to the other steps. Explain how you will check the result. For
+  example, "Keep each environment's login separate so signing in to one cannot
+  overwrite another" explains a step before naming storage files or locks.
+
+Write both in plain, self-contained language for someone who has not read the
+issue, earlier comments, design documents or code. A self-contained plan does
+not need to reproduce the technical design. Explain each requirement once;
+keep supporting file inventories, schemas, locks, ports, helper names and
+branch/checkpoint details after the readable explanation or in the design.
+Explain unavoidable technical terms by their purpose. Keep consequential
+decisions and verification in the explanation itself; links cannot replace it.
+Scale detail to the task without a fixed word limit or repeated design prose.
+Before posting, check that the reader can describe the change, main steps and
+verification without the technical notes. Describe the proposed behavior and
+approach, not private deliberation.
+
+Qualify unresolved facts accurately: an environment's address or test access
+being unverified does not mean the environment does not exist. State what
+needs checking, the affected step and work that can continue. Put commands
+for different terminals in separate labelled code blocks, not side by side
+in one shell block; identify placeholders and prerequisites.
+
 Existing approval gates and required AIDLC plan artifacts still apply; the small
 assessment exception does not bypass them or authorize execution.
 Apply phase templates when the task is part of that workflow, not merely because
@@ -1084,7 +1106,7 @@ Full guidelines at \`docs/agent-coding-guidelines.md\`.
 
 ## Pre-submit checks (MANDATORY before requesting review)
 
-Before requesting review or marking a draft PR ready, run the linters and tests for the module(s) you touched. Incomplete branch checkpoints and draft PRs may be published before these finish, with their check status clearly stated. They are not a review handoff and do not relax merge gates.
+Do not create draft PRs, even if older task text requests one. Complete the agreed implementation, integration, tests and documentation, then run the linters and tests for the module(s) you touched before opening a ready PR or requesting review. Incomplete branch checkpoints may be pushed with check status disclosed; share commit links and continue working. Reuse any existing PR, marking an existing draft ready only after the same completion checks. Required CI still gates merge.
 
 ### Module → check commands
 
@@ -1111,96 +1133,130 @@ Failing to run these checks is a process bug. PRs that land with lint/test failu
 
 ${AGENT_TYPE === 'reviewer' ? `### Step 3.4: Spec-vs-diff Review (MANDATORY for @agent-reviewer)
 
-When assigned a PR review, treat it as an INDEPENDENT review — don't trust the PR description, verify against the code.
+Verify the assigned PR independently against accepted scope and current code;
+do not trust its description as proof. The reviewer owns review, in-scope repair,
+verification and the final report on the SAME PR. Reviewer-specific instructions
+below take precedence over generic instructions to create a new branch/PR.
 
 **If you cannot find PR_NUMBER in the environment**, do not proceed with an unscoped
-PR review. If the task deliberately supplies no review target, return a brief final
-response explaining what cannot be assessed and asking the author for the revision
-and its check results. Otherwise report the missing review setup in your final
-response. Do not select an unrelated PR or manufacture a review/security result.
-The steps below apply once the assigned review target is available.
+PR review. Return a brief setup blocker with the missing target and next action.
+Do not select an unrelated PR or manufacture review/security evidence.
 
 1. **Identify the PR and the driving issue:**
    \`\`\`bash
-   # PR_NUMBER is provided in your environment
-   echo "Reviewing PR #\$PR_NUMBER against issue #\$ISSUE_NUMBER"
-   gh pr view \$PR_NUMBER --json title,body,files,additions,deletions
+   gh pr view \$PR_NUMBER --json number,title,body,state,isDraft,headRefName,headRefOid,files
+   \`\`\`
+   Stop if the assigned PR is a draft or is not open; do not mark it ready for its
+   author. Verify the repository and bound issue, record headRefOid, and fetch
+   that exact branch/diff. Never review a substitute checkout.
+   \`\`\`bash
    gh pr diff \$PR_NUMBER > /tmp/pr-diff.patch
    \`\`\`
 
 2. **Extract the acceptance criteria from the issue:**
-   Re-read the issue body (already shown above). List every acceptance criterion, invariant, and "must NOT" constraint as a checklist. If there's an "Acceptance Criteria" section, extract it verbatim. If not, synthesize from the Goal + Scope sections.
+   Re-read the issue body (already shown above), accepted story/design and
+   applicable AGENTS.md. Separate code-merge
+   requirements from explicitly deferred deployment/live criteria; retain their
+   later gates without requiring live execution in this code review.
 
-3. **Verify each criterion against the diff:**
-   For each criterion in your checklist, find the concrete line(s) in the diff that satisfy it. If you can't find one, that's a HIGH-confidence merge blocker.
+3. **Verify each criterion against the diff and current implementation:**
+   Include unchanged code and test evidence. A missing changed line is not proof
+   of missing behavior. Missing evidence is unverified until investigated, not an
+   automatic HIGH-confidence defect. Report the concrete failure or unmet
+   applicable requirement and practical consequence for every blocker.
 
 4. **Check for invariant violations:**
-   Specifically watch for things the issue said NOT to do — "do not touch X", "do not change behavior of Y", "zero regression to Z". Grep the diff for those areas. Any violation is a HIGH-confidence merge blocker.
+   Verify the actual scope, behavior and evidence for each claimed violation.
+   Preserve accepted architecture and isolation; do not invent requirements.
 
 5. **Check for committed files that should not exist:**
-   The repo's AGENTS.md at the root defines a set of "must not commit" rules (e.g. \`agent_learning/*.md\`, \`tfplan\` files, anything under \`.terraform/\`). Grep the diff's file list for violations — these are HIGH-confidence merge blockers and the agent should propose fixes.
+   Respect AGENTS.md prohibitions such as \`agent_learning/*.md\`, secrets or
+   generated infrastructure artifacts. Remove prohibited additions when safe and
+   authorized; do not just suggest a fix you can make on the assigned PR.
 
 6. **Label each finding independently:**
    - Impact severity: high / medium / low, with the practical consequence
-   - Confidence: high / medium / low, with the evidence or uncertainty
+   - Confidence: high / medium / low, with evidence or uncertainty
    - Approval impact: blocker / discussion needed / optional follow-up
-   Existing acceptance, security and prohibited-file requirements remain blockers.
+   Applicable acceptance, security and prohibited-file requirements remain
+   blockers. Style preferences and unrelated inherited debt are optional.
 
-7. **Write the review summary to a file** at
+7. Collect provisional findings and continue to security review and repair.
+   Do not publish a final REQUEST CHANGES or dispatch a developer for findings
+   that you can fix within this task's scope, authority and remaining budget.
+
+### Step 3.5: Security Review (MANDATORY for @agent-reviewer)
+
+Run \`/security-review\` before approving. Investigate its findings against the
+actual changed behavior, reachability and threat model; scanner output alone is
+not proof. Check secrets, auth/authz, inputs, dependencies and configuration.
+Fold confirmed in-scope defects into the repair batch below. Preserve explicit
+permissions for changes to live credentials, resources, security policy or data;
+review authority does not grant those operations. Keep functional and security
+evidence distinct and do not claim either was run when it was not.
+
+### Step 3.6: Reviewer-owned repair, verification and final verdict
+
+1. **Verify branch ownership before edits.** Use current claim/run evidence to
+   establish one writer. An active developer/reviewer/supervisor or unavailable
+   ownership is a concrete hold, not permission to race. Re-read the remote head;
+   concurrent changes require reconciliation. Never reset or force-push.
+2. **Fix confirmed in-scope defects on the existing PR branch.** Missing behavior,
+   logic/error-handling bugs, configuration, failing tests and inaccurate required
+   handoff evidence are reviewer work when the solution is clear. Keep repairs
+   surgical and batch related findings. Work size alone does not require sending
+   the story back. Reproduce meaningful failures and add useful regressions.
+   A read-only delegated review returns findings for the owning reviewer to fix;
+   respect an explicitly read-only parent task and unavailable write authority.
+3. **Verify and publish the repairs.** Inspect the changed diff, run affected
+   tests/integrations and pinned lint tools, stage only intended files, commit and
+   push through the authorized path to the SAME PR. Confirm the remote SHA. Do
+   not claim unpublished local changes are fixed in the PR. Do not commit review
+   logs or create artifact-only PRs. Preserve claim, action, lineage and budget;
+   do not manually trigger another developer/reviewer solely because you fixed
+   something. Cooperate with any review already scheduled by the engine.
+4. **Validate the final revision.** Recheck repaired behavior and affected security
+   surfaces, and observe all required checks. Reuse identified evidence for
+   unchanged areas; broaden verification for changed risk, failure or unresolved
+   concerns instead of repeating an unchanged full review. A new head invalidates
+   earlier approval. You are the repair author; satisfy any independently required
+   approval without pretending your own verdict is independent approval.
+   Billing/runner/credential failures are external check blocks, not code rework.
+   Never waive required CI or treat skipped/unrun tests as passes.
+5. **Hand off only concrete blockers.** Complete independent authorized repairs
+   first. An unresolved product/security/architecture decision, expanded scope,
+   missing authority/input, active writer, external failure or exhausted limit
+   needs its exact reason, remaining findings, owner and next action. Do not
+   return REQUEST CHANGES for defects already fixed or merely optional cleanup.
+6. **Write the final review summary to a file** at
    \`data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md\`:
-   - Start with verdict (APPROVE / REQUEST CHANGES / BLOCK), reviewed revision,
-     blocker count and the most important consequence.
-   - Describe each blocker in plain language, then evidence, file/line and fix.
-   - State validation gaps and outstanding required checks. Keep optional
-     follow-ups separate and retain the required engine attribution line.
+   - Start with verdict (APPROVE / REQUEST CHANGES / BLOCK), verified final revision,
+     fixes/commits, remaining blocker count and practical consequence.
+   - State validation gaps and outstanding required checks, and the next owner/action.
+   - Record each finding as fixed (author/commit/evidence), unresolved blocker
+     (reason/owner) or optional follow-up. Include functional/security results and
+     required engine attribution. Interim updates must state actual phase/owner:
+     reviewing, reviewer fixing, verifying, or waiting for a named input/check.
    - Follow with the full acceptance-criteria checklist (satisfied/missing,
-     evidence per criterion) and detailed findings. Do not bury blockers below it.
-
-8. **Post the review summary to the PR:**
+     evidence per criterion) and detailed findings.
+7. **Publish the final result for the verified remote head** through the available
+   structured review/artifact channel and assigned PR:
    \`\`\`bash
    gh pr comment \$PR_NUMBER --body-file data/code-review/review-$(date +%Y%m%d)-pr-\$PR_NUMBER.md
    \`\`\`
-
-9. **Only after Step 8:** proceed to the security review step below.
+   Publish any required formal GitHub review through the authorized review path;
+   if the current identity cannot do so, name that pending approval explicitly.
+   A comment or successful worker exit is not a substitute for required approval.
+   Leave merging to the configured owner unless explicitly authorized to merge.
 
 **DO NOT approve a PR if**:
 - Any merge-blocking finding is unresolved
-- Any acceptance criterion from the issue is ✗
-- Any file committed to the PR matches a "must not commit" rule in AGENTS.md
+- Any acceptance criterion due at this stage is unsatisfied
+- A prohibited-file violation or required check/independent approval is unresolved
+- Functional/security evidence describes a different head
 
-### Step 3.5: Security Review (MANDATORY for @agent-reviewer)
-**You MUST run security review before approving ANY PR:**
-
-1. **Run the /security-review command:**
-   Use the built-in security review skill by invoking:
-   \`/security-review\`
-
-   This will automatically:
-   - Scan for hardcoded secrets and credentials
-   - Check for vulnerable dependencies
-   - Identify OWASP Top 10 vulnerabilities
-   - Flag insecure configurations
-
-2. **Review and fix findings:**
-   - Fix issues you can fix safely (see pr-review.md for guidance)
-   - Document unfixable issues for human review
-
-3. **Create review log file:**
-   \`\`\`bash
-   mkdir -p data/code-review
-   # Create data/code-review/review-YYYYMMDD-pr-NNN.md with:
-   # - Security findings from /security-review
-   # - Fixes applied
-   # - Issues escalated
-   \`\`\`
-
-4. **Post security summary to PR:**
-   \`\`\`bash
-   gh pr comment $PR_NUMBER --body "## 🔒 Security Review Complete
-   [Summary of /security-review findings and actions taken]"
-   \`\`\`
-
-**DO NOT merge without completing /security-review.**
+Do not merge, deploy, approve live gates or change credentials as an incidental
+part of review. See pr-review.md and the reviewer persona for this same contract.
 ` : ''}${AGENT_TYPE === 'operations' ? `### Step 3.5: Execution (MANDATORY for @agent-operations)
 **For authorized deployment work, execute and verify the requested infrastructure changes.**
 
@@ -2025,6 +2081,8 @@ async function main(): Promise<void> {
       refreshThresholdMs: TOKEN_REFRESH_THRESHOLD_MS,
     });
 
+    adoptBootstrapToken();
+
     // Issue #4369: tick every 5 min, not 30. `getToken()` is a no-op unless the
     // token is inside the refresh threshold, so a short interval costs nothing —
     // but a 30-min interval against a ~60-min token and a 15-min threshold never
@@ -2064,9 +2122,17 @@ async function main(): Promise<void> {
       writeTokenFile(initialToken);
       log('INFO', 'Initial token written to token file for SDK subprocess');
     } catch (err) {
+      if (brokerMode) throw err;
       log('WARN', `Initial token file write failed: ${(err as Error).message}`);
     }
-  } else {
+  } else if (isMediatedRun()) {
+    // #5223: having no token is this run's correct steady state, not a
+    // misconfiguration. Must be checked BEFORE the brokerMode throw below —
+    // mediated runs in the authority cohort have brokerMode true, so falling
+    // through would abort every mediated run at startup.
+    log('INFO', 'Mediated GitHub operations: no token to refresh; writes go through the gateway');
+  } else if (process.env.ADP_TOKEN_MODE !== 'pat') {
+    if (brokerMode) throw new Error('Brokered GitHub renewal configuration unavailable');
     log('WARN', 'GitHub App credentials not available — token refresh disabled. Token will expire after ~1 hour.');
   }
 

@@ -98,6 +98,21 @@ async def test_tenant_and_policy_amendment_do_not_change_spend_identity(meter):
     assert await meter.store.snapshot(other) is None
 
 
+async def _confirmable_quote():
+    """A real quote for a real request, via the production entry point.
+
+    Built through ``quote_request`` rather than hand-constructed so it carries the
+    live pricing revision and therefore confirms at the reservation boundary. Its
+    ``total_usd`` is deliberately NOT used as the cost under test — the caller
+    pins that separately — so this cannot make the cap arithmetic depend on
+    today's published rates.
+    """
+    from src.orchestration.provider_quotes import quote_request
+
+    body = json.dumps({"model": "anthropic.claude-sonnet-4-6", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 16}).encode()
+    return await quote_request(body, "/v1/messages")
+
+
 async def test_budget_service_enforces_flow_when_legacy_run_caps_are_disabled(meter, monkeypatch):
     monkeypatch.setattr(budget_config, "budget_run_cap_enabled", False)
     monkeypatch.setattr(budget_config, "budget_run_binding_mode", "shadow")
@@ -123,6 +138,13 @@ async def test_budget_service_enforces_flow_when_legacy_run_caps_are_disabled(me
     context._protected_run_binding = RunBinding("worker", "flow", meter.policy.org_id, "", "", False, "flow")
     context._policy_flow_target = meter.target
     context._policy_estimated_cost = Decimal(20)
+    # Issue #5225: the reservation is bound to a typed quote, which it re-confirms
+    # immediately before spending. This test predates that contract and pins the
+    # cost directly to keep the arithmetic below exact, so it needs a quote whose
+    # identity still confirms. Only expiry and the pricing revision are checked at
+    # that boundary, so a quote issued here from the live snapshot satisfies it —
+    # while the $20 figure the flow-cap assertions depend on stays untouched.
+    context._policy_quote = await _confirmable_quote()
     await meter.store.reserve("earlier-worker", Decimal(20), [meter.target])
     await meter.store.reconcile("earlier-worker", Decimal(20), [meter.target])
     context._policy_request_id = "one"
@@ -137,6 +159,44 @@ async def test_budget_service_enforces_flow_when_legacy_run_caps_are_disabled(me
     assert (await meter.store.snapshot(meter.target)).total_usd == 25
     context._policy_request_id = "three"
     assert (await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="untrusted")).allowed
+
+
+async def test_a_policy_cost_with_no_quote_behind_it_is_never_reserved(meter, monkeypatch):
+    """An amount whose provenance is gone cannot be spent (#5225).
+
+    A bare Decimal says nothing about which bytes, which billing model or which
+    published revision produced it. Reserving against one would reintroduce
+    exactly the unbound spend the typed quote exists to prevent, so the policy
+    path refuses rather than falling back to the number.
+    """
+    service = BudgetEnforcementService()
+    service._reservations = meter.store
+
+    @asynccontextmanager
+    async def session():
+        yield _no_budget_session()
+
+    monkeypatch.setattr(service, "_get_session", session)
+    monkeypatch.setattr(service, "_note_check_succeeded", AsyncMock())
+    context = TokenContext(
+        user_id="authority-worker",
+        org_id="__platform__",
+        attributed_org_id=meter.policy.org_id,
+        team_id="",
+        department_id="",
+        account_type="service",
+        auth_source="iam",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    context._policy_flow_target = meter.target
+    context._policy_estimated_cost = Decimal(20)
+    context._policy_request_id = "quoteless"
+    result = await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="untrusted")
+    assert not result.allowed and result.scope == "flow"
+    # Refused before any hold was taken. The meter already exists (the fixture
+    # initialized the flow), so the invariant is that nothing was ADDED to it.
+    snapshot = await meter.store.snapshot(meter.target)
+    assert snapshot.total_usd == 0 and not snapshot.has_pending
 
 
 @pytest.mark.parametrize("failure", ["disabled", "backend", "missing_id", "missing_anchor"])

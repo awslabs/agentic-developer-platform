@@ -42,9 +42,18 @@ DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-models.py"
 
 CONFIG_DIR="${HOME}/.bedrock-gateway"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
+
+# Issue #5039: the version this install is PINNED to. When set, the CLI version
+# that actually lands must equal it or nothing is installed — an install that
+# silently delivered a different version than the one asked for is the failure
+# mode being closed here. Recorded in the manifest so `adp update --to <v>` and
+# `--rollback --to <v>` can be version-explicit rather than "one generation back".
+VERSION_PIN="${ADP_VERSION_PIN:-}"
+MANIFEST_FILE_NAME=".adp-manifest.json"
 
 INSTALL_DIR="${DEFAULT_INSTALL_DIR}"
 GATEWAY_URL="${ADP_GATEWAY_URL:-}"
@@ -94,6 +103,9 @@ parse_args() {
             --prefix)
                 if [ -z "${2:-}" ]; then log_error "--prefix requires a directory"; exit 1; fi
                 INSTALL_DIR="$2"; shift 2 ;;
+            --version-pin)
+                if [ -z "${2:-}" ]; then log_error "--version-pin requires a version"; exit 1; fi
+                VERSION_PIN="$2"; shift 2 ;;
             --uninstall) UNINSTALL=true; shift ;;
             --no-path-edit) NO_PATH_EDIT=true; shift ;;
             -h|--help) usage; exit 0 ;;
@@ -253,6 +265,28 @@ commit_file() {
     log_success "Installed ${target}"
 }
 
+# The ADP_VERSION the STAGED `adp` declares — read from the staged temp, not the
+# installed copy, so the pin is checked against what would land.
+staged_adp_version() {
+    sed -n 's/^readonly ADP_VERSION="\([^"]*\)".*/\1/p' "${INSTALL_DIR}/.${ADP_SCRIPT}.tmp.$$" 2>/dev/null | head -n 1
+}
+
+# Record what this install actually landed, so a later `adp update --to <v>` /
+# `--rollback --to <v>` can verify a version rather than trusting a filename.
+# Not a secret and not a session: plain metadata beside the binaries.
+write_manifest() {
+    installed_version="$1"
+    previous_version=""
+    if [ "${KEEP_PREVIOUS}" = "1" ] && [ -f "${INSTALL_DIR}/${MANIFEST_FILE_NAME}" ]; then
+        previous_version=$(jq -r '.version // empty' "${INSTALL_DIR}/${MANIFEST_FILE_NAME}" 2>/dev/null || true)
+    fi
+    tmp=$(mktemp "${INSTALL_DIR}/${MANIFEST_FILE_NAME}.XXXXXX")
+    jq -n --arg v "${installed_version}" --arg p "${previous_version}" --arg url "${GATEWAY_URL}" \
+        '{version: $v, previous_version: $p, gateway_url: $url}' > "${tmp}"
+    chmod 644 "${tmp}"
+    mv -f "${tmp}" "${INSTALL_DIR}/${MANIFEST_FILE_NAME}"
+}
+
 do_install() {
     resolve_gateway_url
     require_gateway_url
@@ -266,13 +300,21 @@ do_install() {
     # script does not.
     trap cleanup_staged EXIT INT TERM
 
-    stage_file "${ADP_SCRIPT}"
-    stage_file "${CORE_SCRIPT}"
-    stage_file "${PROXY_SCRIPT}"
+    for name in ${CLI_FILES}; do stage_file "${name}"; done
 
-    commit_file "${ADP_SCRIPT}"
-    commit_file "${CORE_SCRIPT}"
-    commit_file "${PROXY_SCRIPT}"
+    # Issue #5039: verify the pin BEFORE anything is committed, so a mismatch
+    # leaves the working CLI untouched rather than installing a version the
+    # caller did not ask for and then reporting it.
+    staged_version=$(staged_adp_version)
+    if [ -n "${VERSION_PIN}" ] && [ "${staged_version}" != "${VERSION_PIN}" ]; then
+        log_error "Version pin mismatch: asked for ${VERSION_PIN}, but ${GATEWAY_URL} serves ${staged_version:-an unreadable version}."
+        log_info "Nothing was installed. Your gateway serves one CLI version; pin that one, or omit --version-pin."
+        exit 1
+    fi
+
+    for name in ${CLI_FILES}; do commit_file "${name}"; done
+
+    write_manifest "${staged_version}"
 
     trap - EXIT INT TERM
     STAGED_TMPS=""
@@ -283,7 +325,7 @@ do_install() {
 
 do_uninstall() {
     removed=0
-    for name in "${ADP_SCRIPT}" "${CORE_SCRIPT}" "${PROXY_SCRIPT}"; do
+    for name in ${CLI_FILES}; do
         if [ -f "${INSTALL_DIR}/${name}" ]; then
             rm -f "${INSTALL_DIR}/${name}" "${INSTALL_DIR}/${name}.prev"
             removed=1
@@ -346,10 +388,13 @@ print_next_steps() {
 
   adp is installed. Next:
 
-    adp login          # approve once in the browser
+    "${INSTALL_DIR}/adp" login    # works immediately, before reloading PATH
     adp status         # confirm you are signed in
     adp codex setup    # or: adp claude setup
     codex              # or: claude
+
+  First-time platform administrator (before GitHub is configured):
+    "${INSTALL_DIR}/adp" admin setup
 
   One login is shared by every tool — adding a second tool is just its setup verb.
 

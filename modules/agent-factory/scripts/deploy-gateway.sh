@@ -35,6 +35,7 @@ echo "=== Agent Gateway Deploy ==="
 if [[ "${SKIP_TF}" != "true" ]]; then
     echo "[1/3] Terraform apply (enable_gateway=true)..."
     if [[ "${DRY_RUN}" == "false" ]]; then
+        bash "${REPO_ROOT}/platform/scripts/build-agent-factory-lambdas.sh"
         pushd "${MODULE_ROOT}/infra" > /dev/null
         terraform apply -input=false -auto-approve -var="enable_gateway=true"
         INPUT_QUEUE_URL=$(terraform output -raw gateway_input_queue_url 2>/dev/null || echo "")
@@ -71,16 +72,8 @@ if [[ "${SKIP_IMG}" != "true" ]]; then
         aws ecr get-login-password --region "${AWS_REGION}" | \
             docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-        BUILD_DIR="/tmp/agent-gateway-build"
-        rm -rf "${BUILD_DIR}"; mkdir -p "${BUILD_DIR}"
-        cp -r "${MODULE_ROOT}/gateway/app" "${BUILD_DIR}/app"
-        cp -r "${MODULE_ROOT}/agent" "${BUILD_DIR}/agent"
-        cp "${MODULE_ROOT}/gateway/Dockerfile" "${BUILD_DIR}/Dockerfile"
-        cp "${MODULE_ROOT}/gateway/entrypoint.sh" "${BUILD_DIR}/entrypoint.sh"
-
-        docker build -t "${ECR_URI}:${AGENT_IMAGE_TAG}" "${BUILD_DIR}"
+        docker build -f "${MODULE_ROOT}/gateway/Dockerfile" -t "${ECR_URI}:${AGENT_IMAGE_TAG}" "${MODULE_ROOT}"
         docker push "${ECR_URI}:${AGENT_IMAGE_TAG}"
-        rm -rf "${BUILD_DIR}"
         AGENT_IMAGE="${ECR_URI}:${AGENT_IMAGE_TAG}"
         echo "  Pushed: ${AGENT_IMAGE}"
     else

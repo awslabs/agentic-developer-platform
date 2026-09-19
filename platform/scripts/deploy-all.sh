@@ -31,15 +31,25 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # (aws sts get-caller-identity, AWS_REGION env, etc.) when no config
 # file is present, so existing self-managed deploys keep working.
 # shellcheck source=load-deploy-config.sh
+# Retain only an explicit override for a missing factory. The config loader's
+# repository-origin fallback is not evidence of a customer's GitHub org.
+FACTORY_GITHUB_ORG_OVERRIDE="${ADP_GITHUB_ORG:-}"
 source "${SCRIPT_DIR}/load-deploy-config.sh"
 
 AWS_REGION="$ADP_REGION"
+export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
 ENVIRONMENT="$ADP_ENVIRONMENT"
 GATEWAY_ONLY=false
 AGENT_FACTORY_ONLY=false
 AGENT_CONTEXT_ONLY=false
 SKIP_AGENT_CONTEXT=false
 AGENT_CONTEXT_ENABLED="${AGENT_CONTEXT_ENABLED:-false}"
+SUPERPLANE_ONLY=false
+SKIP_SUPERPLANE=false
+# Default false, like AGENT_CONTEXT_ENABLED above. The Superplane domain app must not
+# deploy unless somebody asks for it: its Terraform is not this unit's (U3 owns it), so
+# an environment that has not opted in has nothing here to stand up (Issue #5037).
+SUPERPLANE_ENABLED="${SUPERPLANE_ENABLED:-false}"
 DESTROY=false
 SKIP_FRONTEND=false
 SKIP_BROKER=false
@@ -50,12 +60,16 @@ CI_MODE=false
 UPDATE_MODE=false
 CONFIRM_DESTRUCTIVE=false
 
-for arg in "$@"; do
-  case $arg in
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --env) ENVIRONMENT="${2:?--env requires a value}"; shift ;;
+    --region) AWS_REGION="${2:?--region requires a value}"; shift ;;
     --gateway-only) GATEWAY_ONLY=true ;;
     --agent-factory-only) AGENT_FACTORY_ONLY=true ;;
     --agent-context-only) AGENT_CONTEXT_ONLY=true ;;
     --skip-agent-context) SKIP_AGENT_CONTEXT=true ;;
+    --superplane-only) SUPERPLANE_ONLY=true ;;
+    --skip-superplane) SKIP_SUPERPLANE=true ;;
     --destroy) DESTROY=true ;;
     --skip-frontend) SKIP_FRONTEND=true ;;
     --skip-broker) SKIP_BROKER=true ;;
@@ -77,10 +91,15 @@ for arg in "$@"; do
       echo "Update-mode flags (only with --update):"
       echo "  --confirm-destructive  Authorize terraform applies that include resource destroys"
       echo ""
+      echo "Target: --env <dev|staging|prod> --region <aws-region> (AWS_PROFILE selects account)"
+      echo ""
       echo "Scope:"
       echo "  --gateway-only         Platform + gateway only"
       echo "  --agent-factory-only   Platform + agent-factory only"
       echo "  --agent-context-only   Platform + agent-context only"
+      echo "  --superplane-only      Platform + superplane domain app only (skips gateway,"
+      echo "                         broker, admin bootstrap, webhook-ingress, agent-factory,"
+      echo "                         agent-context; implies SUPERPLANE_ENABLED=true)"
       echo ""
       echo "Skip:"
       echo "  --skip-frontend        Skip frontend build and deploy"
@@ -88,13 +107,17 @@ for arg in "$@"; do
       echo "  --skip-admin-bootstrap Skip first-admin DB seeding"
       echo "  --skip-webhook-ingress Skip webhook-ingress stack"
       echo "  --skip-agent-context   Skip agent-context even if AGENT_CONTEXT_ENABLED=true"
+      echo "  --skip-superplane      Skip superplane even if SUPERPLANE_ENABLED=true"
       echo ""
       echo "Build:"
       echo "  --local                Use local Docker for image builds (instead of CodeBuild)"
       exit 0
       ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
+  shift
 done
+export AWS_DEFAULT_REGION="$AWS_REGION" ADP_REGION="$AWS_REGION"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 step() { echo -e "\n${BLUE}━━━ $1 ━━━${NC}\n"; }
@@ -111,6 +134,21 @@ fi
 if [ "$UPDATE_MODE" = true ] && [ "$CI_MODE" = true ]; then
   fail "--update and --ci are mutually exclusive"
 fi
+_SCOPE_COUNT=0
+for _scope in "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY"; do
+  [ "$_scope" != true ] || _SCOPE_COUNT=$((_SCOPE_COUNT + 1))
+done
+[ "$_SCOPE_COUNT" -le 1 ] || fail "Choose only one scope flag"
+
+# Prepared releases only enter through release/upgrade.py, which checks the
+# source, account, manifest and every artifact before any infrastructure apply.
+if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+  [ "$UPDATE_MODE" = true ] && [ "$ENVIRONMENT" = dev ] && [ "$AWS_REGION" = us-east-1 ] || fail "Prepared releases require --update --env dev --region us-east-1"
+  for flag in "$DESTROY" "$CI_MODE" "$LOCAL_MODE" "$CONFIRM_DESTRUCTIVE" "$GATEWAY_ONLY" "$AGENT_FACTORY_ONLY" "$AGENT_CONTEXT_ONLY" "$SUPERPLANE_ONLY" "$SKIP_FRONTEND" "$SKIP_BROKER" "$SKIP_ADMIN_BOOTSTRAP" "$SKIP_WEBHOOK_INGRESS" "$SKIP_AGENT_CONTEXT" "$SKIP_SUPERPLANE"; do
+    [ "$flag" = false ] || fail "Release upgrades require the full deployment and safety gates"
+  done
+  python3 "$SCRIPT_DIR/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
+fi
 
 # =============================================================================
 # Helper: terraform_update_apply — plan-gated apply for update mode (§4)
@@ -119,79 +157,9 @@ fi
 # refuses to apply if the plan includes resource destroys (unless
 # --confirm-destructive was passed). This prevents silent destruction of live
 # resources from TF drift.
-terraform_update_apply() {
-  local MODULE_NAME="$1"
-  local VAR_FILE="$2"
-  shift 2
-  local EXTRA_VARS=("${@}")
-
-  # 1. Plan to a file (captures the plan for inspection)
-  local PLAN_FILE="/tmp/tf-plan-${MODULE_NAME}-$$.tfplan"
-  local PLAN_OUTPUT="/tmp/tf-plan-${MODULE_NAME}-$$.txt"
-
-  # Disable pipefail around the plan command: terraform plan -detailed-exitcode
-  # returns exit code 2 when changes are present (the expected case for update
-  # mode). With pipefail, the pipeline's exit code would be 2, and set -e would
-  # terminate the script before PIPESTATUS can be captured.
-  set +o pipefail
-  if [ ${#EXTRA_VARS[@]} -gt 0 ]; then
-    terraform plan \
-      -var-file="$VAR_FILE" \
-      "${EXTRA_VARS[@]}" \
-      -out="$PLAN_FILE" \
-      -detailed-exitcode -no-color 2>&1 | tee "$PLAN_OUTPUT"
-  else
-    terraform plan \
-      -var-file="$VAR_FILE" \
-      -out="$PLAN_FILE" \
-      -detailed-exitcode -no-color 2>&1 | tee "$PLAN_OUTPUT"
-  fi
-  local EXIT_CODE=${PIPESTATUS[0]}
-  set -o pipefail
-
-  # Exit code: 0 = no changes, 1 = error, 2 = changes present
-  if [ "$EXIT_CODE" -eq 0 ]; then
-    ok "$MODULE_NAME: no changes"
-    rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
-    return 0
-  elif [ "$EXIT_CODE" -eq 1 ]; then
-    rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
-    fail "$MODULE_NAME: terraform plan failed"
-  fi
-
-  # 2. Check for destroys
-  DESTROYS=$(grep -c 'will be destroyed' "$PLAN_OUTPUT" 2>/dev/null) || DESTROYS=0
-
-  if [ "$DESTROYS" -gt 0 ]; then
-    echo ""
-    echo -e "${RED}━━━ DESTROY GATE ━━━${NC}"
-    echo -e "${RED}$MODULE_NAME plan includes $DESTROYS resource(s) to be destroyed:${NC}"
-    echo ""
-    grep 'will be destroyed' "$PLAN_OUTPUT"
-    echo ""
-
-    if [ "$CONFIRM_DESTRUCTIVE" = true ]; then
-      warn "Operator confirmed destructive apply (--confirm-destructive). Proceeding."
-    else
-      echo "To authorize this apply, re-run with --confirm-destructive."
-      echo "To inspect the full plan: cat $PLAN_OUTPUT"
-      echo ""
-      echo "Known drift issues to check:"
-      echo "  - agent-context/Neptune: full apply may want to destroy 9 Neptune resources (Issue #2769)"
-      echo "  - gateway/kms:Decrypt policy: missing 'moved' block causes destroy+recreate (Issue #2909)"
-      echo "  - platform/EKS access entries: role ARN format drift between CI and manual applies"
-      echo ""
-      fail "Refusing to apply $MODULE_NAME plan with $DESTROYS destroy(s). Pass --confirm-destructive to override."
-    fi
-  fi
-
-  # 3. Apply the saved plan (no -auto-approve needed — plan file is pre-approved)
-  terraform apply "$PLAN_FILE"
-  ok "$MODULE_NAME: applied successfully"
-
-  # Cleanup
-  rm -f "$PLAN_FILE" "$PLAN_OUTPUT"
-}
+source "$SCRIPT_DIR/terraform-update.sh"
+source "$SCRIPT_DIR/upgrade-scope.sh"
+source "$SCRIPT_DIR/gateway-alb-vars.sh"
 
 # =============================================================================
 # Preflight
@@ -220,7 +188,7 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/dev/nu
 
 # When config/deployment.yml pins a specific account_id, fail-fast if the
 # operator's creds resolve elsewhere — mirrors preflight's safety check.
-if [ -f "$ROOT_DIR/config/deployment.yml" ] && [ -n "$ADP_ACCOUNT_ID" ] && [ "$ADP_ACCOUNT_ID" != "$ACCOUNT_ID" ]; then
+if [ -n "$ADP_ACCOUNT_ID" ] && [ "$ADP_ACCOUNT_ID" != "$ACCOUNT_ID" ]; then
   fail "config/deployment.yml says account_id=$ADP_ACCOUNT_ID but caller resolves to $ACCOUNT_ID. Either fix config/deployment.yml or switch AWS_PROFILE."
 fi
 
@@ -245,7 +213,7 @@ fi
 # Anyone cloning this repo can run the script without editing tfvars. The
 # detected IP is exported as TF_VAR_eks_public_access_cidrs so Terraform picks
 # it up. If the caller already set the env var, respect it.
-if [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
+if [ "$UPDATE_MODE" = false ] && [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
   MY_IP=""
   for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me; do
     MY_IP=$(curl -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)
@@ -257,7 +225,7 @@ if [ -z "${TF_VAR_eks_public_access_cidrs:-}" ]; then
   export TF_VAR_eks_public_access_cidrs="[\"${MY_IP}/32\"]"
   ok "EKS public API will allow: ${MY_IP}/32 (your current public IP)"
 else
-  ok "EKS public API CIDRs: ${TF_VAR_eks_public_access_cidrs} (from env)"
+  ok "EKS access: preserving existing configuration during upgrades"
 fi
 
 REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -272,28 +240,66 @@ CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
 if [ "$UPDATE_MODE" = true ]; then
   step "Update mode: precondition checks"
 
-  # 1. State bucket must exist
-  aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null \
-    || fail "--update requires an existing deployment. State bucket '$STATE_BUCKET' not found."
+  export UPGRADE_RUN_DIR="${UPGRADE_RUN_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/adp-upgrade-${ACCOUNT_ID}.XXXXXX")}"
+  python3 "$SCRIPT_DIR/upgrade-state.py" prepare --directory "$UPGRADE_RUN_DIR" \
+    --account "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
+    || fail "Cannot safely discover the existing deployment"
+  source "$UPGRADE_RUN_DIR/context.env"
+  resolve_deploy_scope
+  if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+    [ "$DEPLOY_AGENT_CONTEXT" = false ] && [ "$SUPERPLANE_ENABLED" = false ] || fail "This release contract does not cover agent-context or superplane"
+    [ "$DEPLOY_GATEWAY" = true ] && [ "$DEPLOY_FACTORY" = true ] && [ "$DEPLOY_WEBHOOK" = true ] || fail "Release upgrade requires gateway, factory and webhook ingress"
+  fi
+  if [ "$DEPLOY_FACTORY" = true ]; then
+    python3 "$SCRIPT_DIR/upgrade-state.py" prepare-factory --directory "$UPGRADE_RUN_DIR" \
+      --region "$AWS_REGION" --github-org "$FACTORY_GITHUB_ORG_OVERRIDE" \
+      || fail "Cannot prepare the required agent-factory module"
+  fi
+  if [ "$DEPLOY_AGENT_CONTEXT" = true ]; then
+    CONTEXT_CONFIG="$ROOT_DIR/modules/agent-context/config.local.env"
+    [ -f "$CONTEXT_CONFIG" ] || fail "Existing agent-context requires its original config.local.env (or use --skip-agent-context)"
+    ( source "$ROOT_DIR/modules/agent-context/config.env"; source "$CONTEXT_CONFIG";
+      [ "$CLUSTER_NAME" = "$EKS_CLUSTER" ] && [ "$AWS_REGION" = "$ADP_REGION" ] ) \
+      || fail "Agent-context config does not match the upgrade target"
+  fi
+  if [ "$UPGRADE_NEEDS_EKS_ACCESS" = true ]; then
+    python3 "$SCRIPT_DIR/upgrade-state.py" open-access --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION"
+  fi
+  ok "Upgrade evidence and preserved configuration: $UPGRADE_RUN_DIR"
 
-  # 2. EKS cluster must exist and be ACTIVE
-  CLUSTER_STATUS=$(aws eks describe-cluster --name "$EKS_CLUSTER" \
-    --query 'cluster.status' --output text 2>/dev/null) || true
-  [ "$CLUSTER_STATUS" = "ACTIVE" ] \
-    || fail "--update requires a running EKS cluster. Got status: ${CLUSTER_STATUS:-not found}"
+  # Bind all checks and subsequent kubectl calls to the verified target.
+  export KUBECONFIG="${KUBECONFIG:-$(mktemp "${TMPDIR:-/tmp}/adp-${ACCOUNT_ID}-kubeconfig.XXXXXX")}"
+  aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" \
+    --kubeconfig "$KUBECONFIG" >/dev/null || fail "Cannot configure target cluster"
 
-  # 3. Gateway namespace must exist (indicates prior deploy)
-  kubectl get namespace adp-gateway &>/dev/null \
-    || fail "--update requires prior gateway deployment. Namespace 'adp-gateway' not found."
+  # 3. Gateway namespace must exist (indicates prior deploy).
+  if [ "$DEPLOY_GATEWAY" = true ]; then
+    kubectl get namespace adp-gateway --request-timeout=30s &>/dev/null \
+      || fail "Cannot reach the existing gateway namespace"
+  fi
 
-  ok "Preconditions met: state bucket exists, EKS ACTIVE, adp-gateway namespace present"
-
+  NETWORK_WAS_ENABLED=$(python3 "$SCRIPT_DIR/upgrade-network.py" enabled)
+  if [ "$NETWORK_WAS_ENABLED" = true ]; then
+    # Updating code must not turn off enforcement already active in the target.
+    python3 - "$UPGRADE_RUN_DIR/platform.tfvars.json" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data["enable_network_policy_controller"] = True
+path.write_text(json.dumps(data))
+PY
+  fi
+  ok "Preconditions met; existing module scope resolved"
+else
+  resolve_deploy_scope
 fi
 # Pin fresh installs and updates to the source being deployed. Reusing :latest
 # can leave an old Ready pod serving while migration verification reports success.
 SOURCE_SHA=$(git -C "$ROOT_DIR" rev-parse HEAD) || fail "Cannot pin deployment to a source commit"
 export IMAGE_TAG="$SOURCE_SHA"
 ok "Image tag for this deployment: $IMAGE_TAG"
+GATEWAY_IMAGE="${ADP_RELEASE_GATEWAY_IMAGE:-${REGISTRY}/adp-gateway:${IMAGE_TAG}}"
 
 # =============================================================================
 # Helper: refresh AWS credentials (cross-account / short-lived sessions)
@@ -365,6 +371,10 @@ ensure_codebuild_role() {
 # Uses codebuild-run.sh which uploads source to a per-build-unique S3 key
 # and passes --source-location-override, eliminating the shared-key race.
 run_codebuild() {
+  if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+    ok "Using verified release image; no build required for $1"
+    return 0
+  fi
   local PROJECT_NAME="$1"
   local BUILDSPEC_FILE="$2"  # unused — buildspec is baked into the project
 
@@ -405,7 +415,7 @@ run_codebuild() {
 #   - empty-s3-buckets.sh         (non-empty buckets block terraform destroy)
 #   - force-delete-secrets.sh     (avoid 7-day collision on re-deploy)
 #
-# Order: agent-context → webhook-ingress → agent-factory → gateway → platform
+# Order: superplane → agent-context → webhook-ingress → agent-factory → gateway → platform
 # State backend (S3 + DynamoDB) is NOT destroyed — use bootstrap-destroy.sh.
 # GitHub App secrets (adp/gh-app-*) are NOT touched — survive by design.
 # =============================================================================
@@ -413,7 +423,7 @@ if [ "$DESTROY" = true ]; then
   step "Destroying all infrastructure"
   echo "This will destroy ALL ADP infrastructure in $ENVIRONMENT."
   echo ""
-  echo "Destroy order: agent-context → webhook-ingress → agent-factory → gateway → platform"
+  echo "Destroy order: superplane → agent-context → webhook-ingress → agent-factory → gateway → platform"
   echo "State backend and GitHub App secrets will NOT be deleted."
   echo ""
   echo "Type 'yes' to proceed:"
@@ -421,15 +431,21 @@ if [ "$DESTROY" = true ]; then
   [ "$confirm" = "yes" ] || { echo "Aborted."; exit 0; }
 
   # Configure kubectl for K8s cleanup steps
-  export KUBECONFIG="/tmp/adp-deploy-kubeconfig"
+  export KUBECONFIG="${KUBECONFIG:-$(mktemp "${TMPDIR:-/tmp}/adp-${ACCOUNT_ID}-kubeconfig.XXXXXX")}"
   if command -v kubectl >/dev/null 2>&1; then
     aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
   fi
 
+  # Use the same Superplane teardown as undeploy.sh and the undeploy workflow.
+  # A failed domain teardown must stop before removing its platform dependencies.
+  step "Destroy 1/6: Superplane"
+  source "$SCRIPT_DIR/undeploy-phases.sh"
+  phase_superplane || fail "Superplane teardown failed; leaving its dependencies intact"
+
   # -------------------------------------------------------------------------
-  # 1. Agent Context
+  # 2. Agent Context
   # -------------------------------------------------------------------------
-  step "Destroy 1/5: Agent Context"
+  step "Destroy 2/6: Agent Context"
   if [ -d "$ROOT_DIR/modules/agent-context/terraform" ]; then
     kubectl delete namespace agent-context --wait=true --timeout=120s 2>/dev/null || true
 
@@ -450,9 +466,9 @@ if [ "$DESTROY" = true ]; then
   fi
 
   # -------------------------------------------------------------------------
-  # 2. Webhook Ingress (KEDA + Lambda + SQS + API GW + DynamoDB + WAFv2 + KMS)
+  # 3. Webhook Ingress (KEDA + Lambda + SQS + API GW + DynamoDB + WAFv2 + KMS)
   # -------------------------------------------------------------------------
-  step "Destroy 2/5: Webhook Ingress"
+  step "Destroy 3/6: Webhook Ingress"
   if [ -f "$ROOT_DIR/modules/agent-factory/webhook-ingress/infra/terraform.tfvars" ]; then
     # Clean up K8s KEDA resources before TF destroy
     kubectl delete scaledjobs --all -n adp-agents 2>/dev/null || true
@@ -470,9 +486,9 @@ if [ "$DESTROY" = true ]; then
   fi
 
   # -------------------------------------------------------------------------
-  # 3. Agent Factory
+  # 4. Agent Factory
   # -------------------------------------------------------------------------
-  step "Destroy 3/5: Agent Factory"
+  step "Destroy 4/6: Agent Factory"
   if [ -f "$ROOT_DIR/modules/agent-factory/infra/terraform.tfvars" ]; then
     # Clean up K8s resources
     kubectl delete scaledjobs --all -n adp-gateway-agents 2>/dev/null || true
@@ -496,9 +512,9 @@ if [ "$DESTROY" = true ]; then
   fi
 
   # -------------------------------------------------------------------------
-  # 4. Gateway (most complex — ALB, S3, Secrets, CloudFront cleanup first)
+  # 5. Gateway (most complex — ALB, S3, Secrets, CloudFront cleanup first)
   # -------------------------------------------------------------------------
-  step "Destroy 4/5: Gateway"
+  step "Destroy 5/6: Gateway"
 
   # 4a. Delete Ingress and wait for ALB to be removed by the controller
   echo "Cleaning up Ingress resources and ALBs..."
@@ -556,7 +572,7 @@ print(json.dumps(config))
 
   # 4f. Terraform destroy
   cd "$ROOT_DIR/modules/gateway/infra"
-  terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false 2>/dev/null || true
+  terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false -reconfigure 2>/dev/null || true
   terraform destroy -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" -auto-approve || true
 
   # 4g. Clean up SSM parameters
@@ -571,9 +587,9 @@ print(json.dumps(config))
   ok "Gateway destroyed"
 
   # -------------------------------------------------------------------------
-  # 5. Platform (last — EKS, VPC, ECR, IAM)
+  # 6. Platform (last — EKS, VPC, ECR, IAM)
   # -------------------------------------------------------------------------
-  step "Destroy 5/5: Platform"
+  step "Destroy 6/6: Platform"
 
   # Clean up K8s system namespaces before cluster destroy
   kubectl delete namespace arc-systems --wait=true --timeout=120s 2>/dev/null || true
@@ -593,7 +609,7 @@ print(json.dumps(config))
   fi
 
   cd "$ROOT_DIR/platform/infra"
-  terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false 2>/dev/null || true
+  terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false -reconfigure 2>/dev/null || true
   terraform destroy -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve || true
 
   # Clean up any leftover retired CodeBuild projects
@@ -650,10 +666,10 @@ if [ "$CI_MODE" = true ]; then
   }
 
   ci_check_module "platform"      "${ENVIRONMENT}/platform/terraform.tfstate"             "platform-infra-apply.yml"
-  if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+  if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
     ci_check_module "gateway"       "${ENVIRONMENT}/modules/gateway/terraform.tfstate"      "gateway-infra-apply.yml"
   fi
-  if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+  if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
     ci_check_module "agent-factory" "${ENVIRONMENT}/modules/agent-factory/terraform.tfstate" "agent-factory-infra-apply.yml"
   fi
   if [ "$AGENT_CONTEXT_ENABLED" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
@@ -684,10 +700,10 @@ fi
 # =============================================================================
 refresh_credentials
 if [ "$UPDATE_MODE" = true ]; then
-  step "Step 1/11: Bootstrap (skipped — update mode)"
+  step "Step 1/12: Bootstrap (skipped — update mode)"
   ok "State bucket verified in preconditions: $STATE_BUCKET"
 else
-  step "Step 1/11: Bootstrap Terraform state backend"
+  step "Step 1/12: Bootstrap Terraform state backend"
 
   if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
     ok "State bucket exists: $STATE_BUCKET"
@@ -714,13 +730,15 @@ else
     ok "DynamoDB table exists: $LOCK_TABLE"
   fi
 
-  # Replace ACCOUNT_ID placeholders
-  find "$ROOT_DIR/environments/" -name "*.tfvars" 2>/dev/null | while read f; do
-    if grep -q "ACCOUNT_ID" "$f" 2>/dev/null; then
-      sed -i '' "s/ACCOUNT_ID/${ACCOUNT_ID}/g" "$f" 2>/dev/null || sed -i "s/ACCOUNT_ID/${ACCOUNT_ID}/g" "$f"
-    fi
-  done
-  ok "Environment configs updated"
+fi
+
+# Backend configuration is needed for upgrades from a clean checkout too.
+python3 "$SCRIPT_DIR/prepare-backends.py" "$ROOT_DIR/environments/$ENVIRONMENT" "$ACCOUNT_ID"
+ok "Environment backend configs updated"
+
+if [ "$UPDATE_MODE" = true ]; then
+  step "Migrate legacy shared-key ownership"
+  python3 "$SCRIPT_DIR/upgrade-migrations.py" --root "$ROOT_DIR" --directory "$UPGRADE_RUN_DIR"
 fi
 
 # =============================================================================
@@ -736,20 +754,25 @@ refresh_credentials
 # =============================================================================
 # Step 2: Platform infra
 # =============================================================================
-step "Step 2/11: Deploy shared platform (VPC, EKS, ECR, IAM)"
+step "Step 2/12: Deploy shared platform (VPC, EKS, ECR, IAM)"
 
 # Platform infra runs directly (Terraform + kubectl) — no CodeBuild needed.
 cd "$ROOT_DIR/platform/infra"
-terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false
+terraform init -backend-config="../../environments/$ENVIRONMENT/backend.tfvars" -input=false -reconfigure
 if [ "$UPDATE_MODE" = true ]; then
-  terraform_update_apply "platform" "../../environments/$ENVIRONMENT/platform.tfvars"
+  PLATFORM_FIRST_ARGS=()
+  if [ "$NETWORK_WAS_ENABLED" = false ]; then
+    PLATFORM_FIRST_ARGS+=(-var enable_network_policy_controller=false)
+    ok "Deferring network-policy activation until webhook egress policies are installed"
+  fi
+  terraform_update_apply "platform" "../../environments/$ENVIRONMENT/platform.tfvars" ${PLATFORM_FIRST_ARGS[@]+"${PLATFORM_FIRST_ARGS[@]}"}
 else
   terraform apply -var-file="../../environments/$ENVIRONMENT/platform.tfvars" -auto-approve
   ok "Platform deployed"
 fi
 
 # Configure kubectl (needed for k8s steps — local or CodeBuild deploy step)
-export KUBECONFIG="/tmp/adp-deploy-kubeconfig"
+export KUBECONFIG="${KUBECONFIG:-$(mktemp "${TMPDIR:-/tmp}/adp-${ACCOUNT_ID}-kubeconfig.XXXXXX")}"
 if command -v kubectl >/dev/null 2>&1; then
   aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "$AWS_REGION" --kubeconfig "$KUBECONFIG" 2>/dev/null || true
 fi
@@ -758,10 +781,10 @@ refresh_credentials
 # =============================================================================
 # Step 3: Gateway infra
 # =============================================================================
-step "Step 3/11: Deploy gateway infrastructure"
+step "Step 3/12: Deploy gateway infrastructure"
 
-if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
-  echo "Skipping gateway infra (--agent-factory-only or --agent-context-only)"
+if [ "$DEPLOY_GATEWAY" = false ]; then
+  echo "Skipping gateway infra (scope exclusion)"
   ok "Skipped"
 else
   # Ensure the GitHub OAuth secret exists when the auth broker is enabled.
@@ -770,7 +793,7 @@ else
   # accounts the secret won't exist yet (it's provisioned during GitHub App
   # setup), so we create a valid-schema placeholder that lets terraform proceed.
   # Real values are provisioned later by register-github-app or the UI flow.
-  if grep -qE '^\s*enable_github_auth_broker\s*=\s*true' \
+  if [ "$UPDATE_MODE" = false ] && grep -qE '^\s*enable_github_auth_broker\s*=\s*true' \
        "$ROOT_DIR/environments/$ENVIRONMENT/modules/gateway.tfvars" 2>/dev/null; then
     OAUTH_SECRET="adp/${ENVIRONMENT}/cognito/github-oauth-credentials"
     if ! aws secretsmanager describe-secret --secret-id "$OAUTH_SECRET" \
@@ -799,27 +822,15 @@ else
 
   # Gateway infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/gateway/infra"
-  terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false
+  terraform init -backend-config="../../../environments/$ENVIRONMENT/modules/gateway-backend.tfvars" -input=false -reconfigure
   # Issue #3789: enable_webhook_secrets_kms_grant removed — the CMK now lives in
   # platform infra (applied Step 2) so the gateway grant is unconditional.
   if [ "$UPDATE_MODE" = true ]; then
-    # Issue #3665: In update mode, read cached ALB vars from SSM so that
-    # enable_vpc_origin stays consistent between Step 3 and Step 5. Without
-    # this, Step 3 defaults enable_vpc_origin=false → destroys the VPC origin,
-    # then Step 5 recreates it — causing ~10 min of 504 errors.
-    _ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-    _ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
-    _ALB_SG_IDS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-security-group-ids" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "[]")
-
-    STEP3_EXTRA_VARS=()
-    if [ -n "$_ALB_ARN" ] && [ "$_ALB_ARN" != "None" ] && [ -n "$_ALB_DNS" ] && [ "$_ALB_DNS" != "None" ]; then
-      echo "Update mode: found cached ALB details in SSM — passing to Step 3 to preserve VPC origin."
-      STEP3_EXTRA_VARS+=(-var "internal_alb_arn=$_ALB_ARN" -var "internal_alb_dns=$_ALB_DNS" -var "alb_security_group_ids=$_ALB_SG_IDS" -var "enable_vpc_origin=true")
-    else
-      warn "Update mode: ALB details not yet in SSM (first deploy?). Step 3 will run without VPC origin vars — Step 5 will wire them."
-    fi
-    terraform_update_apply "gateway" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
-      "${STEP3_EXTRA_VARS[@]}"
+    # Discover any legacy uncached ALBs before the first Terraform pass.
+    ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/wire-gateway-alb.sh" \
+      || fail "Cannot discover existing gateway load balancers"
+    gateway_alb_vars
+    terraform_update_apply "gateway" "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" "${GATEWAY_ALB_ARGS[@]}"
   else
     terraform apply -var-file="../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
       -auto-approve
@@ -831,10 +842,10 @@ refresh_credentials
 # =============================================================================
 # Step 4: Build + deploy gateway
 # =============================================================================
-step "Step 4/11: Build and deploy gateway"
+step "Step 4/12: Build and deploy gateway"
 
-if [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ]; then
-  echo "Skipping gateway deploy (--agent-factory-only or --agent-context-only)"
+if [ "$DEPLOY_GATEWAY" = false ]; then
+  echo "Skipping gateway deploy (scope exclusion)"
   ok "Skipped"
 else
   # Migrations run after rollout on Ready replicas of this exact release.
@@ -858,7 +869,12 @@ else
   DB_HOST=$(terraform output -raw rds_endpoint 2>/dev/null | sed 's/:5432//' || echo "localhost")
   DB_NAME=$(terraform output -raw rds_database_name 2>/dev/null || echo "bedrockgateway")
   DB_USER="bgadmin"
-  REDIS_HOST=$(terraform output -raw redis_endpoint 2>/dev/null || echo "localhost")
+  # Redis is a list of endpoint objects, so -raw silently fell back to localhost.
+  REDIS_HOST=$(terraform output -json redis_endpoint | python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+print(value[0]["address"] if isinstance(value, list) and value else value or "localhost")
+') || fail "Cannot resolve Redis endpoint from Terraform outputs"
   REDIS_PORT=$(terraform output -raw redis_port 2>/dev/null || echo "6379")
   # #4342: ElastiCache IAM auth needs the provisioned user name and the
   # replication group id (the connect token is signed against the group id, not
@@ -982,6 +998,36 @@ else
     --from-literal=token-secret-key="$TOKEN_SECRET" \
     --from-literal=internal-api-key="$INTERNAL_API_KEY" \
     -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -
+  COGNITO_CLI_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
+  BEDROCK_ROUTING_SHADOW_MODE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-shadow-mode" "true")
+
+  # Issue #3960: CIDRs the gateway may dial an in-pod control listener in.
+  # This is the SSRF allowlist for the one outbound path that deliberately
+  # targets PRIVATE addresses, so it cannot be defaulted to something
+  # convenient — the default is EMPTY, which fails closed (every control
+  # request answers 409 "not configured"). An operator who forgets the SSM
+  # param gets a clear misconfiguration instead of a gateway willing to
+  # dial arbitrary private addresses.
+  #
+  # Not discovered from the cluster at deploy time on purpose: reading the
+  # live pod CIDR would silently re-widen the allowlist whenever the VPC
+  # changed, which is exactly the kind of change nobody reviews.
+  AGENT_CONTROL_CLUSTER_POD_CIDRS=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/agent-control-cluster-pod-cidrs" "")
+  # The authority configuration parameters are encrypted at rest.
+  get_authority_ssm() { aws ssm get-parameter --with-decryption --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
+  AGENT_AUTHORITY_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-enabled" "false")
+  ADP_WORK_CLAIMS_ENABLED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claims-enabled" "false")
+  ADP_WORK_CLAIM_PRODUCER_ROLES=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/work-claim-producer-roles" "")
+  AGENT_AUTHORITY_TABLE=$(get_authority_ssm "/adp/${ENVIRONMENT}/webhook-ingress/agent-authority-table" "")
+  WEBHOOK_EVENTS_TABLE=$(_get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/webhook-events-table" "adp-${ENVIRONMENT}-webhook-events")
+  AGENT_DISPATCH_QUEUE_URL=$(_get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
+  BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
+  AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
+  AGENT_AUTHORITY_KEY_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-key-id" "disabled")
+  AGENT_TASK_SOURCE_ROLE_ARN=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-role-arn" "")
+  AGENT_TASK_SOURCE_EKS_CLUSTER=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-eks-cluster" "")
+  AGENT_TASK_SOURCE_ISOLATION_CONFIRMED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-isolation-confirmed" "false")
+
   sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
       -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
       -e "s|__DB_HOST__|${DB_HOST}|g" \
@@ -1010,27 +1056,54 @@ else
       -e "s|__AGENT_RUN_LOGS_BUCKET__|${AGENT_RUN_LOGS_BUCKET}|g" \
       -e "s|__BUDGET_FAIL_MODE__|${BUDGET_FAIL_MODE}|g" \
       -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
+      -e "s|__COGNITO_CLI_CLIENT_ID__|${COGNITO_CLI_CLIENT_ID}|g" \
+      -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
+      -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
+      -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
+      -e "s|__AGENT_AUTHORITY_ENABLED__|${AGENT_AUTHORITY_ENABLED}|g" \
+      -e "s|__ADP_WORK_CLAIMS_ENABLED__|${ADP_WORK_CLAIMS_ENABLED}|g" \
+      -e "s|__ADP_WORK_CLAIM_PRODUCER_ROLES__|${ADP_WORK_CLAIM_PRODUCER_ROLES}|g" \
+      -e "s|__AGENT_AUTHORITY_TABLE__|${AGENT_AUTHORITY_TABLE}|g" \
+      -e "s|__WEBHOOK_EVENTS_TABLE__|${WEBHOOK_EVENTS_TABLE}|g" \
+      -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
+      -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
+      -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
+      -e "s|__AGENT_AUTHORITY_KEY_ID__|${AGENT_AUTHORITY_KEY_ID}|g" \
+      -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
+      -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
+      -e "s|__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__|${AGENT_TASK_SOURCE_ISOLATION_CONFIRMED}|g" \
       k8s/configmap.yaml | kubectl apply -f -
   # Render serviceaccount with the correct IRSA role ARN (Issue #1008)
   sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
       k8s/serviceaccount.yaml | kubectl apply -f -
   for f in k8s/*.yaml; do
     case "$(basename "$f")" in
-      configmap.yaml|serviceaccount.yaml|targetgroupbinding.yaml) continue ;;
+      configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
       *) kubectl apply -f "$f" -n adp-gateway ;;
     esac
   done
+
+  # Render deployment settings as well as the ConfigMap. Applying the raw
+  # manifest leaves feature flags and the image as literal placeholders.
+  FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "false")
+  FEATURE_AGENT_CONTROL_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
+  FEATURE_NEW_UI_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
+  sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
+      -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
+      -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
+      -e "s|REPLACE_WITH_GATEWAY_IMAGE|${GATEWAY_IMAGE}|g" \
+      k8s/deployment.yaml | kubectl apply -f - -n adp-gateway
 
   if [ "$UPDATE_MODE" = true ]; then
     # Update mode: SHA-tagged image + mandatory rollout + health check (§2, §8)
     CURRENT_IMAGE=$(kubectl get deployment/bedrockgateway -n adp-gateway \
       -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
-    if [ "$CURRENT_IMAGE" = "${REGISTRY}/adp-gateway:${IMAGE_TAG}" ]; then
+    if [ "$CURRENT_IMAGE" = "${GATEWAY_IMAGE}" ]; then
       echo "Image tag unchanged. Forcing rollout restart..."
       kubectl rollout restart deployment/bedrockgateway -n adp-gateway
     else
       kubectl set image deployment/bedrockgateway \
-        bedrockgateway="${REGISTRY}/adp-gateway:${IMAGE_TAG}" -n adp-gateway
+        bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
     fi
     kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s \
       || fail "Gateway rollout failed. Check: kubectl describe deployment/bedrockgateway -n adp-gateway"
@@ -1044,11 +1117,11 @@ else
 
   else
     # Fresh deployments require the same release-image readiness as updates.
-    kubectl set image deployment/bedrockgateway bedrockgateway="${REGISTRY}/adp-gateway:${IMAGE_TAG}" -n adp-gateway
+    kubectl set image deployment/bedrockgateway bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
     kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || fail "Gateway rollout not complete"
   fi
 
-  PRICING_RELEASE_IMAGE="${REGISTRY}/adp-gateway:${IMAGE_TAG}"
+  PRICING_RELEASE_IMAGE="${GATEWAY_IMAGE}"
   python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" migrate \
     --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" --region "$AWS_REGION" \
     --expected-image "$PRICING_RELEASE_IMAGE" \
@@ -1062,16 +1135,16 @@ ok "Gateway deployed"
 
 refresh_credentials
 # =============================================================================
-# Step 5/11: Discover internal ALB and wire to API Gateway + CloudFront
+# Step 5/12: Discover internal ALB and wire to API Gateway + CloudFront
 # =============================================================================
-if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
-  step "Step 5/11: Wire internal ALB to API Gateway and CloudFront"
+if [ "$DEPLOY_GATEWAY" = true ]; then
+  step "Step 5/12: Wire internal ALB to API Gateway and CloudFront"
 
   # Discover ALB, cache to SSM, export ALB_ARN / ALB_DNS / ALB_SG_IDS.
   # The shared script exits 1 if the ALB is not found after 10 min; in
   # deploy-all.sh we downgrade that to a warning so the rest of the deploy
   # can continue (API Gateway will keep MOCK integrations).
-  if bash "$SCRIPT_DIR/wire-gateway-alb.sh"; then
+  if ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" bash "$SCRIPT_DIR/wire-gateway-alb.sh"; then
     # Source the exported variables into this shell (the script also writes
     # to SSM, but we need the values locally for the terraform re-apply).
     ALB_ARN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-alb-arn" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
@@ -1085,6 +1158,7 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
     INTERNAL_PLANE_ALB_DNS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-dns" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "")
     INTERNAL_PLANE_ALB_SG_IDS=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/internal-plane-alb-security-group-ids" --query "Parameter.Value" --output text --region "$AWS_REGION" 2>/dev/null || echo "[]")
   else
+    [ "$UPDATE_MODE" = false ] || fail "ALB wiring failed during upgrade"
     warn "ALB not found after 10 minutes. Skipping ALB wiring — API Gateway will use MOCK integration."
     ALB_ARN=""
     ALB_DNS=""
@@ -1137,87 +1211,50 @@ if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
     # integration still targets the edge ALB 403s every SigV4 internal call.
     ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" \
       bash "$ROOT_DIR/modules/gateway/scripts/apply-internal-plane-deny.sh" || \
-      warn "Internal-plane deny (#4010) not applied; re-run after the API GW repoint lands."
+      fail "Internal-plane deny validation failed after API GW wiring"
   fi
+else
+  # Announce the skip rather than passing over silently. Every other phase reports its
+  # own exclusion, and a run that jumps from Step 4 to Step 6 with no explanation reads
+  # like the script lost a phase.
+  step "Step 5/12: Skipping ALB and API Gateway wiring (scope exclusion)"
 fi
 
 refresh_credentials
 # =============================================================================
 # Step 5: Frontend
 # =============================================================================
-if [ "$SKIP_FRONTEND" = false ] && [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
-  step "Step 6/11: Deploy frontend"
-
-  # Frontend build runs directly (npm + aws s3 sync) — no CodeBuild needed.
-  cd "$ROOT_DIR/modules/gateway/frontend"
-  # Issue #3426: NODE_ENV=production (common in K8s pods) causes npm ci to skip
-  # devDependencies (typescript, vite, etc.) needed for the build.
-  _ORIG_NODE_ENV="${NODE_ENV:-}"
-  export NODE_ENV=development
-  npm ci
-  export NODE_ENV="${_ORIG_NODE_ENV:-production}"
-  # Build with the FULL VITE_* env from SSM (NOT just VITE_API_URL) — these are
-  # baked into the bundle at build time; omitting them ships a broken app
-  # ("GitHub sign-in is not configured" + Cognito unconfigured). Mirrors
-  # gateway-deploy.yml.
-  _ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo ""; }
-  VITE_API_URL="/api" \
-  VITE_COGNITO_REGION="${AWS_REGION:-us-east-1}" \
-  VITE_COGNITO_USER_POOL_ID="$(_ssm /adp/$ENVIRONMENT/gateway/cognito-user-pool-id)" \
-  VITE_COGNITO_CLIENT_ID="$(_ssm /adp/$ENVIRONMENT/gateway/cognito-client-id)" \
-  VITE_COGNITO_DOMAIN="$(_ssm /adp/$ENVIRONMENT/gateway/cognito-domain)" \
-  VITE_GITHUB_AUTH_BROKER_URL="$(_ssm /adp/$ENVIRONMENT/gateway/github-auth-broker-url)" \
-  VITE_AGENT_WS_URL="$(_ssm /adp/$ENVIRONMENT/gateway/agent-ws-url)" \
-    npm run build
-  BUCKET=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/frontend-bucket" --query "Parameter.Value" --output text 2>/dev/null) || true
-  if [ -n "$BUCKET" ] && [ "$BUCKET" != "None" ]; then
-    # Exclude cfn-templates/ so --delete doesn't wipe the CFN role template we
-    # upload next.
-    aws s3 sync dist/ "s3://${BUCKET}/" --delete --exclude "cfn-templates/*"
-    # REQUIRED for the "Add AWS account" flow: the gateway pre-signs a GET for
-    # this template; without it the flow fails "specified key does not exist".
-    aws s3 cp "$ROOT_DIR/modules/gateway/src/auth/cfn_templates/aws_role_v1.yaml" \
-      "s3://${BUCKET}/cfn-templates/aws_role_v1.yaml" --content-type text/yaml > /dev/null
-    DIST_ID=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-id" --query "Parameter.Value" --output text 2>/dev/null) || true
-    [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ] && aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*" > /dev/null
-    ok "Frontend deployed (+ CFN template uploaded)"
-  else
-    warn "Frontend bucket not found in SSM"
-  fi
-else
-  step "Step 6/11: Skipping frontend"
-fi
 
 refresh_credentials
 # =============================================================================
-# Step 7/11: Broker Lambda code
+# Step 7/12: Broker Lambda code
 # =============================================================================
 # deploy-broker.sh packages the real github-auth-broker Lambda code and updates
 # the live Lambda (terraform ships a 503 placeholder). Required for GitHub login.
-# Gateway-scope: runs unless --agent-factory-only or --agent-context-only.
-if [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_BROKER" = false ]; then
-  step "Step 7/11: Deploy broker Lambda code"
+# Gateway-scope: runs only when the resolved scope includes gateway.
+if [ "$DEPLOY_GATEWAY" = true ] && [ "$SKIP_BROKER" = false ] && [ "${UPGRADE_BROKER_ENABLED:-true}" = true ]; then
+  step "Step 7/12: Deploy broker Lambda code"
   bash "$ROOT_DIR/modules/gateway/scripts/deploy-broker.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
   ok "Broker Lambda deployed"
 elif [ "$SKIP_BROKER" = true ]; then
-  step "Step 7/11: Skipping broker Lambda (--skip-broker)"
+  step "Step 7/12: Skipping broker Lambda (--skip-broker)"
 else
-  step "Step 7/11: Skipping broker Lambda (scope exclusion)"
+  step "Step 7/12: Skipping broker Lambda (scope exclusion)"
 fi
 
 refresh_credentials
 # =============================================================================
-# Step 8/11: Bootstrap first admin
+# Step 8/12: Bootstrap first admin
 # =============================================================================
 # bootstrap-admin.sh seeds the first platform_admin's DB rows via kubectl exec.
 # Without it, the onboarding gate shows "request access" for everyone. Requires
 # the gateway pod to be healthy — we enforce a strict rollout gate here.
-# Gateway-scope: runs unless --agent-factory-only or --agent-context-only.
+# Gateway-scope: runs only when the resolved scope includes gateway.
 if [ "$UPDATE_MODE" = true ]; then
-  step "Step 8/11: Admin bootstrap (skipped — update mode)"
+  step "Step 8/12: Admin bootstrap (skipped — update mode)"
   ok "Admin already exists on live platform"
-elif [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
-  step "Step 8/11: Bootstrap first admin"
+elif [ "$DEPLOY_GATEWAY" = true ] && [ "$SKIP_ADMIN_BOOTSTRAP" = false ]; then
+  step "Step 8/12: Bootstrap first admin"
   # Strict rollout gate: bootstrap-admin.sh does kubectl exec into the gateway
   # pod, so the deployment must be fully healthy. Wait up to 300s (retries).
   echo "Waiting for gateway rollout to complete (required for admin bootstrap)..."
@@ -1227,40 +1264,46 @@ elif [ "$AGENT_FACTORY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [
   bash "$ROOT_DIR/modules/gateway/scripts/bootstrap-admin.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
   ok "First admin bootstrapped"
 elif [ "$SKIP_ADMIN_BOOTSTRAP" = true ]; then
-  step "Step 8/11: Skipping admin bootstrap (--skip-admin-bootstrap)"
+  step "Step 8/12: Skipping admin bootstrap (--skip-admin-bootstrap)"
 else
-  step "Step 8/11: Skipping admin bootstrap (scope exclusion)"
+  step "Step 8/12: Skipping admin bootstrap (scope exclusion)"
 fi
 
 refresh_credentials
 # =============================================================================
-# Step 9/11: Webhook-ingress stack (KEDA + agent-runtime)
+# Step 9/12: Webhook-ingress stack (KEDA + agent-runtime)
 # =============================================================================
 # deploy-webhook-ingress.sh builds the agent-runtime image, packages the webhook
 # Lambda zip, and terraform-applies the webhook-ingress stack (API GW → Lambda →
 # SQS → KEDA → agent-worker). Runs BEFORE agent-factory because agent-factory's
 # gateway-main.tf references the KEDA CRD and keda-operator-role that this step
 # creates (Issue #1052).
-if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SKIP_WEBHOOK_INGRESS" = false ]; then
-  step "Step 9/11: Deploy webhook-ingress stack"
+if [ "$DEPLOY_WEBHOOK" = true ]; then
+  step "Step 9/12: Deploy webhook-ingress stack"
+  WEBHOOK_UPDATE_ARGS=()
+  if [ "$UPDATE_MODE" = true ]; then
+    WEBHOOK_UPDATE_ARGS+=(--update)
+    [ "$CONFIRM_DESTRUCTIVE" = true ] && WEBHOOK_UPDATE_ARGS+=(--confirm-destructive)
+  fi
   bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
-    --env "$ENVIRONMENT" --region "$AWS_REGION"
+    --env "$ENVIRONMENT" --region "$AWS_REGION" ${WEBHOOK_UPDATE_ARGS[@]+"${WEBHOOK_UPDATE_ARGS[@]}"}
   ok "Webhook-ingress deployed"
 elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
-  step "Step 9/11: Skipping webhook-ingress (--skip-webhook-ingress)"
+  step "Step 9/12: Skipping webhook-ingress (--skip-webhook-ingress)"
 else
-  step "Step 9/11: Skipping webhook-ingress (scope exclusion)"
+  step "Step 9/12: Skipping webhook-ingress (scope exclusion)"
 fi
 
 refresh_credentials
 # =============================================================================
-# Step 10/11: Agent Factory
+# Step 10/12: Agent Factory
 # =============================================================================
 # Runs after webhook-ingress which installs KEDA (CRD + operator role).
 # GitHub App secrets (ARC runner) are optional — enable_github_apps=false on
 # fresh deploys where Apps haven't been registered yet.
-if [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
-  step "Step 10/11: Deploy agent-factory"
+if [ "$DEPLOY_FACTORY" = true ]; then
+  step "Step 10/12: Deploy agent-factory"
+  bash "$SCRIPT_DIR/build-agent-factory-lambdas.sh"
 
   # Agent factory infra runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/agent-factory/infra"
@@ -1272,6 +1315,7 @@ region         = "${AWS_REGION}"
 encrypt        = true
 dynamodb_table = "${LOCK_TABLE}"
 EOF
+  if [ "$UPDATE_MODE" = false ]; then
   # Detect current state to set conditional flags
   _GH_APPS_EXIST=false
   if aws secretsmanager describe-secret --secret-id "adp/${ADP_GITHUB_ORG:-aws-e}/gh-app-dev-id" --region "$AWS_REGION" &>/dev/null; then
@@ -1303,36 +1347,32 @@ enable_agent_context_rbac = ${_AC_NS_EXISTS}
 seed_agent_registry      = ${_SEED_REGISTRY}
 gateway_deployed         = true
 EOF
+  else
+    FACTORY_VAR_FILE="$UPGRADE_RUN_DIR/agent-factory.tfvars.json"
+  fi
   terraform init -backend-config="$BACKEND_FILE" -input=false
   if [ "$UPDATE_MODE" = true ]; then
-    terraform_update_apply "agent-factory" "terraform.tfvars"
+    terraform_update_apply "agent-factory" "$FACTORY_VAR_FILE"
   else
     terraform apply -var-file=terraform.tfvars -auto-approve
     ok "Agent-factory deployed"
   fi
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---
-  step "Step 10b/11: Build and deploy agent gateway"
+  step "Step 10b/12: Build and deploy agent gateway"
 
   # --- Docker build: use CodeBuild (needs privileged mode) or local Docker ---
   LOCAL_IMAGE_TAG="${IMAGE_TAG:-latest}"
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
     cd "$ROOT_DIR/modules/agent-factory"
-    BUILD_DIR="/tmp/agent-gateway-build"
-    rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
-    cp -r gateway/app "$BUILD_DIR/app"
-    cp -r agent "$BUILD_DIR/agent"
-    cp gateway/Dockerfile "$BUILD_DIR/Dockerfile"
-    cp gateway/entrypoint.sh "$BUILD_DIR/entrypoint.sh"
 
     aws ecr describe-repositories --repository-names "adp-agent-gateway" --region "$AWS_REGION" 2>/dev/null || \
       aws ecr create-repository --repository-name "adp-agent-gateway" --region "$AWS_REGION" --no-cli-pager
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-    docker build -t "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" "$BUILD_DIR"
+    docker build -f gateway/Dockerfile -t "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" .
     docker tag "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG" "$REGISTRY/adp-agent-gateway:latest"
     docker push "$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
     docker push "$REGISTRY/adp-agent-gateway:latest"
-    rm -rf "$BUILD_DIR"
   else
     # Docker build via CodeBuild (Terraform-managed project)
     run_codebuild "adp-${ENVIRONMENT}-agent-gateway" "codebuild/bs-agent-gateway.yml"
@@ -1341,44 +1381,55 @@ EOF
   # --- K8s deploy: runs directly (no CodeBuild needed) ---
   cd "$ROOT_DIR/modules/agent-factory"
   kubectl create namespace adp-gateway-agents --dry-run=client -o yaml | kubectl apply -f -
-  INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url 2>/dev/null || echo "PENDING")
-  RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url 2>/dev/null || echo "PENDING")
-  SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table 2>/dev/null || echo "PENDING")
-  AGENT_IMAGE="$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG"
+  INPUT_QUEUE_URL=$(cd infra && terraform output -raw gateway_input_queue_url)
+  RESPONSE_QUEUE_URL=$(cd infra && terraform output -raw gateway_response_queue_url)
+  SESSIONS_TABLE=$(cd infra && terraform output -raw gateway_sessions_table)
+  AGENT_IMAGE="${ADP_RELEASE_AGENT_GATEWAY_IMAGE:-$REGISTRY/adp-agent-gateway:$LOCAL_IMAGE_TAG}"
   sed -e "s|REPLACE_WITH_INPUT_QUEUE_URL|${INPUT_QUEUE_URL}|g" \
       -e "s|REPLACE_WITH_RESPONSE_QUEUE_URL|${RESPONSE_QUEUE_URL}|g" \
       -e "s|REPLACE_WITH_SESSIONS_TABLE_NAME|${SESSIONS_TABLE}|g" \
       -e "s|REPLACE_WITH_AGENT_IMAGE|${AGENT_IMAGE}|g" \
       gateway/k8s/keda-scaledjob.yaml | kubectl apply -f -
 
+  kubectl wait --for=condition=Ready scaledjob/agent-gateway-worker -n adp-gateway-agents --timeout=300s \
+    || fail "Agent gateway ScaledJob is not ready"
+  DEPLOYED_AGENT_IMAGE=$(kubectl get scaledjob agent-gateway-worker -n adp-gateway-agents \
+    -o jsonpath='{.spec.jobTargetRef.template.spec.containers[0].image}')
+  [ "$DEPLOYED_AGENT_IMAGE" = "$AGENT_IMAGE" ] || fail "Agent gateway ScaledJob is not using the intended release"
   if [ "$UPDATE_MODE" = true ]; then
-    # Update mode: mandatory rollout verification for agent-gateway (§2)
-    kubectl rollout status deployment/adp-agent-gateway -n adp-gateway-agents --timeout=300s 2>/dev/null \
-      || warn "Agent gateway rollout status check skipped (ScaledJob — no persistent deployment)"
     ok "Agent gateway deployed (SHA: $IMAGE_TAG)"
   else
     ok "Agent gateway deployed"
     warn "Store GitHub App creds in Secrets Manager (see modules/agent-factory/SETUP-GUIDE.md)"
   fi
+
+  # The WebSocket ingest Lambda sends to the chat FIFO queue. Its TypeScript
+  # consumer is a separate image from the legacy Python worker above, although
+  # both use the same ECR repository. Never overwrite one release with the other.
+  step "Step 10c/12: Build and deploy chat agent"
+  CHAT_IMAGE_TAG="${IMAGE_TAG}-chat"
+  if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
+    cd "$ROOT_DIR/modules/agent-factory"
+    docker build -f agent/Dockerfile -t "$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG" .
+    docker push "$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG"
+  else
+    IMAGE_TAG="$CHAT_IMAGE_TAG" run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml"
+  fi
+  ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
+    AGENT_IMAGE="${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG}" \
+    bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
+  ok "Chat agent deployed (SHA: $IMAGE_TAG)"
 else
-  step "Step 10/11: Skipping agent-factory"
+  step "Step 10/12: Skipping agent-factory"
 fi
 
 refresh_credentials
 # =============================================================================
-# Step 11/11: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
+# Step 11/12: Agent Context (optional — gated by AGENT_CONTEXT_ENABLED or --agent-context-only)
 # =============================================================================
-DEPLOY_AGENT_CONTEXT=false
-if [ "$AGENT_CONTEXT_ONLY" = true ]; then
-  DEPLOY_AGENT_CONTEXT=true
-elif [ "$GATEWAY_ONLY" = true ] || [ "$AGENT_FACTORY_ONLY" = true ] || [ "$SKIP_AGENT_CONTEXT" = true ]; then
-  DEPLOY_AGENT_CONTEXT=false
-elif [ "$AGENT_CONTEXT_ENABLED" = true ]; then
-  DEPLOY_AGENT_CONTEXT=true
-fi
 
 if [ "$DEPLOY_AGENT_CONTEXT" = true ]; then
-  step "Step 11/11: Deploy agent-context"
+  step "Step 11/12: Deploy agent-context"
 
   # Agent context runs directly — no CodeBuild needed.
   cd "$ROOT_DIR/modules/agent-context/terraform"
@@ -1400,10 +1451,103 @@ EOF
 
   # Deploy k8s manifests
   cd "$ROOT_DIR/modules/agent-context"
-  bash deploy.sh --skip-validate
+  if [ "$UPDATE_MODE" = true ]; then
+    bash deploy.sh --skip-terraform
+  else
+    bash deploy.sh --skip-validate
+  fi
   ok "Agent-context deployed"
 else
-  step "Step 11/11: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"
+  step "Step 11/12: Skipping agent-context (set AGENT_CONTEXT_ENABLED=true or use --agent-context-only)"
+fi
+
+refresh_credentials
+# =============================================================================
+# Step 12/12: Superplane domain app (optional — gated by SUPERPLANE_ENABLED or
+# --superplane-only)
+#
+# LAST in the deploy order, and first in undeploy's PHASE_ORDER. A domain app sits on
+# top of the platform, the gateway and the agent runtime, so it deploys after all of
+# them and is destroyed before any of them (Issue #5037).
+#
+# Registered here deliberately: `modules/domain-apps/cyber/` is absent from this script
+# entirely, which is why its resources survive teardown. That is the failure mode this
+# phase exists not to repeat.
+# =============================================================================
+DEPLOY_SUPERPLANE=false
+if [ "$SUPERPLANE_ONLY" = true ]; then
+  DEPLOY_SUPERPLANE=true
+elif [ "$GATEWAY_ONLY" = true ] || [ "$AGENT_FACTORY_ONLY" = true ] || [ "$AGENT_CONTEXT_ONLY" = true ] || [ "$SKIP_SUPERPLANE" = true ]; then
+  DEPLOY_SUPERPLANE=false
+elif [ "$SUPERPLANE_ENABLED" = true ]; then
+  DEPLOY_SUPERPLANE=true
+fi
+
+if [ "$DEPLOY_SUPERPLANE" = true ]; then
+  step "Step 12/12: Deploy superplane domain app"
+
+  # The module's Terraform belongs to a later unit (U3). Until it lands there is
+  # nothing to apply, so this phase reports that plainly and succeeds rather than
+  # failing an otherwise healthy deploy. When U3 adds infra/control-plane/*.tf the
+  # apply below starts doing work with no further edit to this script.
+  SUPERPLANE_TF_DIR="$ROOT_DIR/modules/domain-apps/superplane/infra/control-plane"
+  if ! ls "$SUPERPLANE_TF_DIR"/*.tf >/dev/null 2>&1; then
+    warn "Superplane: no Terraform in $SUPERPLANE_TF_DIR yet — skipping infrastructure apply"
+    ok "Superplane: nothing to deploy (module skeleton only)"
+  else
+    cd "$SUPERPLANE_TF_DIR"
+    BACKEND_FILE="$ROOT_DIR/environments/$ENVIRONMENT/modules/superplane-backend.tfvars"
+    [ ! -f "$BACKEND_FILE" ] && cat > "$BACKEND_FILE" << EOF
+bucket         = "${STATE_BUCKET}"
+key            = "${ENVIRONMENT}/modules/superplane/terraform.tfstate"
+region         = "${AWS_REGION}"
+encrypt        = true
+dynamodb_table = "${LOCK_TABLE}"
+EOF
+    terraform init -backend-config="$BACKEND_FILE" -input=false
+    if [ "$UPDATE_MODE" = true ]; then
+      terraform_update_apply "superplane" "$ROOT_DIR/environments/$ENVIRONMENT/modules/superplane.tfvars"
+    else
+      terraform apply -var-file="$ROOT_DIR/environments/$ENVIRONMENT/modules/superplane.tfvars" -auto-approve
+      ok "Superplane infrastructure deployed"
+    fi
+  fi
+else
+  step "Step 12/12: Skipping superplane (set SUPERPLANE_ENABLED=true or use --superplane-only)"
+fi
+
+# Finalize after all installed modules have been updated.
+if [ "$UPDATE_MODE" = true ]; then
+  step "Finalize network-policy enforcement"
+  python3 "$SCRIPT_DIR/upgrade-network.py" audit
+  cd "$ROOT_DIR/platform/infra"
+  terraform_update_apply platform "../../environments/$ENVIRONMENT/platform.tfvars"
+  if [ "$DEPLOY_GATEWAY" = true ]; then
+    step "Reconcile gateway after ALB/controller changes"
+    cd "$ROOT_DIR/modules/gateway/infra"
+    gateway_alb_vars
+    terraform_update_apply gateway-final "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" "${GATEWAY_ALB_ARGS[@]}"
+    UPGRADE_CHECK_ONLY=true terraform_update_apply gateway-final "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" "${GATEWAY_ALB_ARGS[@]}"
+  fi
+fi
+
+if [ "$SKIP_FRONTEND" = false ] && [ "$DEPLOY_GATEWAY" = true ]; then
+  step "Step 6/12: Publish frontend and both account-connection templates"
+  bash "$ROOT_DIR/modules/gateway/scripts/deploy-frontend.sh" --env "$ENVIRONMENT" --region "$AWS_REGION"
+else
+  step "Step 6/12: Skipping frontend"
+fi
+
+if [ "$UPDATE_MODE" = true ]; then
+  REQUIRED_MODULE_ARGS=()
+  [ "$DEPLOY_FACTORY" != true ] || REQUIRED_MODULE_ARGS+=(--require-module agent-factory)
+  python3 "$SCRIPT_DIR/upgrade-state.py" verify --directory "$UPGRADE_RUN_DIR" --region "$AWS_REGION" \
+    ${REQUIRED_MODULE_ARGS[@]+"${REQUIRED_MODULE_ARGS[@]}"}
+  if [ "$DEPLOY_GATEWAY" = true ]; then
+    CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query Parameter.Value --output text)
+    curl --fail --silent --show-error --retry 5 --retry-all-errors "https://$CF_DOMAIN/api/health" \
+      | python3 -c 'import json,sys; assert json.load(sys.stdin).get("status")=="healthy", "CDN API is unhealthy"'
+  fi
 fi
 
 # =============================================================================
@@ -1416,13 +1560,23 @@ echo "Gateway:   kubectl get pods -n adp-gateway (configure kubectl: aws eks upd
 
 CF_DOMAIN=$(aws ssm get-parameter --name "/adp/$ENVIRONMENT/gateway/cloudfront-domain" --query "Parameter.Value" --output text 2>/dev/null) || true
 [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ] && echo "Frontend:  https://${CF_DOMAIN}" && echo "API:       https://${CF_DOMAIN}/api/health"
-[ "$GATEWAY_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
+[ "$GATEWAY_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ] && echo "Agents:    kubectl get pods -n arc-runners"
 [ "$DEPLOY_AGENT_CONTEXT" = true ] && echo "Context:   kubectl get pods -n agent-context"
-GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
+GW_WS=""
+if [ "$SUPERPLANE_ONLY" = false ]; then
+  GW_WS=$(cd "$ROOT_DIR/modules/agent-factory/infra" && terraform output -raw gateway_ws_endpoint 2>/dev/null) || true
+fi
 [ -n "$GW_WS" ] && [ "$GW_WS" != "" ] && echo "AgentGW:   $GW_WS"
 
+if [ -n "$CF_DOMAIN" ] && [ "$CF_DOMAIN" != "None" ]; then
+  echo "CLI installation (no sign-in required):"
+  echo "  curl -fsSL https://${CF_DOMAIN}/api/cli/install.sh | sh -s -- --gateway-url https://${CF_DOMAIN}/api"
+  echo '  "$HOME/.adp/bin/adp" admin setup'
+  echo "Sign in with the bootstrap Cognito administrator account; GitHub is not needed for CLI admin login."
+fi
+
 # --- Next steps (manual — GitHub App wiring; skipped in update mode) ---
-if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ]; then
+if [ "$UPDATE_MODE" = false ] && [ "$GATEWAY_ONLY" = false ] && [ "$AGENT_CONTEXT_ONLY" = false ] && [ "$SUPERPLANE_ONLY" = false ]; then
   echo ""
   echo "━━━ Next steps (manual) ━━━"
   echo "To complete the agent path, wire a GitHub App:"

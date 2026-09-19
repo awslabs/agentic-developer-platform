@@ -25,7 +25,19 @@ COPY modules/agent-factory/agent/src/ ./src/
 RUN npx tsc --project tsconfig.json
 
 # -----------------------------------------------------------------------------
-# Stage 2: Stage personas and skills
+# Stage 2: Build the Codex SDK execution adapter
+# -----------------------------------------------------------------------------
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS codex-builder
+
+WORKDIR /build
+COPY modules/agent-factory/codex-reviewer/package.json modules/agent-factory/codex-reviewer/package-lock.json ./
+RUN npm ci
+COPY modules/agent-factory/codex-reviewer/tsconfig.json ./
+COPY modules/agent-factory/codex-reviewer/src/ ./src/
+RUN npm run build && npm prune --omit=dev
+
+# -----------------------------------------------------------------------------
+# Stage 3: Stage personas and skills
 # -----------------------------------------------------------------------------
 FROM public.ecr.aws/docker/library/debian:trixie-slim AS stager
 
@@ -44,7 +56,7 @@ COPY modules/domain-apps/ /source/domain-apps/
 RUN /stage/stage-personas.sh /source /stage
 
 # -----------------------------------------------------------------------------
-# Stage 3: Final runtime image
+# Stage 4: Final runtime image
 # -----------------------------------------------------------------------------
 # python:3.13-slim-bookworm includes Python 3.13 + pip, based on Debian 12.
 # Uses deb.debian.org (Fastly CDN) for apt — far more reliable than
@@ -211,8 +223,18 @@ RUN chmod +x /usr/local/bin/git-askpass-helper /usr/local/bin/gh && \
 COPY --from=builder --chown=agent:agent /build/dist/ /app/dist/
 COPY --from=builder --chown=agent:agent /build/prod_modules/ /app/node_modules/
 
+# Codex is an execution engine inside the same worker image. Keep its dependency
+# tree isolated so SDK versions cannot perturb the Claude worker runtime.
+COPY --from=codex-builder --chown=agent:agent /build/dist/ /app/codex-reviewer/dist/
+COPY --from=codex-builder --chown=agent:agent /build/node_modules/ /app/codex-reviewer/node_modules/
+COPY --from=codex-builder --chown=agent:agent /build/package.json /app/codex-reviewer/package.json
+COPY --chown=agent:agent modules/agent-factory/codex-reviewer/prompts/ /app/codex-reviewer/prompts/
+
 # Copy staged personas and skills
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/
+# Ship the same issue contract for hosted workers outside the ADP repository.
+COPY --chown=agent:agent modules/agent-factory/rules/agents/issue-authoring.md /app/rules/agents/issue-authoring.md
+COPY --chown=agent:agent modules/agent-factory/rules/templates/developer-issue.md /app/rules/templates/developer-issue.md
 COPY --from=stager --chown=agent:agent /stage/skills/ /app/skills/
 
 # Codex CLI config (issue #2704). Codex reads $HOME/.codex/config.toml; the
@@ -237,6 +259,15 @@ RUN printf '#!/bin/sh\nexec python3 -m adp_cred "$@"\n' > /usr/local/bin/adp-cre
 COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_trigger/ /app/adp_trigger/
 RUN printf '#!/bin/sh\nexec python3 -m adp_trigger "$@"\n' > /usr/local/bin/adp-trigger && \
     chmod +x /usr/local/bin/adp-trigger
+
+# Install adp-review CLI (formal PR review submission, #5350). Same pattern again.
+# This is the ONLY sanctioned path for a reviewer to publish a verdict: it catches
+# GitHub's self-review 422 (author and reviewer are the same App), publishes the
+# verdict anyway, and names the pending human approval instead of silently
+# downgrading to a comment that sets no reviewDecision.
+COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_review/ /app/adp_review/
+RUN printf '#!/bin/sh\nexec python3 -m adp_review "$@"\n' > /usr/local/bin/adp-review && \
+    chmod +x /usr/local/bin/adp-review
 
 # Set working directory and switch to non-root user
 WORKDIR /work

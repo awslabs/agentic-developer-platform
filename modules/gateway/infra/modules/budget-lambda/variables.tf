@@ -73,6 +73,16 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "account_id" {
+  description = "AWS account that owns the Lambda functions and their event sources"
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.account_id))
+    error_message = "account_id must be a 12-digit AWS account ID."
+  }
+}
+
 variable "lambda_artifact_bucket" {
   description = "S3 bucket containing the pre-built psycopg2 layer zip (uploaded by CodeBuild)"
   type        = string

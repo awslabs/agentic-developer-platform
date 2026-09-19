@@ -28,6 +28,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
@@ -37,6 +38,13 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import draft_registration_note
+from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
+from lib.pr_binding import binding_note as pr_binding_note
+from lib.invocation_completion import (
+    InvocationCompletionError,
+    is_delivery_completed,
+    record_delivery_completed,
+)
 from lib.invocation_status import (
     clear_control_endpoint,
     register_control_endpoint,
@@ -45,6 +53,7 @@ from lib.invocation_status import update_status as update_invocation_status
 from lib.gateway_credential_client import GatewayCredentialClient, GatewayCredentialError
 from lib.github_token import mint_installation_token
 from lib.provenance_client import post_provenance
+from lib.status_gateway_client import authority_enabled
 from lib.vault_client import VaultClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -54,6 +63,8 @@ WORK_DIR = Path("/work/repo")
 PERSONAS_DIR = Path("/app/personas")
 SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
+CODEX_REVIEWER_BINARY = "/app/codex-reviewer/dist/index.js"
+CODEX_PERSONA_PREFIX = "agent-codex-"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
@@ -115,6 +126,26 @@ PERSONAS_REGISTERING_DRAFTS = frozenset({"aidlc"})
 _STS_TAG_FORBIDDEN = re.compile(r"[^A-Za-z0-9_.:/=+\-@]")
 
 
+def persona_runtime(persona: str) -> str:
+    """Select the model runtime from the trusted persona name only."""
+    if persona.startswith(CODEX_PERSONA_PREFIX) and len(persona) > len(CODEX_PERSONA_PREFIX):
+        return "codex"
+    return "claude"
+
+
+def worker_command(persona: str) -> list[str]:
+    """Return the packaged adapter command for a persona.
+
+    New Codex personas extend this one allow-list without changing the queue
+    contract, KEDA resources, or container image.
+    """
+    if persona_runtime(persona) == "claude":
+        return ["node", AGENT_BINARY]
+    if persona == "agent-codex-reviewer":
+        return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
+    raise ValueError(f"Codex persona is not packaged yet: {persona}")
+
+
 def _sanitize_for_sts_tag(value: str) -> str:
     return _STS_TAG_FORBIDDEN.sub("_", value)
 
@@ -131,7 +162,146 @@ ADP_GH_TOKEN_BROKER_ENV = "ADP_GH_TOKEN_BROKER_ENABLED"
 def _gh_token_broker_enabled(environ: dict | None = None) -> bool:
     """Return True when the GitHub-token gatekeeper is enabled (issue #4272)."""
     env = environ if environ is not None else os.environ
-    return env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
+    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(
+        ADP_GH_TOKEN_BROKER_ENV, ""
+    ).lower() in ("1", "true", "yes")
+
+
+# --- Issue #5223: mediated GitHub operations -----------------------------------
+# The gatekeeper above still hands this pod a real installation token. That token
+# carries `contents: write`, which on GitHub also authorizes
+# `PUT /repos/{o}/{r}/pulls/{n}/merge` and cannot be narrowed to one branch — so a
+# run whose accepted policy keeps merge human-only cannot be given one, and the
+# work used to be refused outright rather than the gate weakened.
+#
+# When mediation is on, the agent subprocess performs GitHub writes by asking the
+# gateway to perform a typed operation (lib/mediated_github.py). No merge-capable
+# token reaches the agent, so the human gate survives while the work proceeds.
+#
+# Default off: the gateway cohort carrying the endpoint must be deployed before any
+# worker depends on it existing.
+ADP_MEDIATED_GITHUB_ENV = "ADP_MEDIATED_GITHUB_ENABLED"
+
+
+def _mediated_github_enabled(environ: dict | None = None) -> bool:
+    """Return True when the mediated-operations feature is switched on (#5223).
+
+    This is the FEATURE flag, not the per-run decision. It is a pod-level env var, so
+    it answers the same for every run in a deployment. Use `_mediated_run` in
+    :func:`main` to decide how a particular run behaves; a site that consults this
+    directly will treat PAT and non-protected runs as mediated.
+    """
+    env = environ if environ is not None else os.environ
+    return env.get(ADP_MEDIATED_GITHUB_ENV, "").lower() in ("1", "true", "yes")
+
+
+def _protected_worker(environ: dict | None = None) -> bool:
+    """Return True when this run carries protected-worker authority (#5223).
+
+    Mediation is a policy-bearing path: the gateway refuses every mediated operation
+    for a run with no accepted policy in force, and refuses it *opaquely* — every
+    authorization failure returns the same `404`, deliberately, so the worker cannot
+    tell "no policy exists" from "this run's authority was revoked". That means the
+    worker cannot decide to fall back on being refused; inferring "no policy, use a
+    token" from a 404 would hand a token to a run whose authority was withdrawn,
+    which is precisely the outcome mediation exists to prevent.
+
+    So the decision has to be made BEFORE the first call, from something local. This
+    is that signal, and it is a necessary condition rather than a full policy check:
+    the protected-worker cohort is the only one that carries the run credential and
+    workload token every mediated request must present, and `authorize_worker_credential`
+    can still refuse an individual run inside it. A run without this authority could
+    not authenticate a mediated request at all, so treating it as mediated only
+    converts a working token run into a bootstrap failure.
+    """
+    env = environ if environ is not None else os.environ
+    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true"
+
+
+# Every variable that would let the agent subprocess, or a tool it runs, reach
+# GitHub with the run's own installation token. Removed together: leaving any one
+# behind reintroduces the merge capability mediation exists to withhold.
+#
+# GH_APP_ID and GH_APP_INSTALLATION_ID are deliberately NOT here — both are public
+# identifiers, not credentials, and the bot commit identity is built from the app
+# id. Nothing can mint a token from them without the private key, which broker
+# mode already withholds.
+_MEDIATED_WITHHELD_TOKEN_VARS = (
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GH_APP_TOKEN",
+    "GH_APP_PRIVATE_KEY",
+    "GH_APP_KEY",
+)
+
+# The token file `git-askpass-helper` and `gh-wrapper` read (#1469). Both resolve it
+# as `${ADP_TOKEN_FILE:-/tmp/.adp-gh-token}` — a DEFAULT, not a required variable —
+# so unsetting `ADP_TOKEN_FILE` does not stop either from finding the file. The path
+# is duplicated here rather than imported because the authority is those two shell
+# scripts; if their default moves, this tuple must move with it.
+MEDIATED_TOKEN_FILE_PATHS = ("/tmp/.adp-gh-token",)
+
+
+def _remove_token_file() -> None:
+    """Delete the on-disk token, so the shell helpers have nothing to fall back to.
+
+    `gh-wrapper` reads the token file and exports `GH_TOKEN` for the real `gh` it
+    execs, unconditionally and before looking at anything else. An agent whose
+    environment we stripped would therefore still get an authenticated `gh` — and
+    `gh pr merge` with it — straight from the file. Env-scoped withholding is not a
+    control while the bytes remain at the path the helpers default to.
+
+    Best-effort by design: in brokered mediation the TS TokenManager never starts,
+    so usually there is no file to remove, and a missing file is the expected case
+    rather than an error.
+    """
+    for path in MEDIATED_TOKEN_FILE_PATHS:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError as exc:  # pragma: no cover - unreadable /tmp is not recoverable here
+            logger.warning("Could not remove the mediated token file %s: %s", path, exc)
+
+
+def _withhold_write_token(agent_env: dict) -> None:
+    """Keep the run's installation token out of the agent subprocess (#5223).
+
+    Mediation's guarantee is that no merge-capable credential is reachable from the
+    agent. That guarantee is only worth anything if the token is actually absent
+    from the environment the agent process runs in — an agent that can read
+    `$GH_TOKEN` can merge its own PR regardless of what the gateway would have
+    refused, and a prompt-injected one can exfiltrate it.
+
+    `GIT_ASKPASS` and `ADP_TOKEN_FILE` go too: the askpass helper falls back to
+    `$GITHUB_TOKEN` and otherwise reads a token file the TokenManager refreshes, so
+    leaving either in place would let `git push` authenticate with exactly the
+    credential being withheld — silently, and outside mediation.
+
+    The env is necessary but not sufficient: both helpers default the token-file path
+    when `ADP_TOKEN_FILE` is unset, so the file itself is removed too — see
+    :func:`_remove_token_file`.
+    """
+    for var in _MEDIATED_WITHHELD_TOKEN_VARS:
+        agent_env.pop(var, None)
+    # Leaving these would let git authenticate straight past mediation.
+    agent_env.pop("GIT_ASKPASS", None)
+    agent_env.pop("ADP_TOKEN_FILE", None)
+    # No refresh loop: there is no token in this env for it to refresh, and a
+    # TokenManager that woke up would put one back.
+    #
+    # Popping this variable is NOT sufficient on its own, and the TS side must not
+    # rely on it being the only switch: `githubTokenBroker.isBrokerEnabled` also
+    # returns true for `ADP_AGENT_AUTHORITY_ENABLED=true`, which the policy-bearing
+    # cohort mediation serves always carries and which this function must leave in
+    # place (the whole authority transport — run credential, workload token, status
+    # reporting — keys off it). The durable guard is `isMediatedRun` in
+    # `agent/src/mediated-github-config.ts`, checked at every mint and at the single
+    # `publishToken` write; `ADP_TOKEN_MODE`/`ADP_MEDIATED_GITHUB_ENABLED` below are
+    # what it reads.
+    agent_env.pop(ADP_GH_TOKEN_BROKER_ENV, None)
+    agent_env["ADP_TOKEN_MODE"] = "mediated"
+    agent_env[ADP_MEDIATED_GITHUB_ENV] = "true"
+    # Unsetting the variable is not enough: the helpers default the path.
+    _remove_token_file()
 
 
 def _broker_installation_token(
@@ -140,7 +310,7 @@ def _broker_installation_token(
     repo_owner: str,
     repo_name: str,
     cred_client: GatewayCredentialClient | None = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Mint this run's GitHub token through the gateway gatekeeper.
 
     Issue #4272. Replaces the in-pod ``mint_installation_token`` (and the vault
@@ -151,7 +321,7 @@ def _broker_installation_token(
     bootstrap failure, which the caller surfaces via _fail_bootstrap_status.
 
     Returns:
-        ``(token, app_id)``. The App ID is public (not a credential) and comes
+        ``(token, app_id, expires_at)``. The App ID is public (not a credential) and comes
         back from the gateway because the caller still needs it for the bot commit
         identity and for the GH_APP_ID the JS TokenManager gates on — both of
         which used to be read from the vault alongside the private key.
@@ -174,7 +344,16 @@ def _broker_installation_token(
         repo_name=repo_name,
         purpose="bootstrap GitHub token for agent run",
     )
-    return result["token"], str(result.get("app_id") or "")
+    expires_at = result.get("expires_at", "")
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if expiry.tzinfo is None or expiry <= datetime.now(UTC):
+            raise ValueError("expired token")
+        if not result.get("token") or not result.get("app_id"):
+            raise ValueError("missing token or app ID")
+    except (ValueError, TypeError, AttributeError):
+        raise RuntimeError("GitHub broker returned an unusable token or expiry") from None
+    return result["token"], str(result["app_id"]), expires_at
 
 
 class PatResolutionResult:
@@ -218,9 +397,11 @@ def _resolve_execution_token(
     Raises:
         RuntimeError: If PAT resolution or validation fails (no App fallback).
     """
-    pat_execution_enabled = environ.get(
-        "ADP_PAT_EXECUTION_ENABLED", ""
-    ).lower() in ("1", "true", "yes")
+    pat_execution_enabled = environ.get("ADP_PAT_EXECUTION_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     token_source = envelope.get("token_source")
 
     # Not enabled or not PAT → App path
@@ -264,8 +445,7 @@ def _resolve_execution_token(
             bootstrap_log.step_error(2, "pat_resolve", exc)
             bootstrap_log.close()
         raise RuntimeError(
-            "PAT mode requested (token_source=pat) but credential "
-            f"resolution failed: {exc}"
+            f"PAT mode requested (token_source=pat) but credential resolution failed: {exc}"
         ) from exc
 
     if bootstrap_log:
@@ -313,13 +493,9 @@ def _resolve_execution_token(
         raise err from exc
 
     if bootstrap_log:
-        bootstrap_log.step_success(
-            3, "pat_validate", github_login=github_login
-        )
+        bootstrap_log.step_success(3, "pat_validate", github_login=github_login)
 
-    return PatResolutionResult(
-        token_mode="pat", token=pat_token, github_login=github_login
-    )
+    return PatResolutionResult(token_mode="pat", token=pat_token, github_login=github_login)
 
 
 def parse_envelope(raw: str) -> dict:
@@ -462,12 +638,52 @@ class VisibilityHeartbeat:
                     logger.debug("Heartbeat extension failed (will retry): %s", exc)
 
 
+def _invocation_identity_decides_replay(envelope: dict) -> bool:
+    """Whether this run's replay verdict comes from its protected invocation.
+
+    True when the run reached here through protected dispatch, which is the only
+    mechanism that can answer "is this delivery a replay?" about *this
+    invocation* rather than about the issue. `bootstrap_run_identity` has already
+    exchanged the pod's Kubernetes proof and the full envelope digest for a
+    credential at that point; the gateway admits the invocation only if its
+    dispatch record is still `pending`, the attempt matches and no other pod is
+    bound to it, and it holds the transactional work claim for
+    (tenant, repository, issue). A replay of a completed execution cannot pass
+    that bind — so by the time control reaches the guard, replay is already
+    refused and a merged PR on the branch adds nothing.
+
+    Conditions mirror `bootstrap_run_identity`'s own (issue #5127): the
+    envelope's `work_claim_required`, the `ADP_WORK_CLAIMS_ENABLED` deployment
+    setting, or agent authority being on. Read here rather than threaded back
+    from that call because it returns None when authority is off, and a bare
+    None cannot distinguish "authority off" from "claims not required".
+
+    False means this deployment has NOT enabled protected dispatch, and the
+    legacy branch-history guard below stays in force for it, byte for byte.
+    """
+    return (
+        envelope.get("work_claim_required") is True
+        or os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
+        or authority_enabled()
+    )
+
+
 def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     """Check if the agent branch for this issue already has a merged PR.
 
     Returns True if the issue has a merged PR from the agent branch
     (agent/issue-NNN), indicating a prior run already completed successfully.
     This is the idempotency guard for SQS redelivery (issue #1864).
+
+    **Legacy path only.** A merged PR on `agent/issue-N` proves that *somebody*
+    finished *something* on this issue once — not that *this* invocation already
+    ran. So it cannot tell a genuinely fresh authorized run (the reviewer after
+    the developer, a repair after review findings) from a stale redelivery, and
+    once any PR for an issue merged it refuses every later run on that issue
+    (issue #5335). Under protected dispatch the invocation's own admission
+    answers the question precisely, so this is consulted only when
+    `_invocation_identity_decides_replay` is False. Kept, rather than removed,
+    so a deployment that has not enabled claims keeps its current behaviour.
 
     Fail-open: returns False on any error (so the run proceeds normally).
     """
@@ -506,6 +722,67 @@ def _is_already_completed(repo: str, issue: int, token: str) -> bool:
     return False
 
 
+def _mediated_already_completed() -> bool:
+    """The idempotency guard, answered through mediation instead of a token (#5223).
+
+    `_is_already_completed` runs `gh pr list` under the run's installation token,
+    which is precisely the credential a mediated run does not have. The protected
+    read returns this assignment's own pull request, so the same question is
+    answered without one.
+
+    It is also the stronger check. `gh pr list --head agent/issue-N` matches on a
+    branch NAME, and a branch name is not ours to control: anyone who can fork the
+    repository can push `agent/issue-N` to their fork and open a PR into `main`,
+    which would make this guard skip a run that never happened. The gateway decides
+    ownership on the immutable head repository id instead, so a fork's identically
+    named branch cannot present itself as this run's completed work.
+
+    Fail-open, matching the token path's contract: a guard that cannot reach the
+    gateway must let the run proceed. The cost of proceeding is a duplicate run; the
+    cost of failing closed is silently dropping real work.
+    """
+    try:
+        from lib import mediated_github
+
+        result = mediated_github.read_repository()
+    except Exception as exc:
+        logger.warning("Mediated idempotency check failed (proceeding with run): %s", exc)
+        return False
+
+    # The route answers `{"repository": {...}, "branch": ..., "idempotency_key": ...}`,
+    # so the pull request is nested one level down. Reading it off the top level
+    # always found nothing, which made this guard silently answer "not completed"
+    # for every run — the failure mode is a duplicate run, which is quiet.
+    if not isinstance(result, dict):
+        return False
+    repository = result.get("repository")
+    if not isinstance(repository, dict):
+        return False
+    pull = repository.get("pull_request")
+    if not isinstance(pull, dict):
+        return False
+
+    # GitHub's `state` is "open" or "closed" — never "merged". Merged-ness is a
+    # SEPARATE boolean, which the gateway derives from `merged_at` and reports as
+    # `merged`. Comparing state against "merged" could not ever be true, so the
+    # guard could not fire even once the nesting was right. Both halves had to be
+    # wrong for the symptom to be invisible.
+    if pull.get("merged") is not True:
+        return False
+    logger.info(
+        "Idempotency check (mediated): assignment's PR #%s is already merged",
+        pull.get("number"),
+    )
+    return True
+
+
+def _already_completed(repo: str, issue: int, token: str, *, mediated: bool) -> bool:
+    """Dispatch the idempotency guard to whichever authority this run actually has."""
+    if mediated:
+        return _mediated_already_completed()
+    return _is_already_completed(repo, issue, token)
+
+
 def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     """Read GitHub's bounded display and the independent explanation archive.
 
@@ -513,6 +790,7 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     labeled fallback; never describe that potentially clipped record as full.
     Each read is best-effort so one missing artifact cannot hide the other.
     """
+
     def read(name: str) -> str:
         try:
             with open(os.path.join(directory, name), "r", encoding="utf-8") as fh:
@@ -527,10 +805,14 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     transcript_text = read("adp-run-transcript.md")
     if not transcript_text.strip():
         transcript_text = (
-            "_Archive source: GitHub display fallback. The independent explanation "
-            "transcript was unavailable; this record may be truncated or incomplete._\n\n"
-            + github_text
-        ) if github_text else ""
+            (
+                "_Archive source: GitHub display fallback. The independent explanation "
+                "transcript was unavailable; this record may be truncated or incomplete._\n\n"
+                + github_text
+            )
+            if github_text
+            else ""
+        )
     return github_text, transcript_text
 
 
@@ -574,7 +856,12 @@ def _upload_transcript_to_s3(
             Body=final_text.encode("utf-8"),
             ContentType="text/markdown",
         )
-        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text.encode("utf-8")))
+        logger.info(
+            "Transcript uploaded to s3://%s/%s (%d bytes)",
+            bucket,
+            key,
+            len(final_text.encode("utf-8")),
+        )
         return key
     except Exception as exc:
         logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
@@ -605,20 +892,26 @@ def _handle_gitlab_mention(
     source = payload.get("source", {})
     project_id = source.get("project_id")
     issue_iid = source.get("issue_iid")
-    # URL precedence: envelope field is primary (self-describing message);
-    # GITLAB_URL env var is an optional break-glass override only.
-    gitlab_url = source.get("gitlab_url", "") or os.environ.get("GITLAB_URL", "")
+    # Security boundary: the webhook body and SQS envelope are untrusted. In
+    # particular, project.web_url must never select the destination of a request
+    # carrying the platform GitLab API token. GITLAB_URL is injected from the
+    # deployment-owned /adp/<env>/gitlab/url SSM parameter.
+    gitlab_url = os.environ.get("GITLAB_URL", "").strip()
     persona = envelope.get("persona", "developer")
     correlation = envelope.get("correlation", {})
     correlation_id = correlation.get("correlation_id", "")
 
-    if not gitlab_url or not project_id or not issue_iid:
+    if not project_id or not issue_iid:
         logger.error(
-            "GitLab path: missing required fields (gitlab_url=%s, project_id=%s, issue_iid=%s)",
-            gitlab_url,
+            "GitLab path: missing required fields (project_id=%s, issue_iid=%s)",
             project_id,
             issue_iid,
         )
+        _delete_message(queue_url, region, receipt_handle)
+        return 1
+
+    if not gitlab_url:
+        logger.error("GitLab path: trusted GITLAB_URL is not configured")
         _delete_message(queue_url, region, receipt_handle)
         return 1
 
@@ -784,6 +1077,14 @@ def _load_door_api_key(region: str) -> None:
     cost of this choice is that a misconfiguration shows up as "the agent had no
     context" rather than a hard error, so both failure paths log at WARNING.
     """
+    if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED") == "true":
+        # These shared credentials bypass run-bound authorization. Protected
+        # workers need a mediated Door integration before enabling that feature.
+        for key in ("DOOR_API_KEY", "VAULT_INTERNAL_API_KEY", "BG_INTERNAL_API_KEY"):
+            os.environ.pop(key, None)
+        logger.info("Protected worker uses no shared Door or gateway credentials")
+        return
+
     if os.environ.get("DOOR_API_KEY"):
         logger.debug("DOOR_API_KEY already set in environment; not reading Secrets Manager")
         return
@@ -861,6 +1162,90 @@ def _checkout_existing_work_branch(branch: str) -> None:
     run_cmd(["git", "checkout", branch], cwd=WORK_DIR)
 
 
+def _work_branch_is_disposable(branch: str) -> bool:
+    """Prove that cleanup would discard only empty commits or review transcripts.
+
+    Inspect every unmerged commit, not just the final diff: code subsequently
+    reverted is still committed work. Incomplete history and read failures must
+    preserve the branch. This deliberately does not use the PR-suppression
+    helper below, whose shallow, net-diff test is insufficient for deletion.
+    """
+    try:
+        if run_cmd(["git", "status", "--porcelain"], cwd=WORK_DIR).stdout.strip():
+            return False
+        head = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        remote = run_cmd(
+            ["git", "rev-parse", f"refs/remotes/origin/{branch}"], cwd=WORK_DIR
+        ).stdout.strip()
+        if head != remote:
+            return False  # Never reset an unpublished local checkpoint.
+        fetch = ["git", "fetch"]
+        if (
+            run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=WORK_DIR).stdout.strip()
+            == "true"
+        ):
+            fetch.append("--unshallow")
+        run_cmd([*fetch, "origin", "refs/heads/main:refs/remotes/origin/main"], cwd=WORK_DIR)
+        if (
+            run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=WORK_DIR).stdout.strip()
+            != "false"
+        ):
+            return False
+        revision_range = f"origin/main..{head}"
+        # Merges can carry conflict resolutions not represented by log's default
+        # per-commit diff. Preserve them rather than guessing about disposability.
+        if run_cmd(
+            ["git", "rev-list", "--min-parents=2", revision_range], cwd=WORK_DIR
+        ).stdout.strip():
+            return False
+        changed = run_cmd(
+            ["git", "log", "--format=", "--name-only", "-z", revision_range], cwd=WORK_DIR
+        ).stdout
+        files = [path for path in changed.split("\0") if path]
+        return all(path.startswith("data/code-review/") for path in files)
+    except (subprocess.CalledProcessError, OSError):
+        logger.warning("Could not prove branch %s disposable; preserving it", branch)
+        return False
+
+
+def _reuse_work_branch(branch: str, *, allow_cleanup: bool, persona: str, issue: int) -> None:
+    """Adopt the existing head, or replace disposable work behind a recovery ref.
+
+    A leased replacement avoids the delete/recreate gap and rejects any writer
+    racing bootstrap. No empty WIP commit is added to an adopted head (#5381).
+    """
+    _checkout_existing_work_branch(branch)
+    if not allow_cleanup or not _work_branch_is_disposable(branch):
+        logger.info("Preserving existing work branch %s without a WIP push", branch)
+        return
+    old_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+    recovery_ref = f"refs/heads/recovery/{branch.replace('/', '-')}-{old_sha}"
+    run_cmd(["git", "push", "origin", f"{old_sha}:{recovery_ref}"], cwd=WORK_DIR)
+    saved = (
+        run_cmd(["git", "ls-remote", "--exit-code", "--refs", "origin", recovery_ref], cwd=WORK_DIR)
+        .stdout.strip()
+        .split()
+    )
+    if saved != [old_sha, recovery_ref]:
+        raise RuntimeError(f"Recovery ref for {branch} did not verify; refusing cleanup")
+    run_cmd(["git", "reset", "--hard", "origin/main"], cwd=WORK_DIR)
+    run_cmd(
+        ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
+        cwd=WORK_DIR,
+    )
+    run_cmd(
+        [
+            "git",
+            "push",
+            f"--force-with-lease=refs/heads/{branch}:{old_sha}",
+            "origin",
+            f"HEAD:refs/heads/{branch}",
+        ],
+        cwd=WORK_DIR,
+    )
+    logger.info("Reset disposable branch %s; prior work retained at %s", branch, recovery_ref)
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -909,6 +1294,11 @@ def main() -> int:
         raise
     tenant_id = envelope["tenant_id"]
     persona = envelope["persona"]
+    runtime = persona_runtime(persona)
+    is_codex_review = persona == "agent-codex-reviewer"
+    is_codex_pr_review = is_codex_review and isinstance(
+        (envelope.get("payload") or {}).get("pull_request"), dict
+    )
     source = envelope["source_ref"]
     installation_id = source["installation_id"]
     repo = source["repo"]
@@ -966,6 +1356,36 @@ def main() -> int:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
 
+    # AIDLC can merge an intermediate gate and continue on the same branch, and
+    # a Codex issue review has no branch/PR terminal state. Legacy workers
+    # therefore deduplicate these paths by exact delivery, not by branch.
+    # Do this before credentials, repository work or any in_progress write that
+    # could overwrite an older worker's completed status. Protected dispatch
+    # already binds/retires attempts and must not fall back to direct table I/O.
+    use_completion_receipt = (
+        persona in PERSONAS_EXTENDING_BRANCH or (is_codex_review and not is_codex_pr_review)
+    ) and not authority_enabled()
+    if use_completion_receipt:
+        try:
+            already_completed = is_delivery_completed(envelope)
+        except InvocationCompletionError as exc:
+            logger.error("Delivery deferred: %s", exc)
+            bootstrap_log.close()
+            return AGENT_EXIT_RETRYABLE
+        if already_completed:
+            logger.info("Delivery %s was already completed; acknowledging redelivery", message_id)
+            bootstrap_log.close()
+            # Keep the existing outcome intact: a redelivery is not a new
+            # invocation and must not overwrite complete with skipped.
+            try:
+                _delete_message(queue_url, region, receipt_handle)
+            except Exception:
+                logger.warning(
+                    "Could not acknowledge completed AIDLC delivery; leaving it for retry"
+                )
+                return AGENT_EXIT_RETRYABLE
+            return 0
+
     # Bind this pod to its protected invocation before any repository code,
     # hooks, SDK tools or repository-selected dependencies can execute (#5028).
     from lib.run_identity import bootstrap_run_identity
@@ -1010,6 +1430,13 @@ def main() -> int:
     # tenant_id is already extracted above; expose it under the personal-context
     # name so the harness doesn't need to know about TENANT_ID vs ADP_TENANT_ID.
     os.environ["ADP_TENANT_ID"] = tenant_id
+
+    # Issue #5301: the engine marks a code-story dispatch as requiring its delivering
+    # pull request to be registered. Read from the trusted dispatch envelope only, and
+    # deliberately not defaulted on: a run that was never asked to bind (a webhook
+    # trigger, or a legacy dispatch) must keep its existing behaviour exactly.
+    if envelope.get("pr_binding_required") is True:
+        os.environ[PR_BINDING_REQUIRED_ENV] = "true"
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
@@ -1058,8 +1485,66 @@ def main() -> int:
     _pat_token = _pat_result.token
     _pat_github_login = _pat_result.github_login
 
+    # Whether this run acquires and publishes everything through mediation. Decided
+    # once, here, and consulted by every later step that would otherwise have used a
+    # token — so the startup path cannot be half-mediated. PAT runs are excluded: an
+    # explicitly accepted PAT is the user's own credential with its own accepted
+    # scope, which #5223 leaves untouched.
+    #
+    # This is THE decision for the run. Every later site consults this variable; none
+    # re-reads the raw flag. That mattered concretely: two sites downstream used to
+    # re-read it, so a PAT run with the flag on globally had its token popped from the
+    # agent env, `GIT_ASKPASS` unset, the on-disk token file DELETED and
+    # `ADP_TOKEN_MODE` overwritten to "mediated" — the user's own credential
+    # destroyed, while the agent was simultaneously told no credential exists. The
+    # flag is a pod-level env var, so "globally on" is its normal deployed state and
+    # that divergence was reachable in ordinary operation, not just in tests.
+    _mediated_run = _mediated_github_enabled() and _token_mode != "pat" and _protected_worker()
+
     # Step 2: Fetch GitHub App credentials from vault (App path — skipped in PAT mode)
-    if _token_mode == "pat":
+    if _mediated_run:
+        # Issue #5223: mediated startup. This branch exists because the reverse —
+        # minting first and withholding later — cannot work for the cohort mediation
+        # is FOR. `runtime_policy.authorize_worker_credential` refuses
+        # /internal/v1/github-installation-token for a develop assignment whose merge
+        # gate is human-only, and refuses it for a grant shorter than the token's
+        # one-hour floor. Both refusals are correct and must not be weakened. But
+        # they land at step 2, before the clone and long before the agent env is
+        # built, so the run used to die at bootstrap and the model never started —
+        # the mediated publication path it would have used was never reached.
+        #
+        # So there is no token in this branch. Not "a token that is withheld later":
+        # none is requested, none is minted, and nothing downstream may assume the
+        # string is non-empty. `app_id` is a public identifier and is read from the
+        # envelope's installation metadata for the local commit identity only; the
+        # gateway signs published commits with its own App identity, so the value
+        # here never determines what appears on a published commit.
+        token = ""
+        # The App id is a public identifier, not a credential, and nothing can be
+        # minted from it without the private key. In the token paths it arrives as a
+        # by-product of the mint; with no mint, it comes from the pod's own
+        # environment, which is where the ScaledJob already publishes it.
+        #
+        # Empty is tolerated rather than fatal: its only use here is the local commit
+        # identity's email, and published commits carry the gateway's App identity
+        # regardless — so a missing value costs a cosmetic local address, not
+        # correctness. Failing startup over it would be a worse outcome than the
+        # generic address the materialization helper falls back to.
+        app_id = os.environ.get("GH_APP_ID", "")
+        private_key = ""
+        token_expires_at = ""
+        bootstrap_log.step_success(
+            2,
+            "mediated_no_token",
+            installation_id=installation_id,
+            repo=f"{repo_owner}/{repo_name}",
+        )
+        logger.info(
+            "Mediated mode: no GitHub installation token is minted for this run; "
+            "repository acquisition and publication go through the protected "
+            "operation route"
+        )
+    elif _token_mode == "pat":
         # PAT resolved above; no vault fetch or token mint needed.
         # Set token variable for downstream use (clone, check-run, etc.)
         token = _pat_token
@@ -1084,7 +1569,7 @@ def main() -> int:
             repo=f"{repo_owner}/{repo_name}",
         )
         try:
-            token, app_id = _broker_installation_token(
+            token, app_id, token_expires_at = _broker_installation_token(
                 installation_id=installation_id,
                 repo_owner=repo_owner,
                 repo_name=repo_name,
@@ -1150,7 +1635,34 @@ def main() -> int:
     # expired before delete). Delete the message and exit cleanly.
     # This is the primary defense against issue #1864 (6h redelivery spawns
     # redundant runs on already-merged stories).
-    if _is_already_completed(repo, issue, token):
+    #
+    # Exempt PERSONAS_EXTENDING_BRANCH (aidlc): that workflow merges a PR at
+    # every gate, not just at final completion (issue #39's PR #41 merged mid-
+    # flow after the reverse-engineering gate; requirements-analysis and
+    # delivery-planning were still pending). For those personas a merged PR on
+    # the branch means "one gate landed," not "this issue is done" — so a new
+    # comment answering the next gate's open questions must not be treated as
+    # a stale redelivery of already-completed work.
+    #
+    # Issue #5335: skipped entirely under protected dispatch. The branch question
+    # is about the ISSUE ("did anyone finish anything here?"), while the guard
+    # needs an answer about THIS INVOCATION ("did this delivery already run?").
+    # Those diverge the moment a legitimate second run follows a merged PR —
+    # reviewer after developer, repair after review findings — and the branch
+    # answer refuses all of them, freezing the issue permanently after its first
+    # merge. When protected dispatch is in force the run has already been admitted
+    # against its own dispatch record, attempt and work claim a few steps above,
+    # so a replay is refused there and a genuinely later authorized attempt is
+    # allowed through — including when older work on the issue merged. This is
+    # NOT "every new SQS message is fresh authority": authority still comes from
+    # the gateway's admission, never from the message. Same reasoning as the
+    # aidlc/authority carve-out at the completion receipt above.
+    if (
+        not is_codex_review
+        and persona not in PERSONAS_EXTENDING_BRANCH
+        and not _invocation_identity_decides_replay(envelope)
+        and _already_completed(repo, issue, token, mediated=_mediated_run)
+    ):
         logger.info(
             "Idempotency guard: issue #%s already has merged PR on agent branch — "
             "skipping redelivered message (message_id=%s)",
@@ -1208,12 +1720,45 @@ def main() -> int:
         "ANTHROPIC_MODEL": effective_model,
     }
 
+    # Issue #5223: in mediated mode there is no token, so exporting these would
+    # publish empty strings as if they were credentials. Removed rather than left
+    # empty, because "" is indistinguishable from a real value to every consumer
+    # that checks presence: `git-askpass-helper` would answer git's password prompt
+    # with nothing and turn an authentication refusal into a confusing hang, and the
+    # TS TokenManager gates its refresh loop on the variable EXISTING.
+    #
+    # `os.environ.pop` as well as omitting them from `env_vars`: this process
+    # inherits the pod environment, and a `GITHUB_TOKEN` projected into the pod from
+    # anywhere else would otherwise survive and be inherited by the agent subprocess
+    # (whose env is `os.environ.copy()`). `_withhold_write_token` strips the agent's
+    # copy later; this makes bootstrap itself consistent with having no credential,
+    # so no startup step can accidentally succeed on an ambient token that mediation
+    # is supposed to have replaced.
+    if _mediated_run:
+        for _var in ("GITHUB_TOKEN", "GH_TOKEN", "GIT_ASKPASS"):
+            env_vars.pop(_var, None)
+            os.environ.pop(_var, None)
+        env_vars["ADP_TOKEN_MODE"] = "mediated"
+        env_vars[ADP_MEDIATED_GITHUB_ENV] = "true"
+        if app_id:
+            # Public identifier, not a credential; the local commit identity uses it.
+            env_vars["GH_APP_ID"] = str(app_id)
+        env_vars["GH_APP_INSTALLATION_ID"] = str(installation_id)
     # Issue #3385 (A4): In PAT mode, do NOT export GH_APP_* vars — TokenManager
     # must not run its refresh loop (which would overwrite the PAT with a bot
     # installation token mid-run). Instead export ADP_TOKEN_MODE=pat so the TS
     # side adopts the env GITHUB_TOKEN as-is.
-    if _token_mode == "pat":
+    elif _token_mode == "pat":
         env_vars["ADP_TOKEN_MODE"] = "pat"
+        for key in (
+            "GH_APP_ID",
+            "GH_APP_PRIVATE_KEY",
+            "GH_APP_KEY",
+            "GH_APP_INSTALLATION_ID",
+            "GH_APP_TOKEN",
+            "GH_APP_TOKEN_EXPIRES_AT",
+        ):
+            os.environ.pop(key, None)
         # Write PAT to the askpass token file so git-askpass-helper reads it.
         # TokenManager won't overwrite since it has no app credentials.
         # Use 0o600 + atomic rename to prevent world-readable window.
@@ -1241,9 +1786,12 @@ def main() -> int:
         # being present; with the key gone and no flag to key off, they would go
         # false, the token manager would never initialise, no refresh would ever
         # be scheduled, and the run would die silently at the 1-hour mark.
+        env_vars["ADP_TOKEN_MODE"] = "app"
+        env_vars["GH_APP_TOKEN"] = token
         env_vars["GH_APP_ID"] = str(app_id)
         if _gh_token_broker_enabled():
             env_vars[ADP_GH_TOKEN_BROKER_ENV] = "1"
+            env_vars["GH_APP_TOKEN_EXPIRES_AT"] = token_expires_at
             # Not setting it is NOT sufficient. The agent subprocess env is
             # os.environ.copy() (see the agent_env assembly below), so any
             # GH_APP_PRIVATE_KEY the pod inherited from somewhere else — a
@@ -1252,7 +1800,9 @@ def main() -> int:
             # and the flag would be silently ineffective. Remove it explicitly so
             # the invariant holds regardless of how the pod env was populated.
             os.environ.pop("GH_APP_PRIVATE_KEY", None)
+            os.environ.pop("GH_APP_KEY", None)
         else:
+            os.environ.pop("GH_APP_TOKEN_EXPIRES_AT", None)
             env_vars["GH_APP_PRIVATE_KEY"] = private_key
         # Authoritative installation id for THIS run's target org. The JS worker
         # must re-mint against this installation — NOT installations[0], which is
@@ -1317,27 +1867,77 @@ def main() -> int:
         merged = ",".join(filter(None, [base_attrs] + runtime_attrs))
         os.environ["OTEL_RESOURCE_ATTRIBUTES"] = merged
 
-    # Step 5: Clone customer repo
-    bootstrap_log.step_start(5, "clone", repo=repo)
-    # Username-only URL — GIT_ASKPASS provides the password from $GITHUB_TOKEN
-    clone_url = f"https://x-access-token@github.com/{repo}"
+    # Step 5: Acquire the repository
     WORK_DIR.parent.mkdir(parents=True, exist_ok=True)
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
-    try:
-        run_cmd(["git", "clone", "--depth=20", clone_url, str(WORK_DIR)])
-    except Exception as exc:
-        bootstrap_log.step_error(5, "clone", exc)
-        _fail_bootstrap_status(
-            message_id,
-            arrived_at,
-            f"could not clone {repo} — check that the GitHub App installation grants "
-            f"Contents access to this repository: {exc}",
+    if _mediated_run:
+        # Issue #5223: materialize the work tree through mediation. A clone over
+        # HTTPS authenticates with the run's installation token — the broad,
+        # hour-long, merge-capable credential this path exists to withhold — so a
+        # mediated run has nothing to clone with and this is not an optimization but
+        # the only way it can obtain code at all.
+        #
+        # This is deliberately NOT a clone: the gateway sends a bounded archive of
+        # one resolved commit under read-only permissions, and the helper builds a
+        # single-commit git repository around it. There is no history, and the local
+        # commit's SHA is not the provider's, which is why the helper records the
+        # confirmed remote head in the publication receipt — `publish_commit` sends
+        # the provider's head as `expected_head`, and the local SHA would read as a
+        # stale expectation and be refused as a conflict.
+        bootstrap_log.step_start(5, "mediated_materialize", repo=repo)
+        try:
+            from lib import mediated_github
+
+            _materialized = mediated_github.materialize_repository(
+                str(WORK_DIR),
+                repository=repo,
+                identity=(
+                    "adp-agent[bot]",
+                    f"{app_id}+adp-agent[bot]@users.noreply.github.com"
+                    if app_id
+                    else "adp-agent[bot]@users.noreply.github.com",
+                ),
+            )
+        except Exception as exc:
+            bootstrap_log.step_error(5, "mediated_materialize", exc)
+            # No fallback to a clone. Reaching for the installation token here would
+            # restore the exact credential mediation removes, and would do it
+            # precisely when authorization was in doubt.
+            _fail_bootstrap_status(
+                message_id,
+                arrived_at,
+                f"could not materialize {repo} through mediated GitHub operations — the "
+                f"gateway may be unreachable, or this run's authorization may have ended. "
+                f"There is no token fallback by design ({ADP_MEDIATED_GITHUB_ENV} is on): {exc}",
+            )
+            bootstrap_log.close()
+            raise
+        bootstrap_log.step_success(
+            5,
+            "mediated_materialize",
+            target=str(WORK_DIR),
+            commit=str(_materialized.get("remote_head", ""))[:7],
         )
-        bootstrap_log.close()
-        raise
-    bootstrap_log.step_success(5, "clone", target=str(WORK_DIR))
-    logger.info("Cloned %s to %s", repo, WORK_DIR)
+        logger.info("Materialized %s at %s through mediation", repo, WORK_DIR)
+    else:
+        bootstrap_log.step_start(5, "clone", repo=repo)
+        # Username-only URL — GIT_ASKPASS provides the password from $GITHUB_TOKEN
+        clone_url = f"https://x-access-token@github.com/{repo}"
+        try:
+            run_cmd(["git", "clone", "--depth=20", clone_url, str(WORK_DIR)])
+        except Exception as exc:
+            bootstrap_log.step_error(5, "clone", exc)
+            _fail_bootstrap_status(
+                message_id,
+                arrived_at,
+                f"could not clone {repo} — check that the GitHub App installation grants "
+                f"Contents access to this repository: {exc}",
+            )
+            bootstrap_log.close()
+            raise
+        bootstrap_log.step_success(5, "clone", target=str(WORK_DIR))
+        logger.info("Cloned %s to %s", repo, WORK_DIR)
 
     # Step 6: Configure git identity (must come BEFORE WIP branch creation)
     bootstrap_log.step_start(6, "git_config")
@@ -1353,140 +1953,185 @@ def main() -> int:
     bootstrap_log.step_success(6, "git_config")
 
     # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec
-    bootstrap_log.step_start(7, "wip_branch", branch=f"agent/issue-{issue}")
-    # Create or reset the agent branch + WIP commit BEFORE exec so that:
-    #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
-    #   2. Users see a "WIP" commit immediately on the branch.
-    #   3. Real agent commits stack cleanly on top.
-    #
-    # Branch convention `agent/issue-NNN` is fixed (A4 auto-merge, reviewer
-    # workflows, operators all rely on it). When this issue has been worked
-    # before — typically architect-then-developer in sequence — the remote
-    # branch already exists. Two cases:
-    #
-    #   (a) Stale branch, no open PR:  prior architect/developer run created
-    #       a WIP commit but no PR shipped. Force-reset to current main so
-    #       this run starts clean. Otherwise the agent's `git fetch`+`merge`
-    #       pulls in everything that landed on main since the prior run,
-    #       inflating the eventual PR diff with already-merged work.
-    #
-    #   (b) Branch with an open PR:  operator may be iterating, or an
-    #       earlier architect run shipped a PR (rare). Don't force-reset —
-    #       extend the existing branch so the PR's review state is preserved.
-    #
-    # SQS FIFO MessageGroupId=tenant#repo#issue serializes runs on the same
-    # issue, so concurrent-run race conditions don't apply here.
-    branch_name = f"agent/issue-{issue}"
+    review_head_ref = (
+        ((envelope.get("payload") or {}).get("pull_request") or {}).get("head") or {}
+    ).get("ref")
+    branch_name = (
+        review_head_ref
+        if is_codex_pr_review
+        else ("default-branch" if is_codex_review else f"agent/issue-{issue}")
+    )
+    bootstrap_log.step_start(7, "wip_branch", branch=branch_name)
+    # Attach checks to the work branch. Existing substantive work and open PR
+    # heads are adopted without a cosmetic commit. Only proven empty/transcript
+    # branches may be reset, after saving and verifying their recovery ref.
+    # The reset uses an exact lease: FIFO does not fence other GitHub writers.
     wip_sha: str = ""
     work_branch_ready = False
-    try:
-        # Detect whether the remote branch exists. Use subprocess.run directly
-        # because run_cmd hardcodes check=True; we want to inspect returncode.
-        remote_check = subprocess.run(
-            ["git", "ls-remote", "--exit-code", "--heads", "origin", branch_name],
-            cwd=WORK_DIR,
-            capture_output=True,
-            text=True,
-            check=False,
+    if is_codex_review:
+        if _mediated_run:
+            raise RuntimeError(
+                "agent-codex-reviewer requires the default GitHub token; "
+                "mediated comment/push support is not configured"
+            )
+        if is_codex_pr_review:
+            if not isinstance(branch_name, str) or not branch_name:
+                raise RuntimeError("agent-codex-reviewer envelope has no PR head branch")
+            expected_review_sha = str(source.get("sha") or "")
+            _checkout_existing_work_branch(branch_name)
+            actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+            if actual_review_sha != expected_review_sha:
+                raise RuntimeError(
+                    f"review head changed before checkout: expected {expected_review_sha}, "
+                    f"found {actual_review_sha}"
+                )
+            bootstrap_step = "review_branch"
+        else:
+            branch_name = (
+                run_cmd(["git", "branch", "--show-current"], cwd=WORK_DIR).stdout.strip() or "HEAD"
+            )
+            actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+            bootstrap_step = "issue_review_base"
+        work_branch_ready = True
+        wip_sha = actual_review_sha
+        bootstrap_log.step_success(7, bootstrap_step, sha=wip_sha[:7])
+    elif _mediated_run:
+        # Issue #5223: every provider step below — `ls-remote`, `gh pr list`,
+        # `push --delete`, `push -u` — authenticates with the installation token a
+        # mediated run does not have. None of them is needed here:
+        #
+        # * The branch is already correct. `materialize_repository` initialized the
+        #   work tree on the assignment's own working branch, which the gateway
+        #   derived from protected records rather than accepting from this process.
+        # * The extend-vs-reset decision was already made against the assignment's
+        #   real pull request during the idempotency read, on the immutable head
+        #   repository id rather than a branch name.
+        # * There is no WIP push. An empty marker commit is a provider write, and
+        #   mediation authorizes writes that carry the agent's actual work; spending
+        #   a publication on a no-op commit would add a provider effect for a
+        #   cosmetic one. The agent's first real `publish_commit` creates the remote
+        #   branch, with `expected_head` taken from the recorded remote head.
+        #
+        # `wip_sha` stays empty on purpose. The local commit's SHA is not a provider
+        # SHA, so attaching a check run to it would be rejected — see the check-run
+        # step, which degrades visibly rather than pretending to have published one.
+        work_branch_ready = True
+        bootstrap_log.step_success(7, "wip_branch", branch=branch_name, mediated=True)
+        logger.info(
+            "Mediated mode: work tree is already on %s; the agent's first mediated "
+            "publication creates the remote branch",
+            branch_name,
         )
-        remote_branch_exists = remote_check.returncode == 0
-
-        if remote_branch_exists:
-            # Check whether an open PR exists for this branch
-            open_pr_check = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--repo",
-                    repo,
-                    "--head",
-                    branch_name,
-                    "--state",
-                    "open",
-                    "--json",
-                    "number",
-                    "--jq",
-                    ".[0].number // empty",
-                ],
+    else:
+        try:
+            # Detect whether the remote branch exists. Use subprocess.run directly
+            # because run_cmd hardcodes check=True; we want to inspect returncode.
+            remote_check = subprocess.run(
+                ["git", "ls-remote", "--exit-code", "--heads", "origin", branch_name],
                 cwd=WORK_DIR,
                 capture_output=True,
                 text=True,
                 check=False,
-                env={**os.environ},
             )
-            has_open_pr = bool(open_pr_check.stdout.strip())
+            if remote_check.returncode not in (0, 2):
+                raise RuntimeError(f"Could not determine whether work branch {branch_name} exists")
+            remote_branch_exists = remote_check.returncode == 0
 
-            if has_open_pr:
-                # (b) Extend the existing branch — preserve the PR's review state.
-                logger.info(
-                    "Branch %s exists with open PR; extending instead of resetting",
-                    branch_name,
-                )
-                _checkout_existing_work_branch(branch_name)
-            elif persona in PERSONAS_EXTENDING_BRANCH:
-                # (a-aidlc) AIDLC stages commit artifacts sequentially on one
-                # branch without opening a PR until the end. Never delete the
-                # remote branch — fetch + extend so prior stage commits survive.
-                # Issue #3430.
-                logger.info(
-                    "Branch %s exists with no open PR; persona=%s is in "
-                    "PERSONAS_EXTENDING_BRANCH — extending instead of resetting",
-                    branch_name,
-                    persona,
-                )
-                _checkout_existing_work_branch(branch_name)
-            else:
-                # (a) Stale branch, no PR — delete it and start fresh from main.
-                logger.info(
-                    "Branch %s exists with no open PR; resetting from main",
-                    branch_name,
-                )
-                subprocess.run(
-                    ["git", "push", "--delete", "origin", branch_name],
+            if remote_branch_exists:
+                # Check whether an open PR exists for this branch
+                open_pr_check = subprocess.run(
+                    [
+                        "gh",
+                        "pr",
+                        "list",
+                        "--repo",
+                        repo,
+                        "--head",
+                        branch_name,
+                        "--state",
+                        "open",
+                        "--json",
+                        "number",
+                        "--jq",
+                        ".[0].number // empty",
+                    ],
                     cwd=WORK_DIR,
                     capture_output=True,
                     text=True,
                     check=False,
+                    env={**os.environ},
                 )
-                run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
-        else:
-            # First run on this issue — clean creation
-            run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+                has_open_pr = bool(open_pr_check.stdout.strip())
 
-        work_branch_ready = True
-        run_cmd(
-            ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
-            cwd=WORK_DIR,
-        )
-        run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
-        sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
-        wip_sha = sha_result.stdout.strip()
-        bootstrap_log.step_success(7, "wip_branch", sha=wip_sha[:7])
-        logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
-    except Exception as exc:
-        bootstrap_log.step_error(7, "wip_branch", exc)
-        # Never launch the model on main after a failed branch checkout. A WIP
-        # commit/push failure remains nonfatal once the work branch is ready.
-        if not work_branch_ready:
-            _fail_bootstrap_status(
-                message_id, arrived_at, f"could not prepare work branch {branch_name}"
-            )
-            bootstrap_log.close()
-            raise
-        logger.warning("WIP commit/push failed (non-fatal): %s", exc)
-        # Fall back to the current work-branch HEAD sha for the Check Run
-        try:
+                _reuse_work_branch(
+                    branch_name,
+                    allow_cleanup=(
+                        open_pr_check.returncode == 0
+                        and not has_open_pr
+                        and persona not in PERSONAS_EXTENDING_BRANCH
+                    ),
+                    persona=persona,
+                    issue=issue,
+                )
+            else:
+                # First run on this issue — clean creation
+                run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+
+            work_branch_ready = True
+            if not remote_branch_exists:
+                run_cmd(
+                    [
+                        "git",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        f"WIP: agent/{persona} starting #{issue}",
+                    ],
+                    cwd=WORK_DIR,
+                )
+                run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
             sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
             wip_sha = sha_result.stdout.strip()
-        except Exception:
-            pass
+            bootstrap_log.step_success(7, "wip_branch", sha=wip_sha[:7])
+            logger.info("Work branch %s ready; sha=%s", branch_name, wip_sha[:7])
+        except Exception as exc:
+            bootstrap_log.step_error(7, "wip_branch", exc)
+            # Never launch the model on main after a failed branch checkout. A WIP
+            # commit/push failure remains nonfatal once the work branch is ready.
+            if not work_branch_ready:
+                _fail_bootstrap_status(
+                    message_id, arrived_at, f"could not prepare work branch {branch_name}"
+                )
+                bootstrap_log.close()
+                raise
+            logger.warning("WIP commit/push failed (non-fatal): %s", exc)
+            # Fall back to the current work-branch HEAD sha for the Check Run
+            try:
+                sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
+                wip_sha = sha_result.stdout.strip()
+            except Exception:
+                pass
 
     # Create GitHub Check Run (best-effort — failure must NOT fail the pod)
     # Use the WIP commit sha so the check attaches to the agent branch.
     check_run_id: int | None = None
     check_run_url: str = ""
-    if wip_sha:
+    if _mediated_run:
+        # Issue #5223: a check run is a provider write authenticated with the
+        # installation token, and there is no `checks: write` credential in a
+        # mediated run. Degrading VISIBLY rather than silently: the run proceeds
+        # (a check run has always been best-effort and never gated execution), and
+        # `check_run_url` stays empty so the status comments that interpolate it
+        # simply omit the link instead of publishing a broken one.
+        #
+        # Progress reporting is not lost with it. Status and cancellation travel over
+        # the authority transport (`update_invocation_status` / the status gateway
+        # client), not over GitHub, so Agent Activity still shows this run's state.
+        logger.info(
+            "Mediated mode: no GitHub check run is created (no checks:write credential); "
+            "run status is reported through the authority transport instead"
+        )
+    elif wip_sha and not is_codex_review:
         try:
             cr = create_check_run(
                 repo=repo,
@@ -1566,14 +2211,15 @@ def main() -> int:
                 raise
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 
-    # Step 8: Remove trigger label
-    try:
-        run_cmd(
-            ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
-            env={**os.environ},
-        )
-    except subprocess.CalledProcessError:
-        logger.warning("Failed to remove label (non-fatal)")
+    # Step 8: Remove trigger label. PR-opened Codex reviews have no trigger label.
+    if not is_codex_review:
+        try:
+            run_cmd(
+                ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
+                env={**os.environ},
+            )
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to remove label (non-fatal)")
 
     # Step 9: Post "started" comment (idempotent via message_id)
     started_marker = f"<!-- adp-run:{message_id} -->"
@@ -1603,7 +2249,7 @@ def main() -> int:
             ],
             env={**os.environ},
         )
-        if not existing.stdout.strip():
+        if not is_codex_review and not existing.stdout.strip():
             run_cmd(
                 ["gh", "issue", "comment", str(issue), "--body", started_body, "-R", repo],
                 env={**os.environ},
@@ -1621,6 +2267,19 @@ def main() -> int:
     # scoped to the agent shell; the proxy authenticates using platform IRSA.
     # Keep os.environ's IRSA intact for post-agent SQS/check-run operations.
     agent_env = os.environ.copy()
+    # The feature flag is a POD-level variable, so `os.environ.copy()` inherits it
+    # even for a run this deployment decided not to mediate. The TypeScript side
+    # reads that raw variable in two places — the load-time constant that injects the
+    # mediated prompt, and `isMediatedRun`, which every mint and refresh guard
+    # consults — so leaving it set told a PAT run's agent it had no credential and
+    # instructed it to publish through a route the gateway would refuse for it.
+    #
+    # Normalising it here, once, is what makes the single decision authoritative
+    # ACROSS the process boundary as well as inside this one: the agent observes the
+    # run's decision rather than the deployment's flag. `_withhold_write_token` sets
+    # it back to "true" for runs that really are mediated.
+    if not _mediated_run:
+        agent_env.pop(ADP_MEDIATED_GITHUB_ENV, None)
     from adp_trigger.transport_identity import preserve_worker_identity
 
     preserve_worker_identity(agent_env)
@@ -1635,7 +2294,9 @@ def main() -> int:
         raise RuntimeError(RETIRED_BEDROCK_VIA[bedrock_via])
 
     if bedrock_via != "gateway":
-        raise RuntimeError("ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported.")
+        raise RuntimeError(
+            "ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported."
+        )
 
     # Start sigv4-proxy subprocess for gateway mode.
     # The proxy must sign with platform IRSA (which has execute-api:Invoke on
@@ -1649,9 +2310,19 @@ def main() -> int:
             for k, v in os.environ.items()
             if k not in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
         }
+        # The proxy shares the worker uid and PID namespace. Its initial exec
+        # environment must not retain credentials readable by the agent.
+        #
+        # Consults the run's decision, not the raw flag: on a PAT run the flag is on
+        # but there is no mediation, and withholding here would strip the user's own
+        # credential from an environment that is entitled to it.
+        if _mediated_run:
+            _withhold_write_token(proxy_env)
         proxy_process = _start_sigv4_proxy(proxy_env, tenant_id)
         if proxy_process is None:
-            raise RuntimeError("Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing.")
+            raise RuntimeError(
+                "Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing."
+            )
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
@@ -1676,11 +2347,42 @@ def main() -> int:
         for var in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"):
             agent_env.pop(var, None)
 
+    # Issue #5223: withhold the write token from the agent when mediation is on.
+    #
+    # Retained as defence in depth rather than as the primary control. Since the
+    # mediated startup path above, bootstrap never mints a token in this mode and
+    # removes any it inherited, so in a correct mediated run there is usually nothing
+    # here to strip. It stays because this is the boundary that matters — the agent
+    # subprocess is the only place model-authored code runs, so it is the only place a
+    # prompt injection can act — and because a token reaching this env from somewhere
+    # unanticipated (a projected pod Secret, a future code path) must not silently
+    # become the agent's merge capability. A control that only works when every
+    # upstream step behaved is not a control.
+    #
+    # The customer-AWS/vault semantics accepted for v2 are untouched: this removes
+    # GitHub token variables only, and `adp-cred` continues to work exactly as it
+    # does today.
+    #
+    # Defence in depth is still scoped to runs that are actually mediated. This site
+    # re-read the raw flag, which made it fire on PAT runs: it deleted the token file
+    # written moments earlier and overwrote `ADP_TOKEN_MODE` to "mediated", so every
+    # TypeScript consumer then took the mediated branch and the run could not
+    # authenticate to GitHub at all. Withholding a credential from a run that is not
+    # mediated protects nothing — mediation is what makes the credential unnecessary.
+    if _mediated_run:
+        _withhold_write_token(agent_env)
+        logger.info(
+            "Mediated GitHub operations on — the agent subprocess holds no installation token; "
+            "writes go through the gateway's typed operations"
+        )
+
     # Update invocation status to in_progress (best-effort)
     # Issue #3385 (C5): include token_mode provenance on the DDB row.
     _keda_job_name = os.environ.get("JOB_NAME", os.environ.get("HOSTNAME", ""))
     update_invocation_status(
-        message_id, arrived_at, "in_progress",
+        message_id,
+        arrived_at,
+        "in_progress",
         run_id=_keda_job_name,
         token_mode=_token_mode,
     )
@@ -1703,13 +2405,19 @@ def main() -> int:
     heartbeat = VisibilityHeartbeat(queue_url, region, receipt_handle)
     heartbeat.start()
 
-    logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
+    command = worker_command(persona)
+    logger.info(
+        "Execing runtime=%s command=%s persona=%s branch=%s",
+        runtime,
+        command,
+        persona,
+        branch_name,
+    )
     try:
-        result = subprocess.run(
-            ["node", AGENT_BINARY],
-            cwd=WORK_DIR,
-            env=agent_env,
-        )
+        run_options = {"cwd": WORK_DIR, "env": agent_env}
+        if is_codex_review:
+            run_options.update({"input": raw_message, "text": True, "capture_output": True})
+        result = subprocess.run(command, **run_options)
     finally:
         if task_config_path:
             Path(task_config_path).unlink(missing_ok=True)
@@ -1727,6 +2435,25 @@ def main() -> int:
     # that can take seconds or fail, and the window where a token remains valid
     # for a pod whose agent has already exited should be as short as possible.
     _teardown_agent_control(message_id, arrived_at, control_registered)
+
+    if is_codex_review:
+        output_lines = (result.stdout or "").strip().splitlines()
+        summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
+        if result.returncode == 0:
+            update_invocation_status(message_id, arrived_at, "complete", summary=summary)
+            if use_completion_receipt:
+                try:
+                    record_delivery_completed(envelope)
+                except InvocationCompletionError as exc:
+                    logger.error("Codex issue-review acknowledgement deferred: %s", exc)
+                    return AGENT_EXIT_RETRYABLE
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("Codex review completed and shared queue message was acknowledged")
+            return 0
+        error = (result.stderr or summary or "Codex review failed")[-1024:]
+        update_invocation_status(message_id, arrived_at, "failed", error_message=error)
+        logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
+        return result.returncode or 1
 
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
     # captured, so the identifier outlives the process that created it.
@@ -1857,6 +2584,13 @@ def main() -> int:
             result.returncode,
         )
         return exit_code
+
+    if use_completion_receipt:
+        try:
+            record_delivery_completed(envelope)
+        except InvocationCompletionError as exc:
+            logger.error("AIDLC acknowledgement deferred: %s", exc)
+            return AGENT_EXIT_RETRYABLE
 
     try:
         _delete_message(queue_url, region, receipt_handle)
@@ -2220,7 +2954,10 @@ def _setup_agent_control(
 
             global _control_renewal_session
             _control_renewal_session = ControlRenewal(
-                run_id=message_id, generation=generation, token=token, expires_at=expires_at,
+                run_id=message_id,
+                generation=generation,
+                token=token,
+                expires_at=expires_at,
             )
             _control_renewal_session.start()
             agent_env["ADP_CONTROL_CREDENTIAL_FILE"] = str(_control_renewal_session.path)
@@ -2462,11 +3199,21 @@ def _register_authored_draft(persona: str, issue: int) -> str:
     return draft_registration_note(work_dir=WORK_DIR, issue=issue)
 
 
+def _join_notes(summary: str, *notes: str) -> str:
+    """Append whichever fail-soft notes were produced to the closing comment.
+
+    Each note is "" when it does not apply, so an unchanged path posts a byte-for-byte
+    unchanged comment. Kept as one helper because both PR paths append the same two
+    notes, and drifting them apart is how one path silently stops reporting.
+    """
+    return "\n\n".join([summary, *(note for note in notes if note)])
+
+
 def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
     """Reference the worker's single outcome report without trusting arbitrary URLs."""
     url = (meta or {}).get("outcome_comment_url")
     prefix = f"https://github.com/{repo}/issues/{issue}#issuecomment-"
-    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix):].isdigit():
+    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix) :].isdigit():
         return f"\n\n[Outcome, remaining work and next action]({url})."
     return ""
 
@@ -2558,24 +3305,34 @@ def _handle_success(
             # entrypoint finds nothing left to push. Registration therefore has to
             # be wired here too, not only on the PR-creating path below.
             draft_note = _register_authored_draft(persona, issue)
+            # #5301: the agent opened its own PR during the run, so this is where that
+            # PR gets bound to its story. Registering only on the entrypoint-creates-PR
+            # path below would miss the common case entirely — the same gap #1723 had
+            # with the correlation marker.
+            binding_note = pr_binding_note(
+                repo=repo, pr_number=self_pr, reviewer_artifact=persona == "reviewer"
+            )
             if self_pr:
                 git_outcome = f"PR #{self_pr} is open: https://github.com/{repo}/pull/{self_pr}."
             else:
                 git_outcome = "No local changes remain to push; task completion is not verified by this check."
-            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(meta, repo, issue)
+            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
+                meta, repo, issue
+            )
             _post_comment(
                 repo,
                 issue,
                 message_id,
                 "completed",
-                f"{summary}\n\n{draft_note}" if draft_note else summary,
+                _join_notes(summary, draft_note, binding_note),
                 check_run_url,
             )
             update_invocation_status(
                 message_id,
                 arrived_at,
                 "complete",
-                summary=f"{persona} — run ended; " + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
+                summary=f"{persona} — run ended; "
+                + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
             return 0
 
@@ -2654,26 +3411,38 @@ def _handle_success(
             # edit the PR body to prepend the marker if it isn't already there.
             _ensure_pr_body_marker(repo, existing_pr_number, branch)
         draft_note = _register_authored_draft(persona, issue)
+        # #5301: bind whichever PR carries this story's work. `transcript_only` pushes
+        # review transcripts and opens no PR, so there is nothing to bind; otherwise the
+        # PR is either the agent's own or the one just created on `branch`.
+        binding_pr = "" if transcript_only else (existing_pr_number or _find_open_pr(repo, branch))
+        binding_note = pr_binding_note(
+            repo=repo, pr_number=binding_pr, reviewer_artifact=persona == "reviewer"
+        )
         if transcript_only:
-            git_outcome = f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+            git_outcome = (
+                f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+            )
         elif existing_pr_number:
             git_outcome = f"PR #{existing_pr_number} is open: https://github.com/{repo}/pull/{existing_pr_number}."
         else:
             git_outcome = f"PR opened on branch `{branch}`; merge and deployment are not verified by this check."
-        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(_read_result_metadata(), repo, issue)
+        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
+            _read_result_metadata(), repo, issue
+        )
         _post_comment(
             repo,
             issue,
             message_id,
             "completed",
-            f"{summary}\n\n{draft_note}" if draft_note else summary,
+            _join_notes(summary, draft_note, binding_note),
             check_run_url,
         )
         update_invocation_status(
             message_id,
             arrived_at,
             "complete",
-            summary=f"{persona} — run ended; " + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
+            summary=f"{persona} — run ended; "
+            + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )
     except subprocess.CalledProcessError as exc:
         logger.error("Post-agent git/PR step failed: %s", exc.stderr or exc)

@@ -121,7 +121,9 @@ locals {
       var.manage_ci_runner_cluster_admin && length(data.aws_iam_roles.ci_runner.arns) > 0 ? [local.ci_runner_role_arn] : [],
       var.extra_cluster_admin_principal_arns,
     )) : arn
-    if var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn
+    # The release deployer's entry is owned by platform/release-infra. Avoid
+    # attempting to create the same EKS entry when that role runs an upgrade.
+    if(var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn) && arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-release-deploy"
   ]
 }
 
@@ -202,6 +204,8 @@ module "eks" {
   eks_cluster_role_arn         = module.iam.eks_cluster_role_arn
   node_group_role_arn          = module.iam.eks_node_group_role_arn
   eks_public_access_cidrs      = var.eks_public_access_cidrs
+  endpoint_public_access       = var.eks_endpoint_public_access
+  endpoint_private_access      = var.eks_endpoint_private_access
   cluster_admin_principal_arns = local.cluster_admin_principal_arns
 
   cluster_version           = var.eks_cluster_version
@@ -275,6 +279,7 @@ module "ecr" {
   name_prefix            = local.name_prefix
   common_tags            = local.common_tags
   repositories           = var.ecr_repositories
+  repository_encryption  = var.ecr_repository_encryption
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
 }
 

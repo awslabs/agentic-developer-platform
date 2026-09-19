@@ -36,6 +36,35 @@ logger = logging.getLogger(__name__)
 _cognito_validator: CognitoJWTValidator | None = None
 
 
+def _stamp_trusted_alias_source(ctx: TokenContext) -> TokenContext:
+    """Stamp the canonical trusted alias source on a service-caller context.
+
+    Issue #5419 (PMM-02). Each validated auth path maps to exactly one alias
+    source. The source is stamped here so the preference dependency can resolve
+    the caller using a single exact ``(alias_source, alias_id)`` query — never a
+    multi-source search that could cross namespaces.
+
+    The mapping:
+    - IAM / Agent Registry (``auth_source="iam"``) → ``agent_registry``
+    - Cognito client_credentials (``auth_source="jwt"``, ``account_type="service"``)
+      → ``cognito_m2m``
+
+    ``sa_registration``, ``eventbridge``, and ``github_actions`` are registrable
+    alias sources but have no self-auth adapter.  When an adapter exists, this
+    function gets a new branch.  Until then, those callers have no trusted source
+    and the preference dependency refuses them cleanly.
+    """
+    if ctx.account_type != "service":
+        return ctx
+
+    if ctx.auth_source == "iam":
+        return ctx.model_copy(update={"canonical_alias_source": "agent_registry"})
+    if ctx.auth_source == "jwt":
+        return ctx.model_copy(update={"canonical_alias_source": "cognito_m2m"})
+
+    return ctx
+
+
 def _get_cognito_validator() -> CognitoJWTValidator | None:
     """Get or create the Cognito JWT validator.
 
@@ -62,12 +91,27 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
     Convert Cognito token claims to TokenContext.
 
     Issue #133: Supports both human PKCE tokens and agent client_credentials tokens.
+    Issue #5419: For service accounts (client_credentials flow), ``user_id`` is
+    the validated ``client_id`` — never ``sub``.  Cognito client_credentials tokens
+    always carry ``client_id``; its absence on a service token is an incoherent
+    shape that must be refused, not guessed at.
+
+    The previous code checked ``not claims.username`` to decide whether to use
+    ``client_id``, but ``_parse_claims`` fills ``username`` with ``sub`` when the
+    payload has no ``username`` key (which is always the case for
+    client_credentials tokens).  That made the branch unreachable, so ``user_id``
+    was always ``sub``.  The PMM dependency resolves ``cognito_m2m`` aliases
+    using ``user_id``, so it searched for ``sub`` instead of the registered
+    ``client_id`` — and no alias ever matched.
 
     Args:
         claims: Validated Cognito token claims
 
     Returns:
         TokenContext: Token context for authorization decisions
+
+    Raises:
+        HTTPException: If account_type is "service" but client_id is missing
     """
     # Determine account type from custom claim
     account_type = claims.account_type or "human"
@@ -83,10 +127,21 @@ def _cognito_claims_to_context(claims: CognitoTokenClaims) -> TokenContext:
         claims.role == "platform_admin" or claims.role == "admin" or "admins" in claims.cognito_groups or "platform-admins" in claims.cognito_groups
     )
 
-    # For service accounts, use client_id as user_id
+    # For service accounts (client_credentials flow), always use validated
+    # client_id.  This is the identifier the alias registry is keyed on:
+    # cognito_m2m aliases are registered with client_id, so resolution must
+    # look up client_id, not sub.
     user_id = claims.sub
-    if account_type == "service" and not claims.username:
-        user_id = claims.client_id or claims.sub
+    if account_type == "service":
+        if not claims.client_id:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "incoherent_service_token",
+                    "message": "Service account token is missing client_id claim.",
+                },
+            )
+        user_id = claims.client_id
 
     return TokenContext(
         user_id=user_id,
@@ -187,7 +242,11 @@ async def get_current_user(
                         },
                     )
 
-                return agent_entry_to_token_context(entry)
+                ctx = agent_entry_to_token_context(entry)
+                # Issue #5419 (PMM-02): stamp the trusted alias source so the
+                # preference dependency can resolve using an exact-source query.
+                ctx = _stamp_trusted_alias_source(ctx)
+                return ctx
 
         # Check if authorization header is present
         if not authorization:
@@ -222,6 +281,10 @@ async def get_current_user(
             # Convert claims to TokenContext
             context = _cognito_claims_to_context(claims)
 
+            # Issue #5419 (PMM-02): stamp trusted alias source for service callers
+            if context.account_type == "service":
+                context = _stamp_trusted_alias_source(context)
+
             logger.debug(f"Token validated for user: {context.user_id}, is_admin: {context.is_admin}")
             return context
 
@@ -238,6 +301,12 @@ async def get_current_user(
                 detail={"error": "invalid_token", "message": "Invalid or malformed token"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        except HTTPException:
+            # Preserve intentional HTTP status codes (e.g. the 401 from
+            # _cognito_claims_to_context for incoherent service tokens).
+            # Without this re-raise, the generic handler below converts them
+            # to 500 — which hides the actionable refusal from the caller.
+            raise
         except Exception as e:
             logger.error(f"Unexpected error validating Cognito token: {e}")
             raise HTTPException(

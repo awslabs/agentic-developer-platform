@@ -14,7 +14,7 @@ metadata:
     app.kubernetes.io/part-of: agent-gateway
 data:
   AGENT_ENTRYPOINT: "complex-task-chat"
-  AWS_REGION: "us-east-1"
+  AWS_REGION: "REPLACE_WITH_AWS_REGION"
 
   # FIFO task queue + FIFO response queue. Response queue became FIFO so
   # AG-UI events (RUN_STARTED → TEXT_MESSAGE_* → RUN_FINISHED) arrive in order
@@ -77,6 +77,8 @@ metadata:
     app.kubernetes.io/name: chat-agent-worker
     app.kubernetes.io/part-of: agent-gateway
 spec:
+  rollout:
+    strategy: gradual
   jobTargetRef:
     parallelism: 1
     completions: 1
@@ -130,4 +132,4 @@ spec:
       metadata:
         queueURL: "REPLACE_WITH_CHAT_TASKS_FIFO_URL"
         queueLength: "1"
-        awsRegion: "us-east-1"
+        awsRegion: "REPLACE_WITH_AWS_REGION"

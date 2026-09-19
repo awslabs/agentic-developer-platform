@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -115,6 +117,27 @@ class _HandlerHarness:
 
 
 class TestNoOpReasonPersisted:
+    def test_draft_pr_records_reason_without_publishing_work(self):
+        payload = {
+            "action": "opened",
+            "pull_request": {
+                "number": 3,
+                "title": "Work in progress",
+                "draft": True,
+                "head": {"ref": "agent/issue-3"},
+            },
+            "repository": {"full_name": "acme/repo"},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        with patch("common.sqs_publisher.publish_envelope") as publish:
+            result, capture = _HandlerHarness.run("pull_request", payload)
+
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"])["reason"] == "pr_draft"
+        assert capture.call_args.kwargs["skip_reason"] == "pr_draft"
+        publish.assert_not_called()
+
     def test_comment_without_mention_writes_no_mention(self):
         result, mock_capture = _HandlerHarness.run("issue_comment", _no_mention_comment_payload())
 
@@ -183,7 +206,8 @@ class TestNoOpResponseBody:
 
 
 class TestTriggeringPathUnaffected:
-    def test_dispatched_run_writes_no_skip_reason(self):
+    @pytest.mark.parametrize("event_type", ["issues", "pull_request"])
+    def test_dispatched_run_writes_no_skip_reason(self, event_type):
         """Regression: a real dispatch must not acquire a skip_reason.
 
         The row would otherwise show "Complete" next to an explanation of why
@@ -203,6 +227,14 @@ class TestTriggeringPathUnaffected:
             "installation": {"id": 123},
         }
 
+        if event_type == "pull_request":
+            payload["action"] = "ready_for_review"
+            payload["pull_request"] = {
+                **payload.pop("issue"),
+                "draft": False,
+                "head": {"ref": "agent/issue-4"},
+            }
+
         with (
             patch("handler._get_events_log") as mock_log,
             patch("handler._get_rate_limiter") as mock_rate,
@@ -211,7 +243,7 @@ class TestTriggeringPathUnaffected:
             patch("handler._capture_invocation_event") as mock_noop_capture,
             patch("common.spawn_persona._capture_invocation_event") as mock_spawn_capture,
             patch("common.spawn_persona._write_pointer_and_provenance"),
-            patch("common.sqs_publisher.publish_envelope", return_value="msg-1"),
+            patch("common.sqs_publisher.publish_envelope", return_value="msg-1") as publish,
         ):
             mock_sig.return_value.verify_github_signature.return_value = True
             mock_resolver.return_value.resolve.return_value = (
@@ -223,11 +255,15 @@ class TestTriggeringPathUnaffected:
 
             from handler import handler
 
-            result = handler(_make_event("issues", payload), None)
+            result = handler(_make_event(event_type, payload), None)
 
         # 202 Accepted — queued for the worker. Distinct from the no-op 200,
         # which is what makes the two paths distinguishable in delivery replays.
         assert result["statusCode"] == 202
+        publish.assert_called_once()
+        assert publish.call_args.args[0]["persona"] == (
+            "agent-codex-reviewer" if event_type == "pull_request" else "developer"
+        )
         # The no-op capture (the only path that sets skip_reason) never ran.
         mock_noop_capture.assert_not_called()
         # The dispatch capture ran, and carries no skip_reason kwarg.

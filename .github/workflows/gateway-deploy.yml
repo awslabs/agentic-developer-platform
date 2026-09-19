@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'modules/gateway/src/**'
+      - 'modules/gateway/cli/**'
       - 'modules/gateway/Dockerfile'
       - 'modules/gateway/k8s/**'
       - 'modules/gateway/frontend/**'
@@ -94,7 +95,7 @@ jobs:
           FRONTEND=false
           MIGRATIONS=false
           BUDGET_LAMBDAS=false
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/Dockerfile|modules/gateway/k8s/)'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/)'; then
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then

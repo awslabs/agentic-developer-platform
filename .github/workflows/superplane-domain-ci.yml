@@ -1,0 +1,484 @@
+name: Superplane Domain CI
+
+# Offline test gate for the Superplane domain app (Issue #5037, EPIC #4910).
+#
+# Created by U1 rather than by the unit that owns Terraform and rollout (U3), because
+# U12, U2 and U8 declare this lane as a required check and U12 is in wave 1. A lane owned
+# by a wave-2 unit would be a wave-1 required check produced after the checks that need
+# it. Creating a lane is not taking release ownership: U2 keeps the pinned image builds
+# and U3 keeps Terraform, rollout and migrations.
+#
+# This workflow builds no image and deploys nothing. It uses the existing self-hosted
+# arc-runner-org pool, matching the other ADP workflows (owner instruction 2026-09-17).
+# ARC has an ambient platform identity. The test job clears AWS credential provider
+# inputs and uses an empty shared credentials file plus a region-only config so normal
+# SDK calls cannot obtain credentials. This is an offline test environment, not a
+# claim that the runner has no identity or that PR code is sandboxed from the host.
+# Live acceptance remains a separate explicitly authorized run.
+#
+# The module-wide test step tolerates "no tests yet" — but only for the domain module, and
+# it says so in the log. It does NOT use --passWithNoTests semantics for the gateway-side
+# registration suites, or for the transferred suites below: those exist now, and a PR that
+# deleted them must fail rather than pass on an empty glob.
+#
+# TRANSFERRED SOURCE (U22, #5326). This lane also runs the tests that came with the three
+# Superplane components ADP now maintains under `src/` — the API's pytest suite and the
+# controller's and platform monitor's Go suites. That is what makes the ownership transfer
+# real: the tests run here, on every PR, instead of in a repository ADP cannot read.
+#
+# They run in their own steps rather than under the module-wide glob because each component
+# has its own toolchain and dependency set, preserved byte-for-byte from the origin. The
+# module's `conftest.py` excludes `src/` from collection for the same reason, and `.ruff.toml`
+# excludes it from ADP's lint rules — lint only; this lane, its path filters and review all
+# still cover it.
+
+on:
+  pull_request:
+    # Pinned to main, matching all 22 sibling `pull_request` lanes. Without this the lane
+    # also fires for PRs targeting arbitrary branches (#5198 review).
+    branches: [main]
+    paths:
+      # The module this lane gates.
+      - 'modules/domain-apps/superplane/**'
+      # The lane itself, so a change to it is checked by it.
+      - '.github/workflows/superplane-domain-ci.yml'
+      # The central registration lists. These live OUTSIDE the module directory, which is
+      # the entire reason they get missed (R1 acc. 3) — so a PR touching any of them has
+      # to be able to run the suites that assert the registration is complete and paired.
+      - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/undeploy.sh'
+      - 'platform/scripts/undeploy-phases.sh'
+      - '.github/workflows/undeploy.yml'
+      - 'docs/adp-platform-deployment/deployment-manifest.md'
+      # The feature gate's four surfaces. Read as text by the registration suite, so an
+      # edit to one without the others must be able to trigger it.
+      - 'modules/gateway/src/features/routes.py'
+      - 'modules/gateway/frontend/src/services/features.ts'
+      - 'modules/gateway/frontend/src/App.tsx'
+      - 'modules/gateway/frontend/src/components/Navigation.tsx'
+      - 'modules/gateway/frontend/src/components/next/journeys.ts'
+      # The suites themselves.
+      - 'modules/gateway/tests/features/test_superplane_flag.py'
+      - 'modules/gateway/tests/features/test_superplane_registration.py'
+      - 'modules/gateway/tests/features/test_superplane_deploy_scope.py'
+      - 'modules/gateway/tests/e2e/test_superplane_route_gated.py'
+      # The persona catalogue (issue #5038, U4). Same reasoning as the lists above:
+      # these live OUTSIDE the module, and U4 registers two Superplane personas in
+      # them. A PR editing the catalogue without its prompt files — or a prompt file
+      # without the catalogue — must be able to run the suites that assert the
+      # pairing, or the "name registered without its file" bug class (#4037) ships
+      # again. `stage-personas.sh` is here because the persona-file resolution rule
+      # those suites encode is derived from it: change the staging and the suites'
+      # premise changes with it.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/tests/test_persona_prompt_files.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/tests/test_persona_catalogue_parity.py'
+      - 'modules/agent-factory/agent-worker-image/stage-personas.sh'
+      - 'docs/agent-catalogue.md'
+  workflow_dispatch:
+
+# No OIDC token permission: lint and unit tests do not need an AWS role.
+permissions:
+  contents: read
+
+concurrency:
+  group: superplane-domain-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  superplane-domain-tests:
+    # Required-check name for U12/U2/U8. Renaming a job silently removes a required check
+    # rather than failing, so treat this string as a contract.
+    name: Superplane domain tests
+    runs-on: arc-runner-org
+    # Tests use mocks. Disable normal AWS credential discovery in this job only;
+    # the ARC runner retains its platform identity and is not a security sandbox.
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container provider treats presence as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/gateway/pyproject.toml
+
+      - name: Install gateway dependencies
+        working-directory: modules/gateway
+        # The registration suites import the gateway's feature module, so they need its
+        # dependency set. The domain module has none of its own yet.
+        run: pip install -e ".[dev]"
+
+      - name: Lint the domain module
+        run: |
+          set -euo pipefail
+          # Only lint if there is Python to lint — the module is a skeleton today, and
+          # `ruff check` on a directory with no .py files exits 0 anyway, but being
+          # explicit keeps the log honest about what ran.
+          if find modules/domain-apps/superplane -name '*.py' -print -quit | grep -q .; then
+            ruff check modules/domain-apps/superplane/
+            ruff format --check modules/domain-apps/superplane/
+          else
+            echo "No Python in modules/domain-apps/superplane/ yet — skipping lint."
+          fi
+
+      - name: Lint the gateway-side gate and its suites
+        working-directory: modules/gateway
+        run: |
+          set -euo pipefail
+          ruff check \
+            src/features/routes.py \
+            tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
+            tests/e2e/test_superplane_route_gated.py
+          ruff format --check \
+            src/features/routes.py \
+            tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
+            tests/e2e/test_superplane_route_gated.py
+
+      - name: Verify Superplane authorization policy
+        working-directory: modules/gateway
+        # Domain-only policy edits must exercise these integration tests even
+        # when Gateway CI's path filter does not match the new domain path.
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q \
+            tests/auth/test_domain_token_policy.py \
+            tests/auth/test_validation_path_boundary.py \
+            tests/auth/test_authority_after_authentication.py \
+            tests/auth/test_spoofed_context_rejected.py \
+            tests/auth/test_workspace_authorization.py \
+            tests/auth/test_endpoint_inventory_complete.py \
+            tests/auth/test_adp_common_packaging.py \
+            tests/auth/test_domain_review_regressions.py \
+            --cov=../domain-apps/superplane/auth/superplane_auth --cov-fail-under=90
+
+      - name: Run domain module tests
+        run: |
+          set -euo pipefail
+          # Scoped to the module ROOT, not modules/domain-apps/superplane/tests/ alone.
+          # The narrower glob silently skipped every suite a story placed outside that
+          # one directory: #5040 (U12) puts its baseline/parity suites in
+          # spike/tests/, and the guard below reported "nothing to run" while 115 tests
+          # sat uncollected — the precise failure this step's comment set out to avoid,
+          # since "no tests ran" and "tests passed" share an exit code.
+          if find modules/domain-apps/superplane -name 'test_*.py' -print -quit | grep -q .; then
+            # Real-environment acceptance runs separately with explicit target/evidence inputs.
+            python3 -m pytest modules/domain-apps/superplane/ -m "not superplane_live" -v --tb=short
+          else
+            echo "No tests in modules/domain-apps/superplane/ yet — nothing to run."
+          fi
+
+      - name: Run migration, placement and handover tests with coverage
+        # Pinned BY PATH and NOT tolerant of an empty glob, for the same reason as the
+        # MCP step below: #5061 (U19) names these three files, so "no tests found" here
+        # means a PR deleted one and must fail rather than pass silently.
+        #
+        # The step above already RUNS these files as part of the module-wide glob, but it
+        # has no --cov-fail-under, so it cannot enforce the >=90% the issue requires on the
+        # migration/placement/reconciliation logic. Coverage is scoped to `migration/`
+        # rather than the whole module because a module-wide percentage would let this
+        # package rot behind the aggregate.
+        #
+        # Nothing here touches AWS: the SkyPilot client, join transport and node resolver
+        # are Protocols with in-test fakes, which is what keeps this suite runnable on the
+        # offline test environment this job configures on the existing ARC runner.
+        run: |
+          set -euo pipefail
+          python3 -m pytest -v --tb=short \
+            modules/domain-apps/superplane/tests/test_skypilot_eks_integration.py \
+            modules/domain-apps/superplane/tests/test_skypilot_state_handover.py \
+            modules/domain-apps/superplane/tests/test_placement.py \
+            --cov=modules/domain-apps/superplane/migration \
+            --cov-report=term-missing --cov-fail-under=90
+
+      - name: Run MCP tool surface tests with coverage
+        # Pinned BY PATH and NOT tolerant of an empty glob, unlike the step above: these
+        # tests exist as of #5038, so "no tests found" here means a PR deleted them and
+        # must fail rather than pass silently.
+        #
+        # This is a separate step from the one above because the tool surface lives under
+        # `tools/`, not `tests/` — the module-wide `tests/` glob never reached it, so
+        # before #5038 these tests would have been committed into a lane that did not run
+        # them. Coverage is gated at the level the issue requires (>=85%).
+        run: |
+          set -euo pipefail
+          cd modules/domain-apps/superplane/tools/superplane-mcp
+          python3 -m pytest tests/ -v --tb=short \
+            --cov=superplane_mcp --cov-report=term-missing --cov-fail-under=85
+
+      - name: Run transferred Superplane API tests
+        # The tests that came WITH the transferred source (U22, #5326). This is the step that
+        # makes the ownership transfer real: ADP now runs the API's own 288-test suite on
+        # every PR, rather than pointing at a repository it cannot read and calling that
+        # coverage.
+        #
+        # Run from the component directory with its own dependency set, because that is the
+        # layout upstream wrote these tests for and the transfer preserved every file
+        # byte-for-byte. That is also why they are excluded from the module-wide glob above
+        # (conftest.py's `collect_ignore`): one uninstalled dependency in transferred code
+        # would otherwise abort COLLECTION and report zero results for the other ~1790 tests.
+        #
+        # WHY THE CONSTRAINTS FILE. `pyproject.toml` declares an unbounded
+        # `fastapi>=0.115.0`, so which FastAPI this lane installs depends on the day it runs
+        # — that alone makes it non-reproducible. Concretely, FastAPI 0.137.0 changed what
+        # `app.routes` contains (routers now appear as an `_IncludedRouter` entry rather than
+        # flattened `Route` objects), and one transferred test walks that list looking for
+        # `.path`, so it fails from 0.137.0 onward.
+        #
+        # The routes themselves still work — `app.openapi()` lists 43 paths and `GET /users`
+        # answers 401 rather than 404. This is a test coupled to a changed introspection API,
+        # NOT an app that stopped serving; the distinction is spelled out in
+        # releases/transfer-constraints.txt because the two look identical from the test
+        # output and have very different severity.
+        #
+        # Inherited either way, and pinned here rather than by editing the transferred
+        # pyproject, because byte-fidelity with the origin is what makes the transfer
+        # auditable.
+        #
+        # No AWS: the suite uses aiosqlite in-memory and fakes its clients, which is what
+        # keeps it runnable on this credential-free hosted runner.
+        working-directory: modules/domain-apps/superplane/src/superplane-api
+        run: |
+          set -euo pipefail
+          # The domain authorization policy (#5044, U9) that `app/auth.py` imports to
+          # enforce the token and workspace rules (#5055, U14). Installed from its
+          # in-repository path because it is not published to any index, which is why
+          # it is absent from the API's `[project.dependencies]` — see the note in
+          # src/superplane-api/pyproject.toml. Importing rather than vendoring keeps
+          # one definition of the rules; the cost is that whoever installs the API has
+          # to install this too, and this is that step.
+          pip install -e ../../auth
+          pip install -e ".[dev]" \
+            -c ../../releases/transfer-constraints.txt
+          # The receiver (#5056, U15) imports `superplane_contracts` — U8's shared
+          # contract package, which lives in the module's `contracts/` directory and is
+          # NOT a declared dependency of the transferred pyproject.toml (that file stays
+          # byte-identical to the origin, which predates the package). So the lane
+          # installs it explicitly. Without this, collection of the whole API suite aborts
+          # with ModuleNotFoundError and pytest exits 4.
+          pip install -e ../../contracts \
+            -c ../../releases/transfer-constraints.txt
+          # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
+          # the transfer, so "no tests found" means a PR deleted them and must fail.
+          #
+          # stderr is kept (it used to go to /dev/null): a collection ERROR and an empty
+          # glob both reach this line, `pipefail` fails the step for either, and with
+          # stderr discarded the log showed the failure without the traceback naming the
+          # unimportable module. The count is still read from the last stdout line.
+          COUNT=$(python3 -m pytest tests/ --collect-only -q | tail -1)
+          echo "Collected: ${COUNT}"
+          python3 -m pytest tests/ -v --tb=short
+
+      - name: Enforce coverage on the observation receiver
+        # Issue #5056 (U15) requires >=85% on the receiver logic it changed. The step
+        # above RUNS these tests but has no --cov-fail-under, so it cannot enforce that.
+        #
+        # Scoped to the three modules the story wrote rather than to the whole app: an
+        # app-wide percentage lets exactly this code rot behind the aggregate, and the
+        # aggregate is dominated by 40+ transferred modules this story did not touch.
+        #
+        # WHY pytest-cov IS INSTALLED HERE. The transferred `pyproject.toml` does not
+        # declare it, and it is preserved byte-for-byte from the origin (that fidelity is
+        # what makes the transfer auditable and is asserted by
+        # tests/test_transferred_source_boundary.py). So the lane adds the tool it needs
+        # instead of editing the file — a dev-only measurement dependency, constrained
+        # alongside the rest.
+        #
+        # WHY THE greenlet CONCURRENCY SETTING IS NOT OPTIONAL. These are async SQLAlchemy
+        # paths, which execute on greenlets; without it coverage.py never sees those
+        # frames and reports 68% for code measured at 96%. A 85% gate would then fail on
+        # correct, fully covered code, and the obvious "fix" is to lower the gate. Verified
+        # both ways before pinning: 96% with, 68% without.
+        working-directory: modules/domain-apps/superplane/src/superplane-api
+        run: |
+          set -euo pipefail
+          pip install 'pytest-cov>=5.0.0' -c ../../releases/transfer-constraints.txt
+          cat > /tmp/superplane-receiver-cov.ini <<'INI'
+          [run]
+          concurrency = greenlet,thread
+          INI
+          # --cov takes MODULE paths, not file paths: a file path silently collects
+          # nothing. That failure mode is safe here (no data => the gate fails rather
+          # than passes) but the distinction is worth stating, since the fix for a
+          # "0% coverage" error is a dotted name and not a lower threshold.
+          python3 -m pytest tests/test_heartbeat_auth.py -v --tb=short \
+            --cov=app.services.observations \
+            --cov=app.services.leases \
+            --cov=app.routers.heartbeat \
+            --cov-config=/tmp/superplane-receiver-cov.ini \
+            --cov-report=term-missing --cov-fail-under=85
+
+      - name: Set up Go for the transferred components
+        # Pinned to the version the transferred go.mod files declare (go 1.23.0), so the
+        # toolchain that judges this code is the one it was written against.
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+          cache-dependency-path: |
+            modules/domain-apps/superplane/src/superplane-controller/go.sum
+            modules/domain-apps/superplane/src/superplane-platform-monitor/go.sum
+
+      - name: Run transferred Superplane controller tests
+        # `go vet` before `go test` because a build-level mistake in transferred code should
+        # be reported as such rather than as a test failure. Both are scoped to this
+        # component: the controller and the monitor are separate modules with separate
+        # go.mod files, and a repo-wide `./...` would not reach either.
+        #
+        # `-count=1` disables Go's test cache, so a green result here always reflects this
+        # commit's code rather than a cached run of an earlier one.
+        #
+        # NOT RUN HERE, and deliberately so: `tests/e2e-controller-test.sh` drives a real
+        # cluster. It transferred with the component (executable bit preserved) and is
+        # inventoried in src/TRANSFER-MANIFEST.md, but it belongs to the credentialed live
+        # acceptance this lane exists to stay out of — running it would give this job the
+        # blast radius the header rules out. `go test ./...` does not pick it up.
+        working-directory: modules/domain-apps/superplane/src/superplane-controller
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go test ./... -count=1 -v
+
+      - name: Run transferred Superplane platform monitor tests
+        # Same NOT-RUN note: `tests/integration_test.go` carries `//go:build integration`, so
+        # the default build excludes it and this lane does not pass `-tags=integration`. That
+        # exclusion is the file's own design, not a suppression added here — but it is stated
+        # so the green result is not read as covering it.
+        #
+        # Since #5056 (U15) that file needs a deployed RECEIVER, not a database: the
+        # INTEGRATION_OBSERVATION_* variables replaced INTEGRATION_DATABASE_URL when the
+        # monitor stopped holding a database credential. It is also not the live acceptance
+        # (U15-L1), which additionally requires the direct table grant to be withdrawn.
+        #
+        # `go vet` is run with the integration tag as well. Without it, a build-level
+        # mistake in a tagged file — a stale call signature, say — is invisible to every
+        # lane and surfaces only when someone runs the live acceptance, which is the worst
+        # possible moment to discover the suite does not compile.
+        working-directory: modules/domain-apps/superplane/src/superplane-platform-monitor
+        run: |
+          set -euo pipefail
+          go vet ./...
+          go vet -tags=integration ./...
+          go test ./... -count=1 -v
+
+      - name: Enforce coverage on the observation client
+        # The sender half of #5056's >=85% requirement. Scoped to `db/`, the package the
+        # story rewrote from a pgx pool into an authenticated contract client; a
+        # component-wide number would average it against monitors/ and config/.
+        #
+        # Measured at 91.0% when written. The gate is the issue's 85%, not that number:
+        # a threshold pinned to the current value turns any honest refactor into a CI
+        # failure, which teaches people to edit the gate.
+        working-directory: modules/domain-apps/superplane/src/superplane-platform-monitor
+        run: |
+          set -euo pipefail
+          go test ./db/... -count=1 -coverprofile=/tmp/monitor-db-cover.out
+          go tool cover -func=/tmp/monitor-db-cover.out | tail -1
+          PCT=$(go tool cover -func=/tmp/monitor-db-cover.out | awk 'END{gsub(/%/,"",$3); print $3}')
+          echo "db package statement coverage: ${PCT}%"
+          # awk, not bc: bc is not installed on every runner image and its absence would
+          # read as a coverage failure rather than a missing tool.
+          if awk -v p="$PCT" 'BEGIN{exit !(p+0 < 85)}'; then
+            echo "::error::Observation client coverage ${PCT}% is below the 85% required by issue #5056. The db package is the monitor's only path to cluster state; add tests rather than lowering this gate."
+            exit 1
+          fi
+
+      - name: Run domain skill tests
+        # Skills may ship their own tests (the cyber pack's url-analysis skill does).
+        # Discovered rather than pinned, because a skill added later should be picked up
+        # without editing this lane — but the log distinguishes "none found" from "passed".
+        run: |
+          set -euo pipefail
+          if find modules/domain-apps/superplane/agent/skills -name 'test_*.py' -print -quit | grep -q .; then
+            python3 -m pytest modules/domain-apps/superplane/agent/skills/ -v --tb=short
+          else
+            echo "No skill tests under modules/domain-apps/superplane/agent/skills/ — nothing to run."
+          fi
+
+      - name: Run persona registration tests
+        working-directory: modules/agent-factory/webhook-ingress
+        # Run from the module root, not from `lambda/`, so the `pythonpath = ["lambda"]`
+        # in this module's pyproject.toml is what makes `common` importable — matching
+        # webhook-ingress-ci.yml. Invoking from inside `lambda/` also happens to work,
+        # via pytest's rootdir insertion, but that is incidental to the package layout
+        # and would break if an `__init__.py` were added or removed above the tests.
+        #
+        # Pinned BY NAME for the same reason as the gateway suites: these are the only
+        # checks that every registered persona name has its prompt file (#4037's bug
+        # class) and that a domain persona filename does not silently shadow a core one.
+        # A directory glob would pass if they were deleted.
+        run: |
+          set -euo pipefail
+          python3 -m pytest \
+            lambda/common/tests/test_persona_prompt_files.py \
+            lambda/common/tests/test_persona_catalogue_parity.py \
+            -v --tb=short
+
+      - name: Run gate and registration tests
+        working-directory: modules/gateway
+        # Pinned BY NAME, not by directory glob. A PR that deleted one of these files
+        # would pass a directory-wide invocation, because "no tests" and "all tests
+        # passed" are the same exit code to a glob — and these four suites are the only
+        # checks that the gate defaults off and that all five central lists are paired.
+        #
+        # test_superplane_deploy_scope.py EXECUTES deploy-all.sh against stubbed tooling
+        # (#5198 review): it asserts which phases actually run and which are skipped
+        # under each scope flag, which a text assertion cannot do. It belongs in this
+        # lane and not a credentialed one precisely because it must never reach AWS —
+        # the harness asserts `aws` resolves to its own stub and strips every AWS_* var
+        # from the child environment, so it is offline by construction.
+        run: |
+          python3 -m pytest \
+            tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_registration.py \
+            tests/features/test_superplane_deploy_scope.py \
+            tests/e2e/test_superplane_route_gated.py \
+            -v --tb=short
+
+      - name: Verify no AWS credentials were configured
+        # Verify the test process environment; the self-hosted runner itself retains IRSA.
+        run: |
+          set -euo pipefail
+          FOUND=""
+          for var in AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ACCESS_KEY_ID \
+                     AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                     AWS_CONTAINER_CREDENTIALS_FULL_URI \
+                     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI; do
+            if [ -n "${!var:-}" ]; then
+              FOUND="${FOUND} ${var}"
+            fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "::error::AWS credentials are present in this job (set:${FOUND}). superplane-domain-ci.yml is an offline lane: lint plus unit tests, no AWS calls, no image, no deploy. If a step needs AWS, it does not belong in this lane."
+            exit 1
+          fi
+          echo "Confirmed: no AWS credentials in this job's environment."
+
+      - name: Verify the AWS SDK cannot discover credentials
+        run: |
+          python3 - <<'PYTHON'
+          import boto3
+          assert boto3.Session().get_credentials() is None, "Offline tests discovered AWS credentials"
+          print("Confirmed: AWS SDK credential discovery is disabled for this test job.")
+          PYTHON

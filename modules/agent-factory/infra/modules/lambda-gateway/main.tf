@@ -34,7 +34,7 @@ resource "aws_lambda_function" "ingest" {
       #   adp/<github_org>/gh-app-ops-{id,key}
       # by the ARC setup process (see SETUP-GUIDE.md).
       # The code appends `-id` and `-key` at runtime.
-      GH_APP_SECRET_PREFIX = "adp/${var.github_org}/gh-app-ops"
+      GH_APP_SECRET_PREFIX = var.github_org != "" ? "adp/${var.github_org}/gh-app-ops" : ""
       ARTIFACTS_BUCKET     = var.artifacts_bucket_name
       ARTIFACTS_TABLE      = var.artifacts_table_name
       # Stage C (#186): WebSocket post-back endpoint for upload-token /
@@ -229,8 +229,9 @@ resource "aws_iam_role_policy" "ingest_apigw_manage_connections" {
 # as new personas are added manually (see SETUP-GUIDE.md) without Terraform
 # changes. The org must match what was used to write the secrets.
 resource "aws_iam_role_policy" "ingest_gh_app_secrets" {
-  name = "gh-app-secrets-read"
-  role = aws_iam_role.ingest.id
+  count = var.github_org != "" ? 1 : 0
+  name  = "gh-app-secrets-read"
+  role  = aws_iam_role.ingest.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -240,6 +241,12 @@ resource "aws_iam_role_policy" "ingest_gh_app_secrets" {
       Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.github_org}/gh-app-*"
     }]
   })
+}
+
+# Preserve ownership of existing policies when the optional-org guard is added.
+moved {
+  from = aws_iam_role_policy.ingest_gh_app_secrets
+  to   = aws_iam_role_policy.ingest_gh_app_secrets[0]
 }
 
 resource "aws_cloudwatch_log_group" "ingest" {

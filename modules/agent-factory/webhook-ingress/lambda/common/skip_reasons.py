@@ -39,6 +39,9 @@ LABEL_UNMAPPED = "label_unmapped"
 #: PR head branch does not match ``agent/issue-*``, so no reviewer is due.
 PR_BRANCH_NOT_AGENT = "pr_branch_not_agent"
 
+#: Draft PRs are incomplete; review starts only once the author marks them ready.
+PR_DRAFT = "pr_draft"
+
 #: Bot-sent ``pull_request.synchronize`` — suppressed so an agent pushing fix
 #: commits to its own PR branch cannot spawn a fresh reviewer each time (#1696).
 BOT_SYNCHRONIZE_DEDUP = "bot_synchronize_dedup"

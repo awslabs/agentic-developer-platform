@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +47,14 @@ from src.internal.auth_deps import verify_internal_or_irsa
 from src.internal.credential_binding import resolve_installation_binding
 from src.knowledge.github_app_service import (
     AGENT_RUN_PERMISSIONS,
+    DEFAULT_IDENTITY,
+    REVIEW_ACTION_VALUE,
+    REVIEW_IDENTITY,
+    REVIEW_IDENTITY_PERMISSIONS,
+    SUPPORTED_IDENTITIES,
+    ReviewerIdentityUnavailableError,
     mint_installation_token_with_expiry,
+    resolve_reviewer_app_credentials,
     resolve_tenant_app_credentials,
 )
 from src.shared.config import get_settings
@@ -151,6 +160,14 @@ class GithubInstallationTokenRequest(BaseModel):
     # practice: the binding rejects a request without one.
     invocation_id: str | None = None
     purpose: str | None = None
+    # Issue #5350: which App identity to mint as. "default" is the authoring
+    # identity (every existing caller, unchanged). "review" asks for the distinct
+    # reviewer App so a review is not a self-review — GitHub 422s APPROVE and
+    # REQUEST_CHANGES from the PR's own author, which made every engine-authored PR
+    # unapprovable. An unrecognised value is REJECTED rather than treated as
+    # "default": a caller that asks for an identity this gateway does not know must
+    # not be handed the authoring identity while believing it got a reviewing one.
+    identity: str = DEFAULT_IDENTITY
 
 
 class GithubInstallationTokenResponse(BaseModel):
@@ -166,6 +183,13 @@ class GithubInstallationTokenResponse(BaseModel):
     # gates whether the JS TokenManager initialises at all. Omitting it would put
     # the 1-hour silent-death path straight back.
     app_id: str
+    # Issue #5350: which identity was ACTUALLY used, which is not always the one
+    # requested. When "review" is asked for but no reviewer App is configured, the
+    # mint falls back to the authoring identity and reports "default" here. That
+    # honesty is the whole point: the reviewer reads this field to learn, BEFORE it
+    # tries, whether a formal verdict is even possible — and if it is not, to say so
+    # explicitly instead of silently downgrading to a comment that sets no verdict.
+    identity: str = DEFAULT_IDENTITY
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +543,42 @@ async def resolve_installation(
     )
 
 
+async def _revalidate_github_binding(request: Request, binding, permissions=None, authorized_action=None) -> None:
+    if getattr(request.state, "agent_broker_grant", None) is None:
+        return  # Legacy rollout cohort, not a protected worker.
+    from src.agentauth.broker_identity import verify_broker_worker
+
+    await verify_broker_worker(request)
+    current = request.state.agent_installation_binding
+    if (
+        current != binding
+        or getattr(request.state, "agent_authorized_action", None) is not authorized_action
+        or (permissions is not None and getattr(request.state, "agent_github_permissions", AGENT_RUN_PERMISSIONS) != permissions)
+    ):
+        raise HTTPException(404, "not found")
+
+
+def _validate_github_expiry(request: Request, expires_at: str) -> None:
+    expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    not_after = getattr(request.state, "agent_github_not_after", None)
+    if expiry.tzinfo is None or expiry <= datetime.now(UTC) or (not_after is not None and expiry > not_after):
+        raise ValueError("provider token lifetime exceeds accepted grant")
+
+
+async def _revoke_undelivered_github_token(token: str) -> None:
+    """Best effort provider revocation. Never log token/response/exception text."""
+    try:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+            response = await client.delete(
+                "https://api.github.com/installation/token",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            )
+        if response.status_code not in (204, 401):
+            logger.error("Undelivered GitHub token revocation refused: status=%s", response.status_code)
+    except Exception:
+        logger.error("Undelivered GitHub token revocation unavailable")
+
+
 # ---------------------------------------------------------------------------
 # Endpoint: POST /internal/v1/github-installation-token
 # ---------------------------------------------------------------------------
@@ -550,10 +610,19 @@ async def resolve_installation(
 async def github_installation_token(
     body: GithubInstallationTokenRequest,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> GithubInstallationTokenResponse:
     settings = get_settings()
+
+    # Issue #5350: reject an identity this gateway does not implement. Checked before
+    # any authz work so a typo cannot be answered with a usable authoring token.
+    if body.identity not in SUPPORTED_IDENTITIES:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "unknown_identity", "message": f"Unsupported identity; expected one of {sorted(SUPPORTED_IDENTITIES)}"},
+        )
 
     # Layer 1 — bind the run to the installation its originating webhook carried.
     # Fail-closed, and deliberately NOT gated on ENFORCE_CREDENTIAL_BINDING:
@@ -605,44 +674,111 @@ async def github_installation_token(
         status_code = 409 if exc.state is OwnerState.RESOLVED else 403
         raise HTTPException(
             status_code=status_code,
-            detail={"error": "installation_not_owned", "message": str(exc)},
+            detail={"error": "installation_not_owned", "message": "Installation ownership could not be verified"},
         ) from exc
 
     # Mint. The key is read here, inside the gateway, and never leaves it.
+    #
+    # Issue #5350: the reviewer App requires BOTH conditions, and they check
+    # different things.
+    #
+    # The authorized ACTION is the AUTHORITY, resolved server-side from engine-written
+    # execution state: a developer cannot turn itself into a reviewer by changing JSON,
+    # so an unauthorized ask is refused below with 403. It is compared by string value
+    # rather than by importing `Action`: `src/internal/` must not import
+    # `src.orchestration` at all (see tests/orchestration/test_internal_plane_guard.py —
+    # agent pods can call every internal route, so promotion state must stay
+    # unreachable from this plane). `Action` is a `StrEnum`, so the value comparison is
+    # exact.
+    #
+    # `body.identity == REVIEW_IDENTITY` is the REQUEST, and it is required as well
+    # because a review run mints more than once. Its bootstrap mint (entrypoint.py,
+    # which sends no `identity`) is what clones the repo and drives the check run, and
+    # it needs the authoring App's broader grant — `issues: write` and `checks: read`
+    # among them. Routing that mint to a review-only App would ask GitHub for
+    # permissions that App was never granted, which GitHub refuses outright, so the
+    # run would die at startup instead of reviewing anything. Selecting on the action
+    # alone therefore breaks the very runs this change exists to enable.
+    #
+    # `mint_installation_id` diverges from `binding.installation_id` for the reviewer
+    # identity because a second App has its own installation on the org; both remain
+    # gated by the two authz layers above, which have already proven this tenant owns
+    # the bound installation.
+    granted_identity = DEFAULT_IDENTITY
+    mint_installation_id = binding.installation_id
+    authorized_action = getattr(request.state, "agent_authorized_action", None)
+    authorized_action_value = getattr(authorized_action, "value", authorized_action)
+    action_is_review = authorized_action_value == REVIEW_ACTION_VALUE
+    if body.identity == REVIEW_IDENTITY and not action_is_review:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "review_identity_not_authorized", "message": "Reviewer identity requires an authorized review assignment"},
+        )
+    wants_reviewer_identity = body.identity == REVIEW_IDENTITY and action_is_review
     try:
-        app_id, private_key = await resolve_tenant_app_credentials(binding.tenant_id)
+        if wants_reviewer_identity:
+            try:
+                app_id, private_key, mint_installation_id = await resolve_reviewer_app_credentials(binding.tenant_id)
+                granted_identity = REVIEW_IDENTITY
+            except ReviewerIdentityUnavailableError:
+                # Expected until the second App is registered. Fall back to the
+                # authoring identity and SAY SO in the response, so the caller
+                # reports a pending human approval instead of silently downgrading
+                # to a comment that sets no reviewDecision.
+                logger.info(
+                    "github-installation-token: reviewer identity unavailable for tenant=%s; falling back to authoring identity",
+                    binding.tenant_id,
+                )
+                app_id, private_key = await resolve_tenant_app_credentials(binding.tenant_id)
+                mint_installation_id = binding.installation_id
+        else:
+            app_id, private_key = await resolve_tenant_app_credentials(binding.tenant_id)
     except ValueError as exc:
         logger.warning(
-            "github-installation-token: no App credentials for tenant=%s: %s",
+            "github-installation-token: no App credentials for tenant=%s identity=%s: %s",
             binding.tenant_id,
-            exc,
+            body.identity,
+            type(exc).__name__,
         )
         raise HTTPException(
             status_code=502,
-            detail={"error": "app_credentials_unavailable", "message": str(exc)},
+            detail={"error": "app_credentials_unavailable", "message": "GitHub App credentials unavailable"},
         ) from exc
 
     # Least-privilege: this run's one repo, and only the verbs an agent run needs.
     # GitHub already scopes the token to one org (one installation = one org);
     # narrowing repo + permissions on top means a hijacked run's live token can
     # touch only the repo it was working on.
-    permissions = getattr(request.state, "agent_github_permissions", AGENT_RUN_PERMISSIONS)
+    await _revalidate_github_binding(request, binding, authorized_action=authorized_action)
+    permissions = dict(getattr(request.state, "agent_github_permissions", AGENT_RUN_PERMISSIONS))
+    # #5350: narrow what the REVIEWER mint asks GitHub for, while still revalidating
+    # against the run's authorized set below. The run's authorized permissions are
+    # computed for the AUTHORING App and include `issues: write` and `checks: read`,
+    # which a review-only App deliberately does not hold; GitHub refuses a token
+    # request naming a permission its App was never granted, so asking unchanged would
+    # turn a correctly configured reviewer App into a failed mint. Narrowing also keeps
+    # the reviewer token least-privilege — it can record a verdict and nothing else.
+    #
+    # `minted_permissions` is deliberately separate from `permissions`: the revalidation
+    # guard compares against what the policy authorized, so substituting the narrowed
+    # set there would make every reviewer mint fail its own re-check with a 404.
+    minted_permissions = permissions
+    if granted_identity == REVIEW_IDENTITY:
+        minted_permissions = {key: value for key, value in permissions.items() if key in REVIEW_IDENTITY_PERMISSIONS}
+    token = None
     try:
         token, expires_at = await mint_installation_token_with_expiry(
             app_id,
             private_key,
-            binding.installation_id,
+            mint_installation_id,
             repositories=[body.repo_name],
-            permissions=permissions,
+            permissions=minted_permissions,
         )
-        not_after = getattr(request.state, "agent_github_not_after", None)
-        if not_after is not None:
-            from datetime import UTC, datetime
-
-            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if expiry.tzinfo is None or expiry <= datetime.now(UTC) or expiry > not_after:
-                raise ValueError("provider token lifetime exceeds accepted grant")
+        await _revalidate_github_binding(request, binding, permissions, authorized_action)
+        _validate_github_expiry(request, expires_at)
     except Exception as exc:
+        if token:
+            await _revoke_undelivered_github_token(token)
         await _write_audit(
             db,
             event_type="github_installation_token_denied",
@@ -653,7 +789,7 @@ async def github_installation_token(
                 "installation_id": binding.installation_id,
                 "repo": f"{body.repo_owner}/{body.repo_name}",
                 "invocation_id": body.invocation_id,
-                "error": str(exc),
+                "error_type": type(exc).__name__,
             },
         )
         await db.commit()
@@ -661,39 +797,59 @@ async def github_installation_token(
             "github-installation-token: mint failed tenant=%s installation=%s: %s",
             binding.tenant_id,
             binding.installation_id,
-            exc,
+            type(exc).__name__,
         )
+        if isinstance(exc, HTTPException):
+            raise
         raise HTTPException(
             status_code=502,
             detail={"error": "mint_failed", "message": "GitHub rejected the installation token request."},
         ) from exc
 
-    # Audit every mint, mirroring credential-raw-read. Without this an operator
-    # cannot answer "which run got a token for which org" after the fact — which
-    # is the whole point of moving the mint server-side.
-    await _write_audit(
-        db,
-        event_type="github_installation_token_minted",
-        org_id=binding.tenant_id,
-        actor_id=None,
-        details={
-            "installation_id": binding.installation_id,
-            "repo": f"{body.repo_owner}/{body.repo_name}",
-            "repositories": [body.repo_name],
-            "permissions": permissions,
-            "invocation_id": body.invocation_id,
-            "expires_at": expires_at,
-            "purpose": body.purpose,
-        },
-    )
-    await db.commit()
+    try:
+        # Audit every mint, mirroring credential-raw-read. Without this an operator
+        # cannot answer "which run got a token for which org" after the fact — which
+        # is the whole point of moving the mint server-side.
+        await _write_audit(
+            db,
+            event_type="github_installation_token_minted",
+            org_id=binding.tenant_id,
+            actor_id=None,
+            details={
+                "installation_id": mint_installation_id,
+                "repo": f"{body.repo_owner}/{body.repo_name}",
+                "repositories": [body.repo_name],
+                # The permissions actually minted, which for the reviewer identity are
+                # narrower than the run's authorized set. Auditing the authorized set
+                # here would overstate what the delivered token can do.
+                "permissions": minted_permissions,
+                "invocation_id": body.invocation_id,
+                "expires_at": expires_at,
+                "purpose": body.purpose,
+                # #5350: record the identity asked for AND the one granted. When they
+                # differ, the audit trail carries the reason an engine-authored PR
+                # could not be formally approved by that run.
+                "identity_requested": body.identity,
+                "identity_granted": granted_identity,
+                "authorized_action": authorized_action.value if authorized_action is not None else None,
+            },
+        )
+        await db.commit()
+
+        await _revalidate_github_binding(request, binding, permissions, authorized_action)
+        _validate_github_expiry(request, expires_at)
+    except Exception:
+        await _revoke_undelivered_github_token(token)
+        raise
 
     logger.info(
-        "github-installation-token minted tenant=%s installation=%s repo=%s/%s expires_at=%s",
+        "github-installation-token minted tenant=%s installation=%s repo=%s/%s expires_at=%s identity=%s",
         binding.tenant_id,
-        binding.installation_id,
+        mint_installation_id,
         body.repo_owner,
         body.repo_name,
         expires_at,
+        granted_identity,
     )
-    return GithubInstallationTokenResponse(token=token, expires_at=expires_at, app_id=str(app_id))
+    response.headers["Cache-Control"] = "no-store"
+    return GithubInstallationTokenResponse(token=token, expires_at=expires_at, app_id=str(app_id), identity=granted_identity)

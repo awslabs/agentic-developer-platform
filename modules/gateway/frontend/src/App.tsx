@@ -49,6 +49,7 @@ const BudgetSpend = lazy(() => import('./pages/BudgetSpend')); // Issue #4402
 const Knowledge = lazy(() => import('./pages/Knowledge')); // Issue #1794
 const GraphView = lazy(() => import('./pages/GraphView')); // Issue #4212
 const FlowsList = lazy(() => import('./pages/FlowsList')); // Issue #4869
+const Superplane = lazy(() => import('./pages/Superplane')); // Issue #5037
 const NotFound = lazy(() => import('./pages/NotFound'));
 
 // Opt-in new UI shell — Issue #5079 (NUI-01 of EPIC #5078).
@@ -144,6 +145,13 @@ function App() {
                   order, so `/flows` and `/flows/:flowId` do not compete. */}
               <Route path="/flows" element={<FeatureGate feature="orchestration_engine"><FlowsList /></FeatureGate>} />
               <Route path="/flows/:flowId" element={<FeatureGate feature="orchestration_engine"><GraphView /></FeatureGate>} />
+              {/* Issue #5037 (EPIC #4910). `superplane` is fail-CLOSED in
+                  ALL_FEATURES_ENABLED, so a pending or failed /features fetch keeps this
+                  route unreachable rather than revealing a domain app whose backing
+                  infrastructure belongs to later units. FeatureGate redirects to "/"
+                  when the flag is off, which is what makes "no new route is reachable
+                  on any tenant" true rather than merely intended. */}
+              <Route path="/superplane" element={<FeatureGate feature="superplane"><Superplane /></FeatureGate>} />
             </Route>
 
             {/* Opt-in new UI — Issue #5079 (NUI-01 of EPIC #5078).

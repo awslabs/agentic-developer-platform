@@ -159,6 +159,17 @@ from .adapters.github_comments import (
     _resolve_platform_identity,
     apply_gate_answer_for_context,
 )
+
+# Issue #4539's verifier. Same package, so this IS an ordinary import — unlike the
+# signer, which lives in the webhook-ingress Lambda zip and cannot be imported from
+# here at all. That asymmetry is why the canonical form is written twice and pinned by
+# a shared golden fixture rather than shared as code.
+from .command_attribution import (
+    SIGNATURE_ATTR,
+    AttributionError,
+    VerifiedCommand,
+    verify_row,
+)
 from .dispatch_pass import resolve_installation_id
 from .models import DecisionKind, NodeKind, OrchestrationFlow, OrchestrationNode
 from .repository import OrchestrationRepository
@@ -169,9 +180,11 @@ logger = logging.getLogger("bedrockgateway.orchestration.engine_commands")
 __all__ = [
     "ENGINE_COMMAND_STATUS_CONSUMED",
     "ENGINE_COMMAND_STATUS_PENDING",
+    "ENGINE_COMMAND_STATUS_QUARANTINED",
     "EngineCommandConfig",
     "EngineCommandReport",
     "PendingEngineAck",
+    "QuarantinedRow",
     "flush_engine_commands",
     "run_engine_command_pass",
 ]
@@ -187,6 +200,19 @@ FEATURE_FLAG_ENV = "FEATURE_ORCHESTRATION_ENGINE_ENABLED"
 # module docstring). A test on each side asserts the pair is equal.
 ENGINE_COMMAND_STATUS_PENDING = "pending"
 ENGINE_COMMAND_STATUS_CONSUMED = "consumed"
+
+# Issue #4539: the terminal status for a row whose attribution did not verify.
+# Deliberately NOT `consumed`:
+#
+#   * `consumed` means "a real command was read and answered". A row that never
+#     established it came from a verified delivery was neither, and an operator
+#     reading the table must be able to tell those apart — a forgery attempt that
+#     looks identical to an applied command is an incident nobody can investigate.
+#   * it is still a terminal value on the sparse index's partition key, so the
+#     `pending` query stops returning the row. That is what stops the endless
+#     re-read: an unverifiable row costs one verification once, not once per wake
+#     forever.
+ENGINE_COMMAND_STATUS_QUARANTINED = "quarantined"
 
 # The sparse GSI the Lambda's marker makes this row visible on.
 ENGINE_COMMAND_INDEX = "engine-command-index"
@@ -329,6 +355,39 @@ class PendingEngineAck:
     message: str
 
 
+@dataclass(frozen=True)
+class QuarantinedRow:
+    """One row whose attribution did not verify, held for the flush to seal off.
+
+    A separate type from :class:`PendingEngineAck`, not a `message=""` special case
+    of it, because the two carry different *intent* and must not be able to drift
+    into each other:
+
+    * a `PendingEngineAck` may post a comment, addressed with a repository and an
+      installation. A quarantined row must never produce a GitHub write at all —
+      those fields came from whoever wrote the row, so posting with them is a
+      confused-deputy write regardless of what the body says. Having no such fields
+      on this type makes that impossible rather than merely intended.
+    * its conditional write is bound to the signature bytes actually observed, so a
+      concurrent legitimate rewrite of the row is not clobbered by a verdict reached
+      about the *previous* content.
+
+    `org_id` is the row's own unverified tenant string. It is a counter label and
+    nothing else — never used to resolve a credential, read a plan, or route a reply.
+    """
+
+    event_id: str
+    arrived_at: str
+    org_id: str
+    #: The signature exactly as read from the row, or `""` when the row carried
+    #: none. The quarantine write is conditional on this still being the value in
+    #: DynamoDB.
+    observed_signature: str
+    #: Bounded, sanitized :mod:`command_attribution` reason. Safe as a metric
+    #: dimension: never derived from row content.
+    reason: str
+
+
 @dataclass
 class EngineCommandReport:
     """What one engine-command pass did.
@@ -344,7 +403,22 @@ class EngineCommandReport:
     # commenter, missing permission, ambiguous or absent target. Counted as one
     # number because the *commenter* is told nothing that distinguishes them.
     commands_refused: int = 0
+    # Issue #4539: rows whose attribution signature did not verify. Counted apart
+    # from `commands_refused` because they are a different kind of event entirely: a
+    # refusal is a real command the platform declined to apply, whereas a
+    # quarantine is a row that never established it came from a verified delivery.
+    # One number for both would let a forgery attempt hide inside ordinary
+    # permission refusals, and would make "the key is not seeded in this
+    # environment" indistinguishable from "people are sending commands they lack
+    # permission for".
+    commands_quarantined: int = 0
     consumes_failed: int = 0
+    # Issue #4539: a quarantine write that did not land. The row therefore stays
+    # `pending` and is verified again next wake — safe (verification is pure and it
+    # will fail identically), but a row that can NEVER be sealed off is a permanent
+    # loop, which is exactly the endless re-read this work has to prevent. Its own
+    # counter, and it forces a non-success report.
+    quarantines_failed: int = 0
     acks_posted: int = 0
     acks_failed: int = 0
     errors: int = 0
@@ -357,6 +431,16 @@ class EngineCommandReport:
     # nothing.
     enabled: bool = True
     pending: list[PendingEngineAck] = field(default_factory=list)
+    #: Issue #4539: rows to seal off during the flush. Separate from `pending` so
+    #: that the ack loop cannot reach them — see :class:`QuarantinedRow`.
+    quarantined: list[QuarantinedRow] = field(default_factory=list)
+    #: Issue #4539: how many rows failed verification for each sanitized reason.
+    #: Bounded keys (the `command_attribution.REASON_*` set), so this is safe to emit
+    #: as a metric dimension. Operationally this is the difference between "the key
+    #: is not seeded in this environment" (every row `no_verification_key`) and
+    #: "somebody is writing rows" (`invalid_signature`), which are the same number in
+    #: `commands_quarantined` and require opposite responses.
+    quarantine_reasons: dict[str, int] = field(default_factory=dict)
     per_org: dict[str, dict[str, int]] = field(default_factory=dict)
 
     @property
@@ -367,7 +451,7 @@ class EngineCommandReport:
         told. That is the invisible outcome this story exists to remove, so it
         forces a non-success report rather than being a footnote.
         """
-        return self.errors == 0 and self.consumes_failed == 0 and self.acks_failed == 0
+        return self.errors == 0 and self.consumes_failed == 0 and self.acks_failed == 0 and self.quarantines_failed == 0
 
     def _org(self, org_id: str) -> dict[str, int]:
         """Per-org counters, seeded with this report's own key set.
@@ -382,7 +466,9 @@ class EngineCommandReport:
                 "commands_read": 0,
                 "commands_applied": 0,
                 "commands_refused": 0,
+                "commands_quarantined": 0,
                 "consumes_failed": 0,
+                "quarantines_failed": 0,
                 "acks_posted": 0,
                 "acks_failed": 0,
                 "errors": 0,
@@ -393,6 +479,15 @@ class EngineCommandReport:
         """Increment a counter both in total and for one org."""
         setattr(self, key, getattr(self, key) + amount)
         self._org(org_id)[key] += amount
+
+    def record_quarantine_reason(self, reason: str) -> None:
+        """Tally one sanitized verification-failure reason.
+
+        Kept off :meth:`record` because this is a dict of bounded string keys rather
+        than a fixed counter set — passing it through `record` would mean `setattr`
+        on a name that is not an attribute.
+        """
+        self.quarantine_reasons[reason] = self.quarantine_reasons.get(reason, 0) + 1
 
 
 def _issue_ref_candidates(issue_number: int) -> list[str]:
@@ -759,12 +854,18 @@ async def _handle_row(
     *,
     access: AccessControl,
 ) -> None:
-    """Resolve, authorize and apply one marked event row.
+    """Verify, resolve, authorize and apply one marked event row.
+
+    Attribution is verified FIRST (#4539). Everything below that point acts on the
+    signed tuple, so "the tick trusts only what a verified GitHub delivery carried"
+    holds by construction rather than by every later reader remembering to check.
 
     Every exit either applies the command or queues a reply, so no comment is
-    silently ignored. There are two exceptions, both consumed quietly because a
-    reply would be noise rather than information (#4599):
+    silently ignored. There are three exceptions, all consumed quietly:
 
+    * **A row whose attribution does not verify** (#4539). Quarantined: no lookup,
+      no decision, no dispatch, no reply. A reply would be a GitHub write addressed
+      with fields whoever wrote the row chose.
     * **A body that parses to nothing.** The Lambda marks any comment containing the
       tag, so `cc @agent-engine` in prose — or a doc quoting a command inside
       backticks — is a marked row with no command in it. Replying to those would
@@ -772,35 +873,47 @@ async def _handle_row(
     * **A comment a bot authored.** A live command is a human act; the platform's own
       agents narrating what a command does are not issuing one.
     """
-    org_id = str(row.get("tenant_id") or "")
-    repo_full = str(row.get("repo") or "")
-    raw_issue = row.get("issue_number")
-    body = row.get("engine_command_body")
-    github_user_id = str(row.get("engine_command_sender_github_id") or "")
     event_id = str(row.get("event_id") or "")
     arrived_at = str(row.get("arrived_at") or "")
 
-    report.record(org_id, "commands_read")
-
+    # Issue #4539: VERIFY ATTRIBUTION FIRST — before the installation is resolved,
+    # before any identity or permission lookup, and before any row field is used for
+    # a side effect. The ordering is the security property, not a performance choice:
+    #
+    #   * an identity lookup keyed on an attacker-chosen sender in an attacker-chosen
+    #     tenant is itself a probe, and a distinguishable outcome is an oracle for
+    #     which accounts and orgs exist;
+    #   * an acknowledgement addressed with an attacker-chosen repository and
+    #     installation would make this component post to a repository of the
+    #     attacker's choosing using a credential it holds — a confused-deputy write,
+    #     regardless of whether the command was ever applied.
+    #
+    # So an unverified row produces no lookup, no decision, no dispatch and no
+    # acknowledgement. It is quarantined (consumed with an empty message, so it stops
+    # being re-read) and counted.
+    #
+    # A valid signature is NOT authorization. It establishes only that this tuple
+    # came from a delivery that passed GitHub's webhook signature check, unaltered.
+    # Membership, PLAN_APPROVE and the human-only gates all run below, unchanged.
     try:
-        issue_number = int(raw_issue)
-    except (TypeError, ValueError):
-        # A comment always has an issue. A row without one cannot be replied to at
-        # all, so consuming it is the only way it stops being re-read forever.
-        logger.warning("orchestration engine commands: event %s has issue_number=%r; consuming without action", event_id, raw_issue)
-        report.record(org_id, "commands_refused")
-        report.pending.append(
-            PendingEngineAck(
-                event_id=event_id,
-                arrived_at=arrived_at,
-                org_id=org_id,
-                repo=repo_full,
-                issue_number=0,
-                installation_id=None,
-                message="",
-            )
-        )
+        verified: VerifiedCommand = verify_row(row)
+    except AttributionError as exc:
+        _quarantine(row, report, reason=exc.reason)
         return
+
+    # Authority and routing come from the SIGNED tuple, not from the row. The row's
+    # mutable copies were checked against it during verification (a disagreement
+    # refuses), so these are equal — but reading them from `verified` is what makes
+    # "the tick acts only on signed values" true by construction rather than by
+    # coincidence, and it is what stays true if a future change adds a row attribute
+    # that is not in the signed set.
+    org_id = verified.tenant_id
+    repo_full = verified.repo
+    issue_number = verified.issue_number
+    body = verified.command_body
+    github_user_id = verified.sender_github_id
+
+    report.record(org_id, "commands_read")
 
     def _queue(message: str, *, installation_id: int | None) -> None:
         report.pending.append(
@@ -827,11 +940,13 @@ async def _handle_row(
     # thread noisy again; it does not make a bot able to approve anything. Do not
     # relax that RBAC on the strength of this check.
     #
-    # `.get` with a False default because the field (#4599) postdates rows already in
-    # the table, and the webhook Lambda that writes it ships before this reads it —
-    # during that window, and for any row written earlier, absent means "unknown",
-    # and treating unknown as human preserves exactly today's behaviour.
-    if bool(row.get("engine_command_sender_is_bot", False)):
+    # Issue #4539 changed WHERE author kind is read from: `verified.sender_is_bot`
+    # derives it from the SIGNED `sender_type`, which is GitHub's own value for the
+    # delivery, instead of from the row's mutable `engine_command_sender_is_bot`
+    # flag. Same behaviour, but the flag was one more attribute anything writing the
+    # row could flip. Verification refuses any row whose signed tuple is absent, so
+    # there is no "field postdates existing rows" window to be tolerant about here.
+    if verified.sender_is_bot:
         logger.info(
             "orchestration engine commands: event %s was authored by a bot; consuming quietly",
             event_id,
@@ -853,15 +968,23 @@ async def _handle_row(
     # it both confirms the row's tenant against the installation that delivered it
     # and is the credential the ack needs. A plan that can dispatch at all already
     # satisfies this, so it refuses nothing that was ever going to work.
+    #
+    # Issue #4539 fixed two defects in this check at once. It compared against the
+    # ROW's `installation_id`, which whoever wrote the row chose — so the check
+    # confirmed the row against itself. And the `row_installation and` conjunct made
+    # it skip entirely when that attribute was absent or empty, so omitting the field
+    # was enough to bypass it. It now compares against the SIGNED installation, and
+    # there is no conditional: an empty signed value cannot equal a resolved id, so
+    # an absent installation refuses instead of passing.
     installation_id = await resolve_installation_id(session, org_id=org_id) if org_id else None
-    row_installation = str(row.get("installation_id") or "").strip()
-    if installation_id is None or (row_installation and str(installation_id) != row_installation):
+    signed_installation = verified.installation_id.strip()
+    if installation_id is None or str(installation_id) != signed_installation:
         logger.warning(
-            "orchestration engine commands: org %r resolves to installation %r but event %s arrived on %r — refusing",
+            "orchestration engine commands: org %r resolves to installation %r but event %s was delivered on %r — refusing",
             org_id,
             installation_id,
             event_id,
-            row_installation,
+            signed_installation,
         )
         report.record(org_id, "commands_refused")
         _queue("", installation_id=None)
@@ -897,6 +1020,122 @@ async def _handle_row(
 
     report.record(org_id, "commands_applied" if applied else "commands_refused")
     _queue(message, installation_id=installation_id)
+
+
+def _quarantine(row: dict[str, Any], report: EngineCommandReport, *, reason: str) -> None:
+    """Record one unverifiable row for sealing off, and do nothing else (#4539).
+
+    Deliberately does NOT: append a decision, dispatch work, resolve an identity or
+    an installation, or queue an acknowledgement. Every one of those would either act
+    on, or address a GitHub write with, fields whoever wrote the row selected.
+
+    The row's `tenant_id` is used as a counter label and nothing else. It is
+    unverified — the label may be a tenant the writer chose — but attributing the
+    event to *some* tenant is what makes a per-org spike visible at all, and it is
+    never used to resolve a credential or read a plan.
+    """
+    org_id = str(row.get("tenant_id") or "")
+    event_id = str(row.get("event_id") or "")
+    arrived_at = str(row.get("arrived_at") or "")
+
+    # Reason and row keys only. Never the signature, the key id, the body, or any
+    # other row content: this line goes to CloudWatch Logs, where attacker-chosen
+    # text is both an injection surface and something an operator may reasonably read
+    # as the platform's own output.
+    logger.warning(
+        "orchestration engine commands: event %s failed attribution verification (%s); quarantining",
+        event_id,
+        reason,
+    )
+
+    report.record(org_id, "commands_quarantined")
+    report.record_quarantine_reason(reason)
+    report.quarantined.append(
+        QuarantinedRow(
+            event_id=event_id,
+            arrived_at=arrived_at,
+            org_id=org_id,
+            # The signature exactly as observed — not stripped, not normalised. The
+            # conditional write below is bound to this value, so it must be the bytes
+            # that were actually compared against, byte for byte.
+            observed_signature=_observed_signature(row),
+            reason=reason,
+        )
+    )
+
+
+def _observed_signature(row: dict[str, Any]) -> str:
+    """The row's signature attribute as a string, `""` when absent.
+
+    A non-string attribute (a number, a map — anything a writer could put there)
+    becomes `""` rather than raising, so a hostile row cannot make quarantining
+    itself fail. `""` is a distinguishable state for the conditional write, which
+    binds to "still absent" in that case.
+    """
+    value = row.get(SIGNATURE_ATTR)
+    return value if isinstance(value, str) else ""
+
+
+def _quarantine_write(table, quarantined: QuarantinedRow) -> bool:
+    """Seal off one unverifiable row. Returns whether this call did it.
+
+    Conditional on BOTH facts this verdict was reached about:
+
+    * the marker is still `pending` — so a tick that already sealed or consumed the
+      row wins and this one applies nothing;
+    * the signature attribute still holds exactly the value that was verified (or is
+      still absent, when the row carried none).
+
+    The second condition is the one that matters for correctness. Without it, a
+    verdict about content read at time T would be applied to whatever the row holds
+    at time T+n: a legitimate signed rewrite landing in that gap would be quarantined
+    on the strength of the *previous* content, turning a race into a lost human
+    command. Binding the write to the observed signature makes the outcome "somebody
+    changed it, re-verify next wake" instead.
+    """
+    from botocore.exceptions import ClientError
+
+    if quarantined.observed_signature:
+        condition = f"engine_command_status = :pending AND {SIGNATURE_ATTR} = :sig"
+        values: dict[str, Any] = {
+            ":quarantined": ENGINE_COMMAND_STATUS_QUARANTINED,
+            ":pending": ENGINE_COMMAND_STATUS_PENDING,
+            ":sig": quarantined.observed_signature,
+            ":reason": quarantined.reason,
+        }
+    else:
+        # No signature was observed. `attribute_not_exists` is the honest binding for
+        # that state — a row that has since ACQUIRED a signature must not be sealed
+        # off by a verdict reached when it had none.
+        condition = f"engine_command_status = :pending AND attribute_not_exists({SIGNATURE_ATTR})"
+        values = {
+            ":quarantined": ENGINE_COMMAND_STATUS_QUARANTINED,
+            ":pending": ENGINE_COMMAND_STATUS_PENDING,
+            ":reason": quarantined.reason,
+        }
+
+    try:
+        table.update_item(
+            Key={"event_id": quarantined.event_id, "arrived_at": quarantined.arrived_at},
+            # The sanitized reason is stored on the row so an operator investigating
+            # later can tell "no key was seeded" from "this signature did not verify"
+            # without correlating against metrics. Bounded enum, never row content.
+            UpdateExpression=("SET engine_command_status = :quarantined, engine_command_quarantine_reason = :reason"),
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            # Either another tick got there first, or the row changed under us. Both
+            # are normal concurrency: nothing was applied, and if the row is still
+            # unverifiable it is quarantined on the next wake.
+            logger.info(
+                "orchestration engine commands: event %s was not quarantined; the row changed or another tick sealed it",
+                quarantined.event_id,
+            )
+            return False
+        raise
 
 
 def _get_table(config: EngineCommandConfig):
@@ -1061,17 +1300,43 @@ async def flush_engine_commands(report: EngineCommandReport, config: EngineComma
     Consume comes first so that a failure to *reply* can never cause the command to
     be applied a second time. An empty `message` means "consume, say nothing" — a
     marked comment that carried no command.
+
+    Quarantined rows (#4539) are sealed off here too, in a loop of their own that
+    cannot post anything. They are handled BEFORE the acks: a row that failed
+    verification has no legitimate reply to wait behind, and sealing it first means a
+    GitHub outage stalling the ack loop cannot leave unverifiable rows `pending` and
+    being re-verified every wake.
     """
-    if not report.pending:
+    if not report.pending and not report.quarantined:
         return
 
     cfg = config if config is not None else EngineCommandConfig.from_env()
     if not cfg.configured:  # pragma: no cover - unreachable while `pending` implies an enabled pass
-        logger.warning("orchestration engine commands: %s is unset; %d marker(s) not consumed", TABLE_ENV, len(report.pending))
+        logger.warning(
+            "orchestration engine commands: %s is unset; %d marker(s) not consumed and %d not quarantined",
+            TABLE_ENV,
+            len(report.pending),
+            len(report.quarantined),
+        )
         report.consumes_failed += len(report.pending)
+        report.quarantines_failed += len(report.quarantined)
         return
 
     handle = table if table is not None else _get_table(cfg)
+
+    for quarantined in report.quarantined:
+        try:
+            _quarantine_write(handle, quarantined)
+        except Exception:
+            # The row stays `pending` and is verified again next wake. Verification is
+            # pure and will fail identically, so nothing is applied — but a row that
+            # can never be sealed off is the permanent re-read this work exists to
+            # prevent, so it is counted and forces a non-success report.
+            logger.exception(
+                "orchestration engine commands: failed to quarantine event %s",
+                quarantined.event_id,
+            )
+            report.record(quarantined.org_id, "quarantines_failed")
 
     for ack in report.pending:
         try:

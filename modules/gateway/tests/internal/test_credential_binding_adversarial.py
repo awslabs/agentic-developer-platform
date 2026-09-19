@@ -720,11 +720,10 @@ class TestImprovisedInvocationReplay:
         """More sophisticated attack: attacker sets body.user_id=victim AND
         uses victim's invocation_id. Registry returns victim → matches body.
 
-        This succeeds because the binding resolves correctly — BUT the attacker
-        would need to control the pod environment (ADP_MESSAGE_ID is from the
-        trusted SQS envelope, not agent-writable). If they somehow spoofed it,
-        they'd get the victim's cred. This tests the boundary holds if SQS
-        envelope trust is maintained.
+        This documents the legacy shared-secret vulnerability, not a security
+        guarantee. Agent-authored code can send arbitrary HTTP bodies regardless
+        of the bootstrap environment. Protected workers require signed run and
+        pod proofs before this lookup (test_bootstrap_routes covers refusal).
         """
         mock_sm = MagicMock()
         mock_sm.get_secret.return_value = "ghp_victim_secret_LEAKED"
@@ -759,9 +758,8 @@ class TestImprovisedInvocationReplay:
                 },
             )
 
-        # This succeeds — the boundary relies on ADP_MESSAGE_ID being
-        # set by the trusted SQS envelope, not agent-controlled.
-        # If the env var trust is broken, this is a vulnerability.
+        # Legacy exposure remains until the protected cohort and IAM isolation
+        # are activated. Never enable shared-secret access for coding workers.
         # For now, document that the gateway trusts the invocation_id
         # — the trust boundary is at the pod environment level.
         assert resp.status_code == 200

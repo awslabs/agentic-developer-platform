@@ -72,7 +72,7 @@ class TestDroppedWriteIsVisible:
         logger = _logger_with_failing_table()
 
         with patch.object(webhook_events, "_get_cloudwatch") as mock_get_cw:
-            _log(logger)
+            result = _log(logger)
 
             mock_get_cw.return_value.put_metric_data.assert_called_once()
             kwargs = mock_get_cw.return_value.put_metric_data.call_args.kwargs
@@ -82,6 +82,7 @@ class TestDroppedWriteIsVisible:
         assert datum["MetricName"] == webhook_events.ROW_WRITE_DROPPED_METRIC
         assert datum["Value"] == 1
         assert datum["Unit"] == "Count"
+        assert result["write_failed"] is True
 
     def test_metric_lands_in_the_shared_webhookingress_namespace(self) -> None:
         """Same namespace as the rest of ingress metrics, so it shares the dashboard."""

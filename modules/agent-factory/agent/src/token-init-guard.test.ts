@@ -30,6 +30,8 @@ jest.mock('@octokit/auth-app', () => ({
 }));
 
 import { canInitTokenManager } from './token-refresh';
+import { isBrokerEnabled } from './lib/githubTokenBroker';
+import { isMediatedRun } from './mediated-github-config';
 
 /** The agent env entrypoint.py produces in BROKER mode: flag set, no key. */
 const BROKER_ENV: NodeJS.ProcessEnv = {
@@ -38,6 +40,29 @@ const BROKER_ENV: NodeJS.ProcessEnv = {
   REPO_OWNER: 'acme-corp',
   REPO_NAME: 'flagship-app',
   ADP_GH_TOKEN_BROKER_ENABLED: '1',
+};
+
+/**
+ * The agent env `entrypoint._withhold_write_token` produces for a mediated run in
+ * the authority cohort (#5223).
+ *
+ * Every field here is what withholding actually leaves behind, and that is the
+ * point: no token variables, but `GH_APP_ID`, `GH_APP_INSTALLATION_ID` and
+ * `REPO_OWNER` deliberately survive (public identifiers, needed for the bot commit
+ * identity), and `ADP_AGENT_AUTHORITY_ENABLED` survives because the whole authority
+ * transport keys off it. `ADP_GH_TOKEN_BROKER_ENABLED` is absent — popped by
+ * withholding — which is exactly why the broker predicate alone cannot be trusted
+ * to stop a re-mint: `isBrokerEnabled` returns true for the authority flag on its
+ * own.
+ */
+const MEDIATED_ENV: NodeJS.ProcessEnv = {
+  GH_APP_ID: '99001',
+  GH_APP_INSTALLATION_ID: '555001',
+  REPO_OWNER: 'acme-corp',
+  REPO_NAME: 'flagship-app',
+  ADP_AGENT_AUTHORITY_ENABLED: 'true',
+  ADP_TOKEN_MODE: 'mediated',
+  ADP_MEDIATED_GITHUB_ENABLED: 'true',
 };
 
 /** The agent env entrypoint.py produces with the flag OFF: key, no flag. */
@@ -117,6 +142,72 @@ describe('canInitTokenManager', () => {
   });
 });
 
+
+  describe('mediated runs — the withheld token must never come back (#5223)', () => {
+    it('refuses to initialise even though broker mode and every identifier survive', () => {
+      // The precise gap this closes. `isBrokerEnabled` is TRUE here (the authority
+      // flag alone sets it), the app id, installation and owner all survive
+      // withholding, and ADP_TOKEN_MODE is "mediated" — not "pat" — so the old
+      // 'pat'-only gate fell straight through and the manager initialised. It then
+      // minted through the broker within seconds of startup.
+      expect(isBrokerEnabled(MEDIATED_ENV)).toBe(true);
+      expect(MEDIATED_ENV.GH_APP_ID).toBeTruthy();
+      expect(MEDIATED_ENV.GH_APP_INSTALLATION_ID).toBeTruthy();
+      expect(MEDIATED_ENV.REPO_OWNER).toBeTruthy();
+
+      expect(canInitTokenManager(MEDIATED_ENV)).toBe(false);
+    });
+
+    it('refuses on the feature flag alone, without ADP_TOKEN_MODE', () => {
+      // Two independent signals, so changing one does not silently reopen the path.
+      const { ADP_TOKEN_MODE: _mode, ...withoutMode } = MEDIATED_ENV;
+      expect(canInitTokenManager(withoutMode)).toBe(false);
+    });
+
+    it.each(['1', 'true', 'yes'])(
+      'refuses for the spelling %s that entrypoint.py also accepts',
+      value => {
+        const { ADP_TOKEN_MODE: _mode, ...env } = MEDIATED_ENV;
+        expect(canInitTokenManager({ ...env, ADP_MEDIATED_GITHUB_ENABLED: value })).toBe(false);
+      },
+    );
+
+    it('still initialises for a non-mediated brokered run', () => {
+      // The guard must not disable refresh for the ordinary hosted run, which is
+      // the failure this file was originally written to catch.
+      expect(canInitTokenManager(BROKER_ENV)).toBe(true);
+    });
+
+    it('adopts the PAT when the deployment flag is on but the run is not mediated', () => {
+      // The cross-boundary half of the single per-run decision (#5223).
+      //
+      // ADP_MEDIATED_GITHUB_ENABLED is a POD-level variable, so a PAT run shares a
+      // deployment with mediated runs and used to inherit it. This side reads that
+      // raw variable, so the PAT run's agent took the mediated branch: no token
+      // adopted, every mint refused, and `getRuntimeGitHubToken` throwing — while
+      // the run was in fact holding the user's own valid credential.
+      //
+      // entrypoint now normalises the variable away for any run it did not decide to
+      // mediate, so what arrives here is an ordinary PAT env. This asserts on the
+      // env as produced: absent flag, ADP_TOKEN_MODE 'pat'.
+      const PAT_ENV: NodeJS.ProcessEnv = {
+        GH_APP_ID: '99001',
+        GH_APP_INSTALLATION_ID: '555001',
+        REPO_OWNER: 'acme-corp',
+        REPO_NAME: 'flagship-app',
+        ADP_TOKEN_MODE: 'pat',
+        GITHUB_TOKEN: 'ghp_the_users_own_credential',
+      };
+
+      expect(isMediatedRun(PAT_ENV)).toBe(false);
+
+      // And the inverse: had the flag leaked through, this run would have been
+      // treated as mediated — which is the bug, stated as a test so the
+      // normalisation cannot be dropped without a failure here.
+      expect(isMediatedRun({ ...PAT_ENV, ADP_MEDIATED_GITHUB_ENABLED: 'true' })).toBe(true);
+    });
+  });
+
 describe('a refresh really is scheduled with no key in the environment', () => {
   let savedEnv: Record<string, string | undefined>;
   const ENV_KEYS = [
@@ -186,5 +277,112 @@ describe('a refresh really is scheduled with no key in the environment', () => {
     await expect(tr!.getToken()).resolves.toBe('ghs_brokered');
     expect(mockCreateAppAuth).not.toHaveBeenCalled();
     expect(tr!.needsRefresh()).toBe(false);
+  });
+});
+
+describe('mediated runs: no path restores a token to the env or the disk (#5223)', () => {
+  const savedEnv = { ...process.env };
+  const TOKEN_FILE = '/tmp/.adp-gh-token-mediated-guard-test';
+
+  beforeEach(() => {
+    jest.resetModules();
+    mockFetchBrokeredToken.mockReset();
+    mockCreateAppAuth.mockReset();
+    try {
+      require('fs').unlinkSync(TOKEN_FILE);
+    } catch {
+      /* absent is the expected case */
+    }
+  });
+
+  afterEach(() => {
+    for (const k of Object.keys(process.env)) if (!(k in savedEnv)) delete process.env[k];
+    Object.assign(process.env, savedEnv);
+    try {
+      require('fs').unlinkSync(TOKEN_FILE);
+    } catch {
+      /* nothing to clean up */
+    }
+  });
+
+  it('a forced refresh cannot write a token file or re-export the env vars', async () => {
+    // The predicate is bypassed deliberately: initTokenManager is called with
+    // explicit options, as agent-pm and getRuntimeGitHubToken do. This proves the
+    // guard is at the WRITE, not only at the door — the broker is even primed to
+    // return a usable token, so anything less than a refusal lands it on disk.
+    // Cleared first: the assertions below must observe what publishToken did or
+    // did not write, not whatever the developer's shell happened to export.
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_APP_TOKEN;
+    Object.assign(process.env, MEDIATED_ENV);
+    process.env.ADP_TOKEN_FILE = TOKEN_FILE;
+    mockFetchBrokeredToken.mockResolvedValue({
+      token: 'ghs_should_never_be_published',
+      expiresAt: new Date(Date.now() + 55 * 60 * 1000),
+    });
+
+    let tr: typeof import('./token-refresh');
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      tr = require('./token-refresh');
+    });
+
+    tr!.initTokenManager({
+      appId: process.env.GH_APP_ID!,
+      owner: process.env.REPO_OWNER!,
+      repo: process.env.REPO_NAME,
+      installationId: process.env.GH_APP_INSTALLATION_ID,
+      brokerMode: true,
+    });
+
+    await expect(tr!.getToken()).rejects.toThrow(/[Mm]ediated/);
+
+    // Not even fetched: no token material enters this process at all, so none can
+    // reach a log line or an error string on the way to being refused.
+    expect(mockFetchBrokeredToken).not.toHaveBeenCalled();
+
+    // The three ways the agent would actually reach GitHub, all still empty.
+    expect(require('fs').existsSync(TOKEN_FILE)).toBe(false);
+    expect(process.env.GH_TOKEN).toBeUndefined();
+    expect(process.env.GITHUB_TOKEN).toBeUndefined();
+    expect(process.env.GH_APP_TOKEN).toBeUndefined();
+  });
+
+  it('getRuntimeGitHubToken refuses instead of minting', async () => {
+    Object.assign(process.env, MEDIATED_ENV);
+    process.env.ADP_TOKEN_FILE = TOKEN_FILE;
+    mockFetchBrokeredToken.mockResolvedValue({
+      token: 'ghs_should_never_be_published',
+      expiresAt: new Date(Date.now() + 55 * 60 * 1000),
+    });
+
+    let tr: typeof import('./token-refresh');
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      tr = require('./token-refresh');
+    });
+
+    await expect(tr!.getRuntimeGitHubToken()).rejects.toThrow(/[Mm]ediated/);
+    expect(mockFetchBrokeredToken).not.toHaveBeenCalled();
+    expect(require('fs').existsSync(TOKEN_FILE)).toBe(false);
+  });
+
+  it('adoptBootstrapToken cannot republish a surviving bootstrap token', async () => {
+    // Belt and braces: withholding pops GH_APP_TOKEN, but if it ever survived,
+    // adoption must not be the path that writes it back to disk.
+    Object.assign(process.env, MEDIATED_ENV);
+    process.env.ADP_TOKEN_FILE = TOKEN_FILE;
+    process.env.GH_APP_TOKEN = 'ghs_stale_bootstrap';
+    process.env.GH_APP_TOKEN_EXPIRES_AT = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+    let tr: typeof import('./token-refresh');
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      tr = require('./token-refresh');
+    });
+
+    expect(() => tr!.adoptBootstrapToken()).toThrow(/[Mm]ediated/);
+    expect(require('fs').existsSync(TOKEN_FILE)).toBe(false);
   });
 });

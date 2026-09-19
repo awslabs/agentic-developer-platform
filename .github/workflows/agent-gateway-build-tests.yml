@@ -1,0 +1,71 @@
+name: Agent Gateway Build Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'codebuild/bs-agent-gateway.yml'
+      - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/tests/test_agent_gateway_build_context.py'
+      - 'modules/agent-factory/scripts/deploy-gateway.sh'
+      - 'modules/agent-factory/gateway/**'
+      - 'modules/agent-factory/rules/personas/**'
+      - '.github/workflows/agent-gateway-build-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'codebuild/bs-agent-gateway.yml'
+      - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/tests/test_agent_gateway_build_context.py'
+      - 'modules/agent-factory/scripts/deploy-gateway.sh'
+      - 'modules/agent-factory/gateway/**'
+      - 'modules/agent-factory/rules/personas/**'
+      - '.github/workflows/agent-gateway-build-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-context:
+    name: Agent gateway build context
+    # RUNNER CHOICE (#5362). Was ubuntu-latest, which the org's Actions billing block
+    # stopped GitHub allocating: every run failed in ~3s with no steps, so this check
+    # was red for a reason unrelated to its subject and enforced nothing. The
+    # in-cluster self-hosted pool is unaffected by that block.
+    #
+    # Safe to move: this is one unittest module reading build config as YAML. No AWS
+    # call, no Docker (ARC container jobs are still blocked by #4167), and no assertion
+    # about credentials being absent. Verified locally with every AWS_* variable
+    # stripped: 8 tests passed with no credentials discoverable.
+    #
+    # The pool is not credential-free — runner pods carry an ambient IRSA identity that
+    # the pod-identity webhook injects into every container. The env/shell below disable
+    # credential discovery for this job's own processes so a pass cannot depend on that
+    # identity. That is an offline test environment, not a sandbox claim.
+    runs-on: arc-runner-org
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    defaults:
+      run:
+        # Unset rather than empty: the container credential provider treats presence
+        # of the variable as enabled.
+        shell: >-
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
+          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
+          bash --noprofile --norc -e -o pipefail {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install PyYAML
+      - run: python -m unittest discover -s platform/scripts/tests -p test_agent_gateway_build_context.py -v

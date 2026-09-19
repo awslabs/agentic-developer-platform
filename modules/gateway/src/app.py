@@ -27,6 +27,7 @@ logger = logging.getLogger("bedrockgateway")
 UNIT_MODULES = [
     "src.auth.routes",
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
+    "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
     "src.auth.aws_connect_routes",  # Issue #562: self-serve AWS account connect
     "src.internal.routes",  # Issue #446: internal service-to-service endpoints
@@ -36,12 +37,23 @@ UNIT_MODULES = [
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
+    "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
     # derives the row key from the protected execution record.
     "src.agentauth.registration_routes",
+    # #5223: mediated GitHub operations. A separate module from
+    # registration_routes even though it shares the /self prefix, because this is
+    # the only route on that prefix that reaches an external provider and holds an
+    # installation credential while doing it. Keeping it its own module means the
+    # authorization it performs is reviewed on its own terms rather than inherited
+    # from a router whose other routes only touch our own records.
+    "src.agentauth.github_operation_routes",
+    # #5301: the delivering run binds its own implementation PR to its story,
+    # authenticated by the run credential rather than a self-declared run header.
+    "src.agentauth.pr_binding_routes",
     "src.agentauth.service_authority",  # Human-only standing service delegation; never on the internal plane.
     "src.proxy.routes",
     "src.admin.routes",
@@ -109,6 +121,17 @@ UNIT_MODULES = [
     # row, and refuses to overwrite one a platform admin authored (§1.4 "admin wins",
     # which with one row per scope can only be enforced at write time).
     "src.admin.bedrock_routing.self_routes",
+    # Issue #5419 (PMM-02): persona-model preference self-service and administration.
+    # Two separate routers for the same reason bedrock_routing splits them: the self
+    # surface takes no target parameter at any position (the authz IS the shape),
+    # while the administration surface takes a canonical service principal ID and
+    # checks ORG_UPDATE as its first statement.
+    "src.admin.persona_models.self_routes",
+    "src.admin.persona_models.routes",
+    # Issue #5420 (PMM-03): read-only persona/model catalogue on the same
+    # /me/persona-models namespace. Kept in a separate module so catalogue
+    # policy/evidence logic does not broaden either PMM-02 write surface.
+    "src.admin.persona_models.catalogue_routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
@@ -157,6 +180,8 @@ async def lifespan(app: FastAPI):
             import src.shared.models.bedrock_routing  # noqa: F401  # Issue #4743
             import src.shared.models.budget  # noqa: F401
             import src.shared.models.organization  # noqa: F401
+            import src.shared.models.persona_model_catalogue  # noqa: F401  # Issue #5420
+            import src.shared.models.persona_models  # noqa: F401  # Issue #5419
             import src.shared.models.usage  # noqa: F401
             import src.shared.models.vault  # noqa: F401  # Issue #135
             from src.shared.database import get_engine
@@ -201,6 +226,7 @@ async def lifespan(app: FastAPI):
                     base_url,
                     inference_profile_prefix=settings.mantle_inference_profile_prefix,
                     on_demand_models=settings.mantle_on_demand_models,
+                    stream_read_timeout=settings.mantle_stream_read_timeout_seconds,
                 )
             )
             logger.info("Mantle passthrough service initialized", extra={"auth_mode": "sigv4"})

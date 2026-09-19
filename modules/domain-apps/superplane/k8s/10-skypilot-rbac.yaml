@@ -1,0 +1,90 @@
+---
+# =============================================================================
+# SkyPilot API server identity — Issue #5042 (U3), EPIC #4910.
+# =============================================================================
+# The Kubernetes half of the identity whose AWS half is `aws_iam_role.skypilot` in
+# infra/control-plane/irsa.tf. That role's trust policy is scoped to exactly
+# `system:serviceaccount:<skypilot_namespace>:skypilot-api` via the OIDC `sub` condition, so
+# this ServiceAccount's name and namespace are a contract with Terraform, not a label. The
+# name matches `local.skypilot_service_account`.
+#
+# The role ARN is substituted from SSM (`/adp/<env>/superplane/skypilot-role-arn`), so the
+# annotation cannot drift from the role Terraform actually created.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: skypilot-api
+  namespace: REPLACE_WITH_SKYPILOT_NAMESPACE
+  labels:
+    app.kubernetes.io/name: skypilot-api
+    app.kubernetes.io/part-of: adp-superplane
+  annotations:
+    eks.amazonaws.com/role-arn: REPLACE_WITH_SKYPILOT_ROLE_ARN
+---
+# =============================================================================
+# A namespace-scoped Role, and what it deliberately does NOT grant.
+# =============================================================================
+# SkyPilot CAN provision compute on a Kubernetes cluster — `kubernetes` is one of U2's
+# `allowed_clouds`. Doing so needs pod/service create rights on the target cluster.
+#
+# This Role grants NO pod creation, and that is the point rather than an oversight. The
+# cluster this rollout targets is the ADP MANAGEMENT cluster. The platform isolation
+# requirement (2026-09-16) states GPU workloads target the intended workspace cluster, not
+# the management cluster; `workspace_cluster_context` is empty in dev, published as the
+# explicit sentinel `none`. Granting pod-create here would give SkyPilot exactly the
+# permission needed to schedule a GPU job onto the management cluster the moment somebody
+# submits one — and it would succeed, which is worse than failing.
+#
+# When a workspace cluster exists, SkyPilot's Kubernetes credentials for THAT cluster are
+# supplied as a kubeconfig for that cluster (U19 owns the resource/state handover). They do
+# not come from widening this Role.
+#
+# What is granted: read of its own ConfigMap and Secret, and read of its own pod/service
+# objects so `sky status` can report on itself. No wildcards — `check_rendered_manifests.py`
+# rejects wildcard verbs and resources, and the reason it does is that a wildcard Role in a
+# namespace is one `kubectl auth can-i` away from being indistinguishable from admin there.
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: skypilot-api
+  namespace: REPLACE_WITH_SKYPILOT_NAMESPACE
+  labels:
+    app.kubernetes.io/name: skypilot-api
+    app.kubernetes.io/part-of: adp-superplane
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["skypilot-config"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["skypilot-api-db"]
+    verbs: ["get"]
+  # Read-only self-inspection. `list`/`get` on pods in its own namespace lets the API server
+  # report its own state; it confers no ability to create anything.
+  - apiGroups: [""]
+    resources: ["pods", "services", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: skypilot-api
+  namespace: REPLACE_WITH_SKYPILOT_NAMESPACE
+  labels:
+    app.kubernetes.io/name: skypilot-api
+    app.kubernetes.io/part-of: adp-superplane
+# A RoleBinding to a Role, both namespaced. Not a ClusterRoleBinding: that is the object the
+# PR #5283 review used to demonstrate the old guard's blindness (a binding to `cluster-admin`
+# passed a check that only looked at image digests), and the replacement guard rejects the
+# kind outright.
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: skypilot-api
+subjects:
+  - kind: ServiceAccount
+    name: skypilot-api
+    namespace: REPLACE_WITH_SKYPILOT_NAMESPACE

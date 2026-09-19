@@ -11,6 +11,8 @@
 
 import { apiClient, buildQueryString } from './api';
 import type {
+  FlowExecution,
+  FlowExecutionParams,
   FlowGraph,
   FlowList,
   FlowListParams,
@@ -97,4 +99,40 @@ export async function listFlows(params: FlowListParams = {}): Promise<FlowList> 
     sort: params.sort,
   });
   return apiClient.get<FlowList>(`/orchestration/flows${query}`);
+}
+
+/**
+ * Fetch execution progress and blocks for one flow (issue #5145).
+ *
+ * The read side of the delivery ledger: per node and cycle, the phase, whether it
+ * is moving, the next scheduled check, and — when stopped — the typed block naming
+ * who acts and what they supply.
+ *
+ * **Read-only by construction.** There is no mutating verb on this path;
+ * approving a gate or resuming a node still goes through `approveGate` /
+ * `resumeNode` above. The payload also carries no claim binding: the server
+ * withholds `claim_id`/`claim_generation` deliberately, so nothing here can be
+ * replayed as authority.
+ *
+ * Paged, because a long-running flow's history is unbounded. `total` reports the
+ * flow's whole count so a caller showing one page can say what it is not showing,
+ * and `limit` above the server ceiling is a 422 rather than a silent clamp.
+ *
+ * A `flow_id` belonging to another org returns the same 404 as an unknown one.
+ *
+ * `signal` is threaded through so a caller can abort in flight. That is not a
+ * nicety on a polling read: without it, unmounting the flow page leaves requests
+ * running against a screen nobody is looking at, and a response landing after
+ * navigation resolves into a component that is gone.
+ */
+export async function getFlowExecution(
+  flowId: string,
+  params: FlowExecutionParams = {},
+  signal?: AbortSignal
+): Promise<FlowExecution> {
+  const query = buildQueryString({ limit: params.limit, offset: params.offset });
+  return apiClient.get<FlowExecution>(
+    `/orchestration/flows/${encodeURIComponent(flowId)}/execution${query}`,
+    signal
+  );
 }

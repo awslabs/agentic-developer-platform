@@ -137,21 +137,44 @@ asyncio.run(main())
 """
 
 
+class PodReplaced(RuntimeError):
+    """A selected serving pod disappeared during an exec operation."""
+
+
+def pod_command(args, pod, parts, *, input_text=None):
+    try:
+        return command(
+            ["kubectl", "exec", "-i", "-n", args.namespace, pod, "-c", "bedrockgateway", "--", *parts],
+            input_text=input_text,
+        )
+    except RuntimeError as exc:
+        current = command(["kubectl", "get", "pod", pod, "-n", args.namespace,
+                           "--ignore-not-found", "-o", "json"])
+        if not current.strip() or json.loads(current)["metadata"].get("deletionTimestamp"):
+            raise PodReplaced(f"Gateway pod {pod} was replaced during pricing rollout") from exc
+        raise  # SQL errors, OOMs and failures on a live pod are not retried.
+
+
 def verify_seed(args, *, migrate=False):
-    pods, image = ready_pods(args)
-    if migrate:
-        command(
-            ["kubectl", "exec", "-n", args.namespace, pods[0], "-c", "bedrockgateway", "--", "env", "PYTHONPATH=/app", "alembic", "upgrade", "head"]
-        )
-    evidence = []
-    for pod in pods:
-        output = command(
-            ["kubectl", "exec", "-i", "-n", args.namespace, pod, "-c", "bedrockgateway", "--", "env", "PYTHONPATH=/app", "python", "-"],
-            input_text=SEED_PROBE,
-        )
-        evidence.append({"pod": pod, "pricing": json.loads(output)})
-    print(json.dumps({"image": image, "replicas": evidence}))
-    return evidence
+    # Readiness is a point-in-time observation. Node consolidation can replace
+    # a pod between selection and exec; reselect the release after that race.
+    # A completed migration is not repeated when only a later probe was lost.
+    for attempt in range(3):
+        pods, image = ready_pods(args)
+        try:
+            if migrate:
+                pod_command(args, pods[0], ["env", "PYTHONPATH=/app", "alembic", "upgrade", "head"])
+                migrate = False
+            evidence = []
+            for pod in pods:
+                output = pod_command(args, pod, ["env", "PYTHONPATH=/app", "python", "-"], input_text=SEED_PROBE)
+                evidence.append({"pod": pod, "pricing": json.loads(output)})
+            print(json.dumps({"image": image, "replicas": evidence}))
+            return evidence
+        except PodReplaced:
+            if attempt == 2:
+                raise
+            print("Gateway pod replaced; reselecting Ready release replicas for pricing verification", flush=True)
 
 
 def quiesce(args):

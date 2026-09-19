@@ -52,6 +52,7 @@ from .base import (
     MediaType,
     MessageRole,
     UnifiedMessage,
+    effective_tenant_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -174,7 +175,29 @@ class WebChatAdapter(ChannelAdapter):
                 "source_ip": request_context.get("identity", {}).get("sourceIp", ""),
                 # Stage A (#184): propagate extended identity claims for downstream
                 # ownership validation and audit logging.
-                "tenant_id": claims.get("custom:tenant_id", ""),
+                # Issue #5268: nothing in the JWT sign-in path ever SETS
+                # `custom:tenant_id` -- the api-authorizer only reads it, with a
+                # "" default -- so for a natively signed-in user the tenant was
+                # structurally always empty. handler.handle_long_running refuses
+                # to enqueue without one, so every native user's hosted chat
+                # failed before enqueue: no inference, no invocation row, and
+                # nothing visible in the product. Slack users were unaffected,
+                # which is why the feature looked like it worked.
+                #
+                # Substitute the org, exactly as the Slack path does deliberately
+                # ("Slack supplies a workspace ID, not an ADP tenant. Use the
+                # server-resolved organization for the registered run
+                # capability.").  Both values are read from the same trusted
+                # `claims` dict here -- never from the client body -- because
+                # this ends up on the row that authorizes a worker to inherit
+                # its owner's Bedrock destination, so a wrong org would be
+                # cross-tenant spend rather than a cosmetic mislabel.
+                #
+                # An explicit tenant claim still wins, and an unusable org
+                # ("" / "default") is deliberately NOT substituted: the handler's
+                # guard must still reject those, or an empty `tenant_id` would
+                # land as the invocation row's GSI1PK and be unqueryable.
+                "tenant_id": effective_tenant_id(claims),
                 "org_id": claims.get("custom:org_id", ""),
                 "team_id": claims.get("custom:team_id", ""),
                 "department_id": claims.get("custom:department_id", ""),

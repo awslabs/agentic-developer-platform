@@ -60,6 +60,26 @@ export interface AggregateCostFigure extends CostFigure {
   partial?: boolean;
 }
 
+/** A persisted worker observation; successful exit is not review approval. */
+export interface StoryActivity {
+  invocation_id: string;
+  persona: 'developer' | 'reviewer';
+  status: string;
+  liveness: 'live' | 'unverifiable' | 'exited';
+}
+
+export interface StoryRun extends StoryActivity {
+  invoked_at: string;
+}
+
+export interface StoryExecution {
+  /** The committed dispatch this history belongs to. */
+  run_id: string | null;
+  activity: StoryActivity | null;
+  runs: StoryRun[];
+  history_complete: boolean;
+}
+
 export interface GraphNode {
   id: string;
   epic_ref: string;
@@ -78,8 +98,20 @@ export interface GraphNode {
   issue_ref: string | null;
   attempts: number;
   run_id?: string | null;
+  /** Current developer/reviewer in this attempt's chain; not a merge verdict. */
+  activity?: StoryActivity | null;
+  execution_history?: StoryExecution | null;
   issue_url?: string | null;
   result_summary?: string | null;
+  bound_pull_request?: {
+    repo: string;
+    pr_number: number;
+    url: string;
+    head_sha: string;
+    role: 'implementation' | 'reviewer_artifact';
+    state: 'active' | 'superseded';
+  } | null;
+  binding_hold?: string | null;
   configuration_problem?: string | null;
   last_gate_decision?: {
     action: 'approved' | 'changes_requested';
@@ -102,8 +134,47 @@ export interface GraphEdge {
  * set validated at acceptance — so an unknown string never reaches this type.
  * `merge` and `deploy` are separate from `develop` because their effects outlive
  * the run: authorizing delivery work is not authorizing either.
+ *
+ * `coordinate` is separate for a different reason: it is authority to *request*
+ * eligible work, not to perform any. A coordinator holding it cannot itself write
+ * code, merge, deploy, conclude an evaluation or release a human gate — every child
+ * it asks for is admitted on that child's own authorized action. So a reader must
+ * never take `coordinate` appearing in `autonomous_actions` as shorthand for the
+ * actions in `coordination.allowed_child_actions` being unattended: those are what a
+ * coordinator may *ask* for, and each request is checked again on its own terms.
  */
-export type PolicyAction = 'develop' | 'review' | 'repair' | 'merge' | 'deploy' | 'evaluate';
+export type PolicyAction = 'develop' | 'review' | 'repair' | 'merge' | 'deploy' | 'evaluate' | 'coordinate';
+
+/**
+ * The personas a coordinator may request work from. Mirrors `ChildPersona`.
+ *
+ * There is no `operations` member, and its absence is a guarantee rather than an
+ * omission: a coordinator cannot request another coordinator, so an accepted scope
+ * can never describe a tree of them sharing one policy's limits.
+ */
+export type ChildPersona = 'developer' | 'reviewer';
+
+/**
+ * An accepted coordinator's bounds, as an owner reads them. Mirrors
+ * `CoordinationSummary`.
+ *
+ * **`assigned_node_count` is a count, and there is no address array to render.** The
+ * assigned addresses are `flow/epic/wave/node` graph keys, which §7.2 makes
+ * non-renderable — the same reason `machine_accepted_evaluations` is a count. The
+ * child personas and actions *are* listed, because "what can this thing cause to
+ * happen?" is the question an owner is answering when they accept a coordinator, and
+ * a count would not answer it.
+ *
+ * `allowed_child_actions` never contains `coordinate`, `merge`, `deploy` or
+ * `evaluate`: the server refuses such a scope at acceptance and refuses the request
+ * again at admission. A renderer therefore does not need — and must not add — a
+ * branch warning about them, since the state it would warn about cannot be accepted.
+ */
+export interface CoordinationSummary {
+  assigned_node_count: number;
+  allowed_child_personas: ChildPersona[];
+  allowed_child_actions: PolicyAction[];
+}
 
 /**
  * The bounds an accepted policy places on autonomous work.
@@ -155,6 +226,17 @@ export interface PolicySummary {
   autonomous_actions: PolicyAction[];
   human_decisions: PolicyAction[];
   machine_accepted_evaluations: number;
+  /**
+   * The accepted coordinator's bounds, or absent/null when the policy accepts none.
+   *
+   * Absent rather than a zeroed summary, for the same reason `execution_policy`
+   * itself is: a `CoordinationSummary` reading "0 nodes, no personas" describes an
+   * accepted-but-useless coordinator, which is a different fact from "no coordinator
+   * was accepted" and the more alarming of the two to show an owner who accepted
+   * neither. Optional as well as nullable so a client built against a pre-#5224 API
+   * release, whose payload omits the key, type-checks unchanged.
+   */
+  coordination?: CoordinationSummary | null;
   expires_at: string;
   limits: PolicyLimits;
 }
@@ -412,4 +494,186 @@ export interface FlowListParams {
   needs_me?: boolean;
   /** No `cost`: it lives in another table and cannot be sorted with the page. */
   sort?: 'created' | 'updated' | 'stalled';
+}
+
+/* ---------------------------------------------------------------------------
+ * Delivery execution read model (issue #5145).
+ *
+ * The **one shared presentation contract** for execution progress and blocks.
+ * Five sibling acceptance issues (review, merge, deployment, evaluation
+ * receipts) populate these same fields as their phase handlers land, so the
+ * display lights up for each rather than each needing a dashboard of its own.
+ * That is why `ExecutionAction` has no per-kind variants: `kind` is a string and
+ * `receipt_ref` is rendered generically. A per-kind union here would become four
+ * divergent renderings later.
+ *
+ * Mirrors `FlowExecutionResponse` in `src/orchestration/routes.py`. Every field
+ * is read-only — approval and recovery stay with the existing gate/resume
+ * controls, and this endpoint has no mutating verb.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Where a delivery cycle got to. Ordered as the engine advances, so a client may
+ * compare positions, but never infer success from position — `concluded` is
+ * reached by a cycle that gave up as well as one that delivered.
+ */
+export type ExecutionPhase =
+  | 'admitted'
+  | 'preparing'
+  | 'delivering'
+  | 'submitting'
+  | 'awaiting_review'
+  | 'repairing'
+  | 'settling'
+  | 'concluded';
+
+/**
+ * Whether the cycle is moving.
+ *
+ * `blocked` is **not** a failure: it means someone must supply something, and
+ * rendering it as an error sends an operator hunting a crash that never happened.
+ * `awaiting_external` means the engine is correctly waiting on a third party.
+ */
+export type ExecutionStatus =
+  | 'runnable'
+  | 'awaiting_external'
+  | 'blocked'
+  | 'concluded'
+  | 'superseded';
+
+/**
+ * Why a cycle stopped. Stable codes a client may branch on.
+ *
+ * An unrecognised code arrives as `authority_unverifiable` — the server maps it
+ * fail-closed, so a newer engine's block can never read here as "not blocked".
+ */
+export type BlockCode =
+  | 'human_gate_required'
+  | 'human_input_required'
+  | 'attempts_exhausted'
+  | 'dependency_unmet'
+  | 'credential_unavailable'
+  | 'authority_unverifiable'
+  | 'external_unavailable'
+  | 'policy_refused'
+  | 'budget_exhausted'
+  | 'deadline_exceeded';
+
+/**
+ * The lifecycle of one externally-visible step.
+ *
+ * `unknown` is a settled record of an *unsettled* fact: the engine looked and
+ * could not tell. Never render it as either outcome — see `resolved`.
+ */
+export type ActionStatus = 'prepared' | 'dispatched' | 'succeeded' | 'failed' | 'unknown';
+
+/** Why delivery stopped, who clears it, and what they must supply. */
+export interface ExecutionBlock {
+  code: BlockCode;
+  /** Who acts next, e.g. `platform-operator`, `requesting-user`. */
+  owner: string;
+  /** What that person supplies. This is what turns a status into a next step. */
+  required_input: string;
+  /**
+   * Outstanding human approval gates. Informational only — approving still goes
+   * through the existing gate controls, not this read.
+   */
+  remaining_gates: string[];
+  /**
+   * Last *real* progress, not the moment of blocking: the ledger deliberately
+   * does not reset it, because it is the clock separating "stuck for a minute"
+   * from "stuck since Tuesday".
+   */
+  progressed_at: string | null;
+  detail: string | null;
+}
+
+/** One externally-visible step: a PR opened, a deployment run, an eval report. */
+export interface ExecutionAction {
+  id: string;
+  /** The idempotency key the engine dispatched under. */
+  operation_key: string;
+  /** Free-form, e.g. `open_pull_request`, `review`, `merge`, `deployment`. */
+  kind: string;
+  status: ActionStatus;
+  attempt: number;
+  /**
+   * Served by the server, never derived here. The tempting client-side
+   * derivation (`status !== 'prepared'`) counts `unknown` as resolved, which is
+   * how a green worker status hides an outstanding gate.
+   */
+  resolved: boolean;
+  /** Sanitized server-side; a reference that failed validation arrives null. */
+  artifact_ref: string | null;
+  /** Null means **pending**, not "nothing happened". */
+  receipt_ref: string | null;
+  created_at: string | null;
+  observed_at: string | null;
+}
+
+/** One node's delivery cycle: where it is, whether it is moving, why not if not. */
+export interface ExecutionSummary {
+  id: string;
+  /** Joins to `GraphNode.id`. */
+  node_id: string;
+  /** A repair cycle is separate work; cycles are never collapsed. */
+  cycle: number;
+  phase: ExecutionPhase;
+  status: ExecutionStatus;
+  /**
+   * Advances by exactly one per applied write. This is what makes rejecting a
+   * stale poll a comparison rather than a guess about arrival order.
+   */
+  revision: number;
+  /*
+   * No `accepted_plan_version`, and no `claim_id`/`claim_generation`: the server
+   * does not serve them. The claim pair is the authority binding its store fence
+   * tests; `accepted_plan_version` is an acceptance record, and the router requires
+   * approval authority of any handler touching one — so a read that exists to show
+   * *progress* must not carry it. The authorizing plan is on the plans route.
+   */
+  attempts: number;
+  next_check_at: string | null;
+  deadline_at: string | null;
+  progressed_at: string | null;
+  progress_note: string | null;
+  /** Present only while actually blocked. */
+  block: ExecutionBlock | null;
+  /** What a recovering pass must go and ask about. */
+  pending_action_key: string | null;
+  notification_receipt_ref: string | null;
+  handoff_receipt_ref: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  /** Newest first, and **capped** — see `action_overflow`. */
+  actions: ExecutionAction[];
+  /** True when older actions were omitted. A capped list is not a complete one. */
+  action_overflow: boolean;
+}
+
+/**
+ * Execution progress for one flow.
+ *
+ * `server_time` is what makes the other instants interpretable: age computed
+ * against a browser clock is computed against a clock that may be wrong or in
+ * another zone.
+ *
+ * `legacy` true means the flow has **no execution rows at all** — a real,
+ * permanent state for every flow delivered before the ledger existed. It means
+ * *no durable execution record*, which is emphatically not success.
+ */
+export interface FlowExecution {
+  flow_id: string;
+  server_time: string;
+  executions: ExecutionSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  legacy: boolean;
+}
+
+/** Paging for the execution read. Mirrors the route's signature. */
+export interface FlowExecutionParams {
+  limit?: number;
+  offset?: number;
 }

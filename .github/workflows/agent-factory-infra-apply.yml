@@ -110,6 +110,15 @@ jobs:
             done
           done
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Build factory Lambda packages
+        run: bash platform/scripts/build-agent-factory-lambdas.sh
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |

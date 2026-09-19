@@ -103,17 +103,34 @@ function agUiFrame(event: Record<string, unknown>) {
 
 describe('useAgUiEvents', () => {
   beforeEach(() => {
+    vi.stubEnv('VITE_AGENT_WS_URL', 'wss://chat.example.test/v1');
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
   // ----- Connection lifecycle -----
+
+  it('does not send credentials to a fallback endpoint when chat is unconfigured', async () => {
+    vi.stubEnv('VITE_AGENT_WS_URL', '');
+    const onMsg = vi.fn();
+    const conv = makeConversation();
+    const { result } = renderHook(() =>
+      useAgUiEvents({ conversation: conv, onMessagesChange: onMsg }),
+    );
+    await act(async () => { await Promise.resolve(); });
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(result.current.connectionStatus).toBe('disconnected');
+    expect(onMsg).toHaveBeenCalledWith(conv.id, expect.arrayContaining([
+      expect.objectContaining({ content: 'Agent chat is not configured for this deployment.', status: 'error' }),
+    ]));
+  });
 
   it('connects to WS when conversation is provided', async () => {
     const onMsg = vi.fn();

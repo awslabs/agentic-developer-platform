@@ -1469,3 +1469,11 @@ def client_for(app, *, permitted: bool, role: str = AdminRole.MEMBER.value):
 
     app.dependency_overrides[get_access_control_dep()] = lambda: access
     return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture(autouse=True)
+def provider_repository_identity(monkeypatch):
+    """Dispatch resolves immutable GitHub identity even with work claims off."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=12345))

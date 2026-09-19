@@ -29,6 +29,7 @@ read, and requiring approval authority to see where delivery stands would be
 authority creep in the direction that grants more than the operation needs.
 """
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -39,7 +40,16 @@ from sqlalchemy.pool import StaticPool
 
 from src.admin.config import Permission
 from src.orchestration.cost import COST_SCOPE_LABEL
-from src.orchestration.execution_policy import AcceptanceMode, Action, ExecutionPolicy, PolicyLimits, stamp_policy
+from src.orchestration.execution_policy import (
+    COORDINATION_SCHEMA_VERSION,
+    AcceptanceMode,
+    Action,
+    ChildPersona,
+    CoordinationScope,
+    ExecutionPolicy,
+    PolicyLimits,
+    stamp_policy,
+)
 from src.orchestration.models import DecisionKind, NodeKind, OrchestrationFlow, OrchestrationNode
 from src.orchestration.repository import OrchestrationRepository
 from src.orchestration.state import ActorKind, NodeState
@@ -57,6 +67,72 @@ APPROVER = "cognito-sub-the-policy-owner"
 # An internal graph address, which §7.2 makes non-renderable. Used as an
 # `evaluation_acceptance` key so its absence from the response can be asserted.
 MACHINE_EVAL_ADDRESS = f"{FLOW_SLUG}/epic-1/wave-1/eval-machine"
+# A second non-renderable address, used as a coordination scope assignment (#5224).
+# Distinct from MACHINE_EVAL_ADDRESS so a body that leaked only one of the two
+# address-shaped policy fields still fails a test that names which one.
+COORDINATOR_NODE_ADDRESS = f"{FLOW_SLUG}/epic-1/wave-1/eval-coordinated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "attempt", "has_history"),
+    [
+        ("running", 1, True),
+        ("awaiting_merge", 1, True),
+        ("awaiting_merge", 2, False),
+        ("passed", 1, True),
+        ("halted", 1, True),
+        ("failed", 1, True),
+        ("pending", 1, False),
+        ("ready", 1, False),
+        ("superseded", 1, False),
+    ],
+)
+async def test_story_activity_uses_only_current_committed_dispatch(session, app_with_router, monkeypatch, state, attempt, has_history):
+    from unittest.mock import MagicMock
+
+    from src.activity.schemas import InvocationChainItem, InvocationChainResponse
+
+    service = MagicMock()
+    service.get_chain.return_value = InvocationChainResponse(
+        correlation_id="attempt-1",
+        total_count=1,
+        items=[
+            InvocationChainItem(
+                invocation_id="review-1", invoked_at="2026-09-15T14:54:00Z", persona="reviewer", status="in_progress", liveness="live"
+            )
+        ],
+    )
+    monkeypatch.setattr("src.orchestration.node_activity._activity_service", lambda: service)
+    flow = await seed_flow(session)
+    node = await seed_node(session, flow, node_ref="story-a", state=state, attempts=attempt)
+    await OrchestrationRepository(session).append_decision(
+        org_id=ORG_A,
+        flow_id=flow.id,
+        node_id=node.id,
+        kind=DecisionKind.NODE_DISPATCHED.value,
+        actor_id="service:dispatch",
+        actor_role="service",
+        actor_kind=ActorKind.SERVICE.value,
+        reason=json.dumps({"attempt": 1, "run_id": "attempt-1", "repo": "aws-e/adp", "issue": 5037}),
+    )
+    response = client_for(app_with_router).get(route(flow.id))
+    assert response.status_code == 200, response.text
+    card = response.json()["nodes"][0]
+    assert card["state"] == state  # Display enrichment cannot promote the story.
+    if has_history:
+        service.get_chain.assert_called_once_with(correlation_id="attempt-1", tenant_id=ORG_A)
+        assert card["execution_history"]["run_id"] == "attempt-1"
+        assert card["execution_history"]["history_complete"] is True
+        assert card["execution_history"]["runs"][0]["invocation_id"] == "review-1"
+        if state in ("running", "awaiting_merge"):
+            assert card["activity"] == {"invocation_id": "review-1", "persona": "reviewer", "status": "in_progress", "liveness": "live"}
+        else:
+            assert card["activity"] is None
+    else:
+        service.get_chain.assert_not_called()
+        assert card["activity"] is None
+        assert card["execution_history"] is None
 
 
 def route(flow_id: str) -> str:
@@ -250,6 +326,7 @@ async def accept_policy(
     flow: OrchestrationFlow,
     *,
     repository_ids: list[str] | None = None,
+    coordinated: bool = False,
 ) -> None:
     """Accept a plan carrying an execution policy, via the real acceptance path (#5128).
 
@@ -260,15 +337,34 @@ async def accept_policy(
 
     `DEPLOY` is deliberately in both `allowed_actions` and `human_gates`: the overlap
     is the case the summary's autonomous/gated split exists to get right.
+
+    `coordinated` accepts a bounded coordinator alongside all of that (#5224). It
+    raises the schema version, because a coordination scope on a v1 or v2 document is
+    refused rather than silently upgraded — so a test asking for a scope is asking for
+    the document version that can actually carry one. Every other field is unchanged
+    between the two shapes, which is what lets the coordination assertions below
+    attribute a difference in the body to the scope and nothing else.
     """
     policy = ExecutionPolicy(
         org_id=flow.org_id,
         repository_ids=repository_ids or ["repo-alpha"],
         environment_connection_ids=["conn-env-alpha"],
-        allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.DEPLOY, Action.EVALUATE],
+        allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.DEPLOY, Action.EVALUATE, *([Action.COORDINATE] if coordinated else [])],
         human_gates=[Action.DEPLOY],
         evaluation_acceptance={MACHINE_EVAL_ADDRESS: AcceptanceMode.MACHINE},
         expires_at=datetime.now(UTC) + timedelta(days=7),
+        **(
+            {
+                "schema_version": COORDINATION_SCHEMA_VERSION,
+                "coordination": CoordinationScope(
+                    assigned_node_addresses=[COORDINATOR_NODE_ADDRESS],
+                    allowed_child_personas=[ChildPersona.DEVELOPER, ChildPersona.REVIEWER],
+                    allowed_child_actions=[Action.DEVELOP, Action.REVIEW],
+                ),
+            }
+            if coordinated
+            else {}
+        ),
         limits=PolicyLimits(
             max_wall_clock_seconds=3600,
             max_spend_usd=Decimal("50.00"),
@@ -935,6 +1031,89 @@ class TestExecutionPolicySummary:
 
         assert MACHINE_EVAL_ADDRESS not in response.text
         assert "evaluation_acceptance" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_an_accepted_coordination_scope_is_reported_on_the_wire(self, session, app_with_router):
+        """The owner-visible answer to "what may this coordinator ask for?" (#5224).
+
+        Asserted at this layer and not only on `summarize_policy`, because the field
+        being present on the model is not the same fact as it reaching the body: the
+        response model is `extra="forbid"`, so a summary field the route's schema does
+        not carry is dropped silently rather than raising.
+
+        The personas and actions are listed because they are what an owner is actually
+        deciding about. The assigned nodes are a count for the same reason
+        `machine_accepted_evaluations` is — see the address test below.
+        """
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow, coordinated=True)
+
+        coordination = client_for(app_with_router).get(route(flow.id)).json()["execution_policy"]["coordination"]
+
+        assert coordination["assigned_node_count"] == 1
+        assert coordination["allowed_child_personas"] == ["developer", "reviewer"]
+        assert coordination["allowed_child_actions"] == ["develop", "review"]
+
+    @pytest.mark.asyncio
+    async def test_a_policy_with_no_coordinator_reports_none_rather_than_an_empty_scope(self, session, app_with_router):
+        """`null`, not `{"assigned_node_count": 0, ...}`.
+
+        A zeroed scope describes an accepted-but-useless coordinator, which is a
+        different fact from "no coordinator was accepted" and the more alarming of the
+        two to show an owner who accepted neither. Every policy accepted before #5224
+        is in this case permanently.
+        """
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow)
+
+        summary = client_for(app_with_router).get(route(flow.id)).json()["execution_policy"]
+
+        assert summary["coordination"] is None
+        # The `coordinate` authority is absent too, not merely unbounded: absence
+        # grants nothing, so a reader must not see the action without the scope.
+        assert "coordinate" not in summary["autonomous_actions"]
+
+    @pytest.mark.asyncio
+    async def test_no_assigned_coordinator_address_reaches_the_body(self, session, app_with_router):
+        """§7.2 again, for the summary's second address-shaped field.
+
+        `assigned_node_addresses` holds `flow/epic/wave/node` keys exactly like
+        `evaluation_acceptance` does, and the projection counts them for the same
+        reason. Asserted separately from the evaluation case so a body that leaked only
+        one of the two fails a test naming which.
+        """
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow, coordinated=True)
+
+        response = client_for(app_with_router).get(route(flow.id))
+
+        assert COORDINATOR_NODE_ADDRESS not in response.text
+        assert "assigned_node_addresses" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_coordination_authority_does_not_widen_what_is_reported_as_autonomous(self, session, app_with_router):
+        """Accepting a coordinator changes no other line of the summary.
+
+        The misreading to prevent is "a coordinator may ask for work, therefore the
+        work it asks for is unattended". `deploy` stays gated and stays out of
+        `autonomous_actions` on the coordinated document exactly as on the plain one,
+        and the scope itself never names `deploy` — a scope naming it is refused at
+        acceptance and the request refused again at admission.
+        """
+        flow = await seed_flow(session)
+        await seed_node(session, flow, node_ref="story-a")
+        await accept_policy(session, flow, coordinated=True)
+
+        summary = client_for(app_with_router).get(route(flow.id)).json()["execution_policy"]
+
+        assert "coordinate" in summary["autonomous_actions"]
+        assert summary["human_decisions"] == ["deploy"]
+        assert "deploy" not in summary["autonomous_actions"]
+        assert "deploy" not in summary["coordination"]["allowed_child_actions"]
+        assert "evaluate" not in summary["coordination"]["allowed_child_actions"]
 
     @pytest.mark.asyncio
     async def test_an_unreadable_policy_document_reports_no_policy_not_a_500(self, session, app_with_router):

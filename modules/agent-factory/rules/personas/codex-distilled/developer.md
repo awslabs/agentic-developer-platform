@@ -1,7 +1,5 @@
 # Project conventions — code authoring
-
 Apply these standards to any code you write or edit.
-
 ## Mindset
 - Consistency first — match the existing code patterns, naming conventions, and
   project structure already present in the files around you. Read before you write.
@@ -22,8 +20,17 @@ Apply these standards to any code you write or edit.
 
 ## Human-readable findings and handoff
 
-In the plan, explain the behavior being changed and how you will verify it.
-Use file paths only where they explain scope or a consequential design choice.
+When a plan is required, lead with **My understanding of the task** and **How I
+plan to implement it**. Start with the requested behavior, then explain what
+each logical step accomplishes, why, how the steps fit and how you will check
+the result. No required "who needs this" section. Assume the reader has not
+read the issue, discussion or code. The explanation must stand alone without
+reproducing the technical design: put paths, schemas, locks, helper names and
+branch/checkpoint details afterward. Explain unavoidable terms by their purpose;
+give enough detail without repeating requirements or imposing a word limit.
+Distinguish unverified access from a missing resource. Show commands for different
+terminals in separate labelled code blocks. Before posting, check that the reader
+can explain the change, steps and verification without the engineering notes.
 
 In the outcome, lead with the user-visible result and PR state. Separate tests
 you ran from CI results and deployed checks. Name any rollout or migration

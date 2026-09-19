@@ -1,4 +1,4 @@
-import type { PolicyAction, PolicySummary } from '@/types/orchestration';
+import type { ChildPersona, PolicyAction, PolicySummary } from '@/types/orchestration';
 
 interface PlanSummaryProps {
   stories: number;
@@ -23,10 +23,26 @@ const ACTION_LABELS: Record<PolicyAction, string> = {
   merge: 'merge',
   deploy: 'deploy',
   evaluate: 'conclude evaluations',
+  // Phrased as asking, not doing. `coordinate` is the one action that performs no
+  // work: it authorizes *requesting* an eligible child, which is then admitted on
+  // its own authorized action. A label like "coordinate work" would read as
+  // authority over the work itself, which is exactly the misreading the separate
+  // coordination section below exists to prevent.
+  coordinate: 'ask for further work in an assigned part of the plan',
+};
+
+/** How a persona is described to an owner, not the wire vocabulary. */
+const CHILD_PERSONA_LABELS: Record<ChildPersona, string> = {
+  developer: 'developers',
+  reviewer: 'reviewers',
 };
 
 function actionList(actions: PolicyAction[]): string {
   return actions.map((action) => ACTION_LABELS[action] ?? action).join(', ');
+}
+
+function personaList(personas: ChildPersona[]): string {
+  return personas.map((persona) => CHILD_PERSONA_LABELS[persona] ?? persona).join(', ');
 }
 
 /** The authorization's own deadline, in the reader's locale. */
@@ -108,6 +124,38 @@ export function PlanSummary({ stories, waves, gates, evaluations, policy }: Plan
                   believing a human gate can be satisfied by a machine. */}
               {' '}Approval gates still require you.
             </p>
+          )}
+
+          {/* Rendered only when a coordinator was actually accepted. The scope is
+              shown as its own block rather than folded into the autonomous-actions
+              line because "may ask for work" and "may do work" are different powers,
+              and an owner accepting the former is answering a different question.
+
+              The assigned nodes are a COUNT. Their addresses are internal
+              `flow/epic/wave/node` keys that §7.2 makes non-renderable, and the
+              summary carries no address array, so there is nothing to leak here by
+              mistake. */}
+          {policy.coordination && (
+            <div data-testid="policy-coordination">
+              <p>
+                <span className="text-gray-500 dark:text-gray-400">Coordination: </span>
+                within {policy.coordination.assigned_node_count}{' '}
+                {policy.coordination.assigned_node_count === 1 ? 'assigned step' : 'assigned steps'}, may ask for{' '}
+                {policy.coordination.allowed_child_personas.length > 0
+                  ? personaList(policy.coordination.allowed_child_personas)
+                  : 'no one'}{' '}
+                to {policy.coordination.allowed_child_actions.length > 0 ? actionList(policy.coordination.allowed_child_actions) : 'do nothing'}
+              </p>
+              {/* Stated because it is the assumption an owner is most likely to make
+                  wrongly, and believing it means believing an approval, a merge, a
+                  deploy or an evaluation conclusion can be reached by asking rather
+                  than by the authority that actually governs it. Each of those is
+                  refused for a delegated request whatever else the policy allows. */}
+              <p>
+                Every request is checked again on its own terms and counts against the limits below. Coordination cannot approve a
+                gate, merge, deploy or conclude an evaluation.
+              </p>
+            </div>
           )}
 
           {policy.user_credentials && (

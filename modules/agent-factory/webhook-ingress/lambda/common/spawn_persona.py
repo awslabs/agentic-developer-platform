@@ -340,6 +340,7 @@ def _advance_chain_depth(correlation_ctx: dict) -> dict:
     if correlation_ctx.get("is_new_chain"):
         # This spawn IS the root generation — nothing spawned it.
         advanced["chain_depth"] = 0
+        advanced["credential_chain_depth"] = 0
         return advanced
 
     caller_depth = correlation_ctx.get("chain_depth", 0)
@@ -354,6 +355,14 @@ def _advance_chain_depth(correlation_ctx: dict) -> dict:
         )
         caller_depth = 0
     advanced["chain_depth"] = caller_depth + 1
+
+    # Issue #5365: the conservative depth the credential horizon is measured on
+    # advances in lockstep. It is only ever >= chain_depth, so it can withhold
+    # vault authority but never extend it — see _compute_authorized_user_id.
+    credential_depth = correlation_ctx.get("credential_chain_depth")
+    if not isinstance(credential_depth, int) or isinstance(credential_depth, bool):
+        credential_depth = caller_depth
+    advanced["credential_chain_depth"] = max(credential_depth, caller_depth) + 1
     return advanced
 
 
@@ -418,13 +427,21 @@ def _apply_bot_guards(
         return SpawnResult(success=False, block_reason="cross_persona_loop")
 
     # Guard 5: Depth cap
+    #
+    # Issue #5365: protected dispatch supplies the authenticated caller's own
+    # generation; the shared-IAM legacy route supplies only its server-observed
+    # head and refuses a selected ancestor. The cap itself is unchanged. Include
+    # the source invocation in the log so a refusal is actionable.
     chain_depth = correlation_ctx.get("chain_depth", 0)
     if chain_depth >= MAX_CHAIN_DEPTH:
         logger.info(
-            "spawn_persona: depth guard blocked — %s at depth %d >= max %d",
+            "spawn_persona: depth guard blocked — %s at depth %d >= max %d "
+            "(caller invocation=%s correlation=%s)",
             persona,
             chain_depth,
             MAX_CHAIN_DEPTH,
+            correlation_ctx.get("parent_invocation_id") or "unknown",
+            correlation_ctx.get("correlation_id") or "unknown",
         )
         _emit_metric(
             "ChainDepthExceeded", {"persona": persona, "depth": str(chain_depth)}
@@ -561,6 +578,13 @@ def _build_envelope(
             "is_human_rooted": correlation_ctx.get("is_human_rooted", True),
             "parent_invocation_id": correlation_ctx.get("parent_invocation_id"),
             "chain_depth": correlation_ctx.get("chain_depth", 0),
+            # Issue #5365: unlike a local-only guard value, the conservative
+            # credential horizon must survive the queue boundary.  Omitting it
+            # lets one forged shallow hop erase the higher depth before the next
+            # dispatch and restore the root human's vault authority.
+            "credential_chain_depth": correlation_ctx.get(
+                "credential_chain_depth", correlation_ctx.get("chain_depth", 0)
+            ),
         },
         "payload": payload,
         "arrived_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -665,7 +689,13 @@ def _compute_authorized_user_id(
     if not is_human_rooted:
         return ""
 
-    chain_depth = correlation_ctx.get("chain_depth", 0)
+    # Issue #5365: use the separately persisted conservative horizon when a
+    # dispatch route supplies it. It advances and serializes across every hop,
+    # so a later shallow cap depth cannot restore root-human vault authority.
+    # Older producers omit it and retain their existing ``chain_depth`` policy.
+    chain_depth = correlation_ctx.get("credential_chain_depth")
+    if not isinstance(chain_depth, int) or isinstance(chain_depth, bool):
+        chain_depth = correlation_ctx.get("chain_depth", 0)
     if chain_depth >= max_credential_chain_depth:
         return ""
 
@@ -763,6 +793,9 @@ def _capture_invocation_event(
             correlation_id=correlation_ctx.get("correlation_id"),
             parent_invocation_id=correlation_ctx.get("parent_invocation_id"),
             chain_depth=correlation_ctx.get("chain_depth"),
+            credential_chain_depth=correlation_ctx.get(
+                "credential_chain_depth", correlation_ctx.get("chain_depth")
+            ),
             root_human_id=root_human,
             is_human_rooted=is_human_rooted,
             authorized_user_id=authorized_user_id,

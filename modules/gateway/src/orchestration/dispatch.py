@@ -169,6 +169,49 @@ def graph_address(node: OrchestrationNode, *, flow_slug: str) -> str:
     return f"{flow_slug}/{node.epic_ref}/{node.wave_ref}/{node.node_ref}"
 
 
+@dataclass(frozen=True)
+class GraphAttribution:
+    """A model call's verified graph identity, for `usage_logs.graph_address`.
+
+    Issue #4898. This is the write side of the cost story: `cost.py` groups
+    `usage_logs` by `graph_address`, and until something persisted the column
+    every flow reported `unknown` / `no_usage_rows` — honestly, but uselessly.
+
+    **Only `agentauth.engine.validate_engine_authority` may construct one**, and
+    only on the branch where it has just re-read live SQL and proved: the flow is
+    runnable, its plan approval is not superseded, the assigned node is RUNNING on
+    exactly `node_attempt`, and (for a child dispatch) the parent's dispatch
+    receipt is committed. The value is therefore a *report of a completed
+    authorization*, never an input to one — nothing here is consulted to decide
+    whether a request is allowed.
+
+    Frozen, and `address` is composed by `graph_address` above rather than
+    re-spelled, so the ledger write and the cost read cannot disagree.
+
+    What deliberately gets NO attribution (each stays NULL, which reads as
+    "unavailable" rather than as zero spend):
+
+      - A flow-level or wave coordinator. It owns no single graph node, and
+        charging it to one of its children would invent a number. Those branches
+        of `validate_engine_authority` return None.
+      - Ordinary human, CLI and chat traffic, which has no protected assignment
+        at all — so NULL by construction, not by a policy some caller could
+        ignore. This is also what keeps migration 031's partial index
+        (`WHERE graph_address IS NOT NULL`) small.
+
+    `run_id` is carried so the usage writer can refuse to stamp an address onto a
+    row whose run identity disagrees with the invocation this assignment was
+    proved for, rather than persisting a graph/run mismatch.
+    """
+
+    org_id: str
+    flow_id: str
+    node_id: str
+    node_attempt: int
+    address: str
+    run_id: str
+
+
 async def _dispatch_transition(
     session: AsyncSession,
     *,

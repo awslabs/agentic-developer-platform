@@ -500,7 +500,7 @@ def test_authority_child_github_mint_uses_protected_assignment_not_missing_legac
     ownership = AsyncMock()
     monkeypatch.setattr(internal_routes, "assert_installation_owned_by", ownership)
     monkeypatch.setattr(internal_routes, "resolve_tenant_app_credentials", AsyncMock(return_value=("app", "private-test-key")))
-    mint = AsyncMock(return_value=("repo-token", "2026-09-14T00:00:00Z"))
+    mint = AsyncMock(return_value=("repo-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()))
     monkeypatch.setattr(internal_routes, "mint_installation_token_with_expiry", mint)
     response = TestClient(app).post(
         "/internal/v1/github-installation-token",

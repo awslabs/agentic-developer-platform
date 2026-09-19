@@ -201,37 +201,14 @@ A Story is a GitHub Issue with the `type: story` label. It describes a user-faci
 
 ### Story Template
 
-```markdown
-## US-{Epic}.{Story}: {Story Title}
-
-**As a** {persona},
-**I want to** {action},
-**So that** {benefit}.
-
-**Epic**: #{epic_issue_number} | **Priority**: {priority} | **Size**: {size}
-
-### Acceptance Criteria
-- [ ] {Specific, testable criterion 1}
-- [ ] {Specific, testable criterion 2}
-- [ ] {Specific, testable criterion 3}
-
-### Technical Notes
-{Any implementation guidance, API contracts, or design references}
-
-```[tasklist]
-### Units
-- [ ] #{unit_issue_number} {Unit title}
-- [ ] #{unit_issue_number} {Unit title}
-```
-
-### Dependencies
-- **Blocked by**: #{issue_number} (reason)
-- **Blocks**: #{issue_number} (reason)
-```
+Use [developer-issue.md](../templates/developer-issue.md), following
+[issue-authoring.md](issue-authoring.md). Put persona, motivation and parent
+reference in Description; keep one stable acceptance table in Validation.
+Use native sub-issue links for children; text/tasklists supplement the hierarchy.
 
 ### Agent Rules for Stories
 
-1. Every story MUST follow the "As a / I want to / So that" format.
+1. Every story states who benefits, the desired outcome and why, using the canonical template.
 2. Every story MUST have at least 2 testable acceptance criteria.
 3. Apply labels: `type: story`, `phase: inception`, `priority:` label.
 4. Story IDs: `US-{Epic}.{Story}` (e.g., `US-1.2`).
@@ -247,42 +224,14 @@ A Unit is a GitHub Issue with `type: unit` label. It represents an implementable
 
 ### Unit Template
 
-```markdown
-## Unit {Epic}-{Seq}: {Unit Title}
-
-**Story**: #{story_issue_number} | **Priority**: {priority}
-**Assigned Agent**: @agent-{type}
-
-### What to Build
-{Clear description of the implementation scope}
-
-### Files to Create/Modify
-```
-path/to/file1.py    # Description of changes
-path/to/file2.ts    # Description of changes
-```
-
-### Implementation Details
-{Specific technical guidance — API signatures, patterns to follow, constraints}
-
-### Acceptance Criteria
-- [ ] {Implementation-level criterion 1}
-- [ ] {Implementation-level criterion 2}
-- [ ] Tests pass
-- [ ] PR approved
-
-### Dependencies
-- **Blocked by**: #{issue_number} — {reason, what must complete first}
-- **Blocks**: #{issue_number} — {what depends on this unit}
-
-### Rules/Constraints
-- {Constraint 1 — e.g., "Do NOT modify shared/ directory"}
-- {Constraint 2 — e.g., "Follow existing patterns in src/auth/"}
-```
+Use the same [developer issue template](../templates/developer-issue.md), scaled
+to the unit's scope. Name dependencies, reuse points, completion boundary and
+phase owners. A file list is guidance; behavior and acceptance define the work.
+Do not embed an agent mention as assignment or add a trigger label.
 
 ### Agent Rules for Units
 
-1. Apply labels: `type: unit`, `phase: construction`, `agent-{type}`, `status: ready` or `status: blocked`.
+1. Apply classification and status labels consistent with the project. Never add `agent-*` labels; see core-workflow for dispatch.
 2. Unit IDs: `Unit {Epic}-{Seq}` (e.g., `Unit 1-3`).
 3. Reference the parent story issue number in the body.
 4. Include specific file paths — units should be actionable without clarification.
@@ -290,7 +239,7 @@ path/to/file2.ts    # Description of changes
    - In issue body: `Blocked by: #N`
    - On project board: `blocked_by` field
    - In Beads: `bd dep add <this-unit> <blocker> --type blocks`
-6. Each unit maps to exactly one PR.
+6. Prefer one coherent PR per unit. If acceptance includes post-merge fixes, keep the issue open until its declared completion boundary is met.
 7. Create Beads task: `bd create "Unit X-Y: Title" -p 3 --json` then set dependencies.
 
 ---
@@ -314,7 +263,7 @@ path/to/file2.ts    # Description of changes
 Backlog → Todo (when unblocked)
 Todo → In Progress (when agent starts)
 In Progress → Review (when PR created)
-Review → Done (when PR merged)
+Review → Done (when the issue's declared acceptance is met)
 ```
 
 ---
@@ -362,13 +311,13 @@ bd dep add <story-id> <epic-id> --type parent-child
 # Unit 1 (no dependencies)
 UNIT1_NUM=$(gh issue create --repo "$REPO" \
   --title "Unit 1-1: Create K8s manifests" \
-  --label "type: unit,phase: construction,agent-developer,status: ready" \
+  --label "type: unit,phase: construction,status: ready" \
   --body "$UNIT1_BODY" | grep -oE '[0-9]+$')
 
 # Unit 2 (blocked by Unit 1)
 UNIT2_NUM=$(gh issue create --repo "$REPO" \
   --title "Unit 1-2: Configure persistent storage" \
-  --label "type: unit,phase: construction,agent-developer,status: blocked" \
+  --label "type: unit,phase: construction,status: blocked" \
   --body "$UNIT2_BODY_WITH_BLOCKED_BY" | grep -oE '[0-9]+$')
 
 # Set project board blocked_by field

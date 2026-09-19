@@ -1,0 +1,412 @@
+name: superplane-k8s-deploy
+
+# Kubernetes rollout for the Superplane domain app.
+# Issue #5042 (U3), EPIC #4910. Follows the cyber-k8s-deploy.yml pattern (checkout →
+# kubeconfig → resolve variables → substitute → kubectl apply) with three deliberate
+# departures, each of which exists because copying cyber exactly would ship a defect this
+# EPIC was written to prevent.
+#
+# DEPARTURE 1 — CONFIGURATION COMES FROM SSM, NOT FROM WORKFLOW LITERALS.
+#
+# cyber-k8s-deploy.yml builds its queue URLs and image reference by string-formatting the
+# account id in the workflow. That makes the workflow a second source of truth: Terraform
+# also knows these values, and the two can disagree with nothing to detect it. This lane
+# instead reads the parameters `config.tf` publishes under /adp/<env>/superplane/. If an
+# apply has not run, the parameters are absent and this lane stops — which is correct, since
+# a rollout before its IAM roles exist produces pods that cannot authenticate.
+#
+# DEPARTURE 2 — NO FLOATING TAGS, ENFORCED HERE AND NOT ONLY IN THE LOCK.
+#
+# cyber deploys `adp-cyber-worker:latest`. R2 forbids that for this module: the manifest that
+# reaches the cluster must be digest-addressed, because pinning in a lock file achieves
+# nothing if the rollout names a tag. The guard below re-checks the rendered output after
+# substitution, which is the only place the actual deployed text exists — a manifest can be
+# pinned in the repository and unpinned after a `sed` that replaced a placeholder with a tag.
+#
+# DEPARTURE 3 — IT REFUSES TO DEPLOY THE THREE IMAGES THAT DO NOT EXIST.
+#
+# `releases/superplane.lock.yaml` records superplane-api, -controller and -platform-monitor
+# as `pending_images` with NO digest, blocked by `source_access`: building them needs read
+# access to aws-innovate/AISuperPlane that ADP does not have. So this lane can roll out the
+# SkyPilot API service (digest resolved: sha256:de41a5c6…) and must not pretend it can roll
+# out the other three. The preflight fails closed on any manifest that references them.
+#
+# This is why the lane is dispatch-only rather than push-triggered like cyber's: with three
+# of four components unbuildable, an automatic rollout on every k8s/** merge would be an
+# automatic partial deploy.
+#
+# MIGRATIONS ARE NOT HERE. See superplane-migrate.yml — a separate lane, per the issue, and
+# blocked on #5045 (U13) because the upstream Alembic chain has no single head.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: false
+        default: 'dev'
+        type: string
+      dry_run:
+        description: 'Render and validate manifests server-side without applying'
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: superplane-k8s-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  MANIFEST_DIR: modules/domain-apps/superplane/k8s
+  LOCK_FILE: modules/domain-apps/superplane/releases/superplane.lock.yaml
+
+jobs:
+  deploy:
+    name: Roll out Superplane manifests
+    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    permissions:
+      contents: read
+
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      SSM_PREFIX: /adp/${{ inputs.environment }}/superplane
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install AWS CLI + kubectl
+        run: |
+          set -e
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          if ! command -v kubectl >/dev/null 2>&1; then
+            curl -sL "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
+            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          fi
+          aws --version
+          kubectl version --client
+
+      - name: Preflight — are there manifests to apply?
+        # U3 owns the manifests, and at the time this lane was written there are none: the
+        # three application images are unbuildable, so there is nothing to write a Deployment
+        # for that could actually start. An empty rollout must be a visible stop, not a
+        # successful no-op — "applied nothing" and "applied everything" must not share a
+        # green tick.
+        run: |
+          set -euo pipefail
+          if [ ! -d "${{ env.MANIFEST_DIR }}" ]; then
+            echo "::error::${{ env.MANIFEST_DIR }} does not exist. No Superplane manifests have been authored yet — the three application images are pending in the release lock (blocked by source_access), so there is nothing deployable. This lane stops rather than reporting a successful rollout of nothing."
+            exit 1
+          fi
+          COUNT=$(find "${{ env.MANIFEST_DIR }}" -maxdepth 1 -name '*.yaml' -o -maxdepth 1 -name '*.yml' | wc -l | tr -d ' ')
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No manifests found in ${{ env.MANIFEST_DIR }}. Refusing to report a successful rollout with nothing applied."
+            exit 1
+          fi
+          echo "Found ${COUNT} manifest(s) to roll out."
+
+      - name: Preflight — refuse to deploy an image the lock does not pin
+        # The fail-closed check for departure 3. Runs BEFORE kubeconfig, so a manifest naming
+        # an unbuildable image never reaches a cluster connection.
+        #
+        # Read from the lock rather than hardcoded: if U2 later resolves source_access and
+        # promotes an image from `pending_images` to `images`, this stops blocking it with no
+        # edit here. A hardcoded list would have to be remembered at exactly the moment
+        # everyone is busy celebrating that the build works.
+        run: |
+          set -euo pipefail
+          PENDING=$(python3 -c "
+          import yaml, sys
+          lock = yaml.safe_load(open('${{ env.LOCK_FILE }}'))
+          print(' '.join(sorted((lock.get('pending_images') or {}).keys())))
+          ")
+          echo "Images the lock does NOT pin a digest for: ${PENDING:-<none>}"
+          if [ -z "$PENDING" ]; then
+            echo "All lock images are resolved; nothing to block."
+            exit 0
+          fi
+          FAILED=0
+          for image in $PENDING; do
+            # Comment lines are excluded before matching. A manifest may legitimately explain
+            # WHY one of these images is absent, and a guard that failed on the documentation
+            # of its own rule would train people to delete the explanation. (Two earlier
+            # guards in this unit had exactly that bug.)
+            #
+            # The trailing delimiter is the word boundary, and there is deliberately NO
+            # leading one: the real reference is `adp-superplane-api`, i.e. the lock's
+            # `ecr_repository` name, so requiring a non-`-` character before the image name
+            # would miss the very form this check exists to catch. Verified against a fixture
+            # of `…/adp-superplane-api:latest`, which an earlier version of this pattern
+            # silently allowed.
+            if grep -rn --include='*.yaml' --include='*.yml' -E "^[^#]*${image}(:|@|\"|'|[[:space:]]|\$)" "${{ env.MANIFEST_DIR }}"; then
+              echo "::error::A manifest references '${image}', which the release lock records as pending with no digest (blocked by source_access — ADP cannot read aws-innovate/AISuperPlane). There is no digest to deploy, so any reference to it is either a floating tag or a fabricated pin."
+              FAILED=1
+            fi
+          done
+          [ "$FAILED" -eq 0 ] || exit 1
+          echo "Confirmed: no manifest references a pending image."
+
+      - name: Read configuration published by Terraform
+        id: config
+        # Every value comes from the SSM parameters config.tf writes. Absent parameters mean
+        # no apply has run, and the error says so rather than surfacing as pods that cannot
+        # assume their role.
+        run: |
+          set -euo pipefail
+          get_param () {
+            local name="$1"
+            local value
+            if ! value=$(aws ssm get-parameter --name "${{ env.SSM_PREFIX }}/${name}" --query 'Parameter.Value' --output text 2>/dev/null); then
+              echo "::error::SSM parameter ${{ env.SSM_PREFIX }}/${name} not found. Run superplane-infra-apply.yml first: this lane reads what Terraform published rather than recomputing it, so a missing parameter means the infrastructure this rollout depends on does not exist yet."
+              return 1
+            fi
+            printf '%s' "$value"
+          }
+
+          CONTROL_PLANE_ROLE_ARN=$(get_param control-plane-role-arn)
+          SKYPILOT_ROLE_ARN=$(get_param skypilot-role-arn)
+          NAMESPACE=$(get_param namespace)
+          SKYPILOT_NAMESPACE=$(get_param skypilot-namespace)
+          SKYPILOT_IMAGE=$(get_param skypilot-image)
+          DATABASE_SECRET_NAME=$(get_param database-secret-name)
+          JWT_SECRET_NAME=$(get_param jwt-secret-name)
+          WORKSPACE_CLUSTER_CONTEXT=$(get_param workspace-cluster-context)
+          PUBLISHED_REGION=$(get_param aws-region)
+
+          # The region Terraform applied in must be the region this lane is operating in.
+          # They are two separate literals (this workflow's env.AWS_REGION and
+          # var.aws_region), so a mismatch is possible — and it would render pods whose
+          # AWS_REGION points somewhere their IRSA role's resource ARNs do not cover,
+          # producing 403s from inside the pod rather than a rollout error.
+          if [ "$PUBLISHED_REGION" != "${{ env.AWS_REGION }}" ]; then
+            echo "::error::Terraform published region '${PUBLISHED_REGION}' but this lane runs in '${{ env.AWS_REGION }}'. Refusing to render manifests bound to a region the infrastructure was not applied in."
+            exit 1
+          fi
+
+          # The two namespaces are separate Terraform inputs with separate defaults, and
+          # irsa.tf scopes a different OIDC `sub` condition to each. Equal values would mean
+          # one of the two trust policies cannot match the service account that uses it.
+          if [ "$NAMESPACE" = "$SKYPILOT_NAMESPACE" ]; then
+            echo "::error::namespace and skypilot-namespace are both '${NAMESPACE}'. These are distinct identity boundaries in irsa.tf; collapsing them means one trust policy no longer matches its service account."
+            exit 1
+          fi
+
+          {
+            echo "control_plane_role_arn=${CONTROL_PLANE_ROLE_ARN}"
+            echo "skypilot_role_arn=${SKYPILOT_ROLE_ARN}"
+            echo "namespace=${NAMESPACE}"
+            echo "skypilot_namespace=${SKYPILOT_NAMESPACE}"
+            echo "skypilot_image=${SKYPILOT_IMAGE}"
+            echo "database_secret_name=${DATABASE_SECRET_NAME}"
+            echo "jwt_secret_name=${JWT_SECRET_NAME}"
+            echo "workspace_cluster_context=${WORKSPACE_CLUSTER_CONTEXT}"
+            echo "aws_region=${PUBLISHED_REGION}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Secret NAMES are printed; secret VALUES are never fetched by this lane. The pods
+          # resolve them at runtime through their own scoped IRSA role, which is what keeps
+          # material out of CI logs entirely.
+          echo "Namespace: ${NAMESPACE}"
+          echo "SkyPilot namespace: ${SKYPILOT_NAMESPACE}"
+          echo "SkyPilot image: ${SKYPILOT_IMAGE}"
+          echo "Secret references: ${DATABASE_SECRET_NAME}, ${JWT_SECRET_NAME}"
+
+      - name: Resolve and bind the target account
+        id: account
+        # The rendered manifests are validated against THIS account, so the account must be
+        # resolved from the runner's real identity rather than assumed. Without it the IRSA
+        # annotation check below could only verify the ARN's shape, not that it names the
+        # account this rollout is actually authenticated to — and a cross-account role ARN
+        # in a ServiceAccount annotation is an identity this domain has no business assuming.
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          if ! printf '%s' "$ACCOUNT_ID" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::Could not resolve the caller's account id. Refusing to render manifests that cannot be bound to a target account."
+            exit 1
+          fi
+          echo "account_id=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
+          echo "Target account: ${ACCOUNT_ID}"
+
+      - name: Guard — the image Terraform published must be digest-pinned
+        # Departure 2, checked against the value actually about to be deployed. The Terraform
+        # suite asserts this at plan time (tests/lock_pin.tftest.hcl); this asserts it against
+        # what is live in SSM, which could have been changed by hand.
+        #
+        # The value arrives as `env:` data. It previously read
+        # `IMAGE='${{ steps.config.outputs.skypilot_image }}'` — a single quote in that SSM
+        # parameter would have escaped the quoting inside the very guard meant to validate it.
+        env:
+          SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
+        run: |
+          set -euo pipefail
+          IMAGE="$SP_SKYPILOT_IMAGE"
+          if ! printf '%s' "$IMAGE" | grep -qE '@sha256:[0-9a-f]{64}$'; then
+            echo "::error::The SkyPilot image published in SSM ('${IMAGE}') is not digest-addressed. R2 requires the manifest that reaches the cluster to be pinned; a tag here means nothing downstream can say what ran."
+            exit 1
+          fi
+          echo "Confirmed digest-pinned: ${IMAGE}"
+
+      - name: Guard — GPU workloads must not target the management cluster
+        # The platform-isolation requirement (2026-09-16) states GPU workloads target the
+        # intended workspace cluster, NOT the ADP management cluster. Terraform publishes the
+        # sentinel `none` when no workspace cluster is configured, precisely so that "unset"
+        # cannot be read as "use the current cluster".
+        #
+        # This lane rolls out the control plane, which is not itself a GPU workload, so an
+        # unconfigured workspace is not an error here — it is a documented constraint that
+        # must be surfaced rather than silently inherited. A live GPU run is not authorized by
+        # this story in any case (U19 owns the SkyPilot handover).
+        env:
+          SP_WORKSPACE_CONTEXT: ${{ steps.config.outputs.workspace_cluster_context }}
+        run: |
+          set -euo pipefail
+          CONTEXT="$SP_WORKSPACE_CONTEXT"
+          if [ "$CONTEXT" = "none" ] || [ -z "$CONTEXT" ]; then
+            echo "::warning::No GPU workspace cluster is configured (workspace_cluster_context=none). The control plane will roll out, but SkyPilot must not be given a GPU workload until a workspace cluster is set — otherwise jobs would schedule on whatever cluster is current, which for this runner is the ADP management cluster."
+          else
+            echo "GPU workspace target: ${CONTEXT}"
+            if printf '%s' "$CONTEXT" | grep -qiE 'adp-(dev|staging|prod)-eks-cluster|management'; then
+              echo "::error::workspace_cluster_context ('${CONTEXT}') names the ADP management cluster. GPU workloads must target the intended workspace cluster (platform isolation requirement, 2026-09-16)."
+              exit 1
+            fi
+          fi
+
+      - name: Configure kubectl
+        run: |
+          set -euo pipefail
+          CLUSTER_NAME="adp-${{ env.ENVIRONMENT }}-eks-cluster"
+          aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "$CLUSTER_NAME"
+          kubectl cluster-info
+
+      - name: Render manifests
+        # Rendered to a directory first, then guarded, then applied. cyber pipes `sed`
+        # straight into `kubectl apply`, which leaves no artifact to check — and the text that
+        # matters for R2 is the text after substitution, not the text in the repository.
+        #
+        # VALUES PASS AS DATA, NOT AS INTERPOLATED SOURCE (PR #5283 review, finding 4).
+        #
+        # The previous version built its `sed` script by interpolating `${{ steps.config.
+        # outputs.* }}` directly into the shell. `${{ }}` is textual substitution into the
+        # script BEFORE the shell parses it, so at that moment the value is source code, not
+        # data: a value containing `|` ends the `sed` expression, and one containing a quote
+        # or `$(…)` reaches the shell. These values come from SSM parameters, which can be
+        # edited by hand, so "Terraform wrote it" is not an assumption this step may make.
+        #
+        # They are now passed as `env:` variables and substituted by a Python string
+        # operation — data at every layer, parsed as neither shell nor sed.
+        env:
+          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
+          SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+          SP_CONTROL_PLANE_ROLE_ARN: ${{ steps.config.outputs.control_plane_role_arn }}
+          SP_SKYPILOT_ROLE_ARN: ${{ steps.config.outputs.skypilot_role_arn }}
+          SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
+          SP_DATABASE_SECRET_NAME: ${{ steps.config.outputs.database_secret_name }}
+          SP_JWT_SECRET_NAME: ${{ steps.config.outputs.jwt_secret_name }}
+          SP_AWS_REGION: ${{ steps.config.outputs.aws_region }}
+          SP_SOURCE_DIR: ${{ env.MANIFEST_DIR }}
+          SP_LOCK_FILE: ${{ env.LOCK_FILE }}
+        run: |
+          set -euo pipefail
+          # --lock-file is not optional: the renderer reads it to decide whether a value that
+          # no manifest consumes is expected (its component is still `pending_images`, so
+          # there are no manifests for it yet) or a defect (the lock resolved it, so the
+          # manifests that consume it are now owed). Without it a renamed placeholder would
+          # render successfully while silently dropping an identity.
+          python3 modules/domain-apps/superplane/infra/scripts/render_manifests.py \
+            --source-dir "$SP_SOURCE_DIR" \
+            --output-dir /tmp/rendered \
+            --lock-file "$SP_LOCK_FILE"
+
+      - name: Guard — validate the rendered object set before touching the cluster
+        # WHAT THIS REPLACED, AND WHY THE OLD CHECK WAS NOT ENOUGH.
+        #
+        # The previous guard matched image SHAPE: any string ending `@sha256:` plus 64 hex
+        # characters passed. PR #5283's review fed it a digest-pinned Deployment in namespace
+        # `adp` together with a ClusterRoleBinding to `cluster-admin`; it exited 0 and printed
+        # "all digest-pinned". Namespace, kind, RBAC scope, identity and resource bounds were
+        # all unchecked, and a 64-hex digest unrelated to the release lock was
+        # indistinguishable from the pinned one.
+        #
+        # check_rendered_manifests.py decides structurally instead: permitted domain
+        # namespaces (supplied as DATA from the values Terraform published, so this check and
+        # the module cannot drift), a kind allowlist that rejects cluster-scoped objects,
+        # namespaced RBAC with no wildcards and no cluster-admin binding, IRSA annotations
+        # bound to THIS account and THIS environment's role prefix, CPU/memory requests AND
+        # limits on every container, GPU containers required to carry a node selector, and
+        # every image digest checked against what the LOCK actually pins.
+        #
+        # It reports NetworkPolicy presence and states explicitly that presence is not
+        # enforcement — enforcement is the still-open platform-owned prerequisite #4999.
+        #
+        # Same data-not-source discipline as the render step: the namespaces and the
+        # environment arrive as `env:` and are passed as quoted shell variables. `${{ }}`
+        # interpolated straight into an argument list is still interpolation before the shell
+        # parses, so a value carrying a quote would escape the argument.
+        env:
+          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
+          SP_SKYPILOT_NAMESPACE: ${{ steps.config.outputs.skypilot_namespace }}
+          SP_ACCOUNT_ID: ${{ steps.account.outputs.account_id }}
+          SP_ENVIRONMENT: ${{ inputs.environment }}
+          SP_LOCK_FILE: ${{ env.LOCK_FILE }}
+        run: |
+          set -euo pipefail
+          python3 modules/domain-apps/superplane/infra/scripts/check_rendered_manifests.py \
+            --rendered-dir /tmp/rendered \
+            --lock-file "$SP_LOCK_FILE" \
+            --namespace "$SP_NAMESPACE" \
+            --namespace "$SP_SKYPILOT_NAMESPACE" \
+            --account-id "$SP_ACCOUNT_ID" \
+            --environment "$SP_ENVIRONMENT"
+
+      - name: Server-side dry run
+        # Always runs, including before a real apply: it is the only check that the rendered
+        # objects are valid against the cluster's actual schemas and admission controllers.
+        run: |
+          set -euo pipefail
+          for f in /tmp/rendered/*; do
+            echo "=== Validating $(basename "$f") ==="
+            kubectl apply --dry-run=server -f "$f"
+          done
+
+      - name: Apply
+        if: inputs.dry_run == false
+        run: |
+          set -euo pipefail
+          for f in /tmp/rendered/*; do
+            echo "=== Applying $(basename "$f") ==="
+            kubectl apply -f "$f"
+          done
+
+      - name: Summary
+        if: always()
+        env:
+          SP_ENVIRONMENT: ${{ env.ENVIRONMENT }}
+          # This lane has no `mode` input — it has `dry_run`. An earlier revision read
+          # `${{ inputs.mode }}`, which GitHub resolves to the empty string for an input that
+          # does not exist, so the summary reported "Mode:" with nothing after it. Deriving it
+          # from the input that actually gates the apply step keeps the summary and the
+          # behaviour in agreement.
+          SP_MODE: ${{ inputs.dry_run == false && 'apply' || 'dry-run (no changes applied)' }}
+          SP_NAMESPACE: ${{ steps.config.outputs.namespace }}
+          SP_SKYPILOT_IMAGE: ${{ steps.config.outputs.skypilot_image }}
+        run: |
+          {
+            echo "## Superplane K8s rollout"
+            echo "- **Environment**: ${SP_ENVIRONMENT}"
+            echo "- **Mode**: ${SP_MODE}"
+            echo "- **SkyPilot image**: \`${SP_SKYPILOT_IMAGE}\`"
+            echo "- **Namespace**: \`${SP_NAMESPACE}\`"
+            echo "- **Status**: ${{ job.status }}"
+            echo ""
+            echo "### Not rolled out by this lane"
+            echo "- \`superplane-api\`, \`superplane-controller\`, \`superplane-platform-monitor\`"
+            echo "  — recorded as pending in the release lock with no digest (blocked by"
+            echo "  \`source_access\`). The preflight refuses any manifest referencing them."
+            echo "- Schema migrations — \`superplane-migrate.yml\`, blocked on #5045 (U13)."
+          } >> "$GITHUB_STEP_SUMMARY"

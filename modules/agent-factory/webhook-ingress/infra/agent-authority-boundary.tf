@@ -11,14 +11,25 @@ locals {
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/*/internal/v1/agent/*",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/github-installation-token",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/credential-assume-role",
+    "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/worker-task-credentials",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/credential-raw-read",
+    "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/proxy-request",
+    "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/credential-materialize",
+    "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/GET/internal/v1/user-credentials",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/provenance*",
+  ]
+  # Existing worker housekeeping still shares these stores. Per-run storage
+  # and queue access requires a separate supervisor rollout; these are exact
+  # environment/account resources, not a claim of per-run data isolation.
+  agent_authority_artifact_resources = [
+    "${aws_s3_bucket.agent_run_logs.arn}/*",
+    "arn:aws:s3:::adp-${var.environment}-agent-beads-state-${local.account_id}/*",
+    "arn:aws:s3:::adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}/*",
   ]
   agent_authority_boundary_allow = concat([
     for statement in local.agent_worker_scoped_policy.Statement : statement
     if contains([
-      "BedrockModelInvoke", "BedrockAgentCoreBrowser", "CloudWatchLogGroups",
-      "BootstrapLogging", "S3Combined", "SQSQueueMgmt", "MarkerSigningKeyKMSDecrypt"
+      "CloudWatchLogGroups", "BootstrapLogging", "ProvenanceMetrics"
     ], statement.Sid)
     ], [
     {
@@ -37,10 +48,16 @@ locals {
       }
     },
     {
-      Sid      = "MarkerSecretOnly"
+      Sid      = "WorkerQueue"
       Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-      Resource = aws_secretsmanager_secret.marker_signing_key.arn
+      Action   = ["sqs:ChangeMessageVisibility", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage"]
+      Resource = aws_sqs_queue.agent_submit.arn
+    },
+    {
+      Sid      = "WorkerArtifacts"
+      Effect   = "Allow"
+      Action   = ["s3:GetObject", "s3:PutObject"]
+      Resource = local.agent_authority_artifact_resources
     },
     {
       Sid      = "AuthenticatedGateway"
@@ -59,6 +76,15 @@ locals {
     Version = "2012-10-17"
     Statement = concat(local.agent_authority_boundary_allow, [
       {
+        # Protected model requests must cross the gateway's current policy and
+        # shared spend checks. Explicit denial also covers resource-policy grants
+        # to a role session and future additions to the inherited Allow list.
+        Sid      = "DenyDirectModelInvocation"
+        Effect   = "Deny"
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:StartAsyncInvoke"]
+        Resource = "*"
+      },
+      {
         # Blocks IAM/boundary changes, STS role chaining/federation, EKS access
         # entries, compute/job mutation, webhook invocation, SSM and state reads.
         Sid       = "DenyUnlistedActions"
@@ -75,10 +101,37 @@ locals {
       {
         # Do not let a shared-key, App-private-key, platform-admin credential or
         # tenant-vault read restore privileges through another transport.
-        Sid         = "DenyOtherSecrets"
+        Sid      = "DenyAllSecrets"
+        Effect   = "Deny"
+        Action   = ["secretsmanager:*"]
+        Resource = "*"
+      },
+      {
+        Sid         = "DenyOtherArtifacts"
         Effect      = "Deny"
-        Action      = ["secretsmanager:*"]
-        NotResource = aws_secretsmanager_secret.marker_signing_key.arn
+        Action      = ["s3:*"]
+        NotResource = local.agent_authority_artifact_resources
+      },
+      {
+        Sid         = "DenyOtherQueues"
+        Effect      = "Deny"
+        Action      = ["sqs:*"]
+        NotResource = aws_sqs_queue.agent_submit.arn
+      },
+      {
+        Sid         = "DenyOtherEncryptionKeys"
+        Effect      = "Deny"
+        Action      = ["kms:*"]
+        NotResource = aws_kms_key.dynamodb.arn
+      },
+      {
+        Sid      = "DenyDirectKMS"
+        Effect   = "Deny"
+        Action   = ["kms:*"]
+        Resource = "*"
+        Condition = {
+          StringNotEquals = { "kms:ViaService" = "dynamodb.${var.aws_region}.amazonaws.com" }
+        }
       },
       {
         Sid         = "DenyOtherGatewayRoutes"
@@ -129,7 +182,7 @@ resource "aws_iam_role_policy" "agent_authority_worker" {
   count  = var.agent_authority_enabled ? 1 : 0
   name   = "agent-worker-scoped-permissions"
   role   = aws_iam_role.agent_authority_worker[0].id
-  policy = jsonencode(local.agent_worker_scoped_policy)
+  policy = jsonencode(local.agent_authority_boundary)
 }
 
 resource "kubernetes_service_account" "agent_authority_worker" {
@@ -151,16 +204,17 @@ resource "aws_dynamodb_table_item" "agent_authority_worker" {
   table_name = data.aws_ssm_parameter.agent_authority_registry[0].value
   hash_key   = "agent_id"
   item = jsonencode({
-    agent_id          = { S = "authority-worker" }
-    role_arn          = { S = aws_iam_role.agent_authority_worker[0].arn }
-    agent_name        = { S = "authority-worker" }
-    org_id            = { S = "__platform__" }
-    team_id           = { S = "__agents__" }
-    owner             = { S = "platform" }
-    scope             = { S = "internal" }
-    status            = { S = "active" }
-    allowed_models    = { SS = ["*"] }
-    credential_scopes = { SS = ["credential:raw-read"] }
-    budget_config_id  = { S = "" }
+    agent_id              = { S = "authority-worker" }
+    role_arn              = { S = aws_iam_role.agent_authority_worker[0].arn }
+    agent_name            = { S = "authority-worker" }
+    org_id                = { S = "__platform__" }
+    team_id               = { S = "__agents__" }
+    owner                 = { S = "platform" }
+    scope                 = { S = "internal" }
+    requires_run_identity = { BOOL = true }
+    status                = { S = "active" }
+    allowed_models        = { SS = ["*"] }
+    credential_scopes     = { SS = ["credential:raw-read", "credential:materialize"] }
+    budget_config_id      = { S = "" }
   })
 }

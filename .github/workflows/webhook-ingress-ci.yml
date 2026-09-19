@@ -4,6 +4,17 @@ on:
   pull_request:
     paths:
       - 'modules/agent-factory/webhook-ingress/**'
+      - '.github/workflows/webhook-ingress-ci.yml'
+      - '.github/workflows/webhook-ingress-deploy.yml'
+      - '.github/scripts/detect-webhook-deploy-changes.sh'
+      - '.github/scripts/tests/test_webhook_deploy_hold.py'
+      # Issue #5365: the agent-authority rollout guard and its tests. Both live
+      # outside this module but gate its Terraform apply, so an edit to either
+      # must reach the job that verifies them — same lockstep-reachability
+      # reason as the runner-iam and command_attribution paths below.
+      - '.github/scripts/resolve-agent-authority-rollout.sh'
+      - '.github/scripts/tests/test_agent_authority_rollout.py'
+      - '.github/deployment-holds/webhook-infra.md'
       # Issue #4021: the persona catalogue is guarded by a parity test in
       # lambda/common/tests/test_persona_catalogue_parity.py. Without this path
       # a docs-only PR editing the catalogue runs no CI at all, and the drift
@@ -19,6 +30,14 @@ on:
       # guard would go quietly stale. Same lockstep-reachability pattern
       # gateway-ci.yml uses for the webhook-ingress identity resolver.
       - 'modules/agent-factory/infra/modules/runner-iam/main.tf'
+      # Issue #4539: tests/test_engine_command_signing_iam.py asserts that the
+      # placeholder keyring value this module provisions is the same string the
+      # GATEWAY's verifier refuses. That parity is the only thing stopping an
+      # unseeded environment from verifying signatures against a value published
+      # in git (#4128), and half of it lives outside this module — so a
+      # gateway-side edit to _PLACEHOLDER_KEYS must reach this job. Same
+      # lockstep-reachability reason as the runner-iam path above.
+      - 'modules/gateway/src/orchestration/command_attribution.py'
     branches:
       - main
 
@@ -27,6 +46,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  worker-safety:
+    name: Worker IAM and deployment safety
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - name: Install test dependencies
+        run: pip install pytest PyYAML boto3 moto
+      - name: Check worker policy and deployment hold
+        run: |
+          pytest -q --import-mode=importlib .github/scripts/tests/test_webhook_deploy_hold.py \
+            .github/scripts/tests/test_agent_authority_rollout.py \
+            modules/agent-factory/webhook-ingress/tests/test_worker_iam_boundary.py \
+            modules/agent-factory/webhook-ingress/tests/test_agent_control_manifest.py \
+            modules/agent-factory/webhook-ingress/tests/test_scaledjob_manifest.py \
+            modules/agent-factory/webhook-ingress/tests/test_engine_command_signing_iam.py \
+            modules/agent-factory/webhook-ingress/tests/test_webhook_waf.py
+
   lint:
     name: Lint
     runs-on: arc-runner-org

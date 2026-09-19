@@ -11,8 +11,9 @@ variable "environment" {
 }
 
 variable "github_org" {
-  description = "GitHub organization name for runner registration"
+  description = "GitHub organization for optional legacy ARC integration; empty when GitHub is not configured"
   type        = string
+  default     = ""
 }
 
 variable "github_repo" {
@@ -25,6 +26,12 @@ variable "runner_namespace" {
   description = "Kubernetes namespace for ARC runner pods"
   type        = string
   default     = "arc-runners"
+}
+
+variable "runner_role_name" {
+  description = "Optional factory IRSA role name; upgrades retain the owned role or avoid legacy CodeBuild name collisions"
+  type        = string
+  default     = ""
 }
 
 variable "gateway_deployed" {
@@ -111,4 +118,10 @@ variable "agent_ws_public_url" {
     condition     = var.agent_ws_public_url == "" || startswith(var.agent_ws_public_url, "wss://")
     error_message = "agent_ws_public_url must start with wss:// — the frontend uses it as a WebSocket URL verbatim."
   }
+}
+
+variable "disable_execute_api_endpoint" {
+  type        = bool
+  description = "Disable the AWS-assigned execute-api hostname on the chat WebSocket API so it answers only on its published custom domain. A WEBSOCKET API supports neither a resource policy nor a WAF web ACL, so that hostname carries no network-layer restriction at all. Default false (the AWS default); set true wherever a custom domain such as ws.<zone> is in use."
+  default     = false
 }

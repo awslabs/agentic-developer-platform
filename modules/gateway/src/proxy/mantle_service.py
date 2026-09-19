@@ -4,8 +4,9 @@ Proxies ``POST /openai/v1/responses`` to the upstream ``bedrock-mantle`` endpoin
 so Codex (and any future OpenAI-model client) rides the same per-tenant metering
 and model-allowlist governance that Claude traffic gets today.
 
-This is a **passthrough, not a translation** — the request body is forwarded
-byte-for-byte and the response (including streaming chunks) is returned verbatim.
+Successful response bytes pass through unchanged. If an upstream stream fails
+before its terminal event, an SSE error is appended when at a record boundary;
+an interrupted partial record is closed without injecting more malformed data.
 It intentionally does NOT touch ``format_translator.py``.
 
 The one exception is the ``model`` field: bedrock-runtime's OpenAI path serves
@@ -29,6 +30,7 @@ mantle models).
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import json
 import logging
@@ -38,7 +40,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -53,10 +55,14 @@ from src.chat_logging.service import ChatLoggingService
 from src.proxy.bedrock_enforcement import RoutingDecision, resolve_routing_decision
 from src.proxy.mantle_auth import MantleAuth, SigV4MantleAuth
 from src.proxy.service import _current_client_tool
+from src.proxy.stream_handler import SSEBoundary
 from src.shared.database import get_session_factory
 from src.shared.exceptions import BedrockGatewayError
 from src.shared.schemas.auth import TokenContext
 from src.usage.service import UsageService
+
+if TYPE_CHECKING:  # Imported lazily at call time to keep the proxy import graph acyclic.
+    from src.orchestration.provider_quotes import TrustedUsage
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +98,7 @@ _GEO_PREFIXES = ("us.", "eu.", "apac.", "in.", "global.", "us-gov.")
 # missing newline upstream), we drop the buffer with a WARN rather than grow it
 # unboundedly — metering must never threaten gateway pod memory or the stream.
 _MAX_SNIFF_BUFFER_BYTES = 1024 * 1024  # 1 MiB
+_TERMINAL_EVENTS = {"response.completed", "response.incomplete", "response.failed", "error"}
 
 
 @dataclass
@@ -154,6 +161,13 @@ class _StreamUsageSniffer:
         self.usage: dict[str, Any] = {}
         self._buffer = b""
         self.metadata: dict[str, str] = {}
+        self.terminal_event: str | None = None
+        self.sequence_number = -1
+        self._event_name = ""
+        self._event_terminal: str | None = None
+        self._oversized_data = False
+        self._dropping_line = False
+        self._trailing_cr = False
 
     def finish(self) -> None:
         if self._buffer:
@@ -162,31 +176,66 @@ class _StreamUsageSniffer:
 
     def feed(self, chunk: bytes) -> None:
         """Consume one upstream chunk, updating ``usage`` from any complete lines."""
-        self._buffer += chunk
-        # Cap the carried buffer: on overflow drop it (metering must never break
-        # the stream or grow pod memory unboundedly).
-        if len(self._buffer) > _MAX_SNIFF_BUFFER_BYTES:
-            logger.warning(
-                "mantle usage sniffer buffer exceeded cap; dropping partial line",
-                extra={"buffer_bytes": len(self._buffer), "cap_bytes": _MAX_SNIFF_BUFFER_BYTES},
-            )
-            self._buffer = b""
+        if not chunk:
             return
-        # Split on newlines; the last element is the (possibly incomplete)
-        # trailing fragment, carried forward until its newline arrives.
-        *complete, self._buffer = self._buffer.split(b"\n")
-        for raw in complete:
-            self._parse_line(raw)
+        # SSE permits LF, CRLF and CR, including CRLF split across reads.
+        if self._trailing_cr and chunk.startswith(b"\n"):
+            chunk = chunk[1:]
+        self._trailing_cr = chunk.endswith(b"\r")
+        chunk = chunk.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        # Limit each line, not an entire HTTP chunk: one chunk can contain many
+        # events. After an oversized line, discard until its newline rather than
+        # trying to parse its tail as the start of a new event.
+        parts = chunk.split(b"\n")
+        for index, part in enumerate(parts):
+            complete = index < len(parts) - 1
+            if not self._dropping_line:
+                self._buffer += part
+                if len(self._buffer) > _MAX_SNIFF_BUFFER_BYTES:
+                    self._oversized_data |= self._buffer.startswith(b"data:")
+                    logger.warning("mantle usage sniffer buffer exceeded cap; dropping partial line")
+                    self._buffer = b""
+                    self._dropping_line = True
+                elif complete:
+                    self._parse_line(self._buffer)
+                    self._buffer = b""
+            if complete:
+                self._dropping_line = False
 
     def _parse_line(self, raw: bytes) -> None:
         try:
-            line = raw.decode("utf-8", errors="ignore").strip()
+            # Only an empty line dispatches an SSE event. Whitespace or an
+            # invalid UTF-8 byte must not manufacture a completion delimiter.
+            line = raw.decode("utf-8", errors="replace")
+            if not line:
+                # A terminal data line is not delivered as an SSE event until
+                # the blank-line delimiter arrives. EOF mid-record is failure.
+                terminal = self._event_terminal
+                if self._oversized_data and self._event_name in _TERMINAL_EVENTS:
+                    terminal = self._event_name
+                if terminal:
+                    self.terminal_event = terminal
+                self._event_name = ""
+                self._event_terminal = None
+                self._oversized_data = False
+                return
+            if line.startswith("event:"):
+                self._event_name = line[6:].strip()
+                return
             if not line.startswith("data:"):
                 return
             payload = line[len("data:") :].strip()
             if not payload or payload == "[DONE]" or not payload.startswith("{"):
                 return
             data = json.loads(payload)
+            if not isinstance(data, dict):
+                return
+            event_type = data.get("type", self._event_name)
+            if isinstance(event_type, str) and event_type in _TERMINAL_EVENTS:
+                self._event_terminal = event_type
+            sequence = data.get("sequence_number")
+            if isinstance(sequence, int) and not isinstance(sequence, bool):
+                self.sequence_number = max(self.sequence_number, sequence)
             # usage may be top-level or nested under a "response" object.
             found = data.get("usage")
             if found is None and isinstance(data.get("response"), dict):
@@ -210,7 +259,9 @@ class MantlePassthroughService:
         base_url: Mantle base URL WITHOUT the responses path (e.g.
             ``https://bedrock-mantle.us-east-1.api.aws``).
         http_client: Optional pre-built httpx.AsyncClient (injected in tests).
-        timeout: Upstream request timeout in seconds.
+        timeout: Non-streaming request / streaming write timeout in seconds.
+        stream_read_timeout: Maximum upstream silence during a stream. Connect
+            and pool acquisition have separate ten-second deadlines.
     """
 
     def __init__(
@@ -222,6 +273,7 @@ class MantlePassthroughService:
         on_demand_models: str = "",
         http_client: httpx.AsyncClient | None = None,
         timeout: float = 120.0,
+        stream_read_timeout: float = 600.0,
     ) -> None:
         self._auth = auth
         self._base_url = base_url.rstrip("/")
@@ -230,6 +282,7 @@ class MantlePassthroughService:
         # profile exists for them) — these must NOT be geo-prefixed.
         self._on_demand_patterns = [p.strip() for p in on_demand_models.split(",") if p.strip()]
         self._timeout = timeout
+        self._stream_timeout = httpx.Timeout(timeout, read=stream_read_timeout, connect=10.0, pool=10.0)
         self._http_client = http_client
         self._chat_logger: ChatLoggingService | None = None
 
@@ -421,7 +474,7 @@ class MantlePassthroughService:
         # stream. Connecting here lets the route return the real upstream
         # status, and guarantees the failure is logged (#3897).
         try:
-            upstream_request = client.build_request("POST", routed.upstream_url, content=body, headers=headers)
+            upstream_request = client.build_request("POST", routed.upstream_url, content=body, headers=headers, timeout=self._stream_timeout)
             resp = await client.send(upstream_request, stream=True)
         except httpx.HTTPError as exc:
             if owns_client:
@@ -466,32 +519,81 @@ class MantlePassthroughService:
 
         async def _passthrough() -> AsyncIterator[bytes]:
             sniffer = _StreamUsageSniffer()
+            boundary = SSEBoundary()
+            outcome = "interrupted"
+            result_status = 502
+
+            def error_event(code: str, message: str) -> bytes:
+                # No response.completed fabrication or automatic replay after
+                # partial output. The client receives the actual failure.
+                payload = {
+                    "type": "error",
+                    "code": code,
+                    "message": f"{message} Request ID: {request_id}",
+                    "param": None,
+                    "sequence_number": sniffer.sequence_number + 1,
+                }
+                return b"event: error\ndata: " + json.dumps(payload).encode() + b"\n\n"
+
             try:
                 async for chunk in resp.aiter_bytes():
                     # Passthrough: yield upstream bytes verbatim, sniff usage as
                     # we go. The sniffer buffers partial lines internally; the
                     # yielded bytes are never modified.
                     sniffer.feed(chunk)
+                    boundary.feed(chunk)
                     yield chunk
+                if sniffer.terminal_event is None:
+                    outcome = "premature_eof"
+                    if not boundary.at_boundary:
+                        raise httpx.RemoteProtocolError("Upstream ended inside a Responses event")
+                    yield error_event("upstream_stream_incomplete", "The model stream ended before a terminal response event.")
+            except httpx.HTTPError as exc:
+                if sniffer.terminal_event is None:
+                    if outcome != "premature_eof":
+                        outcome = "read_timeout" if isinstance(exc, httpx.ReadTimeout) else "transport_error"
+                    result_status = 504 if isinstance(exc, httpx.ReadTimeout) else 502
+                    # A partial data line has already reached the client. An
+                    # injected error here would corrupt that line as well.
+                    if not boundary.at_boundary:
+                        raise
+                    code = "upstream_stream_timeout" if isinstance(exc, httpx.ReadTimeout) else "upstream_stream_error"
+                    message = "Timed out waiting for model output." if isinstance(exc, httpx.ReadTimeout) else "The upstream model connection failed."
+                    yield error_event(code, message)
+            except (asyncio.CancelledError, GeneratorExit):
+                outcome = "client_cancelled"
+                result_status = 499
+                raise
             finally:
                 sniffer.finish()
                 await resp.aclose()
                 if owns_client:
                     await client.aclose()
                 latency_ms = (time.monotonic() - start) * 1000
-                logger.info(
-                    "mantle stream completed: HTTP %d (model=%s request_id=%s latency_ms=%d)",
-                    status_code,
+                if sniffer.terminal_event:
+                    outcome = sniffer.terminal_event.removeprefix("response.")
+                    result_status = 502 if sniffer.terminal_event in {"error", "response.failed"} else status_code
+                logger.log(
+                    logging.WARNING if result_status >= 400 else logging.INFO,
+                    "mantle stream %s (model=%s request_id=%s latency_ms=%d)",
+                    outcome,
                     model,
                     request_id,
                     int(latency_ms),
+                    extra={
+                        "stream_outcome": outcome,
+                        "terminal_event": sniffer.terminal_event,
+                        "stream_read_timeout_seconds": self._stream_timeout.read,
+                        "upstream_status": status_code,
+                        "status_code": result_status,
+                    },
                 )
                 await self._log_usage(
                     context,
                     model,
                     self._capture_usage(sniffer.usage, body, model, sniffer.metadata, base_url=routed.base_url),
                     int(latency_ms),
-                    status_code,
+                    result_status,
                     request_id,
                     agent_run_id,
                     routing_decision=routed.decision,
@@ -523,9 +625,24 @@ class MantlePassthroughService:
             return {}
         # Keep invalid and absent counters as evidence; policy validation, not
         # int() coercion, decides whether they can be billed.
+        #
+        # Issue #5226: output_tokens_details is retained for the same reason. It
+        # is not priced separately (reasoning bills as output, already inside
+        # output_tokens), but it is the evidence that shows whether the reported
+        # counts agree with each other — reasoning_tokens exceeding output_tokens
+        # means they do not, and the quote contract must not release a
+        # reservation against totals that only agree after clamping. Dropping it
+        # here would make that conflict invisible downstream.
         return {
             name: found[name]
-            for name in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens_details")
+            for name in (
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "input_tokens_details",
+                "output_tokens_details",
+            )
             if name in found
         }
 
@@ -574,6 +691,27 @@ class MantlePassthroughService:
     # ------------------------------------------------------------------
     # Metering
     # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _trusted_usage(usage: dict[str, Any]) -> TrustedUsage:
+        """Ask the route's own quote adapter whether this usage can settle a hold.
+
+        Routed through the registry rather than calling the Responses adapter
+        directly so the answer always comes from whichever adapter actually
+        issued the bound for this endpoint. If no adapter owns the route there is
+        no reservation to protect, so ordinary metering is unaffected.
+        """
+        from src.orchestration.provider_quotes import TrustedUsage, adapter_for
+
+        adapter = adapter_for(MANTLE_RESPONSES_PATH)
+        if adapter is None:
+            return TrustedUsage(input_tokens=0, output_tokens=0, known=True)
+        try:
+            return await adapter.reconcile({"usage": dict(usage)})
+        except Exception:
+            # A failure to establish trust is not a grant of it.
+            logger.exception("Responses usage trust check failed; treating usage as unknown")
+            return TrustedUsage.unknown("usage trust check failed")
 
     async def _log_usage(
         self,
@@ -642,6 +780,22 @@ class MantlePassthroughService:
         output_tokens = decision.usage["output_tokens"] if decision else 0
         cost_usd = decision.ledger_cost if decision else Decimal("0")
 
+        # Issue #5226: settling a policy reservation needs a STRICTER test than
+        # "a decision exists". `normalize_usage` is deliberately forgiving — it
+        # bounds contradictory counters (cached > input) and records the conflict
+        # as `valid=False` rather than refusing, because the usage_logs row is
+        # worth keeping either way. But the quote contract may not release
+        # reserved headroom on counters it cannot trust: a partly-invented total
+        # would replace a real hold with an understated charge. So the adapter
+        # that issued the bound decides whether this usage is settleable, and an
+        # untrusted block keeps the hold exactly as an absent one does.
+        trusted = await self._trusted_usage(usage)
+        if decision is not None and not trusted.known:
+            logger.warning(
+                "Mantle usage rejected by the Responses quote contract; retaining reservation",
+                extra={"request_id": request_id, "model": model, "reason": trusted.reason},
+            )
+
         await reconcile_budget_reservation(
             context=context,
             request_id=request_id,
@@ -649,7 +803,7 @@ class MantlePassthroughService:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             actual_cost_usd=cost_usd,
-            usage_known=decision is not None,
+            usage_known=decision is not None and trusted.known,
         )
 
         # Budget & Spend reads budget_usage, not usage_logs. Only the S3 event

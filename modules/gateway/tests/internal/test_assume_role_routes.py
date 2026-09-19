@@ -721,3 +721,131 @@ class TestAssumeRoleCanonicalResolution:
         data = resp.json()
         assert data["access_key_id"] == "ASIAIOSFODNN7EXAMPLE"
         assert "provenance_id" in data
+
+
+class TestWorkspaceBrokerIntegration:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("account,external_id", [("123456789012", "tenant-a-external"), ("210987654321", "tenant-b-external")])
+    async def test_authorized_stored_workspace_reaches_sts_with_identity_tags(self, db, account, external_id):
+        cred = await _seed_aws_role_credential(db)
+        cred.scopes = {"account_id": account, "status": "verified"}
+        await db.commit()
+        stored = json.loads(_ROLE_SECRET_JSON)
+        stored.update(account_id=account, role_arn=f"arn:aws:iam::{account}:role/Workspace", external_id=external_id)
+        sm = MagicMock()
+        sm.get_secret.return_value = json.dumps(stored)
+        with (
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+            patch("src.auth.sts_client.get_settings", return_value=_settings_mock()),
+            patch(
+                "src.internal.assume_role_routes.resolve_credential_binding",
+                return_value=SimpleNamespace(
+                    resolved_user_id="user-alice",
+                    from_registry=True,
+                    drift_detected=True,
+                ),
+            ),
+            patch("src.auth.sts_client.boto3.client") as client_factory,
+            patch("src.internal.assume_role_routes.assume_role") as legacy,
+        ):
+            client_factory.return_value.assume_role.return_value = _mock_sts_response()
+            response = _make_app(db, sm).post(
+                "/internal/v1/credential-assume-role",
+                json={
+                    "user_id": "untrusted-body-user",
+                    "agent_id": "developer",
+                    "task_id": "task-xyz",
+                    "label": "prod",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert response.status_code == 200, response.text
+        legacy.assert_not_called()
+        call = client_factory.return_value.assume_role.call_args.kwargs
+        assert call["RoleArn"] == stored["role_arn"]
+        assert call["ExternalId"] == external_id
+        assert call["DurationSeconds"] == 1800
+        assert {tag["Key"]: tag["Value"] for tag in call["Tags"]} == {
+            "adp:user_id": "user-alice",
+            "adp:agent_id": "developer",
+            "adp:task_id": "task-xyz",
+            "adp:persona": "developer",
+        }
+        assert response.json()["region"] == "us-west-2"
+        assert external_id not in response.text and stored["role_arn"] not in response.text
+        audit = (await db.execute(select(AuditLog).where(AuditLog.event_type == "vault_aws_role_assumed"))).scalar_one()
+        assert audit.details["success"] is True
+        assert audit.details["authorized_user_id"] == "user-alice"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"external_id": None},
+            {"external_id": 123},
+            {"external_id": " "},
+            {"account_id": "210987654321"},
+            {"role_arn": "arn:aws:iam::210987654321:role/Other"},
+            {"account_id": "210987654321", "role_arn": "arn:aws:iam::210987654321:role/Other"},
+        ],
+    )
+    async def test_invalid_workspace_metadata_refuses_before_sts_and_audits(self, db, overrides):
+        cred = await _seed_aws_role_credential(db)
+        cred.scopes = {"account_id": "123456789012"}
+        await db.commit()
+        stored = {**json.loads(_ROLE_SECRET_JSON), "account_id": "123456789012", **overrides}
+        sm = MagicMock()
+        sm.get_secret.return_value = json.dumps(stored)
+        with (
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+            patch("src.auth.sts_client.get_settings", return_value=_settings_mock()),
+            patch("src.auth.sts_client.boto3.client") as client_factory,
+            patch("src.internal.assume_role_routes.assume_role") as legacy,
+        ):
+            response = _make_app(db, sm).post(
+                "/internal/v1/credential-assume-role",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "developer",
+                    "task_id": "task-xyz",
+                    "label": "prod",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert response.status_code == 502, response.text
+        client_factory.return_value.assume_role.assert_not_called()
+        legacy.assert_not_called()
+        assert stored["role_arn"] not in response.text
+        audit = (await db.execute(select(AuditLog).where(AuditLog.event_type == "vault_aws_role_assumed"))).scalar_one()
+        assert audit.details["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_imported_role_retains_optional_external_id(self, db):
+        cred = await _seed_aws_role_credential(db)
+        cred.scopes = {"account_id": "123456789012", "source": "imported_role"}
+        await db.commit()
+        stored = {**json.loads(_ROLE_SECRET_JSON), "account_id": "123456789012", "external_id": ""}
+        sm = MagicMock()
+        sm.get_secret.return_value = json.dumps(stored)
+        with (
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+            patch("src.internal.assume_role_routes.STSClient") as broker,
+            patch("src.internal.sts_assume_service.boto3.client") as client_factory,
+        ):
+            client_factory.return_value.assume_role.return_value = _mock_sts_response()
+            response = _make_app(db, sm).post(
+                "/internal/v1/credential-assume-role",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "developer",
+                    "task_id": "task-xyz",
+                    "label": "prod",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert response.status_code == 200, response.text
+        broker.assert_not_called()
+        assert "ExternalId" not in client_factory.return_value.assume_role.call_args.kwargs

@@ -46,7 +46,13 @@ POLL_INTERVAL="${POLL_INTERVAL:-15}"
 # --- Upload source to per-build S3 key ---------------------------------------
 ZIP_PATH="/tmp/adp-source-${UNIQUE_ID}.zip"
 echo "Packaging source → s3://${STATE_BUCKET}/${SOURCE_KEY}"
-bash "$SCRIPT_DIR/zip-source.sh" "$ROOT_DIR" "$ZIP_PATH" > /dev/null
+if [ "${ADP_RELEASE_BUILD:-false}" = true ]; then
+  # Release inputs come only from the selected commit, never local secrets,
+  # build output, Terraform overrides, or private deployment evidence.
+  git -C "$ROOT_DIR" archive --format=zip --output="$ZIP_PATH" "$SOURCE_SHA"
+else
+  bash "$SCRIPT_DIR/zip-source.sh" "$ROOT_DIR" "$ZIP_PATH" > /dev/null
+fi
 aws s3 cp "$ZIP_PATH" "s3://${STATE_BUCKET}/${SOURCE_KEY}" --region "$REGION" > /dev/null
 rm -f "$ZIP_PATH"
 

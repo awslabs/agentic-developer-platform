@@ -5,9 +5,11 @@ const SOURCE_PATH = path.join(__dirname, 'agent-worker.ts');
 const source = fs.readFileSync(SOURCE_PATH, 'utf-8');
 
 describe('agent-worker pre-submit checks contract', () => {
-  it('requires pre-submit checks before requesting review, allowing draft progress', () => {
+  it('requires completed work before opening a PR, allowing branch checkpoints', () => {
     expect(source).toContain('## Pre-submit checks (MANDATORY before requesting review)');
-    expect(source).toContain('Incomplete branch checkpoints and draft PRs may be published before these finish');
+    expect(source).toContain('Do not create draft PRs');
+    expect(source).toContain('before opening a ready PR or requesting review');
+    expect(source).toContain('Incomplete branch checkpoints may be pushed with check status disclosed');
     expect(source).not.toContain('fix the underlying issue before pushing');
   });
 

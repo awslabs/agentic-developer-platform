@@ -25,6 +25,7 @@ Coverage, in order of what actually protects the tenant boundary:
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,6 +36,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from src.internal.routes import router
+from src.knowledge.github_app_service import ReviewerIdentityUnavailableError
+from src.orchestration.execution_policy import Action
 from src.shared.database import get_db
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import Base
@@ -51,7 +54,10 @@ _FOREIGN_INSTALLATION = 555002
 
 _INVOCATION_ID = "evt-abc-123"
 
-_GITHUB_EXPIRES_AT = "2026-08-27T16:45:00Z"
+_GITHUB_EXPIRES_AT = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+
+# Not a key — the mint is stubbed, so this only has to be a distinguishable string.
+_FAKE_REVIEW_KEY = "-----BEGIN RSA PRIVATE KEY-----\nreview-not-a-real-key\n-----END RSA PRIVATE KEY-----"
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +143,14 @@ async def db(engine) -> AsyncSession:
         yield session
 
 
-def _make_app(db_session: AsyncSession) -> TestClient:
+def _make_app(db_session: AsyncSession, *, authorized_action: Action | None = None) -> TestClient:
     app = FastAPI()
+
+    @app.middleware("http")
+    async def _set_authorized_action(request, call_next):
+        request.state.agent_authorized_action = authorized_action
+        return await call_next(request)
+
     app.include_router(router)
 
     async def _get_db():
@@ -197,11 +209,19 @@ def _post(
     mint: AsyncMock | None = None,
     settings: MagicMock | None = None,
     headers: dict | None = None,
+    reviewer: AsyncMock | None = None,
+    authorized_action: Action | None = None,
 ):
-    """POST the route with DDB + mint + credential resolution stubbed out."""
+    """POST the route with DDB + mint + credential resolution stubbed out.
+
+    ``reviewer`` stubs the #5350 reviewer-identity resolver. Its default models
+    today's live state: no distinct reviewer App is registered, so the resolver
+    raises ReviewerIdentityUnavailableError and the route must fall back.
+    """
     settings = settings or _settings_mock()
     mint = mint or AsyncMock(return_value=("ghs_brokered_token", _GITHUB_EXPIRES_AT))
-    client = _make_app(db_session)
+    reviewer = reviewer or AsyncMock(side_effect=ReviewerIdentityUnavailableError("not configured"))
+    client = _make_app(db_session, authorized_action=authorized_action)
 
     with (
         patch("src.internal.routes.get_settings", return_value=settings),
@@ -214,6 +234,7 @@ def _post(
             "src.internal.routes.resolve_tenant_app_credentials",
             new=AsyncMock(return_value=("99001", "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----")),
         ),
+        patch("src.internal.routes.resolve_reviewer_app_credentials", new=reviewer),
         patch("src.internal.routes.mint_installation_token_with_expiry", new=mint),
     ):
         resp = client.post(
@@ -348,6 +369,7 @@ class TestMintHappyPath:
 
         assert resp.status_code == 200, resp.text
         payload = resp.json()
+        assert resp.headers["cache-control"] == "no-store"
         assert payload["token"] == "ghs_brokered_token"
         assert payload["expires_at"] == _GITHUB_EXPIRES_AT
         # The App ID is public (only the private key is secret) and the worker still
@@ -433,3 +455,200 @@ class TestAuthn:
 
         assert resp.status_code == 403, resp.text
         mint.assert_not_awaited()
+
+
+class TestReviewerIdentity:
+    """Issue #5350 — the reviewer identity, and the honesty of its fallback.
+
+    The defect: every PR the engine opens is authored by the tenant's GitHub App,
+    and every reviewer the engine dispatched authenticated as that SAME App. GitHub
+    answers 422 "Can not approve your own pull request" to both APPROVE and
+    REQUEST_CHANGES, so no engine-authored PR could ever receive a verdict and
+    `reviewDecision` stayed empty for the entire life of the engine.
+
+    These tests cover the gateway half: minting as a DISTINCT reviewer App when one
+    is configured, and — crucially, because it is today's live state — reporting
+    truthfully when one is not. The `identity` field in the response is what lets the
+    reviewer discover, before it tries, that a formal verdict is impossible. If that
+    field silently said "review" while handing back the authoring identity, the whole
+    fallback would be a lie and the reviewer would go on downgrading in silence.
+    """
+
+    _REVIEW_INSTALLATION = 777001
+
+    def test_review_action_value_matches_the_policy_enum(self):
+        """The internal plane compares the authorized action by STRING, so pin the value.
+
+        `src/internal/` must not import `src.orchestration` (agent pods can call every
+        internal route, so promotion state stays unreachable from that plane — see
+        tests/orchestration/test_internal_plane_guard.py). The route therefore matches
+        `Action.REVIEW` by its value. Renaming the enum value without updating the
+        constant would silently stop granting the reviewer identity to real reviewers,
+        with no test failing anywhere near the change — so assert they agree.
+        """
+        from src.knowledge.github_app_service import REVIEW_ACTION_VALUE
+        from src.orchestration.execution_policy import Action
+
+        assert REVIEW_ACTION_VALUE == Action.REVIEW.value
+
+    @pytest.mark.asyncio
+    async def test_default_identity_is_unchanged_for_existing_callers(self, db):
+        """A body with no `identity` mints exactly as before, on the bound installation."""
+        resp, mint = _post(db)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["identity"] == "default"
+        assert mint.await_args.args[2] == _BOUND_INSTALLATION
+
+    @pytest.mark.asyncio
+    async def test_configured_reviewer_app_mints_on_its_own_installation(self, db):
+        """The reviewer App's OWN installation id is used, not the authoring one.
+
+        A second GitHub App has a separate installation on the org. Minting the
+        reviewer key against the authoring App's installation id would fail at
+        GitHub, so this asserts the installation actually travels with the identity.
+        """
+        reviewer = AsyncMock(return_value=("88002", _FAKE_REVIEW_KEY, self._REVIEW_INSTALLATION))
+        resp, mint = _post(db, body=_body(identity="review"), reviewer=reviewer, authorized_action=Action.REVIEW)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["identity"] == "review"
+        assert resp.json()["app_id"] == "88002"
+        assert mint.await_args.args[0] == "88002"
+        assert mint.await_args.args[2] == self._REVIEW_INSTALLATION
+
+    @pytest.mark.asyncio
+    async def test_absent_reviewer_app_falls_back_and_says_so(self, db):
+        """Today's live state: no reviewer App, so the response must admit it.
+
+        The run still gets a working token — the review attempt should proceed and
+        collect the 422 rather than the run dying — but `identity` comes back
+        "default", which is the caller's signal to name the pending human approval.
+        """
+        resp, mint = _post(db, body=_body(identity="review"), authorized_action=Action.REVIEW)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["identity"] == "default"
+        assert resp.json()["app_id"] == "99001"
+        assert mint.await_args.args[2] == _BOUND_INSTALLATION
+
+    @pytest.mark.asyncio
+    async def test_fallback_is_recorded_in_the_audit_trail(self, db):
+        """Requested vs granted are both audited, so the gap is answerable later."""
+        resp, _ = _post(db, body=_body(identity="review"), authorized_action=Action.REVIEW)
+
+        assert resp.status_code == 200, resp.text
+        rows = await _audit_rows(db, "github_installation_token_minted")
+        assert len(rows) == 1
+        assert rows[0].details["identity_requested"] == "review"
+        assert rows[0].details["identity_granted"] == "default"
+        assert rows[0].details["authorized_action"] == "review"
+
+    @pytest.mark.asyncio
+    async def test_broken_reviewer_credentials_do_not_degrade_to_authoring(self, db):
+        """A PRESENT but malformed reviewer secret is a misconfiguration, not a fallback.
+
+        Silently falling back here would hide a real deployment fault behind the
+        expected "not registered yet" path, so the run fails loudly instead.
+        """
+        reviewer = AsyncMock(side_effect=ValueError("installation_id missing from reviewer secret"))
+        resp, mint = _post(db, body=_body(identity="review"), reviewer=reviewer, authorized_action=Action.REVIEW)
+
+        assert resp.status_code == 502, resp.text
+        assert resp.json()["detail"]["error"] == "app_credentials_unavailable"
+        mint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unknown_identity_is_refused_not_defaulted(self, db):
+        """A caller asking for an identity we do not implement gets no token at all.
+
+        Answering a typo with a usable authoring token would hand back the one
+        identity that cannot review while the caller believed otherwise.
+        """
+        resp, mint = _post(db, body=_body(identity="reviewer"))
+
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"]["error"] == "unknown_identity"
+        mint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_implementation_action_cannot_mint_reviewer_credentials(self, db):
+        """A developer-controlled body cannot select the distinct reviewer App."""
+        reviewer = AsyncMock(return_value=("88002", _FAKE_REVIEW_KEY, self._REVIEW_INSTALLATION))
+
+        resp, mint = _post(
+            db,
+            body=_body(identity="review"),
+            reviewer=reviewer,
+            authorized_action=Action.DEVELOP,
+        )
+
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["error"] == "review_identity_not_authorized"
+        mint.assert_not_awaited()
+        reviewer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_review_runs_bootstrap_mint_keeps_the_authoring_identity(self, db):
+        """A review run's OTHER mints must not be routed to the reviewer App.
+
+        A reviewer run mints more than once: its bootstrap mint (entrypoint.py, which
+        sends no `identity`) clones the repo and drives the check run, and it needs the
+        authoring App's broader grant. Selecting the reviewer App from the action alone
+        would point that mint at a review-only App and ask GitHub for permissions that
+        App was never granted — GitHub refuses, so the run would die at startup instead
+        of reviewing anything. The authority check stays server-side; the request still
+        has to say which identity it wants.
+        """
+        reviewer = AsyncMock(return_value=("88002", _FAKE_REVIEW_KEY, self._REVIEW_INSTALLATION))
+
+        resp, mint = _post(db, reviewer=reviewer, authorized_action=Action.REVIEW)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["identity"] == "default"
+        assert resp.json()["app_id"] == "99001"
+        assert mint.await_args.args[2] == _BOUND_INSTALLATION
+        reviewer.assert_not_awaited()
+        # The authoring grant is intact for the work this mint actually does.
+        assert mint.await_args.kwargs["permissions"].get("issues") == "write"
+
+    @pytest.mark.asyncio
+    async def test_reviewer_mint_asks_only_for_permissions_a_review_app_holds(self, db):
+        """A reviewer App is not granted `issues`/`checks`; the mint must not ask.
+
+        The run's authorized permission set is computed for the AUTHORING App. GitHub
+        refuses an access-token request naming a permission its App was never granted,
+        so passing that set through unchanged would make a correctly configured reviewer
+        App fail to mint. Narrowing also keeps the reviewer token least-privilege: it can
+        record a verdict and nothing else.
+        """
+        reviewer = AsyncMock(return_value=("88002", _FAKE_REVIEW_KEY, self._REVIEW_INSTALLATION))
+
+        resp, mint = _post(db, body=_body(identity="review"), reviewer=reviewer, authorized_action=Action.REVIEW)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["identity"] == "review"
+        permissions = mint.await_args.kwargs["permissions"]
+        assert permissions.get("pull_requests") == "write", "a reviewer must be able to submit the review"
+        assert "issues" not in permissions
+        assert "checks" not in permissions
+
+    @pytest.mark.asyncio
+    async def test_reviewer_identity_still_requires_the_ownership_layers(self, db):
+        """Asking for the reviewer identity is not a way around the tenant boundary.
+
+        The identity choice is consulted only AFTER binding and ownership pass, so a
+        run bound to another tenant's installation is refused exactly as before.
+        """
+        reviewer = AsyncMock(return_value=("88002", "key", self._REVIEW_INSTALLATION))
+        resp, mint = _post(
+            db,
+            row=_bound_row(installation_id=_FOREIGN_INSTALLATION, tenant_id=_OTHER_TENANT),
+            body=_body(identity="review"),
+            reviewer=reviewer,
+            authorized_action=Action.REVIEW,
+        )
+
+        assert resp.status_code in (403, 409), resp.text
+        mint.assert_not_awaited()
+        reviewer.assert_not_awaited()

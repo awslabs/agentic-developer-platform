@@ -1,0 +1,33 @@
+# One-shot Job to run Alembic migrations against the integration-test DB
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: superplane-db-migrate
+  namespace: superplane
+  labels:
+    app.kubernetes.io/name: superplane-api
+    app.kubernetes.io/component: migration
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-db
+          image: public.ecr.aws/docker/library/postgres:16-alpine
+          command: ['sh', '-c', 'until pg_isready -h postgres.superplane.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
+      containers:
+        - name: migrate
+          image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
+          command: ['python', '-m', 'alembic', 'upgrade', 'head']
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://superplane:superplane@postgres.superplane.svc.cluster.local:5432/superplane"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

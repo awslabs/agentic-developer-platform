@@ -73,6 +73,7 @@ const RUN_SPECIFIC_INTERPOLATIONS = [
  *   - rules                               — loadRules() output; reads only
  *                                           .adp-rules files, never the issue
  *   - KNOWLEDGE_LAYER_*                   — module constants from env
+ *   - MEDIATED_GITHUB_*                   — module constants from env (#5223)
  */
 const INVARIANT_INTERPOLATIONS = [
   'AGENT_TYPE',
@@ -80,6 +81,8 @@ const INVARIANT_INTERPOLATIONS = [
   'rules',
   'KNOWLEDGE_LAYER_ENABLED',
   'KNOWLEDGE_LAYER_PROMPT',
+  'MEDIATED_GITHUB_ENABLED',
+  'MEDIATED_GITHUB_PROMPT',
 ];
 
 /** Every `${...}` interpolation in `text`, innermost-first, de-duplicated. */
