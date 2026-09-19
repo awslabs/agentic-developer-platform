@@ -54,6 +54,10 @@ class ModelPolicyReport:
 
     status: Literal["proposed", "unavailable"]
     reason: str | None = None
+    tenant_id: str | None = None
+    persona: str | None = None
+    principal_kind: Literal["human", "service_account"] | None = None
+    compatibility_class: str | None = None
     requested_model_id: str | None = None
     resolved_model_id: str | None = None
     resolution_source: str | None = None
@@ -87,6 +91,40 @@ class ModelPolicyReport:
             values["ADP_MODEL_POLICY_REQUESTED_MODEL"] = self.requested_model_id
         return values
 
+    def shadow_event(
+        self,
+        legacy_model: str,
+        *,
+        invocation_id: str,
+        channel: str,
+        trigger: str,
+    ) -> dict[str, object] | None:
+        """Build one structured, behaviour-neutral comparison log event."""
+        if self.status != "proposed":
+            return None
+        return {
+            "event": "persona_model_shadow_comparison",
+            "schema_version": 1,
+            "invocation_id": invocation_id,
+            "tenant_id": self.tenant_id,
+            "persona": self.persona,
+            "principal_kind": self.principal_kind,
+            "channel": channel,
+            "trigger": trigger,
+            "compatibility_class": self.compatibility_class,
+            "legacy_model": legacy_model,
+            "proposed_model": self.resolved_model_id,
+            "mapping_exists": self.resolution_source == "principal-mapping",
+            "resolution_source": self.resolution_source,
+            "matches_legacy": self.resolved_model_id == legacy_model,
+            "snapshot_digest": self.snapshot_digest,
+            "policy_revision": self.policy_revision,
+            "catalogue_revision": self.catalogue_revision,
+            "posture_revision": self.posture_revision,
+            "runtime_posture": "report_only",
+            "admission_refusal": False,
+        }
+
 
 def _safe_policy_text(value: object, *, optional: bool = False) -> str | None:
     if optional and value is None:
@@ -114,6 +152,10 @@ def parse_model_policy_report(value: object, *, invocation_id: str) -> ModelPoli
     if status != "proposed" or not isinstance(value.get("decision"), dict):
         raise ValueError("invalid model-policy response")
     decision = value["decision"]
+    tenant_id = _safe_policy_text(decision.get("tenant_id"))
+    persona = _safe_policy_text(decision.get("persona"))
+    principal_kind = _safe_policy_text(decision.get("principal_kind"))
+    compatibility_class = _safe_policy_text(decision.get("compatibility_class"))
     resolved = _safe_policy_text(decision.get("resolved_model_id"))
     requested = _safe_policy_text(decision.get("requested_model_id"), optional=True)
     source = _safe_policy_text(decision.get("resolution_source"))
@@ -125,6 +167,7 @@ def parse_model_policy_report(value: object, *, invocation_id: str) -> ModelPoli
         decision.get("invocation_id") != invocation_id
         or decision.get("runtime_posture") != "report_only"
         or source not in _RESOLUTION_SOURCES
+        or principal_kind not in {"human", "service_account"}
         or len(digest) != 64
         or any(char not in "0123456789abcdef" for char in digest)
         or type(posture_revision) is not int
@@ -135,6 +178,10 @@ def parse_model_policy_report(value: object, *, invocation_id: str) -> ModelPoli
         raise ValueError("invalid model-policy response")
     return ModelPolicyReport(
         status="proposed",
+        tenant_id=tenant_id,
+        persona=persona,
+        principal_kind=principal_kind,
+        compatibility_class=compatibility_class,
         requested_model_id=requested,
         resolved_model_id=resolved,
         resolution_source=source,

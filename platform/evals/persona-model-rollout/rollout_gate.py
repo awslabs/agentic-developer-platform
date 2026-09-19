@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+"""Offline PMM-09 evidence validator. It never invokes a model or flips posture."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent
+MANIFEST_PATH = ROOT / "matrix.json"
+STATUSES = {"pass", "fail", "blocked", "not_run"}
+SHADOW_MARKER = "PMM09_MODEL_SHADOW "
+COMMON_FIELDS = {
+    "account_id",
+    "region",
+    "timestamp_utc",
+    "persona",
+    "principal_kind",
+    "principal_id",
+    "tenant_id",
+    "surface",
+    "requested_model",
+    "resolved_model",
+    "resolution_source",
+    "policy_revision",
+    "posture_revision",
+}
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError(f"{path}: top-level value must be an object")
+    return value
+
+
+def validate_manifest(manifest: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    cells = manifest.get("cells")
+    if manifest.get("schema_version") != 1 or not isinstance(cells, list):
+        return ["manifest must have schema_version=1 and a cells array"]
+    ids = [cell.get("id") for cell in cells if isinstance(cell, dict)]
+    required_ids = {f"L{number}" for number in range(1, 26)}
+    if len(cells) != 25 or set(ids) != required_ids or len(ids) != len(set(ids)):
+        errors.append("manifest must contain each cell L1..L25 exactly once")
+    for cell in cells:
+        if not isinstance(cell, dict):
+            errors.append("every matrix cell must be an object")
+            continue
+        kinds = cell.get("evidence_kinds")
+        if (
+            not isinstance(kinds, list)
+            or not kinds
+            or set(kinds) - {"A", "B", "C", "D"}
+        ):
+            errors.append(f"{cell.get('id', '?')}: invalid evidence_kinds")
+        if (
+            "B" in (kinds or [])
+            and cell.get("id") != "L8"
+            and not cell.get("reason_code")
+        ):
+            errors.append(
+                f"{cell.get('id', '?')}: refusal cell has no fixed reason_code"
+            )
+    return errors
+
+
+def _present(value: Any) -> bool:
+    return value is not None and value != "" and value != [] and value != {}
+
+
+def _require(
+    cell_id: str,
+    value: dict[str, Any],
+    fields: set[str],
+    errors: list[str],
+    label: str = "evidence",
+) -> None:
+    missing = sorted(field for field in fields if not _present(value.get(field)))
+    if missing:
+        errors.append(f"{cell_id}: {label} missing {', '.join(missing)}")
+
+
+def _require_keys(
+    cell_id: str, value: dict[str, Any], fields: set[str], errors: list[str]
+) -> None:
+    """Require common fields while allowing outcome-specific null values."""
+    missing = sorted(field for field in fields if field not in value)
+    if missing:
+        errors.append(f"{cell_id}: evidence missing {', '.join(missing)}")
+
+
+def validate_kind_a(cell_id: str, evidence: dict[str, Any], errors: list[str]) -> None:
+    invocation = evidence.get("invocation")
+    if not isinstance(invocation, dict):
+        errors.append(f"{cell_id}: kind A requires invocation evidence")
+        return
+    _require(
+        cell_id,
+        invocation,
+        {
+            "provider_request_id",
+            "model_output_sha256",
+            "usage_row_id",
+            "agent_run_id",
+            "cost_usd",
+            "input_tokens",
+            "output_tokens",
+        },
+        errors,
+        "invocation",
+    )
+    digest = invocation.get("model_output_sha256")
+    if _present(digest) and (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(c not in "0123456789abcdef" for c in digest)
+    ):
+        errors.append(f"{cell_id}: model_output_sha256 must be a lowercase SHA-256")
+    if invocation.get("real_model_output") is not True:
+        errors.append(
+            f"{cell_id}: kind A must explicitly assert real_model_output=true"
+        )
+    if not _present(evidence.get("resolved_model")):
+        errors.append(f"{cell_id}: kind A requires a resolved_model")
+    if invocation.get("cost_usd", 0) < 0:
+        errors.append(f"{cell_id}: cost_usd cannot be negative")
+
+
+def validate_kind_b(
+    cell: dict[str, Any], evidence: dict[str, Any], errors: list[str]
+) -> None:
+    cell_id = cell["id"]
+    if cell_id == "L8":
+        observation = evidence.get("non_billable_observation")
+        if not isinstance(observation, dict):
+            errors.append("L8: requires non_billable_observation evidence")
+            return
+        _require(
+            cell_id,
+            observation,
+            {"request_trace_id", "usage_query_id", "provider_log_query_id"},
+            errors,
+            "non_billable_observation",
+        )
+        if (
+            observation.get("scope_selector_rendered") is not False
+            or observation.get("self_rows_only") is not True
+        ):
+            errors.append("L8: must prove no scope selector and self-only requests")
+        if (
+            observation.get("usage_rows") != 0
+            or observation.get("provider_invocations") != 0
+        ):
+            errors.append(
+                "L8: observation must prove zero usage rows and zero provider invocations"
+            )
+        return
+    refusal = evidence.get("refusal")
+    if not isinstance(refusal, dict):
+        errors.append(f"{cell_id}: kind B requires refusal evidence")
+        return
+    _require(
+        cell_id,
+        refusal,
+        {
+            "reason_code",
+            "requester_delivery_id",
+            "usage_query_id",
+            "provider_log_query_id",
+        },
+        errors,
+        "refusal",
+    )
+    if refusal.get("reason_code") != cell.get("reason_code"):
+        errors.append(f"{cell_id}: expected reason_code {cell.get('reason_code')!r}")
+    if refusal.get("usage_rows") != 0 or refusal.get("provider_invocations") != 0:
+        errors.append(
+            f"{cell_id}: refusal must prove zero usage rows and zero provider invocations"
+        )
+    if _present(refusal.get("provider_request_id")):
+        errors.append(f"{cell_id}: refusal cannot carry a provider request ID")
+    if cell_id == "L11":
+        surface_codes = refusal.get("surface_reason_codes")
+        expected = cell.get("reason_code")
+        if (
+            not isinstance(surface_codes, dict)
+            or surface_codes.get("ui") != expected
+            or surface_codes.get("cli") != expected
+        ):
+            errors.append("L11: UI and CLI must expose the same fixed reason code")
+
+
+def validate_kind_c(cell_id: str, evidence: dict[str, Any], errors: list[str]) -> None:
+    change = evidence.get("configuration_change")
+    if not isinstance(change, dict):
+        errors.append(f"{cell_id}: kind C requires configuration_change evidence")
+        return
+    _require(
+        cell_id,
+        change,
+        {"api_response_id", "audit_row_id", "stored_revision"},
+        errors,
+        "configuration_change",
+    )
+    if (
+        not isinstance(change.get("stored_revision"), int)
+        or change["stored_revision"] < 1
+    ):
+        errors.append(f"{cell_id}: stored_revision must be a positive integer")
+
+
+def validate_shadow(
+    manifest: dict[str, Any], evidence: dict[str, Any], errors: list[str]
+) -> None:
+    shadow = evidence.get("shadow_comparison")
+    if not isinstance(shadow, dict):
+        errors.append("L22: kind D requires shadow_comparison evidence")
+        return
+    minimum = shadow.get("minimum_observations_per_path")
+    if not isinstance(minimum, int) or minimum < 1:
+        errors.append("L22: minimum_observations_per_path must be positive")
+        return
+    observations = shadow.get("observations")
+    if not isinstance(observations, list):
+        errors.append("L22: observations must be an array")
+        return
+    required = set(manifest["required_shadow_paths"])
+    counts = {path: 0 for path in required}
+    for index, row in enumerate(observations):
+        if not isinstance(row, dict):
+            errors.append(f"L22: observation {index} is not an object")
+            continue
+        path = row.get("dispatch_path")
+        if path not in required:
+            errors.append(f"L22: observation {index} has unknown dispatch_path")
+            continue
+        counts[path] += 1
+        if row.get("admission_refusal") is True:
+            errors.append(
+                f"L22: observation {index} mixes an admission refusal into selection shadow data"
+            )
+        mapping_exists = row.get("mapping_exists")
+        if not isinstance(mapping_exists, bool):
+            errors.append(f"L22: observation {index} must state mapping_exists")
+            continue
+        differs = row.get("legacy_model") != row.get("proposed_model")
+        if differs != mapping_exists:
+            errors.append(f"L22: observation {index} is an unexplained divergence")
+        _require(
+            "L22",
+            row,
+            {
+                "legacy_model",
+                "proposed_model",
+                "persona",
+                "principal_kind",
+                "tenant_id",
+                "policy_revision",
+            },
+            errors,
+            f"observation {index}",
+        )
+    uncovered = sorted(path for path, count in counts.items() if count < minimum)
+    if uncovered:
+        errors.append(f"L22: uncovered shadow paths: {', '.join(uncovered)}")
+
+
+def shadow_path(event: dict[str, Any]) -> str | None:
+    """Map trusted worker channel/trigger fields to the approved path names."""
+    channel = event.get("channel")
+    trigger = event.get("trigger")
+    if channel == "gitlab":
+        return "gitlab"
+    if trigger == "eventbridge" or channel in {"schedule", "eventbridge"}:
+        return "scheduled_service_account"
+    if trigger == "agent_trigger":
+        return "agent_to_agent"
+    if trigger in {"orchestration", "orchestration_loop"}:
+        return "orchestration_loop"
+    if trigger in {"workflow_dispatch", "arc_workflow"}:
+        return "arc_workflow"
+    if channel in {"chat", "ui"}:
+        return "chat_ui"
+    if channel == "cli":
+        return "cli"
+    if trigger in {"issue_labeled", "label"}:
+        return "label_dispatch"
+    if channel == "github" and trigger in {"mention", "issue_comment"}:
+        return "github_mention"
+    return None
+
+
+def shadow_report(path: Path) -> dict[str, Any]:
+    """Convert one-line worker events into the L22 observation shape."""
+    observations: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for line_number, raw in enumerate(path.read_text().splitlines(), start=1):
+        payload = raw.partition(SHADOW_MARKER)[2] if SHADOW_MARKER in raw else raw
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            rejected.append({"line": line_number, "reason": "invalid_json"})
+            continue
+        if (
+            not isinstance(event, dict)
+            or event.get("event") != "persona_model_shadow_comparison"
+        ):
+            rejected.append({"line": line_number, "reason": "wrong_event"})
+            continue
+        dispatch_path = shadow_path(event)
+        if dispatch_path is None:
+            rejected.append(
+                {
+                    "line": line_number,
+                    "reason": "unmapped_path",
+                    "channel": event.get("channel"),
+                    "trigger": event.get("trigger"),
+                }
+            )
+            continue
+        observations.append(
+            {
+                "dispatch_path": dispatch_path,
+                "mapping_exists": event.get("mapping_exists"),
+                "legacy_model": event.get("legacy_model"),
+                "proposed_model": event.get("proposed_model"),
+                "admission_refusal": event.get("admission_refusal", False),
+                "persona": event.get("persona"),
+                "principal_kind": event.get("principal_kind"),
+                "tenant_id": event.get("tenant_id"),
+                "policy_revision": event.get("policy_revision"),
+            }
+        )
+    return {
+        "minimum_observations_per_path": 1,
+        "observations": observations,
+        "rejected_events": rejected,
+    }
+
+
+def validate_safety(evidence: dict[str, Any], errors: list[str]) -> None:
+    safety = evidence.get("safety")
+    if not isinstance(safety, dict):
+        errors.append("safety block is required")
+        return
+    if safety.get("enforcement_authorized") is not False:
+        errors.append("this harness accepts only enforcement_authorized=false")
+    if safety.get("posture_at_collection") != "report_only":
+        errors.append(
+            "this harness accepts evidence collected in report_only posture only"
+        )
+    if safety.get("probe_spend_ceiling_usd") not in (None, 0, 0.0):
+        errors.append("paid probing is not authorized by this harness")
+    flags = evidence.get("feature_flags")
+    if not isinstance(flags, dict):
+        errors.append("feature_flags block is required")
+    else:
+        if flags.get("persona_model_posture") != "report_only":
+            errors.append("persona_model_posture must remain report_only")
+        if flags.get("model_probe_enabled") is not False:
+            errors.append(
+                "model_probe_enabled must remain false without spend approval"
+            )
+        if flags.get("agent_models_ui_enabled") is not False:
+            errors.append(
+                "agent_models_ui_enabled must remain false before readiness approval"
+            )
+
+
+def validate_deployment(evidence: dict[str, Any], errors: list[str]) -> None:
+    deployment = evidence.get("deployment")
+    if not isinstance(deployment, dict):
+        errors.append("deployment block is required")
+        return
+    _require(
+        "deployment",
+        deployment,
+        {
+            "environment",
+            "account_id",
+            "region",
+            "git_revision",
+            "gateway_image_digest",
+            "worker_image_digest",
+            "webhook_version",
+            "deploy_state_sha256",
+        },
+        errors,
+    )
+    if deployment.get("mixed_version_nodes") is not False:
+        errors.append("deployment: mixed_version_nodes must be explicitly false")
+    health = deployment.get("health")
+    if not isinstance(health, dict) or not all(
+        health.get(key) is True
+        for key in (
+            "frontend_200",
+            "gateway_200",
+            "gateway_pods_running",
+            "rds_available",
+            "worker_spawned",
+        )
+    ):
+        errors.append("deployment: every required health assertion must be true")
+
+
+def assess(manifest: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
+    errors = validate_manifest(manifest)
+    if evidence.get("schema_version") != 1 or evidence.get("story") != 5427:
+        errors.append("evidence must have schema_version=1 and story=5427")
+    validate_safety(evidence, errors)
+    validate_deployment(evidence, errors)
+    provided = evidence.get("cells")
+    if not isinstance(provided, dict):
+        provided = {}
+        errors.append("cells must be an object keyed by L1..L25")
+    expected = {cell["id"]: cell for cell in manifest["cells"]}
+    unknown = sorted(set(provided) - set(expected))
+    if unknown:
+        errors.append(f"unknown matrix cells: {', '.join(unknown)}")
+    results: list[dict[str, Any]] = []
+    for cell_id in sorted(expected, key=lambda item: int(item[1:])):
+        cell = expected[cell_id]
+        value = provided.get(cell_id, {"status": "not_run"})
+        if not isinstance(value, dict) or value.get("status") not in STATUSES:
+            errors.append(f"{cell_id}: invalid status")
+            value = {"status": "fail"}
+        status = value.get("status")
+        before = len(errors)
+        if status == "pass":
+            _require_keys(cell_id, value, COMMON_FIELDS, errors)
+            for kind in cell["evidence_kinds"]:
+                if kind == "A":
+                    validate_kind_a(cell_id, value, errors)
+                elif kind == "B":
+                    validate_kind_b(cell, value, errors)
+                elif kind == "C":
+                    validate_kind_c(cell_id, value, errors)
+                elif kind == "D":
+                    validate_shadow(manifest, evidence, errors)
+        elif status == "blocked" and not _present(value.get("blocker")):
+            errors.append(f"{cell_id}: blocked status requires blocker")
+        results.append(
+            {
+                "id": cell_id,
+                "status": "fail"
+                if len(errors) > before and status == "pass"
+                else status,
+            }
+        )
+    totals = {
+        status: sum(result["status"] == status for result in results)
+        for status in STATUSES
+    }
+    complete = not errors and totals["pass"] == 25
+    return {
+        "schema_version": 1,
+        "story": 5427,
+        "complete": complete,
+        "enforcement_ready": False,
+        "totals": totals,
+        "results": results,
+        "errors": errors,
+        "manifest_sha256": hashlib.sha256(MANIFEST_PATH.read_bytes()).hexdigest(),
+        "notice": "Offline, non-enforcing assessment only; it cannot authorize spend, deployment, or a posture flip.",
+    }
+
+
+def template(manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "story": 5427,
+        "safety": {
+            "enforcement_authorized": False,
+            "posture_at_collection": "report_only",
+            "probe_spend_ceiling_usd": 0,
+        },
+        "feature_flags": {
+            "persona_model_posture": "report_only",
+            "model_probe_enabled": False,
+            "agent_models_ui_enabled": False,
+        },
+        "deployment": {},
+        "cells": {cell["id"]: {"status": "not_run"} for cell in manifest["cells"]},
+        "shadow_comparison": {"minimum_observations_per_path": 1, "observations": []},
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("validate-manifest")
+    sub.add_parser("template")
+    shadow_parser = sub.add_parser("shadow-report")
+    shadow_parser.add_argument("events", type=Path)
+    assess_parser = sub.add_parser("assess")
+    assess_parser.add_argument("evidence", type=Path)
+    args = parser.parse_args()
+    manifest = load_json(MANIFEST_PATH)
+    if args.command == "validate-manifest":
+        errors = validate_manifest(manifest)
+        print(json.dumps({"valid": not errors, "errors": errors}, indent=2))
+        return int(bool(errors))
+    if args.command == "template":
+        print(json.dumps(template(manifest), indent=2))
+        return 0
+    if args.command == "shadow-report":
+        report = shadow_report(args.events)
+        print(json.dumps(report, indent=2))
+        return int(bool(report["rejected_events"]))
+    report = assess(manifest, load_json(args.evidence))
+    print(json.dumps(report, indent=2))
+    return int(bool(report["errors"]))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

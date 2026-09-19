@@ -1598,7 +1598,18 @@ def main() -> int:
     # path and live admission gate is proven.  Older gateways/workers simply
     # omit these comparison fields during the mixed-version rollout.
     if run_identity is not None and run_identity.model_policy_report is not None:
-        env_vars.update(run_identity.model_policy_report.environment(effective_model))
+        model_policy_report = run_identity.model_policy_report
+        env_vars.update(model_policy_report.environment(effective_model))
+        shadow_event = model_policy_report.shadow_event(
+            effective_model,
+            invocation_id=message_id,
+            channel=str(envelope.get("channel") or "unknown")[:64],
+            trigger=str(envelope.get("intent", {}).get("trigger") or "unknown")[:64],
+        )
+        if shadow_event is not None:
+            # One-line JSON is intentionally queryable in CloudWatch. It contains
+            # canonical policy facts but no bearer credential or model output.
+            logger.info("PMM09_MODEL_SHADOW %s", json.dumps(shadow_event, sort_keys=True, separators=(",", ":")))
 
     # Issue #5223: in mediated mode there is no token, so exporting these would
     # publish empty strings as if they were credentials. Removed rather than left

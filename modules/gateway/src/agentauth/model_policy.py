@@ -179,6 +179,7 @@ class ModelPolicySnapshot:
 class ModelPolicyDecision:
     schema_version: int
     tenant_id: str
+    principal_kind: Literal["human", "service_account"]
     invocation_id: str
     correlation_id: str
     snapshot_digest: str
@@ -197,6 +198,7 @@ class ModelPolicyDecision:
         return {
             "schema_version": self.schema_version,
             "tenant_id": self.tenant_id,
+            "principal_kind": self.principal_kind,
             "invocation_id": self.invocation_id,
             "correlation_id": self.correlation_id,
             "snapshot_digest": self.snapshot_digest,
@@ -288,6 +290,7 @@ def resolve_decision(
     return ModelPolicyDecision(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
         tenant_id=snapshot.tenant_id,
+        principal_kind=snapshot.principal_kind,
         invocation_id=invocation_id,
         correlation_id=snapshot.correlation_id,
         snapshot_digest=policy_digest(snapshot.to_dict()),

@@ -61,6 +61,10 @@ def reply(token="adpr1.first.signature", **changes):
 def policy_reply(**decision_changes):
     decision = {
         "invocation_id": "run-a",
+        "tenant_id": "tenant",
+        "persona": "developer",
+        "principal_kind": "human",
+        "compatibility_class": "claude-agent-sdk",
         "runtime_posture": "report_only",
         "posture_revision": 7,
         "requested_model_id": "sonnet46",
@@ -84,6 +88,10 @@ def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
 
     assert report == ModelPolicyReport(
         status="proposed",
+        tenant_id="tenant",
+        persona="developer",
+        principal_kind="human",
+        compatibility_class="claude-agent-sdk",
         requested_model_id="sonnet46",
         resolved_model_id="global.anthropic.claude-sonnet-4-6",
         resolution_source="explicit-direct",
@@ -97,6 +105,33 @@ def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
     assert evidence["ADP_MODEL_POLICY_LEGACY_MODEL"] == "global.anthropic.claude-opus-5"
     assert evidence["ADP_MODEL_POLICY_MATCH"] == "false"
     assert "ANTHROPIC_MODEL" not in evidence
+    assert report.shadow_event(
+        "global.anthropic.claude-opus-5",
+        invocation_id="run-a",
+        channel="github",
+        trigger="issue_labeled",
+    ) == {
+        "event": "persona_model_shadow_comparison",
+        "schema_version": 1,
+        "invocation_id": "run-a",
+        "tenant_id": "tenant",
+        "persona": "developer",
+        "principal_kind": "human",
+        "channel": "github",
+        "trigger": "issue_labeled",
+        "compatibility_class": "claude-agent-sdk",
+        "legacy_model": "global.anthropic.claude-opus-5",
+        "proposed_model": "global.anthropic.claude-sonnet-4-6",
+        "mapping_exists": False,
+        "resolution_source": "explicit-direct",
+        "matches_legacy": False,
+        "snapshot_digest": "a" * 64,
+        "policy_revision": "policy-7",
+        "catalogue_revision": "catalogue-4",
+        "posture_revision": 7,
+        "runtime_posture": "report_only",
+        "admission_refusal": False,
+    }
 
 
 @pytest.mark.parametrize(
