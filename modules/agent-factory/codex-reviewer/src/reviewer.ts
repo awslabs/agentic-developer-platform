@@ -5,12 +5,15 @@ import {
   parseVerdict,
   requiresChanges,
   reviewOutputSchema,
+  type CodexIssueReviewEnvelope,
+  type CodexPullRequestReviewEnvelope,
   type CodexReviewEnvelope,
   type ReviewFinding,
   type ReviewVerdict,
 } from "./contracts.js";
 import {
   formatFixesPushedComment,
+  formatIssueReviewComment,
   formatReviewComment,
   GitHubClient,
 } from "./github.js";
@@ -31,6 +34,7 @@ const FORBIDDEN_AUTOFIX_PATHS = [
 ];
 
 export type ReviewRunResult =
+  | { status: "issue_reviewed"; issue: number; blockers: number }
   | { status: "stale"; expected: string; actual: string }
   | { status: "changes_requested"; blockers: number }
   | { status: "approved"; sha: string }
@@ -56,6 +60,14 @@ function reviewerPrompt(
 
 function fixPrompt(findings: ReviewFinding[]): string {
   return `Apply only the following reviewer-approved mechanical fixes to the working tree. Do not commit, push, merge, call GitHub, or alter unrelated files. Run focused tests for changed behavior. If a requested repair requires choosing product semantics or changing architecture, leave it untouched and explain that in the final response.\n\n${JSON.stringify(findings, null, 2)}`;
+}
+
+function issueReviewPrompt(
+  persona: string,
+  issue: { title: string; body: string | null },
+  request: string,
+): string {
+  return `${persona}\n\nReview this GitHub issue:\n# ${issue.title}\n${issue.body ?? "(no body)"}\n\nThe human requested:\n${request}\n\nInspect the current repository where useful. Assess whether the issue is clear, feasible, consistent with the codebase, and testable. Identify missing acceptance criteria, security or operational risks, dependency gaps, and ambiguous product decisions. Return only the requested structured verdict. Do not modify files.`;
 }
 
 export function gitEnvironment(token: string): NodeJS.ProcessEnv {
@@ -219,8 +231,42 @@ async function publishVerdict(
   await github.comment(prNumber, body);
 }
 
-export async function runReview(
-  envelope: CodexReviewEnvelope,
+async function runIssueReview(
+  envelope: CodexIssueReviewEnvelope,
+  runtime: ReviewRuntime,
+): Promise<ReviewRunResult> {
+  if (!runtime.workspace || !runtime.githubToken || !runtime.proxyBaseUrl) {
+    throw new Error("Codex review requires the shared worker workspace, GitHub token, and gateway proxy");
+  }
+  const github = new GitHubClient(envelope.repository, async () => runtime.githubToken);
+  const [issue, persona] = await Promise.all([
+    github.getIssue(envelope.issue.number),
+    readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8"),
+  ]);
+  const codex = new Codex({
+    baseUrl: runtime.proxyBaseUrl,
+    apiKey: "sigv4-proxy-placeholder",
+    env: childEnvironment(),
+  });
+  const verdict = await codexVerdict(
+    codex,
+    runtime.workspace,
+    issueReviewPrompt(persona, issue, envelope.issue.triggering_comment),
+  );
+  await github.commentOnce(
+    envelope.issue.number,
+    `<!-- agent-codex-reviewer:${envelope.message_id} -->`,
+    formatIssueReviewComment(verdict, envelope.issue.number, `Codex SDK ${SDK_VERSION}`),
+  );
+  return {
+    status: "issue_reviewed",
+    issue: envelope.issue.number,
+    blockers: verdict.findings.filter((finding) => finding.blocking).length,
+  };
+}
+
+async function runPullRequestReview(
+  envelope: CodexPullRequestReviewEnvelope,
   runtime: ReviewRuntime,
 ): Promise<ReviewRunResult> {
   if (!runtime.workspace || !runtime.githubToken || !runtime.proxyBaseUrl) {
@@ -405,4 +451,14 @@ export async function runReview(
     const mergeSha = await github.merge(envelope.pull_request.number, expected);
     return { status: "merged", sha: expected, mergeSha };
   }
+}
+
+export async function runReview(
+  envelope: CodexReviewEnvelope,
+  runtime: ReviewRuntime,
+): Promise<ReviewRunResult> {
+  if (envelope.kind === "codex_issue_review") {
+    return runIssueReview(envelope, runtime);
+  }
+  return runPullRequestReview(envelope, runtime);
 }

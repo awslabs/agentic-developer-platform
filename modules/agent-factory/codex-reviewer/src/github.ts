@@ -24,9 +24,51 @@ export function formatFixesPushedComment(
   );
 }
 
+export function formatIssueReviewComment(
+  verdict: ReviewVerdict,
+  issueNumber: number,
+  engine: string,
+): string {
+  const blockers = verdict.findings.filter((finding) => finding.blocking);
+  const lines = [
+    `## agent-codex-reviewer — ${verdict.verdict === "approve" ? "ISSUE READY" : "ISSUE CHANGES REQUESTED"}`,
+    "",
+    `**Reviewed issue:** #${issueNumber}`,
+    `**Blockers:** ${blockers.length}`,
+    `**Engine:** ${engine}`,
+    "",
+    verdict.summary,
+  ];
+  for (const finding of verdict.findings) {
+    const location = finding.file
+      ? `${finding.file}${finding.line ? `:${finding.line}` : ""}`
+      : "Issue-wide";
+    lines.push(
+      "",
+      `### ${finding.id}: ${finding.title}`,
+      "",
+      `**Impact:** ${finding.impact} · **Confidence:** ${finding.confidence} · **Approval:** ${finding.blocking ? "blocker" : "non-blocking"} · **Owner:** ${finding.fixClass}`,
+      "",
+      finding.details,
+      "",
+      `**Location:** \`${location}\``,
+      "",
+      `**Recommended fix:** ${finding.recommendedFix}`,
+    );
+  }
+  if (verdict.validationGaps.length > 0) {
+    lines.push("", "### Validation gaps", "", ...verdict.validationGaps.map((gap) => `- ${gap}`));
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 interface IssueResponse {
   number: number;
   title: string;
+  body: string | null;
+}
+
+interface IssueCommentResponse {
   body: string | null;
 }
 
@@ -103,6 +145,15 @@ export class GitHubClient {
       method: "POST",
       body: JSON.stringify({ body }),
     });
+  }
+
+  async commentOnce(number: number, marker: string, body: string): Promise<boolean> {
+    const comments = await this.request<IssueCommentResponse[]>(
+      `/repos/${this.repository}/issues/${number}/comments?per_page=100&sort=created&direction=desc`,
+    );
+    if (comments.some((comment) => comment.body?.includes(marker))) return false;
+    await this.comment(number, `${marker}\n${body}`);
+    return true;
   }
 
   async checks(sha: string): Promise<ChecksState> {

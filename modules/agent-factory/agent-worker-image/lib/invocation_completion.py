@@ -1,4 +1,4 @@
-"""Durable delivery completion for the legacy AIDLC worker path (#5165).
+"""Durable delivery completion for legacy worker paths (#5165).
 
 A merged PR identifies neither a completed AIDLC workflow nor a completed queue
 message. Keep a receipt on the exact ingress row instead. Its 30-day retention
@@ -61,7 +61,7 @@ def _request(envelope: dict) -> dict:
             "#tenant": "tenant_id",
             "#repo": "repo",
             "#persona": "persona",
-            "#done": "aidlc_delivery_completed",
+            "#done": "delivery_completed",
         },
         "ExpressionAttributeValues": {
             ":tenant": {"S": tenant},
@@ -82,12 +82,16 @@ def is_delivery_completed(envelope: dict) -> bool:
     """
     request = _request(envelope)
     scope = request["ConditionExpression"]
+    request["ExpressionAttributeNames"]["#legacy_done"] = "aidlc_delivery_completed"
     request["ExpressionAttributeNames"]["#status"] = "status"
     request["ExpressionAttributeValues"].update(
         {":true": {"BOOL": True}, ":complete": {"S": "complete"}}
     )
     request["UpdateExpression"] = "SET #done = :true"
-    request["ConditionExpression"] = scope + " AND (#done = :true OR #status = :complete)"
+    request["ConditionExpression"] = (
+        scope
+        + " AND (#done = :true OR #legacy_done = :true OR #status = :complete)"
+    )
     try:
         _get_client().update_item(**request)
         return True
@@ -106,6 +110,7 @@ def is_delivery_completed(envelope: dict) -> bool:
     request["UpdateExpression"] = "SET #done = :false"
     request["ConditionExpression"] = (
         scope + " AND (attribute_not_exists(#done) OR #done = :false)"
+        " AND (attribute_not_exists(#legacy_done) OR #legacy_done = :false)"
         " AND (attribute_not_exists(#status) OR #status <> :complete)"
     )
     try:

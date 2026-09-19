@@ -1203,6 +1203,9 @@ def main() -> int:
     persona = envelope["persona"]
     runtime = persona_runtime(persona)
     is_codex_review = persona == "agent-codex-reviewer"
+    is_codex_pr_review = is_codex_review and isinstance(
+        (envelope.get("payload") or {}).get("pull_request"), dict
+    )
     source = envelope["source_ref"]
     installation_id = source["installation_id"]
     repo = source["repo"]
@@ -1260,21 +1263,25 @@ def main() -> int:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
 
-    # AIDLC can merge an intermediate gate and continue on the same branch.
-    # Legacy workers therefore deduplicate this exact delivery, not the branch.
+    # AIDLC can merge an intermediate gate and continue on the same branch, and
+    # a Codex issue review has no branch/PR terminal state. Legacy workers
+    # therefore deduplicate these paths by exact delivery, not by branch.
     # Do this before credentials, repository work or any in_progress write that
     # could overwrite an older worker's completed status. Protected dispatch
     # already binds/retires attempts and must not fall back to direct table I/O.
-    use_completion_receipt = persona in PERSONAS_EXTENDING_BRANCH and not authority_enabled()
+    use_completion_receipt = (
+        persona in PERSONAS_EXTENDING_BRANCH
+        or (is_codex_review and not is_codex_pr_review)
+    ) and not authority_enabled()
     if use_completion_receipt:
         try:
             already_completed = is_delivery_completed(envelope)
         except InvocationCompletionError as exc:
-            logger.error("AIDLC delivery deferred: %s", exc)
+            logger.error("Delivery deferred: %s", exc)
             bootstrap_log.close()
             return AGENT_EXIT_RETRYABLE
         if already_completed:
-            logger.info("AIDLC delivery %s was already completed; acknowledging redelivery", message_id)
+            logger.info("Delivery %s was already completed; acknowledging redelivery", message_id)
             bootstrap_log.close()
             # Keep the existing outcome intact: a redelivery is not a new
             # invocation and must not overwrite complete with skipped.
@@ -1848,7 +1855,11 @@ def main() -> int:
     review_head_ref = (
         ((envelope.get("payload") or {}).get("pull_request") or {}).get("head") or {}
     ).get("ref")
-    branch_name = review_head_ref if is_codex_review else f"agent/issue-{issue}"
+    branch_name = (
+        review_head_ref
+        if is_codex_pr_review
+        else ("default-branch" if is_codex_review else f"agent/issue-{issue}")
+    )
     bootstrap_log.step_start(7, "wip_branch", branch=branch_name)
     # Create or reset the agent branch + WIP commit BEFORE exec so that:
     #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
@@ -1880,19 +1891,29 @@ def main() -> int:
                 "agent-codex-reviewer requires the default GitHub token; "
                 "mediated comment/push support is not configured"
             )
-        if not isinstance(branch_name, str) or not branch_name:
-            raise RuntimeError("agent-codex-reviewer envelope has no PR head branch")
-        expected_review_sha = str(source.get("sha") or "")
-        _checkout_existing_work_branch(branch_name)
-        actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
-        if actual_review_sha != expected_review_sha:
-            raise RuntimeError(
-                f"review head changed before checkout: expected {expected_review_sha}, "
-                f"found {actual_review_sha}"
-            )
+        if is_codex_pr_review:
+            if not isinstance(branch_name, str) or not branch_name:
+                raise RuntimeError("agent-codex-reviewer envelope has no PR head branch")
+            expected_review_sha = str(source.get("sha") or "")
+            _checkout_existing_work_branch(branch_name)
+            actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+            if actual_review_sha != expected_review_sha:
+                raise RuntimeError(
+                    f"review head changed before checkout: expected {expected_review_sha}, "
+                    f"found {actual_review_sha}"
+                )
+            bootstrap_step = "review_branch"
+        else:
+            branch_name = run_cmd(
+                ["git", "branch", "--show-current"], cwd=WORK_DIR
+            ).stdout.strip() or "HEAD"
+            actual_review_sha = run_cmd(
+                ["git", "rev-parse", "HEAD"], cwd=WORK_DIR
+            ).stdout.strip()
+            bootstrap_step = "issue_review_base"
         work_branch_ready = True
         wip_sha = actual_review_sha
-        bootstrap_log.step_success(7, "review_branch", sha=wip_sha[:7])
+        bootstrap_log.step_success(7, bootstrap_step, sha=wip_sha[:7])
     elif _mediated_run:
         # Issue #5223: every provider step below — `ls-remote`, `gh pr list`,
         # `push --delete`, `push -u` — authenticates with the installation token a
@@ -2347,6 +2368,12 @@ def main() -> int:
         summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
         if result.returncode == 0:
             update_invocation_status(message_id, arrived_at, "complete", summary=summary)
+            if use_completion_receipt:
+                try:
+                    record_delivery_completed(envelope)
+                except InvocationCompletionError as exc:
+                    logger.error("Codex issue-review acknowledgement deferred: %s", exc)
+                    return AGENT_EXIT_RETRYABLE
             _delete_message(queue_url, region, receipt_handle)
             logger.info("Codex review completed and shared queue message was acknowledged")
             return 0

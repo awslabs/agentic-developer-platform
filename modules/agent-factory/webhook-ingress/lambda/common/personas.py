@@ -17,10 +17,10 @@ LABEL_TO_PERSONA: dict[str, str] = {
     "superpower": "pt-superpower",
 }
 
-# Personas selected by platform events rather than by a label or mention. They
-# use the same envelope and queue as every other persona; the worker entrypoint
-# selects the packaged runtime from the persona name. Keeping this catalogue in
-# the normal Lambda package also makes code-only rollout independent of worker
+# Personas also selected automatically by platform events. They use the same
+# envelope and queue as every other persona; the worker entrypoint selects the
+# packaged runtime from the persona name. Keeping this catalogue in the normal
+# Lambda package also makes code-only rollout independent of worker
 # infrastructure migration state.
 AUTOMATIC_PERSONAS: set[str] = {"agent-codex-reviewer"}
 
@@ -57,6 +57,10 @@ MENTION_TO_PERSONA: dict[str, str] = {
     # OR @agent-aidlc mention). Placed before codex to preserve the codex-last
     # dict-order invariant.
     "@agent-aidlc": "aidlc",
+    # The Codex reviewer supports the standard human mention path in addition
+    # to automatic eligible-PR events. Keep this before @agent-codex and use
+    # token-aware parsing so the older supervisor name cannot shadow it.
+    "@agent-codex-reviewer": "agent-codex-reviewer",
     # Issue #2706: codex supervisor persona. Mention-triggered only (the
     # platform standard); intentionally NOT in LABEL_TO_PERSONA. Placed last so
     # it cannot shadow an earlier persona under the first-match dict-order

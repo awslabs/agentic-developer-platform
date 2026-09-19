@@ -25,6 +25,7 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-aidlc": "aidlc",
     "@agent-architect": "architect",
     "@agent-codex": "codex",
+    "@agent-codex-reviewer": "agent-codex-reviewer",
     "@agent-developer": "developer",
     "@agent-malware-analysis-agent": "malware-analysis-agent",
     "@agent-operations": "operations",

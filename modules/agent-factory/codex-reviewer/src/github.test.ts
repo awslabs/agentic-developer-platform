@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   formatFixesPushedComment,
+  formatIssueReviewComment,
   formatReviewComment,
   GitHubClient,
 } from "./github.js";
@@ -27,6 +28,17 @@ test("a repair push identifies the repaired tree as reviewed and approved", () =
   assert.doesNotMatch(body, /— APPROVE/);
 });
 
+test("issue review comments identify the issue without claiming a PR merge", () => {
+  const body = formatIssueReviewComment(
+    { verdict: "approve", summary: "The issue is ready.", findings: [], validationGaps: [] },
+    5499,
+    "Codex SDK 0.155.1",
+  );
+  assert.match(body, /ISSUE READY/);
+  assert.match(body, /Reviewed issue:\*\* #5499/);
+  assert.doesNotMatch(body, /Reviewed head|merge/i);
+});
+
 test("a verdict is posted as a PR comment with the default GitHub identity", async () => {
   const originalFetch = globalThis.fetch;
   let requested = "";
@@ -47,6 +59,28 @@ test("a verdict is posted as a PR comment with the default GitHub identity", asy
   }
   assert.match(requested, /\/repos\/aws-e\/adp\/issues\/5471\/comments$/);
   assert.deepEqual(JSON.parse(payload), { body: "Reviewed current head." });
+});
+
+test("an issue verdict marker prevents a duplicate redelivery comment", async () => {
+  const originalFetch = globalThis.fetch;
+  let posts = 0;
+  globalThis.fetch = async (input, init) => {
+    if ((init?.method ?? "GET") === "POST") posts += 1;
+    return new Response(
+      JSON.stringify([{ body: "<!-- agent-codex-reviewer:m-1 -->\nprior verdict" }]),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  try {
+    const github = new GitHubClient("aws-e/adp", async () => "default-token");
+    assert.equal(
+      await github.commentOnce(5499, "<!-- agent-codex-reviewer:m-1 -->", "new verdict"),
+      false,
+    );
+    assert.equal(posts, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("shared live-fleet diagnostics do not block an otherwise ready merge", async () => {

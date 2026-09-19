@@ -61,9 +61,59 @@ test("accepts the standard worker envelope selected by persona name", () => {
     },
   };
   const parsed = parseEnvelope(JSON.stringify(envelope));
+  assert.equal(parsed.kind, "codex_pr_review");
+  if (parsed.kind !== "codex_pr_review") throw new Error("expected PR envelope");
   assert.equal(parsed.repository, "aws-e/adp");
   assert.equal(parsed.installation_id, 10);
   assert.equal(parsed.pull_request.number, 5460);
+});
+
+test("accepts the standard issue mention envelope", () => {
+  const parsed = parseEnvelope(
+    JSON.stringify({
+      version: "1.0",
+      channel: "github",
+      message_id: "m-3",
+      arrived_at: "2026-09-19T00:00:00Z",
+      tenant_id: "tenant",
+      persona: "agent-codex-reviewer",
+      source_ref: {
+        installation_id: 10,
+        repo: "aws-e/adp",
+        issue: 5499,
+        pr: null,
+        sha: null,
+      },
+      payload: {
+        issue: { number: 5499, title: "Review this proposal" },
+        comment: { body: "@agent-codex-reviewer review this issue" },
+      },
+    }),
+  );
+  assert.equal(parsed.kind, "codex_issue_review");
+  if (parsed.kind !== "codex_issue_review") throw new Error("expected issue envelope");
+  assert.equal(parsed.issue.number, 5499);
+  assert.equal(parsed.issue.triggering_comment, "@agent-codex-reviewer review this issue");
+});
+
+test("rejects an issue envelope whose normalized and payload issue differ", () => {
+  assert.throws(
+    () => parseEnvelope(
+      JSON.stringify({
+        version: "1.0",
+        message_id: "m-4",
+        arrived_at: "2026-09-19T00:00:00Z",
+        tenant_id: "tenant",
+        persona: "agent-codex-reviewer",
+        source_ref: { installation_id: 10, repo: "aws-e/adp", issue: 5499 },
+        payload: {
+          issue: { number: 5500 },
+          comment: { body: "@agent-codex-reviewer review this issue" },
+        },
+      }),
+    ),
+    /does not match/,
+  );
 });
 
 test("a blocking finding always forces request_changes", () => {

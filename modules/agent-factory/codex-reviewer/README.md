@@ -20,8 +20,9 @@ authenticated GitHub webhook
 The shared entrypoint owns SQS acknowledgement, visibility heartbeats, tenant
 GitHub authentication, checkout, status reporting, and the gateway proxy. The
 adapter receives the prepared checkout and tenant default/developer GitHub
-token. It publishes verdict comments, can push bounded mechanical fixes, and
-can optionally merge. It does not attempt formal self-approval.
+token. On an issue mention it publishes an issue-readiness review. On an
+eligible pull request it publishes a code verdict, can push bounded mechanical
+fixes, and can optionally merge. It does not attempt formal self-approval.
 
 ## Gateway-only model access
 
@@ -40,8 +41,9 @@ Git and bounded-fix checks remain in force.
 
 ## Feature controls
 
-- Pull-request events select `agent-codex-reviewer` through the existing persona
-  intent mapping; there is no separate reviewer routing flag.
+- `@agent-codex-reviewer` issue mentions and eligible pull-request events both
+  select `agent-codex-reviewer` through the existing persona intent mapping;
+  there is no separate reviewer routing flag or message shape.
 - `CODEX_REVIEWER_APPLY_FIXES` enables bounded mechanical repairs.
 - `CODEX_REVIEWER_MERGE_ENABLED` defaults to `true`; set it to `false` to stop
   after approval instead of squash-merging the current, successfully checked

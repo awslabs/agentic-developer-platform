@@ -319,6 +319,11 @@ def _has_engine_tag(body: str) -> bool:
     return _ENGINE_TAG_RE.search(body) is not None
 
 
+def _has_persona_mention(body: str, mention: str) -> bool:
+    """Match one complete persona token without prefix collisions."""
+    return re.search(re.escape(mention) + r"(?![\w-])", body) is not None
+
+
 def _extract_mention_persona(body: str) -> str | None:
     """Extract the first @agent-X persona mention from comment body.
 
@@ -327,7 +332,7 @@ def _extract_mention_persona(body: str) -> str | None:
     if not body:
         return None
     for mention, persona in MENTION_TO_PERSONA.items():
-        if mention in body:
+        if _has_persona_mention(body, mention):
             return persona
     return None
 
@@ -342,7 +347,7 @@ def _extract_all_mention_personas(body: str) -> list[str]:
         return []
     personas = []
     for mention, persona in MENTION_TO_PERSONA.items():
-        if mention in body:
+        if _has_persona_mention(body, mention):
             personas.append(persona)
     return personas
 
