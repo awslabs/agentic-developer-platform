@@ -132,3 +132,16 @@ variable "cloudwatch_kms_key_arn" {
   type        = string
   default     = ""
 }
+
+variable "model_policy_enabled" {
+  type    = bool
+  default = false
+}
+variable "model_control_endpoint" {
+  type    = string
+  default = ""
+}
+variable "model_root_admission_arn" {
+  type    = string
+  default = ""
+}

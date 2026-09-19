@@ -992,6 +992,10 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
         )
         if registered is None:
             raise RuntimeError("Chat run registration unavailable")
+        if os.environ.get("ADP_CHAT_MODEL_POLICY_ENABLED", "false").lower() == "true":
+            from model_root_client import register_model_root
+
+            send_kwargs["MessageBody"] = register_model_root(sqs_body, source="chat", subject=message.user_id)
         sqs.send_message(**send_kwargs)
     except Exception:
         set_thread_processing(session_id, thread_id, None)

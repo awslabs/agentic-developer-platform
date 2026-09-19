@@ -22,7 +22,7 @@ LABEL_TO_PERSONA: dict[str, str] = {
 # packaged runtime from the persona name. Keeping this catalogue in the normal
 # Lambda package also makes code-only rollout independent of worker
 # infrastructure migration state.
-AUTOMATIC_PERSONAS: set[str] = {"agent-codex-reviewer"}
+AUTOMATIC_PERSONAS: set[str] = {"agent-codex-reviewer", "intent-refinement"}
 
 # @-mention patterns in issue/PR comments that trigger personas.
 MENTION_TO_PERSONA: dict[str, str] = {
@@ -85,6 +85,7 @@ PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
     "architect": "claude-agent-sdk",
     "codex": "claude-agent-sdk",
     "developer": "claude-agent-sdk",
+    "intent-refinement": "claude-agent-sdk",
     "malware-analysis-agent": "claude-agent-sdk",
     "operations": "claude-agent-sdk",
     "pm": "claude-agent-sdk",

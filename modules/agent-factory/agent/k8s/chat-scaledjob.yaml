@@ -47,6 +47,8 @@ data:
   ADP_BEDROCK_VIA: "gateway"
   SIGV4_PROXY_TARGET: "REPLACE_WITH_GATEWAY_APIGW_INVOKE_URL"
   SIGV4_PROXY_PORT: "9090"
+  ADP_AGENT_CONTROL_ENDPOINT: "REPLACE_WITH_MODEL_CONTROL_ENDPOINT"
+  ADP_WORKLOAD_TOKEN_FILE: "/var/run/adp-model/token"
 
   # Personas baked into the image
   PERSONAS_DIR: "/app/personas"
@@ -97,13 +99,28 @@ spec:
       spec:
         serviceAccountName: adp-agent
         restartPolicy: Never
+        volumes:
+          - name: model-policy-identity
+            projected:
+              sources:
+                - serviceAccountToken:
+                    audience: adp-agent-bootstrap
+                    expirationSeconds: 600
+                    path: token
         containers:
           - name: chat-agent
             image: REPLACE_WITH_AGENT_IMAGE
             envFrom:
               - configMapRef:
                   name: chat-agent-config
+            volumeMounts:
+              - name: model-policy-identity
+                mountPath: /var/run/adp-model
+                readOnly: true
             env:
+              # Must be explicit pod spec for gateway workload verification.
+              - name: ADP_CHAT_MODEL_POLICY_ENABLED
+                value: "REPLACE_WITH_CHAT_MODEL_POLICY_ENABLED"
               # Optional: injected at runtime by gateway ingest (cross-team item)
               - name: CHAT_AGENT_SESSION_OWNER_ENFORCED
                 value: "true"

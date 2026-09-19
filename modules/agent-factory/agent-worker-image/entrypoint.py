@@ -1766,6 +1766,75 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         "ANTHROPIC_MODEL", "global.anthropic.claude-opus-5"
     )
 
+    # PMM-07: under a verified ``enforcing`` posture the gateway's decision — not
+    # the envelope or the pod default — is what this run must launch on, and an
+    # enforcing posture the gateway could not satisfy must stop the run here,
+    # before any harness starts. Under ``disabled``/``report_only`` the legacy
+    # assignment above is preserved byte for byte.
+    #
+    # The posture is read from the verified gateway report, never from
+    # ``ADP_MODEL_POLICY_*`` in the environment: those are telemetry this process
+    # writes, and anything in the pod could set them.
+    policy_report = run_identity.model_policy_report if run_identity is not None else None
+    # Captured before any substitution.  PMM-08 attribution requires the legacy
+    # (pre-policy) assignment, the proposed model and the model actually executed
+    # to stay separately recoverable; passing the already-enforced value as the
+    # "legacy" one would make ``ADP_MODEL_POLICY_MATCH`` trivially true and erase
+    # the very difference the enforcement is being measured by.
+    legacy_model = effective_model
+    if policy_report is not None:
+        enforcement_failure = policy_report.enforcement_failure
+        if enforcement_failure is not None:
+            # Deliberately not a fallback to ``effective_model``: an enforcing
+            # failure that becomes report-only behaviour by exception handling is
+            # the bypass PMM-07 must make impossible. Failing the run is the only
+            # honest outcome, and the status says the model policy stopped it
+            # rather than blaming the agent.
+            logger.error(
+                "Refusing to launch: model policy could not be satisfied (reason=%s, "
+                "posture_determined=%s)",
+                enforcement_failure,
+                not policy_report.verification_failed,
+            )
+            bootstrap_log.step_error(
+                4,
+                "set_env",
+                RuntimeError(f"model policy unsatisfied: {enforcement_failure}"),
+            )
+            # The requester's message states what actually happened: the run was
+            # stopped before any inference, by policy. It must not be phrased as
+            # an agent failure, and a report-only run must never produce this
+            # message at all, since nothing is blocked there.
+            #
+            # Two distinct causes, told apart because they are not the same fact and
+            # a requester acts differently on each. An unverifiable response does not
+            # establish that enforcement was on -- only that the platform's answer
+            # could not be trusted to say -- so asserting "the platform is enforcing"
+            # there would be a claim the control flow does not support.
+            if policy_report.verification_failed:
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    "the gateway's agent model-policy response could not be verified, so the "
+                    "platform could not confirm whether a model policy is being enforced for "
+                    f"this run ({enforcement_failure}); the run was stopped before the agent "
+                    "started and no model was invoked",
+                )
+            else:
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    "the platform is enforcing an agent model policy and the gateway could not "
+                    f"authorize a model for this run ({enforcement_failure}); the run was "
+                    "stopped before the agent started and no model was invoked",
+                )
+            bootstrap_log.close()
+            return 1
+        # Bootstrap can precede the SDK launch by minutes of repository setup.
+        # Preserve the legacy input here; the SDK boundary obtains a fresh,
+        # challenge-bound decision and applies enforcement there. Otherwise an
+        # enforcing bootstrap would become the "legacy" model after rollback.
+
     env_vars = {
         "GITHUB_TOKEN": token,
         "GH_TOKEN": token,
@@ -1781,12 +1850,17 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": effective_model,
     }
-    # PMM-07 report-only evidence.  This deliberately does not feed
-    # ``effective_model``: PMM-09 owns the enforcing flip after every runtime
-    # path and live admission gate is proven.  Older gateways/workers simply
-    # omit these comparison fields during the mixed-version rollout.
-    if run_identity is not None and run_identity.model_policy_report is not None:
-        env_vars.update(run_identity.model_policy_report.environment(effective_model))
+    # PMM-07 attribution evidence.  These variables describe what happened; they
+    # are never an input, and the block above deliberately reads the posture from
+    # the verified report rather than from here.  ``legacy_model`` (not
+    # ``effective_model``) is passed so the pre-policy assignment stays visible
+    # even when enforcement replaced it -- that difference is the measurement.
+    # Older gateways/workers simply omit these fields during the mixed-version
+    # rollout, which is why nothing downstream may require them.
+    if policy_report is not None:
+        env_vars.update(policy_report.environment(legacy_model))
+        env_vars["ADP_MODEL_POLICY_ENFORCED"] = "false"
+        env_vars["ADP_MODEL_POLICY_EXECUTION_PENDING"] = "true"
 
     # Issue #5223: in mediated mode there is no token, so exporting these would
     # publish empty strings as if they were credentials. Removed rather than left
