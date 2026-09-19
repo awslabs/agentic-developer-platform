@@ -14,6 +14,8 @@ cd "$ROOT_DIR"
 # Include codebuild/ when present so checked-in buildspecs reach CodeBuild.
 INCLUDE_DIRS=(platform/ modules/ environments/ libs/)
 [ -d codebuild ] && INCLUDE_DIRS+=(codebuild/)
+# Gateway staging and the worker Dockerfile both consume the shared validators.
+[ -d contracts ] && INCLUDE_DIRS+=(contracts/)
 
 # Include root-level config files needed by CodeBuild steps (e.g. grype scans).
 ROOT_CONFIGS=()

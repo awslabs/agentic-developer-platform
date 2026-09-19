@@ -6,12 +6,60 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULE = ROOT / 'modules/agent-factory'
 BUILDSPEC = yaml.safe_load((ROOT / 'codebuild/bs-agent-gateway.yml').read_text())
+
+
+class SourceArchiveTests(unittest.TestCase):
+    def test_shared_contract_survives_the_real_source_packager(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'source'
+            for name in ('platform', 'modules', 'environments', 'libs', 'codebuild'):
+                (source / name).mkdir(parents=True)
+            contract = Path('contracts/orchestration-review/v1')
+            (source / contract).mkdir(parents=True)
+            for name in ('models.py', 'review-result.golden.json'):
+                shutil.copyfile(ROOT / contract / name, source / contract / name)
+            cache = source / contract / '__pycache__'
+            cache.mkdir()
+            (cache / 'models.pyc').write_bytes(b'excluded bytecode')
+            lock = source / 'modules/package-lock.json'
+            lock.write_text('{"lockfileVersion": 3}')
+
+            archive = root / 'source.zip'
+            subprocess.run(
+                ['bash', str(ROOT / 'platform/scripts/zip-source.sh'), str(source), str(archive)],
+                check=True, capture_output=True, text=True,
+            )
+            extracted = root / 'extracted'
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(extracted)
+
+            for name in ('models.py', 'review-result.golden.json'):
+                self.assertEqual((extracted / contract / name).read_bytes(), (ROOT / contract / name).read_bytes())
+            self.assertEqual((extracted / 'modules/package-lock.json').read_bytes(), lock.read_bytes())
+            self.assertFalse((extracted / contract / '__pycache__').exists())
+
+    def test_source_packager_still_accepts_a_checkout_without_contracts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / 'source'
+            for name in ('platform', 'modules', 'environments', 'libs'):
+                (source / name).mkdir(parents=True)
+            archive = root / 'source.zip'
+            subprocess.run(
+                ['bash', str(ROOT / 'platform/scripts/zip-source.sh'), str(source), str(archive)],
+                check=True, capture_output=True, text=True,
+            )
+            with zipfile.ZipFile(archive) as bundle:
+                self.assertIn('modules/', bundle.namelist())
+                self.assertFalse(any(name.startswith('contracts/') for name in bundle.namelist()))
 
 DOCKER = r'''#!/usr/bin/env python3
 import json, os, shlex, sys

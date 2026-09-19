@@ -6,6 +6,8 @@ on:
     paths:
       - 'codebuild/bs-agent-gateway.yml'
       - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/zip-source.sh'
+      - 'contracts/**'
       - 'platform/scripts/tests/test_agent_gateway_build_context.py'
       - 'modules/agent-factory/scripts/deploy-gateway.sh'
       - 'modules/agent-factory/gateway/**'
@@ -16,6 +18,8 @@ on:
     paths:
       - 'codebuild/bs-agent-gateway.yml'
       - 'platform/scripts/deploy-all.sh'
+      - 'platform/scripts/zip-source.sh'
+      - 'contracts/**'
       - 'platform/scripts/tests/test_agent_gateway_build_context.py'
       - 'modules/agent-factory/scripts/deploy-gateway.sh'
       - 'modules/agent-factory/gateway/**'
@@ -68,4 +72,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install PyYAML
+      - name: Install archive tool if needed
+        run: |
+          if ! command -v zip >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y zip
+          fi
       - run: python -m unittest discover -s platform/scripts/tests -p test_agent_gateway_build_context.py -v
