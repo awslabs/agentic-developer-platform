@@ -46,6 +46,10 @@ Existing deployments must also retain the configuration discovered by
 the canonical update path. A plan made only with portable defaults can propose
 removing existing optional integrations, administrator entries or immutable ECR
 encryption settings. Review the saved plan with the actual retained inputs.
+The snapshot also retains a configured tick's queue, command-bridge table, KMS
+key and existing tenant-secret scope. It matches selectors to webhook-owned
+state and refuses missing, ambiguous or foreign-target evidence; an unwired tick
+does not gain these integrations or authority activation through discovery.
 The legacy GitLab placeholder secret-version address uses a `removed` block with
 `destroy=false`: setup/rotation owns its values, and migration must not remove an
 existing version or alter its stages. The secret itself remains managed.

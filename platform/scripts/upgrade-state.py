@@ -85,6 +85,65 @@ def broker_settings(variables):
     return result
 
 
+def gateway_engine_settings(gateway_state, webhook_state, account, region, environment):
+    """Retain an already-wired tick without enabling an unconfigured engine.
+
+    Match its existing selectors to the owning webhook state. Missing ownership
+    evidence refuses preparation rather than clearing live selectors or guessing
+    queue/table permissions. Preserve the existing tenant-secret scope exactly.
+    """
+    module = "module.orchestration_tick[0]"
+    ticks = [a for r, a in resources(gateway_state, "aws_lambda_function")
+             if r.get("module") == module and r["name"] == "tick"]
+    if not ticks:
+        return {}
+    if len(ticks) != 1:
+        raise ValueError("Ambiguous existing orchestration tick")
+    variables = (ticks[0].get("environment") or [{}])[0].get("variables", {})
+    result = {}
+
+    def owned(kind, selector, key):
+        matches = [a for _, a in resources(webhook_state, kind) if a.get(key) == selector]
+        if len(matches) != 1:
+            raise ValueError("Cannot recover existing orchestration resource ownership")
+        attrs = matches[0]
+        arn = attrs.get("arn", "")
+        parts = arn.split(":", 5)
+        if len(parts) != 6 or parts[0] != "arn" or parts[3:5] != [region, account]:
+            raise ValueError("Existing orchestration resource belongs to another target")
+        return attrs, parts[1]
+
+    queue = variables.get("BG_ORCH_DISPATCH_QUEUE_URL", "")
+    if queue:
+        attrs, _ = owned("aws_sqs_queue", queue, "url")
+        result.update(orchestration_dispatch_queue_url=queue,
+                      orchestration_dispatch_queue_arn=attrs["arn"])
+    table = variables.get("WEBHOOK_EVENTS_TABLE", "")
+    if table:
+        attrs, partition = owned("aws_dynamodb_table", table, "name")
+        encryption = attrs.get("server_side_encryption") or []
+        if len(encryption) != 1 or not encryption[0].get("kms_key_arn"):
+            raise ValueError("Cannot recover existing orchestration table encryption")
+        expected = f"arn:{partition}:secretsmanager:{region}:{account}:secret:adp/{environment}/tenants/*"
+        scopes = set()
+        for resource, policy in resources(gateway_state, "aws_iam_role_policy"):
+            if resource.get("module") != module or resource["name"] != "tick":
+                continue
+            for statement in json.loads(policy["policy"]).get("Statement", []):
+                actions = statement.get("Action", [])
+                actions = [actions] if isinstance(actions, str) else actions
+                if statement.get("Effect") != "Allow" or "secretsmanager:GetSecretValue" not in actions:
+                    continue
+                values = statement.get("Resource", [])
+                scopes.update([values] if isinstance(values, str) else values)
+        if expected not in scopes:
+            raise ValueError("Cannot recover existing orchestration tenant-secret scope")
+        result.update(orchestration_webhook_events_table=table,
+                      orchestration_webhook_events_kms_key_arn=encryption[0]["kms_key_arn"],
+                      orchestration_github_app_secret_arn_pattern=expected)
+    return result
+
+
 def factory_settings(state):
     result = {"enable_github_apps": False, "seed_agent_registry": False}
     configured_org = output(state, "github_org")
@@ -205,6 +264,8 @@ def prepare(args):
     write_json(directory / "eks-access.json", {"publicAccessCidrs": platform["eks_public_access_cidrs"]})
     gateway = {"environment": args.environment, "aws_region": args.region}
     gateway_state = states.get("gateway", {})
+    gateway.update(gateway_engine_settings(gateway_state, states.get("webhook-ingress", {}),
+                                           args.account, args.region, args.environment))
     brokers = [a for r, a in resources(gateway_state, "aws_lambda_function") if "github_auth_broker" in r.get("module", "")]
     gateway["enable_github_auth_broker"] = bool(brokers)
     broker_before = {}
