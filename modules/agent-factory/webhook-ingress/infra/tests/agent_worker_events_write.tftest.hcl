@@ -28,10 +28,46 @@ mock_provider "kubernetes" {}
 mock_provider "helm" {}
 mock_provider "tls" {}
 
+# Authority-on plans also validate the gateway's existing marker key. Keep the
+# fixture deterministic: provider-generated strings may be shorter than 32 bytes.
+override_data {
+  target          = data.aws_secretsmanager_secret_version.worker_marker
+  override_during = plan
+  values = {
+    secret_string = "fixture-only-32-byte-key-never-deploy"
+    version_id    = "fixture-current-version"
+  }
+}
+
 variables {
   # Enabling authority requires an approved immutable worker digest; the variable
   # validation rejects tags, so a plausible digest is supplied rather than "".
   agent_authority_worker_image_digests = ["sha256:0000000000000000000000000000000000000000000000000000000000000000"]
+  agent_image                          = "123456789012.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
+
+override_data {
+  target          = data.aws_ssm_parameter.gateway_apigw_invoke_url
+  override_during = plan
+  values          = { value = "https://example123.execute-api.us-east-1.amazonaws.com/dev" }
+}
+
+override_resource {
+  target          = aws_cloudwatch_log_group.agent_bootstrap
+  override_during = plan
+  values          = { arn = "arn:aws:logs:us-east-1:123456789012:log-group:/adp/dev/agent-factory/bootstrap" }
+}
+
+override_resource {
+  target          = aws_sqs_queue.agent_submit
+  override_during = plan
+  values          = { arn = "arn:aws:sqs:us-east-1:123456789012:adp-dev-agent-submit.fifo" }
+}
+
+override_resource {
+  target          = aws_s3_bucket.agent_run_logs
+  override_during = plan
+  values          = { arn = "arn:aws:s3:::adp-dev-agent-run-logs-123456789012" }
 }
 
 # -----------------------------------------------------------------------------
@@ -183,7 +219,10 @@ run "grant_is_gone_once_authority_is_on" {
   command = plan
 
   variables {
-    agent_authority_enabled = true
+    agent_authority_enabled                = true
+    agent_worker_admission_paused          = true
+    agent_authority_runtime_ready          = true
+    agent_authority_legacy_workers_drained = true
   }
 
   assert {
