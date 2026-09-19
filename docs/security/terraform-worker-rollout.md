@@ -50,6 +50,13 @@ bucket's `runs/*` prefix. It selects the run/attempt path after authentication.
 KEDA uses its own operator identity to poll queue depth. Shared Beads/Dolt S3
 synchronization is unavailable to protected workers; they use GitHub task tracking.
 
+The gateway's namespace Role also permits `get` on `batch/jobs` so bootstrap can
+verify the controller Job's absolute lifetime for pause budgeting (#5205). Workers
+receive no Kubernetes Job permission. A compatible gateway and worker must retain
+this bound across bootstrap and credential renewal; missing lifecycle evidence
+leaves pause unavailable. Applying RBAC alone does not establish live control
+acceptance.
+
 `ADP_RUN_TASKS_ENABLED` follows the authority activation flag; preparation leaves
 it false and omits `ADP_RUN_TASK_QUEUE_URL`. Both archive bucket settings select
 this environment's run-log bucket. `agent_door_service_url` selects a gateway-only

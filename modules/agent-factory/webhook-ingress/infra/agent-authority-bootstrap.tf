@@ -128,6 +128,13 @@ resource "kubernetes_role" "gateway_agent_pod_read" {
     resources  = ["pods"]
     verbs      = ["get"]
   }
+  # The owning Job's deadline includes bootstrap and previous pod attempts.
+  # No worker receives Kubernetes API permissions or a caller-selected lookup.
+  rule {
+    api_groups = ["batch"]
+    resources  = ["jobs"]
+    verbs      = ["get"]
+  }
 }
 
 resource "kubernetes_role_binding" "gateway_agent_pod_read" {
