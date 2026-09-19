@@ -71,6 +71,7 @@ from lib.gateway_credential_client import GatewayCredentialClient, GatewayCreden
 from lib.github_token import mint_installation_token
 from lib.provenance_client import post_provenance
 from lib.status_gateway_client import authority_enabled
+from lib.review_delivery import prepare_review_delivery
 from lib.vault_client import VaultClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -1634,6 +1635,8 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         if isinstance(expect, dict):
             os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
+    review_delivery = prepare_review_delivery(envelope)
+
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
     # the Door's allowed_principals stores GitHub logins + team slugs.
@@ -2568,6 +2571,11 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # the verified owner's user/team/org routing. Tool AWS credentials stay
     # scoped to the agent shell; the proxy authenticates using platform IRSA.
     # Keep os.environ's IRSA intact for post-agent SQS/check-run operations.
+    # Capture the actual source before model execution. Mediated checkouts have a
+    # synthetic local commit; the verified archive receipt carries the provider SHA.
+    reviewed_head_sha = (
+        str(_materialized.get("remote_head", "")) if _mediated_run else wip_sha
+    )
     agent_env = os.environ.copy()
     # The feature flag is a POD-level variable, so `os.environ.copy()` inherits it
     # even for a run this deployment decided not to mediate. The TypeScript side
@@ -2767,19 +2775,28 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # not this field. Observability only — nothing resumes from it yet.
     _record_session_id(message_id, arrived_at)
 
+    # The own-run credential is still live here; terminal status invalidates it.
+    review_note = review_delivery.finish(reviewed_head_sha=reviewed_head_sha) if review_delivery else ""
+    if review_note:
+        logger.info("%s", review_note)
+    review_options = {"review_note": review_note} if review_note else {}
+
     # Step 11/12: Post-agent actions
     if result.returncode == 0:
         exit_code = _handle_success(
-            repo, issue, branch_name, persona, message_id, arrived_at, check_run_url
+            repo, issue, branch_name, persona, message_id, arrived_at, check_run_url, **review_options
         )
     else:
         exit_code = _handle_failure(
-            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url
+            repo, issue, persona, message_id, arrived_at, result.returncode, check_run_url, **review_options
         )
 
     # GitHub's clipped display is separate from the readable explanation archive.
     # Read outside the check-run block so archival remains independent of finalize.
     final_text, transcript_text = _read_run_reports()
+    if review_note:
+        final_text = _join_notes(final_text or "", review_note)
+        transcript_text = _join_notes(transcript_text or "", review_note)
 
     # Finalize the Check Run (best-effort — must NOT affect pod exit code)
     if check_run_id is not None:
@@ -3554,6 +3571,7 @@ def _handle_success(
     message_id: str,
     arrived_at: str,
     check_run_url: str = "",
+    review_note: str = "",
 ) -> int:
     """Step 11: Commit remaining changes, push branch, create PR if needed."""
     try:
@@ -3663,7 +3681,7 @@ def _handle_success(
                 issue,
                 message_id,
                 "completed",
-                _join_notes(summary, draft_note, amendment_note, binding_note, handoff),
+                _join_notes(summary, draft_note, amendment_note, binding_note, handoff, review_note),
                 check_run_url,
             )
             update_invocation_status(
@@ -3781,7 +3799,7 @@ def _handle_success(
             issue,
             message_id,
             "completed",
-            _join_notes(summary, draft_note, amendment_note, binding_note, handoff),
+            _join_notes(summary, draft_note, amendment_note, binding_note, handoff, review_note),
             check_run_url,
         )
         update_invocation_status(
@@ -3898,10 +3916,11 @@ def _handle_failure(
     arrived_at: str,
     exit_code: int,
     check_run_url: str = "",
+    review_note: str = "",
 ) -> int:
     """Step 12: Post failure comment, exit nonzero."""
     summary = f"Agent `{persona}` failed with exit code {exit_code}."
-    _post_comment(repo, issue, message_id, "failed", summary, check_run_url)
+    _post_comment(repo, issue, message_id, "failed", _join_notes(summary, review_note), check_run_url)
     update_invocation_status(
         message_id,
         arrived_at,

@@ -63,4 +63,8 @@ async def review_dispatch_expectation(session, *, grant, node, attempt, reviewer
         "author_run_id": context.author_run_id,
         "execution_id": context.execution_id,
         "expected_head_sha": context.actual_head_sha,
+        "repo": context.binding.repo,
+        "pr_number": context.binding.pr_number,
+        "provider_repository_id": context.binding.provider_repository_id,
+        "provider_pr_node_id": context.binding.provider_pr_node_id,
     }

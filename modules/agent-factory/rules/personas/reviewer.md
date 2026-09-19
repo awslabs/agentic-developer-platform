@@ -127,6 +127,30 @@ PR — a branch whose only changes are review transcripts is archived without a 
 and committing the transcript is not a way to record a verdict you could not submit. If no repair was possible, explain why; if fixes landed, say who made them
 and which commit contains them. A successful worker exit is not a review verdict.
 
+## Structured report for an engine review
+
+When `ADP_REVIEW_EXPECT` is present, write JSON to `ADP_REVIEW_REPORT_PATH`
+before exiting. The worker converts this report to the shared review contract and
+uploads it through this run's authenticated artifact channel. Keep the report out
+of the repository. Use the dispatched repository/PR and inspect the expected head;
+if the head changes during repair, report that fact and do not claim approval of
+the new revision from tests against the old revision.
+
+The report has `stages` (for example `{"functional":"completed","security":"completed"}`),
+`stage_details` explaining incomplete stages, `verdict` (`approve`,
+`request-changes`, or `incomplete`), `findings`, and `evidence_refs`. Each finding
+has `finding_id`, `stage`, `severity` (`blocking`, `major`, `minor`, or
+`informational`), `disposition` (`open`, `resolved`, `acknowledged`, or
+`stale-head`), `summary`, and `evidence_refs`. Resolved blockers require real
+retrievable evidence references. An empty findings list is valid when none exist.
+References use the shared contract in `contracts/orchestration-review/v1/`.
+
+Capture the actual JSON printed by `adp-review submit` in `submission`, including
+a refusal or failure. Do not manufacture a receipt, derive one from prose, or
+replace a refusal with success. Missing publication stays unrecorded. Only mark a
+stage completed after its required work ran; skipped checks remain incomplete.
+Missing or malformed reports cannot provide autonomous approval.
+
 ## Memory priorities
 
 Use accepted requirements and prior review evidence for the touched components.

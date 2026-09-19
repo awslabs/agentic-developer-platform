@@ -147,6 +147,10 @@ async def test_review_envelope_carries_protected_fences_and_replays_once(review_
         "author_run_id": r.author,
         "execution_id": r.execution_id,
         "expected_head_sha": HEAD,
+        "repo": "org/repo",
+        "pr_number": 77,
+        "provider_repository_id": 1234,
+        "provider_pr_node_id": "PR_bound",
     }
     assert envelope["message_id"] != r.author
     assert "handoff_required" not in envelope

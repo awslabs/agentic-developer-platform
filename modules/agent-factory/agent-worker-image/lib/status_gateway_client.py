@@ -278,3 +278,36 @@ def upload_transcript(content: str) -> str:
     if not isinstance(key, str) or not key.startswith("runs/") or result.get("sha256") != hashlib.sha256(data).hexdigest():
         raise StatusGatewayError("invalid transcript upload receipt")
     return key
+
+
+def upload_review_result(data: bytes) -> str:
+    """Store and observe this run's review through its existing own-run channel."""
+    import hashlib
+    import re
+
+    if not authority_enabled() or not 0 < len(data) <= 256 * 1024:
+        raise StatusGatewayError("review upload unavailable (maximum 256 KiB)")
+    tenant = os.environ.get("ADP_TENANT_ID", "")
+    run = os.environ.get("ADP_MESSAGE_ID", "")
+    attempt = os.environ.get("ADP_RUN_ATTEMPT", "")
+    if not tenant or not run or not attempt.isdecimal() or int(attempt) < 1:
+        raise StatusGatewayError("review upload run identity unavailable")
+    result = _post_bytes("/artifacts/review-result", data, content_type="application/json", timeout_seconds=35)
+    digest = hashlib.sha256(data).hexdigest()
+    expected_key = (
+        f"runs/{hashlib.sha256(tenant.encode()).hexdigest()}/"
+        f"{hashlib.sha256(run.encode()).hexdigest()}/attempt-{int(attempt)}/"
+        f"review-result/{digest}.json"
+    )
+    key = result.get("key") if isinstance(result, dict) else None
+    if (
+        not isinstance(key, str)
+        or key != expected_key
+        or result.get("sha256") != digest
+    ):
+        raise StatusGatewayError("invalid review upload/ledger receipt")
+    if result.get("recorded") is not True:
+        refusal = result.get("refusal")
+        reason = refusal if isinstance(refusal, str) and re.fullmatch(r"[a-z_]{1,80}", refusal) else "not_recorded"
+        raise StatusGatewayError(f"review upload receipt: stored but not recorded ({reason})")
+    return key
