@@ -28,6 +28,17 @@ mock_provider "kubernetes" {}
 mock_provider "helm" {}
 mock_provider "tls" {}
 
+# Authority-on plans also validate the gateway's existing marker key. Keep the
+# fixture deterministic: provider-generated strings may be shorter than 32 bytes.
+override_data {
+  target          = data.aws_secretsmanager_secret_version.worker_marker
+  override_during = plan
+  values = {
+    secret_string = "fixture-only-32-byte-key-never-deploy"
+    version_id    = "fixture-current-version"
+  }
+}
+
 variables {
   # Enabling authority requires an approved immutable worker digest; the variable
   # validation rejects tags, so a plausible digest is supplied rather than "".
