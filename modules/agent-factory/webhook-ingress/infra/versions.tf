@@ -1,5 +1,6 @@
 terraform {
-  required_version = ">= 1.5"
+  # Non-destructive removal of the legacy placeholder version uses removed {}.
+  required_version = ">= 1.7"
 
   required_providers {
     aws = {

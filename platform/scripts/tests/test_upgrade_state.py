@@ -190,6 +190,7 @@ class EnginePreservationTests(unittest.TestCase):
     def test_unwired_tick_does_not_gain_optional_integration(self):
         gateway, webhook = self.states()
         gateway["resources"][0]["instances"][0]["attributes"]["environment"][0]["variables"] = {}
+        gateway["resources"].pop()
         self.assertEqual(state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test"), {})
         self.assertEqual(state.gateway_engine_settings({}, webhook, self.account, self.region, "test"), {})
 
@@ -202,7 +203,7 @@ class EnginePreservationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
 
-    def test_missing_encryption_or_exact_secret_scope_refuses(self):
+    def test_missing_encryption_or_secret_scope_policy_refuses(self):
         gateway, webhook = self.states()
         webhook["resources"][1]["instances"][0]["attributes"]["server_side_encryption"] = []
         with self.assertRaisesRegex(ValueError, "encryption"):
@@ -211,6 +212,56 @@ class EnginePreservationTests(unittest.TestCase):
         gateway["resources"].pop()
         with self.assertRaisesRegex(ValueError, "tenant-secret scope"):
             state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+
+    def test_wired_table_without_ack_grant_preserves_table_without_enabling_ack(self):
+        gateway, webhook = self.states()
+        gateway["resources"][1]["instances"][0]["attributes"]["policy"] = json.dumps({"Statement": []})
+        result = state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+        self.assertEqual(result["orchestration_webhook_events_table"], "customer-events")
+        self.assertEqual(result["orchestration_webhook_events_kms_key_arn"], "arn:aws:kms:eu-west-1:111122223333:key/existing")
+        self.assertNotIn("orchestration_github_app_secret_arn_pattern", result)
+        self.assertFalse(any(key.endswith("enabled") for key in result))
+
+    def test_narrow_existing_ack_scope_is_preserved_exactly(self):
+        self.scope = self.scope.removesuffix("*") + "customer/github-app-*"
+        gateway, webhook = self.states()
+        result = state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+        self.assertEqual(result["orchestration_github_app_secret_arn_pattern"], self.scope)
+
+    def test_existing_ack_scope_is_retained_independently_of_table_and_queue(self):
+        for variables in ({"BG_ORCH_DISPATCH_QUEUE_URL": self.queue}, {}):
+            with self.subTest(variables=variables):
+                gateway, webhook = self.states()
+                gateway["resources"][0]["instances"][0]["attributes"]["environment"][0]["variables"] = variables
+                result = state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+                self.assertEqual(result["orchestration_github_app_secret_arn_pattern"], self.scope)
+                self.assertNotIn("orchestration_webhook_events_table", result)
+                self.assertFalse(any(key.endswith("enabled") for key in result))
+
+    def test_null_environment_variables_remain_unwired(self):
+        gateway, webhook = self.states()
+        gateway["resources"][0]["instances"][0]["attributes"]["environment"][0]["variables"] = None
+        gateway["resources"].pop()
+        self.assertEqual(state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test"), {})
+
+    def test_unrepresentable_or_foreign_ack_grants_refuse(self):
+        for change in ({"Resource": "*"},
+                       {"Resource": self.scope.replace("111122223333", "999999999999")},
+                       {"Resource": self.scope.replace("/test/", "/prod/")},
+                       {"Resource": [self.scope, self.scope + "/github-app-*"]},
+                       {"Resource": []},
+                       {"Action": "SecretsManager:GetSecretValue"},
+                       {"Action": "*:GetSecretValue"},
+                       {"Condition": {"StringEquals": {"aws:PrincipalTag/tenant": "customer"}}},
+                       {"Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]}):
+            with self.subTest(change=change):
+                gateway, webhook = self.states()
+                policy = gateway["resources"][1]["instances"][0]["attributes"]
+                document = json.loads(policy["policy"])
+                document["Statement"][0].update(change)
+                policy["policy"] = json.dumps(document)
+                with self.assertRaisesRegex(ValueError, "tenant-secret scope"):
+                    state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
 
 
 class RequiredFactoryTests(unittest.TestCase):

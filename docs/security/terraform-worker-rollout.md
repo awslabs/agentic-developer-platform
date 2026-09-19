@@ -50,9 +50,15 @@ The snapshot also retains a configured tick's queue, command-bridge table, KMS
 key and existing tenant-secret scope. It matches selectors to webhook-owned
 state and refuses missing, ambiguous or foreign-target evidence; an unwired tick
 does not gain these integrations or authority activation through discovery.
+Acknowledgement permissions are retained independently of queue/table wiring.
+A policy without that optional grant leaves it disabled. An existing single
+tenant-secret grant is copied exactly, including a narrower tenant/path pattern;
+conditions, multiple scopes and other shapes that the Terraform input cannot
+represent are refused instead of being dropped or broadened.
 The legacy GitLab placeholder secret-version address uses a `removed` block with
 `destroy=false`: setup/rotation owns its values, and migration must not remove an
-existing version or alter its stages. The secret itself remains managed.
+existing version or alter its stages. The secret itself remains managed. This
+requires Terraform 1.7 or later.
 
 ## Run services (#5195 / #5513)
 

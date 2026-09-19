@@ -99,8 +99,11 @@ def gateway_engine_settings(gateway_state, webhook_state, account, region, envir
         return {}
     if len(ticks) != 1:
         raise ValueError("Ambiguous existing orchestration tick")
-    variables = (ticks[0].get("environment") or [{}])[0].get("variables", {})
+    variables = (ticks[0].get("environment") or [{}])[0].get("variables") or {}
+    if not isinstance(variables, dict):
+        raise ValueError("Cannot recover existing orchestration tick environment")
     result = {}
+    partitions = set()
 
     def owned(kind, selector, key):
         matches = [a for _, a in resources(webhook_state, kind) if a.get(key) == selector]
@@ -111,6 +114,9 @@ def gateway_engine_settings(gateway_state, webhook_state, account, region, envir
         parts = arn.split(":", 5)
         if len(parts) != 6 or parts[0] != "arn" or parts[3:5] != [region, account]:
             raise ValueError("Existing orchestration resource belongs to another target")
+        partitions.add(parts[1])
+        if len(partitions) != 1:
+            raise ValueError("Existing orchestration resources belong to different partitions")
         return attrs, parts[1]
 
     queue = variables.get("BG_ORCH_DISPATCH_QUEUE_URL", "")
@@ -120,27 +126,62 @@ def gateway_engine_settings(gateway_state, webhook_state, account, region, envir
                       orchestration_dispatch_queue_arn=attrs["arn"])
     table = variables.get("WEBHOOK_EVENTS_TABLE", "")
     if table:
-        attrs, partition = owned("aws_dynamodb_table", table, "name")
+        attrs, _ = owned("aws_dynamodb_table", table, "name")
         encryption = attrs.get("server_side_encryption") or []
         if len(encryption) != 1 or not encryption[0].get("kms_key_arn"):
             raise ValueError("Cannot recover existing orchestration table encryption")
-        expected = f"arn:{partition}:secretsmanager:{region}:{account}:secret:adp/{environment}/tenants/*"
-        scopes = set()
-        for resource, policy in resources(gateway_state, "aws_iam_role_policy"):
-            if resource.get("module") != module or resource["name"] != "tick":
-                continue
-            for statement in json.loads(policy["policy"]).get("Statement", []):
-                actions = statement.get("Action", [])
-                actions = [actions] if isinstance(actions, str) else actions
-                if statement.get("Effect") != "Allow" or "secretsmanager:GetSecretValue" not in actions:
-                    continue
-                values = statement.get("Resource", [])
-                scopes.update([values] if isinstance(values, str) else values)
-        if expected not in scopes:
-            raise ValueError("Cannot recover existing orchestration tenant-secret scope")
         result.update(orchestration_webhook_events_table=table,
-                      orchestration_webhook_events_kms_key_arn=encryption[0]["kms_key_arn"],
-                      orchestration_github_app_secret_arn_pattern=expected)
+                      orchestration_webhook_events_kms_key_arn=encryption[0]["kms_key_arn"])
+
+    # The optional acknowledgement grant is independent of queue/table wiring.
+    # An observed policy with no grant means it was never enabled; a missing
+    # policy for a wired tick cannot establish that absence safely.
+    policies = [a for r, a in resources(gateway_state, "aws_iam_role_policy")
+                if r.get("module") == module and r["name"] == "tick"]
+    if not policies and not result:
+        return result
+    if len(policies) != 1:
+        raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+    document = json.loads(policies[0]["policy"])
+    if not isinstance(document, dict):
+        raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+    statements = document.get("Statement", [])
+    statements = [statements] if isinstance(statements, dict) else statements
+    if not isinstance(statements, list) or any(not isinstance(statement, dict) for statement in statements):
+        raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+    scopes = []
+    for statement in statements:
+        actions = statement.get("Action", [])
+        actions = [actions] if isinstance(actions, str) else actions
+        if not isinstance(actions, list) or any(not isinstance(action, str) for action in actions):
+            raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+        if not any(action == "*" or action.lower().startswith("secretsmanager:")
+                   or "*" in action.partition(":")[0] or "?" in action.partition(":")[0]
+                   for action in actions) and "NotAction" not in statement:
+            continue
+        # Terraform exposes one unconditional GetSecretValue resource string.
+        # Refuse any policy shape that would lose permissions or restrictions
+        # when represented by that input, including conditions and deny rules.
+        if (statement.get("Effect") != "Allow" or actions != ["secretsmanager:GetSecretValue"]
+                or any(key in statement for key in ("Condition", "NotAction", "NotResource"))):
+            raise ValueError("Cannot preserve existing orchestration tenant-secret scope policy")
+        values = statement.get("Resource", [])
+        values = [values] if isinstance(values, str) else values
+        if not isinstance(values, list) or not values:
+            raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+        scopes.extend(values)
+    if not scopes:
+        return result
+    if len(scopes) != 1 or not isinstance(scopes[0], str):
+        raise ValueError("Cannot represent existing orchestration tenant-secret scope exactly")
+    scope = scopes[0]
+    parts = scope.split(":", 5)
+    if (len(parts) != 6 or parts[0] != "arn" or not re.fullmatch(r"aws(?:-[a-z0-9]+)*", parts[1]) or parts[2] != "secretsmanager"
+            or parts[3:5] != [region, account] or (partitions and parts[1] not in partitions)
+            or not parts[5].startswith(f"secret:adp/{environment}/tenants/")
+            or parts[5] == f"secret:adp/{environment}/tenants/"):
+        raise ValueError("Existing orchestration tenant-secret scope is outside the target")
+    result["orchestration_github_app_secret_arn_pattern"] = scope
     return result
 
 
