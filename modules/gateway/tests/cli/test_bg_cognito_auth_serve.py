@@ -801,7 +801,10 @@ class TestExistingCommandsUnchanged:
 
         import sys as _sys
 
-        assert imported <= _sys.stdlib_module_names, f"non-stdlib imports: {imported - _sys.stdlib_module_names}"
+        # The sibling resolver is distributed with the proxy and itself uses
+        # only the standard library; no external pip package is required.
+        allowed = _sys.stdlib_module_names | {"adp_deployments"}
+        assert imported <= allowed, f"non-stdlib imports: {imported - allowed}"
 
     def test_token_subcommand_still_works_alongside_serve(self, run_bg_cognito_auth, cognito_home: Path) -> None:
         _seed_session(cognito_home, "https://gw.example.com/api", int(time.time()) + 3600)

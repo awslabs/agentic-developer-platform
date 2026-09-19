@@ -156,8 +156,9 @@ already dead.
 
 `remove` refuses the saved default (removing it would leave the next command with
 no target) and refuses a deployment in active use. "In use" is established by
-signalling the recorded pid, not by the existence of a pidfile, so a stale file
-from a killed session does not block a removal forever.
+matching the recorded PID and process start time, plus the proxy's deployment
+metadata. A stale file whose PID has been reused by an unrelated process does not
+block removal or direct the user to terminate that process.
 
 ---
 
@@ -251,8 +252,10 @@ on one machine is the case where a fixed port breaks.
   started by an older CLI or by `adp daemon install` is still found.
 
 Because a named deployment's port is only known at runtime, the proxy
-**publishes** it: `runtime/proxy.json` records `{pid, port, deployment_id,
-deployment, gateway_url}`. Discovery is then by published record, and the record
+**publishes** it: `runtime/proxy.json` records `{pid, process_start, proxy, port,
+deployment_id, deployment, gateway_url}`. Startup and removal verify the durable
+process identity before treating a recorded PID as owned. Discovery is then by
+published record, and the record
 is validated twice:
 
 1. a record naming a **different** deployment is never reused, even though it

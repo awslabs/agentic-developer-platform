@@ -1258,17 +1258,16 @@ cmd_serve() {
         exit 1
     fi
 
-    # A stale pidfile from a killed session is normal; a live one is not, and
-    # would otherwise surface as an opaque "address already in use".
-    if [ -f "${PROXY_PID_FILE}" ]; then
-        local existing_pid
-        existing_pid=$(cat "${PROXY_PID_FILE}" 2>/dev/null || true)
-        if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
-            print_error "A gateway proxy is already running (pid ${existing_pid}). Stop it first: kill ${existing_pid}" >&2
-            exit 1
-        fi
-        rm -f "${PROXY_PID_FILE}"
+    # A reused PID may belong to an unrelated process. Only durable process
+    # identity and matching deployment metadata prove ownership.
+    local existing_pid
+    existing_pid=$(python3 "$(dirname "$(script_path)")/adp_deployments.py" proxy-owner \
+        "${PROXY_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${GATEWAY_URL}") || exit $?
+    if [ -n "${existing_pid}" ]; then
+        print_error "A gateway proxy is already running (pid ${existing_pid}). Stop the original proxy session first." >&2
+        exit 1
     fi
+    rm -f "${PROXY_PID_FILE}" "${PROXY_IDENTITY_FILE}"
 
     # The runtime dir may not exist on a named deployment's first serve.
     mkdir -p "${PROXY_RUNTIME_DIR}" 2>/dev/null || true

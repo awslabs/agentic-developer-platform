@@ -467,11 +467,15 @@ def serve(
         sys.stderr.write(f"[proxy] point Codex at http://127.0.0.1:{bound_port}/openai/v1 — Ctrl-C to stop\n")
         sys.stderr.flush()
         if identity_file:
+            from adp_deployments import _process_start
+
             # The bind succeeded, so the port below is real and reachable.
             write_identity(
                 identity_file,
                 {
                     "pid": os.getpid(),
+                    "process_start": _process_start(os.getpid()),
+                    "proxy": "adp-gateway-proxy",
                     "port": bound_port,
                     "deployment_id": deployment_id,
                     "deployment": deployment_name,

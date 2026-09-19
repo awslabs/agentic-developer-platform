@@ -953,12 +953,33 @@ def lease(deployment, pid):
         _write_json_private(directory / f"{pid}.json", {"pid": pid, "start": start})
 
 
+def proxy_owner(runtime, deployment_id, gateway_url):
+    """Return a proxy record only when its process identity still matches.
+
+    PID existence alone is never ownership: an unclean exit followed by PID
+    reuse must not block recovery or suggest terminating another process.
+    """
+    try:
+        value = _read_json(Path(runtime) / "proxy.json") or {}
+        pid = value.get("pid")
+        if type(pid) is not int or pid <= 0 or value.get("proxy") != "adp-gateway-proxy":
+            return None
+        if value.get("deployment_id", "") != deployment_id or canonical_url(value.get("gateway_url", "")) != canonical_url(gateway_url):
+            return None
+        start = value.get("process_start")
+        if not start or start != _process_start(pid):
+            return None
+        return value
+    except (OSError, ValueError, TypeError, DeploymentError):
+        return None
+
+
 def _busy_reason(deployment):
     """Why a deployment must not be removed right now, or None.
 
     Only evidence of CURRENT use counts. A stale pidfile from a killed session is
-    not use, so ownership is established by signalling the process rather than by
-    the file's existence.
+    not use, so PID plus process start time and deployment metadata establish
+    ownership, rather than the file's existence or a successful kill -0.
     """
     runtime = deployment.runtime_dir
     for path in (runtime / "leases").glob("*.json"):
@@ -969,22 +990,9 @@ def _busy_reason(deployment):
     daemon = Path.home() / "Library/LaunchAgents" / f"com.adp.gateway-proxy.{deployment.id}.plist"
     if daemon.exists():
         return "an always-on proxy is installed; run adp daemon uninstall for this deployment"
-    for marker in ("proxy.json", "proxy.pid"):
-        path = runtime / marker
-        if not path.exists():
-            continue
-        try:
-            raw = path.read_text().strip()
-            pid = int(json.loads(raw)["pid"]) if marker.endswith(".json") else int(raw)
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            return f"a proxy is running (pid {pid})"
-        return f"a proxy is running (pid {pid})"
+    owner = proxy_owner(runtime, deployment.id, deployment.gateway_url)
+    if owner:
+        return f"a proxy is running (pid {owner['pid']})"
     if (deployment.config_dir / "refresh.lock").exists():
         return "a token refresh or login is in progress"
     return None
@@ -1304,6 +1312,10 @@ def main(argv=None):
     helper_parser = subparsers.add_parser("helper-command", help="print a pinned Claude token helper (internal)")
     helper_parser.add_argument("adp_path")
     subparsers.add_parser("setup-port", help="reserve the selected deployment's bare Codex port (internal)")
+    owner_parser = subparsers.add_parser("proxy-owner", help="print a verified proxy PID (internal)")
+    owner_parser.add_argument("runtime")
+    owner_parser.add_argument("deployment_id")
+    owner_parser.add_argument("gateway_url")
 
     args = parser.parse_args(argv)
     if not args.verb:
@@ -1332,6 +1344,10 @@ def main(argv=None):
             print(helper_command(resolve(), args.adp_path))
         elif args.verb == "setup-port":
             print(setup_port(resolve()))
+        elif args.verb == "proxy-owner":
+            owner = proxy_owner(args.runtime, args.deployment_id, args.gateway_url)
+            if owner:
+                print(owner["pid"])
         elif args.verb == "resolve":
             deployment = resolve(args.deployment)
             if args.validate_config:

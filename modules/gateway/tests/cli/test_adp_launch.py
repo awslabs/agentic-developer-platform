@@ -400,7 +400,7 @@ class TestCodexReusesProxy:
 
         assert result.returncode != 0
         assert "already running" in result.stderr
-        assert "kill" in result.stderr, "must tell the user how to resolve it"
+        assert "Stop the original proxy session" in result.stderr, "must tell the user how to resolve it"
         assert elapsed < 8, f"should fail fast, not wait out the readiness timeout ({elapsed:.1f}s)"
         assert launch.record.tools == ["codex"], "codex must not launch against a proxy-less port"
 

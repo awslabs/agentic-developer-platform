@@ -421,13 +421,54 @@ class TestRemove:
     def test_remove_refuses_a_deployment_whose_proxy_is_running(self) -> None:
         deployments.add("dev", DEV_URL)
         deployments.add("integration", INT_URL)
-        runtime = deployments.resolve("integration").ensure_directories().runtime_dir
-        (runtime / "proxy.json").write_text(json.dumps({"pid": os.getpid(), "port": 9999}))
+        selected = deployments.resolve("integration").ensure_directories()
+        runtime = selected.runtime_dir
+        (runtime / "proxy.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "port": 9999,
+                    "process_start": deployments._process_start(os.getpid()),
+                    "proxy": "adp-gateway-proxy",
+                    "deployment_id": selected.id,
+                    "gateway_url": selected.gateway_url,
+                }
+            )
+        )
 
         with pytest.raises(DeploymentError) as excinfo:
             deployments.remove("integration")
 
         assert excinfo.value.code == "deployment_busy"
+
+    @pytest.mark.parametrize("identity", [False, True])
+    def test_unrelated_live_pid_does_not_block_removal(self, identity):
+        import subprocess
+
+        deployments.add("dev", DEV_URL)
+        deployments.add("integration", INT_URL)
+        selected = deployments.resolve("integration").ensure_directories()
+        process = subprocess.Popen(["sleep", "60"])
+        try:
+            (selected.runtime_dir / "proxy.pid").write_text(str(process.pid))
+            if identity:
+                (selected.runtime_dir / "proxy.json").write_text(
+                    json.dumps(
+                        {
+                            "pid": process.pid,
+                            "port": 9999,
+                            "process_start": "old-process-start",
+                            "proxy": "adp-gateway-proxy",
+                            "deployment_id": selected.id,
+                            "gateway_url": selected.gateway_url,
+                        }
+                    )
+                )
+            deployments.remove("integration")
+            assert process.poll() is None
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
 
     def test_a_stale_pidfile_does_not_block_removal(self) -> None:
         """A killed session leaves a pidfile behind; that is not active use."""

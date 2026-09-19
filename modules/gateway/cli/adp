@@ -548,19 +548,16 @@ ensure_proxy() {
         return 0
     fi
 
-    # Nothing of ours is running, but the core keeps ONE pidfile per deployment
-    # and refuses to start a second proxy. Without this check that refusal
-    # surfaces as a 10s "did not come up" timeout with the real reason buried in
-    # the log — so name it now, with the fix. Only the legacy fixed-port case can
-    # reach this: a named deployment binds a port the OS chooses, so it has no
-    # "running, but on another port" state.
-    if [ -z "${named}" ] && [ -f "${PROXY_PID_FILE}" ]; then
+    # A verified process may still be running on a different selected port, or
+    # may be temporarily unresponsive. Report that before waiting for another
+    # startup; an unrelated process with a recycled PID is never ownership.
+    if [ -f "${PROXY_IDENTITY_FILE}" ]; then
         local existing_pid
-        existing_pid=$(cat "${PROXY_PID_FILE}" 2>/dev/null || true)
-        if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+        existing_pid=$(deployments proxy-owner "${ADP_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${ADP_DEPLOYMENT_URL:-}")
+        if [ -n "${existing_pid}" ]; then
             _release_proxy_spawn_lock
-            print_error "An auth proxy is already running (pid ${existing_pid}), but not on port ${CODEX_PROXY_PORT}."
-            print_warning "Stop it with 'kill ${existing_pid}', or re-run 'adp codex setup' to use its port."
+            print_error "An auth proxy is already running (pid ${existing_pid}), but is not reachable on the selected port."
+            print_warning "Stop the original proxy session, or re-run 'adp codex setup' to use its port."
             exit 1
         fi
     fi
@@ -585,9 +582,8 @@ ensure_proxy() {
         where="127.0.0.1:${requested_port}"
     fi
 
-    # Stale identity removed BEFORE spawning, so the wait below cannot mistake a
-    # previous run's published port for this one's.
-    rm -f "${PROXY_IDENTITY_FILE}" 2>/dev/null || true
+    # The core verifies process ownership before clearing stale metadata. Keep
+    # that evidence intact until its check, including during concurrent startup.
 
     print_info "Starting the auth proxy on ${where} (log: ${PROXY_LOG_FILE})..."
     # setsid where available so the proxy survives this terminal; nohup covers

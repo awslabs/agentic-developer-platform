@@ -15,6 +15,43 @@ from pathlib import Path
 import pytest
 
 
+def test_codex_recovers_from_proxy_pid_reused_by_unrelated_process(installed):
+    run, env, stores, _, prefix, _ = installed
+    tool = prefix / "codex"
+    tool.write_text("#!/bin/sh\necho tool-started\n")
+    tool.chmod(0o755)
+    runtime = stores["dev"] / "runtime"
+    unrelated = subprocess.Popen(["sleep", "60"])
+    proxy_pid = None
+    try:
+        (runtime / "proxy.pid").write_text(str(unrelated.pid))
+        (runtime / "proxy.json").write_text(
+            json.dumps(
+                {
+                    "pid": unrelated.pid,
+                    "port": 9999,
+                    "process_start": "old-process-start",
+                    "proxy": "adp-gateway-proxy",
+                    "deployment_id": stores["dev"].name,
+                    "gateway_url": "https://dev.example.test/api",
+                }
+            )
+        )
+        result = run("--deployment", "dev", "codex", extra={"PATH": env["PATH"].split(":", 1)[1]})
+        assert result.returncode == 0, result.stderr
+        assert "tool-started" in result.stdout
+        identity = json.loads((runtime / "proxy.json").read_text())
+        assert identity["pid"] != unrelated.pid and identity["process_start"]
+        proxy_pid = identity["pid"]
+        assert unrelated.poll() is None
+        assert f"kill {unrelated.pid}" not in (stores["dev"] / "logs/proxy.log").read_text()
+    finally:
+        if proxy_pid:
+            os.kill(proxy_pid, signal.SIGINT)
+        unrelated.terminate()
+        unrelated.wait(timeout=5)
+
+
 @pytest.mark.parametrize(
     "key,value",
     [
