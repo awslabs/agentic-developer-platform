@@ -58,7 +58,7 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -68,7 +68,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.models.base import utcnow
 
 from .dispatch_pass import attempt_run_id, resolve_installation_id
-from .handoff import current_identity, handoff_required, missing_receipt_hold, receipt_for
+from .execution_state import TERMINAL_EXECUTION_STATUSES, BlockCode, ExecutionIdentity, ExecutionStatus, OutcomeKind, PhaseAdvance
+from .execution_store import advance_execution, load_execution
+from .handoff import current_identity, handoff_required, missing_receipt_hold, outstanding_block, receipt_for
 from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
 from .pr_bindings import (
     BindingError,
@@ -364,6 +366,67 @@ async def _delivery_receipt(session: AsyncSession, *, node: OrchestrationNode, l
     return await receipt_for(session, identity=identity, lock=lock)
 
 
+async def _persist_missing_handoff_block(
+    session: AsyncSession, *, node: OrchestrationNode, identity: ExecutionIdentity | None, detail: str
+) -> dict[str, Any]:
+    """Record the hold without borrowing a replacement owner's authority.
+
+    The snapshot was resolved before external observations. The store rechecks it
+    under its normal locks. A missing execution or displaced claim cannot authorize
+    a ledger write, so its typed refusal stays in the node's existing decision log.
+    """
+    block = outstanding_block(
+        BlockCode.AUTHORITY_UNVERIFIABLE,
+        owner="platform-operator",
+        required_input="reconcile this attempt's ownership and obtain its committed continuation receipt",
+        detail=detail,
+    )
+    record = None
+    refusal = "execution_missing"
+    recorded_in = "decision"
+    if identity is not None and identity.cycle == node.attempts:
+        outcome = await load_execution(session, identity=identity, for_update=True)
+        record = outcome.record if outcome is not None else None
+        refusal = outcome.reason if outcome is not None else "execution_missing"
+        if outcome is not None and outcome.kind is OutcomeKind.APPLIED and record is not None:
+            if record.status not in TERMINAL_EXECUTION_STATUSES:
+                # Do not replace an existing budget, human or other recovery gate.
+                if record.block is None:
+                    outcome = await advance_execution(
+                        session,
+                        identity=identity,
+                        advance=PhaseAdvance(
+                            phase=record.phase,
+                            status=ExecutionStatus.BLOCKED,
+                            expected_revision=record.revision,
+                            next_check_at=record.next_check_at or utcnow() + timedelta(seconds=300),
+                        ),
+                        block=block,
+                        pending_action_key=record.pending_action_key,
+                    )
+                    if outcome.kind is not OutcomeKind.BLOCKED:
+                        raise RuntimeError("handoff block could not be persisted under its locked authority")
+                    recorded_in = "execution"
+                elif record.block.code == block.code and record.block.required_input == block.required_input:
+                    recorded_in = "execution"
+    elif identity is not None:
+        refusal = "execution_cycle_mismatch"
+    if refusal and ("claim" in refusal or "owner" in refusal):
+        block = outstanding_block(BlockCode.OWNERSHIP_LOST, owner=block.owner, required_input=block.required_input, detail=detail)
+    return {
+        "issue": "5144",
+        "block_code": block.code.value,
+        "owner": block.owner,
+        "required_input": block.required_input,
+        "remaining_gates": list(block.remaining_gates),
+        "detail": block.detail,
+        "identity": asdict(identity) if identity is not None else {"org_id": node.org_id, "node_id": node.id, "cycle": node.attempts},
+        "execution_id": record.id if record is not None else None,
+        "recorded_in": recorded_in,
+        "authority_refusal": refusal,
+    }
+
+
 async def observe_results(session: AsyncSession, *, run_store: Any | None = None, evidence: Any | None = None) -> ResultReport:
     report = ResultReport()
     deadline = time.monotonic() + 45
@@ -466,6 +529,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     raise ValueError("run record does not match node/tenant/attempt")
                 status = row.get("status")
                 observation: dict = {}
+                receipt_identity = None
                 if recovered_without_run_record:
                     observation["recovered_without_run_record"] = True
                 if recovered_from_skipped_run:
@@ -492,6 +556,8 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         if installation_id is None:
                             raise ValueError("GitHub installation is unresolved")
                         source = evidence if evidence is not None else GitHubEvidenceSource()
+                        if handoff_required(dispatch):
+                            receipt_identity = await current_identity(session, org_id=node.org_id, node_id=node.id)
                         url, hold = await _story_evidence(
                             session,
                             node=node,
@@ -542,32 +608,23 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             or (target == NodeState.PASSED and not binding_scope_matches(current, node))
                         )
                     ) or (snapshot is None and current is not None)
-                    # #5144 F2: the receipt read in `_story_evidence` was taken without
-                    # locks, alongside the provider call. Between that snapshot and this
-                    # write a handover can advance the claim generation, and the receipt
-                    # this attempt was about to pass on becomes unattributable — so the
-                    # authority backing a PASSED transition is revalidated here, under
-                    # the node lock, rather than trusted from the earlier read.
-                    #
-                    # Only on the passing path. A hold needs no receipt authority, and
-                    # re-reading for it would add a locked query to the common case that
-                    # changes no outcome.
-                    #
-                    # Locked, and after the node lock, deliberately: `receipt_for` takes
-                    # the store's flow → claim → accepted-plan → execution order, which
-                    # is the same order the worker write path takes behind the same node
-                    # lock, so the result sweep and a concurrent commit serialize instead
-                    # of deadlocking.
-                    if target == NodeState.PASSED and handoff_required(dispatch):
+                    # The node lock precedes the store's flow/claim/plan/execution
+                    # locks, as in the worker write path. Missing receipts need the
+                    # same guarded, durable block on holds as on attempted completion.
+                    if handoff_required(dispatch):
                         revalidated = await _delivery_receipt(session, node=locked, lock=True)
-                        if revalidated != observation.get("handoff_receipt_ref"):
-                            # Fail closed, and held rather than failed: the work is
-                            # genuinely still outstanding, and the next sweep re-reads
-                            # whatever superseded this.
-                            target = NodeState.AWAITING_MERGE
-                            detail = missing_receipt_hold("the continuation receipt's authority changed during verification")
+                        receipt_changed = target == NodeState.PASSED and revalidated != observation.get("handoff_receipt_ref")
+                        if revalidated is None or receipt_changed:
+                            block_detail = missing_receipt_hold(
+                                "the continuation receipt's authority changed during verification" if receipt_changed else ""
+                            )
+                            if target == NodeState.PASSED:
+                                target, detail = NodeState.AWAITING_MERGE, block_detail
                             observation.pop("merge_receipt", None)
                             observation.pop("handoff_receipt_ref", None)
+                            observation["handoff_block"] = await _persist_missing_handoff_block(
+                                session, node=locked, identity=receipt_identity, detail=block_detail
+                            )
                     if changed:
                         target = NodeState.AWAITING_MERGE
                         detail = "The implementation binding changed during verification; its current head and scope will be verified again."
@@ -600,6 +657,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                                 from_state=node.state,
                                 to_state=node.state,
                                 reason=json.dumps(payload),
+                                rejection_reason=json.dumps(observation["handoff_block"]) if "handoff_block" in observation else None,
                             )
                         )
                         await session.flush()
@@ -634,6 +692,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             from_state=observed_state,
                             to_state=target.value,
                             reason=json.dumps(payload),
+                            rejection_reason=json.dumps(observation["handoff_block"]) if "handoff_block" in observation else None,
                         )
                     )
                     await session.flush()

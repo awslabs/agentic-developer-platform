@@ -58,7 +58,10 @@ def test_every_success_path_reports_the_handoff(path, persona, monkeypatch):
     handoff = MagicMock(return_value="> handoff-receipt-note")
     monkeypatch.setattr(entrypoint, "delivery_handoff_note", handoff)
 
-    assert entrypoint._handle_success("aws-e/adp", 5144, "agent/issue-5144", persona, "run", "arrival") == 0
+    assert (
+        entrypoint._handle_success("aws-e/adp", 5144, "agent/issue-5144", persona, "run", "arrival")
+        == 0
+    )
 
     assert handoff.call_count == 1
     # The note reaches the closing comment, so an unrecorded handoff is visible to a
@@ -82,7 +85,12 @@ def test_repeat_delivery_reports_each_time_and_converges_on_the_server(path, mon
     monkeypatch.setattr(entrypoint, "delivery_handoff_note", handoff)
 
     for _ in range(2):
-        assert entrypoint._handle_success("aws-e/adp", 5144, "agent/issue-5144", "developer", "run", "arrival") == 0
+        assert (
+            entrypoint._handle_success(
+                "aws-e/adp", 5144, "agent/issue-5144", "developer", "run", "arrival"
+            )
+            == 0
+        )
 
     assert handoff.call_count == 2
 
@@ -109,7 +117,12 @@ def test_a_failing_run_reports_no_handoff(monkeypatch):
     handoff = MagicMock(return_value="> handoff-receipt-note")
     monkeypatch.setattr(entrypoint, "delivery_handoff_note", handoff)
 
-    assert entrypoint._handle_success("aws-e/adp", 5144, "agent/issue-5144", "developer", "run", "arrival") == 1
+    assert (
+        entrypoint._handle_success(
+            "aws-e/adp", 5144, "agent/issue-5144", "developer", "run", "arrival"
+        )
+        == 1
+    )
     handoff.assert_not_called()
 
 
@@ -128,7 +141,12 @@ def test_handoff_failure_does_not_destroy_delivered_work(monkeypatch):
     # not depend on that being the only failure mode it can produce.
     monkeypatch.setattr(entrypoint, "delivery_handoff_note", lambda **_: "> not recorded")
 
-    assert entrypoint._handle_success("aws-e/adp", 5144, "agent/issue-5144", "developer", "run", "arrival") == 0
+    assert (
+        entrypoint._handle_success(
+            "aws-e/adp", 5144, "agent/issue-5144", "developer", "run", "arrival"
+        )
+        == 0
+    )
 
 
 def test_envelope_marker_is_read_from_dispatch_not_chosen_by_the_worker(monkeypatch):

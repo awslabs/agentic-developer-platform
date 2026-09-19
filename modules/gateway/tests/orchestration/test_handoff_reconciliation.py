@@ -25,13 +25,14 @@ the marker off the run's own dispatch record is what lets both behaviours coexis
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
-from src.orchestration.execution_state import ExecutionIdentity, OutcomeKind
-from src.orchestration.execution_store import create_execution
-from src.orchestration.handoff import commit_handoff, handoff_required, missing_receipt_hold
+from src.orchestration.execution_state import BlockCode, ExecutionIdentity, ExecutionStatus, OutcomeKind, PhaseAdvance
+from src.orchestration.execution_store import advance_execution, create_execution, load_execution
+from src.orchestration.handoff import commit_handoff, handoff_required, missing_receipt_hold, outstanding_block
 from src.orchestration.models import (
     ActorKind,
     ClaimState,
@@ -39,6 +40,7 @@ from src.orchestration.models import (
     NodeState,
     OrchestrationAcceptedPlan,
     OrchestrationDecision,
+    OrchestrationExecution,
     OrchestrationWorkClaim,
 )
 from src.orchestration.results import _story_evidence, observe_results
@@ -551,3 +553,170 @@ async def test_an_unmarked_dispatch_pays_no_revalidation_read(session, monkeypat
 
     assert report.advanced == 1
     assert node.state == NodeState.PASSED.value
+
+
+async def _stored_handoff_block(session, node):
+    decision = await session.scalar(
+        select(OrchestrationDecision)
+        .where(OrchestrationDecision.node_id == node.id, OrchestrationDecision.kind == DecisionKind.RESULT_OBSERVED.value)
+        .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+        .limit(1)
+    )
+    assert decision is not None
+    assert decision.rejection_reason is not None
+    block = json.loads(decision.rejection_reason)
+    assert block == json.loads(decision.reason)["handoff_block"]
+    assert block["owner"] and block["required_input"]
+    return block
+
+
+async def test_missing_handoff_persists_a_bound_block_and_repeated_sweeps_are_idempotent(session, monkeypatch):
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _marked_story(session)
+    await _bind(session, node, dispatch)
+    identity = await _ledger(session, node)
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+    assert report.errors == 0
+    await session.commit()
+    block = await _stored_handoff_block(session, node)
+    row = await session.scalar(select(OrchestrationExecution).where(OrchestrationExecution.node_id == node.id))
+    await session.refresh(row)
+    assert row.status == ExecutionStatus.BLOCKED.value
+    assert row.block_code == block["block_code"] == BlockCode.AUTHORITY_UNVERIFIABLE.value
+    assert row.block_owner == block["owner"] and row.block_required_input == block["required_input"]
+    assert row.next_check_at is not None and row.handoff_receipt_ref is None
+    assert block["identity"]["claim_generation"] == identity.claim_generation
+    assert block["identity"]["accepted_plan_version"] == identity.accepted_plan_version
+    revision = row.revision
+    count = len(await _observations(session, node))
+    await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+    await session.refresh(row)
+    assert row.revision == revision
+    assert len(await _observations(session, node)) == count
+
+
+@pytest.mark.parametrize("race", ["receipt", "generation", "plan"])
+async def test_commit_time_handoff_failure_is_typed_without_writing_under_stale_authority(session, monkeypatch, race):
+    from src.orchestration import results
+
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _marked_story(session)
+    await _bind(session, node, dispatch)
+    identity = await _ledger(session, node)
+    assert (await commit_handoff(session, identity=identity, now=datetime.now(UTC))).accepted
+    execution = await session.scalar(select(OrchestrationExecution).where(OrchestrationExecution.node_id == node.id))
+    revision = execution.revision
+    original = results._story_evidence
+
+    async def move_authority(*args, **kwargs):
+        observed = await original(*args, **kwargs)
+        assert observed[0] == PR_URL
+        if race == "generation":
+            claim = await session.get(OrchestrationWorkClaim, CLAIM_ID)
+            claim.generation += 1
+        elif race == "plan":
+            plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == node.flow_id))
+            plan.superseded_at = datetime.now(UTC)
+        else:
+            execution.handoff_receipt_ref = None
+        await session.flush()
+        return observed
+
+    monkeypatch.setattr(results, "_story_evidence", move_authority)
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+    assert report.errors == 0 and node.state == NodeState.AWAITING_MERGE.value
+    await session.commit()
+    block = await _stored_handoff_block(session, node)
+    await session.refresh(execution)
+    if race == "receipt":
+        assert block["recorded_in"] == "execution"
+        assert execution.status == ExecutionStatus.BLOCKED.value
+    else:
+        assert block["recorded_in"] == "decision"
+        assert execution.revision == revision
+        assert execution.claim_generation == identity.claim_generation
+        assert execution.block_code is None
+        assert block["authority_refusal"]
+    assert block["block_code"] == (BlockCode.OWNERSHIP_LOST.value if race == "generation" else BlockCode.AUTHORITY_UNVERIFIABLE.value)
+
+
+async def test_missing_execution_records_a_typed_hold_without_inventing_ownership(session, monkeypatch):
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _marked_story(session)
+    await _bind(session, node, dispatch)
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+    assert report.errors == 0
+    await session.commit()
+    block = await _stored_handoff_block(session, node)
+    assert block["block_code"] == BlockCode.AUTHORITY_UNVERIFIABLE.value
+    assert block["recorded_in"] == "decision" and block["execution_id"] is None
+    assert block["identity"] == {"org_id": node.org_id, "node_id": node.id, "cycle": node.attempts}
+    assert list(await session.scalars(select(OrchestrationExecution))) == []
+
+
+async def test_a_later_authorized_handoff_clears_the_block_and_completes(session, monkeypatch):
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _marked_story(session)
+    await _bind(session, node, dispatch)
+    identity = await _ledger(session, node)
+    await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+    assert (await _stored_handoff_block(session, node))["recorded_in"] == "execution"
+    assert (await commit_handoff(session, identity=identity, now=datetime.now(UTC))).accepted
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+    assert report.errors == 0 and node.state == NodeState.PASSED.value
+    row = await session.scalar(select(OrchestrationExecution).where(OrchestrationExecution.node_id == node.id))
+    assert row.block_code is None and row.handoff_receipt_ref
+    assert "handoff_block" not in (await _observations(session, node))[-1]
+
+
+@pytest.mark.parametrize("code", [BlockCode.HUMAN_GATE_REQUIRED, BlockCode.BUDGET_EXHAUSTED])
+async def test_missing_handoff_preserves_existing_gate_and_pending_action(session, monkeypatch, code):
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _marked_story(session)
+    await _bind(session, node, dispatch)
+    identity = await _ledger(session, node)
+    record = (await load_execution(session, identity=identity)).record
+    due = datetime.now(UTC) + timedelta(hours=1)
+    existing = outstanding_block(code, owner="requester", required_input="resolve the existing gate", detail="original gate")
+    outcome = await advance_execution(
+        session,
+        identity=identity,
+        advance=PhaseAdvance(phase=record.phase, status=ExecutionStatus.BLOCKED, expected_revision=record.revision, next_check_at=due),
+        block=existing,
+        pending_action_key="pending-external-observation",
+    )
+    assert outcome.kind is OutcomeKind.BLOCKED
+    before = outcome.record
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+    assert report.errors == 0
+    await session.commit()
+    after = (await load_execution(session, identity=identity)).record
+    assert after == before
+    block = await _stored_handoff_block(session, node)
+    assert block["recorded_in"] == "decision"
+    assert block["block_code"] == BlockCode.AUTHORITY_UNVERIFIABLE.value
+
+
+async def test_handoff_block_and_node_hold_rollback_together_when_audit_write_fails(session, monkeypatch):
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _marked_story(session)
+    await _bind(session, node, dispatch)
+    identity = await _ledger(session, node)
+    await session.commit()
+    before = (await load_execution(session, identity=identity)).record
+    state_before = node.state
+    original_add = session.add
+
+    def fail_result_audit(instance, *args, **kwargs):
+        if isinstance(instance, OrchestrationDecision) and instance.kind == DecisionKind.RESULT_OBSERVED.value:
+            raise RuntimeError("injected audit persistence failure")
+        return original_add(instance, *args, **kwargs)
+
+    monkeypatch.setattr(session, "add", fail_result_audit)
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+    assert report.errors == 1
+    await session.commit()
+    await session.refresh(node)
+    assert node.state == state_before
+    assert (await load_execution(session, identity=identity)).record == before
+    assert await _observations(session, node) == []
