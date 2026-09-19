@@ -47,13 +47,14 @@ def store():
         yield store
 
 
-def provision(store, invocation="run-a"):
+def provision(store, invocation="run-a", **envelope_changes):
     envelope = {
         "message_id": invocation,
         "tenant_id": "tenant",
         "persona": "developer",
         "arrived_at": "2026-09-13T09:00:00Z",
         "source_ref": {"repo": "org/repo", "issue": 1},
+        **envelope_changes,
     }
     now = datetime.now(UTC)
     grant = DelegatedGrant(
@@ -68,6 +69,18 @@ def provision(store, invocation="run-a"):
     )
     store.provision_pending(envelope=envelope, grant=grant, now=now)
     return envelope, grant
+
+
+def test_direct_override_request_and_resolution_are_protected_separately(store):
+    provision(
+        store,
+        model_requested="sonnet46",
+        model_resolved="global.anthropic.claude-sonnet-4-6",
+    )
+
+    execution = store._read("TENANT#tenant", "EXEC#run-a")
+    assert execution["direct_model_requested"] == {"S": "sonnet46"}
+    assert execution["direct_model_override"] == {"S": "global.anthropic.claude-sonnet-4-6"}
 
 
 @pytest.fixture

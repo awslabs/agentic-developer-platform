@@ -8,12 +8,13 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
-
 from adp_trigger import client as trigger_client
 from lib.run_identity import (
+    ModelPolicyReport,
     RunIdentityError,
     RunIdentitySession,
     bootstrap_run_identity,
+    parse_model_policy_report,
     read_workload_token,
 )
 
@@ -57,6 +58,74 @@ def reply(token="adpr1.first.signature", **changes):
     }
 
 
+def policy_reply(**decision_changes):
+    decision = {
+        "invocation_id": "run-a",
+        "runtime_posture": "report_only",
+        "posture_revision": 7,
+        "requested_model_id": "sonnet46",
+        "resolved_model_id": "global.anthropic.claude-sonnet-4-6",
+        "resolution_source": "explicit-direct",
+        "snapshot_digest": "a" * 64,
+        "policy_revision": "policy-7",
+        "catalogue_revision": "catalogue-4",
+        **decision_changes,
+    }
+    return {
+        "posture": "report_only",
+        "status": "proposed",
+        "decision": decision,
+        "assertion": "adpe1.payload.signature",
+    }
+
+
+def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
+    report = parse_model_policy_report(policy_reply(), invocation_id="run-a")
+
+    assert report == ModelPolicyReport(
+        status="proposed",
+        requested_model_id="sonnet46",
+        resolved_model_id="global.anthropic.claude-sonnet-4-6",
+        resolution_source="explicit-direct",
+        snapshot_digest="a" * 64,
+        policy_revision="policy-7",
+        catalogue_revision="catalogue-4",
+        posture_revision=7,
+    )
+    evidence = report.environment("global.anthropic.claude-opus-5")
+    assert evidence["ADP_MODEL_POLICY_PROPOSED_MODEL"] == "global.anthropic.claude-sonnet-4-6"
+    assert evidence["ADP_MODEL_POLICY_LEGACY_MODEL"] == "global.anthropic.claude-opus-5"
+    assert evidence["ADP_MODEL_POLICY_MATCH"] == "false"
+    assert "ANTHROPIC_MODEL" not in evidence
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        policy_reply(invocation_id="another-run"),
+        policy_reply(runtime_posture="enforcing"),
+        policy_reply(resolution_source="invented"),
+        policy_reply(snapshot_digest="not-a-digest"),
+        policy_reply(resolved_model_id="bad\nlog"),
+    ],
+)
+def test_invalid_policy_report_never_becomes_worker_environment(policy):
+    with pytest.raises(ValueError, match="invalid model-policy"):
+        parse_model_policy_report(policy, invocation_id="run-a")
+
+
+def test_unavailable_report_exposes_bounded_reason_only():
+    report = parse_model_policy_report(
+        {"posture": "report_only", "status": "unavailable", "reason": "snapshot_expired"},
+        invocation_id="run-a",
+    )
+    assert report.environment("legacy") == {
+        "ADP_MODEL_POLICY_POSTURE": "report_only",
+        "ADP_MODEL_POLICY_STATUS": "unavailable",
+        "ADP_MODEL_POLICY_REASON": "snapshot_expired",
+    }
+
+
 def test_refresh_atomically_replaces_live_cli_file(identity, monkeypatch):
     session, _ = identity
     monkeypatch.setattr(session, "_request", lambda: reply())
@@ -71,6 +140,31 @@ def test_refresh_atomically_replaces_live_cli_file(identity, monkeypatch):
     old.close()
     assert stat.S_IMODE(session.credential_path.stat().st_mode) == 0o600
     assert not list(session.credential_path.parent.glob("credential-*"))
+
+
+def test_refresh_retains_first_report_only_proposal_as_immutable_comparison(identity, monkeypatch):
+    session, _ = identity
+    monkeypatch.setattr(session, "_request", lambda: reply(model_policy=policy_reply()))
+    session.refresh()
+    assert session.model_policy_report is not None
+    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+
+    changed = policy_reply(resolved_model_id="global.anthropic.claude-opus-5")
+    monkeypatch.setattr(session, "_request", lambda: reply(model_policy=changed))
+    session.refresh()
+    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_refresh_can_observe_policy_after_old_gateway_response(identity, monkeypatch):
+    session, _ = identity
+    replies = iter([reply(), reply(model_policy=policy_reply())])
+    monkeypatch.setattr(session, "_request", lambda: next(replies))
+
+    session.refresh()
+    assert session.model_policy_report is None
+    session.refresh()
+    assert session.model_policy_report is not None
+    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
 
 
 @pytest.mark.parametrize(
@@ -118,15 +212,31 @@ def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypa
     credentials.token = None
     sdk_session = MagicMock()
     sdk_session.get_credentials.return_value.get_frozen_credentials.return_value = credentials
-    for key in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "ADP_WORKER_IRSA_ROLE_ARN", "ADP_WORKER_IRSA_TOKEN_FILE"):
+    for key in (
+        "AWS_ROLE_ARN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "ADP_WORKER_IRSA_ROLE_ARN",
+        "ADP_WORKER_IRSA_TOKEN_FILE",
+    ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("ADP_WORKER_IRSA_ROLE_ARN" if preserved else "AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
+    monkeypatch.setenv(
+        "ADP_WORKER_IRSA_ROLE_ARN" if preserved else "AWS_ROLE_ARN",
+        "arn:aws:iam::123456789012:role/authority-worker",
+    )
     irsa_token = session._directory / "irsa-token"
     irsa_token.write_text("worker-web-identity")
-    monkeypatch.setenv("ADP_WORKER_IRSA_TOKEN_FILE" if preserved else "AWS_WEB_IDENTITY_TOKEN_FILE", str(irsa_token))
+    monkeypatch.setenv(
+        "ADP_WORKER_IRSA_TOKEN_FILE" if preserved else "AWS_WEB_IDENTITY_TOKEN_FILE",
+        str(irsa_token),
+    )
     monkeypatch.setenv("AWS_REGION", "us-west-2")
     sdk_session.create_client.return_value.assume_role_with_web_identity.return_value = {
-        "Credentials": {"AccessKeyId": "test-access", "SecretAccessKey": "test-secret", "SessionToken": "test-session", "Expiration": datetime.now(timezone.utc) + timedelta(hours=1)}
+        "Credentials": {
+            "AccessKeyId": "test-access",
+            "SecretAccessKey": "test-secret",
+            "SessionToken": "test-session",
+            "Expiration": datetime.now(timezone.utc) + timedelta(hours=1),
+        }
     }
     monkeypatch.setattr("lib.run_identity.botocore.session.get_session", lambda: sdk_session)
     response = MagicMock()
@@ -139,7 +249,12 @@ def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypa
     monkeypatch.setattr("lib.run_identity.requests.Session", lambda: http)
     assert session._request()["invocation_id"] == "run-a"
     sdk_session.get_credentials.assert_not_called()
-    assert sdk_session.create_client.return_value.assume_role_with_web_identity.call_args.kwargs["WebIdentityToken"] == "worker-web-identity"
+    assert (
+        sdk_session.create_client.return_value.assume_role_with_web_identity.call_args.kwargs[
+            "WebIdentityToken"
+        ]
+        == "worker-web-identity"
+    )
     args, kwargs = http.post.call_args
     assert args[0].endswith("/internal/v1/agent/bootstrap")
     assert kwargs["headers"]["X-Adp-Workload-Token"] == "pod-token-one"

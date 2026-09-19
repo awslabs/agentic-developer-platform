@@ -15,7 +15,9 @@ import os
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 import botocore.auth
@@ -29,6 +31,8 @@ CREDENTIAL_FILE_ENV = "ADP_RUN_CREDENTIAL_FILE"
 CONTROL_ENDPOINT_ENV = "ADP_AGENT_CONTROL_ENDPOINT"
 WORKLOAD_HEADER = "X-Adp-Workload-Token"
 _MAX_TOKEN_BYTES = 8192
+_MAX_POLICY_FIELD_BYTES = 256
+_RESOLUTION_SOURCES = frozenset({"explicit-direct", "principal-mapping", "system-default"})
 
 
 class RunIdentityError(Exception):
@@ -37,6 +41,108 @@ class RunIdentityError(Exception):
 
 class WorkOwnershipPending(RunIdentityError):
     """The gateway retained an authorized child behind its active parent."""
+
+
+@dataclass(frozen=True)
+class ModelPolicyReport:
+    """Sanitized, non-authoritative report-only evidence from bootstrap.
+
+    The proposed model is intentionally not an execution input.  The gateway
+    response is authenticated transport, but worker-side signature verification
+    and enforcing consumption belong to the later PMM-06/PMM-09 gate.
+    """
+
+    status: Literal["proposed", "unavailable"]
+    reason: str | None = None
+    requested_model_id: str | None = None
+    resolved_model_id: str | None = None
+    resolution_source: str | None = None
+    snapshot_digest: str | None = None
+    policy_revision: str | None = None
+    catalogue_revision: str | None = None
+    posture_revision: int | None = None
+
+    def environment(self, legacy_model: str) -> dict[str, str]:
+        """Return comparison telemetry without changing ``ANTHROPIC_MODEL``."""
+        values = {
+            "ADP_MODEL_POLICY_POSTURE": "report_only",
+            "ADP_MODEL_POLICY_STATUS": self.status,
+        }
+        if self.status == "unavailable":
+            values["ADP_MODEL_POLICY_REASON"] = self.reason or "unknown"
+            return values
+        values.update(
+            {
+                "ADP_MODEL_POLICY_PROPOSED_MODEL": self.resolved_model_id or "",
+                "ADP_MODEL_POLICY_RESOLUTION_SOURCE": self.resolution_source or "",
+                "ADP_MODEL_POLICY_SNAPSHOT_DIGEST": self.snapshot_digest or "",
+                "ADP_MODEL_POLICY_POLICY_REVISION": self.policy_revision or "",
+                "ADP_MODEL_POLICY_CATALOGUE_REVISION": self.catalogue_revision or "",
+                "ADP_MODEL_POLICY_POSTURE_REVISION": str(self.posture_revision),
+                "ADP_MODEL_POLICY_LEGACY_MODEL": legacy_model,
+                "ADP_MODEL_POLICY_MATCH": str(self.resolved_model_id == legacy_model).lower(),
+            }
+        )
+        if self.requested_model_id:
+            values["ADP_MODEL_POLICY_REQUESTED_MODEL"] = self.requested_model_id
+        return values
+
+
+def _safe_policy_text(value: object, *, optional: bool = False) -> str | None:
+    if optional and value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value.encode("utf-8")) > _MAX_POLICY_FIELD_BYTES
+        or any(ord(char) < 32 or ord(char) > 126 for char in value)
+    ):
+        raise ValueError("invalid model-policy field")
+    return value
+
+
+def parse_model_policy_report(value: object, *, invocation_id: str) -> ModelPolicyReport:
+    """Strictly reduce a bootstrap policy response to report-only telemetry."""
+    if not isinstance(value, dict) or value.get("posture") != "report_only":
+        raise ValueError("invalid model-policy response")
+    status = value.get("status")
+    if status == "unavailable":
+        return ModelPolicyReport(
+            status="unavailable",
+            reason=_safe_policy_text(value.get("reason")),
+        )
+    if status != "proposed" or not isinstance(value.get("decision"), dict):
+        raise ValueError("invalid model-policy response")
+    decision = value["decision"]
+    resolved = _safe_policy_text(decision.get("resolved_model_id"))
+    requested = _safe_policy_text(decision.get("requested_model_id"), optional=True)
+    source = _safe_policy_text(decision.get("resolution_source"))
+    digest = _safe_policy_text(decision.get("snapshot_digest"))
+    policy_revision = _safe_policy_text(decision.get("policy_revision"))
+    catalogue_revision = _safe_policy_text(decision.get("catalogue_revision"))
+    posture_revision = decision.get("posture_revision")
+    if (
+        decision.get("invocation_id") != invocation_id
+        or decision.get("runtime_posture") != "report_only"
+        or source not in _RESOLUTION_SOURCES
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+        or type(posture_revision) is not int
+        or posture_revision < 1
+        or not isinstance(value.get("assertion"), str)
+        or not value["assertion"].startswith("adpe1.")
+    ):
+        raise ValueError("invalid model-policy response")
+    return ModelPolicyReport(
+        status="proposed",
+        requested_model_id=requested,
+        resolved_model_id=resolved,
+        resolution_source=source,
+        snapshot_digest=digest,
+        policy_revision=policy_revision,
+        catalogue_revision=catalogue_revision,
+        posture_revision=posture_revision,
+    )
 
 
 def read_workload_token() -> str:
@@ -76,6 +182,7 @@ class RunIdentitySession:
         self._thread: threading.Thread | None = None
         self._attempt: int | None = None
         self._model_policy_reported = False
+        self.model_policy_report: ModelPolicyReport | None = None
 
     def _request(self) -> dict:
         session = botocore.session.get_session()
@@ -142,13 +249,26 @@ class RunIdentitySession:
         # would make mixed-version rollout impossible to audit.
         if not self._model_policy_reported:
             policy = result.get("model_policy")
-            if isinstance(policy, dict) and policy.get("posture") == "report_only":
-                if policy.get("status") == "proposed":
+            # Absence is expected while an older gateway is still serving a
+            # mixed-version rollout.  Keep looking on refresh so a newly
+            # upgraded gateway can still emit comparison evidence.
+            if policy is not None:
+                try:
+                    self.model_policy_report = parse_model_policy_report(
+                        policy,
+                        invocation_id=self._invocation_id,
+                    )
+                except ValueError:
+                    self.model_policy_report = ModelPolicyReport(
+                        status="unavailable",
+                        reason="invalid_gateway_report",
+                    )
+                if self.model_policy_report.status == "proposed":
                     logger.info("Model-policy decision received and ignored by report-only worker")
                 else:
                     logger.warning(
                         "Model-policy decision unavailable in report-only mode (reason=%s)",
-                        policy.get("reason", "unknown"),
+                        self.model_policy_report.reason,
                     )
                 self._model_policy_reported = True
         with self._write_lock:
