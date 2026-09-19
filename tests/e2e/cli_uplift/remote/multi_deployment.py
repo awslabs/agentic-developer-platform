@@ -31,11 +31,10 @@ so the load-bearing assertions are made against the deployments themselves:
 
 BOUNDS
 
-The issue's live limits are hard: one instance, 48 requests, 256 output tokens per
-request. Six tool sessions are launched for overlap (three in each arrangement). The
-lifecycle case launches three sessions and continues them after state changes.
-Claude receives the configured output cap; Codex is prompted for a short reply.
-The existing run-level cost and time controls remain required.
+Model execution is disabled: the hard Codex output limit (256 tokens per
+request) and aggregate 48-request ceiling are not implemented. A short prompt
+and receipt checks cannot enforce limits before spend. Both preflight and this
+entry point refuse E16/E17 until enforcement is implemented and verified.
 
 WHAT IS DELIBERATELY NOT DONE
 
@@ -957,7 +956,18 @@ def _validate_bindings(config):
     )
 
 
+def _require_model_limits():
+    # No config switch can stand in for an implemented request/token limiter.
+    require(
+        False,
+        "E16/E17 model execution is disabled: hard Codex output limits "
+        "(at most 256 tokens per request) and an aggregate 48-request ceiling "
+        "must be implemented before inference",
+    )
+
+
 def execute(config, evidence):
+    _require_model_limits()
     os.umask(0o077)
     missing = [key for key in REQUIRED if not config.get(key)]
     require(

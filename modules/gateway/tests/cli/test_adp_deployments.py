@@ -347,6 +347,40 @@ class TestUse:
 
 
 class TestRemove:
+    def test_registry_publication_failure_preserves_the_entire_store(self, monkeypatch) -> None:
+        deployments.add("dev", DEV_URL)
+        deployments.add("integration", INT_URL)
+        store = deployments.resolve("integration").root
+        (store / "tokens.json").write_text('"session-fixture"')
+        (store / "state" / "handoff.json").write_text('"pending-fixture"')
+        before = {str(p.relative_to(store)): p.read_bytes() for p in store.rglob("*") if p.is_file()}
+
+        def fail(_registry):
+            raise OSError("simulated registry publication failure")
+
+        monkeypatch.setattr(deployments, "save_registry", fail)
+        with pytest.raises(OSError, match="publication failure"):
+            deployments.remove("integration")
+
+        assert "integration" in deployments.load_registry()["deployments"]
+        assert {str(p.relative_to(store)): p.read_bytes() for p in store.rglob("*") if p.is_file()} == before
+
+    def test_cleanup_is_after_publication_and_outside_registry_lock(self, monkeypatch) -> None:
+        deployments.add("dev", DEV_URL)
+        deployments.add("integration", INT_URL)
+        store = deployments.resolve("integration").root
+
+        def fail_cleanup(path):
+            assert path == store
+            assert "integration" not in deployments.load_registry()["deployments"]
+            assert not (deployments.adp_home() / "registry.lock").exists()
+            raise OSError("simulated cleanup failure")
+
+        monkeypatch.setattr(deployments.shutil, "rmtree", fail_cleanup)
+        with pytest.raises(DeploymentError, match="registration was removed.*cleanup"):
+            deployments.remove("integration")
+        assert store.exists()
+
     def test_remove_forgets_one_deployment_only(self) -> None:
         deployments.add("dev", DEV_URL)
         deployments.add("integration", INT_URL)

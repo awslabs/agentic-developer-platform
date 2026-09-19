@@ -86,6 +86,9 @@ HOSTED = "hosted"
 # approximating three deployments with one URL registered under three names would
 # pass while every crossed-endpoint defect the story exists to prevent survived.
 THREE_DEPLOYMENTS = "three_deployments"
+# A capability requirement, deliberately never granted by current preflight.
+# Gateway availability does not prove enforcement of inference spend limits.
+MULTI_DEPLOYMENT_MODEL_LIMITS = "multi_deployment_model_limits"
 
 CASES = (
     Case(
@@ -198,14 +201,14 @@ CASES = (
         "#5413",
         "multi-deployment",
         "One install, three deployments, three concurrent tool sessions (two Codex + Claude and the reverse mix): every marker has an authenticated request and usage receipt at its own deployment for its own user, and none at the other two",
-        (EC2, PLATFORM, THREE_DEPLOYMENTS),
+        (EC2, PLATFORM, THREE_DEPLOYMENTS, MULTI_DEPLOYMENT_MODEL_LIMITS),
     ),
     Case(
         "E17",
         "#5413",
         "multi-deployment",
         "Live default switch, refresh, and logout of one deployment leave the other two correctly routed; the logged-out one fails labelled without borrowing a session; teardown leaves no deployment state",
-        (EC2, PLATFORM, THREE_DEPLOYMENTS),
+        (EC2, PLATFORM, THREE_DEPLOYMENTS, MULTI_DEPLOYMENT_MODEL_LIMITS),
     ),
 )
 

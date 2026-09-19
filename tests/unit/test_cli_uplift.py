@@ -333,6 +333,8 @@ def test_multi_deployment_execute_preserves_both_test_and_teardown_failures(
     tmp_path, monkeypatch, primary_failure
 ):
     module, common = shipped_script(tmp_path, "multi_deployment")
+    # Exercise cleanup independently of the unfinished live-limit capability.
+    monkeypatch.setattr(module, "_require_model_limits", lambda: None)
     document = dict.fromkeys(module.REQUIRED, "fixture")
     document.update(
         mode="overlap",
@@ -382,6 +384,21 @@ def test_multi_deployment_execute_preserves_both_test_and_teardown_failures(
         module.execute(document, evidence)
     assert evidence["success"] is False
     assert evidence["teardown_error"] == "cleanup failed"
+
+
+@pytest.mark.parametrize("mode", ["overlap", "lifecycle"])
+def test_multi_deployment_direct_execution_blocks_before_setup_or_inference(
+    tmp_path, monkeypatch, mode
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("disabled model journey reached setup or inference")
+
+    for name in ("_home", "_register", "_login", "_setup_tools", "_run_tool"):
+        monkeypatch.setattr(module, name, unexpected)
+    with pytest.raises(common.RemoteError, match="256.*48-request"):
+        module.execute({"mode": mode}, {})
 
 
 def config_fixture(**overrides):
@@ -578,7 +595,10 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
     # #5413: three real deployments are a fixture like any other, so their absence
     # blocks E16/E17 by the same mechanism rather than by a special case — and says
     # which fixture is missing, so an operator knows what to go and create.
-    assert blocked["E16"] == ["three_deployments"]
+    assert blocked["E16"] == [
+        cases.MULTI_DEPLOYMENT_MODEL_LIMITS,
+        cases.THREE_DEPLOYMENTS,
+    ]
     assert matrix["E17"]["status"] == cases.BLOCKED
 
 
@@ -1058,6 +1078,19 @@ def test_the_missing_fixture_report_says_what_to_create():
     entry = absent[cases.THREE_DEPLOYMENTS]
     assert "deployments" in entry["needs"]
     assert "E16" in entry["blocks"] and "E17" in entry["blocks"]
+
+
+def test_reachable_deployments_do_not_enable_unbounded_model_execution():
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    available = preflight.evaluate_fixtures(cfg, deployments_available=True)
+    assert cases.THREE_DEPLOYMENTS in available
+    matrix = cases.new_matrix(("multi-deployment",))
+    cases.block_missing_fixtures(matrix, available)
+    assert {row["status"] for row in matrix.values()} == {cases.BLOCKED}
+    report = preflight.missing_fixture_report(cfg, available)
+    missing = report[cases.MULTI_DEPLOYMENT_MODEL_LIMITS]
+    assert missing["blocks"] == ["E16", "E17"]
+    assert "256" in missing["needs"] and "48-request" in missing["needs"]
 
 
 def test_harness_pin_is_an_immutable_full_sha():

@@ -448,6 +448,11 @@ def missing_fixture_report(cfg, available):
             "gateway_url and credential_secret_name — never one URL under three "
             "names, which the CLI treats as aliases of a single deployment)"
         ),
+        cases.MULTI_DEPLOYMENT_MODEL_LIMITS: (
+            "implementation of hard Codex output limits (at most 256 tokens per "
+            "request) and an aggregate 48-request ceiling before inference; "
+            "E16/E17 model execution is disabled until these limits are enforced"
+        ),
     }
     absent = {}
     for fixture, description in names.items():

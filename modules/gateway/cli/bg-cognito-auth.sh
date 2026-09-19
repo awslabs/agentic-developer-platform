@@ -631,7 +631,7 @@ exchange_for_aws_credentials() {
     fi
 
     # Write credentials to AWS credentials file
-    write_aws_credentials "${access_key_id}" "${secret_access_key}" "${session_token}"
+    write_aws_credentials "${access_key_id}" "${secret_access_key}" "${session_token}" || return 1
 
     print_success "AWS credentials obtained successfully!"
     print_info "Credentials expire at: ${expiration}"
@@ -639,62 +639,76 @@ exchange_for_aws_credentials() {
     return 0
 }
 
-# Write AWS credentials to credentials file
+# All deployments share these two AWS files. Hold one OS-managed lock across
+# complete-file replacements, including logout; per-deployment refresh locks
+# cannot serialize updates to unrelated profiles in the same file.
+update_aws_profile() {
+    local operation="$1"
+    shift
+    # Credential values travel on stdin, never in a subprocess argument list.
+    printf '%s\n' "$@" | python3 -c '
+import fcntl, os, re, stat, sys, tempfile, time
+from pathlib import Path
+operation, profile, region, credentials, config = sys.argv[1:]
+try:
+    if operation not in ("write", "delete") or any(c in profile for c in "\r\n[]") or any(c in region for c in "\r\n"):
+        raise ValueError("invalid profile metadata")
+    values = sys.stdin.read().splitlines()
+    if operation == "write" and (len(values) != 3 or not all(values)):
+        raise ValueError("invalid credential fields")
+    directory = Path(credentials).parent
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = os.open(directory / ".adp-profiles.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lock, "r+") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ValueError("unsafe lock")
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("another profile update is still running")
+                time.sleep(0.05)
+        updates = []
+        for path, section in ((Path(credentials), profile), (Path(config), "profile " + profile)):
+            if operation == "delete" and not path.exists():
+                continue
+            existing = path.read_text() if path.exists() else ""
+            lines, skip = [], False
+            for line in existing.splitlines(keepends=True):
+                header = re.match(r"^\s*\[([^\]]+)\]\s*(?:[#;].*)?$", line.strip())
+                if header:
+                    skip = header.group(1) == section
+                if not skip:
+                    lines.append(line)
+            content = "".join(lines)
+            if operation == "write":
+                content += "\n[" + section + "]\n"
+                if path == Path(credentials):
+                    for key, value in zip(("aws_access_key_id", "aws_secret_access_key", "aws_session_token"), values):
+                        content += key + " = " + value + "\n"
+                else:
+                    content += "region = " + region + "\noutput = json\n"
+            updates.append((path, content))
+        for path, content in updates:
+            fd, temporary = tempfile.mkstemp(prefix=".adp-profile-", dir=path.parent)
+            try:
+                with os.fdopen(fd, "w") as output:
+                    output.write(content)
+                os.replace(temporary, path)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+except (OSError, ValueError):
+    sys.stderr.write("[ERROR] Could not update the shared AWS profiles. Check file permissions or retry after the other update finishes.\n")
+    sys.exit(1)
+' "${operation}" "${PROFILE_NAME}" "${REGION:-us-east-1}" "${AWS_CREDENTIALS_FILE}" "${AWS_CONFIG_FILE}"
+}
+
 write_aws_credentials() {
-    local access_key_id="$1"
-    local secret_access_key="$2"
-    local session_token="$3"
-
-    # Backup existing credentials file
-    if [ -f "${AWS_CREDENTIALS_FILE}" ]; then
-        # Remove existing bedrock-gateway profile if present
-        local temp_file
-        temp_file=$(mktemp)
-
-        # Use awk to filter out the existing profile
-        awk -v profile="[${PROFILE_NAME}]" '
-            BEGIN { skip = 0 }
-            /^\[/ { skip = ($0 == profile) }
-            !skip { print }
-        ' "${AWS_CREDENTIALS_FILE}" > "${temp_file}"
-
-        mv "${temp_file}" "${AWS_CREDENTIALS_FILE}"
-    fi
-
-    # Append the new profile
-    cat >> "${AWS_CREDENTIALS_FILE}" << EOF
-
-[${PROFILE_NAME}]
-aws_access_key_id = ${access_key_id}
-aws_secret_access_key = ${secret_access_key}
-aws_session_token = ${session_token}
-EOF
-
-    chmod 600 "${AWS_CREDENTIALS_FILE}"
-
-    # Also update AWS config with region
-    if [ -f "${AWS_CONFIG_FILE}" ]; then
-        # Remove existing profile config
-        local temp_file
-        temp_file=$(mktemp)
-
-        awk -v profile="[profile ${PROFILE_NAME}]" '
-            BEGIN { skip = 0 }
-            /^\[/ { skip = ($0 == profile) }
-            !skip { print }
-        ' "${AWS_CONFIG_FILE}" > "${temp_file}"
-
-        mv "${temp_file}" "${AWS_CONFIG_FILE}"
-    fi
-
-    cat >> "${AWS_CONFIG_FILE}" << EOF
-
-[profile ${PROFILE_NAME}]
-region = ${REGION}
-output = json
-EOF
-
-    chmod 600 "${AWS_CONFIG_FILE}"
+    update_aws_profile write "$1" "$2" "$3"
 }
 
 # Login command
@@ -1125,19 +1139,7 @@ cmd_logout() {
         rm -f "${TOKEN_FILE}"
     fi
 
-    # Remove credentials profile
-    if [ -f "${AWS_CREDENTIALS_FILE}" ]; then
-        local temp_file
-        temp_file=$(mktemp)
-
-        awk -v profile="[${PROFILE_NAME}]" '
-            BEGIN { skip = 0 }
-            /^\[/ { skip = ($0 == profile) }
-            !skip { print }
-        ' "${AWS_CREDENTIALS_FILE}" > "${temp_file}"
-
-        mv "${temp_file}" "${AWS_CREDENTIALS_FILE}"
-    fi
+    update_aws_profile delete
 
     print_success "Logged out successfully."
 }

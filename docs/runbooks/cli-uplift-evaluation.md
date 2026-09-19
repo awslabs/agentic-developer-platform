@@ -124,6 +124,14 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
 Suites: `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
 `github`, `parity`, `harness`, `multi-deployment`, `full`.
 
+**E16/E17 model execution is currently disabled**, even with reachable gateways.
+The `multi_deployment_model_limits` requirement blocks both cases until hard
+Codex output limits (at most 256 tokens per request) and the aggregate 48-request
+ceiling are implemented before inference. The remote entry point also refuses
+execution; there is no configuration override. A short prompt or a check of
+receipts after inference cannot enforce these limits. AC-10/AC-11 remain open.
+The zero-model-request session checkpoint below remains available.
+
 `multi-deployment` (E16/E17, #5413) is the one suite whose fixture cannot be
 created from this workflow: it needs **three separately reachable ADP
 deployments**, each with its own sign-in fixture, supplied as a JSON array in the
@@ -157,8 +165,8 @@ Codex session must report an authentication error, and the other two must finish
 Cleanup failure makes the case fail.
 
 With the variable unset, E16/E17 report `blocked` naming `three_deployments`, and
-`full_acceptance` stays false. That is the intended state until a coordinator
-supplies the integration and pre-production gateways.
+`full_acceptance` stays false. Supplying gateways clears that fixture requirement;
+the separate model-limit requirement above still blocks execution.
 
 Before inference, the same EC2 payload can run a session-only checkpoint:
 

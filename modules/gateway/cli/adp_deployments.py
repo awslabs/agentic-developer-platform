@@ -986,6 +986,7 @@ def remove(name):
     next command's behaviour unpredictable rather than merely inconvenient.
     """
     validate_name(name)
+    cleanup = None
     with _RegistryLock():
         registry, _ = adopt_legacy(load_registry())
         record = registry["deployments"].get(name)
@@ -1017,12 +1018,22 @@ def remove(name):
             if deployment.root.is_symlink() or deployments_root().is_symlink():
                 raise DeploymentError("Refusing to remove a deployment store through a symlink.", "unsafe_file")
             private_directory(deployment.root)
-            try:
-                shutil.rmtree(deployment.root)
-            except OSError as exc:
-                raise DeploymentError(f"Could not remove the local deployment store: {exc}.", "operation_failed") from None
+            cleanup = deployment.root
         registry = {**registry, "deployments": remaining}
+        # Publish before destructive cleanup. A failed publication leaves the
+        # entire registered store intact; interruption after publication leaves
+        # only an unregistered, recoverable private directory. New registrations
+        # use fresh stable ids, so they cannot reuse this cleanup target.
         save_registry(registry)
+    if cleanup is not None:
+        try:
+            shutil.rmtree(cleanup)
+        except OSError:
+            raise DeploymentError(
+                f"The registration was removed, but local cleanup is incomplete at {cleanup}. "
+                "Remove that unregistered directory after resolving the filesystem error.",
+                "deployment_cleanup_incomplete",
+            ) from None
     return {
         # `_emit_result` keys its wording off this status, and its default is
         # "configured" — so omitting it made a successful `adp deployment remove

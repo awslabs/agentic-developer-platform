@@ -1,5 +1,7 @@
 """Exercise deployment boundaries through installed entrypoints (#5413)."""
 
+import configparser
+import fcntl
 import json
 import os
 import plistlib
@@ -11,6 +13,76 @@ import time
 from pathlib import Path
 
 import pytest
+
+
+@pytest.mark.parametrize("other_action", ["refresh", "logout"])
+def test_concurrent_named_aws_profile_updates_preserve_other_profiles(installed, tmp_path, other_action):
+    _, env, stores, home, binary, network = installed
+    for name, store in stores.items():
+        config = json.loads((store / "config.json").read_text())
+        config.update(user_pool_id="pool", client_id="client", identity_pool_id="identity", region="us-east-1")
+        (store / "config.json").write_text(json.dumps(config))
+    aws_dir = home / ".aws"
+    aws_dir.mkdir(exist_ok=True)
+    credentials, config = aws_dir / "credentials", aws_dir / "config"
+    credentials.write_text(
+        "[unrelated]\naws_access_key_id=keep\n[bedrock-gateway-dev]\naws_access_key_id=old-dev\n[bedrock-gateway-integration]\naws_access_key_id=old-int\n"
+    )
+    config.write_text(
+        "[profile unrelated]\nregion=us-west-2\n[profile bedrock-gateway-dev]\nregion=us-east-1\n"
+        "[profile bedrock-gateway-integration]\nregion=us-east-1\n"
+    )
+    before = (credentials.read_bytes(), config.read_bytes())
+    ready = tmp_path / "aws-ready"
+    stub = tmp_path / "stubs" / "aws"
+    stub.write_text(
+        "#!/usr/bin/env python3\nimport json,os,sys\nfrom pathlib import Path\n"
+        "name=os.environ['ADP_DEPLOYMENT_NAME']\n"
+        "if sys.argv[1]=='cognito-idp':\n"
+        " print(json.dumps({'AuthenticationResult':{'IdToken':'id-'+name,'AccessToken':'access-'+name,'ExpiresIn':3600}}))\n"
+        "elif sys.argv[2]=='get-id': print(json.dumps({'IdentityId':'identity-'+name}))\n"
+        "else:\n"
+        f" Path({str(ready)!r}).touch()\n"
+        " print(json.dumps({'Credentials':{'AccessKeyId':'new-'+name,'SecretKey':'secret-fixture',"
+        "'SessionToken':'session-fixture','Expiration':'later'}}))\n"
+    )
+    stub.chmod(0o755)
+    processes = []
+    with (aws_dir / ".adp-profiles.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            for name, action in (("dev", "refresh"), ("integration", other_action)):
+                processes.append(
+                    subprocess.Popen(
+                        ["bash", str(binary / "adp"), "--deployment", name, action],
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                )
+            deadline = time.monotonic() + 8
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert ready.exists(), "refresh did not reach the mocked Identity Pool exchange"
+            time.sleep(0.2)
+            assert all(process.poll() is None for process in processes), "a profile writer bypassed the shared lock"
+            assert (credentials.read_bytes(), config.read_bytes()) == before
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            for process in processes:
+                out, err = process.communicate(timeout=15)
+                assert process.returncode == 0, out + err
+    profiles, regions = configparser.RawConfigParser(), configparser.RawConfigParser()
+    profiles.read(credentials)
+    regions.read(config)
+    assert profiles["unrelated"]["aws_access_key_id"] == "keep"
+    assert regions["profile unrelated"]["region"] == "us-west-2"
+    assert profiles["bedrock-gateway-dev"]["aws_access_key_id"] == "new-dev"
+    assert ("bedrock-gateway-integration" in profiles) == (other_action == "refresh")
+    if other_action == "refresh":
+        assert profiles["bedrock-gateway-integration"]["aws_access_key_id"] == "new-integration"
+    assert not network.exists()
 
 
 @pytest.fixture

@@ -357,8 +357,12 @@ green result that proves nothing:
   names. User IDs may coincide across independent deployments.
 
 With the variable unset, E16/E17 report `blocked` naming `three_deployments` and
-`full_acceptance` stays false. That is the intended state until a coordinator
-supplies the integration and pre-production gateways.
+`full_acceptance` stays false. Even with reachable gateways, model execution is
+disabled by the separate `multi_deployment_model_limits` requirement and a remote
+entry-point guard. Hard Codex output limits (at most 256 tokens per request) and
+the aggregate 48-request ceiling must be implemented before inference. There is
+no configuration override. The zero-model-request session checkpoint remains
+available; supplying gateway fixtures alone cannot enable live acceptance.
 
 The offline suites (`modules/gateway/tests/cli/`, `tests/unit/test_cli_uplift.py`)
 cover the registry, the precedence rule, concurrency, the proxy identity checks,
