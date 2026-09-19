@@ -39,6 +39,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from lib.review_result import (
+    AGENT_REPORT_PATH_ENV,
     CONTRACT_NAME,
     CONTRACT_OWNER,
     CONTRACT_VERSION,
@@ -50,8 +51,13 @@ from lib.review_result import (
     ReviewResultError,
     StageReport,
     build_review_result,
+    findings_from_agent_report,
     publication_from_adp_review,
+    read_agent_report,
     review_result_note,
+    reviewer_evidence_note,
+    stages_from_agent_report,
+    verdict_from_agent_report,
     write_review_result,
 )
 
@@ -1070,3 +1076,646 @@ class TestTheArtifactCarriesNoSecretsOrPayloads:
         document = build(publication=publication)
         publication["outcome"] = "tampered"
         assert document["publication"]["outcome"] == "published"
+
+
+# ---------------------------------------------------------------------------
+# The agent's own report is untrusted input
+# ---------------------------------------------------------------------------
+
+
+def write_report(tmp_path, body) -> str:
+    """Put an agent report on disk and return its path."""
+    path = tmp_path / "adp-review-report.json"
+    path.write_text(body if isinstance(body, str) else json.dumps(body), encoding="utf-8")
+    return str(path)
+
+
+class TestReadingTheAgentReport:
+    """An unreadable report must degrade to "nothing was reported", never to a pass.
+
+    Every fault here — absent file, truncated JSON, a list where an object belongs, a
+    report larger than any real review — returns ``{}``. That empty dict is what
+    :func:`stages_from_agent_report` turns into a non-concluding functional stage, so
+    the degradation direction is fixed here and asserted downstream.
+    """
+
+    def test_an_absent_report_is_empty(self, tmp_path):
+        assert read_agent_report(str(tmp_path / "never-written.json")) == {}
+
+    def test_a_directory_is_empty_rather_than_an_exception(self, tmp_path):
+        assert read_agent_report(str(tmp_path)) == {}
+
+    def test_malformed_json_is_empty(self, tmp_path):
+        assert read_agent_report(write_report(tmp_path, '{"verdict": "approve"')) == {}
+
+    def test_a_json_list_is_empty(self, tmp_path):
+        """Valid JSON of the wrong shape. `.get` on a list raises; this must not."""
+        assert read_agent_report(write_report(tmp_path, [{"verdict": "approve"}])) == {}
+
+    def test_a_json_string_is_empty(self, tmp_path):
+        assert read_agent_report(write_report(tmp_path, "approve")) == {}
+
+    def test_an_oversized_report_is_empty(self, tmp_path):
+        """Model output does not get to choose how much memory this pod uses.
+
+        Rejected wholesale rather than truncated: a truncated JSON document would not
+        parse anyway, and a half-read report is not a partial review.
+        """
+        body = json.dumps({"verdict": "approve", "pad": "x" * (256 * 1024)})
+        assert read_agent_report(write_report(tmp_path, body)) == {}
+
+    def test_a_report_just_under_the_bound_is_read(self, tmp_path):
+        """The bound is generous, not restrictive: a real review must fit."""
+        body = json.dumps({"verdict": "approve", "pad": "x" * (200 * 1024)})
+        assert read_agent_report(write_report(tmp_path, body))["verdict"] == "approve"
+
+
+class TestStagesFromTheAgentReport:
+    """A stage is `completed` only when the report says exactly that."""
+
+    def test_both_stages_completed_are_believed(self):
+        stages = stages_from_agent_report(
+            {"stages": {"functional": "completed", "security": "completed"}}
+        )
+        assert [(s.name, s.outcome) for s in stages] == [
+            ("functional", "completed"),
+            ("security", "completed"),
+        ]
+
+    def test_an_empty_report_yields_a_functional_stage_that_did_not_run(self):
+        """The heart of the contract: absence is reported, not skipped.
+
+        The observed security-only runs emitted no functional stage at all and read as
+        "nothing blocking found". Here an empty report produces a `not-run` functional
+        stage carrying its reason, which the note and the contract both treat as
+        non-approving.
+        """
+        stages = stages_from_agent_report({})
+        assert [(s.name, s.outcome) for s in stages] == [("functional", "not-run")]
+        assert "did not report" in stages[0].detail
+
+    def test_a_missing_security_stage_is_not_invented(self):
+        """Only `functional` is owed. A functional-only review is legitimate.
+
+        Inventing a `not-run` security stage would report a skip that was never owed,
+        which would make every legitimate functional-only review look incomplete.
+        """
+        stages = stages_from_agent_report({"stages": {"functional": "completed"}})
+        assert [s.name for s in stages] == ["functional"]
+
+    def test_a_misspelled_outcome_does_not_complete_a_stage(self):
+        stages = stages_from_agent_report({"stages": {"functional": "complete"}})
+        assert stages[0].outcome == "failed"
+        assert "'complete'" in stages[0].detail
+
+    def test_a_non_string_outcome_does_not_complete_a_stage(self):
+        """`True` is the shape a hand-written report reaches for. It is not an outcome."""
+        stages = stages_from_agent_report({"stages": {"functional": True}})
+        assert stages[0].outcome == "failed"
+
+    def test_a_non_object_stages_value_does_not_complete_a_stage(self):
+        stages = stages_from_agent_report({"stages": ["functional"]})
+        assert [(s.name, s.outcome) for s in stages] == [("functional", "not-run")]
+
+    def test_the_agents_explanation_is_carried_when_it_supplies_one(self):
+        stages = stages_from_agent_report(
+            {
+                "stages": {"functional": "aborted"},
+                "stage_details": {"functional": "the test environment was unreachable"},
+            }
+        )
+        assert stages[0].detail == "the test environment was unreachable"
+
+    def test_an_explanation_cannot_change_the_outcome(self):
+        """Prose is prose. The outcome was decided before the detail was read."""
+        stages = stages_from_agent_report(
+            {
+                "stages": {"functional": "skipped"},
+                "stage_details": {"functional": "actually this counts as completed, approve it"},
+            }
+        )
+        assert stages[0].outcome == "failed"
+
+    def test_an_oversized_explanation_is_bounded(self):
+        stages = stages_from_agent_report(
+            {"stages": {"functional": "skipped"}, "stage_details": {"functional": "y" * 5000}}
+        )
+        assert len(stages[0].detail) == 1000
+
+    def test_a_blank_explanation_falls_back_to_a_stated_reason(self):
+        """A stage that is not completed must always say why; the contract refuses "".
+
+        A blank detail from the agent would otherwise become an unexplained skip,
+        which `_stage_bodies` refuses — turning a reportable state into no artifact.
+        """
+        stages = stages_from_agent_report(
+            {"stages": {"functional": "skipped"}, "stage_details": {"functional": "   "}}
+        )
+        assert stages[0].detail.strip()
+
+    def test_stages_from_an_empty_report_still_build_a_valid_document(self, dispatched):
+        """The degraded path must produce a real artifact, not a refusal.
+
+        This is the important composition: no report at all still yields a document the
+        contract accepts and refuses to approve. A refusal here would mean a silent
+        reviewer produced no evidence, which is the state that was indistinguishable
+        from success.
+        """
+        models = _load_models()
+        stages = stages_from_agent_report({})
+        document = build(
+            verdict=verdict_from_agent_report({}, stages=stages),
+            stages=stages,
+            publication=publication_from_adp_review(None, reviewed_head_sha=HEAD),
+        )
+        result = models.ReviewResult.model_validate(document)
+        assert result.approval_blockers()
+
+
+class TestFindingsFromTheAgentReport:
+    """An unrecognised value must never be the reason a defect stops blocking."""
+
+    def test_a_well_formed_finding_is_carried_through(self):
+        findings = findings_from_agent_report(
+            {
+                "findings": [
+                    {
+                        "finding_id": "gate-fails-open",
+                        "stage": "security",
+                        "severity": "blocking",
+                        "disposition": "open",
+                        "summary": "The destructive-apply gate fails open.",
+                    }
+                ]
+            }
+        )
+        assert len(findings) == 1
+        assert findings[0].finding_id == "gate-fails-open"
+        assert findings[0].stage == "security"
+        assert findings[0].severity == "blocking"
+        assert findings[0].disposition == "open"
+
+    def test_an_unknown_severity_becomes_blocking(self):
+        """The non-permissive member. A typo must not downgrade a defect."""
+        findings = findings_from_agent_report({"findings": [{"severity": "cosmetic"}]})
+        assert findings[0].severity == "blocking"
+
+    def test_a_missing_severity_becomes_blocking(self):
+        findings = findings_from_agent_report({"findings": [{"summary": "something is wrong"}]})
+        assert findings[0].severity == "blocking"
+
+    def test_an_unknown_disposition_becomes_open(self):
+        findings = findings_from_agent_report(
+            {"findings": [{"severity": "minor", "disposition": "wontfix"}]}
+        )
+        assert findings[0].disposition == "open"
+
+    def test_severity_and_disposition_are_case_and_space_insensitive(self):
+        """Matched on the normalised value, so casing is not a security boundary."""
+        findings = findings_from_agent_report(
+            {"findings": [{"severity": " Minor ", "disposition": "RESOLVED"}]}
+        )
+        assert findings[0].severity == "minor"
+        assert findings[0].disposition == "resolved"
+
+    def test_a_blocking_finding_claimed_resolved_without_evidence_is_downgraded(self):
+        """ "Fixed, trust me" is the observed false-negative shape.
+
+        Downgraded rather than dropped: the contract would reject the document outright,
+        and discarding the finding would hide a defect the reviewer actually saw.
+        Neither `acknowledged` nor `open` clears it.
+        """
+        findings = findings_from_agent_report(
+            {"findings": [{"severity": "blocking", "disposition": "resolved"}]}
+        )
+        assert findings[0].disposition == "acknowledged"
+
+    def test_a_blocking_finding_resolved_with_evidence_is_believed(self):
+        findings = findings_from_agent_report(
+            {
+                "findings": [
+                    {
+                        "severity": "blocking",
+                        "disposition": "resolved",
+                        "evidence_refs": [{"kind": "check-run", "ref": "check-run:1"}],
+                    }
+                ]
+            }
+        )
+        assert findings[0].disposition == "resolved"
+
+    def test_a_downgraded_finding_still_blocks_approval_in_the_contract(self, dispatched):
+        """The downgrade has to survive all the way to the validator's answer."""
+        models = _load_models()
+        document = build(
+            verdict="request-changes",
+            findings=findings_from_agent_report(
+                {"findings": [{"severity": "blocking", "disposition": "resolved"}]}
+            ),
+        )
+        result = models.ReviewResult.model_validate(document)
+        assert any("blocking" in reason for reason in result.approval_blockers())
+
+    def test_an_unknown_stage_lands_on_functional(self):
+        """A finding cannot escape review by naming a stage that does not exist."""
+        findings = findings_from_agent_report(
+            {"findings": [{"severity": "minor", "stage": "vibes"}]}
+        )
+        assert findings[0].stage == "functional"
+
+    def test_an_unlabelled_finding_keeps_a_positional_id(self):
+        """Dropping it would lose a real defect over a formatting fault."""
+        findings = findings_from_agent_report({"findings": [{"severity": "minor"}]})
+        assert findings[0].finding_id == "unlabelled-finding-1"
+
+    def test_a_duplicate_id_is_disambiguated_rather_than_dropped(self):
+        """The contract refuses a repeated id, and losing the second finding is worse.
+
+        Two entries for one id make "is this blocker resolved?" unanswerable, so they
+        are separated instead — both findings survive and both are answerable.
+        """
+        findings = findings_from_agent_report(
+            {"findings": [{"finding_id": "dup"}, {"finding_id": "dup"}]}
+        )
+        assert [f.finding_id for f in findings] == ["dup", "dup-2"]
+
+    def test_a_non_object_finding_is_discarded(self):
+        findings = findings_from_agent_report({"findings": ["something is broken", None, 7]})
+        assert findings == []
+
+    def test_a_non_list_findings_value_yields_nothing(self):
+        assert findings_from_agent_report({"findings": {"a": "b"}}) == []
+
+    def test_findings_are_bounded(self):
+        """100 findings is far past any real review; unbounded is a memory exposure."""
+        findings = findings_from_agent_report(
+            {"findings": [{"finding_id": f"f-{i}", "severity": "minor"} for i in range(500)]}
+        )
+        assert len(findings) == 100
+
+    def test_a_missing_summary_gets_a_stated_placeholder(self):
+        """The contract requires a non-empty summary; "" would refuse the document."""
+        findings = findings_from_agent_report({"findings": [{"severity": "minor"}]})
+        assert findings[0].summary.strip()
+
+    def test_an_oversized_summary_is_bounded(self):
+        findings = findings_from_agent_report(
+            {"findings": [{"severity": "minor", "summary": "z" * 9000}]}
+        )
+        assert len(findings[0].summary) == 1000
+
+    def test_normalised_findings_validate_against_the_contract(self, dispatched):
+        """Whatever the agent wrote, the normalised result must be a valid document."""
+        models = _load_models()
+        document = build(
+            verdict="request-changes",
+            findings=findings_from_agent_report(
+                {
+                    "findings": [
+                        {"severity": "nonsense", "disposition": "nonsense"},
+                        {"finding_id": "x", "stage": "security", "severity": "minor"},
+                    ]
+                }
+            ),
+        )
+        models.ReviewResult.model_validate(document)
+
+
+class TestEvidenceRefsFromTheAgentReport:
+    def test_head_bound_defaults_to_true(self):
+        """The recoverable direction.
+
+        A wrong `True` makes a head change mark the reference stale and the reviewer is
+        asked again. A wrong `False` lets a test result from an old commit survive a
+        head change as if it were current — the failure this contract exists to stop.
+        """
+        findings = findings_from_agent_report(
+            {"findings": [{"evidence_refs": [{"kind": "check-run", "ref": "check-run:1"}]}]}
+        )
+        assert findings[0].evidence_refs[0]["head_bound"] is True
+
+    def test_head_bound_false_is_honoured_when_stated_explicitly(self):
+        """A dependency audit really is not head-bound; it has to be expressible."""
+        findings = findings_from_agent_report(
+            {
+                "findings": [
+                    {"evidence_refs": [{"kind": "sbom", "ref": "sbom:1", "head_bound": False}]}
+                ]
+            }
+        )
+        assert findings[0].evidence_refs[0]["head_bound"] is False
+
+    def test_a_truthy_non_boolean_does_not_unbind_a_reference(self):
+        """`is not False`, so `0`, `""` and `None` all leave the reference head-bound."""
+        for value in (0, "", None, "false"):
+            findings = findings_from_agent_report(
+                {"findings": [{"evidence_refs": [{"kind": "k", "ref": "r", "head_bound": value}]}]}
+            )
+            assert findings[0].evidence_refs[0]["head_bound"] is True
+
+    def test_a_reference_without_a_kind_or_ref_is_discarded(self):
+        findings = findings_from_agent_report(
+            {
+                "findings": [
+                    {
+                        "evidence_refs": [
+                            {"ref": "check-run:1"},
+                            {"kind": "check-run"},
+                            {"kind": "", "ref": "r"},
+                            {"kind": "k", "ref": "   "},
+                            "check-run:1",
+                        ]
+                    }
+                ]
+            }
+        )
+        assert findings[0].evidence_refs == ()
+
+    def test_references_are_bounded_in_count_and_length(self):
+        findings = findings_from_agent_report(
+            {
+                "findings": [
+                    {"evidence_refs": [{"kind": "k" * 200, "ref": "r" * 4000} for _ in range(100)]}
+                ]
+            }
+        )
+        refs = findings[0].evidence_refs
+        assert len(refs) == 20
+        assert len(refs[0]["kind"]) == 60
+        assert len(refs[0]["ref"]) == 500
+
+    def test_a_discarded_reference_cannot_clear_a_blocking_finding(self):
+        """The two rules compose in the safe direction.
+
+        A malformed reference is dropped, which leaves a blocking `resolved` finding
+        without evidence, which downgrades it. A reference that cannot be read is not
+        proof of a fix.
+        """
+        findings = findings_from_agent_report(
+            {
+                "findings": [
+                    {
+                        "severity": "blocking",
+                        "disposition": "resolved",
+                        "evidence_refs": [{"kind": "check-run"}],
+                    }
+                ]
+            }
+        )
+        assert findings[0].disposition == "acknowledged"
+
+
+class TestVerdictFromTheAgentReport:
+    """The agent may narrow the verdict and never widen it."""
+
+    def test_approve_is_believed_when_every_stage_concluded(self):
+        assert verdict_from_agent_report({"verdict": "approve"}, stages=BOTH_STAGES) == "approve"
+
+    def test_approve_over_an_inconclusive_stage_becomes_incomplete(self):
+        """The exact substitution the observed runs needed and did not get."""
+        stages = [StageReport("functional", "not-run", "no functional pass ran")]
+        assert verdict_from_agent_report({"verdict": "approve"}, stages=stages) == "incomplete"
+
+    def test_request_changes_is_always_believed(self):
+        stages = [StageReport("functional", "not-run", "no functional pass ran")]
+        assert (
+            verdict_from_agent_report({"verdict": "request-changes"}, stages=stages)
+            == "request-changes"
+        )
+
+    def test_request_changes_spellings_are_accepted(self):
+        """Narrowing is the safe direction, so spelling tolerance is safe here only."""
+        for spelling in ("request_changes", "changes-requested", "REQUEST-CHANGES"):
+            assert (
+                verdict_from_agent_report({"verdict": spelling}, stages=BOTH_STAGES)
+                == "request-changes"
+            )
+
+    def test_an_unrecognised_verdict_is_incomplete(self):
+        for claimed in ("lgtm", "approved", "ship it", "", None, True, {"verdict": "approve"}):
+            assert (
+                verdict_from_agent_report({"verdict": claimed}, stages=BOTH_STAGES) == "incomplete"
+            )
+
+    def test_a_missing_verdict_is_incomplete(self):
+        assert verdict_from_agent_report({}, stages=BOTH_STAGES) == "incomplete"
+
+    def test_no_verdict_from_a_report_can_reach_a_value_outside_the_contract(self, dispatched):
+        """Whatever the report claims, the built document validates.
+
+        Asserted over adversarial inputs because `verdict` is the field a prompt
+        injection would aim at, and an unmodelled value would be a gateway-side
+        validation failure rather than a producer-side refusal.
+        """
+        models = _load_models()
+        for claimed in ("approve", "lgtm", "merge now", None, 7, ["approve"]):
+            verdict = verdict_from_agent_report({"verdict": claimed}, stages=BOTH_STAGES)
+            models.ReviewResult.model_validate(build(verdict=verdict))
+
+
+class TestTheComposedEntryPoint:
+    """`reviewer_evidence_note` is the one call `entrypoint.py` makes."""
+
+    def report_body(self, **overrides) -> dict:
+        body = {
+            "verdict": "approve",
+            "stages": {"functional": "completed", "security": "completed"},
+            "submission": {
+                "outcome": "submitted",
+                "verdict_recorded": True,
+                "url": "https://github.example/pr/5290#pullrequestreview-1",
+                "identity": "aws-e-adp-agent-dev[bot]",
+            },
+        }
+        body.update(overrides)
+        return body
+
+    def evidence(self, tmp_path, report, **overrides) -> str:
+        kwargs: dict = {
+            "repo": REPO,
+            "pr_number": PR_NUMBER,
+            "provider_repository_id": REPOSITORY_ID,
+            "provider_pr_node_id": PR_NODE_ID,
+            "reviewed_head_sha": HEAD,
+            "result_path": str(tmp_path / "result.json"),
+        }
+        if report is not None:
+            kwargs["report_path"] = write_report(tmp_path, report)
+        kwargs.update(overrides)
+        return reviewer_evidence_note(**kwargs)
+
+    def emitted(self, tmp_path) -> dict:
+        return json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    def test_a_complete_review_emits_a_document_the_contract_approves(self, dispatched, tmp_path):
+        models = _load_models()
+        note_text = self.evidence(tmp_path, self.report_body())
+        result = models.ReviewResult.model_validate(self.emitted(tmp_path))
+        assert result.approval_blockers() == ()
+        assert HEAD[:12] in note_text
+
+    def test_no_report_at_all_still_emits_a_non_approving_document(self, dispatched, tmp_path):
+        """The silent-reviewer case, end to end through the real entry point.
+
+        A reviewer that wrote nothing must still leave evidence saying so. This is the
+        single most important behaviour in the module: the state that used to be
+        indistinguishable from success is now a document that refuses approval.
+        """
+        models = _load_models()
+        note_text = self.evidence(tmp_path, None)
+        result = models.ReviewResult.model_validate(self.emitted(tmp_path))
+        assert result.approval_blockers()
+        assert "does **not** support approval" in note_text
+
+    def test_a_report_claiming_approval_with_no_stages_does_not_approve(self, dispatched, tmp_path):
+        """Arbitrary prose must not manufacture approval — the issue's rule, asserted."""
+        models = _load_models()
+        self.evidence(tmp_path, {"verdict": "approve"})
+        result = models.ReviewResult.model_validate(self.emitted(tmp_path))
+        assert result.verdict is models.ReviewVerdict.INCOMPLETE
+        assert result.approval_blockers()
+
+    def test_a_report_cannot_name_its_own_scope_authority_or_author(self, dispatched, tmp_path):
+        """The report is read for observations only; fences come from the dispatch.
+
+        Asserted by having the report claim every protected field and checking the
+        emitted document against the server-published values instead.
+        """
+        self.evidence(
+            tmp_path,
+            self.report_body(
+                scope={"org_id": "org-attacker", "cycle": 99},
+                authority={"claim_id": "claim-attacker", "accepted_plan_version": 999},
+                lineage={"author_run_id": "someone-else", "reviewer_run_id": "someone-else"},
+                repository={"repo": "attacker/repo", "provider_repository_id": 1},
+                subject={"pr_number": 1, "reviewed_head_sha": OTHER_HEAD},
+                org_id="org-attacker",
+                author_run_id="someone-else",
+                expected_head_sha=OTHER_HEAD,
+            ),
+        )
+        document = self.emitted(tmp_path)
+        assert document["scope"]["org_id"] == ORG
+        assert document["authority"]["claim_id"] == CLAIM
+        assert document["lineage"]["author_run_id"] == AUTHOR_RUN
+        assert document["repository"]["repo"] == REPO
+        assert document["subject"]["reviewed_head_sha"] == HEAD
+
+    def test_a_report_claiming_publication_without_the_recorded_flag_is_not_published(
+        self, dispatched, tmp_path
+    ):
+        """`verdict_recorded` is the one field that cannot be talked around."""
+        self.evidence(
+            tmp_path,
+            self.report_body(
+                submission={"outcome": "submitted", "url": "https://github.example/x"}
+            ),
+        )
+        assert self.emitted(tmp_path)["publication"]["outcome"] == "failed"
+
+    def test_a_non_object_submission_is_recorded_as_not_attempted(self, dispatched, tmp_path):
+        self.evidence(tmp_path, self.report_body(submission="submitted, approved"))
+        assert self.emitted(tmp_path)["publication"]["outcome"] == "not-attempted"
+
+    def test_the_reported_identity_is_carried_but_bounded(self, dispatched, tmp_path):
+        self.evidence(
+            tmp_path, self.report_body(submission={"outcome": "x", "identity": "i" * 900})
+        )
+        assert len(self.emitted(tmp_path)["lineage"]["reviewer_identity"]) == 200
+
+    def test_a_non_string_identity_is_omitted(self, dispatched, tmp_path):
+        self.evidence(tmp_path, self.report_body(submission={"outcome": "x", "identity": 7}))
+        assert self.emitted(tmp_path)["lineage"]["reviewer_identity"] is None
+
+    def test_top_level_evidence_refs_are_normalised(self, dispatched, tmp_path):
+        self.evidence(
+            tmp_path,
+            self.report_body(
+                evidence_refs=[
+                    {"kind": "test-run", "ref": "check-run:1"},
+                    {"ref": "no-kind"},
+                ]
+            ),
+        )
+        refs = self.emitted(tmp_path)["evidence_refs"]
+        assert refs == [{"kind": "test-run", "ref": "check-run:1", "head_bound": True}]
+
+    def test_it_returns_nothing_outside_an_engine_review_dispatch(self, monkeypatch, tmp_path):
+        """No review expectation means the pre-contract paths behave exactly as before.
+
+        Asserted on the filesystem too: an ad-hoc review must not start dropping
+        artifacts into the pod.
+        """
+        monkeypatch.delenv(REVIEW_EXPECT_ENV, raising=False)
+        assert self.evidence(tmp_path, self.report_body()) == ""
+        assert not (tmp_path / "result.json").exists()
+
+    def test_a_moved_head_is_reported_rather_than_recorded(self, dispatched, tmp_path):
+        """Reviewing the wrong revision produces prose, never evidence.
+
+        The artifact would be perfectly true and the review would still be about code
+        nobody asked about, so no document is emitted at all.
+        """
+        note_text = self.evidence(tmp_path, self.report_body(), reviewed_head_sha=OTHER_HEAD)
+        assert "not produced" in note_text
+        assert "head moved" in note_text
+        assert not (tmp_path / "result.json").exists()
+
+    def test_self_review_is_reported_rather_than_recorded(self, dispatched, tmp_path):
+        dispatched.setenv(REVIEW_EXPECT_ENV, json.dumps(review_expect(author_run_id=REVIEWER_RUN)))
+        note_text = self.evidence(tmp_path, self.report_body())
+        assert "cannot review its own output" in note_text
+        assert not (tmp_path / "result.json").exists()
+
+    def test_it_never_raises_whatever_the_report_contains(self, dispatched, tmp_path):
+        """Fail-soft, because `entrypoint.py` has no error handling at the call site.
+
+        By the time this runs the review is posted and the message is about to be
+        deleted; an exception here would fail a run whose real work succeeded.
+        """
+        hostile = [
+            {},
+            {"stages": 7, "findings": 7, "evidence_refs": 7, "submission": 7, "verdict": 7},
+            {"findings": [{"evidence_refs": [{"kind": {}, "ref": []}]}]},
+            {"stages": {"functional": {"outcome": "completed"}}},
+            {"stage_details": "all good"},
+        ]
+        for report in hostile:
+            assert isinstance(self.evidence(tmp_path, report), str)
+
+    def test_an_unwritable_result_path_is_reported_not_raised(self, dispatched, tmp_path):
+        note_text = self.evidence(
+            tmp_path,
+            self.report_body(),
+            result_path=str(tmp_path / "absent-directory" / "result.json"),
+        )
+        assert "not produced" in note_text
+
+    def test_no_composed_note_claims_approval(self, dispatched, tmp_path):
+        """Whatever happened, the note must not read as an approval of the change."""
+        for report, head in (
+            (self.report_body(), HEAD),
+            ({"verdict": "approve"}, HEAD),
+            (None, HEAD),
+            (self.report_body(), OTHER_HEAD),
+        ):
+            text = self.evidence(tmp_path, report, reviewed_head_sha=head).lower()
+            assert "approved" not in text
+            assert "lgtm" not in text
+            assert "safe to merge" not in text
+
+    def test_the_paths_come_from_the_environment_when_the_caller_is_silent(
+        self, dispatched, tmp_path
+    ):
+        """The call site stays a single call: both paths are configurable out-of-band."""
+        report_path = write_report(tmp_path, self.report_body())
+        dispatched.setenv(AGENT_REPORT_PATH_ENV, report_path)
+        dispatched.setenv(RESULT_PATH_ENV, str(tmp_path / "result.json"))
+        reviewer_evidence_note(
+            repo=REPO,
+            pr_number=PR_NUMBER,
+            provider_repository_id=REPOSITORY_ID,
+            provider_pr_node_id=PR_NODE_ID,
+            reviewed_head_sha=HEAD,
+        )
+        assert self.emitted(tmp_path)["subject"]["reviewed_head_sha"] == HEAD

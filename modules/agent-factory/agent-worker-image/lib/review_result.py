@@ -81,9 +81,11 @@ from datetime import UTC, datetime
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AGENT_REPORT_PATH_ENV",
     "CONTRACT_NAME",
     "CONTRACT_OWNER",
     "CONTRACT_VERSION",
+    "DEFAULT_AGENT_REPORT_PATH",
     "DEFAULT_RESULT_PATH",
     "HANDOFF_EXPECT_ENV",
     "RESULT_PATH_ENV",
@@ -92,9 +94,14 @@ __all__ = [
     "ReviewResultError",
     "StageReport",
     "build_review_result",
+    "findings_from_agent_report",
     "publication_from_adp_review",
+    "read_agent_report",
     "review_expected",
     "review_result_note",
+    "reviewer_evidence_note",
+    "stages_from_agent_report",
+    "verdict_from_agent_report",
     "write_review_result",
 ]
 
@@ -152,6 +159,34 @@ SECURITY_STAGE = "security"
 # list. An accepted set rather than a denial list, so an outcome a future `adp_review`
 # adds is non-publishing by default — the fail-closed direction.
 _PUBLISHED_OUTCOMES = frozenset({"submitted"})
+
+#: Where the reviewer agent writes its own account of stages and findings. Read as
+#: untrusted model output — see :func:`read_agent_report`.
+AGENT_REPORT_PATH_ENV = "ADP_REVIEW_REPORT_PATH"
+DEFAULT_AGENT_REPORT_PATH = "/tmp/adp-review-report.json"
+
+# Bounds on that untrusted report. Generous enough for a real review and finite, since
+# the alternative is letting model output decide how much memory this pod uses.
+_MAX_REPORT_BYTES = 256 * 1024
+_MAX_DETAIL_CHARS = 1000
+_MAX_FINDINGS = 100
+_MAX_REFS_PER_FINDING = 20
+
+# The contract's closed vocabularies, mapped so an unrecognised value lands on the
+# NON-permissive member rather than falling through. A typo must never be the reason a
+# blocker stops blocking.
+_SEVERITIES = {
+    "blocking": "blocking",
+    "major": "major",
+    "minor": "minor",
+    "informational": "informational",
+}
+_DISPOSITIONS = {
+    "open": "open",
+    "resolved": "resolved",
+    "acknowledged": "acknowledged",
+    "stale-head": "stale-head",
+}
 
 
 class ReviewResultError(Exception):
@@ -561,6 +596,217 @@ def _timestamp(observed_at: datetime | None) -> str:
     return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def read_agent_report(path: str) -> dict:
+    """Read the reviewer agent's own account of its stages and findings.
+
+    The agent process knows things the entrypoint cannot: whether it actually ran a
+    functional pass, what it found, and how each finding stands. So it writes them to
+    a file and this reads them back.
+
+    **Everything in that file is untrusted.** It is model output, and the issue's rule
+    is that arbitrary prose must not manufacture approval. Two consequences:
+
+    * Nothing about scope, authority, lineage, the repository, the pull request or the
+      reviewed commit is read from here — not even as a hint. Those come from the
+      server-published dispatch and from what the entrypoint inspected, and this
+      function's return value has no way to influence them.
+    * An unreadable, absent or malformed report yields ``{}``, which
+      :func:`stages_from_agent_report` turns into a ``failed`` functional stage. The
+      absent answer is never a pass: a reviewer that wrote nothing is reported as a
+      review that did not conclude, which is precisely the state the observed runs
+      were in while reporting success.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            # Bounded: this is model output, and an unbounded read is a memory
+            # exposure in a pod that has already finished its real work.
+            raw = handle.read(_MAX_REPORT_BYTES + 1)
+    except OSError:
+        logger.info("review result: no agent report at %s", path)
+        return {}
+    if len(raw) > _MAX_REPORT_BYTES:
+        logger.warning(
+            "review result: agent report at %s exceeds %s bytes", path, _MAX_REPORT_BYTES
+        )
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        logger.warning("review result: agent report at %s is not valid JSON", path)
+        return {}
+    if not isinstance(parsed, dict):
+        logger.warning("review result: agent report at %s is not an object", path)
+        return {}
+    return parsed
+
+
+def stages_from_agent_report(report: dict) -> list[StageReport]:
+    """The stages the agent reported, with an absent or unusable claim failing closed.
+
+    A stage is only recorded as ``completed`` when the report says exactly that. Every
+    other value — missing, misspelled, a non-string, a claim about a stage this
+    contract does not model — becomes an inconclusive stage carrying the reason.
+
+    That direction is the whole point. The observed security-only runs would have
+    produced no functional stage at all; here that yields ``functional: failed`` with
+    "the reviewer did not report" as the detail, which
+    :func:`_local_blockers` and the contract both read as non-approving.
+    """
+    claimed = report.get("stages")
+    claims: dict[str, object] = {}
+    if isinstance(claimed, dict):
+        claims = claimed
+
+    stages: list[StageReport] = []
+    for name in (FUNCTIONAL_STAGE, SECURITY_STAGE):
+        claim = claims.get(name)
+        if claim == "completed":
+            stages.append(StageReport(name, "completed"))
+            continue
+        if name == SECURITY_STAGE and claim is None:
+            # Only `functional` is mandatory. A functional-only review is legitimate
+            # and inventing a `not-run` security stage would report a skip that was
+            # never owed.
+            continue
+        detail = _stage_detail(report, name, claim)
+        stages.append(StageReport(name, "failed" if claim is not None else "not-run", detail))
+    return stages
+
+
+def _stage_detail(report: dict, name: str, claim: object) -> str:
+    """Why a stage is not being recorded as completed. Never blank, and bounded."""
+    supplied = report.get("stage_details")
+    if isinstance(supplied, dict):
+        text = supplied.get(name)
+        if isinstance(text, str) and text.strip():
+            # The agent's own explanation, truncated. Useful to an operator and
+            # load-bearing for nothing: the outcome above was decided before this was
+            # read, so no wording here can turn an unfinished stage into a finished one.
+            return text.strip()[:_MAX_DETAIL_CHARS]
+    if claim is None:
+        return f"the reviewer did not report a {name} stage, so it cannot be treated as concluded"
+    return (
+        f"the reviewer reported {name} stage outcome {str(claim)[:60]!r}, which is not a "
+        "completed stage"
+    )
+
+
+def findings_from_agent_report(report: dict) -> list[FindingReport]:
+    """The findings the agent reported, normalised so an unknown value cannot clear one.
+
+    Severity and disposition are mapped through the contract's closed vocabularies and
+    anything unrecognised becomes the *non-permissive* member: an unknown severity is
+    ``blocking`` and an unknown disposition is ``open``. A typo must not be the reason
+    a defect stops blocking, which is the direction every other closed vocabulary in
+    this codebase chooses.
+
+    A finding claiming ``resolved`` with no evidence reference is downgraded to
+    ``acknowledged`` rather than dropped or passed through: the contract would reject
+    the document outright ("fixed, trust me"), and silently discarding the finding
+    would hide a defect the reviewer actually saw. Neither disposition clears it.
+    """
+    claimed = report.get("findings")
+    if not isinstance(claimed, list):
+        return []
+
+    findings: list[FindingReport] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(claimed[:_MAX_FINDINGS]):
+        if not isinstance(entry, dict):
+            continue
+        raw_id = entry.get("finding_id")
+        finding_id = raw_id.strip()[:120] if isinstance(raw_id, str) and raw_id.strip() else ""
+        if not finding_id:
+            # Positional rather than dropped: an unlabelled finding is still a finding,
+            # and dropping it would lose a defect over a formatting fault.
+            finding_id = f"unlabelled-finding-{index + 1}"
+        if finding_id in seen:
+            finding_id = f"{finding_id}-{index + 1}"
+        seen.add(finding_id)
+
+        stage = entry.get("stage")
+        summary = entry.get("summary")
+        refs = _evidence_refs(entry.get("evidence_refs"))
+        severity = _SEVERITIES.get(str(entry.get("severity", "")).strip().lower(), "blocking")
+        disposition = _DISPOSITIONS.get(str(entry.get("disposition", "")).strip().lower(), "open")
+        if severity == "blocking" and disposition == "resolved" and not refs:
+            disposition = "acknowledged"
+
+        findings.append(
+            FindingReport(
+                finding_id=finding_id,
+                stage=stage if stage in {FUNCTIONAL_STAGE, SECURITY_STAGE} else FUNCTIONAL_STAGE,
+                severity=severity,
+                disposition=disposition,
+                summary=(
+                    summary.strip()[:_MAX_DETAIL_CHARS]
+                    if isinstance(summary, str) and summary.strip()
+                    else "the reviewer recorded no description for this finding"
+                ),
+                evidence_refs=refs,
+            )
+        )
+    return findings
+
+
+def _evidence_refs(claimed: object) -> tuple[dict[str, object], ...]:
+    """Normalise reported evidence into references. Anything else is discarded.
+
+    ``head_bound`` defaults to **True** for an unspecified value: the consequence of a
+    wrong guess is that a head change marks the reference stale and the reviewer is
+    asked again, which is the recoverable direction. Defaulting to False would let a
+    test result from an old commit survive a head change as if it were current.
+    """
+    if not isinstance(claimed, list):
+        return ()
+    refs: list[dict[str, object]] = []
+    for entry in claimed[:_MAX_REFS_PER_FINDING]:
+        if not isinstance(entry, dict):
+            continue
+        kind = entry.get("kind")
+        ref = entry.get("ref")
+        if not isinstance(kind, str) or not kind.strip():
+            continue
+        if not isinstance(ref, str) or not ref.strip():
+            continue
+        body: dict[str, object] = {
+            "kind": kind.strip()[:60],
+            # Bounded and copied: a reference is a pointer the owning store resolves,
+            # so an over-long one is a producer fault rather than data to preserve.
+            "ref": ref.strip()[:500],
+            "head_bound": entry.get("head_bound") is not False,
+        }
+        summary = entry.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            body["summary"] = summary.strip()[:_MAX_DETAIL_CHARS]
+        refs.append(body)
+    return tuple(refs)
+
+
+def verdict_from_agent_report(report: dict, *, stages: list[StageReport]) -> str:
+    """The verdict, which the agent may only ever *narrow*.
+
+    A report may say ``request-changes`` and be believed. It may say ``approve`` and be
+    believed only when the stages it produced actually concluded — and even then the
+    publication block decides whether that approval was recorded anywhere, and the
+    contract refuses an ``approve`` the evidence does not support.
+
+    Anything unrecognised is ``incomplete``. An agent whose verdict field is a typo has
+    not approved anything.
+    """
+    claimed = str(report.get("verdict", "")).strip().lower()
+    if claimed == "approve" and all(stage.outcome == "completed" for stage in stages):
+        return "approve"
+    if claimed in {"request-changes", "request_changes", "changes-requested"}:
+        return "request-changes"
+    if claimed == "approve":
+        # An approval whose own stages did not conclude. Reported as the incomplete
+        # review it is rather than refused, so the artifact still records what ran.
+        logger.warning("review result: 'approve' claimed with an inconclusive stage")
+        return "incomplete"
+    return "incomplete"
+
+
 def write_review_result(document: dict[str, object], *, path: str | None = None) -> str:
     """Write the artifact where a collector can pick it up. Returns the path written.
 
@@ -664,6 +910,82 @@ def review_result_note(
         "exact commit and nothing else; the repository's own independent-approval and check "
         "requirements still apply."
     )
+
+
+def reviewer_evidence_note(
+    *,
+    repo: str,
+    pr_number: int,
+    provider_repository_id: int,
+    provider_pr_node_id: str,
+    reviewed_head_sha: str,
+    report_path: str | None = None,
+    result_path: str | None = None,
+) -> str:
+    """The single call site: produce this reviewer run's evidence. Never raises.
+
+    Composes the pieces above into the one function ``entrypoint.py`` invokes, so the
+    call site stays a single line. That matters beyond tidiness — the entrypoint hook
+    is deliberately minimal because #4529 holds a separate reservation in the same
+    file, and both contracts should survive each other.
+
+    The division of trust is the whole design:
+
+    * ``repo``, ``pr_number``, the immutable identities and ``reviewed_head_sha`` come
+      from the caller, which read them from the dispatch envelope and from the commit
+      it actually checked out and verified before exec.
+    * Scope, authority and the authoring run come from the server-published dispatch,
+      inside :func:`build_review_result`, where no caller can reach them.
+    * Stages, findings and the claimed verdict come from the agent's report and are
+      normalised so that every unrecognised or absent value fails closed.
+    * Publication comes from the agent's report too, but only as an
+      ``adp_review``-shaped result whose ``verdict_recorded`` flag decides — the one
+      field that cannot be talked around.
+
+    Returns "" when this is not an engine review dispatch.
+    """
+    if not review_expected():
+        return ""
+
+    report = read_agent_report(
+        report_path
+        or os.environ.get(AGENT_REPORT_PATH_ENV, "").strip()
+        or DEFAULT_AGENT_REPORT_PATH
+    )
+    stages = stages_from_agent_report(report)
+    submission = report.get("submission")
+    return review_result_note(
+        repo=repo,
+        provider_repository_id=provider_repository_id,
+        pr_number=pr_number,
+        provider_pr_node_id=provider_pr_node_id,
+        reviewed_head_sha=reviewed_head_sha,
+        verdict=verdict_from_agent_report(report, stages=stages),
+        stages=stages,
+        publication=publication_from_adp_review(
+            submission if isinstance(submission, dict) else None,
+            reviewed_head_sha=reviewed_head_sha,
+        ),
+        findings=findings_from_agent_report(report),
+        evidence_refs=list(_evidence_refs(report.get("evidence_refs"))),
+        reviewer_identity=_reported_identity(report),
+        path=result_path,
+    )
+
+
+def _reported_identity(report: dict) -> str | None:
+    """The provider login the verdict was published under, if the report names one.
+
+    Advisory and bounded. Nothing is decided by it: a shared bot identity is exactly
+    why provider-side independent approval is a separate requirement, so this is for a
+    human reading the record.
+    """
+    submission = report.get("submission")
+    if isinstance(submission, dict):
+        identity = submission.get("identity")
+        if isinstance(identity, str) and identity.strip():
+            return identity.strip()[:200]
+    return None
 
 
 def _local_blockers(document: dict[str, object]) -> list[str]:
