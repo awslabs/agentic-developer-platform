@@ -85,6 +85,106 @@ def broker_settings(variables):
     return result
 
 
+def gateway_engine_settings(gateway_state, webhook_state, account, region, environment):
+    """Retain an already-wired tick without enabling an unconfigured engine.
+
+    Match its existing selectors to the owning webhook state. Missing ownership
+    evidence refuses preparation rather than clearing live selectors or guessing
+    queue/table permissions. Preserve the existing tenant-secret scope exactly.
+    """
+    module = "module.orchestration_tick[0]"
+    ticks = [a for r, a in resources(gateway_state, "aws_lambda_function")
+             if r.get("module") == module and r["name"] == "tick"]
+    if not ticks:
+        return {}
+    if len(ticks) != 1:
+        raise ValueError("Ambiguous existing orchestration tick")
+    variables = (ticks[0].get("environment") or [{}])[0].get("variables") or {}
+    if not isinstance(variables, dict):
+        raise ValueError("Cannot recover existing orchestration tick environment")
+    result = {}
+    partitions = set()
+
+    def owned(kind, selector, key):
+        matches = [a for _, a in resources(webhook_state, kind) if a.get(key) == selector]
+        if len(matches) != 1:
+            raise ValueError("Cannot recover existing orchestration resource ownership")
+        attrs = matches[0]
+        arn = attrs.get("arn", "")
+        parts = arn.split(":", 5)
+        if len(parts) != 6 or parts[0] != "arn" or parts[3:5] != [region, account]:
+            raise ValueError("Existing orchestration resource belongs to another target")
+        partitions.add(parts[1])
+        if len(partitions) != 1:
+            raise ValueError("Existing orchestration resources belong to different partitions")
+        return attrs, parts[1]
+
+    queue = variables.get("BG_ORCH_DISPATCH_QUEUE_URL", "")
+    if queue:
+        attrs, _ = owned("aws_sqs_queue", queue, "url")
+        result.update(orchestration_dispatch_queue_url=queue,
+                      orchestration_dispatch_queue_arn=attrs["arn"])
+    table = variables.get("WEBHOOK_EVENTS_TABLE", "")
+    if table:
+        attrs, _ = owned("aws_dynamodb_table", table, "name")
+        encryption = attrs.get("server_side_encryption") or []
+        if len(encryption) != 1 or not encryption[0].get("kms_key_arn"):
+            raise ValueError("Cannot recover existing orchestration table encryption")
+        result.update(orchestration_webhook_events_table=table,
+                      orchestration_webhook_events_kms_key_arn=encryption[0]["kms_key_arn"])
+
+    # The optional acknowledgement grant is independent of queue/table wiring.
+    # An observed policy with no grant means it was never enabled; a missing
+    # policy for a wired tick cannot establish that absence safely.
+    policies = [a for r, a in resources(gateway_state, "aws_iam_role_policy")
+                if r.get("module") == module and r["name"] == "tick"]
+    if not policies and not result:
+        return result
+    if len(policies) != 1:
+        raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+    document = json.loads(policies[0]["policy"])
+    if not isinstance(document, dict):
+        raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+    statements = document.get("Statement", [])
+    statements = [statements] if isinstance(statements, dict) else statements
+    if not isinstance(statements, list) or any(not isinstance(statement, dict) for statement in statements):
+        raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+    scopes = []
+    for statement in statements:
+        actions = statement.get("Action", [])
+        actions = [actions] if isinstance(actions, str) else actions
+        if not isinstance(actions, list) or any(not isinstance(action, str) for action in actions):
+            raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+        if not any(action == "*" or action.lower().startswith("secretsmanager:")
+                   or "*" in action.partition(":")[0] or "?" in action.partition(":")[0]
+                   for action in actions) and "NotAction" not in statement:
+            continue
+        # Terraform exposes one unconditional GetSecretValue resource string.
+        # Refuse any policy shape that would lose permissions or restrictions
+        # when represented by that input, including conditions and deny rules.
+        if (statement.get("Effect") != "Allow" or actions != ["secretsmanager:GetSecretValue"]
+                or any(key in statement for key in ("Condition", "NotAction", "NotResource"))):
+            raise ValueError("Cannot preserve existing orchestration tenant-secret scope policy")
+        values = statement.get("Resource", [])
+        values = [values] if isinstance(values, str) else values
+        if not isinstance(values, list) or not values:
+            raise ValueError("Cannot recover existing orchestration tenant-secret scope policy")
+        scopes.extend(values)
+    if not scopes:
+        return result
+    if len(scopes) != 1 or not isinstance(scopes[0], str):
+        raise ValueError("Cannot represent existing orchestration tenant-secret scope exactly")
+    scope = scopes[0]
+    parts = scope.split(":", 5)
+    if (len(parts) != 6 or parts[0] != "arn" or not re.fullmatch(r"aws(?:-[a-z0-9]+)*", parts[1]) or parts[2] != "secretsmanager"
+            or parts[3:5] != [region, account] or (partitions and parts[1] not in partitions)
+            or not parts[5].startswith(f"secret:adp/{environment}/tenants/")
+            or parts[5] == f"secret:adp/{environment}/tenants/"):
+        raise ValueError("Existing orchestration tenant-secret scope is outside the target")
+    result["orchestration_github_app_secret_arn_pattern"] = scope
+    return result
+
+
 def factory_settings(state):
     result = {"enable_github_apps": False, "seed_agent_registry": False}
     configured_org = output(state, "github_org")
@@ -205,6 +305,8 @@ def prepare(args):
     write_json(directory / "eks-access.json", {"publicAccessCidrs": platform["eks_public_access_cidrs"]})
     gateway = {"environment": args.environment, "aws_region": args.region}
     gateway_state = states.get("gateway", {})
+    gateway.update(gateway_engine_settings(gateway_state, states.get("webhook-ingress", {}),
+                                           args.account, args.region, args.environment))
     brokers = [a for r, a in resources(gateway_state, "aws_lambda_function") if "github_auth_broker" in r.get("module", "")]
     gateway["enable_github_auth_broker"] = bool(brokers)
     broker_before = {}

@@ -71,8 +71,10 @@ resource "aws_secretsmanager_secret_version" "github_app_key" {
 # retained 7 days for graceful rollover during S5 verification.
 # =============================================================================
 
+locals { marker_signing_secret_name = "adp/${var.environment}/webhook-ingress/marker-signing-key" }
+
 resource "aws_secretsmanager_secret" "marker_signing_key" {
-  name                    = "adp/${var.environment}/webhook-ingress/marker-signing-key"
+  name                    = local.marker_signing_secret_name
   description             = "HMAC-SHA256 key for signing correlation markers (cred-binding S4)"
   kms_key_id              = local.webhook_secrets_kms_key_arn
   recovery_window_in_days = 0
@@ -110,4 +112,16 @@ resource "aws_secretsmanager_secret" "gitlab_webhook_secret" {
   name        = "adp/${var.environment}/gitlab-webhook-secret"
   description = "GitLab webhook secret token for X-Gitlab-Token header validation"
   kms_key_id  = local.webhook_secrets_kms_key_arn
+}
+
+# Older deployments tracked the initial placeholder version. Secret values are
+# now owned by out-of-band setup/rotation; relinquish only Terraform's version
+# ownership without removing stages or deleting an existing version on upgrade.
+# This does not seed a new value or change the current webhook credential.
+removed {
+  from = aws_secretsmanager_secret_version.gitlab_webhook_secret
+
+  lifecycle {
+    destroy = false
+  }
 }

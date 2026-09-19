@@ -137,6 +137,133 @@ class PreservationTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class EnginePreservationTests(unittest.TestCase):
+    account = "111122223333"
+    region = "eu-west-1"
+    queue = "https://sqs.eu-west-1.amazonaws.com/111122223333/customer-submit.fifo"
+    scope = "arn:aws:secretsmanager:eu-west-1:111122223333:secret:adp/test/tenants/*"
+
+    def states(self):
+        gateway = {"resources": [
+            resource("aws_lambda_function", "tick", {"environment": [{"variables": {
+                "BG_ORCH_DISPATCH_QUEUE_URL": self.queue, "WEBHOOK_EVENTS_TABLE": "customer-events"}}]}, "module.orchestration_tick[0]"),
+            resource("aws_iam_role_policy", "tick", {"policy": json.dumps({"Statement": [
+                {"Effect": "Allow", "Action": ["secretsmanager:GetSecretValue"], "Resource": [self.scope]}]})}, "module.orchestration_tick[0]")]}
+        webhook = {"resources": [
+            resource("aws_sqs_queue", "agent_submit", {"url": self.queue,
+                "arn": "arn:aws:sqs:eu-west-1:111122223333:customer-submit.fifo"}),
+            resource("aws_dynamodb_table", "webhook_events", {"name": "customer-events",
+                "arn": "arn:aws:dynamodb:eu-west-1:111122223333:table/customer-events",
+                "server_side_encryption": [{"kms_key_arn": "arn:aws:kms:eu-west-1:111122223333:key/existing"}]})]}
+        return gateway, webhook
+
+    def test_prepare_keeps_live_dispatch_and_command_bridge_in_exported_gateway_inputs(self):
+        gateway, webhook = self.states()
+        platform = {"outputs": {"eks_cluster_name": {"value": "adp-test-eks-cluster"}},
+                    "resources": [resource("aws_eks_cluster", "main", {"name": "adp-test-eks-cluster"})]}
+        states = {"test/platform/terraform.tfstate": platform,
+                  "test/modules/gateway/terraform.tfstate": gateway,
+                  "test/modules/webhook-ingress/terraform.tfstate": webhook}
+        def aws(*args):
+            if args[:2] == ("sts", "get-caller-identity"):
+                return {"Account": self.account}
+            if args[:2] == ("s3api", "list-objects-v2"):
+                return {"Contents": [{"Key": key} for key in states]}
+            if args[:2] == ("s3api", "get-object"):
+                Path(args[-1]).write_text(json.dumps(states[args[args.index("--key") + 1]]))
+                return {}
+            if args[:2] == ("eks", "describe-cluster"):
+                return {"cluster": {"status": "ACTIVE", "resourcesVpcConfig": {
+                    "endpointPublicAccess": False, "endpointPrivateAccess": True, "publicAccessCidrs": []}}}
+            self.fail(f"Unexpected AWS access: {args[:2]}")
+        with tempfile.TemporaryDirectory() as directory, patch.object(state, "aws", aws), \
+                patch.object(state, "integration_snapshot", return_value={"secrets": {}, "mappings": {}}):
+            state.prepare(SimpleNamespace(directory=directory, account=self.account, region=self.region, environment="test"))
+            exported = json.loads((Path(directory) / "gateway.tfvars.json").read_text())
+        self.assertEqual(exported["orchestration_dispatch_queue_url"], self.queue)
+        self.assertEqual(exported["orchestration_dispatch_queue_arn"], webhook["resources"][0]["instances"][0]["attributes"]["arn"])
+        self.assertEqual(exported["orchestration_webhook_events_table"], "customer-events")
+        self.assertEqual(exported["orchestration_webhook_events_kms_key_arn"], "arn:aws:kms:eu-west-1:111122223333:key/existing")
+        self.assertEqual(exported["orchestration_github_app_secret_arn_pattern"], self.scope)
+        self.assertNotIn("orchestration_agent_authority_enabled", exported)
+
+    def test_unwired_tick_does_not_gain_optional_integration(self):
+        gateway, webhook = self.states()
+        gateway["resources"][0]["instances"][0]["attributes"]["environment"][0]["variables"] = {}
+        gateway["resources"].pop()
+        self.assertEqual(state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test"), {})
+        self.assertEqual(state.gateway_engine_settings({}, webhook, self.account, self.region, "test"), {})
+
+    def test_missing_ambiguous_or_foreign_resource_refuses_instead_of_clearing_selectors(self):
+        for mutation in (lambda w: w["resources"].clear(),
+                         lambda w: w["resources"].append(copy.deepcopy(w["resources"][0])),
+                         lambda w: w["resources"][0]["instances"][0]["attributes"].update(arn="arn:aws:sqs:eu-west-1:999999999999:queue")):
+            gateway, webhook = self.states()
+            mutation(webhook)
+            with self.assertRaises(ValueError):
+                state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+
+    def test_missing_encryption_or_secret_scope_policy_refuses(self):
+        gateway, webhook = self.states()
+        webhook["resources"][1]["instances"][0]["attributes"]["server_side_encryption"] = []
+        with self.assertRaisesRegex(ValueError, "encryption"):
+            state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+        gateway, webhook = self.states()
+        gateway["resources"].pop()
+        with self.assertRaisesRegex(ValueError, "tenant-secret scope"):
+            state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+
+    def test_wired_table_without_ack_grant_preserves_table_without_enabling_ack(self):
+        gateway, webhook = self.states()
+        gateway["resources"][1]["instances"][0]["attributes"]["policy"] = json.dumps({"Statement": []})
+        result = state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+        self.assertEqual(result["orchestration_webhook_events_table"], "customer-events")
+        self.assertEqual(result["orchestration_webhook_events_kms_key_arn"], "arn:aws:kms:eu-west-1:111122223333:key/existing")
+        self.assertNotIn("orchestration_github_app_secret_arn_pattern", result)
+        self.assertFalse(any(key.endswith("enabled") for key in result))
+
+    def test_narrow_existing_ack_scope_is_preserved_exactly(self):
+        self.scope = self.scope.removesuffix("*") + "customer/github-app-*"
+        gateway, webhook = self.states()
+        result = state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+        self.assertEqual(result["orchestration_github_app_secret_arn_pattern"], self.scope)
+
+    def test_existing_ack_scope_is_retained_independently_of_table_and_queue(self):
+        for variables in ({"BG_ORCH_DISPATCH_QUEUE_URL": self.queue}, {}):
+            with self.subTest(variables=variables):
+                gateway, webhook = self.states()
+                gateway["resources"][0]["instances"][0]["attributes"]["environment"][0]["variables"] = variables
+                result = state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+                self.assertEqual(result["orchestration_github_app_secret_arn_pattern"], self.scope)
+                self.assertNotIn("orchestration_webhook_events_table", result)
+                self.assertFalse(any(key.endswith("enabled") for key in result))
+
+    def test_null_environment_variables_remain_unwired(self):
+        gateway, webhook = self.states()
+        gateway["resources"][0]["instances"][0]["attributes"]["environment"][0]["variables"] = None
+        gateway["resources"].pop()
+        self.assertEqual(state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test"), {})
+
+    def test_unrepresentable_or_foreign_ack_grants_refuse(self):
+        for change in ({"Resource": "*"},
+                       {"Resource": self.scope.replace("111122223333", "999999999999")},
+                       {"Resource": self.scope.replace("/test/", "/prod/")},
+                       {"Resource": [self.scope, self.scope + "/github-app-*"]},
+                       {"Resource": []},
+                       {"Action": "SecretsManager:GetSecretValue"},
+                       {"Action": "*:GetSecretValue"},
+                       {"Condition": {"StringEquals": {"aws:PrincipalTag/tenant": "customer"}}},
+                       {"Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]}):
+            with self.subTest(change=change):
+                gateway, webhook = self.states()
+                policy = gateway["resources"][1]["instances"][0]["attributes"]
+                document = json.loads(policy["policy"])
+                document["Statement"][0].update(change)
+                policy["policy"] = json.dumps(document)
+                with self.assertRaisesRegex(ValueError, "tenant-secret scope"):
+                    state.gateway_engine_settings(gateway, webhook, self.account, self.region, "test")
+
+
 class RequiredFactoryTests(unittest.TestCase):
     def prepare(self, modules=None, org="customer", override="", account="111122223333", roles=(), owned_role=None):
         with tempfile.TemporaryDirectory() as directory:

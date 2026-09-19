@@ -96,6 +96,11 @@ supervisor isolation or a claim that all worker data is isolated per run.
 
 ## Rollout and remaining release conditions
 
+The reusable configuration and staged Terraform procedure are documented in
+[Terraform-managed worker rollout](terraform-worker-rollout.md). Preparation,
+activation, admission pause and legacy-role retirement are declarative settings;
+the live release conditions below still apply.
+
 Runtime and infrastructure are separate PRs. Runtime merged in #5196. The IAM
 definitions can merge with the checked-in
 `.github/deployment-holds/webhook-infra.md` hold: the webhook deployment workflow

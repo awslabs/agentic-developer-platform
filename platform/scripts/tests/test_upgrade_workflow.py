@@ -15,6 +15,29 @@ spec.loader.exec_module(network)
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_tick_second_pass_runs_only_after_in_scope_gateway_and_refresh(self):
+        source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
+        start = source.index('if [ "$DEPLOY_WEBHOOK" = true ]; then', source.index('# Step 9/12:'))
+        block = source[start:source.index('\nrefresh_credentials\n', start)]
+        prefix = '''set -euo pipefail
+step() { :; }
+ok() { :; }
+bash() { echo webhook; }
+refresh_credentials() { echo refreshed; }
+terraform_update_apply() { echo "terraform $1"; }
+'''
+        for gateway, webhook in ((True, True), (False, True), (True, False)):
+            with self.subTest(gateway=gateway, webhook=webhook):
+                env = dict(os.environ, ROOT_DIR=str(ROOT), DEPLOY_GATEWAY=str(gateway).lower(),
+                           DEPLOY_WEBHOOK=str(webhook).lower(), UPDATE_MODE="true", CONFIRM_DESTRUCTIVE="false",
+                           SKIP_WEBHOOK_INGRESS="false", ENVIRONMENT="dev", AWS_REGION="us-east-1")
+                result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = ["webhook"] if webhook else []
+                if webhook and gateway:
+                    expected += ["refreshed", "terraform gateway-worker-authority"]
+                self.assertEqual(result.stdout.splitlines(), expected)
+
     def test_full_upgrade_includes_required_factory_and_discovers_optional_modules(self):
         scenarios = [
             ({}, ["true", "true", "true", "false"]),

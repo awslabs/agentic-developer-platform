@@ -123,7 +123,10 @@ locals {
     )) : arn
     # The release deployer's entry is owned by platform/release-infra. Avoid
     # attempting to create the same EKS entry when that role runs an upgrade.
-    if(var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn) && arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-release-deploy"
+    if(var.manage_ci_runner_cluster_admin || arn != local.ci_runner_role_arn) &&
+    arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-release-deploy" &&
+    arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-authority-worker-role" &&
+    (!var.agent_legacy_worker_admin_retired || arn != "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.name_prefix}-agent-scaledjob-role")
   ]
 }
 
