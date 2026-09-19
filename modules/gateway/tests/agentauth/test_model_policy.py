@@ -102,7 +102,9 @@ def test_absent_mapping_uses_only_its_compatibility_class_default():
     decision = resolve_decision(policy, invocation_id="run-review", persona="reviewer", now=NOW)
 
     assert decision.resolved_model_id == SONNET
+    assert decision.requested_model_id is None
     assert decision.resolution_source == "system-default"
+    assert (decision.runtime_posture, decision.posture_revision) == ("report_only", 2)
 
 
 def test_broken_mapping_never_falls_through_to_default():
@@ -119,12 +121,44 @@ def test_direct_override_applies_only_when_supplied_for_this_hop():
         invocation_id="root-developer",
         persona="developer",
         direct_override=SONNET,
+        direct_requested="sonnet46",
         now=NOW,
     )
     child = resolve_decision(policy, invocation_id="child-developer", persona="developer", now=NOW)
 
     assert (direct.resolved_model_id, direct.resolution_source) == (SONNET, "explicit-direct")
+    assert direct.requested_model_id == "sonnet46"
     assert (child.resolved_model_id, child.resolution_source) == (OPUS, "principal-mapping")
+    assert child.requested_model_id == OPUS
+
+
+def test_unresolved_direct_override_is_reported_as_refusal_not_defaulted():
+    with pytest.raises(ModelPolicyError, match="direct_override_unresolved"):
+        resolve_decision(
+            snapshot(mappings={}),
+            invocation_id="run-developer",
+            persona="developer",
+            direct_requested="not-a-real-model",
+            now=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    "class_policy",
+    [
+        {"model_id": SONNET, "posture": "enforcing", "posture_revision": 3},
+        {"model_id": SONNET, "posture": "report_only", "posture_revision": 0},
+        {"model_id": SONNET, "posture": "unknown", "posture_revision": 3},
+    ],
+)
+def test_partial_slice_never_issues_load_bearing_or_unknown_posture_decision(class_policy):
+    with pytest.raises(ModelPolicyError, match="runtime_posture_unsupported"):
+        resolve_decision(
+            snapshot(class_defaults={"claude-agent-sdk": class_policy}),
+            invocation_id="run-developer",
+            persona="developer",
+            now=NOW,
+        )
 
 
 def test_unknown_persona_and_missing_class_default_fail_distinctly():
@@ -317,6 +351,72 @@ async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_ses
 
 
 @pytest.mark.asyncio
+async def test_report_only_mapping_snapshot_does_not_require_unproven_active_default(
+    db_session,
+):
+    db_session.add(
+        User(
+            id="user-no-default",
+            org_id="tenant-a",
+            team_id="team-a",
+            email="no-default@example.test",
+            cognito_sub="human-no-default",
+        )
+    )
+    db_session.add(
+        PersonaModelPreference(
+            id="pref-no-default",
+            org_id="tenant-a",
+            principal_kind="human",
+            principal_source="self",
+            principal_id="user-no-default",
+            persona_key="developer",
+            canonical_model_id=SONNET,
+            requested_alias="sonnet46",
+            revision=1,
+            updated_by="user-no-default",
+            updated_by_source="self",
+        )
+    )
+    db_session.add(
+        PersonaModelPolicySetting(
+            compatibility_class="claude-agent-sdk",
+            harness_contract_revision="0.3.220",
+            active_default_model_id=None,
+            revision=1,
+            posture_revision=1,
+            enforcement_posture="report_only",
+        )
+    )
+    await db_session.flush()
+
+    built = await build_root_snapshot(
+        db_session,
+        store=_RootStore(
+            {
+                "authority_kind": {"S": "github_event"},
+                "human_id": {"S": "human-no-default"},
+            }
+        ),
+        invocation_id="root-no-default",
+        tenant_id="tenant-a",
+        execution={"flow_id": {"S": "chain-no-default"}},
+        grant=_grant("github_event", "human-no-default"),
+        now=NOW,
+    )
+
+    decision = resolve_decision(
+        built,
+        invocation_id="run-developer",
+        persona="developer",
+        now=NOW,
+    )
+    assert decision.resolved_model_id == SONNET
+    assert decision.resolution_source == "principal-mapping"
+    assert built.class_defaults["claude-agent-sdk"]["model_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_service_root_resolves_verified_alias_to_canonical_principal(db_session):
     db_session.add(
         ServicePrincipal(
@@ -374,6 +474,8 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
             "tenant_id": {"S": "tenant-a"},
             "status": {"S": "active"},
             "persona": {"S": "developer"},
+            "direct_model_requested": {"S": "sonnet46"},
+            "direct_model_override": {"S": SONNET},
             "model_policy_snapshot": {"S": raw},
             "model_policy_snapshot_digest": {"S": digest},
         },
@@ -407,4 +509,45 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
     assert result["posture"] == "report_only"
     assert result["status"] == "proposed"
     assert decision["resolved_model_id"] == SONNET
+    assert decision["requested_model_id"] == "sonnet46"
+    assert decision["resolution_source"] == "explicit-direct"
+    assert (decision["runtime_posture"], decision["posture_revision"]) == ("report_only", 2)
     assert verified.chain_id == "chain-a"
+
+
+def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(policy_store):
+    value = snapshot().to_dict()
+    raw, digest = canonical_json(value).decode(), policy_digest(value)
+    _put(
+        policy_store,
+        {
+            "pk": {"S": "TENANT#tenant-a"},
+            "sk": {"S": "EXEC#run-developer"},
+            "tenant_id": {"S": "tenant-a"},
+            "status": {"S": "active"},
+            "persona": {"S": "developer"},
+            "direct_model_requested": {"S": "not-a-real-model"},
+            "model_policy_snapshot": {"S": raw},
+            "model_policy_snapshot_digest": {"S": digest},
+        },
+    )
+    record = type(
+        "Record",
+        (),
+        {
+            "tenant_id": "tenant-a",
+            "invocation_id": "run-developer",
+            "principal": "run-developer#1",
+            "current_attempt": 1,
+        },
+    )()
+
+    assert bootstrap_model_policy(
+        store=policy_store,
+        record=record,
+        grant=_grant("github_event"),
+    ) == {
+        "posture": "report_only",
+        "status": "unavailable",
+        "reason": "direct_override_unresolved",
+    }

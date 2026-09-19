@@ -1265,7 +1265,7 @@ def main() -> int:
     # hooks, SDK tools or repository-selected dependencies can execute (#5028).
     from lib.run_identity import bootstrap_run_identity
 
-    bootstrap_run_identity(envelope)
+    run_identity = bootstrap_run_identity(envelope)
 
     # Read correlation context from SQS envelope.
     # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
@@ -1593,6 +1593,12 @@ def main() -> int:
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": effective_model,
     }
+    # PMM-07 report-only evidence.  This deliberately does not feed
+    # ``effective_model``: PMM-09 owns the enforcing flip after every runtime
+    # path and live admission gate is proven.  Older gateways/workers simply
+    # omit these comparison fields during the mixed-version rollout.
+    if run_identity is not None and run_identity.model_policy_report is not None:
+        env_vars.update(run_identity.model_policy_report.environment(effective_model))
 
     # Issue #5223: in mediated mode there is no token, so exporting these would
     # publish empty strings as if they were credentials. Removed rather than left

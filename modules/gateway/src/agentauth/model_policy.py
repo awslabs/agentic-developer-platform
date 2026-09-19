@@ -186,8 +186,11 @@ class ModelPolicyDecision:
     persona: str
     compatibility_class: str
     harness_contract_revision: str
+    requested_model_id: str | None
     resolved_model_id: str
     resolution_source: Literal["explicit-direct", "principal-mapping", "system-default"]
+    runtime_posture: Literal["report_only"]
+    posture_revision: int
     policy_revision: str
     catalogue_revision: str
 
@@ -201,8 +204,11 @@ class ModelPolicyDecision:
             "persona": self.persona,
             "compatibility_class": self.compatibility_class,
             "harness_contract_revision": self.harness_contract_revision,
+            "requested_model_id": self.requested_model_id,
             "resolved_model_id": self.resolved_model_id,
             "resolution_source": self.resolution_source,
+            "runtime_posture": self.runtime_posture,
+            "posture_revision": self.posture_revision,
             "policy_revision": self.policy_revision,
             "catalogue_revision": self.catalogue_revision,
         }
@@ -229,9 +235,16 @@ def resolve_decision(
     invocation_id: str,
     persona: str,
     direct_override: str | None = None,
+    direct_requested: str | None = None,
     now: datetime | None = None,
 ) -> ModelPolicyDecision:
-    """Select only from frozen policy facts; PMM-07 adds the live admission gate."""
+    """Resolve one hop from gateway-owned, frozen policy facts.
+
+    Only the report-only posture is deliberately accepted by this PMM-07
+    slice.  Returning an enforcing decision before the live admission and
+    invocability gates exist would turn a partial implementation into the
+    load-bearing selector.
+    """
     current = (now or datetime.now(UTC)).astimezone(UTC)
     if current >= snapshot.expires_at:
         raise ModelPolicyError("snapshot_expired")
@@ -242,13 +255,31 @@ def resolve_decision(
     harness_revision = contract.get("harness_contract_revision", "")
     if not compatibility_class or not harness_revision:
         raise ModelPolicyError("persona_incompatible")
-    resolved = direct_override or snapshot.mappings.get(persona)
+    class_policy = snapshot.class_defaults.get(compatibility_class)
+    if not isinstance(class_policy, dict):
+        raise ModelPolicyError("class_default_unavailable")
+    posture = class_policy.get("posture")
+    posture_revision = class_policy.get("posture_revision")
+    if posture != "report_only" or type(posture_revision) is not int or posture_revision < 1:
+        raise ModelPolicyError("runtime_posture_unsupported")
+
+    # An explicit directive that edge validation could not resolve is a
+    # proposed refusal, not permission to silently continue down the ladder.
+    # Report-only callers record this refusal while preserving legacy runtime
+    # behaviour; enforcing callers are intentionally not implemented here.
+    if direct_requested and not direct_override:
+        raise ModelPolicyError("direct_override_unresolved")
+    if direct_override and not direct_requested:
+        direct_requested = direct_override
+
+    mapping = snapshot.mappings.get(persona)
+    resolved = direct_override or mapping
+    requested = direct_requested if direct_override else mapping
     source: Literal["explicit-direct", "principal-mapping", "system-default"] = "explicit-direct" if direct_override else "principal-mapping"
     if resolved is None:
-        default = snapshot.class_defaults.get(compatibility_class)
-        if not isinstance(default, dict) or not isinstance(default.get("model_id"), str) or not default["model_id"]:
+        if not isinstance(class_policy.get("model_id"), str) or not class_policy["model_id"]:
             raise ModelPolicyError("class_default_unavailable")
-        resolved = default["model_id"]
+        resolved = class_policy["model_id"]
         source = "system-default"
     known = next((row for row in PLATFORM_MODEL_CATALOGUE if row.canonical_model_id == resolved), None)
     if known is None or known.lifecycle != "active":
@@ -264,8 +295,11 @@ def resolve_decision(
         persona=persona,
         compatibility_class=compatibility_class,
         harness_contract_revision=harness_revision,
+        requested_model_id=requested,
         resolved_model_id=resolved,
         resolution_source=source,
+        runtime_posture="report_only",
+        posture_revision=posture_revision,
         policy_revision=snapshot.policy_revision,
         catalogue_revision=snapshot.catalogue_revision,
     )
@@ -367,7 +401,6 @@ async def build_root_snapshot(
             "harness_contract_revision": row.harness_contract_revision,
         }
         for row in settings
-        if row.active_default_model_id
     }
     revision_input = {
         "preferences": [
@@ -530,6 +563,7 @@ def bootstrap_model_policy(*, store, record, grant: DelegatedGrant, env: dict[st
             invocation_id=record.invocation_id,
             persona=raw_execution.get("persona", {}).get("S", ""),
             direct_override=raw_execution.get("direct_model_override", {}).get("S") or None,
+            direct_requested=raw_execution.get("direct_model_requested", {}).get("S") or None,
         )
         decision_body = canonical_json(decision.to_dict())
         assertion = sign_envelope(
@@ -549,7 +583,7 @@ def bootstrap_model_policy(*, store, record, grant: DelegatedGrant, env: dict[st
             env=env,
         )
         return {
-            "posture": "report_only",
+            "posture": decision.runtime_posture,
             "status": "proposed",
             "decision": decision.to_dict(),
             "assertion": assertion,
