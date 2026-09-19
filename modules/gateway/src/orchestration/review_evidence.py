@@ -1,0 +1,747 @@
+"""Validate a reviewer run's structured result against protected state (#5146).
+
+## The defect this exists to close
+
+A reviewer run that exits 0 has established nothing about the change under review.
+Every observation recorded on #5146 is a variant of that: a run that reproduced a
+real correctness blocker and published only a security report; a run whose
+functional prose said APPROVE while the pull request's review list stayed empty; a
+run whose findings described one commit while the provider attached the verdict to
+another. In each case the process succeeded, so nothing downstream could tell
+complete review evidence from incomplete review evidence.
+
+The shared artifact in ``contracts/orchestration-review/v1`` gives the reviewer a
+shape that can *state* what it did. This module is the half that decides whether to
+believe it.
+
+## Why nothing here trusts the submitter
+
+The artifact's ``scope``, ``authority``, ``repository``, ``subject`` and ``lineage``
+are all things a model can type into a JSON document. So none of them is accepted:
+each is compared against state the reviewer cannot write — the pull-request binding
+registered for the node's current attempt, the execution row's plan version and
+claim generation, and the provider's own head. A result whose claimed lineage does
+not match protected state is refused, which is what "arbitrary issue prose cannot
+manufacture evidence" means mechanically.
+
+This is the same property ``pr_binding_routes`` and ``handoff`` rely on, and the
+reason :func:`validate_review_result` takes an :class:`ExecutionIdentity` its caller
+already resolved rather than any field from the document.
+
+## Every refusal is typed, and absence is never a pass
+
+:class:`ReviewEvidenceRefusal` is a closed set of codes, following
+``pr_bindings.BindingRefusal`` for the same reason: "which fail-closed arm fired" is
+the whole diagnostic value, and one opaque message is what made the original
+failures expensive to diagnose. :func:`refusal_explanation` names what is missing
+and who resolves it.
+
+There is deliberately no path from a missing answer to an accepted one. An absent
+binding, an unresolvable pull request, an ambiguous candidate and a provider we
+could not reach are all refusals, not defaults.
+
+## What "accepted" does and does not mean
+
+:class:`ReviewEvidence` carrying no ``approval_blockers`` means the artifact is
+internally complete and correctly bound to the current revision. It is **not** a
+merge decision and **not** a substitute for the provider-side requirements — an
+approving review from a non-author, required checks, merge state — which
+``pr_bindings.evidence_for_binding`` owns and this module never re-decides. The
+reviewer-is-not-the-author check enforced by the contract is necessary and not
+sufficient; :func:`validate_review_result` re-checks it against *protected* run
+identity rather than the document's claim, and still does not discharge the
+provider's own independent-approval rule.
+
+## Scope
+
+Producing and validating evidence, and persisting references to it. This module
+dispatches no repair, advances no phase, decides no merge eligibility and adds no
+route. :func:`record_review_evidence` writes through the existing execution ledger
+(#5142) as one prepared action plus one observation, carrying references only —
+never a transcript and never a credential.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .execution_state import (
+    ActionIntent,
+    BlockCode,
+    BlockRecord,
+    ExecutionIdentity,
+    ExecutionOutcome,
+    Observation,
+    ObservedOutcome,
+    OutcomeKind,
+)
+from .models import BindingRole, BindingState, OrchestrationPullRequestBinding
+from .pr_bindings import BindingError, BindingRefusal, active_binding_for_node
+
+__all__ = [
+    "REVIEW_CONTRACT_NAME",
+    "REVIEW_CONTRACT_VERSION",
+    "ReviewEvidence",
+    "ReviewEvidenceError",
+    "ReviewEvidenceRefusal",
+    "evidence_action_intent",
+    "evidence_decision_snapshot",
+    "evidence_observation",
+    "evidence_operation_key",
+    "evidence_summary",
+    "legacy_review_note",
+    "outstanding_block",
+    "parse_review_result",
+    "record_review_evidence",
+    "refusal_explanation",
+    "resolve_expected_subject",
+    "review_artifact_ref",
+    "validate_review_result",
+]
+
+REVIEW_CONTRACT_NAME = "orchestration-review"
+REVIEW_CONTRACT_VERSION = 1
+
+#: The contract package lives outside this module's import tree on purpose:
+#: `contracts/README.md` keeps that directory to schemas and their documentation,
+#: with no `pyproject.toml` and no package install. Both the gateway and the worker
+#: reach it by path for exactly that reason, so there is ONE validator rather than
+#: a copy per consumer — the #4029 drift this whole pattern exists to prevent.
+#: `parents[4]` is the repository root: orchestration → src → gateway → modules → root.
+#: The same traversal `tests/internal/test_provenance_contract.py` uses to reach the
+#: provenance fixture, spelled here rather than shared because a helper importable
+#: from both would itself need a home.
+_CONTRACT_DIR = Path(__file__).resolve().parents[4] / "contracts" / "orchestration-review" / "v1"
+
+
+def _contract_models() -> Any:
+    """Import the normative validator from the shared contract directory.
+
+    Imported lazily and by path rather than at module import time so that a gateway
+    process which never handles review evidence does not depend on the contracts
+    directory being present, and so the failure — if the directory is missing — is
+    a clear error at the point of use rather than an import crash at startup.
+    """
+    import importlib.util
+    import sys
+
+    cached = sys.modules.get("_adp_orchestration_review_v1")
+    if cached is not None:
+        return cached
+    path = _CONTRACT_DIR / "models.py"
+    if not path.is_file():
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE,
+            f"The review-result contract validator is not available at {path}.",
+        )
+    spec = importlib.util.spec_from_file_location("_adp_orchestration_review_v1", path)
+    if spec is None or spec.loader is None:
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE,
+            "The review-result contract validator could not be loaded.",
+        )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["_adp_orchestration_review_v1"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class ReviewEvidenceRefusal(StrEnum):
+    """Why a submitted review result was not accepted as evidence.
+
+    Stable machine-readable codes rather than prose, following
+    ``pr_bindings.BindingRefusal``. Two of these reach an operator through the story
+    API, and "which arm fired" is the whole diagnostic value: the observed failures
+    were expensive to diagnose precisely because "the reviewer ran and nothing
+    happened" said nothing about whether the result was malformed, bound to the
+    wrong revision, or never published.
+
+    Every member is a refusal. None of them is a state an absent answer falls
+    through to.
+    """
+
+    MALFORMED_RESULT = "malformed_result"  # Did not validate against the contract
+    CONTRACT_UNAVAILABLE = "contract_unavailable"  # The shared validator could not be loaded
+    WRONG_CONTRACT = "wrong_contract"  # A document from another contract or version
+
+    # Binding and identity arms. Each compares the document against state the
+    # submitter cannot write.
+    NO_BINDING = "no_binding"  # No pull request registered for this story
+    AMBIGUOUS_PR = "ambiguous_pr"  # Several active bindings; which was reviewed is unknown
+    NOT_IMPLEMENTATION = "not_implementation"  # Bound PR is a reviewer artifact
+    SUPERSEDED_BINDING = "superseded_binding"  # The binding was replaced
+    REPOSITORY_MISMATCH = "repository_mismatch"  # Result names another repository
+    PR_MISMATCH = "pr_mismatch"  # Result names another pull request
+    TENANT_MISMATCH = "tenant_mismatch"  # Result belongs to another tenant
+    SCOPE_MISMATCH = "scope_mismatch"  # Result names another node or cycle
+    POLICY_MISMATCH = "policy_mismatch"  # Result was authorized under another accepted plan
+    STALE_CLAIM = "stale_claim"  # Claim generation is no longer current
+
+    # Evidence-quality arms. The result is well-formed and correctly bound, and
+    # still cannot be treated as review evidence for the current revision.
+    STALE_HEAD = "stale_head"  # Reviewed commit is not the bound head
+    SELF_REVIEW = "self_review"  # Reviewer run is the author run
+    UNTRUSTED_ARTIFACT = "untrusted_artifact"  # A referenced artifact could not be trusted
+
+
+class ReviewEvidenceError(Exception):
+    """A review result was refused. Always a refusal, never a default.
+
+    ``code`` is a :class:`ReviewEvidenceRefusal` a caller can put in a response body
+    or persist as a typed block, so the reason survives without reading logs.
+    """
+
+    def __init__(self, code: ReviewEvidenceRefusal, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+@dataclass(frozen=True)
+class ReviewEvidence:
+    """A review result that validated and bound to the current revision.
+
+    Deliberately not "an approval". ``approval_blockers`` is carried forward from
+    the artifact rather than collapsed into a boolean, because the observed failures
+    all involved something true-but-insufficient being read as sufficient. A caller
+    deciding anything on this object must consult it, and an empty tuple means only
+    that the *artifact* carries no blocker — provider-side independent review,
+    required checks and merge state are separate requirements owned by
+    ``pr_bindings.evidence_for_binding``.
+
+    ``result`` is the validated contract object. ``artifact_ref`` is the reference
+    persisted through the ledger; it is a pointer, never the document.
+    """
+
+    result: Any
+    artifact_ref: str
+    reviewed_head_sha: str
+    repo: str
+    pr_number: int
+    approval_blockers: tuple[str, ...]
+
+    @property
+    def is_complete_review(self) -> bool:
+        """True when the artifact itself carries no blocker.
+
+        Named for what it checks. It is not ``may_merge`` and not ``approved``: this
+        object cannot see the provider's review list, its required checks or its
+        merge state, and a name suggesting otherwise is how the next caller skips
+        the checks that do.
+        """
+        return not self.approval_blockers
+
+
+def parse_review_result(document: dict[str, Any]) -> Any:
+    """Validate a submitted document against the shared contract.
+
+    Structural validation only — this says the document is a well-formed review
+    result, not that it describes work the submitter was entitled to review. That
+    is :func:`validate_review_result`'s job, and separating them means a malformed
+    payload is distinguishable from a forged one.
+
+    Raises:
+        ReviewEvidenceError: ``WRONG_CONTRACT`` when the envelope names another
+            contract or version, ``MALFORMED_RESULT`` when it fails validation, and
+            ``CONTRACT_UNAVAILABLE`` when the shared validator is missing.
+    """
+    from pydantic import ValidationError
+
+    models = _contract_models()
+    if not isinstance(document, dict):
+        raise ReviewEvidenceError(ReviewEvidenceRefusal.MALFORMED_RESULT, "A review result must be a JSON object.")
+    # Checked before validation so a v2 document produces "wrong contract" rather
+    # than a field-level complaint that reads like a producer bug.
+    name, version = document.get("name"), document.get("version")
+    if name != REVIEW_CONTRACT_NAME or version != REVIEW_CONTRACT_VERSION:
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.WRONG_CONTRACT,
+            f"Expected contract {REVIEW_CONTRACT_NAME!r} version {REVIEW_CONTRACT_VERSION}, got {name!r} version {version!r}.",
+        )
+    try:
+        return models.ReviewResult.model_validate(document)
+    except ValidationError as error:
+        # The validator's own message names the failing rule, which is the whole
+        # diagnostic value for a producer. It contains no submitted secret: every
+        # field in this contract is an identifier, a reference or a closed
+        # vocabulary value.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.MALFORMED_RESULT,
+            f"The review result did not validate against the contract: {error}",
+        ) from None
+
+
+async def resolve_expected_subject(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    node_id: str,
+    attempt: int,
+) -> OrchestrationPullRequestBinding:
+    """The pull request a review for this story is expected to be about.
+
+    Resolved from the binding the server registered for the node's current attempt
+    — never from the submitted result. A reviewer that names a different pull
+    request is refused rather than believed, which is the arm the observed
+    wrong-revision run needed: it published analysis of one commit and had it
+    attached to another, and nothing compared the two.
+
+    Every arm here is a refusal. In particular an ambiguous candidate is refused
+    rather than resolved by picking the newest: two active bindings mean the
+    association is genuinely unknown, and guessing would accept review evidence for
+    an arbitrary pull request.
+
+    There is no superseded arm here: ``active_binding_for_node`` queries on the active
+    state, so a superseded row is simply not returned — the absence surfaces as
+    ``NO_BINDING``. The ``SUPERSEDED_BINDING`` arm lives in
+    :func:`validate_review_result`, which is reachable with a binding the caller
+    resolved some other way.
+
+    Raises:
+        ReviewEvidenceError: ``NO_BINDING``, ``AMBIGUOUS_PR`` or ``NOT_IMPLEMENTATION``.
+    """
+    try:
+        binding = await active_binding_for_node(session, org_id=org_id, node_id=node_id, attempt=attempt)
+    except BindingError as error:
+        if error.code is BindingRefusal.AMBIGUOUS_CANDIDATE:
+            raise ReviewEvidenceError(
+                ReviewEvidenceRefusal.AMBIGUOUS_PR,
+                "Several pull requests are bound to this story, so which one was reviewed is unknown.",
+            ) from None
+        raise ReviewEvidenceError(ReviewEvidenceRefusal.NO_BINDING, f"The expected pull request could not be resolved: {error.code.value}.") from None
+    if binding is None:
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.NO_BINDING,
+            "No pull request is registered for this story, so there is nothing a review can be evidence about.",
+        )
+    if binding.role != BindingRole.IMPLEMENTATION.value:
+        # Reviewing a reviewer-artifact PR is the #4005 recursion shape. Its review
+        # is not evidence about the story's delivery, however complete.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.NOT_IMPLEMENTATION,
+            "The pull request bound to this story is a reviewer artifact; a review of it is not evidence about the delivered work.",
+        )
+    return binding
+
+
+def validate_review_result(
+    document: dict[str, Any],
+    *,
+    identity: ExecutionIdentity,
+    binding: OrchestrationPullRequestBinding,
+    flow_id: str,
+    author_run_id: str,
+    actual_head_sha: str | None = None,
+    trusted_artifact_refs: frozenset[str] | None = None,
+) -> ReviewEvidence:
+    """Bind a submitted review result to protected state, or refuse it.
+
+    ``identity``, ``binding``, ``flow_id`` and ``author_run_id`` must all be
+    resolved by the caller from state the reviewer cannot write: the execution row's
+    plan version and claim generation, the registered pull-request binding, and the
+    dispatch record naming which run authored the change. Every corresponding field
+    in the document is compared against them, so a forged scope, a forged repository
+    or a forged author is a refusal rather than an accepted claim.
+
+    ``actual_head_sha`` is the provider's current head when the caller has read it.
+    When supplied and different from the bound head, it is used for the stale-head
+    comparison — a head that moved after binding invalidates the review even though
+    the document and the binding agree with each other.
+
+    ``trusted_artifact_refs``, when supplied, is the set of references the caller
+    could verify. A head-bound reference outside that set is refused as
+    ``UNTRUSTED_ARTIFACT`` rather than silently counted: an unverifiable test result
+    supports no conclusion. Left ``None``, no artifact verification is claimed and
+    none is performed — the caller is stating it did not check, which keeps "not
+    checked" distinguishable from "checked and trusted".
+
+    Returns:
+        ReviewEvidence: validated and bound. Carries ``approval_blockers``; an empty
+        tuple means the artifact is complete, NOT that the change may merge.
+
+    Raises:
+        ReviewEvidenceError: with the specific arm that refused.
+    """
+    result = parse_review_result(document)
+    models = _contract_models()
+
+    if binding.state != BindingState.ACTIVE.value:
+        # Checked here rather than trusting the caller's resolution path: a binding
+        # that stopped being current is permanently incapable of completing the new
+        # scope, and a review of it is evidence about superseded work.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.SUPERSEDED_BINDING,
+            "The pull request this review is bound to is no longer the current binding for this story.",
+        )
+    if result.scope.org_id != identity.org_id:
+        # First, because a cross-tenant document must not have any of its other
+        # fields compared against this tenant's state.
+        raise ReviewEvidenceError(ReviewEvidenceRefusal.TENANT_MISMATCH, "The review result names another tenant.")
+    if result.scope.node_id != identity.node_id or result.scope.cycle != identity.cycle or result.scope.flow_id != flow_id:
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.SCOPE_MISMATCH,
+            f"The review result names flow/node/cycle {result.scope.flow_id}/{result.scope.node_id}/{result.scope.cycle}, "
+            f"but this execution is {flow_id}/{identity.node_id}/{identity.cycle}.",
+        )
+    if result.authority.accepted_plan_version != identity.accepted_plan_version:
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.POLICY_MISMATCH,
+            "The review result was authorized under a different accepted plan version than the one in force.",
+        )
+    if result.authority.claim_id != identity.claim_id or result.authority.claim_generation != identity.claim_generation:
+        # The generation is the ownership fence. A result produced under an older
+        # generation describes work someone else now owns; accepting it would let a
+        # superseded run's evidence advance the current owner's delivery.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.STALE_CLAIM,
+            "The review result was produced under a claim generation that is no longer current, so another run now owns this work.",
+        )
+
+    if result.repository.provider_repository_id != binding.provider_repository_id:
+        # Compared on the immutable id, not the name: a rename or transfer
+        # re-points `repo`, and the observed failures include findings landing on
+        # the wrong repository.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.REPOSITORY_MISMATCH,
+            "The review result names a different repository than the one bound to this story.",
+        )
+    if result.subject.provider_pr_node_id != binding.provider_pr_node_id or result.subject.pr_number != binding.pr_number:
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.PR_MISMATCH,
+            f"The review result is about pull request #{result.subject.pr_number}, but #{binding.pr_number} is bound to this story.",
+        )
+
+    if result.lineage.author_run_id != author_run_id:
+        # A submitted author id is a claim; the dispatch record is the fact. A
+        # reviewer naming some other run as author could otherwise defeat the
+        # self-review check by pointing it at a run it is not.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.SELF_REVIEW,
+            "The review result names a different authoring run than the one that delivered this work, so self-review cannot be ruled out.",
+        )
+    if result.lineage.reviewer_run_id == author_run_id:
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.SELF_REVIEW,
+            "The reviewing run is the run that authored the change. Note that a distinct reviewer run still does "
+            "not satisfy the provider's independent-approval requirement.",
+        )
+
+    current_head = actual_head_sha or binding.head_sha
+    if result.subject.reviewed_head_sha != current_head:
+        # Refused rather than invalidated-and-accepted. `invalidate_for_head` exists
+        # for a caller that wants to retain the downgraded artifact; as *evidence*
+        # for the current revision, a review of different code is simply not it.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.STALE_HEAD,
+            f"The review examined commit {result.subject.reviewed_head_sha}, but the pull request's current head is {current_head}, "
+            "so its findings and test evidence describe different code.",
+        )
+
+    blockers = list(result.approval_blockers())
+    if trusted_artifact_refs is not None:
+        untrusted = [ref.ref for ref in _head_bound_refs(result) if ref.ref not in trusted_artifact_refs]
+        if untrusted:
+            raise ReviewEvidenceError(
+                ReviewEvidenceRefusal.UNTRUSTED_ARTIFACT,
+                f"The review relies on {len(untrusted)} head-bound artifact reference(s) that could not be verified; "
+                "unverifiable test evidence supports no conclusion.",
+            )
+
+    # Belt and braces against a future contract edit that softens the mandatory
+    # functional stage: a result whose functional stage did not conclude must never
+    # reach a caller without that reason attached.
+    functional = result.stage(models.ReviewStageName.FUNCTIONAL)
+    if (functional is None or functional.outcome not in models.CONCLUSIVE_STAGE_OUTCOMES) and not blockers:
+        blockers.append("the functional review stage did not conclude")
+
+    return ReviewEvidence(
+        result=result,
+        artifact_ref=review_artifact_ref(result),
+        reviewed_head_sha=result.subject.reviewed_head_sha,
+        repo=binding.repo,
+        pr_number=binding.pr_number,
+        approval_blockers=tuple(blockers),
+    )
+
+
+def _head_bound_refs(result: Any) -> list[Any]:
+    """Every head-bound evidence reference in the result, finding-level included.
+
+    Finding-level references are included because that is where a "resolved"
+    blocking finding's proof lives, and an unverifiable proof of a fix is exactly
+    the false-negative the observations recorded.
+    """
+    refs = [ref for ref in result.evidence_refs if ref.head_bound]
+    for finding in result.findings:
+        refs.extend(ref for ref in finding.evidence_refs if ref.head_bound)
+    return refs
+
+
+def review_artifact_ref(result: Any) -> str:
+    """The stable reference under which this review result is recorded.
+
+    Derived from the work — tenant, node, cycle and reviewed commit — rather than
+    generated per submission, for the reason ``ActionIntent.operation_key``
+    documents: a per-attempt value turns every retry into a second apparent review.
+    A resubmission of the same review at the same head converges on this same
+    string; a review of a *different* commit is different evidence and gets its own.
+    """
+    scope = result.scope
+    return f"review:{scope.org_id}:{scope.node_id}:cycle-{scope.cycle}:{result.subject.reviewed_head_sha}"
+
+
+def evidence_operation_key(evidence: ReviewEvidence) -> str:
+    """Idempotency key for recording this evidence. Derived from the work, not the attempt."""
+    scope = evidence.result.scope
+    return f"record_review:{scope.node_id}:cycle-{scope.cycle}:{evidence.reviewed_head_sha}"
+
+
+def evidence_action_intent(evidence: ReviewEvidence) -> ActionIntent:
+    """The ledger action that records this review evidence.
+
+    ``artifact_ref`` is a reference and ``detail`` is small, non-sensitive operator
+    context — which pull request, which commit, whether the artifact is complete.
+    Neither carries the document, a transcript or a credential: these rows are read
+    by operators and surfaced in diagnostics, so a secret written here would be a
+    disclosure with no revocation path.
+    """
+    return ActionIntent(
+        operation_key=evidence_operation_key(evidence),
+        kind="review_evidence",
+        artifact_ref=evidence.artifact_ref,
+        detail={
+            "repo": evidence.repo,
+            "pr_number": str(evidence.pr_number),
+            "reviewed_head_sha": evidence.reviewed_head_sha,
+            "verdict": str(evidence.result.verdict),
+            "publication": str(evidence.result.publication.outcome),
+            "complete_review": "true" if evidence.is_complete_review else "false",
+        },
+    )
+
+
+def evidence_observation(evidence: ReviewEvidence) -> Observation:
+    """The observation settling the recorded evidence.
+
+    ``SUCCEEDED`` records that the evidence was validated and stored — not that the
+    review approved anything. An incomplete review is a successfully recorded
+    incomplete review, and flattening that into ``FAILED`` would lose the artifact
+    the operator needs. ``detail`` carries the blocker reasons so the *why* survives
+    in the row rather than only in the caller's logs.
+    """
+    reasons = "; ".join(evidence.approval_blockers) if evidence.approval_blockers else "no approval blockers in this artifact"
+    return Observation(
+        operation_key=evidence_operation_key(evidence),
+        outcome=ObservedOutcome.SUCCEEDED,
+        receipt_ref=evidence.artifact_ref,
+        # Bounded so a long finding list cannot turn an operator-facing column into
+        # a transcript dump.
+        detail=reasons[:900],
+    )
+
+
+def outstanding_block(refusal: ReviewEvidenceRefusal, *, owner: str) -> BlockRecord:
+    """A typed block for review evidence that could not be accepted.
+
+    Exists so a refusal persists a resolvable condition and an owner rather than the
+    caller inventing free text or — far worse — treating unverifiable review output
+    as a completed review. The code mapping is deliberate:
+    ``CONTRACT_UNAVAILABLE`` is a provider/platform condition, the identity and
+    binding arms need an operator decision, and everything else is a dependency the
+    reviewer must satisfy by running again against the current revision.
+    """
+    if refusal is ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE:
+        code = BlockCode.PROVIDER_UNAVAILABLE
+    elif refusal in {
+        ReviewEvidenceRefusal.NO_BINDING,
+        ReviewEvidenceRefusal.AMBIGUOUS_PR,
+        ReviewEvidenceRefusal.NOT_IMPLEMENTATION,
+        ReviewEvidenceRefusal.SUPERSEDED_BINDING,
+        ReviewEvidenceRefusal.REPOSITORY_MISMATCH,
+        ReviewEvidenceRefusal.PR_MISMATCH,
+    }:
+        code = BlockCode.HUMAN_INPUT_REQUIRED
+    elif refusal in {
+        ReviewEvidenceRefusal.TENANT_MISMATCH,
+        ReviewEvidenceRefusal.SCOPE_MISMATCH,
+        ReviewEvidenceRefusal.POLICY_MISMATCH,
+        ReviewEvidenceRefusal.STALE_CLAIM,
+    }:
+        code = BlockCode.AUTHORITY_UNVERIFIABLE
+    else:
+        code = BlockCode.DEPENDENCY_UNSATISFIED
+    return BlockRecord(code=code, owner=owner, required_input=refusal_explanation(refusal), detail=f"review_evidence_refusal={refusal.value}")
+
+
+def refusal_explanation(refusal: ReviewEvidenceRefusal) -> str:
+    """Operator-facing prose for a refusal, so a held story explains itself.
+
+    The observed failures were expensive to diagnose because "the reviewer ran and
+    the story did not move" was true, unactionable, and in several cases describing
+    something that could never resolve on its own. Each reason below names what is
+    missing and who can resolve it.
+    """
+    return {
+        ReviewEvidenceRefusal.MALFORMED_RESULT: (
+            "The reviewer's structured result did not match the review-result contract, so it cannot be read as evidence. "
+            "The reviewer must emit a valid result; the validation message names the failing rule."
+        ),
+        ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE: (
+            "The shared review-result contract could not be loaded, so no review result can be validated. "
+            "This is a platform condition, not a reviewer error."
+        ),
+        ReviewEvidenceRefusal.WRONG_CONTRACT: (
+            "The submitted document belongs to a different contract or version than the review-result contract this surface reads."
+        ),
+        ReviewEvidenceRefusal.NO_BINDING: (
+            "No pull request is registered for this story, so a review has nothing to be evidence about. "
+            "An operator can record the implementing pull request through the attributed recovery path."
+        ),
+        ReviewEvidenceRefusal.AMBIGUOUS_PR: (
+            "Several pull requests are bound to this story, so which one was reviewed is unknown. An operator must supersede the incorrect binding."
+        ),
+        ReviewEvidenceRefusal.NOT_IMPLEMENTATION: (
+            "The pull request bound to this story is a reviewer artifact, and a review of it is not evidence about the delivered work."
+        ),
+        ReviewEvidenceRefusal.SUPERSEDED_BINDING: (
+            "The pull request bound to this story was superseded; the replacement must be registered before a review of it counts."
+        ),
+        ReviewEvidenceRefusal.REPOSITORY_MISMATCH: (
+            "The review result names a different repository than the one bound to this story, so it describes code from somewhere else."
+        ),
+        ReviewEvidenceRefusal.PR_MISMATCH: "The review result is about a different pull request than the one bound to this story.",
+        ReviewEvidenceRefusal.TENANT_MISMATCH: "The review result names another tenant and cannot be read against this one's state.",
+        ReviewEvidenceRefusal.SCOPE_MISMATCH: (
+            "The review result names a different flow, story or delivery cycle than the execution it was "
+            "submitted for, so it is evidence about other work."
+        ),
+        ReviewEvidenceRefusal.POLICY_MISMATCH: (
+            "The review result was authorized under a different accepted plan version than the one in force, "
+            "so the plan it was produced against is no longer current."
+        ),
+        ReviewEvidenceRefusal.STALE_CLAIM: (
+            "The review result was produced under a claim generation that is no longer current, so another run "
+            "now owns this work. The current owner must review again."
+        ),
+        ReviewEvidenceRefusal.STALE_HEAD: (
+            "The reviewed commit is not the pull request's current head, so the review's findings and test evidence describe different code. "
+            "A fresh review of the current head is required."
+        ),
+        ReviewEvidenceRefusal.SELF_REVIEW: (
+            "The reviewing run is the run that authored the change, so the review is not independent. A different run must review it, "
+            "and the provider's own approving-review-from-a-non-author requirement still applies separately."
+        ),
+        ReviewEvidenceRefusal.UNTRUSTED_ARTIFACT: (
+            "The review relies on test or check artifacts that could not be verified, so its conclusions are "
+            "not supported. The reviewer must re-run them against the current head."
+        ),
+    }.get(refusal, f"Review evidence was refused: {refusal.value}")
+
+
+async def record_review_evidence(
+    session: AsyncSession,
+    *,
+    identity: ExecutionIdentity,
+    evidence: ReviewEvidence,
+) -> ExecutionOutcome:
+    """Persist references to validated review evidence through the execution ledger.
+
+    One prepared action carrying the artifact reference. No new table and no new
+    endpoint: the ledger (#5142) already models "an externally-visible step and
+    what was observed about it", and this is that. The store re-verifies the claim
+    generation inside its own transaction, so a generation that advanced between
+    validation and this write is a ``CONFLICT`` rather than an accepted record.
+
+    Deliberately does **not** advance a phase. Recording that a review happened is
+    not deciding what follows from it, and this module dispatches nothing.
+
+    Returns the store's outcome unchanged, including ``STALE``/``CONFLICT``, so the
+    caller sees which arm fired rather than a swallowed failure.
+    """
+    from .execution_store import prepare_action, record_observation
+
+    prepared = await prepare_action(session, identity=identity, intent=evidence_action_intent(evidence))
+    if prepared.kind is not OutcomeKind.APPLIED or prepared.action is None:
+        # A conflict or block means the ledger declined the write; observing against
+        # an action that does not exist would be worse than reporting the refusal.
+        return prepared
+    return await record_observation(session, identity=identity, observation=evidence_observation(evidence))
+
+
+def evidence_summary(evidence: ReviewEvidence) -> dict[str, object]:
+    """The review evidence as a read surface would present it.
+
+    Deliberately excludes the findings' prose and every artifact reference beyond
+    the top-level one: the reasons are already summarised in ``approval_blockers``,
+    and a read surface that echoed each reference would leak the shape of internal
+    storage under a read permission. Mirrors ``pr_bindings.binding_summary``'s
+    reasoning about what a story API should and should not surface.
+    """
+    result = evidence.result
+    return {
+        "repo": evidence.repo,
+        "pr_number": evidence.pr_number,
+        "reviewed_head_sha": evidence.reviewed_head_sha,
+        "verdict": str(result.verdict),
+        "publication_outcome": str(result.publication.outcome),
+        "blocking_findings": len(result.blocking_findings),
+        "approval_blockers": list(evidence.approval_blockers),
+        "complete_review": evidence.is_complete_review,
+        "observed_at": result.observed_at.isoformat(),
+    }
+
+
+def legacy_review_note(text: str) -> dict[str, object]:
+    """Parse pre-contract reviewer output into a non-authoritative note.
+
+    Existing reviewer runs emit prose, and that must keep working: a worker which
+    has not adopted the contract still produces output an operator reads. What it
+    must NOT do is become a review verdict, which is why this returns a plain note
+    marked ``authoritative: False`` and carrying no verdict field at all.
+
+    There is deliberately no path from this function to :class:`ReviewEvidence`. The
+    whole defect was prose being read as a conclusion; a compatibility shim that
+    produced evidence from text would reintroduce it with a contract's blessing.
+    """
+    body = (text or "").strip()
+    return {
+        "kind": "legacy_review_output",
+        "authoritative": False,
+        "grants_approval": False,
+        # Bounded for the same reason the observation detail is: an operator column
+        # is not a transcript store.
+        "text": body[:2000],
+        "note": "Legacy reviewer output, retained for operators. It is not bound to a reviewed commit and grants no approval.",
+    }
+
+
+def evidence_decision_snapshot(evidence: ReviewEvidence, *, now: datetime) -> str:
+    """A compact, sorted JSON snapshot for the existing append-only decision store.
+
+    Sorted keys so two snapshots of the same evidence compare equal, matching
+    ``pr_bindings.binding_snapshot``'s convention. References and counts only —
+    never the findings' text, which belongs with the artifact the reference points
+    at.
+    """
+    return json.dumps(
+        {
+            "artifact_ref": evidence.artifact_ref,
+            "repo": evidence.repo,
+            "pr_number": evidence.pr_number,
+            "reviewed_head_sha": evidence.reviewed_head_sha,
+            "verdict": str(evidence.result.verdict),
+            "publication_outcome": str(evidence.result.publication.outcome),
+            "blocking_finding_ids": sorted(finding.finding_id for finding in evidence.result.blocking_findings),
+            "approval_blocker_count": len(evidence.approval_blockers),
+            "complete_review": evidence.is_complete_review,
+            "recorded_at": now.isoformat(),
+        },
+        sort_keys=True,
+    )
