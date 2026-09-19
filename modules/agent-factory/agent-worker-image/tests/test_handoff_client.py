@@ -40,7 +40,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lib.handoff_client import (  # noqa: E402
+from lib.handoff_client import (
     HANDOFF_EXPECT_ENV,
     HANDOFF_RECEIPT_CONTRACT_VERSION,
     HANDOFF_REQUIRED_ENV,
@@ -49,7 +49,7 @@ from lib.handoff_client import (  # noqa: E402
     handoff_required,
     report_handoff,
 )
-from lib.status_gateway_client import StatusGatewayError  # noqa: E402
+from lib.status_gateway_client import StatusGatewayError
 
 RECEIPT = "handoff:execution=exec-1:cycle=1:plan=3:claim=claim-1:generation=1"
 
@@ -244,14 +244,18 @@ class TestReceiptIsStrict:
         assert (result.accepted, result.receipt_ref) == (False, "")
 
     def test_response_without_a_usable_outcome_raises(self):
-        with patch("lib.handoff_client.post_self", return_value={"receipt_ref": RECEIPT}):
-            with pytest.raises(StatusGatewayError):
-                report_handoff()
+        with (
+            patch("lib.handoff_client.post_self", return_value={"receipt_ref": RECEIPT}),
+            pytest.raises(StatusGatewayError),
+        ):
+            report_handoff()
 
     def test_a_non_object_response_raises(self):
-        with patch("lib.handoff_client.post_self", return_value=[]):
-            with pytest.raises(StatusGatewayError):
-                report_handoff()
+        with (
+            patch("lib.handoff_client.post_self", return_value=[]),
+            pytest.raises(StatusGatewayError),
+        ):
+            report_handoff()
 
     def test_non_string_receipt_is_dropped_not_coerced(self):
         """A truthy non-string would make `bool(receipt_ref)` true on garbage."""
