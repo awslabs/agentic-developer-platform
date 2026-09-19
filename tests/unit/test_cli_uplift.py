@@ -42,6 +42,68 @@ from tests.e2e.cli_uplift import (
 FULL = ("full",)
 
 
+@pytest.mark.parametrize("org_id", ["", "fixture-org"])
+def test_multi_deployment_accepts_native_admin_usage_attribution(
+    tmp_path, monkeypatch, org_id
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    session = {"verified": True, "user_id": "cognito-sub", "org_id": org_id}
+    monkeypatch.setattr(common, "fixture_secret", lambda *a: "fixture")
+    monkeypatch.setattr(module, "_access_token", lambda *a: "test-token")
+    monkeypatch.setattr(common, "api", lambda *a, **k: (200, session))
+
+    class Cli:
+        def json(self, *args, **kwargs):
+            return {"status": "verified"}
+
+    result = module._login(
+        {},
+        Cli(),
+        {},
+        {
+            "name": "dev",
+            "gateway_url": "https://dev.example.test",
+            "credential_secret_name": "fixture",
+        },
+        {},
+    )
+    assert result["org_id"] == org_id
+    assert result["user_id"] == "cognito-sub"
+
+
+@pytest.mark.parametrize(
+    "session",
+    [
+        {"verified": True, "user_id": "cognito-sub"},
+        {"verified": True, "user_id": "", "org_id": ""},
+    ],
+)
+def test_multi_deployment_refuses_incomplete_usage_attribution(
+    tmp_path, monkeypatch, session
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    monkeypatch.setattr(common, "fixture_secret", lambda *a: "fixture")
+    monkeypatch.setattr(module, "_access_token", lambda *a: "test-token")
+    monkeypatch.setattr(common, "api", lambda *a, **k: (200, session))
+
+    class Cli:
+        def json(self, *args, **kwargs):
+            return {"status": "verified"}
+
+    with pytest.raises(common.RemoteError, match="incomplete usage attribution"):
+        module._login(
+            {},
+            Cli(),
+            {},
+            {
+                "name": "dev",
+                "gateway_url": "https://dev.example.test",
+                "credential_secret_name": "fixture",
+            },
+            {},
+        )
+
+
 def test_multi_deployment_thread_exception_cannot_pass(tmp_path, monkeypatch):
     module, common = shipped_script(tmp_path, "multi_deployment")
 
@@ -266,8 +328,9 @@ def test_multi_deployment_lifecycle_continues_same_tool_sessions(tmp_path, monke
     ]
 
 
-def test_multi_deployment_execute_does_not_swallow_teardown_failure(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_multi_deployment_execute_preserves_both_test_and_teardown_failures(
+    tmp_path, monkeypatch, primary_failure
 ):
     module, common = shipped_script(tmp_path, "multi_deployment")
     document = dict.fromkeys(module.REQUIRED, "fixture")
@@ -300,16 +363,25 @@ def test_multi_deployment_execute_does_not_swallow_teardown_failure(
     )
     monkeypatch.setattr(module, "_access_token", lambda cli, name: name + "-credential")
     monkeypatch.setattr(module, "_setup_tools", lambda *a: None)
-    monkeypatch.setattr(module, "_overlap", lambda *a: None)
+
+    def overlap(*args):
+        if primary_failure:
+            raise common.RemoteError("original inference failure")
+
+    monkeypatch.setattr(module, "_overlap", overlap)
 
     def fail_cleanup(*args):
         raise common.RemoteError("cleanup failed")
 
     monkeypatch.setattr(module, "_teardown", fail_cleanup)
     evidence = {"checks": [], "transcript": []}
-    with pytest.raises(common.RemoteError, match="cleanup failed"):
+    expected_error = (
+        "original inference failure" if primary_failure else "cleanup failed"
+    )
+    with pytest.raises(common.RemoteError, match=expected_error):
         module.execute(document, evidence)
     assert evidence["success"] is False
+    assert evidence["teardown_error"] == "cleanup failed"
 
 
 def config_fixture(**overrides):

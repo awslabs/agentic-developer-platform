@@ -165,7 +165,7 @@ def _register(cli, deployments, evidence, identifiers=None):
         "distinct_ids": len(set(identifiers)),
         "default": listed.get("default"),
     }
-    return dict(zip([entry["name"] for entry in deployments], identifiers, strict=True))
+    return dict(zip([entry["name"] for entry in deployments], identifiers))
 
 
 def _access_token(cli, name):
@@ -223,10 +223,12 @@ def _login(config, cli, env, entry, evidence):
         (session or {}).get("verified"),
         f"{name} did not confirm an admin session for the identity that logged in",
     )
+    # Native Cognito platform-admin sessions legitimately have org_id="".
+    # Usage records that exact token context, and /usage/logs accepts org_id=.
+    # Do not substitute the canonical user's organization or reject the session.
     require(
-        (session or {}).get("org_id"),
-        f"{name} attributed no organization to the signed-in identity; its usage "
-        "log cannot be queried without one",
+        isinstance(session.get("org_id"), str) and session.get("user_id"),
+        f"{name} returned incomplete usage attribution for the signed-in identity",
     )
     return {
         "name": name,
@@ -532,7 +534,7 @@ def _pass(config, env, sessions, tokens, evidence, *, label):
         threading.Thread(
             target=drive, args=(name, tool), name=f"{label}:{name}/{tool}", daemon=True
         )
-        for name, tool in zip(names, tools, strict=True)
+        for name, tool in zip(names, tools)
     ]
     for thread in threads:
         thread.start()
@@ -566,7 +568,7 @@ def _pass(config, env, sessions, tokens, evidence, *, label):
         f"{label}: no completion of our prompt came back from: " + ", ".join(silent),
     )
     return {
-        "arrangement": dict(zip(names, tools, strict=True)),
+        "arrangement": dict(zip(names, tools)),
         "concurrent_sessions": len(runs),
         "receipts": _receipts(config, sessions, tokens, runs, after=started),
     }
@@ -796,7 +798,7 @@ def _lifecycle(config, cli, env, home, sessions, evidence):
 
     threads = [
         threading.Thread(target=drive, args=(name, tool), daemon=True)
-        for name, tool in zip(names, ("codex", "codex", "claude"), strict=True)
+        for name, tool in zip(names, ("codex", "codex", "claude"))
     ]
     audit_tokens = {name: _access_token(cli, name) for name in names}
     for thread in threads:
@@ -973,6 +975,7 @@ def execute(config, evidence):
         home, env = _home(config, temporary)
         cli = common.Cli(Path(config["cli_path"]), env, evidence["transcript"])
         identifiers = {}
+        primary_failure = None
         try:
             _register(cli, deployments, evidence, identifiers)
 
@@ -1000,6 +1003,10 @@ def execute(config, evidence):
                 _overlap(config, env, home, sessions, tokens, identifiers, evidence)
             else:
                 _lifecycle(config, cli, env, home, sessions, evidence)
+        except Exception as exc:
+            primary_failure = exc
+            evidence["failure_stage"] = evidence.get("stage")
+            raise
         finally:
             # In `finally` because a failed assertion must not leave three proxies
             # listening: the next attempt on this instance would find them and fail
@@ -1010,7 +1017,8 @@ def execute(config, evidence):
                 except Exception as exc:
                     evidence["teardown_error"] = str(exc)
                     evidence["success"] = False
-                    raise
+                    if primary_failure is None:
+                        raise
         evidence.update(stage="complete", success=True)
 
 

@@ -160,6 +160,27 @@ With the variable unset, E16/E17 report `blocked` naming `three_deployments`, an
 `full_acceptance` stays false. That is the intended state until a coordinator
 supplies the integration and pre-production gateways.
 
+Before inference, the same EC2 payload can run a session-only checkpoint:
+
+```bash
+python3 /home/ec2-user/adp-eval/remote/dispatcher.py \
+  multi_deployment_sessions /path/to/multi-deployment-payload.json
+```
+
+Run as `ec2-user`, with the installed Claude and Codex binaries on `PATH`.
+The payload needs the same instance/account, region, endpoint, CLI path and
+three deployment/credential references as E16/E17. It signs in to the real
+gateways in one temporary home, launches both tools with `--version`, verifies
+three separate proxy identities, switches the default, refreshes one session,
+and logs out another. The remaining tokens must still authenticate at their
+own gateways. It stops the proxies and deletes its temporary home.
+
+Its report contains `checkpoint_only: true` and `model_requests: 0`. It is not
+an E16/E17 acceptance case and cannot establish model routing or spend. Native
+platform-admin sessions may legitimately have an empty organization ID; usage
+queries must preserve that value and the gateway-reported user ID. Provision
+approved routing fixtures separately before attempting the model scenarios.
+
 ### Watch it
 
 ```bash

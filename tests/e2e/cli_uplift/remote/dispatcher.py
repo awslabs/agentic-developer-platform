@@ -50,6 +50,8 @@ PURPOSES = {
     # switch, a refresh and one logout leave the other two correctly routed.
     "multi_deployment_concurrency": ("multi_deployment", {"mode": "overlap"}),
     "multi_deployment_lifecycle": ("multi_deployment", {"mode": "lifecycle"}),
+    # Diagnostic checkpoint only; deliberately not mapped to an acceptance case.
+    "multi_deployment_sessions": ("multi_deployment_sessions", {}),
 }
 
 
