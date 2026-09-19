@@ -215,7 +215,7 @@ export default function AgentModels() {
       const catalogues = await Promise.all(
         personaResponse.personas
           .filter((persona) => persona.configurable)
-          .map((persona) => getModelCatalogue(persona.key, signal)),
+          .map((persona) => getModelCatalogue(activeScope, persona.key, signal)),
       );
       setData({
         personas: personaResponse.personas,
@@ -252,7 +252,7 @@ export default function AgentModels() {
   }, [load, scope]);
 
   const selectedPrincipal = useMemo(
-    () => principals.find((principal) => principal.canonical_principal_id === scope.canonicalPrincipalId),
+    () => principals.find((principal) => principal.canonical_service_principal_id === scope.canonicalPrincipalId),
     [principals, scope.canonicalPrincipalId],
   );
   const nothingCertified = Boolean(
@@ -310,12 +310,12 @@ export default function AgentModels() {
               My own agents
             </label>
             {principals.map((principal) => (
-              <label key={principal.canonical_principal_id} className="flex items-center gap-2">
+              <label key={principal.canonical_service_principal_id} className="flex items-center gap-2">
                 <input
                   type="radio"
                   name="scope"
-                  checked={scope.kind === 'service' && scope.canonicalPrincipalId === principal.canonical_principal_id}
-                  onChange={() => setScope({ kind: 'service', canonicalPrincipalId: principal.canonical_principal_id })}
+                  checked={scope.kind === 'service' && scope.canonicalPrincipalId === principal.canonical_service_principal_id}
+                  onChange={() => setScope({ kind: 'service', canonicalPrincipalId: principal.canonical_service_principal_id })}
                 />
                 {principal.display_name} ({principal.tenant_label}, {principal.source})
               </label>

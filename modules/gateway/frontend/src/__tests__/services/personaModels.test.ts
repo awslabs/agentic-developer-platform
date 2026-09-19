@@ -53,10 +53,26 @@ describe('personaModels service request boundaries', () => {
 
   it('requests only recorded persona-filtered catalogue data', async () => {
     vi.mocked(apiClient.get).mockResolvedValue({ models: [] });
-    await getModelCatalogue('malware analysis');
+    await getModelCatalogue({ kind: 'self' }, 'malware analysis');
     expect(apiClient.get).toHaveBeenCalledWith(
       '/me/persona-models/catalog?persona_key=malware%20analysis',
       undefined,
+    );
+  });
+
+  it('uses the target-scoped catalogue for a managed service principal', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ models: [] });
+    await getModelCatalogue(
+      { kind: 'service', canonicalPrincipalId: 'opaque/id with spaces' },
+      'architect/reviewer',
+    );
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/service-principals/opaque%2Fid%20with%20spaces/persona-models/catalog?persona_key=architect%2Freviewer',
+      undefined,
+    );
+    expect(apiClient.get).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^\/me\/persona-models\/catalog/),
+      expect.anything(),
     );
   });
 

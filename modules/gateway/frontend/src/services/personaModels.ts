@@ -85,7 +85,7 @@ export interface ModelCatalogue {
 }
 
 export interface ManageableServicePrincipal {
-  canonical_principal_id: string;
+  canonical_service_principal_id: string;
   principal_kind: 'service_account';
   display_name: string;
   tenant_label: string;
@@ -120,9 +120,13 @@ export function getPersonaCatalogue(signal?: AbortSignal): Promise<PersonaCatalo
   return apiClient.get('/me/persona-models/catalog', signal);
 }
 
-export function getModelCatalogue(personaKey: string, signal?: AbortSignal): Promise<ModelCatalogue> {
+export function getModelCatalogue(
+  scope: PersonaModelScope,
+  personaKey: string,
+  signal?: AbortSignal,
+): Promise<ModelCatalogue> {
   return apiClient.get(
-    `/me/persona-models/catalog${buildQueryString({ persona_key: personaKey })}`,
+    `${scopeBase(scope)}/catalog${buildQueryString({ persona_key: personaKey })}`,
     signal,
   );
 }

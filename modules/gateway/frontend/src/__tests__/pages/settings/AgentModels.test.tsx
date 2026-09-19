@@ -212,7 +212,7 @@ describe('Agent Models page — issue #5422', () => {
   it('uses only a server-returned opaque ID for managed-service requests', async () => {
     vi.mocked(personaModels.getManageableServicePrincipals).mockResolvedValue({
       principals: [{
-        canonical_principal_id: 'opaque/service:id',
+        canonical_service_principal_id: 'opaque/service:id',
         principal_kind: 'service_account',
         display_name: 'Nightly triage',
         tenant_label: 'Acme',
@@ -222,12 +222,24 @@ describe('Agent Models page — issue #5422', () => {
     });
     render(<AgentModels />);
 
+    await screen.findByText('Brand New Persona');
+    vi.mocked(personaModels.getModelCatalogue).mockClear();
     const managed = await screen.findByRole('radio', { name: /Nightly triage \(Acme, github-actions\)/ });
     fireEvent.click(managed);
     await waitFor(() => expect(personaModels.getPreferences).toHaveBeenCalledWith(
       { kind: 'service', canonicalPrincipalId: 'opaque/service:id' },
       expect.any(AbortSignal),
     ));
+    await waitFor(() => expect(personaModels.getModelCatalogue).toHaveBeenCalledWith(
+      { kind: 'service', canonicalPrincipalId: 'opaque/service:id' },
+      'brand-new-persona',
+      expect.any(AbortSignal),
+    ));
+    expect(personaModels.getModelCatalogue).not.toHaveBeenCalledWith(
+      { kind: 'self' },
+      expect.anything(),
+      expect.anything(),
+    );
     expect(await screen.findByText(/Changes below apply to Nightly triage in Acme/)).toBeInTheDocument();
   });
 
@@ -307,7 +319,7 @@ describe('Agent Models page — issue #5422', () => {
         { ...preferences.entries[0], persona_key: 'reviewer', persona_display_name: 'Reviewer' },
       ],
     });
-    vi.mocked(personaModels.getModelCatalogue).mockImplementation(async (key) => ({
+    vi.mocked(personaModels.getModelCatalogue).mockImplementation(async (_scope, key) => ({
       ...modelCatalogue,
       persona_key: key,
     }));
