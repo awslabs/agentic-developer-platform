@@ -3,6 +3,8 @@ package controllers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,12 +49,16 @@ type SkyPilotHealthChecker interface {
 // the control plane. It implements manager.Runnable so it can be registered
 // with the controller-runtime manager via mgr.Add().
 type HeartbeatSender struct {
-	Client     client.Client
-	SkyChecker SkyPilotHealthChecker
-	APIURL     string        // Control plane API base URL
-	ClusterID  string        // This cluster's identifier
-	Interval   time.Duration // Heartbeat interval (default 30s)
-	HTTPClient *http.Client  // HTTP client for POSTing heartbeats
+	WorkspaceID           string
+	Credential            string
+	SigningKey            string
+	RequireAuthentication bool
+	Client                client.Client
+	SkyChecker            SkyPilotHealthChecker
+	APIURL                string        // Control plane API base URL
+	ClusterID             string        // This cluster's identifier
+	Interval              time.Duration // Heartbeat interval (default 30s)
+	HTTPClient            *http.Client  // HTTP client for POSTing heartbeats
 }
 
 // Start begins the heartbeat loop. It blocks until ctx is cancelled.
@@ -147,12 +153,30 @@ func (h *HeartbeatSender) Collect(ctx context.Context) ClusterHeartbeat {
 func (h *HeartbeatSender) Send(ctx context.Context, hb ClusterHeartbeat) error {
 	logger := log.FromContext(ctx).WithName("heartbeat")
 
-	data, err := json.Marshal(hb)
+	var payload any = hb
+	url := h.APIURL + "/internal/heartbeat"
+	signed := h.Credential != "" || h.RequireAuthentication
+	if signed {
+		if h.WorkspaceID == "" || h.Credential == "" || h.SigningKey == "" || hb.Timestamp.IsZero() {
+			return fmt.Errorf("authenticated observation configuration is incomplete")
+		}
+		status := "degraded"
+		if hb.Status == "healthy" {
+			status = "healthy"
+		}
+		payload = map[string]any{
+			"contract_version": "v1", "kind": "fleet_health",
+			"subject":     map[string]string{"cluster_id": h.ClusterID, "workspace": h.WorkspaceID},
+			"reported_at": hb.Timestamp.UTC().Format(time.RFC3339Nano),
+			"reporter":    "superplane-controller", "status": status,
+			"checks": []map[string]string{{"name": "controller-heartbeat", "status": status, "observed_at": hb.Timestamp.UTC().Format(time.RFC3339Nano)}},
+		}
+		url = h.APIURL + "/internal/observations"
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal heartbeat: %w", err)
 	}
-
-	url := h.APIURL + "/internal/heartbeat"
 
 	var lastErr error
 	for attempt := 0; attempt < maxSendRetries; attempt++ {
@@ -171,15 +195,24 @@ func (h *HeartbeatSender) Send(ctx context.Context, hb ClusterHeartbeat) error {
 			return fmt.Errorf("create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if signed {
+			req.Header.Set("Authorization", h.Credential)
+			req.Header.Set("x-superplane-contract-version", "v1")
+			mac := hmac.New(sha256.New, []byte(h.SigningKey))
+			mac.Write(data)
+			req.Header.Set("x-superplane-signature", fmt.Sprintf("sha256=%x", mac.Sum(nil)))
+		}
 
-		resp, err := h.HTTPClient.Do(req)
+		hc := *h.HTTPClient
+		hc.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+		resp, err := hc.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("send heartbeat (attempt %d): %w", attempt+1, err)
 			continue
 		}
 
 		// Read and close the body.
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+		_, _ = io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -187,7 +220,7 @@ func (h *HeartbeatSender) Send(ctx context.Context, hb ClusterHeartbeat) error {
 			return nil
 		}
 
-		lastErr = fmt.Errorf("heartbeat rejected (attempt %d): status %d: %s", attempt+1, resp.StatusCode, string(body))
+		lastErr = fmt.Errorf("heartbeat rejected (attempt %d): status %d", attempt+1, resp.StatusCode)
 		// Don't retry on 4xx client errors (except 429).
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 			return lastErr

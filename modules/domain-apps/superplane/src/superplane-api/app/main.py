@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -27,6 +28,7 @@ from app.routers.research import router as research_router
 from app.routers.events import router as events_router
 from app.routers.accounts import router as accounts_router
 from app.routers.internal import router as internal_router
+from app.routers.installation import router as installation_router
 from app.routers.provider_connections import router as provider_connections_router
 from app.routers.provider_handles import router as provider_handles_router
 from app.routers.quota import router as quota_router
@@ -60,6 +62,11 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle — start/stop background reconcilers."""
     # Reapply if the server or an embedding host replaced handlers after import.
     configure_log_redaction()
+    if os.environ.get("SUPERPLANE_INSTALLATION_REQUIRED") == "true":
+        from app.installation import capabilities
+
+        if not all(capabilities().values()):
+            raise RuntimeError("Production Superplane trust adapters are not composed in this image")
     logger.info("Starting VaultSyncReconciler background task")
     await vault_sync_reconciler.start()
     logger.info("Starting WorkspaceReconciler background task")
@@ -184,4 +191,5 @@ app.include_router(events_router)
 app.include_router(accounts_router)
 app.include_router(users_router)
 app.include_router(internal_router)
+app.include_router(installation_router)
 app.include_router(provider_handles_router)

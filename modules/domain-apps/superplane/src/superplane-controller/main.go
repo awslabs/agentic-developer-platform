@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"os"
 	"time"
@@ -18,8 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	superplanev1 "github.com/aws-innovate/AISuperPlane/src/superplane-controller/api/v1"
 	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/adapters"
+	superplanev1 "github.com/aws-innovate/AISuperPlane/src/superplane-controller/api/v1"
 	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/controllers"
 	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/provisioner"
 	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/skypilot"
@@ -37,19 +38,21 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr          string
-		healthProbeAddr      string
-		enableLeaderElection bool
-		skypilotURL          string
-		eksClusterName       string
-		awsRegion            string
-		ssmActivationID      string
-		ssmActivationCode    string
-		controlPlaneAPIURL   string
-		clusterID            string
-		heartbeatInterval    time.Duration
+		installationPreflight bool
+		metricsAddr           string
+		healthProbeAddr       string
+		enableLeaderElection  bool
+		skypilotURL           string
+		eksClusterName        string
+		awsRegion             string
+		ssmActivationID       string
+		ssmActivationCode     string
+		controlPlaneAPIURL    string
+		clusterID             string
+		heartbeatInterval     time.Duration
 	)
 
+	flag.BoolVar(&installationPreflight, "installation-preflight", false, "Report installed production integration capabilities without contacting Kubernetes.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&healthProbeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -75,8 +78,22 @@ func main() {
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	if installationPreflight {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"authenticated_observations": true, "authenticated_skypilot": true, "governed_provisioning": false})
+		os.Exit(2)
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// A complete installation never starts the legacy unauthenticated path.
+	if os.Getenv("SUPERPLANE_INSTALLATION_REQUIRED") == "true" {
+		// B's controller execution adapter is not published yet. Authentication
+		// to SkyPilot alone is not spending authority. Fail before registering
+		// provider-mutating loops; never re-enable direct provisioning as fallback.
+		setupLog.Error(nil, "governed controller provisioning adapter is unavailable (B/#4912)")
+		os.Exit(1)
+
+	}
 
 	// Create controller manager.
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -84,9 +101,10 @@ func main() {
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
 		},
-		HealthProbeBindAddress: healthProbeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "superplane-controller.superplane.ai",
+		HealthProbeBindAddress:  healthProbeAddr,
+		LeaderElection:          enableLeaderElection,
+		LeaderElectionID:        "superplane-controller.superplane.ai",
+		LeaderElectionNamespace: os.Getenv("SUPERPLANE_LEADER_NAMESPACE"),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create manager")
@@ -94,7 +112,7 @@ func main() {
 	}
 
 	// Initialize SkyPilot client and cloud adapters.
-	skyClient := skypilot.NewClient(skypilotURL)
+	skyClient := skypilot.NewClient(skypilotURL, skypilot.WithServiceToken(os.Getenv("SKYPILOT_SERVICE_TOKEN")))
 	cloudAdapters := adapters.NewAdaptersFromClient(skyClient)
 
 	// Initialize the onboarder.
@@ -158,11 +176,15 @@ func main() {
 			heartbeatClusterID = eksClusterName
 		}
 		heartbeat := &controllers.HeartbeatSender{
-			Client:     mgr.GetClient(),
-			SkyChecker: &skyPilotHealthAdapter{client: skyClient},
-			APIURL:     controlPlaneAPIURL,
-			ClusterID:  heartbeatClusterID,
-			Interval:   heartbeatInterval,
+			Client:                mgr.GetClient(),
+			WorkspaceID:           os.Getenv("WORKSPACE_ID"),
+			Credential:            os.Getenv("OBSERVATION_CREDENTIAL"),
+			SigningKey:            os.Getenv("OBSERVATION_SIGNING_KEY"),
+			RequireAuthentication: os.Getenv("SUPERPLANE_INSTALLATION_REQUIRED") == "true",
+			SkyChecker:            &skyPilotHealthAdapter{client: skyClient},
+			APIURL:                controlPlaneAPIURL,
+			ClusterID:             heartbeatClusterID,
+			Interval:              heartbeatInterval,
 		}
 		if err := mgr.Add(heartbeat); err != nil {
 			setupLog.Error(err, "unable to add runnable", "runnable", "HeartbeatSender")
@@ -239,4 +261,3 @@ func parseDurationOrDefault(s string, defaultVal time.Duration) time.Duration {
 	}
 	return d
 }
-

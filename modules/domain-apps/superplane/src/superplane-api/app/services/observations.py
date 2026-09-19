@@ -585,7 +585,16 @@ def _apply_to_cluster(
     # `last_reconciled_at` says "the monitor last completed a cycle against this
     # cluster", which is what actually happened here and what makes the
     # monitor's own liveness observable without forging the controller's.
-    cluster.last_reconciled_at = observation.reported_at
+    if (
+        settings.controller_observation_submitter_id
+        and submitter_id == settings.controller_observation_submitter_id
+        and observation.kind == "fleet_health"
+    ):
+        # Only the separately configured authenticated controller identity can
+        # advance its own heartbeat. Payload reporter names confer no authority.
+        cluster.last_heartbeat = observation.reported_at
+    else:
+        cluster.last_reconciled_at = observation.reported_at
 
 
 def _record_transition_event(

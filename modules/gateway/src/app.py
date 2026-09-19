@@ -25,6 +25,7 @@ from src.shared.tracing import setup_tracing, shutdown_tracing
 logger = logging.getLogger("bedrockgateway")
 
 UNIT_MODULES = [
+    "src.domain_proxy.superplane",
     "src.auth.routes",
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
     "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators

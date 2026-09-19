@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://superplane:superplane@localhost:5432/superplane"
     )
+    # Explicit domain schema for asyncpg (PGOPTIONS is a libpq setting, ignored
+    # by this driver). Empty preserves the existing database-owned search_path.
+    superplane_db_schema: str = ""
+    # Trusted identity that may advance controller liveness; no reporter-name trust.
+    controller_observation_submitter_id: str = ""
 
     # AWS
     aws_region: str = "us-east-1"

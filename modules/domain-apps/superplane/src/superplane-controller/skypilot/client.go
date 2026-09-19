@@ -19,8 +19,9 @@ const maxResponseBodySize = 10 * 1024 * 1024 // 10 MB
 
 // Client is an HTTP client for the SkyPilot REST API server.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL      string
+	serviceToken string
+	httpClient   *http.Client
 }
 
 // ClientOption configures the Client.
@@ -31,6 +32,11 @@ func WithHTTPClient(hc *http.Client) ClientOption {
 	return func(c *Client) {
 		c.httpClient = hc
 	}
+}
+
+// WithServiceToken authenticates the private SkyPilot transport.
+func WithServiceToken(token string) ClientOption {
+	return func(c *Client) { c.serviceToken = token }
 }
 
 // WithTimeout sets the default request timeout for non-streaming calls.
@@ -46,7 +52,8 @@ func NewClient(baseURL string, opts ...ClientOption) *Client {
 	c := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
 	for _, opt := range opts {
@@ -244,7 +251,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respB
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doAuthenticated(req)
 	if err != nil {
 		return fmt.Errorf("do request: %w", err)
 	}
@@ -279,4 +286,14 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("skypilot api error (status %d): %s", e.StatusCode, e.Body)
+}
+
+// Never forward a service credential through a redirect.
+func (c *Client) doAuthenticated(req *http.Request) (*http.Response, error) {
+	if c.serviceToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.serviceToken)
+	}
+	hc := *c.httpClient
+	hc.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+	return hc.Do(req)
 }

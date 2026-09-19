@@ -73,6 +73,11 @@ def snapshot_clock(monkeypatch):
     return NOW
 
 
+def test_snapshot_is_refused_at_its_exact_expiry():
+    with pytest.raises(ModelPolicyError, match="snapshot_expired"):
+        resolve_decision(snapshot(), invocation_id="run-review", persona="reviewer", now=NOW + timedelta(hours=2))
+
+
 def active_allowlist_revision(
     *,
     tenant_patterns=None,

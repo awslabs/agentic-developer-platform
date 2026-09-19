@@ -117,6 +117,7 @@ PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
 
 INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
+        ("GET", "/internal/installation"),
         ("PATCH", "/internal/clusters/{cluster_id}/resources"),
         ("POST", "/internal/vault-sync/trigger"),
         ("POST", "/internal/workspaces/{workspace_id}/reconcile"),

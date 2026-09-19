@@ -1,0 +1,35 @@
+version: 1
+environment: dev
+account_id: '879318057152'
+region: us-east-1
+cluster: adp-dev-eks-cluster
+namespace: superplane
+skypilot_namespace: skypilot
+origin: https://d1g6cal2ts4iis.cloudfront.net
+# Choose and authorize the workspace target and immutable domain identities.
+workspace_cluster: null
+workspace_namespace: null
+org_id: null
+adp_org_id: aws-e
+workspace_id: null
+cluster_id: null
+auth:
+  issuer: null
+  client_ids: []
+database:
+  identifier: null
+  database: null
+  schema: superplane
+  skypilot_schema: skypilot
+  backup_id: null
+  migration_owner: null
+  backup_owner: null
+  restore_owner: null
+secrets:
+  database: adp/dev/superplane/database
+  observation: adp/dev/superplane/observation
+  workspace_access: adp/dev/superplane/workspace-access
+timeout_seconds: 900
+# Set only after verifying the selected cluster's actual enforcement and handover.
+network_policy_enforced: false
+controller_ownership: null

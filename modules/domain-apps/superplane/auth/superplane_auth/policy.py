@@ -358,7 +358,10 @@ class DomainPrincipal:
     """Opaque ADP principal id. Never parsed for meaning."""
 
     org_id: str
-    """From the verified token claim only — never a request-body ``org_id``."""
+    """Verified organization, optionally resolved through an explicit server-held
+    ADP-to-domain organization binding. Never a request-body ``org_id``. The API
+    retains the source claim separately when applying such a binding.
+    """
 
     client_id: str
     """The Cognito app client that minted the token."""

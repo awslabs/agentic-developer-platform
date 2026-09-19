@@ -130,6 +130,9 @@ async def enforce_domain_authorization(
 
     scope, permission = requirement  # type: ignore[misc]
     caller = await domain_auth.require_verified_caller(request, credentials)
+    from app.organization_binding import bind_caller
+
+    caller = await bind_caller(db, caller)
     request.state.caller = caller
 
     if scope is Scope.WORKSPACE:

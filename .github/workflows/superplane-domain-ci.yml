@@ -53,6 +53,10 @@ on:
       # The feature gate's four surfaces. Read as text by the registration suite, so an
       # edit to one without the others must be able to trigger it.
       - 'modules/gateway/src/features/routes.py'
+      - 'modules/gateway/src/domain_proxy/**'
+      - 'modules/gateway/src/app.py'
+      - 'modules/gateway/pyproject.toml'
+      - 'modules/gateway/tests/features/test_superplane_proxy.py'
       - 'modules/gateway/frontend/src/services/features.ts'
       - 'modules/gateway/frontend/src/App.tsx'
       - 'modules/gateway/frontend/src/components/Navigation.tsx'
@@ -145,14 +149,16 @@ jobs:
         run: |
           set -euo pipefail
           ruff check \
-            src/features/routes.py \
+            src/features/routes.py src/domain_proxy/ \
             tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_proxy.py \
             tests/features/test_superplane_registration.py \
             tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py
           ruff format --check \
-            src/features/routes.py \
+            src/features/routes.py src/domain_proxy/ \
             tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_proxy.py \
             tests/features/test_superplane_registration.py \
             tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py
@@ -359,7 +365,9 @@ jobs:
           ruff check --isolated --select E4,E7,E9,F,I app/routers/provider_connections.py \
             app/services/provider_connections.py app/services/credential_evidence.py \
             app/routers/accounts.py tests/test_provider_connections_postgres.py \
-            app/migration_version.py alembic/env.py
+            app/migration_version.py app/schema_boundary.py app/installation.py \
+            app/skypilot_proxy.py app/routers/installation.py app/organization_binding.py \
+            app/installation_bootstrap.py alembic/versions/015_add_adp_org_binding.py alembic/env.py
           python3 -m pytest tests/test_workspaces.py tests/test_accounts.py \
             -v --tb=short \
             --cov=app.routers.provider_connections \
@@ -526,6 +534,7 @@ jobs:
         run: |
           python3 -m pytest \
             tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_proxy.py \
             tests/features/test_superplane_registration.py \
             tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py \
