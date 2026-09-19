@@ -1573,3 +1573,49 @@ async def test_missing_repository_identity_refuses_before_dispatch(session, monk
     assert not report.pending
     assert node.state == "ready"
     assert node.attempts == 0
+
+
+async def test_ledger_backed_story_is_marked_as_owing_a_handoff(session, work_claims_enabled):
+    """#5144: the marker rides the envelope AND the decision.
+
+    On the envelope so the worker knows it owes a receipt; on the decision because
+    that is what `handoff.handoff_required` reads to decide whether a missing receipt
+    holds the node. Reading it from the run's own dispatch record is what makes the
+    boundary deterministic rather than a deploy-time inference.
+    """
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    assert report.pending[0].envelope["handoff_required"] is True
+    dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
+    assert json.loads(dispatch.reason)["handoff_required"] is True
+
+
+async def test_story_without_the_execution_ledger_owes_no_handoff(session, monkeypatch):
+    """A dispatch with no claim has no execution row, so it cannot produce a receipt.
+
+    Marking it would hold it forever for evidence it has no way to commit — worse than
+    the defect being fixed. So the marker is gated on the ledger, not on node kind
+    alone, and this is the case that distinguishes the two.
+    """
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    envelope = report.pending[0].envelope
+    # Still bound by #5301's PR contract; just not by this one.
+    assert envelope["pr_binding_required"] is True
+    assert "handoff_required" not in envelope
+    dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
+    assert json.loads(dispatch.reason)["handoff_required"] is False
+
+
+async def test_non_story_nodes_owe_no_handoff(session, work_claims_enabled):
+    """An evaluation's completion boundary is the human gate, not a worker handoff."""
+    await _make_org(session)
+    flow = await _make_flow(session)
+    await _make_approval(session, flow)
+    await _make_node(session, flow, node_ref="eval-1", kind=NodeKind.EVAL.value)
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    assert "handoff_required" not in report.pending[0].envelope
