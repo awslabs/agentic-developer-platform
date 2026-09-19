@@ -41,13 +41,13 @@ envelope at all) without the signing key being in scope.
 
 ## What this deliberately does not do
 
-No pause/resume/steer/abort behaviour. :meth:`AgentControlAdapter.prepare_command`
-runs authorization first and *then* refuses an unimplemented verb with 501, so
-the existing ladder is preserved: an unauthorized caller cannot learn which
-verbs exist, and an authorized one gets the honest answer. Because
-``SUPPORTED_AGENT_ACTIONS`` contains no live-control verb, no envelope is signed
-in this deployment at all — the signing path ships proven and dormant, the same
-shape as the worker-side verifier.
+The adapter prepares delegated commands; the shared control service performs
+pause/resume and the worker owns their runtime behavior. Authorization precedes
+the supported-verb check, so unauthorized callers cannot enumerate capabilities.
+Steer and abort remain unavailable. Direct human commands use the distinct
+session/ownership authorization path in ``human_control.py`` and the same signer,
+transport and worker verifier; this adapter never synthesizes a delegated grant
+for a human.
 
 It also does not forward. Returning a :class:`PreparedForward` rather than
 performing the request keeps the destination validation and the HTTP client in
@@ -119,7 +119,7 @@ class AgentStatusView:
     reason: str | None = None
     # Advertised verbs, already intersected with what the deployment supports by
     # whoever produced this view. Reported so a coordinator does not attempt a
-    # verb that cannot work; empty in this deployment.
+    # verb that cannot work.
     capabilities: dict[str, bool] = field(default_factory=dict)
     updated_at: str | None = None
     # Audit breadcrumbs the caller is entitled to see about its own authority.

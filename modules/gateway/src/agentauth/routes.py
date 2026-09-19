@@ -235,18 +235,25 @@ class AgentRuntime:
         pod, _, _, _ = context or self.authenticate(credential_token, workload_token)
         return self.adapter.status(credential_token=credential_token, target_run_id=run_id, presented_workload_binding=pod.uid).to_public_dict()
 
-    def control(self, run_id: str, action: AgentAction, body: bytes, credential_token: str, workload_token: str, *, context=None) -> None:
+    async def control(self, run_id: str, action: AgentAction, body: bytes, credential_token: str, workload_token: str, *, context=None):
+        from src.activity.control_service import ControlError, ControlService
+
         pod, _, _, _ = context or self.authenticate(credential_token, workload_token)
-        self.adapter.prepare_command(
+        prepared = await run_in_threadpool(
+            self.adapter.prepare_command,
             credential_token=credential_token,
             target_run_id=run_id,
             action=action,
             request_body=body,
             presented_workload_binding=pod.uid,
         )
-        # This runtime ships no command implementation. Enabling a policy verb
-        # alone must never return success without actually forwarding its effect.
-        raise PolicyError(501, f"{action.value} is not implemented in this deployment")
+        config = os.environ if self.env is None else self.env
+        service = ControlService(table_name=config.get("WEBHOOK_EVENTS_TABLE"), env=self.env, authority_store=self.store)
+        try:
+            result, status = await service.command_for_agent(prepared, request_body=body)
+            return JSONResponse(result.model_dump(), status_code=status, headers={"Cache-Control": "no-store"})
+        except ControlError as exc:
+            raise PolicyError(exc.status_code, exc.detail) from None
 
     def bootstrap(self, body: BootstrapRequest, token: str) -> dict:
         pod = self.workloads.verify(token)
@@ -268,7 +275,10 @@ class AgentRuntime:
             from_thread.run(admit_deferred_bootstrap, self.store, body.invocation_id, body.envelope_digest)
         now = datetime.now(UTC)
         record = self.store.bind(invocation_id=body.invocation_id, digest=body.envelope_digest, pod=pod, now=now)
-        return issue_bound_credential(record, now=now, env=self.env)
+        result = issue_bound_credential(record, now=now, env=self.env)
+        if pod.deadline_at is not None:
+            result["pod_deadline_at"] = pod.deadline_at
+        return result
 
 
 @lru_cache(maxsize=1)
@@ -296,6 +306,7 @@ async def bootstrap(
 ) -> JSONResponse:
     try:
         result = await run_in_threadpool(runtime.bootstrap, body, request.headers.get(WORKLOAD_HEADER, ""))
+        pod_deadline_at = result.get("pod_deadline_at")
         caller = verify_credential(result["credential"], env=runtime.env)
         record = await run_in_threadpool(runtime.store.authority.load_execution, invocation_id=caller.invocation_id, tenant_id=caller.tenant_id)
         grant = await run_in_threadpool(
@@ -307,6 +318,8 @@ async def bootstrap(
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
+        if pod_deadline_at is not None:
+            result["pod_deadline_at"] = pod_deadline_at
         from src.agentauth.model_policy import bootstrap_model_policy_live
 
         result["model_policy"] = await bootstrap_model_policy_live(
@@ -361,6 +374,9 @@ async def _agent_call(request: Request, runtime: AgentRuntime, method, *args) ->
             result = await method(*call_args, context=context)
         else:
             result = await run_in_threadpool(method, *call_args, context=context)
+        if isinstance(result, JSONResponse):
+            audit("allowed", result.status_code)
+            return result
         audit("allowed", 202 if isinstance(args[0], DispatchRequest) else 200)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except (BootstrapRefusedError, WorkloadRefusedError, CredentialError, ExecutionStateError):

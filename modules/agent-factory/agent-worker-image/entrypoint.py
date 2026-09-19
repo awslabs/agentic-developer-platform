@@ -2895,11 +2895,10 @@ def _setup_agent_control(
     the flag is off, nothing is minted, nothing is written and no port is
     advertised — the row is byte-identical to a run without this feature (FR-1.1).
 
-    **The token's lifetime is bounded by the pod's, not by a fixed window.** The
-    expiry is derived from ``ADP_POD_DEADLINE_SECONDS`` — the same
-    ``activeDeadlineSeconds`` Kubernetes enforces on this pod — so a token cannot
-    outlive the process it authenticates; a leaked token from a finished run is
-    already expired even if terminal cleanup never ran.
+    A verified absolute Kubernetes deadline bounds the token when available.
+    The configured TTL alone is only a duration cap; registration occurs after
+    bootstrap and cannot establish when the Job started. Without lifecycle
+    evidence the read channel remains usable, while pause remains unavailable.
 
     **The generation is assigned by the invocation row, not read from config.**
     ``register_control_endpoint`` returns it from an atomic increment, so a retry
@@ -2932,11 +2931,21 @@ def _setup_agent_control(
         token = secrets.token_urlsafe(32)
         port = _control_port()
 
-        # Bound by the pod deadline so the credential cannot outlive the listener
-        # that honours it.
+        # Bootstrap receives the absolute Kubernetes lifetime from the gateway.
+        # A TTL minted after clone does not establish when a Job began. Missing
+        # lifecycle evidence leaves reads available but disables worker pause.
+        expiry = time.time() + _control_token_ttl_seconds()
+        try:
+            deadline = datetime.fromisoformat(
+                agent_env.get("ADP_POD_DEADLINE_AT", "").replace("Z", "+00:00")
+            )
+            if deadline.tzinfo is not None and deadline.timestamp() > time.time():
+                expiry = min(expiry, deadline.timestamp())
+        except (ValueError, TypeError):
+            pass
         expires_at = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(time.time() + _control_token_ttl_seconds()),
+            time.gmtime(expiry),
         )
 
         # The generation comes back from the write. It is not computed here: see
@@ -3028,19 +3037,11 @@ def _setup_agent_control(
 
 
 def _control_token_ttl_seconds() -> int:
-    """Token TTL, bounded by the deadline Kubernetes actually enforces.
+    """Configured duration cap, not evidence of an absolute workload deadline.
 
-    Reads ``ADP_POD_DEADLINE_SECONDS``, which the ScaledJob renders from the same
-    ``var.agent_pod_deadline_seconds`` it passes to ``activeDeadlineSeconds``. The
-    two therefore cannot drift: whatever wall-clock limit the pod is killed at is
-    the limit the credential expires at.
-
-    Falls back to ``MAX_CONTROL_TOKEN_TTL_SECONDS`` when unset or unparseable, and
-    never exceeds it. The cap is not redundant with the deadline: an operator can
-    raise ``agent_pod_deadline_seconds``, and an unbounded TTL would silently turn
-    a leaked token into a near-permanent one. A too-short TTL only costs the
-    ability to control a long run's tail; a too-long one is a live credential for
-    a pod that no longer exists.
+    The verified Kubernetes deadline is applied separately during registration
+    and by the worker pause gate. Never add this duration to registration time
+    and treat that result as the Job's lifetime.
     """
     raw = os.environ.get("ADP_POD_DEADLINE_SECONDS", "").strip()
     if raw.isdigit() and int(raw) > 0:

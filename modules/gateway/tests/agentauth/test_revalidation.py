@@ -89,10 +89,7 @@ def request(ctx, *, epoch=None, now=None):
 async def test_online_revalidation_and_unsupported_runtime(queued_context, monkeypatch):
     ctx = queued_context
     body = request(ctx)
-    # The deployed runtime still cannot claim a live control succeeded.
-    response = await ctx.client.post("/internal/v1/agent/revalidate", json=body, headers=ctx.target_headers)
-    assert response.status_code == 501, response.text
-    monkeypatch.setattr(ctx.child.service.policy, "require_supported", lambda action: None)
+    # Pause is supported; the unchanged delegated proof still revalidates.
     response = await ctx.client.post("/internal/v1/agent/revalidate", json=body, headers=ctx.target_headers)
     assert response.status_code == 200, response.text
     assert response.json() == {"allowed": True, "command_id": "queued-pause", "generation": 1, "max_round_trip_ms": 1000}

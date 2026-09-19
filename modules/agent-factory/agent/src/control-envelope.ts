@@ -76,8 +76,6 @@ const REQUIRED_CLAIMS = [
   'action',
   'command_id',
   'body_digest',
-  'grant_id',
-  'revocation_epoch',
   'iat',
   'nbf',
   'exp',
@@ -116,13 +114,12 @@ const STRING_CLAIMS = [
   'action',
   'command_id',
   'body_digest',
-  'grant_id',
   'iat',
   'nbf',
   'exp',
 ] as const;
 
-const INT_CLAIMS = ['target_generation', 'revocation_epoch'] as const;
+const INT_CLAIMS = ['target_generation'] as const;
 
 /** ISO-8601 UTC seconds, the one format both sides emit. */
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -136,8 +133,9 @@ export interface ControlEnvelope {
   action: string;
   commandId: string;
   bodyDigest: string;
-  grantId: string;
-  revocationEpoch: number;
+  grantId?: string;
+  revocationEpoch?: number;
+  authorityKind?: 'delegated_grant' | 'human_session';
   keyId: string;
   issuedAt: number;
   notBefore: number;
@@ -318,6 +316,21 @@ export function verifyEnvelope(
     if (!isPlainInteger(payload[claim])) return { ok: false, reason: 'malformed' };
   }
 
+  // Legacy envelopes without a kind are delegated, and still require an epoch.
+  const authorityKind = payload.authority_kind === undefined ? 'delegated_grant' : payload.authority_kind;
+  if (authorityKind === 'human_session') {
+    if (['grant_id', 'revocation_epoch', 'authority_reference_id'].some((claim) => claim in payload)) {
+      return { ok: false, reason: 'malformed' };
+    }
+  } else if (authorityKind === 'delegated_grant') {
+    if (typeof payload.grant_id !== 'string' || !payload.grant_id ||
+        !isPlainInteger(payload.revocation_epoch) || payload.revocation_epoch < 1) {
+      return { ok: false, reason: 'malformed' };
+    }
+  } else {
+    return { ok: false, reason: 'malformed' };
+  }
+
   if (!ALLOWED_ALGORITHMS.has(payload.alg as string)) {
     return { ok: false, reason: 'unsupported_algorithm' };
   }
@@ -359,10 +372,6 @@ export function verifyEnvelope(
     return { ok: false, reason: 'chain_mismatch' };
   }
 
-  if ((payload.revocation_epoch as number) < 1) {
-    return { ok: false, reason: 'malformed' };
-  }
-
   const issuedAt = parseTimestamp(payload.iat);
   const notBefore = parseTimestamp(payload.nbf);
   const expiresAt = parseTimestamp(payload.exp);
@@ -387,8 +396,9 @@ export function verifyEnvelope(
       action: payload.action as string,
       commandId: payload.command_id as string,
       bodyDigest: payload.body_digest as string,
-      grantId: payload.grant_id as string,
-      revocationEpoch: payload.revocation_epoch as number,
+      grantId: payload.grant_id as string | undefined,
+      revocationEpoch: payload.revocation_epoch as number | undefined,
+      authorityKind,
       keyId,
       issuedAt,
       notBefore,

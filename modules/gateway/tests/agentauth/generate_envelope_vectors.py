@@ -397,6 +397,105 @@ def build() -> dict:
         },
     ]
 
+    # Both verifiers consume the same signed human/legacy/hostile variants.
+    def signed_payload(payload):
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        signature = private_key.sign(ENVELOPE_VERSION.encode() + b"." + raw)
+        return f"{ENVELOPE_VERSION}.{_b64e(raw)}.{_b64e(signature)}"
+
+    human = _base_payload(authority_kind="human_session", principal="human-owner")
+    for claim in ("grant_id", "revocation_epoch", "authority_reference_id"):
+        human.pop(claim)
+    human_token = sign_envelope(
+        tenant_id=TENANT,
+        principal="human-owner",
+        authority_kind="human_session",
+        target_run_id=EXPECTED_RUN_ID,
+        target_generation=EXPECTED_GENERATION,
+        action=EXPECTED_ACTION,
+        command_id=EXPECTED_COMMAND_ID,
+        request_body=EXPECTED_BODY,
+        now=NOW,
+        env=env,
+    )
+    vectors.extend(
+        [
+            {
+                "name": "valid_human_session",
+                "accept": True,
+                "token": human_token,
+                "note": "real human signer emits no delegated grant or revocation claims",
+            },
+            {
+                "name": "valid_legacy_delegated",
+                "accept": True,
+                "token": signed_payload(_base_payload()),
+                "note": "existing delegated envelopes without authority_kind retain their contract",
+            },
+        ]
+    )
+    attacks = [
+        ("human_with_grant", {**human, "grant_id": "invented"}),
+        ("human_with_null_epoch", {**human, "revocation_epoch": None}),
+        ("human_with_epoch", {**human, "revocation_epoch": 1}),
+        ("human_with_authority_reference", {**human, "authority_reference_id": "invented"}),
+        ("unknown_authority_kind", _base_payload(authority_kind="unknown")),
+        ("malformed_authority_kind", _base_payload(authority_kind=[])),
+        ("null_authority_kind", _base_payload(authority_kind=None)),
+    ]
+    for kind in (None, "delegated_grant"):
+        for missing in ("grant_id", "revocation_epoch"):
+            payload = _base_payload()
+            if kind is not None:
+                payload["authority_kind"] = kind
+            payload.pop(missing)
+            attacks.append((f"{kind or 'legacy'}_missing_{missing}", payload))
+    for name, payload in attacks:
+        vectors.append(
+            {
+                "name": name,
+                "accept": False,
+                "reason": "malformed",
+                "token": signed_payload(payload),
+                "note": "valid signature cannot excuse invalid authority claims",
+            }
+        )
+    version, encoded, signature = human_token.split(".")
+    changed = {**human, "principal": "another-human"}
+    vectors.append(
+        {
+            "name": "human_signature_tampered",
+            "accept": False,
+            "reason": "bad_signature",
+            "token": f"{version}.{_b64e(json.dumps(changed).encode())}.{signature}",
+            "note": "human identity is signed, never caller chosen",
+        }
+    )
+
+    version, encoded, signature = accepted.split(".")
+    changed_kind = _base_payload(authority_kind="human_session", principal="human-owner")
+    for claim in ("grant_id", "revocation_epoch", "authority_reference_id"):
+        changed_kind.pop(claim)
+    vectors.append(
+        {
+            "name": "authority_kind_tampered",
+            "accept": False,
+            "reason": "bad_signature",
+            "token": f"{version}.{_b64e(json.dumps(changed_kind).encode())}.{signature}",
+            "note": "changing delegated authority into a structurally valid human envelope cannot reuse its signature",
+        }
+    )
+    legacy_kind = _base_payload()
+    vectors.append(
+        {
+            "name": "authority_kind_removed",
+            "accept": False,
+            "reason": "bad_signature",
+            "token": f"{version}.{_b64e(json.dumps(legacy_kind, sort_keys=True, separators=(',', ':')).encode())}.{signature}",
+            "note": "removing only the explicit delegated kind must invalidate the signature even though legacy envelopes are supported",
+        }
+    )
+
     return {
         "note": (
             "Shared vectors for the #5028 control authorization envelope. Verified by "
