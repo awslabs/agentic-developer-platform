@@ -132,6 +132,7 @@ __all__ = [
     "accept_amendment",
     "assign_author_run",
     "gate_diff",
+    "in_force_plan",
     "mark_request_dispatched",
     "record_replan_request",
     "register_amendment_draft",
@@ -214,6 +215,11 @@ class AmendmentRequest:
 
     id: str
     flow_id: str
+    #: The committed `REPLAN_REQUESTED` decision this request was born from. Carried
+    #: on the snapshot (#4529) because it is the authoring assignment's attribution
+    #: root and its FIFO deduplication input — `authoring_dispatch` must derive both
+    #: from server-written state rather than re-reading the row it was handed.
+    replan_decision_id: str
     requested_by: str
     request_text: str
     base_plan_version: int | None
@@ -266,6 +272,7 @@ def _snapshot(row: OrchestrationAmendmentRequest, *, created: bool) -> Amendment
     return AmendmentRequest(
         id=row.id,
         flow_id=row.flow_id,
+        replan_decision_id=row.replan_decision_id,
         requested_by=row.requested_by,
         request_text=row.request_text,
         base_plan_version=row.base_plan_version,
@@ -307,12 +314,17 @@ def gate_diff(*, base_document: dict | None, proposed_document: dict) -> GateDif
     )
 
 
-async def _in_force_plan(session: AsyncSession, *, org_id: str, flow_id: str) -> OrchestrationAcceptedPlan | None:
+async def in_force_plan(session: AsyncSession, *, org_id: str, flow_id: str) -> OrchestrationAcceptedPlan | None:
     """The flow's currently accepted plan, or None if it has never been accepted.
 
     `superseded_at IS NULL` is the single-row invariant `amend_plan` maintains; this is
     the same read `repository.get_accepted_plan` performs, spelled locally because the
     acceptance path needs it inside its own lock.
+
+    Exported (#4529) because the authoring-authority validator in `agentauth/engine.py`
+    must compare a request's recorded base against what is in force *by the same read*
+    the acceptance path uses. Two spellings of "the plan in force" is how an authoring
+    run gets admitted against a base that acceptance will then reject.
     """
     return (
         await session.execute(
@@ -372,7 +384,7 @@ async def record_replan_request(
     # What was in force when the human asked. Recorded now rather than at authoring
     # time: the request is the moment the human's intent was fixed, and a base read
     # later would silently re-target the request at whatever landed in between.
-    in_force = await _in_force_plan(session, org_id=org_id, flow_id=flow_id)
+    in_force = await in_force_plan(session, org_id=org_id, flow_id=flow_id)
 
     request = OrchestrationAmendmentRequest(
         org_id=org_id,
@@ -548,7 +560,7 @@ async def register_amendment_draft(
     # novel proposal.
     document_hash = plan_hash(proposal)
 
-    in_force = await _in_force_plan(session, org_id=org_id, flow_id=request.flow_id)
+    in_force = await in_force_plan(session, org_id=org_id, flow_id=request.flow_id)
     diff = gate_diff(
         base_document=in_force.plan_document if in_force is not None else None,
         proposed_document=document,
@@ -728,7 +740,7 @@ async def accept_amendment(
         await session.execute(
             select(OrchestrationFlow).where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.id == draft.flow_id).with_for_update()
         )
-        in_force = await _in_force_plan(session, org_id=actor.org_id, flow_id=draft.flow_id)
+        in_force = await in_force_plan(session, org_id=actor.org_id, flow_id=draft.flow_id)
 
         current_version = in_force.version if in_force is not None else None
         current_hash = in_force.plan_hash if in_force is not None else None

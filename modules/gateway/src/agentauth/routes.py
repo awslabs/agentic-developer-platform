@@ -104,14 +104,21 @@ class AgentRuntime:
         """
         if grant.authority.kind in {"github_event", "service_policy"}:
             return None
-        if grant.authority.kind != "gate_decision":
+        if grant.authority.kind not in {"gate_decision", "replan_request"}:
             raise BootstrapRefusedError("unsupported authority source")
-        from src.agentauth.engine import validate_engine_authority
+        from src.agentauth.engine import validate_authoring_authority, validate_engine_authority
         from src.shared.database import get_session_factory
 
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         try:
             async with get_session_factory()() as session:
+                if grant.authority.kind == "replan_request":
+                    # Issue #4529. Re-proves the amendment-authoring assignment against
+                    # live state — tenant, flow, run binding and base revision — and
+                    # returns no graph attribution, because an authoring run owns no
+                    # node and its spend must not be charged to one.
+                    await validate_authoring_authority(session=session, execution=execution or {}, grant=grant)
+                    return None
                 return await validate_engine_authority(session=session, execution=execution or {}, grant=grant, store=self.store)
         except Exception:
             raise BootstrapRefusedError("engine authority unavailable") from None
