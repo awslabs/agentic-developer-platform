@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,11 +19,13 @@ from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.models.persona_models import ServicePrincipal
 from src.shared.schemas.auth import TokenContext
+from src.usage.persona_cost import get_persona_cost_report
 
 from . import service
 from .schemas import (
     ConflictResponse,
     ManageableServicePrincipalsResponse,
+    PersonaCostResponse,
     PreferenceDetailResponse,
     PreferenceListResponse,
     SetPreferenceRequest,
@@ -139,6 +141,33 @@ async def list_my_preferences(
 
     entries = await service.build_preference_list(db, org_id=current_user.org_id, principal_kind=kind, principal_id=pid)
     return PreferenceListResponse(principal_kind=kind, principal_id=pid, entries=entries)
+
+
+@router.get("/costs", response_model=PersonaCostResponse)
+async def get_my_persona_costs(
+    current_user: Annotated[TokenContext, Depends(get_persona_model_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    chain_id: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+) -> PersonaCostResponse:
+    """Return usage-ledger costs for only the authenticated preference owner."""
+    try:
+        kind, _source, pid = await _resolve_caller(db, current_user)
+    except service.PreferenceRejectedError as exc:
+        raise _rejected(exc) from exc
+    report = await get_persona_cost_report(
+        db,
+        org_id=current_user.org_id,
+        principal_kind=kind,
+        principal_id=pid,
+        chain_id=chain_id,
+    )
+    return PersonaCostResponse(
+        **{
+            **report.__dict__,
+            "status": report.status.value,
+            "entries": [entry.__dict__ for entry in report.entries],
+        }
+    )
 
 
 @router.get("/explain/{persona_key}", response_model=PreferenceDetailResponse)

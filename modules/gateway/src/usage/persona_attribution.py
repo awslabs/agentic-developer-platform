@@ -32,3 +32,8 @@ class PersonaUsageAttribution:
     snapshot_digest: str
     policy_revision: str
     catalogue_revision: str
+    requested_model_id: str | None = None
+    resolved_model_id: str | None = None
+    resolution_source: Literal["explicit-direct", "principal-mapping", "system-default"] | None = None
+    runtime_posture: Literal["report_only"] | None = None
+    posture_revision: int | None = None

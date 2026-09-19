@@ -38,6 +38,11 @@ _COLUMNS = (
     sa.Column("model_policy_snapshot_digest", sa.String(length=64), nullable=True),
     sa.Column("model_policy_revision", sa.String(length=64), nullable=True),
     sa.Column("model_catalogue_revision", sa.String(length=64), nullable=True),
+    sa.Column("requested_model_id", sa.String(length=255), nullable=True),
+    sa.Column("resolved_model_id", sa.String(length=255), nullable=True),
+    sa.Column("resolution_source", sa.String(length=32), nullable=True),
+    sa.Column("runtime_posture", sa.String(length=32), nullable=True),
+    sa.Column("posture_revision", sa.Integer(), nullable=True),
     sa.Column("pricing_source_kind", sa.String(length=32), nullable=True),
     sa.Column("pricing_generation_id", sa.BigInteger(), nullable=True),
     sa.Column("pricing_pointer_revision", sa.BigInteger(), nullable=True),
@@ -65,9 +70,47 @@ def upgrade() -> None:
         postgresql_where=sa.text("chain_id IS NOT NULL"),
         sqlite_where=sa.text("chain_id IS NOT NULL"),
     )
+    op.create_table(
+        "persona_model_retirement_alerts",
+        sa.Column("id", sa.String(length=255), nullable=False),
+        sa.Column("org_id", sa.String(length=255), nullable=False),
+        sa.Column("preference_id", sa.String(length=255), nullable=False),
+        sa.Column("persona_key", sa.String(length=64), nullable=False),
+        sa.Column("preference_owner_kind", sa.String(length=32), nullable=False),
+        sa.Column("preference_owner_id", sa.String(length=255), nullable=False),
+        sa.Column("canonical_model_id", sa.String(length=255), nullable=False),
+        sa.Column("lifecycle_revision", sa.String(length=64), nullable=False),
+        sa.Column("state", sa.String(length=16), server_default="claimed", nullable=False),
+        sa.Column("claim_token", sa.String(length=64), nullable=False),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("attempt_count", sa.Integer(), server_default="1", nullable=False),
+        sa.Column("last_error", sa.String(length=512), nullable=True),
+        sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint("state IN ('claimed', 'delivered')", name="ck_persona_retirement_state"),
+        sa.CheckConstraint("attempt_count >= 1", name="ck_persona_retirement_attempts"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "preference_id",
+            "canonical_model_id",
+            "lifecycle_revision",
+            name="uq_persona_retirement_transition",
+        ),
+    )
+    op.create_index("ix_persona_model_retirement_alerts_org_id", "persona_model_retirement_alerts", ["org_id"])
+    op.create_index(
+        "ix_persona_retirement_claim",
+        "persona_model_retirement_alerts",
+        ["state", "lease_expires_at"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("ix_persona_retirement_claim", table_name="persona_model_retirement_alerts")
+    op.drop_index("ix_persona_model_retirement_alerts_org_id", table_name="persona_model_retirement_alerts")
+    op.drop_table("persona_model_retirement_alerts")
     op.drop_index("ix_usage_chain_id", table_name="usage_logs")
     op.drop_index("ix_usage_persona_owner", table_name="usage_logs")
     for column in reversed(_COLUMNS):

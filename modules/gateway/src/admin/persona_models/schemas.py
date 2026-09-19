@@ -7,6 +7,7 @@ branches on ``reason`` rather than maintaining two error parsers.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -64,6 +65,35 @@ class PreferenceDetailResponse(BaseModel):
 
     default_model_id: str | None = None
     default_source: str = "claude-agent-sdk"
+
+
+class PersonaModelCostEntryResponse(BaseModel):
+    """One persona/model ledger bucket for a preference owner."""
+
+    persona_key: str
+    model_id: str
+    amount_usd: Decimal
+    input_tokens: int
+    output_tokens: int
+    call_count: int
+    unpriced_call_count: int
+
+
+class PersonaCostResponse(BaseModel):
+    """Tenant- and owner-scoped usage-ledger cost report."""
+
+    principal_kind: Literal["human", "service_account"]
+    principal_id: str
+    principal_dimension: Literal["preference_owner"] = "preference_owner"
+    chain_id: str | None = None
+    status: Literal["known", "none_incurred", "unknown"]
+    amount_usd: Decimal | None = None
+    call_count: int
+    unpriced_call_count: int
+    partial: bool
+    scope: str
+    caveat: str
+    entries: list[PersonaModelCostEntryResponse]
 
 
 # ── Request models ───────────────────────────────────────────────────────────

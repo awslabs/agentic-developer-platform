@@ -141,6 +141,11 @@ class UsageService(IUsageService):
             "model_policy_snapshot_digest": None,
             "model_policy_revision": None,
             "model_catalogue_revision": None,
+            "requested_model_id": None,
+            "resolved_model_id": None,
+            "resolution_source": None,
+            "runtime_posture": None,
+            "posture_revision": None,
         }
         attribution = getattr(context, "_persona_usage_attribution", None)
         try:
@@ -152,6 +157,32 @@ class UsageService(IUsageService):
                 return names
             if agent_run_id and attribution.invocation_id != agent_run_id:
                 return names
+            proposal = {
+                "requested_model_id": attribution.requested_model_id,
+                "resolved_model_id": attribution.resolved_model_id,
+                "resolution_source": attribution.resolution_source,
+                "runtime_posture": attribution.runtime_posture,
+                "posture_revision": attribution.posture_revision,
+            }
+            if proposal != {
+                "requested_model_id": None,
+                "resolved_model_id": None,
+                "resolution_source": None,
+                "runtime_posture": None,
+                "posture_revision": None,
+            } and not (
+                (
+                    attribution.requested_model_id is None
+                    or (isinstance(attribution.requested_model_id, str) and bool(attribution.requested_model_id))
+                )
+                and isinstance(attribution.resolved_model_id, str)
+                and bool(attribution.resolved_model_id)
+                and attribution.resolution_source in {"explicit-direct", "principal-mapping", "system-default"}
+                and attribution.runtime_posture == "report_only"
+                and type(attribution.posture_revision) is int
+                and attribution.posture_revision >= 1
+            ):
+                proposal = {key: None for key in proposal}
             return {
                 "persona_key": attribution.persona_key,
                 "compatibility_class": attribution.compatibility_class,
@@ -163,6 +194,7 @@ class UsageService(IUsageService):
                 "model_policy_snapshot_digest": attribution.snapshot_digest,
                 "model_policy_revision": attribution.policy_revision,
                 "model_catalogue_revision": attribution.catalogue_revision,
+                **proposal,
             }
         except (AttributeError, TypeError, ValueError):
             return names

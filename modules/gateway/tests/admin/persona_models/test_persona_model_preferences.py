@@ -98,10 +98,11 @@ import asyncio
 import os
 import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -121,6 +122,7 @@ from src.shared.models.persona_models import (
     ServicePrincipal,
     ServicePrincipalAlias,
 )
+from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
 
 os.environ["TESTING"] = "1"
@@ -3074,3 +3076,120 @@ async def test_manageable_principals_reports_truthful_source(engine, seed_data):
 
     # The seed data's agent_registry alias should also be truthful
     assert by_id[TEST_SP_CANONICAL_ID]["source"] == "agent-registry"
+
+
+def _cost_row(*, owner_kind: str, owner_id: str, org_id: str = TEST_ORG_A, chain_id: str = "chain-1", amount: str = "1.000000"):
+    return UsageLog(
+        id=new_uuid(),
+        org_id=org_id,
+        department_id="",
+        team_id="",
+        user_id="metered-worker",
+        account_type="service",
+        model="global.anthropic.claude-sonnet-4-6",
+        input_tokens=10,
+        output_tokens=5,
+        cost_usd=Decimal(amount),
+        latency_ms=1,
+        status_code=200,
+        persona_key="architect",
+        preference_owner_kind=owner_kind,
+        preference_owner_id=owner_id,
+        chain_id=chain_id,
+        pricing_source_kind="database",
+        pricing_generation_id=1,
+        pricing_pointer_revision=1,
+        pricing_snapshot_version="v1",
+        pricing_policy_version=1,
+    )
+
+
+@pytest.fixture
+async def cost_client(engine, seed_data):
+    """Minimal real FastAPI surface, isolated from unrelated legacy routers."""
+    from src.admin.persona_models.routes import router as admin_router
+    from src.admin.persona_models.self_routes import get_persona_model_current_user
+    from src.admin.persona_models.self_routes import router as self_router
+    from src.shared.database import get_db
+
+    app = FastAPI()
+    app.include_router(self_router)
+    app.include_router(admin_router)
+
+    async def override_get_db():
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            yield session
+
+    context = _human_context()
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: context
+    app.dependency_overrides[get_persona_model_current_user] = lambda: context
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        http._app = app  # type: ignore[attr-defined]
+        yield http
+
+
+async def test_cost_route_derives_self_owner_and_ignores_injected_owner(cost_client: AsyncClient, engine):
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add_all(
+            [
+                _cost_row(owner_kind="human", owner_id=TEST_USER_ID, amount="1.250000"),
+                _cost_row(owner_kind="human", owner_id=TEST_OTHER_USER_ID, amount="99.000000"),
+            ]
+        )
+        await session.commit()
+
+    response = await cost_client.get(f"/me/persona-models/costs?principal_id={TEST_OTHER_USER_ID}")
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["principal_kind"], body["principal_id"]) == ("human", TEST_USER_ID)
+    assert Decimal(body["amount_usd"]) == Decimal("1.250000")
+    assert body["principal_dimension"] == "preference_owner"
+    assert "invoice reconciliation is not established" in body["caveat"]
+
+
+async def test_cost_route_managed_principal_is_admin_and_chain_scoped(cost_client: AsyncClient, engine):
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add_all(
+            [
+                _cost_row(owner_kind="service_account", owner_id=TEST_SP_CANONICAL_ID, chain_id="wanted", amount="2.000000"),
+                _cost_row(owner_kind="service_account", owner_id=TEST_SP_CANONICAL_ID, chain_id="other", amount="9.000000"),
+            ]
+        )
+        await session.commit()
+
+    _set_context(cost_client, _admin_context())
+    response = await cost_client.get(f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/costs?chain_id=wanted")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["principal_id"] == TEST_SP_CANONICAL_ID
+    assert body["chain_id"] == "wanted"
+    assert Decimal(body["amount_usd"]) == Decimal("2.000000")
+
+    _set_context(cost_client, _service_context())
+    assert (await cost_client.get(f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/costs")).status_code == 403
+
+
+async def test_cost_route_rejects_cross_tenant_or_unknown_managed_target(cost_client: AsyncClient, engine):
+    other_id = "sp-other-tenant-cost"
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add(
+            ServicePrincipal(
+                canonical_service_principal_id=other_id,
+                org_id=TEST_ORG_B,
+                display_name="Other tenant",
+                status="active",
+                approved_by="other-admin",
+            )
+        )
+        await session.commit()
+
+    _set_context(cost_client, _admin_context())
+    cross_tenant = await cost_client.get(f"/service-principals/{other_id}/persona-models/costs")
+    unknown = await cost_client.get("/service-principals/no-such-principal/persona-models/costs")
+    assert cross_tenant.status_code == 422
+    assert unknown.status_code == 422

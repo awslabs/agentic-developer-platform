@@ -52,6 +52,11 @@ def _attribution(**overrides):
         snapshot_digest="a" * 64,
         policy_revision="b" * 64,
         catalogue_revision="c" * 64,
+        requested_model_id="sonnet46",
+        resolved_model_id="global.anthropic.claude-sonnet-4-6",
+        resolution_source="explicit-direct",
+        runtime_posture="report_only",
+        posture_revision=2,
     )
     fields.update(overrides)
     return PersonaUsageAttribution(**fields)
@@ -69,10 +74,17 @@ def _decision(**overrides):
     return SimpleNamespace(**fields)
 
 
-async def _log(db_session, context, *, pricing_decision=None, request_id="request-1"):
+async def _log(
+    db_session,
+    context,
+    *,
+    pricing_decision=None,
+    request_id="request-1",
+    model="global.anthropic.claude-sonnet-4-6",
+):
     await UsageService(db_session).log_request(
         context=context,
-        model="global.anthropic.claude-sonnet-4-6",
+        model=model,
         input_tokens=10,
         output_tokens=20,
         cost_usd=Decimal("0.001000"),
@@ -107,12 +119,26 @@ def test_cross_tenant_or_run_evidence_is_withheld_atomically(override):
 async def test_writer_persists_protected_persona_chain_owner_and_pricing_tuple(db_session):
     context = _context()
     context._persona_usage_attribution = _attribution()
-    await _log(db_session, context, pricing_decision=_decision())
+    await _log(db_session, context, pricing_decision=_decision(), model="legacy-runtime-model")
     row = (await db_session.scalars(select(UsageLog))).one()
     assert (row.persona_key, row.chain_id, row.root_invocation_id) == ("architect", "chain-1", "root-1")
     assert (row.preference_owner_kind, row.preference_owner_id) == ("service_account", "canonical-service-1")
     assert row.harness_contract_revision == "0.3.220"
     assert row.model_policy_snapshot_digest == "a" * 64
+    assert row.model == "legacy-runtime-model"
+    assert (
+        row.requested_model_id,
+        row.resolved_model_id,
+        row.resolution_source,
+        row.runtime_posture,
+        row.posture_revision,
+    ) == (
+        "sonnet46",
+        "global.anthropic.claude-sonnet-4-6",
+        "explicit-direct",
+        "report_only",
+        2,
+    )
     assert (
         row.pricing_source_kind,
         row.pricing_generation_id,
@@ -172,7 +198,13 @@ def test_projection_reads_only_the_protected_snapshot():
         principal_kind="human",
         principal_id="canonical-human-1",
         mappings={"architect": "global.anthropic.claude-sonnet-4-6"},
-        class_defaults={},
+        class_defaults={
+            "claude-agent-sdk": {
+                "model_id": "global.anthropic.claude-sonnet-4-6",
+                "posture": "report_only",
+                "posture_revision": 2,
+            }
+        },
         persona_contracts={
             "architect": {
                 "compatibility_class": "claude-agent-sdk",
@@ -215,3 +247,20 @@ def test_projection_reads_only_the_protected_snapshot():
     assert result.chain_id == "protected-chain"
     assert result.principal_kind == "human"
     assert result.principal_id == "canonical-human-1"
+    assert result.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+    assert result.resolution_source == "principal-mapping"
+    assert result.runtime_posture == "report_only"
+
+
+def test_partial_report_only_proposal_is_withheld_atomically():
+    context = _context()
+    context._persona_usage_attribution = _attribution(resolved_model_id=None)
+    evidence = UsageService._persona_evidence_for(context, RUN)
+    assert evidence["persona_key"] == "architect"
+    assert {
+        evidence["requested_model_id"],
+        evidence["resolved_model_id"],
+        evidence["resolution_source"],
+        evidence["runtime_posture"],
+        evidence["posture_revision"],
+    } == {None}

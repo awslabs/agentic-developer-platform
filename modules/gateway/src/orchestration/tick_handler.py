@@ -42,6 +42,7 @@ import logging
 import os
 from typing import Any
 
+from src.admin.persona_models.retirement import RetirementAlertReport, run_retirement_alert_pass
 from src.orchestration.dispatch_pass import DispatchPassReport, publish_pending, run_dispatch_pass
 from src.orchestration.engine_commands import EngineCommandReport, flush_engine_commands, run_engine_command_pass
 from src.orchestration.stall import StallConfig, StallReport, detect_stalls
@@ -120,6 +121,7 @@ _ENGINE_COMMAND_REPORT_ATTR = "engine_command_report"
 # is also what keeps projection optional at the boundary rather than a hard
 # dependency of the tick — a display concern must never be able to fail the tick.
 _PROJECTION_REPORT_ATTR = "tracker_projection_report"
+_RETIREMENT_REPORT_ATTR = "persona_model_retirement_report"
 
 
 def _attached_stall_report(report: TickReport) -> StallReport | None:
@@ -140,6 +142,10 @@ def _attached_engine_command_report(report: TickReport) -> EngineCommandReport |
 def _attached_projection_report(report: TickReport) -> TrackerProjectionReport | None:
     """The tracker-projection pass's report carried on a tick report, if one is attached."""
     return getattr(report, _PROJECTION_REPORT_ATTR, None)
+
+
+def _attached_retirement_report(report: TickReport) -> RetirementAlertReport | None:
+    return getattr(report, _RETIREMENT_REPORT_ATTR, None)
 
 
 def _emit_metrics(report: TickReport) -> None:
@@ -385,6 +391,18 @@ def _emit_metrics(report: TickReport) -> None:
                         }
                     )
 
+        retirement_report = _attached_retirement_report(report)
+        if retirement_report is not None:
+            metric_data.extend(
+                [
+                    {"MetricName": "RetirementMappingsExamined", "Value": retirement_report.mappings_examined, "Unit": "Count"},
+                    {"MetricName": "RetirementClaimsAcquired", "Value": retirement_report.claims_acquired, "Unit": "Count"},
+                    {"MetricName": "RetirementAlertsDelivered", "Value": retirement_report.delivered, "Unit": "Count"},
+                    {"MetricName": "RetirementAlertsFailed", "Value": retirement_report.notifications_failed, "Unit": "Count"},
+                    {"MetricName": "RetirementAlertErrors", "Value": retirement_report.errors, "Unit": "Count"},
+                ]
+            )
+
         # PutMetricData caps at 1000 datums per call.
         for start in range(0, len(metric_data), 1000):
             client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=metric_data[start : start + 1000])
@@ -512,10 +530,15 @@ async def _run() -> TickReport:
         # rather than being lost.
         await flush_tracker_projections(projection_report, session_factory=factory)
 
+        # Independent-session outbox pass. Each claim is committed before SNS
+        # publish, so this must remain after the engine transaction above.
+        retirement_report = await run_retirement_alert_pass(factory)
+
         setattr(report, _STALL_REPORT_ATTR, stall_report)
         setattr(report, _DISPATCH_REPORT_ATTR, dispatch_report)
         setattr(report, _ENGINE_COMMAND_REPORT_ATTR, engine_command_report)
         setattr(report, _PROJECTION_REPORT_ATTR, projection_report)
+        setattr(report, _RETIREMENT_REPORT_ATTR, retirement_report)
         setattr(report, "result_report", result_report)
         return report
 
@@ -540,6 +563,7 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
     dispatch_report = _attached_dispatch_report(report)
     engine_command_report = _attached_engine_command_report(report)
     projection_report = _attached_projection_report(report)
+    retirement_report = _attached_retirement_report(report)
 
     summary = {
         # A failed detection, dispatch or engine-command pass makes the whole
@@ -559,6 +583,7 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
         and (dispatch_report is None or dispatch_report.success)
         and (engine_command_report is None or engine_command_report.success)
         and (projection_report is None or projection_report.success)
+        and (retirement_report is None or retirement_report.success)
         else "error",
         "nodes_examined": report.nodes_examined,
         "transitions_effected": report.transitions_effected,
@@ -643,6 +668,18 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
                 "projection_errors": projection_report.errors,
                 "projections_capped": projection_report.capped,
                 "projections_enabled": projection_report.enabled,
+            }
+        )
+
+    if retirement_report is not None:
+        summary.update(
+            {
+                "retirement_mappings_examined": retirement_report.mappings_examined,
+                "retirement_claims_acquired": retirement_report.claims_acquired,
+                "retirement_retries_acquired": retirement_report.retries_acquired,
+                "retirement_alerts_delivered": retirement_report.delivered,
+                "retirement_alerts_failed": retirement_report.notifications_failed,
+                "retirement_alert_errors": retirement_report.errors,
             }
         )
 

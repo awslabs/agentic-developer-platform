@@ -22,6 +22,7 @@ from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
+from src.usage.persona_cost import get_persona_cost_report
 
 from . import catalogue_routes, catalogue_service, service
 from .catalogue import persona_compatibility_class
@@ -30,6 +31,7 @@ from .schemas import (
     AliasResponse,
     ConflictResponse,
     LinkAliasRequest,
+    PersonaCostResponse,
     PreferenceDetailResponse,
     PreferenceListResponse,
     RegisterServicePrincipalRequest,
@@ -74,6 +76,39 @@ async def list_service_principal_preferences(
 
     entries = await service.build_preference_list(db, org_id=current_user.org_id, principal_kind="service_account", principal_id=canonical_id)
     return PreferenceListResponse(principal_kind="service_account", principal_id=canonical_id, entries=entries)
+
+
+@router.get("/{canonical_id}/persona-models/costs", response_model=PersonaCostResponse)
+async def get_service_principal_persona_costs(
+    canonical_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    chain_id: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+) -> PersonaCostResponse:
+    """Return tenant-scoped usage-ledger costs for an administered principal."""
+    await _require_human_org_admin(db, current_user)
+    try:
+        await service.validate_target_service_principal(
+            db,
+            canonical_id=canonical_id,
+            org_id=current_user.org_id,
+        )
+    except service.PreferenceRejectedError as exc:
+        raise _rejected(exc) from exc
+    report = await get_persona_cost_report(
+        db,
+        org_id=current_user.org_id,
+        principal_kind="service_account",
+        principal_id=canonical_id,
+        chain_id=chain_id,
+    )
+    return PersonaCostResponse(
+        **{
+            **report.__dict__,
+            "status": report.status.value,
+            "entries": [entry.__dict__ for entry in report.entries],
+        }
+    )
 
 
 @router.get("/{canonical_id}/persona-models/catalog", response_model=ModelCatalogueResponse)

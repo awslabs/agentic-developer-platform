@@ -603,9 +603,10 @@ def protected_usage_attribution(*, store, record) -> PersonaUsageAttribution | N
     worker-unwritable authority table used by bootstrap; request data is not an
     input.  Snapshot parsing supplies the tenant/digest integrity checks.
 
-    PMM-07 owns resolution and live admission.  This function therefore records
-    only facts frozen by PMM-06 and does not infer requested/resolved model or
-    resolution source from report-only policy.
+    PMM-07 owns resolution and live admission.  When its report-only resolver can
+    produce a proposal from the same protected facts, this function records that
+    proposal as evidence. It is not enforcement and is not the actually invoked
+    model; the usage writer keeps that truth in ``usage_logs.model``.
     """
     try:
         raw_execution = (
@@ -639,6 +640,16 @@ def protected_usage_attribution(*, store, record) -> PersonaUsageAttribution | N
             )
         ):
             return None
+        try:
+            proposal = resolve_decision(
+                snapshot,
+                invocation_id=record.invocation_id,
+                persona=persona,
+                direct_override=raw_execution.get("direct_model_override", {}).get("S") or None,
+                direct_requested=raw_execution.get("direct_model_requested", {}).get("S") or None,
+            )
+        except ModelPolicyError:
+            proposal = None
         return PersonaUsageAttribution(
             tenant_id=snapshot.tenant_id,
             invocation_id=record.invocation_id,
@@ -652,6 +663,11 @@ def protected_usage_attribution(*, store, record) -> PersonaUsageAttribution | N
             snapshot_digest=digest,
             policy_revision=snapshot.policy_revision,
             catalogue_revision=snapshot.catalogue_revision,
+            requested_model_id=proposal.requested_model_id if proposal else None,
+            resolved_model_id=proposal.resolved_model_id if proposal else None,
+            resolution_source=proposal.resolution_source if proposal else None,
+            runtime_posture=proposal.runtime_posture if proposal else None,
+            posture_revision=proposal.posture_revision if proposal else None,
         )
     # Reporting enrichment is not an admission gate. DynamoDB/network failures,
     # test doubles with an older shape, and future deserializer errors all mean

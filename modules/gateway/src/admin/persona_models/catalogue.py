@@ -17,6 +17,8 @@ in the test suite asserts it matches the authoritative source.  See
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Literal
 
@@ -114,6 +116,16 @@ class CatalogueModel:
     compatibility_class: str
     harness_contract_revision: str
     lifecycle: LifecycleStatus = "active"
+
+    @property
+    def lifecycle_revision(self) -> str:
+        """Stable transition identity for retirement alert deduplication."""
+        canonical = json.dumps(
+            {"lifecycle": self.lifecycle, "model_id": self.canonical_model_id},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
 
 
 # The catalogue.  Order is presentational (family groups).

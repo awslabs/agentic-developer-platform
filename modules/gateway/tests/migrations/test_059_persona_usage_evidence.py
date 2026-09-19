@@ -9,6 +9,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.shared.models.persona_models import PersonaModelRetirementAlert
 from src.shared.models.usage import UsageLog
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "alembic" / "versions"
@@ -23,11 +24,35 @@ COLUMNS = {
     "model_policy_snapshot_digest",
     "model_policy_revision",
     "model_catalogue_revision",
+    "requested_model_id",
+    "resolved_model_id",
+    "resolution_source",
+    "runtime_posture",
+    "posture_revision",
     "pricing_source_kind",
     "pricing_generation_id",
     "pricing_pointer_revision",
     "pricing_snapshot_version",
     "pricing_policy_version",
+}
+OUTBOX_COLUMNS = {
+    "id",
+    "org_id",
+    "preference_id",
+    "persona_key",
+    "preference_owner_kind",
+    "preference_owner_id",
+    "canonical_model_id",
+    "lifecycle_revision",
+    "state",
+    "claim_token",
+    "lease_expires_at",
+    "attempt_count",
+    "last_error",
+    "claimed_at",
+    "delivered_at",
+    "created_at",
+    "updated_at",
 }
 
 
@@ -94,6 +119,10 @@ async def test_columns_are_nullable_without_defaults_and_match_the_model():
         assert all(columns[name].get("default") is None for name in COLUMNS)
         assert COLUMNS <= set(UsageLog.__table__.columns.keys())
         assert {"ix_usage_persona_owner", "ix_usage_chain_id"} <= {index.name for index in UsageLog.__table__.indexes}
+        async with engine.connect() as conn:
+            outbox = {row["name"]: row for row in await conn.run_sync(lambda c: sa_inspect(c).get_columns("persona_model_retirement_alerts"))}
+        assert set(outbox) == OUTBOX_COLUMNS
+        assert set(PersonaModelRetirementAlert.__table__.columns.keys()) == OUTBOX_COLUMNS
     finally:
         await engine.dispose()
 
@@ -154,7 +183,9 @@ async def test_partial_query_indexes_and_downgrade():
             await conn.run_sync(_run, MIGRATION.downgrade)
         async with engine.connect() as conn:
             columns = {row["name"] for row in await conn.run_sync(lambda c: sa_inspect(c).get_columns("usage_logs"))}
+            tables = set(await conn.run_sync(lambda c: sa_inspect(c).get_table_names()))
         assert COLUMNS.isdisjoint(columns)
+        assert "persona_model_retirement_alerts" not in tables
     finally:
         await engine.dispose()
 
@@ -182,6 +213,10 @@ def test_real_postgres_upgrade_downgrade_and_reupgrade(pg_url):
         rows = cursor.fetchall()
         assert {row[0] for row in rows} == COLUMNS
         assert all(row[1] == "YES" and row[2] is None for row in rows)
+        cursor.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='persona_model_retirement_alerts'"
+        )
+        assert {row[0] for row in cursor.fetchall()} == OUTBOX_COLUMNS
 
     downgrade(pg_url, MIGRATION.down_revision)
     with psycopg2.connect(pg_url) as conn, conn.cursor() as cursor:
@@ -190,6 +225,8 @@ def test_real_postgres_upgrade_downgrade_and_reupgrade(pg_url):
             (list(COLUMNS),),
         )
         assert cursor.fetchall() == []
+        cursor.execute("SELECT to_regclass('public.persona_model_retirement_alerts')")
+        assert cursor.fetchone()[0] is None
 
     upgrade(pg_url, "head")
     with psycopg2.connect(pg_url) as conn, conn.cursor() as cursor:

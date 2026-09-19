@@ -61,6 +61,13 @@ class UsageLog(Base, TenantMixin):
     model_policy_snapshot_digest: Mapped[str | None] = mapped_column(String(64))
     model_policy_revision: Mapped[str | None] = mapped_column(String(64))
     model_catalogue_revision: Mapped[str | None] = mapped_column(String(64))
+    # PMM-07's report-only proposal. These are not the invoked model (that is
+    # ``model`` above) and are nullable as one atomic decision tuple.
+    requested_model_id: Mapped[str | None] = mapped_column(String(255))
+    resolved_model_id: Mapped[str | None] = mapped_column(String(255))
+    resolution_source: Mapped[str | None] = mapped_column(String(32))
+    runtime_posture: Mapped[str | None] = mapped_column(String(32))
+    posture_revision: Mapped[int | None] = mapped_column(Integer)
     # The complete pricing-decision identity. A partial tuple is never written:
     # NULL across all five means the decision was not captured, not "current".
     pricing_source_kind: Mapped[str | None] = mapped_column(String(32))
