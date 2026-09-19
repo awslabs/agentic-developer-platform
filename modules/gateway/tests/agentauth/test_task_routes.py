@@ -1,6 +1,7 @@
 """Task acquisition and bootstrap exercised through real routes and TokenReview."""
 
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import boto3
@@ -12,7 +13,7 @@ from src.agentauth.bootstrap import envelope_digest
 from src.agentauth.routes import AgentRuntime, get_agent_runtime
 from src.agentauth.routes import router as bootstrap_router
 from src.agentauth.task_routes import router, task_delivery
-from tests.agentauth.test_bootstrap_routes import ENV, kubernetes, provision, store  # noqa: F401
+from tests.agentauth.test_bootstrap_routes import ENV, kubernetes, lifecycle_job, provision, store  # noqa: F401
 
 HEADERS = {"X-Caller-Identity": "registered-worker", "X-Adp-Workload-Token": "pod-token"}
 BASE = "/internal/v1/agent/task"
@@ -94,3 +95,68 @@ def test_task_service_feature_flag_defaults_off(task_http):
     with pytest.raises(HTTPException) as error:
         task_delivery(runtime)
     assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize("action", ["acquire", "heartbeat", "ack"])
+@pytest.mark.parametrize("job_status", [500, 200])
+def test_optional_deadline_change_does_not_refuse_a_committed_task(task_http, monkeypatch, action, job_status):
+    client, runtime, delivery, envelope, kube = task_http
+    state = lifecycle_job(kube)
+    state["job_status"] = 200 if job_status == 500 else 500
+    before = runtime.workloads.verify("pod-token")
+    assert (before.deadline_at is not None) == (job_status == 500)
+    if action != "acquire":
+        assert client.post(BASE + "/acquire", headers=HEADERS, json={}).status_code == 200
+    method = "acquire" if action == "acquire" else "maintain"
+    original = getattr(delivery, method)
+
+    def change_optional_observation(*args, **kwargs):
+        result = original(*args, **kwargs)
+        state["job_status"] = job_status
+        return result
+
+    monkeypatch.setattr(delivery, method, change_optional_observation)
+    response = client.post(BASE + "/" + action, headers=HEADERS, json={})
+    assert response.status_code == 200
+    assert runtime.workloads.verify("pod-token").deadline_at != before.deadline_at
+    row = delivery.read("pod-a")
+    assert row["invocation_id"] == "run-a"
+    assert row["state"] == ("acknowledged" if action == "ack" else "assigned")
+    if action == "acquire":
+        assert json.loads(response.json()["body"]) == envelope
+        # A lost response still returns this exact assignment, never a new task.
+        assert client.post(BASE + "/acquire", headers=HEADERS, json={}).json() == response.json()
+    else:
+        assert response.json() == {"accepted": True}
+    if action == "ack":
+        assert client.post(BASE + "/ack", headers=HEADERS, json={}).status_code == 200
+        assert client.post(BASE + "/acquire", headers=HEADERS, json={}).status_code == 404
+
+
+@pytest.mark.parametrize("action", ["acquire", "heartbeat", "ack"])
+@pytest.mark.parametrize("field", ["uid", "name", "namespace", "service_account", "ip"])
+def test_task_final_identity_fence_still_rejects_replacement(task_http, monkeypatch, action, field):
+    client, runtime, delivery, _, _ = task_http
+    if action != "acquire":
+        assert client.post(BASE + "/acquire", headers=HEADERS, json={}).status_code == 200
+    verify = runtime.workloads.verify
+    changed = False
+
+    def verified_snapshot(token):
+        pod = verify(token)
+        return replace(pod, **{field: "replacement"}) if changed else pod
+
+    method = "acquire" if action == "acquire" else "maintain"
+    original = getattr(delivery, method)
+
+    def replace_identity(*args, **kwargs):
+        nonlocal changed
+        result = original(*args, **kwargs)
+        changed = True
+        return result
+
+    monkeypatch.setattr(runtime.workloads, "verify", verified_snapshot)
+    monkeypatch.setattr(delivery, method, replace_identity)
+    response = client.post(BASE + "/" + action, headers=HEADERS, json={})
+    assert response.status_code == 404
+    assert "body" not in response.json() and "accepted" not in response.json()
