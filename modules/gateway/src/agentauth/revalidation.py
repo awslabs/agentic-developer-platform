@@ -42,9 +42,12 @@ async def revalidate_command(runtime, body, *, context):
             raise ValueError
         registration = await run_in_threadpool(runtime.store._read, f"TENANT#{target.tenant_id}", f"REG#{target.invocation_id}#{target.attempt}")
         generation = int(registration["generation"]["N"])
+        key_id = config.get(SIGNING_KEY_ID_ENV)
+        if not key_id:
+            raise EnvelopeError("envelope key id is not configured")
         proof = verify_envelope(
             body.envelope,
-            public_keys={config.get(SIGNING_KEY_ID_ENV, "primary"): _signing_key(config).public_key()},
+            public_keys={key_id: _signing_key(config).public_key()},
             expected_run_id=target.invocation_id,
             expected_generation=generation,
             expected_action=body.action.value,

@@ -144,7 +144,9 @@ async def test_human_revalidation_refuses_wrong_bindings(human_queued, monkeypat
 
 
 @pytest.mark.parametrize("orchestration", [False, True])
-@pytest.mark.parametrize("attack", [None, "service", "wrong_owner", "wrong_tenant", "missing_key", "expired_session", "no_membership"])
+@pytest.mark.parametrize(
+    "attack", [None, "service", "wrong_owner", "wrong_tenant", "missing_key", "expired_session", "no_membership", "expired_during_ownership_read"]
+)
 def test_both_human_routes_send_exact_signed_bytes(orchestration, monkeypatch, attack):
     from src.agentauth.envelope import SIGNING_KEY_ENV
     from src.agentauth.execution import ExecutionStatus
@@ -177,6 +179,8 @@ def test_both_human_routes_send_exact_signed_bytes(orchestration, monkeypatch, a
     db = MagicMock(scalar=AsyncMock(return_value=CANONICAL_USER_ID))
     raw = ('{ "command_id" : "' + COMMAND_ID + '", "reason": "hold" }').encode()
     context = human_context()
+    signer = MagicMock(wraps=sign_envelope)
+    monkeypatch.setattr("src.agentauth.envelope.sign_envelope", signer)
     if attack == "service":
         context.account_type = "service"
     elif attack == "wrong_owner":
@@ -190,11 +194,22 @@ def test_both_human_routes_send_exact_signed_bytes(orchestration, monkeypatch, a
     elif attack == "no_membership":
         # Identity mapping resolves twice; the current membership lookup refuses.
         db.scalar.side_effect = [CANONICAL_USER_ID, CANONICAL_USER_ID, None]
+    elif attack == "expired_during_ownership_read":
+        grant = authority.live_grant.return_value
+
+        def slow_protected_read(**kwargs):
+            service._now = lambda: context.expires_at + timedelta(seconds=1)
+            return grant
+
+        authority.live_grant.side_effect = slow_protected_read
     with build_client(service, context, db, orchestration=orchestration) as client:
         response = client.post(command_path("pause", orchestration), content=raw, headers={"Content-Type": "application/json"})
     if attack is not None:
         assert response.status_code == 404, response.text
         service._http_client.request.assert_not_awaited()
+        if attack == "expired_during_ownership_read":
+            authority.live_grant.assert_called_once()
+            signer.assert_not_called()
         return
     assert response.status_code == 202, response.text
     assert response.json()["command_status"] == "pending"
@@ -302,5 +317,19 @@ async def test_human_proof_expiring_during_membership_read_is_refused(human_queu
         monkeypatch.setattr("src.agentauth.revalidation.datetime", AfterRead)
 
     monkeypatch.setattr("src.agentauth.human_control.require_live_human_membership", delayed_membership)
+    response = await ctx.client.post("/internal/v1/agent/revalidate", json=body, headers=ctx.target_headers)
+    assert response.status_code == 404, response.text
+
+
+@pytest.mark.parametrize("key_id", [None, ""])
+async def test_revalidation_refuses_missing_signing_key_id(human_queued, monkeypatch, key_id):
+    ctx = human_queued
+    ctx.runtime.env[SIGNING_KEY_ID_ENV] = "primary"
+    body = human_request(ctx)
+    if key_id is None:
+        ctx.runtime.env.pop(SIGNING_KEY_ID_ENV)
+    else:
+        ctx.runtime.env[SIGNING_KEY_ID_ENV] = key_id
+    monkeypatch.setattr(ctx.child.service.policy, "require_supported", lambda action: None)
     response = await ctx.client.post("/internal/v1/agent/revalidate", json=body, headers=ctx.target_headers)
     assert response.status_code == 404, response.text

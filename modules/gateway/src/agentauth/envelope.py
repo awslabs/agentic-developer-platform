@@ -256,8 +256,13 @@ def sign_envelope(
     if not key_id:
         raise EnvelopeError("envelope key id is not configured")
 
+    # Never turn an expired authorization into a fresh one-second proof. The
+    # caller checks freshness after ownership reads; the signer independently
+    # refuses invalid lifetimes instead of coercing them into authority.
+    if type(ttl_seconds) is not int or ttl_seconds < 1:
+        raise EnvelopeError("envelope lifetime must be a positive integer")
     issued = (now or datetime.now(UTC)).replace(microsecond=0)
-    ttl = max(1, min(int(ttl_seconds), MAX_ENVELOPE_TTL_SECONDS))
+    ttl = min(ttl_seconds, MAX_ENVELOPE_TTL_SECONDS)
 
     payload: dict[str, object] = {
         "v": ENVELOPE_VERSION,

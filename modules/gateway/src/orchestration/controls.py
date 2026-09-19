@@ -577,7 +577,7 @@ async def _run_control_identity(current_user: TokenContext, db: AsyncSession) ->
     `attributed_org_id` instead would let a caller nominate the tenant whose runs
     they may control.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     return canonical_user_id, current_user.org_id
 
 
