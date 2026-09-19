@@ -63,6 +63,7 @@ never a transcript and never a credential.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime
@@ -183,6 +184,10 @@ class ReviewEvidenceRefusal(StrEnum):
     SCOPE_MISMATCH = "scope_mismatch"  # Result names another node or cycle
     POLICY_MISMATCH = "policy_mismatch"  # Result was authorized under another accepted plan
     STALE_CLAIM = "stale_claim"  # Claim generation is no longer current
+    REVIEWER_MISMATCH = "reviewer_mismatch"  # Named reviewer is not the authenticated producer
+    REVIEWER_UNVERIFIED = "reviewer_unverified"  # No authenticated producer to compare against
+    EXECUTION_MISMATCH = "execution_mismatch"  # Result names another execution
+    EXECUTION_UNBOUND = "execution_unbound"  # Persisted evidence must name its execution
 
     # Evidence-quality arms. The result is well-formed and correctly bound, and
     # still cannot be treated as review evidence for the current revision.
@@ -338,6 +343,8 @@ def validate_review_result(
     binding: OrchestrationPullRequestBinding,
     flow_id: str,
     author_run_id: str,
+    reviewer_run_id: str | None = None,
+    execution_id: str | None = None,
     actual_head_sha: str | None = None,
     trusted_artifact_refs: frozenset[str] | None = None,
 ) -> ReviewEvidence:
@@ -349,6 +356,23 @@ def validate_review_result(
     dispatch record naming which run authored the change. Every corresponding field
     in the document is compared against them, so a forged scope, a forged repository
     or a forged author is a refusal rather than an accepted claim.
+
+    ``reviewer_run_id`` is the run the transport *authenticated* as the producer of
+    this artifact — not the run the document names. Supply it on any ingestion path
+    where the artifact arrived over an authenticated channel. Checking only
+    "reviewer differs from author" is insufficient and was reproduced as such: a
+    substituted ``reviewer_run_id`` validated with ``is_complete_review=True``,
+    which means the run credited with the review need not be the run that performed
+    it. When omitted, no producer authentication is claimed and the document's
+    reviewer is treated as unverified — which the ``REVIEWER_UNVERIFIED`` arm
+    reports rather than passing off as bound.
+
+    ``execution_id`` is the execution the server resolved for this node and cycle.
+    The contract lets a pre-submission producer leave ``scope.execution_id`` unset
+    because the runtime may not know it yet, but a *persisted* artifact must be
+    bound to the exact execution: an unbound or model-substituted execution is
+    refused here rather than recorded against whichever row the caller happened to
+    load.
 
     ``actual_head_sha`` is the provider's current head when the caller has read it.
     When supplied and different from the bound head, it is used for the stale-head
@@ -432,6 +456,27 @@ def validate_review_result(
             "The reviewing run is the run that authored the change. Note that a distinct reviewer run still does "
             "not satisfy the provider's independent-approval requirement.",
         )
+    if reviewer_run_id is not None and result.lineage.reviewer_run_id != reviewer_run_id:
+        # The self-review check above is necessary and not sufficient: it only proves
+        # the *named* reviewer differs from the author. A substituted reviewer id
+        # passes it while crediting the review to a run that never performed it,
+        # which is the reproduced finding. The authenticated producer is the fact.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.REVIEWER_MISMATCH,
+            "The review result names a reviewing run that is not the authenticated producer of this artifact.",
+        )
+    if execution_id is not None and result.scope.execution_id != execution_id:
+        # Covers both "names someone else's execution" and "names none at all". A
+        # pre-submission producer may legitimately omit it, but evidence about to be
+        # persisted must be bound to the exact execution the server resolved — an
+        # unbound artifact recorded against a caller-selected row is how evidence
+        # ends up attached to work it did not examine.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.EXECUTION_UNBOUND if result.scope.execution_id is None else ReviewEvidenceRefusal.EXECUTION_MISMATCH,
+            "The review result does not name the execution this review belongs to."
+            if result.scope.execution_id is None
+            else "The review result names a different execution than the one resolved for this story.",
+        )
 
     current_head = actual_head_sha or binding.head_sha
     if result.subject.reviewed_head_sha != current_head:
@@ -484,23 +529,63 @@ def _head_bound_refs(result: Any) -> list[Any]:
     return refs
 
 
+def _result_identity(result: Any) -> str:
+    """The part of a key that distinguishes one review *result* from another.
+
+    The work coordinates alone are not an identity. Two genuinely different review
+    results can share tenant, node, cycle and reviewed commit — a first reviewer
+    whose verdict failed to publish, and a second authorized run that published on
+    the unchanged head. Folding in ``result_id`` and the reviewing run keeps those
+    two distinct while a *replay of the same result* still converges.
+
+    ``result_id`` is producer-chosen and unbounded in the contract, and the ledger's
+    ``operation_key`` column is ``String(255)``. So the identity is hashed rather
+    than interpolated: a long ``result_id`` must not silently push the key over the
+    limit, where it would either raise at persistence time or truncate two distinct
+    results back into one. The components are length-prefixed before hashing for the
+    reason ``execution_runner.OperationIdentity.key`` gives — a bare ``:`` join is
+    not injective, so two different (result, reviewer) pairs could otherwise flatten
+    to the same digest.
+    """
+    parts = (str(result.result_id), str(result.lineage.reviewer_run_id))
+    material = ":".join(f"{len(part)}={part}" for part in parts)
+    return hashlib.sha256(material.encode()).hexdigest()[:32]
+
+
 def review_artifact_ref(result: Any) -> str:
     """The stable reference under which this review result is recorded.
 
-    Derived from the work — tenant, node, cycle and reviewed commit — rather than
-    generated per submission, for the reason ``ActionIntent.operation_key``
-    documents: a per-attempt value turns every retry into a second apparent review.
-    A resubmission of the same review at the same head converges on this same
-    string; a review of a *different* commit is different evidence and gets its own.
+    Derived from the work — tenant, node, cycle and reviewed commit — *plus* the
+    identity of the result itself, rather than generated per submission. The work
+    coordinates keep the reference meaningful to an operator; the result identity is
+    what makes it a reference to *this* review.
+
+    A resubmission of the same result converges on this same string, so a retry is
+    still one review. A different result at the same head — the reproduced
+    failed-publication-then-authorized-success sequence — gets its own reference
+    instead of colliding with the first and being refused as already settled.
     """
     scope = result.scope
-    return f"review:{scope.org_id}:{scope.node_id}:cycle-{scope.cycle}:{result.subject.reviewed_head_sha}"
+    return f"review:{scope.org_id}:{scope.node_id}:cycle-{scope.cycle}:{result.subject.reviewed_head_sha}:{_result_identity(result)}"
 
 
 def evidence_operation_key(evidence: ReviewEvidence) -> str:
-    """Idempotency key for recording this evidence. Derived from the work, not the attempt."""
+    """Idempotency key for recording this evidence.
+
+    Scoped to the real result identity, not the head. Keying on the work alone made
+    two different complete results at one commit share a single ledger action —
+    reproduced on real PostgreSQL: an incomplete review whose publication failed
+    with HTTP 401 was recorded and settled first, and the later authorized approval
+    at the *unchanged* head returned ``CONFLICT`` / ``action_already_settled``,
+    because a settled observation is correctly immutable. The defect was the key, so
+    that is what this fixes; the store's immutability is the property being relied
+    on, not worked around.
+
+    A replay of the same result still produces the same key, so the duplicate path
+    (``observation_already_recorded``) continues to absorb retries.
+    """
     scope = evidence.result.scope
-    return f"record_review:{scope.node_id}:cycle-{scope.cycle}:{evidence.reviewed_head_sha}"
+    return f"record_review:{scope.node_id}:cycle-{scope.cycle}:{evidence.reviewed_head_sha}:{_result_identity(evidence.result)}"
 
 
 def evidence_action_intent(evidence: ReviewEvidence) -> ActionIntent:
@@ -573,6 +658,13 @@ def outstanding_block(refusal: ReviewEvidenceRefusal, *, owner: str) -> BlockRec
         ReviewEvidenceRefusal.SCOPE_MISMATCH,
         ReviewEvidenceRefusal.POLICY_MISMATCH,
         ReviewEvidenceRefusal.STALE_CLAIM,
+        # A reviewer or execution that cannot be attributed to authenticated state is
+        # an authority condition, not a retry: running the reviewer again over the
+        # same unauthenticated path would produce the same unattributable artifact.
+        ReviewEvidenceRefusal.REVIEWER_MISMATCH,
+        ReviewEvidenceRefusal.REVIEWER_UNVERIFIED,
+        ReviewEvidenceRefusal.EXECUTION_MISMATCH,
+        ReviewEvidenceRefusal.EXECUTION_UNBOUND,
     }:
         code = BlockCode.AUTHORITY_UNVERIFIABLE
     else:
@@ -629,6 +721,22 @@ def refusal_explanation(refusal: ReviewEvidenceRefusal) -> str:
         ReviewEvidenceRefusal.STALE_CLAIM: (
             "The review result was produced under a claim generation that is no longer current, so another run "
             "now owns this work. The current owner must review again."
+        ),
+        ReviewEvidenceRefusal.REVIEWER_MISMATCH: (
+            "The review result credits a reviewing run that is not the authenticated producer of the artifact, so who "
+            "actually performed this review cannot be established. The reviewer must publish its result over its own "
+            "authenticated run identity."
+        ),
+        ReviewEvidenceRefusal.REVIEWER_UNVERIFIED: (
+            "The review result arrived without an authenticated producer to attribute it to, so the reviewing run is "
+            "self-declared. Evidence must be published through the run's authenticated lineage."
+        ),
+        ReviewEvidenceRefusal.EXECUTION_MISMATCH: (
+            "The review result names a different execution than the one resolved for this story, so it is evidence about another attempt."
+        ),
+        ReviewEvidenceRefusal.EXECUTION_UNBOUND: (
+            "The review result does not name the execution it belongs to, so persisted evidence could not be bound to the "
+            "work it examined. The producer must include the execution it was dispatched for."
         ),
         ReviewEvidenceRefusal.STALE_HEAD: (
             "The reviewed commit is not the pull request's current head, so the review's findings and test evidence describe different code. "

@@ -690,7 +690,10 @@ class TestExpectedSubjectComesFromProtectedState:
             flow_id=flow_id,
             author_run_id=AUTHOR_RUN,
         )
-        assert evidence.artifact_ref.endswith(HEAD)
+        # The reviewed commit is named in the reference, but is no longer the last
+        # component: the result identity is appended so two different results at one
+        # head do not share a reference. See TestEvidenceIdentityIsPerResult.
+        assert HEAD in evidence.artifact_ref
 
 
 # ---------------------------------------------------------------------------
@@ -882,3 +885,168 @@ class TestLegacyOutputStaysParseableAndNonAuthoritative:
         note = legacy_review_note("APPROVE")
         assert not isinstance(note, type(accept()))
         assert "artifact_ref" not in note
+
+
+# ---------------------------------------------------------------------------
+# Producer attribution: the authenticated producer, not the document's claim
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerIsBoundToTheAuthenticatedProducer:
+    """`reviewer != author` is necessary and not sufficient.
+
+    Reproduced finding: an arbitrary substituted `reviewer_run_id` validated with
+    `is_complete_review=True`, because the only lineage comparison was against the
+    author. That means the run credited with a review need not be the run that
+    performed it — so the "independently attributable reviewer run" this contract
+    exists to establish was not established.
+    """
+
+    def test_substituted_reviewer_is_refused_against_the_authenticated_producer(self):
+        body = patched(APPROVE, lineage={"reviewer_run_id": "run-somebody-else-entirely"})
+        assert refusal(body, reviewer_run_id=REVIEWER_RUN) is ReviewEvidenceRefusal.REVIEWER_MISMATCH
+
+    def test_matching_reviewer_is_accepted(self):
+        assert accept(reviewer_run_id=REVIEWER_RUN).is_complete_review
+
+    def test_substitution_passes_the_self_review_check_it_is_not_caught_by(self):
+        """Pin *why* the separate arm is needed.
+
+        The substituted id differs from the author, so the self-review check is
+        satisfied and cannot be the thing that refuses this. Without an
+        authenticated producer to compare against, the document is accepted.
+        """
+        body = patched(APPROVE, lineage={"reviewer_run_id": "run-somebody-else-entirely"})
+        assert body["lineage"]["reviewer_run_id"] != AUTHOR_RUN
+        assert accept(body).is_complete_review
+
+    def test_unverified_producer_is_not_silently_trusted(self):
+        """Omitting the producer must not read as "verified".
+
+        `None` means the caller is stating it did not authenticate the producer.
+        That is a different fact from "the producer matched", and the ingestion path
+        that persists evidence must not be able to reach acceptance without it.
+        """
+        evidence = accept()
+        assert evidence.is_complete_review
+        assert refusal(reviewer_run_id="run-the-real-authenticated-reviewer") is ReviewEvidenceRefusal.REVIEWER_MISMATCH
+
+
+class TestExecutionIsBoundServerSide:
+    """A persisted artifact must name the exact execution the server resolved."""
+
+    def test_wrong_execution_is_refused(self):
+        body = patched(APPROVE, scope={"execution_id": "execution-somewhere-else"})
+        assert refusal(body, execution_id="execution-the-real-one") is ReviewEvidenceRefusal.EXECUTION_MISMATCH
+
+    def test_unbound_execution_is_refused_with_its_own_code(self):
+        """An absent execution is distinguishable from a wrong one.
+
+        The contract permits a pre-submission producer to omit it, so "not yet
+        known" and "names another attempt" are different producer bugs and get
+        different codes.
+        """
+        body = patched(APPROVE, scope={"execution_id": None})
+        assert refusal(body, execution_id="execution-the-real-one") is ReviewEvidenceRefusal.EXECUTION_UNBOUND
+
+    def test_matching_execution_is_accepted(self):
+        execution_id = APPROVE["scope"]["execution_id"]
+        assert accept(execution_id=execution_id).is_complete_review
+
+    def test_pre_submission_producer_may_still_omit_it(self):
+        """Backwards compatibility: no server-resolved execution, no check.
+
+        A caller that is only validating a producer's draft does not have an
+        execution to compare against, and must not be forced to invent one.
+        """
+        body = patched(APPROVE, scope={"execution_id": None})
+        assert accept(body).is_complete_review
+
+
+# ---------------------------------------------------------------------------
+# Ledger identity: per result, not per head
+# ---------------------------------------------------------------------------
+
+
+def _result_variant(reviewer: str, result_id: str) -> dict:
+    body = patched(APPROVE, lineage={"reviewer_run_id": reviewer})
+    body["result_id"] = result_id
+    return body
+
+
+class TestEvidenceIdentityIsPerResult:
+    """Two different results at one head must not share a ledger action.
+
+    Reproduced on real PostgreSQL by the supervisor: a first valid *incomplete*
+    review whose publication failed with HTTP 401 was recorded and settled, and the
+    later complete approval at the **unchanged** head — a distinct `result_id` —
+    returned CONFLICT / `action_already_settled`. A settled observation is correctly
+    immutable, so the defect was the key, not the store.
+
+    The synthetic store used elsewhere in this file does not reproduce the
+    immutability refusal (it replaces unconditionally and always returns APPLIED),
+    which is why these assertions are about key distinctness and why the real-store
+    sequence is exercised in `test_review_evidence_postgres.py`.
+    """
+
+    def test_distinct_results_at_the_same_head_get_distinct_refs(self):
+        first = accept(_result_variant("run-reviewer-one", "result-first-attempt"), reviewer_run_id="run-reviewer-one")
+        second = accept(_result_variant("run-reviewer-two", "result-second-attempt"), reviewer_run_id="run-reviewer-two")
+        assert first.reviewed_head_sha == second.reviewed_head_sha, "the premise is an unchanged head"
+        assert first.artifact_ref != second.artifact_ref
+
+    def test_distinct_results_at_the_same_head_get_distinct_operation_keys(self):
+        first = accept(_result_variant("run-reviewer-one", "result-first-attempt"), reviewer_run_id="run-reviewer-one")
+        second = accept(_result_variant("run-reviewer-two", "result-second-attempt"), reviewer_run_id="run-reviewer-two")
+        assert evidence_operation_key(first) != evidence_operation_key(second)
+
+    def test_a_differing_result_id_alone_is_enough_to_separate_them(self):
+        """The same reviewer resubmitting a genuinely new result is not a replay."""
+        first = accept(_result_variant(REVIEWER_RUN, "result-one"), reviewer_run_id=REVIEWER_RUN)
+        second = accept(_result_variant(REVIEWER_RUN, "result-two"), reviewer_run_id=REVIEWER_RUN)
+        assert evidence_operation_key(first) != evidence_operation_key(second)
+        assert first.artifact_ref != second.artifact_ref
+
+    def test_replaying_the_same_result_still_converges(self):
+        """Idempotency is preserved: a retry of one result is still one review.
+
+        This is the property the original head-only key was protecting, and it must
+        survive the fix — otherwise every transport retry becomes a second apparent
+        review.
+        """
+        once = accept()
+        twice = accept()
+        assert evidence_operation_key(once) == evidence_operation_key(twice)
+        assert once.artifact_ref == twice.artifact_ref
+
+    def test_a_different_head_is_still_different_evidence(self):
+        """The original property: review of another commit gets its own identity.
+
+        `publication` is moved with the subject: the contract requires a published
+        verdict to name the commit it was recorded against, so patching only
+        `reviewed_head_sha` would be a malformed document rather than a review of a
+        second commit.
+        """
+        moved = patched(
+            APPROVE,
+            subject={"reviewed_head_sha": MOVED_HEAD},
+            publication={"published_head_sha": MOVED_HEAD},
+        )
+        first = accept()
+        second = accept(moved, binding=binding(head=MOVED_HEAD))
+        assert second.reviewed_head_sha == MOVED_HEAD
+        assert evidence_operation_key(first) != evidence_operation_key(second)
+
+    def test_operation_key_fits_the_ledger_column(self):
+        """`operation_key` is String(255); a long producer-chosen result_id must not
+        push the key over it, where it would truncate two results into one.
+        """
+        body = _result_variant(REVIEWER_RUN, "result-" + "x" * 4000)
+        key = evidence_operation_key(accept(body, reviewer_run_id=REVIEWER_RUN))
+        assert len(key) <= 255
+
+    def test_the_reviewed_commit_is_still_recoverable_from_the_reference(self):
+        """An operator reading the row must still see which commit was reviewed."""
+        evidence = accept()
+        assert HEAD in evidence.artifact_ref
+        assert NODE in evidence.artifact_ref
