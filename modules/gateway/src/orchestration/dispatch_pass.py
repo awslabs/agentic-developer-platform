@@ -1094,10 +1094,30 @@ async def prepare_pending(
 
     from src.agentauth.model_policy import ensure_snapshot_report_only
 
-    if writer is None:
-        from src.agentauth.engine import get_engine_authority_writer
+    async def _writer() -> Any:
+        """Resolve the writer, building it at most once, inside the caller's guard.
 
-        writer = get_engine_authority_writer()
+        Construction is a real failure point, not a formality: `BootstrapStore`
+        raises `AuthorityStoreError` when `AGENT_AUTHORITY_TABLE` is unset, and
+        boto3 client creation can fail on credentials or configuration. It must
+        therefore happen *inside* the per-node `try`, the way `publish_pending`
+        has always done it -- hoisted above the loop it escapes `_run` after the
+        SQL commit and skips the command and projection flushes that follow, so a
+        misconfigured table would stall the whole tick rather than fail the one
+        dispatch that needed authority.
+
+        Both the import and the client construction block, so this runs off the
+        event loop as well.
+        """
+        nonlocal writer
+        if writer is None:
+            def _build():
+                from src.agentauth.engine import get_engine_authority_writer
+
+                return get_engine_authority_writer()
+
+            writer = await run_in_threadpool(_build)
+        return writer
 
     prepared: list[PendingPublish] = []
     for pending in report.pending:
@@ -1105,7 +1125,8 @@ async def prepare_pending(
         try:
             # Blocking DynamoDB writes: off the event loop so a slow round trip
             # cannot stall the tick's other work.
-            envelope = await run_in_threadpool(writer.provision, pending)
+            resolved = await _writer()
+            envelope = await run_in_threadpool(resolved.provision, pending)
         except Exception:
             logger.exception(
                 "orchestration dispatch: protected authority unavailable for node %s during preparation; no message sent",
@@ -1123,7 +1144,9 @@ async def prepare_pending(
         # Now, and only now, is there a `pending` protected record to attach to.
         # `ensure_snapshot_report_only` already converts every specific failure
         # into a receipt, so this cannot raise a model-policy error into the tick.
-        receipt = await ensure_snapshot_report_only(session, store=writer.store, invocation_id=invocation_id)
+        # `resolved`, not `writer`: the snapshot must attach to the same store the
+        # record was just provisioned into.
+        receipt = await ensure_snapshot_report_only(session, store=resolved.store, invocation_id=invocation_id)
         report.model_policy_receipts[invocation_id] = receipt
         if receipt.get("status") != "available":
             logger.warning(

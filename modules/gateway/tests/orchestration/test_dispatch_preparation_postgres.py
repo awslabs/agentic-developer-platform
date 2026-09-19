@@ -10,16 +10,32 @@ SQLite a version with the savepoints removed still passes.
 
 It matters here specifically because of what preparation runs next to. The tick
 reserves a work claim -- the row that makes "exactly one mutating run per issue"
-hold -- on the same `AsyncSession` the snapshot build then reads from. On a real
-server, one unguarded failed read inside that window would poison the
-transaction, and the claim would be discarded at COMMIT while the producer was
-still told admission succeeded: an issue with no recorded owner and a run that
-believes it owns it.
+hold -- on the same `AsyncSession` the snapshot build later reads from. Two
+distinct hazards follow from an unguarded failed read, and they are worth keeping
+apart because only one of them is what these tests observe:
 
-Two cases, deliberately: the claim survives a snapshot build that fails partway,
-and the claim survives one that succeeds. Bounded on purpose -- this file exists
-to prove the transaction property on real SQL, not to re-run the behavioural
-matrix that `test_dispatch_preparation.py` already covers on a faster engine.
+- A claim that is still *uncommitted* when the read fails is lost outright: the
+  abort takes the whole transaction, claim included, and `ROLLBACK` is the only
+  legal next statement. That is the admission path, where
+  `ensure_snapshot_for_admission` reads inside the tick transaction before the
+  commit.
+- A claim that is already *committed* -- the case here, since preparation runs
+  after the tick commits -- is durable and cannot be undone by anything that
+  happens afterwards. The damage is to the session, not the row: the aborted
+  transaction refuses every subsequent statement, so the rest of the tick's
+  post-commit work on that session fails, and the claim becomes unreadable
+  through it even though it is safely on disk.
+
+These tests pin the second hazard, which is the one this seam can actually
+produce. They prove the injected failure is contained to the read that caused it:
+the session stays usable afterwards, and the row is confirmed durable from a
+fresh connection rather than only from the session that wrote it.
+
+Two cases, deliberately: the session and claim survive a snapshot build that
+fails partway, and they survive one that succeeds. Bounded on purpose -- this
+file exists to prove the transaction property on real SQL, not to re-run the
+behavioural matrix that `test_dispatch_preparation.py` already covers on a
+faster engine.
 
 Marked `integration` and skipped (not failed) where `pgserver` is unavailable,
 following `test_execution_runner_postgres.py`. DynamoDB is still moto and SQS is
@@ -79,18 +95,20 @@ def work_claims_on(monkeypatch):
 
 
 async def test_a_failing_snapshot_read_leaves_the_committed_work_claim_intact(pg_session_factory, protected_engine, work_claims_on):
-    """The failure mode SQLite cannot show: a poisoned transaction losing the claim.
+    """The failure mode SQLite cannot show: a poisoned session after the commit.
 
     A real broken read is injected -- `SELECT` against a table that does not exist,
     which is what a mid-deploy schema skew actually produces -- at the point
     `build_root_snapshot` reads persona preferences. On PostgreSQL that aborts the
-    transaction, so without the savepoint the claim row committed moments earlier
-    would be unreachable and every later statement on the session would fail.
+    transaction. The claim row itself is already committed and so cannot be lost;
+    what breaks without the savepoint is the *session*, which then refuses every
+    later statement, leaving the claim unreadable through it and the remaining
+    post-commit work unable to run.
 
-    What must hold: the receipt says the evidence is unavailable, the claim row is
-    still present and still `held` by this run, and the dispatch still publishes.
-    Report-only means a snapshot defect costs the run nothing -- least of all its
-    ownership record.
+    What must hold: the receipt says the evidence is unavailable, the session is
+    still usable, the claim row still reads back as `held` by this run -- both
+    through this session and from a fresh connection -- and the dispatch still
+    publishes. Report-only means a snapshot defect costs the run nothing.
     """
     from sqlalchemy import text
 

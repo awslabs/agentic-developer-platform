@@ -162,6 +162,27 @@ def _journal_snapshot_persistence(monkeypatch, journal):
     monkeypatch.setattr(model_policy_module, "_persist_snapshot", recording)
 
 
+@pytest.fixture(autouse=True)
+def _journal_post_commit_flushes(monkeypatch, journal):
+    """Record the flushes that follow preparation, still calling the real ones.
+
+    These exist so "the rest of the tick kept going" is an assertion rather than a
+    hope. Both flushes are downstream of `prepare_pending` on already-committed
+    work, so anything that escapes preparation silently skips them -- the tick
+    returns an error and the commands and projections it owed are simply never
+    flushed. Wrapped rather than replaced: the real functions still run, so this
+    cannot turn a broken flush green.
+    """
+    for name in ("flush_engine_commands", "flush_tracker_projections"):
+        original = getattr(tick_handler_module, name)
+
+        def recording(*args, _original=original, _name=name, **kwargs):
+            journal.append(_name)
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(tick_handler_module, name, recording)
+
+
 @pytest.fixture
 def sqs(monkeypatch, journal):
     client = RecordingSQS(journal)
@@ -318,6 +339,85 @@ async def test_a_second_tick_over_the_same_dispatch_neither_reprepares_nor_repub
     assert len(sqs.calls) == 1
     assert "provision" not in journal
     assert store._read(f"TENANT#{ORG}", f"EXEC#{invocation_id}")["model_policy_snapshot"]["S"] == stored
+
+
+async def test_a_failing_provision_fails_that_dispatch_and_still_finishes_the_tick(session_factory, protected_store, sqs, journal, monkeypatch):
+    """An authority write that fails must cost one dispatch, not the tick.
+
+    Preparation runs on work that is already committed, so anything it lets escape
+    is damage to correct, durable state: the flushes below it never run. The
+    dispatch itself genuinely cannot proceed -- `publish_pending` would have
+    refused it too -- so it is counted `publish_failed`, which forces a non-success
+    report rather than a green tick that silently sent nothing.
+    """
+    store, writer = protected_store
+    node_id = await _seed_ready_story(session_factory)
+
+    def refusing_provision(_pending):
+        journal.append("provision")
+        raise RuntimeError("authority store unavailable")
+
+    monkeypatch.setattr(writer, "provision", refusing_provision)
+
+    report = await tick_handler_module._run()
+
+    dispatch_report = getattr(report, "dispatch_report")
+    assert "provision" in journal, "the failure never fired, so nothing was proved"
+    assert dispatch_report.publish_failed == 1
+    assert not dispatch_report.success
+    # Dropped from `pending`, so nothing downstream can send it.
+    assert dispatch_report.pending == []
+    assert sqs.calls == []
+    assert "snapshot" not in journal
+
+    # The part that matters: the tick continued past the failure.
+    assert journal.count("flush_engine_commands") == 1
+    assert journal.count("flush_tracker_projections") == 1
+
+    # The node stays `running` with no run -- the documented recoverable state that
+    # #4211's stall detector picks up, not an off-graph execution.
+    async with session_factory() as session:
+        assert (await session.scalar(select(OrchestrationNode.state).where(OrchestrationNode.id == node_id))) == NodeState.RUNNING.value
+
+
+async def test_an_unbuildable_authority_writer_fails_that_dispatch_and_still_finishes_the_tick(session_factory, sqs, journal, monkeypatch):
+    """The same containment for *constructing* the writer, which is its own failure.
+
+    Deliberately not using the `protected_store` fixture: that hands preparation an
+    already-built writer and so cannot see this boundary at all. Here the real
+    factory and the real `BootstrapStore` run with `AGENT_AUTHORITY_TABLE` absent --
+    an ordinary misconfiguration or a mid-deploy env gap -- and the store refuses on
+    the empty table name. The only stub is boto3's client constructor, which the
+    factory evaluates before the store sees the table name; that keeps the test off
+    the credential chain entirely. No request is ever issued, so there is nothing
+    for moto to intercept.
+
+    This was a real regression in the first version of this stage: the writer was
+    resolved once above the loop, outside the per-node guard, so an unset table
+    raised straight out of `prepare_pending` after the SQL commit and skipped both
+    flushes below it. One misconfigured variable stalled the entire tick instead of
+    failing the single dispatch that needed authority.
+    """
+    monkeypatch.delenv("AGENT_AUTHORITY_TABLE", raising=False)
+    monkeypatch.setattr("src.agentauth.engine.boto3.client", lambda *_args, **_kwargs: object())
+    node_id = await _seed_ready_story(session_factory)
+
+    report = await tick_handler_module._run()
+
+    dispatch_report = getattr(report, "dispatch_report")
+    assert dispatch_report.dispatched == 1
+    assert dispatch_report.publish_failed == 1
+    assert not dispatch_report.success
+    assert dispatch_report.pending == []
+    assert sqs.calls == []
+    assert dispatch_report.model_policy_receipts == {}
+    assert "snapshot" not in journal
+
+    assert journal.count("flush_engine_commands") == 1
+    assert journal.count("flush_tracker_projections") == 1
+
+    async with session_factory() as session:
+        assert (await session.scalar(select(OrchestrationNode.state).where(OrchestrationNode.id == node_id))) == NodeState.RUNNING.value
 
 
 async def test_an_unapproved_flow_still_dispatches_nothing_and_prepares_nothing(session_factory, protected_store, sqs):

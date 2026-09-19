@@ -545,7 +545,10 @@ async def _run() -> TickReport:
         # Mutates the report in place and never raises: a protected-authority
         # failure drops that dispatch and counts `publish_failed`, while merely
         # unavailable model-policy evidence is recorded as a receipt and changes
-        # nothing about what executes.
+        # nothing about what executes. "Never raises" includes *building* the
+        # authority writer, which can fail on an unset table or bad credentials --
+        # that has to stay contained, because an exception escaping here would
+        # skip every flush below on work that is already committed.
         await prepare_pending(session, dispatch_report)
 
         # Only now, with the `running` rows durable, does anything reach the queue.
