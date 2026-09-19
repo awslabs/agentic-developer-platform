@@ -1111,6 +1111,7 @@ async def prepare_pending(
         """
         nonlocal writer
         if writer is None:
+
             def _build():
                 from src.agentauth.engine import get_engine_authority_writer
 
