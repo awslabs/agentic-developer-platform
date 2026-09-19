@@ -1,0 +1,31 @@
+{
+  "source": "repos/aws-e/adp/pulls/5542",
+  "captured_at": "2026-09-19T22:36:36.454255+00:00",
+  "response": {
+    "id": 4580269853,
+    "node_id": "PR_kwDORsAMpc8AAAABEQFfHQ",
+    "number": 5542,
+    "state": "closed",
+    "merged": true,
+    "merge_commit_sha": "68a1ecf2fa1f88ebdf67db86274a0c5f4fc6ee61",
+    "draft": false,
+    "mergeable": null,
+    "mergeable_state": "unknown",
+    "user": {
+      "id": 20402445,
+      "login": "PranavSharma1000",
+      "type": "User"
+    },
+    "head": {
+      "sha": "9ab0d1e3675617a7ccc1931cae1d05153aff9db4"
+    },
+    "base": {
+      "sha": "f7ab92245506d8d4e23be4a503b71026d7f1fbd8",
+      "ref": "main",
+      "repo": {
+        "id": 1186991269,
+        "full_name": "aws-e/adp"
+      }
+    }
+  }
+}
