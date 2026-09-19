@@ -19,7 +19,9 @@ LABEL_TO_PERSONA: dict[str, str] = {
 
 # Personas selected by platform events rather than by a label or mention. They
 # use the same envelope and queue as every other persona; the worker entrypoint
-# selects the packaged runtime from the persona name.
+# selects the packaged runtime from the persona name. Keeping this catalogue in
+# the normal Lambda package also makes code-only rollout independent of worker
+# infrastructure migration state.
 AUTOMATIC_PERSONAS: set[str] = {"agent-codex-reviewer"}
 
 # @-mention patterns in issue/PR comments that trigger personas.

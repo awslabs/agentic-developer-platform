@@ -195,6 +195,12 @@ async function waitForChecks(
   throw new Error("timed out waiting for required checks");
 }
 
+export function mergeEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return (env.CODEX_REVIEWER_MERGE_ENABLED ?? "true") === "true";
+}
+
 async function publishVerdict(
   github: GitHubClient,
   prNumber: number,
@@ -356,7 +362,7 @@ export async function runReview(
       if (repairedPr.draft) {
         throw new Error("approved PR is still a draft; refusing to merge");
       }
-      if ((process.env.CODEX_REVIEWER_MERGE_ENABLED ?? "false") !== "true") {
+      if (!mergeEnabled()) {
         return { status: "approved", sha: newSha };
       }
       const mergeSha = await github.merge(envelope.pull_request.number, newSha);
@@ -385,7 +391,7 @@ export async function runReview(
       verdict,
       expected,
     );
-    if ((process.env.CODEX_REVIEWER_MERGE_ENABLED ?? "false") !== "true") {
+    if (!mergeEnabled()) {
       return { status: "approved", sha: expected };
     }
     const mergeSha = await github.merge(envelope.pull_request.number, expected);

@@ -5,9 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { validateAutofix } from "./reviewer.js";
+import { mergeEnabled, validateAutofix } from "./reviewer.js";
 
 const exec = promisify(execFile);
+
+test("merge is enabled by default and can be explicitly disabled", () => {
+  assert.equal(mergeEnabled({}), true);
+  assert.equal(mergeEnabled({ CODEX_REVIEWER_MERGE_ENABLED: "true" }), true);
+  assert.equal(mergeEnabled({ CODEX_REVIEWER_MERGE_ENABLED: "false" }), false);
+});
 
 async function fixture(): Promise<{
   branch: string;

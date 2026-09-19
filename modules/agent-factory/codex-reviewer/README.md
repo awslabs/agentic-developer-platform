@@ -36,8 +36,9 @@ adapter has no direct-Bedrock fallback.
 - Pull-request events select `agent-codex-reviewer` through the existing persona
   intent mapping; there is no separate reviewer routing flag.
 - `CODEX_REVIEWER_APPLY_FIXES` enables bounded mechanical repairs.
-- `CODEX_REVIEWER_MERGE_ENABLED` enables squash merge after a current-head
-  review and successful checks.
+- `CODEX_REVIEWER_MERGE_ENABLED` defaults to `true`; set it to `false` to stop
+  after approval instead of squash-merging the current, successfully checked
+  head.
 - `CODEX_REVIEWER_MODEL` selects the gateway model identifier.
 
 ## Local verification
