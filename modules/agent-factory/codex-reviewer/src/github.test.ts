@@ -78,3 +78,35 @@ test("shared live-fleet diagnostics do not block an otherwise ready merge", asyn
     globalThis.fetch = originalFetch;
   }
 });
+
+test("unavailable legacy statuses do not hide accessible check runs", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/status?per_page=100")) {
+      return new Response(JSON.stringify({ message: "Resource not accessible by integration" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        check_runs: [
+          { name: "Codex Adapter Unit Tests", status: "completed", conclusion: "success" },
+        ],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  try {
+    const github = new GitHubClient("aws-e/adp", async () => "default-token");
+    assert.deepEqual(await github.checks("a".repeat(40)), {
+      ready: true,
+      failing: [],
+      pending: [],
+      total: 1,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

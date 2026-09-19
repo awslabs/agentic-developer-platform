@@ -52,6 +52,15 @@ export interface ChecksState {
 // in .github/workflows/gitlab-integration-tests.yml.
 const NON_BLOCKING_CHECKS = new Set(["GitLab Live Fleet"]);
 
+class GitHubRequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export class GitHubClient {
   constructor(
     private readonly repository: string,
@@ -72,7 +81,8 @@ export class GitHubClient {
       signal: init.signal ?? AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
-      throw new Error(
+      throw new GitHubRequestError(
+        response.status,
         `GitHub ${init.method ?? "GET"} ${path} returned ${response.status}: ${await response.text()}`,
       );
     }
@@ -102,7 +112,15 @@ export class GitHubClient {
       ),
       this.request<CombinedStatusResponse>(
         `/repos/${this.repository}/commits/${sha}/status?per_page=100`,
-      ),
+      ).catch((error: unknown) => {
+        // The reused developer installation can read check runs but does not
+        // necessarily have legacy commit-status permission. GitHub's merge API
+        // remains the final authority for every branch-protection requirement.
+        if (error instanceof GitHubRequestError && error.status === 403) {
+          return { state: "pending", statuses: [] };
+        }
+        throw error;
+      }),
     ]);
     const failing: string[] = [];
     const pending: string[] = [];
