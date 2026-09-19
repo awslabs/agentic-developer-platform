@@ -193,20 +193,45 @@ async def asker(session, *, org_id: str = ORG_A, user_id: str = ASKER) -> None:
     `resolve_user_entity_id`, which raise on an id that names nobody in this org. A
     fixture without this row would exercise the failure path while looking like the
     happy one.
+
+    The `org_id` assertion on an existing row is the guard against a specific silent
+    failure: this is keyed on the primary key, so re-calling it for a *second* tenant
+    with the default id would find tenant A's row, skip the insert, and leave tenant B
+    with no human at all. The resolver filters on `org_id` in SQL, so the caller would
+    then see an identity refusal several layers away from its cause. Each tenant needs
+    its own id; asserting here is what makes forgetting that loud.
     """
-    if await session.get(User, user_id) is None:
+    existing = await session.get(User, user_id)
+    if existing is None:
         session.add(User(id=user_id, org_id=org_id, team_id="team-test", email=f"{user_id}@example.com", cognito_sub=user_id))
         await session.flush()
+        return
+    assert existing.org_id == org_id, f"user {user_id!r} already exists in {existing.org_id!r}; give tenant {org_id!r} its own user id"
 
 
-async def replan(session, report: EngineCommandReport, *, flow_id: str, org_id: str = ORG_A, text: str = "gate the deploy wave", source=...):
-    """Drive the replan branch exactly as `_handle_row` drives it, then commit."""
+async def replan(
+    session,
+    report: EngineCommandReport,
+    *,
+    flow_id: str,
+    org_id: str = ORG_A,
+    text: str = "gate the deploy wave",
+    source=...,
+    user_id: str = ASKER,
+):
+    """Drive the replan branch exactly as `_handle_row` drives it, then commit.
+
+    `user_id` is separable from `org_id` because a `users` row is per-tenant: a second
+    tenant's replan must be asked by a human who exists *in that tenant*, or the
+    identity resolution inside `build_authoring_assignment` refuses before any
+    assignment is built. Defaulted so single-tenant callers read unchanged.
+    """
     applied, message = await _apply_command(
         session,
         command=replan_command(text),
         org_id=org_id,
         flow_id=flow_id,
-        context=token(org_id),
+        context=token(org_id, user_id),
         access=access_control(),
         source=(REPO, ISSUE, INSTALLATION) if source is ... else source,
         publishes=report.pending_authoring,
@@ -243,9 +268,15 @@ async def flush(session, report, sqs, monkeypatch, *, queue: str = "https://sqs.
     await flush_engine_commands(report)
 
 
-async def flow_with_asker(session, *, org_id: str = ORG_A) -> str:
-    flow_id = await accepted_flow(session, org_id=org_id, proposal=base_proposal(org_id=org_id))
-    await asker(session, org_id=org_id)
+async def flow_with_asker(session, *, org_id: str = ORG_A, proposal=None, user_id: str = ASKER) -> str:
+    """An accepted flow plus the human who may ask it to replan.
+
+    `proposal` is exposed so a caller needing a *second* flow in one tenant can vary the
+    slug — `uq_orchestration_flows_org_slug` makes two default flows collide — without
+    reimplementing the asker seeding and losing it.
+    """
+    flow_id = await accepted_flow(session, org_id=org_id, proposal=proposal or base_proposal(org_id=org_id))
+    await asker(session, org_id=org_id, user_id=user_id)
     await session.commit()
     return flow_id
 

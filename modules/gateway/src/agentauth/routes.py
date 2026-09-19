@@ -127,7 +127,28 @@ class AgentRuntime:
                     await validate_authoring_authority(session=session, execution=execution or {}, grant=grant)
                     return None
                 return await validate_engine_authority(session=session, execution=execution or {}, grant=grant, store=self.store)
+        except BootstrapRefusedError:
+            # Issue #4529: a deliberate refusal passes through with its own reason.
+            #
+            # Both validators end in `except BootstrapRefusedError: raise` followed by a
+            # relabelling `except Exception`, specifically so that "we decided no" stays
+            # distinguishable from "we could not decide". Re-wrapping everything here
+            # defeated that: every refusal — a stolen authoring assignment, a halted
+            # node, a base revision that moved — reached the caller as "engine authority
+            # unavailable", which reads as an outage. An operator seeing it would go
+            # looking for a broken database instead of the run presenting a stale
+            # assignment, and the two have opposite responses.
+            #
+            # Not a security change: both paths deny. The refusal text is already
+            # deliberately coarse — one sentence for every way an authoring assignment
+            # can fail, so a caller cannot tell "no such request" from "not your
+            # request" — so passing it through leaks nothing that the inner functions
+            # have not already decided to say.
+            raise
         except Exception:
+            # Genuinely unexpected: the session could not be opened, the store read
+            # failed, something raised a shape neither validator anticipated. Still
+            # fail-closed, and still deliberately unspecific.
             raise BootstrapRefusedError("engine authority unavailable") from None
 
     async def enroll_coordinator(self, record, grant):
