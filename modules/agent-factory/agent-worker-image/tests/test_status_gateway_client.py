@@ -616,3 +616,31 @@ class TestTranscriptArchive:
         assert entrypoint._upload_transcript_to_s3("text", "owner/repo", 1, "run", "today", "developer") is None
         upload.assert_called_once_with("text")
         direct.assert_not_called()
+
+
+@pytest.mark.parametrize("recorded", [True, False])
+def test_review_upload_uses_live_own_run_transport(enabled, http, monkeypatch, recorded):
+    import hashlib
+
+    monkeypatch.setenv("ADP_TENANT_ID", "tenant")
+    monkeypatch.setenv("ADP_MESSAGE_ID", "reviewer")
+    monkeypatch.setenv("ADP_RUN_ATTEMPT", "1")
+    data = b'{"result_id":"review-one"}'
+    digest = hashlib.sha256(data).hexdigest()
+    tenant = hashlib.sha256(b"tenant").hexdigest()
+    run = hashlib.sha256(b"reviewer").hexdigest()
+    key = f"runs/{tenant}/{run}/attempt-1/review-result/{digest}.json"
+    calls, responses = http
+    responses[0] = {"key": key, "sha256": digest, "recorded": recorded}
+    if recorded:
+        assert status_gateway_client.upload_review_result(data) == key
+    else:
+        with pytest.raises(StatusGatewayError, match="receipt"):
+            status_gateway_client.upload_review_result(data)
+    assert len(calls) == 1
+    assert calls[0]["url"] == ENDPOINT + "/self/artifacts/review-result"
+    assert calls[0]["headers"]["X-Adp-Run-Credential"] == CREDENTIAL
+    assert calls[0]["headers"]["X-Adp-Workload-Token"] == WORKLOAD_TOKEN
+    assert "Credential=platform-key/" in calls[0]["headers"]["Authorization"]
+    assert calls[0]["kwargs"]["allow_redirects"] is False
+    assert calls[0]["session"].trust_env is False

@@ -77,3 +77,9 @@ test-results/
 # #5199 CLI uplift evaluation: private run state (passwords/tokens until cleanup).
 # Never commit or attach these; report.json/results.xml are the sanitized outputs.
 .adp-eval/
+
+# #5146: the shared contracts tree staged into the gateway's docker build context by
+# modules/gateway/scripts/stage-contracts.sh. The repository-root contracts/ tree is
+# the single source of truth; this is a per-build copy, gated inside the built image
+# by `python -m src.orchestration.review_contract_selfcheck`.
+modules/gateway/contracts/

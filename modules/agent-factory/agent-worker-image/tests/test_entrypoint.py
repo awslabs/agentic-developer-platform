@@ -4663,3 +4663,86 @@ class TestMediatedIdempotencyGuard:
         calls.update({"mediated": 0, "token": 0})
         assert entrypoint._already_completed("acme/repo", 42, "ghs_x", mediated=False) is False
         assert calls == {"mediated": 0, "token": 1}
+
+
+@pytest.mark.parametrize("agent_exit", [0, 1])
+@pytest.mark.parametrize("mediated", [False, True])
+def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, tmp_path, agent_exit, mediated):
+    import entrypoint
+    from lib import status_gateway_client
+    from tests.test_review_delivery import EXPECT, HEAD
+    import hashlib
+
+    envelope = {**SAMPLE_ENVELOPE, "persona": "reviewer", "review_expect": EXPECT}
+    monkeypatch.setattr(entrypoint, "prepend_correlation_marker", lambda body: body)
+    if mediated:
+        from lib import mediated_github
+        monkeypatch.setattr(entrypoint, "_mediated_github_enabled", lambda: True)
+        monkeypatch.setattr(entrypoint, "_protected_worker", lambda: True)
+        monkeypatch.setattr(entrypoint, "_withhold_write_token", MagicMock())
+        monkeypatch.setattr(mediated_github, "read_repository", lambda: {"pull_requests": []})
+        def materialize(destination, **kwargs):
+            Path(destination).mkdir(parents=True, exist_ok=True)
+            return {"remote_head": HEAD, "local_head": "b" * 40}
+        monkeypatch.setattr(mediated_github, "materialize_repository", materialize)
+    monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/test-queue")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("ADP_RUN_ATTEMPT", "1")
+    monkeypatch.setattr(entrypoint, "_receive_one_message", lambda *_: (json.dumps(envelope), "receipt"))
+    for name in ("_delete_message", "create_check_run", "update_check_run", "_upload_transcript_to_s3",
+                 "_record_session_id", "_load_door_api_key", "_setup_agent_control", "_teardown_agent_control"):
+        monkeypatch.setattr(entrypoint, name, MagicMock(return_value=None))
+    vault = MagicMock()
+    vault.return_value.get_secret.return_value = {"app_id": "123", "private_key": "fake-key"}
+    monkeypatch.setattr(entrypoint, "VaultClient", vault)
+    monkeypatch.setattr(entrypoint, "mint_installation_token", MagicMock(return_value="test-token"))
+    monkeypatch.setattr(entrypoint.shutil, "rmtree", MagicMock())
+    monkeypatch.setattr(entrypoint.shutil, "copytree", MagicMock())
+    monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path / "repo")
+    monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
+    monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="", returncode=0)))
+    def command(cmd, **kwargs):
+        return MagicMock(stdout=HEAD if cmd[:3] == ["git", "rev-parse", "HEAD"] else "", returncode=0)
+    monkeypatch.setattr(entrypoint, "run_cmd", command)
+    events = []
+    def agent(cmd, **kwargs):
+        if cmd[:2] == ["git", "ls-remote"]:
+            return MagicMock(returncode=2, stdout="", stderr="")
+        if cmd[0] == "gh":
+            return MagicMock(returncode=0, stdout="", stderr="")
+        assert cmd[0] == "node"
+        env = kwargs["env"]
+        assert json.loads(env["ADP_REVIEW_EXPECT"]) == EXPECT
+        Path(env["ADP_REVIEW_REPORT_PATH"]).write_text(json.dumps({
+            "stages": {"functional": "completed"}, "verdict": "request-changes",
+            "findings": [{"finding_id": "F1", "stage": "functional", "severity": "blocking",
+                          "disposition": "open", "summary": "Needs repair"}],
+        }))
+        events.append("agent")
+        return MagicMock(returncode=agent_exit, stdout="", stderr="")
+    monkeypatch.setattr(entrypoint.subprocess, "run", agent)
+    monkeypatch.setattr(status_gateway_client, "authority_enabled", lambda: True)
+    def upload(path, data, **kwargs):
+        assert events == ["agent"]
+        assert path == "/artifacts/review-result"
+        body = json.loads(data)
+        assert body["subject"]["reviewed_head_sha"] == HEAD
+        assert body["findings"][0]["finding_id"] == "F1"
+        digest = hashlib.sha256(data).hexdigest()
+        tenant = hashlib.sha256(envelope["tenant_id"].encode()).hexdigest()
+        run = hashlib.sha256(envelope["message_id"].encode()).hexdigest()
+        events.append("upload")
+        return {"key": f"runs/{tenant}/{run}/attempt-1/review-result/{digest}.json",
+                "sha256": digest, "recorded": True}
+    monkeypatch.setattr(status_gateway_client, "_post_bytes", upload)
+    def terminal(*args, **kwargs):
+        assert events == ["agent", "upload"]
+        assert "Review evidence recorded" in kwargs["review_note"]
+        events.append("terminal")
+        return agent_exit
+    monkeypatch.setattr(entrypoint, "_handle_success", terminal)
+    monkeypatch.setattr(entrypoint, "_handle_failure", terminal)
+    monkeypatch.setattr(entrypoint, "update_invocation_status", MagicMock())
+    assert entrypoint.main() == agent_exit
+    assert events == ["agent", "upload", "terminal"]

@@ -60,8 +60,133 @@ class _Api:
         return [path for _, path, _ in self.calls]
 
 
-def _ok_review(state: str = "APPROVED") -> tuple[int, str]:
-    return 200, json.dumps({"id": 9001, "state": state, "html_url": f"https://github.com/{_REPO}/pull/{_PR}#pullrequestreview-9001"})
+_HEAD = "2589dc84f4a0c7a4b2ee3e6cbe7fa3b02d9a5c17"
+
+
+def _ok_review(state: str = "APPROVED", commit_id: str | None = _HEAD) -> tuple[int, str]:
+    body: dict = {
+        "id": 9001,
+        "state": state,
+        "html_url": f"https://github.com/{_REPO}/pull/{_PR}#pullrequestreview-9001",
+    }
+    if commit_id is not None:
+        body["commit_id"] = commit_id
+    return 200, json.dumps(body)
+
+
+# ---- the receipt: what the provider actually said --------------------------
+#
+# `pending_approval` was the only thing a consumer could read, and three unrelated
+# causes produce it. A downstream reader that assumed the familiar one told operators
+# to configure a reviewer App for failures a reviewer App would not have fixed. And
+# the commit the verdict landed on was never reported at all, so "this verdict is
+# about the revision I read" was an assertion rather than an observation.
+
+
+def test_a_recorded_verdict_reports_the_commit_github_returned(monkeypatch):
+    api = _Api(_ok_review())
+    monkeypatch.setattr(review_client, "_api", api)
+
+    result = submit_review(repo=_REPO, pr_number=_PR, event="APPROVE", body=_BODY, commit_id=_HEAD, token="t")
+
+    assert result["commit_id"] == _HEAD
+
+
+def test_the_reported_commit_is_the_provider_s_not_the_request_s(monkeypatch):
+    """The receipt must be able to disagree with the request, or it evidences nothing.
+
+    A consumer compares the published commit with the head the reviewer inspected.
+    Defaulting this field to the requested `commit_id` would make that comparison
+    compare a value with itself — it could never fail, so the same-revision binding it
+    exists to establish would never actually be checked.
+    """
+    other = "f0d2eb968cb5f9d1322da48d92042cd7f45c166a"
+    api = _Api(_ok_review(commit_id=other))
+    monkeypatch.setattr(review_client, "_api", api)
+
+    result = submit_review(repo=_REPO, pr_number=_PR, event="APPROVE", body=_BODY, commit_id=_HEAD, token="t")
+
+    assert result["commit_id"] == other, "the request's commit was echoed instead of the provider's"
+
+
+@pytest.mark.parametrize("returned", [None, "", 12345, True, {"sha": _HEAD}, []])
+def test_a_missing_or_unusable_commit_is_reported_as_none(returned, monkeypatch):
+    """Absent is reported as absent; the consumer decides what to do about unknown."""
+    body: dict = {"id": 9001, "state": "APPROVED", "html_url": "https://x/1"}
+    if returned is not None:
+        body["commit_id"] = returned
+    api = _Api((200, json.dumps(body)))
+    monkeypatch.setattr(review_client, "_api", api)
+
+    result = submit_review(repo=_REPO, pr_number=_PR, event="APPROVE", body=_BODY, commit_id=_HEAD, token="t")
+
+    assert result["commit_id"] is None
+
+
+def test_the_self_review_refusal_reports_the_identity_cause(monkeypatch):
+    api = _Api((422, _SELF_REVIEW_422), _ok_review(state="COMMENTED"))
+    monkeypatch.setattr(review_client, "_api", api)
+
+    result = submit_review(repo=_REPO, pr_number=_PR, event="APPROVE", body=_BODY, token="t")
+
+    assert result["refusal_reason"] == review_client.REFUSAL_SELF_REVIEW
+
+
+def test_a_downgraded_state_does_not_claim_the_identity_cause(monkeypatch):
+    """GitHub accepted the call, so nothing about the reviewer's identity is shown."""
+    api = _Api(_ok_review(state="COMMENTED"), (201, json.dumps({"html_url": "https://x#c2"})))
+    monkeypatch.setattr(review_client, "_api", api)
+
+    result = submit_review(repo=_REPO, pr_number=_PR, event="APPROVE", body=_BODY, token="t")
+
+    assert result["refusal_reason"] == review_client.REFUSAL_STATE_DOWNGRADED
+    assert result["refusal_reason"] != review_client.REFUSAL_SELF_REVIEW
+
+
+def test_an_unreadable_response_reports_unknown_not_a_guessed_cause(monkeypatch):
+    api = _Api((200, "<html>not json</html>"), (201, json.dumps({"html_url": "https://x#c3"})))
+    monkeypatch.setattr(review_client, "_api", api)
+
+    result = submit_review(repo=_REPO, pr_number=_PR, event="APPROVE", body=_BODY, token="t")
+
+    assert result["refusal_reason"] == review_client.REFUSAL_UNREADABLE_RESPONSE
+
+
+def test_a_non_dict_success_body_is_not_treated_as_a_review(monkeypatch):
+    """A JSON array parses cleanly and carries no state. Unknown, not recorded."""
+    api = _Api((200, "[]"), (201, json.dumps({"html_url": "https://x#c4"})))
+    monkeypatch.setattr(review_client, "_api", api)
+
+    result = submit_review(repo=_REPO, pr_number=_PR, event="APPROVE", body=_BODY, token="t")
+
+    assert result["verdict_recorded"] is False
+    assert result["refusal_reason"] == review_client.REFUSAL_UNREADABLE_RESPONSE
+
+
+def test_the_three_refusal_causes_are_distinct_values():
+    """Collapsed constants would make every branch above vacuously true."""
+    causes = {
+        review_client.REFUSAL_SELF_REVIEW,
+        review_client.REFUSAL_STATE_DOWNGRADED,
+        review_client.REFUSAL_UNREADABLE_RESPONSE,
+    }
+    assert len(causes) == 3
+
+
+def test_every_pending_approval_path_states_a_cause(monkeypatch):
+    """No `pending_approval` may be silent about why, including the last-resort path."""
+    scripts = [
+        ((422, _SELF_REVIEW_422), _ok_review(state="COMMENTED")),
+        ((422, _SELF_REVIEW_422), (422, "no"), (201, json.dumps({"html_url": "https://x#c5"}))),
+        (_ok_review(state="COMMENTED"), (201, json.dumps({"html_url": "https://x#c6"}))),
+        ((200, "<html>"), (201, json.dumps({"html_url": "https://x#c7"}))),
+    ]
+    for script in scripts:
+        api = _Api(*script)
+        monkeypatch.setattr(review_client, "_api", api)
+        result = submit_review(repo=_REPO, pr_number=_PR, event="APPROVE", body=_BODY, token="t")
+        assert result["outcome"] == "pending_approval"
+        assert result.get("refusal_reason"), f"no cause reported for {script}"
 
 
 # ---- the accepted path -----------------------------------------------------

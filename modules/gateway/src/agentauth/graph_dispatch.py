@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import replace
 
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
@@ -284,6 +285,20 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
             wave_key(grant.flow_id, mapping["epic_ref"], mapping["wave_ref"]) if mapping else None,
             coordinates,
         )
+        if body.persona == "reviewer":
+            from src.orchestration.review_dispatch import review_dispatch_expectation
+
+            reviewer_run_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"adp-dispatch:{caller.tenant_id}:{request_key}"))
+            review_expect = await review_dispatch_expectation(
+                session,
+                grant=grant,
+                node=node,
+                attempt=attempt,
+                reviewer_run_id=reviewer_run_id,
+                installation_id=int(parent.get("installation_id", {}).get("N", "0")),
+                repo=body.target.repo,
+            )
+            graph = replace(graph, review_expect=review_expect)
         command, grant, caller = await run_in_threadpool(
             service.prepare, body=body, credential_token=credential_token, workload_binding=workload_binding, graph=graph
         )
@@ -355,6 +370,17 @@ async def dispatch_graph(*, service, session_factory, body, credential_token, wo
             _, node = await _lock_assignment(session, grant=grant, issue=body.target.issue)
         execution = await run_in_threadpool(service.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{command['invocation_id']['S']}")
         await validate_engine_authority(session=session, execution=execution, grant=grant, store=service.store)
+        if body.persona == "reviewer":
+            review_expect = await review_dispatch_expectation(
+                session,
+                grant=grant,
+                node=node,
+                attempt=graph.attempt,
+                reviewer_run_id=command["invocation_id"]["S"],
+                installation_id=int(execution.get("installation_id", {}).get("N", "0")),
+                repo=body.target.repo,
+            )
+            graph = replace(graph, review_expect=review_expect)
         command, grant, caller = await run_in_threadpool(
             service.prepare, body=body, credential_token=credential_token, workload_binding=workload_binding, graph=graph
         )

@@ -193,7 +193,7 @@ async def _story_state(ctx):
 class TestAllowedChildren:
     """The lane works end to end under an accepted scope, and stays idempotent."""
 
-    async def test_coordinator_launch_and_developer_then_reviewer_child(self, wave_context):
+    async def test_coordinator_launch_and_developer_then_reviewer_child(self, wave_context, monkeypatch):
         """The whole point of the story: a coordinator can be dispatched and can ask.
 
         Before this change `graph_dispatch` refused every `coordinates` request
@@ -212,6 +212,9 @@ class TestAllowedChildren:
         assert boot.status_code == 200, boot.text
         assert await _story_state(ctx) == ("running", 1)
 
+        from tests.agentauth.test_review_dispatch import seed_review_context
+
+        await seed_review_context(ctx, monkeypatch)
         review = await dispatch(ctx, persona="reviewer", issue=43, request_id="review", headers=developer_headers)
         assert review.status_code == 202, review.text
         assert (await bootstrap_child(ctx, review.json()["invocation_id"]))[0].status_code == 200

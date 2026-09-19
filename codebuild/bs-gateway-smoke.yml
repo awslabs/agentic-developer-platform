@@ -12,6 +12,11 @@ version: 0.2
 phases:
   build:
     commands:
+      # Issue #5146: stage the shared review-result contract into the build context
+      # before building, exactly as bs-gateway-build.yml does. A smoke build that
+      # skipped this would pass while the deploy build's selfcheck failed — the PR
+      # gate would then be green on an image that cannot ship.
+      - modules/gateway/scripts/stage-contracts.sh
       - cd modules/gateway
       - docker build --pull -t adp-gateway:pr-smoke .
   post_build:
@@ -23,3 +28,7 @@ phases:
       # builds green and only fails later — as an ImportError on the first priced
       # request, or as a Lambda silently billing at default rates.
       - docker run --rm --entrypoint python adp-gateway:pr-smoke -m pricing_policy.selfcheck
+      # Issue #5146: same for the shared review-result contract. Catching a dropped
+      # COPY or an unstaged contract at PR time is the whole point of a smoke build;
+      # without this the first sign would be refused review evidence in production.
+      - docker run --rm --entrypoint python adp-gateway:pr-smoke -m src.orchestration.review_contract_selfcheck

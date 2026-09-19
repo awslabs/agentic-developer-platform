@@ -40,12 +40,19 @@ phases:
   build:
     commands:
       # Build context is the repo root — the Dockerfile's COPY paths are
-      # `modules/agent-factory/...` and `modules/domain-apps/...`.
+      # `modules/agent-factory/...`, `modules/domain-apps/...` and `contracts/`.
       - docker build --no-cache --pull
           -f modules/agent-factory/agent-worker-image/Dockerfile
           -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
           -t "$REGISTRY/$ECR_REPO:latest"
           .
+      # Issue #5146: gate the push on the image carrying the shared review-result
+      # contract, and on this image's producer agreeing with it. `contracts/` is
+      # COPY'd in, not pip-installed, so a dropped COPY line or a changed build
+      # context builds green and degrades silently — the producer emits unvalidated
+      # artifacts and nothing about the running pod says so. Deliberately BEFORE the
+      # push: an image that cannot validate its own review evidence must not ship.
+      - docker run --rm --entrypoint python3 "$REGISTRY/$ECR_REPO:$IMAGE_TAG" -m lib.contract_selfcheck
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - 'if [ "${PUBLISH_LATEST:-true}" = true ]; then docker push "$REGISTRY/$ECR_REPO:latest"; fi'
 

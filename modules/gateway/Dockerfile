@@ -43,6 +43,15 @@ COPY src/ src/
 # snapshots/*.json) must be present in the runtime image, not just installed as a
 # build-time dependency.
 COPY pricing_policy/ pricing_policy/
+# Issue #5146: the shared review-result contract — ONE normative validator read by
+# the gateway, the orchestration tick and the agent worker, so producer and consumer
+# cannot drift (#4029). It has no pyproject.toml and is not pip-installed, and the
+# repository-root `contracts/` tree is outside this build context
+# (`cd modules/gateway && docker build .`), so `scripts/stage-contracts.sh` copies it
+# into the context first. Without this the review path fails closed at runtime with
+# `contract_unavailable` — honest, but a total outage discovered on first use, which
+# is why `src.orchestration.review_contract_selfcheck` gates the build below.
+COPY contracts/ contracts/
 COPY alembic/ alembic/
 COPY alembic.ini .
 # Issue #4146: the /setup page's Download button is served by GET /api/cli/{script_name}

@@ -55,7 +55,7 @@ async def accept(ctx, *, actions=None, human_gates=None):
         await db.commit()
 
 
-async def test_policy_allows_developer_then_reviewer_and_idempotent_replay(graph_context):
+async def test_policy_allows_developer_then_reviewer_and_idempotent_replay(graph_context, monkeypatch):
     ctx = graph_context
     await accept(ctx)
     await enroll(ctx)
@@ -64,6 +64,9 @@ async def test_policy_allows_developer_then_reviewer_and_idempotent_replay(graph
     replay = await send(ctx)
     assert replay.status_code == 202, replay.text
     assert replay.json() == first.json()
+    from tests.agentauth.test_review_dispatch import seed_review_context
+
+    await seed_review_context(ctx, monkeypatch)
     review = await send(ctx, {**ctx.body, "persona": "reviewer", "request_id": "review-policy"})
     assert review.status_code == 202, review.text
     assert await node_state(ctx) == ("running", 1)
