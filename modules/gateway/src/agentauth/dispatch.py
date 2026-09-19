@@ -77,7 +77,7 @@ def _root_coordinator_fan_out(*, grant, raw_grant: dict, parent: dict, target_re
     """
     return (
         graph_cleared
-        and grant.authority.kind == "github_event"
+        and grant.authority.kind == AUTHORITY_GITHUB_EVENT
         and raw_grant.get(FAN_OUT_CAPABILITY_FIELD) == {"S": FAN_OUT_CAPABILITY}
         and raw_grant.get(FAN_OUT_REPOSITORY_FIELD) == {"S": target_repo}
         and not parent.get("parent_principal")
@@ -211,7 +211,7 @@ class DispatchService:
             or (
                 body.target.issue != allowed_issue
                 and not (graph and parent.get("coordinator_flow_id") == {"S": grant.flow_id})
-                and not (grant.authority.kind == "service_policy" and raw_grant.get("dispatch_issue_scope") == {"S": "repository"})
+                and not (grant.authority.kind == AUTHORITY_SERVICE_POLICY and raw_grant.get("dispatch_issue_scope") == {"S": "repository"})
                 and not _root_coordinator_fan_out(
                     grant=grant, raw_grant=raw_grant, parent=parent, target_repo=body.target.repo, graph_cleared=fan_out_cleared
                 )
@@ -274,7 +274,7 @@ class DispatchService:
 
     def _child_grant(self, body, parent, invocation, *, graph=None):
         actions = {AgentAction.MONITOR}
-        coordinates = (parent.authority.kind == "service_policy" and body.persona in {"operations", "aidlc", "codex"}) or bool(
+        coordinates = (parent.authority.kind == AUTHORITY_SERVICE_POLICY and body.persona in {"operations", "aidlc", "codex"}) or bool(
             graph and graph.wave_coordinator
         )
         if body.persona == "developer" or coordinates:
@@ -351,7 +351,7 @@ class DispatchService:
             "dispatch_reservation_id": {"S": request_key},
         }
         child_item = self.store._grant_item(child_grant)
-        if grant.authority.kind == "gate_decision":
+        if grant.authority.kind == AUTHORITY_GATE_DECISION:
             try:
                 for field in ("orchestration_node_id", "orchestration_node_attempt", "orchestration_dispatch_receipt"):
                     execution[field] = command[field]
@@ -375,7 +375,7 @@ class DispatchService:
             child_item["dispatch_personas"] = {
                 "SS": [p for p in raw_grant["dispatch_personas"]["SS"] if p in {"developer", "reviewer", "operations"}]
             }
-        if grant.authority.kind == "service_policy":
+        if grant.authority.kind == AUTHORITY_SERVICE_POLICY:
             permitted = raw_grant.get("dispatch_personas", {}).get("SS", [])
             if envelope["persona"] == "developer" and "reviewer" not in permitted:
                 child_item.pop("dispatch_personas", None)
