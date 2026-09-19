@@ -113,6 +113,34 @@ def snapshot(**changes) -> ModelPolicySnapshot:
     return ModelPolicySnapshot(**values)
 
 
+def live_snapshot(**changes) -> ModelPolicySnapshot:
+    """A `snapshot()` whose validity window is relative to the real clock.
+
+    `NOW` is a fixed instant, which is exactly right for the resolution tests: they
+    pass `now=NOW` explicitly, so issuance and resolution share one clock and the
+    result is deterministic forever.
+
+    It is wrong for tests that go through `bootstrap_model_policy`, because that
+    seam does not accept a `now` -- `_resolve_execution_decision` calls
+    `resolve_decision` without one, so it reads the real wall clock by design. A
+    snapshot issued at a fixed 12:00 with a two-hour window therefore expires
+    against real time, and those tests began returning `snapshot_expired` once the
+    day's clock passed 14:00 UTC. The expiry check was right; the fixture was
+    incoherent.
+
+    Anchoring issuance to `datetime.now(UTC)` makes both ends of the comparison use
+    the same clock again, which is the same convention the live-bootstrap tests in
+    this file already follow. Issuance is backdated a minute so the window is
+    unambiguously open rather than opening exactly at the current instant. Not a
+    larger hard-coded expiry: pushing the constant into the future would only move
+    the failure, and the next reader would have no way to tell it was load-bearing.
+    """
+    current = datetime.now(UTC)
+    values = {"issued_at": current - timedelta(minutes=1), "expires_at": current + timedelta(hours=2)}
+    values.update(changes)
+    return snapshot(**values)
+
+
 def test_three_hops_select_distinct_models_from_one_root_snapshot():
     policy = snapshot()
 
@@ -268,7 +296,10 @@ def _put(store, item):
 
 @pytest.mark.asyncio
 async def test_child_inherits_exact_parent_snapshot_without_rereading_preferences(db_session, policy_store):
-    root = snapshot().to_dict()
+    # `live_snapshot`, not `snapshot`: the `bootstrap_model_policy` call at the end
+    # of this test resolves against the real clock, so the window has to be open
+    # against that same clock. The admission call above it is still pinned to `NOW`.
+    root = live_snapshot().to_dict()
     raw, digest = canonical_json(root).decode(), policy_digest(root)
     _put(
         policy_store,
@@ -1151,7 +1182,8 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
-    value = snapshot().to_dict()
+    # `live_snapshot`: `bootstrap_model_policy` resolves against the real clock.
+    value = live_snapshot().to_dict()
     raw, digest = canonical_json(value).decode(), policy_digest(value)
     _put(
         policy_store,
@@ -1203,7 +1235,11 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
 
 
 def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(policy_store):
-    value = snapshot().to_dict()
+    # `live_snapshot`: `bootstrap_model_policy` resolves against the real clock. An
+    # expired snapshot would also produce an `unavailable` result here, but with
+    # reason `snapshot_expired` -- masking the `direct_override_unresolved` refusal
+    # this test exists to pin, which is why the assertion is on the reason.
+    value = live_snapshot().to_dict()
     raw, digest = canonical_json(value).decode(), policy_digest(value)
     _put(
         policy_store,
@@ -1238,6 +1274,81 @@ def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(po
         "status": "unavailable",
         "reason": "direct_override_unresolved",
     }
+
+
+def test_bootstrap_refuses_an_expired_snapshot_rather_than_signing_a_stale_proposal(policy_store):
+    """Expiry is load-bearing, so it gets its own test rather than only a fixture.
+
+    Nothing asserted `snapshot_expired` anywhere before this. That mattered because
+    the three tests above used to fail against it by accident -- a fixed-clock
+    fixture aging past its own window -- and the cheapest way to make those failures
+    stop would have been to widen or drop the expiry check. Nothing would have
+    caught that.
+
+    So the window is closed deliberately here: issued in the past, expired before
+    now, with everything else about the snapshot valid. A signed proposal describing
+    policy that is no longer current is worse than no proposal, because the
+    signature makes it look authoritative. The refusal must be the reason, not a
+    generic unavailability, and no assertion may be signed.
+    """
+    current = datetime.now(UTC)
+    value = snapshot(
+        issued_at=current - timedelta(hours=3),
+        expires_at=current - timedelta(minutes=1),
+    ).to_dict()
+    raw, digest = canonical_json(value).decode(), policy_digest(value)
+    _put(
+        policy_store,
+        {
+            "pk": {"S": "TENANT#tenant-a"},
+            "sk": {"S": "EXEC#run-developer"},
+            "tenant_id": {"S": "tenant-a"},
+            "status": {"S": "active"},
+            "persona": {"S": "developer"},
+            "model_policy_snapshot": {"S": raw},
+            "model_policy_snapshot_digest": {"S": digest},
+        },
+    )
+    record = type(
+        "Record",
+        (),
+        {
+            "tenant_id": "tenant-a",
+            "invocation_id": "run-developer",
+            "principal": "run-developer#1",
+            "current_attempt": 1,
+        },
+    )()
+
+    result = bootstrap_model_policy(store=policy_store, record=record, grant=_grant("github_event"))
+
+    assert result == {"posture": "report_only", "status": "unavailable", "reason": "snapshot_expired"}
+    # No assertion, so there is nothing a downstream verifier could mistake for a
+    # current decision.
+    assert "assertion" not in result
+
+
+def test_resolution_accepts_a_snapshot_up_to_but_not_including_its_expiry(policy_store):
+    """The boundary itself, since `>=` versus `>` is the likely way this breaks.
+
+    Paired with the test above so the expiry rule is pinned from both sides: a
+    snapshot one second inside its window resolves, and one exactly at its expiry
+    does not. Without the second half, widening the comparison to `>` would pass
+    every other test in this file.
+    """
+    policy = snapshot()
+
+    inside = resolve_decision(
+        policy,
+        invocation_id="run-developer",
+        persona="developer",
+        now=policy.expires_at - timedelta(seconds=1),
+    )
+    assert inside.resolved_model_id == SONNET
+
+    with pytest.raises(ModelPolicyError) as exact:
+        resolve_decision(policy, invocation_id="run-developer", persona="developer", now=policy.expires_at)
+    assert exact.value.reason == "snapshot_expired"
 
 
 def _live_policy_record(policy_store, policy: ModelPolicySnapshot):
