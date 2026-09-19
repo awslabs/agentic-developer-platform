@@ -64,6 +64,12 @@ class BootstrapRequest(BaseModel):
     model_policy_contract: int | None = Field(default=None, ge=1, le=64, strict=True)
 
 
+class ModelDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    nonce: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_policy_contract: int = Field(strict=True, ge=1, le=64)
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -383,6 +389,17 @@ async def bootstrap(
     db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
+        # Keep the original JSON body usable against older gateways, whose
+        # BootstrapRequest rejects unknown fields. Accept the earlier JSON
+        # declaration during this rollout as well, with no contradictory claims.
+        header_contract = request.headers.get("X-Adp-Model-Policy-Contract")
+        client_contract = body.model_policy_contract
+        if header_contract is not None:
+            if not header_contract.isascii() or not header_contract.isdecimal() or not 1 <= int(header_contract) <= 64:
+                raise HTTPException(422, "invalid model policy contract")
+            if client_contract is not None and client_contract != int(header_contract):
+                raise HTTPException(422, "conflicting model policy contract")
+            client_contract = int(header_contract)
         result = await run_in_threadpool(runtime.bootstrap, body, request.headers.get(WORKLOAD_HEADER, ""))
         pod_deadline_at = result.get("pod_deadline_at")
         caller = verify_credential(result["credential"], env=runtime.env)
@@ -409,7 +426,7 @@ async def bootstrap(
         )
         _refuse_unconsumable_model_policy(
             model_policy,
-            client_contract=body.model_policy_contract,
+            client_contract=client_contract,
             invocation_id=record.invocation_id,
         )
         result["model_policy"] = model_policy
@@ -472,6 +489,60 @@ async def _agent_call(request: Request, runtime: AgentRuntime, method, *args) ->
     except AuthorityStoreError:
         audit("unavailable", 503)
         raise HTTPException(503, "agent authority unavailable") from None
+
+
+@router.post("/model-decision")
+async def model_decision(
+    body: ModelDecisionRequest,
+    request: Request,
+    runtime: AgentRuntime = Depends(get_agent_runtime),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """Issue fresh model authority immediately before an SDK launch or retry.
+
+    Neither persona nor root is supplied by the worker. They come from its
+    protected execution. The entire response, including unavailable proposals,
+    is signed and bound to a one-use client challenge so unsigned error metadata
+    cannot turn enforcement into permission or replay a prior report-only read.
+    """
+    from src.agentauth.envelope import sign_envelope
+    from src.agentauth.model_policy import MODEL_POLICY_AUDIENCE, bootstrap_model_policy_live, canonical_json
+
+    async def resolve(_body, _credential, _workload, *, context):
+        _, caller, record, grant = context
+        from src.orchestration.work_admission import worker_checkpoint
+
+        await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
+        policy = await bootstrap_model_policy_live(db, store=runtime.store, record=record, grant=grant, env=runtime.env)
+        _refuse_unconsumable_model_policy(policy, client_contract=body.model_policy_contract, invocation_id=record.invocation_id)
+        result = {
+            "nonce": body.nonce,
+            "invocation_id": caller.invocation_id,
+            "tenant_id": caller.tenant_id,
+            "attempt": caller.attempt,
+            "model_policy": policy,
+        }
+        assertion = sign_envelope(
+            tenant_id=caller.tenant_id,
+            principal=record.principal,
+            target_run_id=caller.invocation_id,
+            target_generation=caller.attempt,
+            action="model_policy_response",
+            command_id=body.nonce,
+            request_body=canonical_json(result),
+            grant_id=grant.grant_id,
+            revocation_epoch=grant.revocation_epoch,
+            flow_id=grant.flow_id,
+            authority_reference_id=grant.authority.reference_id,
+            audience=MODEL_POLICY_AUDIENCE,
+            env=runtime.env,
+        )
+        return {"result": result, "assertion": assertion}
+
+    try:
+        return await _agent_call(request, runtime, resolve, body)
+    except WorkClaimError:
+        raise HTTPException(409, "work ownership unavailable") from None
 
 
 @router.get("/status")

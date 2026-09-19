@@ -53,6 +53,7 @@ MODEL_POLICY_SCHEMA_VERSION = 1
 #: gateway decides the posture and the model, and declaring a higher number here
 #: cannot obtain a decision, relax a gate, or alter what is signed.
 MODEL_POLICY_CONTRACT_VERSION = 1
+MODEL_POLICY_CONTRACT_HEADER = "X-Adp-Model-Policy-Contract"
 #: The closed posture vocabulary this worker understands.  ``enforcing`` is
 #: supported *in source* here so the runtime can be proven end-to-end; every
 #: actually configured environment remains ``report_only``, and the flip itself
@@ -683,7 +684,7 @@ class RunIdentitySession:
         self._thread: threading.Thread | None = None
         self._attempt: int | None = None
         self.pod_deadline_at: str | None = None
-        self._model_policy_reported = False
+        self._model_policy_seen = False
         self.model_policy_report: ModelPolicyReport | None = None
 
     def _request(self) -> dict:
@@ -697,18 +698,17 @@ class RunIdentitySession:
             {
                 "invocation_id": self._invocation_id,
                 "envelope_digest": self._digest,
-                # Declares only that this worker will honour an enforcing decision
-                # rather than launching on its legacy assignment. It carries no
-                # authority: it cannot select a model, relax a gate or influence
-                # what the gateway signs. An older gateway ignores the field.
-                "model_policy_contract": MODEL_POLICY_CONTRACT_VERSION,
             }
         ).encode()
         signed = botocore.awsrequest.AWSRequest(
             method="POST",
             url=self._url,
             data=data,
-            headers={"Content-Type": "application/json", WORKLOAD_HEADER: read_workload_token()},
+            headers={
+                "Content-Type": "application/json",
+                WORKLOAD_HEADER: read_workload_token(),
+                MODEL_POLICY_CONTRACT_HEADER: str(MODEL_POLICY_CONTRACT_VERSION),
+            },
         )
         botocore.auth.SigV4Auth(
             credentials.get_frozen_credentials(),
@@ -757,83 +757,69 @@ class RunIdentitySession:
         # until PMM-09 enables enforcement.  Reporting the ignored proposal is
         # intentional evidence; silently accepting or silently dropping it
         # would make mixed-version rollout impossible to audit.
-        if not self._model_policy_reported:
-            policy = result.get("model_policy")
-            # Absence is expected while an older gateway is still serving a
-            # mixed-version rollout.  Keep looking on refresh so a newly
-            # upgraded gateway can still emit comparison evidence.
-            if policy is not None:
-                try:
-                    self.model_policy_report = parse_model_policy_report(
-                        policy,
-                        invocation_id=self._invocation_id,
-                        attempt=attempt,
-                        tenant_id=self._tenant_id,
-                        correlation_id=self._correlation_id,
-                        public_keys=load_model_policy_verification_keys(),
-                    )
-                except ModelPolicyVerificationError as exc:
-                    self.model_policy_report = _unconsumable_report(
-                        policy, reason=exc.reason, authenticated=exc.authenticated
-                    )
-                except ValueError:
-                    self.model_policy_report = _unconsumable_report(
-                        policy, reason="decision_malformed"
-                    )
-                # The message must describe what actually happened. A report-only
-                # warning that implies the run was blocked before inference is a
-                # false statement about enforcement, and an operator reading it
-                # would conclude the gate works when nothing was gated.
-                report = self.model_policy_report
-                failure = report.enforcement_failure
-                if failure is not None and report.verification_failed:
-                    # Truthful about the uncertainty: an unverifiable response does
-                    # not establish that the platform was enforcing, so claiming it
-                    # was would be as wrong as claiming it was not. What *is* known
-                    # is that the posture cannot be determined, which is why the run
-                    # stops.
-                    logger.error(
-                        "Model-policy response could not be verified, so the live posture is "
-                        "unknown and may be enforcing; run must not proceed on its legacy "
-                        "model (reason=%s)",
-                        failure,
-                    )
-                elif failure is not None:
-                    logger.error(
-                        "Enforcing model policy cannot be satisfied; run must not proceed "
-                        "on its legacy model (reason=%s)",
-                        failure,
-                    )
-                elif report.enforced:
-                    logger.info(
-                        "Enforcing model policy: launching on the gateway-decided model"
-                    )
-                elif report.status == "proposed":
-                    logger.info(
-                        "Model-policy decision received and recorded; posture=%s leaves the "
-                        "existing model assignment in effect (nothing was blocked)",
-                        report.posture or "unknown",
-                    )
-                else:
-                    logger.warning(
-                        "Model-policy decision unavailable (posture=%s, reason=%s); the "
-                        "existing model assignment stays in effect and no inference was "
-                        "blocked",
-                        report.posture or "unknown",
-                        report.reason,
-                    )
-                # A transient missing key/snapshot may recover on the next
-                # refresh. Pin only an authenticated proposal, or the explicit
-                # mixed-version compatibility outcome, for this worker run.
-                #
-                # An enforcing failure is never pinned: it must be re-evaluated on
-                # every refresh so an operator's rollback to report_only, or a
-                # recovered decision, is picked up instead of the run staying
-                # latched to a stale refusal.
-                self._model_policy_reported = failure is None and (
-                    report.status == "proposed"
-                    or report.reason == "snapshot_unsupported_revision"
+        policy = result.get("model_policy")
+        # Absence is expected while an older gateway is still serving a
+        # mixed-version rollout.  Keep looking on refresh so a newly
+        # upgraded gateway can still emit comparison evidence.
+        if policy is not None:
+            try:
+                self.model_policy_report = parse_model_policy_report(
+                    policy,
+                    invocation_id=self._invocation_id,
+                    attempt=attempt,
+                    tenant_id=self._tenant_id,
+                    correlation_id=self._correlation_id,
+                    public_keys=load_model_policy_verification_keys(),
                 )
+            except ModelPolicyVerificationError as exc:
+                self.model_policy_report = _unconsumable_report(
+                    policy, reason=exc.reason, authenticated=exc.authenticated
+                )
+            except ValueError:
+                self.model_policy_report = _unconsumable_report(policy, reason="decision_malformed")
+            # The message must describe what actually happened. A report-only
+            # warning that implies the run was blocked before inference is a
+            # false statement about enforcement, and an operator reading it
+            # would conclude the gate works when nothing was gated.
+            report = self.model_policy_report
+            failure = report.enforcement_failure
+            if failure is not None and report.verification_failed:
+                # Truthful about the uncertainty: an unverifiable response does
+                # not establish that the platform was enforcing, so claiming it
+                # was would be as wrong as claiming it was not. What *is* known
+                # is that the posture cannot be determined, which is why the run
+                # stops.
+                logger.error(
+                    "Model-policy response could not be verified, so the live posture is "
+                    "unknown and may be enforcing; run must not proceed on its legacy "
+                    "model (reason=%s)",
+                    failure,
+                )
+            elif failure is not None:
+                logger.error(
+                    "Enforcing model policy cannot be satisfied; run must not proceed "
+                    "on its legacy model (reason=%s)",
+                    failure,
+                )
+            elif report.enforced:
+                logger.info("Enforcing model policy: launching on the gateway-decided model")
+            elif report.status == "proposed":
+                logger.info(
+                    "Model-policy decision received and recorded; posture=%s leaves the "
+                    "existing model assignment in effect (nothing was blocked)",
+                    report.posture or "unknown",
+                )
+            else:
+                logger.warning(
+                    "Model-policy decision unavailable (posture=%s, reason=%s); the "
+                    "existing model assignment stays in effect and no inference was "
+                    "blocked",
+                    report.posture or "unknown",
+                    report.reason,
+                )
+            self._model_policy_seen = True
+        elif self._model_policy_seen:
+            self.model_policy_report = _unconsumable_report(None, reason="decision_missing")
         with self._write_lock:
             if self._stop.is_set():
                 return
@@ -868,6 +854,7 @@ class RunIdentitySession:
                     raise RunIdentityError("work ownership startup deadline exceeded") from None
                 logger.info("Authorized child is waiting for its parent to release work ownership")
         os.environ[CREDENTIAL_FILE_ENV] = str(self.credential_path)
+        os.environ["ADP_RUN_ATTEMPT"] = str(self._attempt)
         os.environ["ADP_POD_DEADLINE_AT"] = self.pod_deadline_at or "1970-01-01T00:00:00Z"
         self._thread = threading.Thread(
             target=self._renew, name="adp-run-identity-refresh", daemon=True

@@ -40,6 +40,7 @@
  * must not be able to change how ordinary runs behave.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { prepareModelQuery, ModelPolicyRefused } from '../model-policy-runtime';
 import { ControlCancelledError, isControlCancellation } from '../control-runtime';
 
 /** The shape of a single message yielded by query(). */
@@ -227,6 +228,7 @@ class SDKResponseError extends Error {
 }
 
 function isRetryableError(err: unknown): boolean {
+  if (err instanceof ModelPolicyRefused) return false;
   if (err instanceof SDKResponseError) return err.retryable;
   const message = ((err as Error)?.message || String(err)).toLowerCase();
   return RETRYABLE_PATTERNS.some(p => message.includes(p));
@@ -416,6 +418,8 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           } : {}),
         } as typeof queryParams;
       }
+
+      effectiveParams = await prepareModelQuery(effectiveParams);
 
       // Last check before committing to a query: a cancellation that landed
       // while the input factory ran must not produce a live attempt.

@@ -1830,10 +1830,10 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
                 )
             bootstrap_log.close()
             return 1
-        enforced_model = policy_report.effective_model(effective_model)
-        if enforced_model != effective_model:
-            logger.info("Enforcing model policy: using the gateway-decided model")
-            effective_model = enforced_model
+        # Bootstrap can precede the SDK launch by minutes of repository setup.
+        # Preserve the legacy input here; the SDK boundary obtains a fresh,
+        # challenge-bound decision and applies enforcement there. Otherwise an
+        # enforcing bootstrap would become the "legacy" model after rollback.
 
     env_vars = {
         "GITHUB_TOKEN": token,
@@ -1859,6 +1859,8 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # rollout, which is why nothing downstream may require them.
     if policy_report is not None:
         env_vars.update(policy_report.environment(legacy_model))
+        env_vars["ADP_MODEL_POLICY_ENFORCED"] = "false"
+        env_vars["ADP_MODEL_POLICY_EXECUTION_PENDING"] = "true"
 
     # Issue #5223: in mediated mode there is no token, so exporting these would
     # publish empty strings as if they were credentials. Removed rather than left

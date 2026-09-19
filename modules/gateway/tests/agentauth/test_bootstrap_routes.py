@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
@@ -13,7 +14,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from moto import mock_aws
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from src.admin.persona_models.catalogue import HARNESS_CONTRACT_REVISION
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, envelope_digest
@@ -198,7 +198,8 @@ def http_client(store, kubernetes, monkeypatch, *, posture="report_only", postur
     runtime = AgentRuntime(store=store, workloads=kubernetes[0], env=ENV)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
 
-    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    database_directory = tempfile.TemporaryDirectory(prefix="adp-bootstrap-test-")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_directory.name}/posture.sqlite")
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def _provision():
@@ -233,6 +234,7 @@ def http_client(store, kubernetes, monkeypatch, *, posture="report_only", postur
     # same committed store the route reads, rather than reaching into the app's
     # dependency overrides to reconstruct it.
     client.posture_sessions = session_factory
+    client.database_directory = database_directory
     return client, auth
 
 

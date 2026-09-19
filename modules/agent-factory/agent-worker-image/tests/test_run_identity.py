@@ -391,7 +391,7 @@ def test_refresh_atomically_replaces_live_cli_file(identity, monkeypatch):
     assert not list(session.credential_path.parent.glob("credential-*"))
 
 
-def test_refresh_retains_first_report_only_proposal_as_immutable_comparison(identity, monkeypatch):
+def test_refresh_reads_each_new_gateway_decision(identity, monkeypatch):
     session, _ = identity
     monkeypatch.setattr(session, "_request", lambda: reply(model_policy=policy_reply()))
     session.refresh()
@@ -401,7 +401,7 @@ def test_refresh_retains_first_report_only_proposal_as_immutable_comparison(iden
     changed = policy_reply(resolved_model_id="global.anthropic.claude-opus-5")
     monkeypatch.setattr(session, "_request", lambda: reply(model_policy=changed))
     session.refresh()
-    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-opus-5"
 
 
 def test_refresh_can_observe_policy_after_old_gateway_response(identity, monkeypatch):
@@ -538,8 +538,9 @@ def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypa
     assert json.loads(kwargs["data"]) == {
         "invocation_id": "run-a",
         "envelope_digest": session._digest,
-        "model_policy_contract": MODEL_POLICY_CONTRACT_VERSION,
     }
+    assert kwargs["headers"]["X-Adp-Model-Policy-Contract"] == str(MODEL_POLICY_CONTRACT_VERSION)
+    assert "x-adp-model-policy-contract" in kwargs["headers"]["Authorization"]
 
 
 def test_start_refuses_before_launching_background_thread(identity, monkeypatch):
@@ -665,11 +666,21 @@ def test_non_enforcing_postures_preserve_the_legacy_assignment_exactly(posture):
     ("policy", "expected_reason"),
     [
         (
-            {"posture": "enforcing", "posture_verified": True, "status": "unavailable", "reason": "evidence_stale"},
+            {
+                "posture": "enforcing",
+                "posture_verified": True,
+                "status": "unavailable",
+                "reason": "evidence_stale",
+            },
             "evidence_stale",
         ),
         (
-            {"posture": "enforcing", "posture_verified": False, "status": "unavailable", "reason": "evidence_stale"},
+            {
+                "posture": "enforcing",
+                "posture_verified": False,
+                "status": "unavailable",
+                "reason": "evidence_stale",
+            },
             # An unverified posture outranks the specific reason: the platform does
             # not know what it is enforcing, which is the broader failure.
             "posture_unverified",
@@ -677,7 +688,9 @@ def test_non_enforcing_postures_preserve_the_legacy_assignment_exactly(posture):
     ],
     ids=["stale-evidence", "unverified-posture"],
 )
-def test_enforcing_without_a_usable_decision_is_a_refusal_not_legacy_execution(policy, expected_reason):
+def test_enforcing_without_a_usable_decision_is_a_refusal_not_legacy_execution(
+    policy, expected_reason
+):
     """An enforcing failure must never become report-only behaviour.
 
     This is the central anti-bypass property. Exception handling and default
@@ -702,7 +715,9 @@ def test_a_malformed_enforcing_decision_refuses_rather_than_falling_back():
     non-enforcing and the run would quietly proceed on its legacy model.
     """
     tampered = _enforcing()
-    tampered["decision"] = dict(tampered["decision"], resolved_model_id="global.anthropic.claude-opus-5")
+    tampered["decision"] = dict(
+        tampered["decision"], resolved_model_id="global.anthropic.claude-opus-5"
+    )
 
     with pytest.raises(ModelPolicyVerificationError):
         parse_model_policy_report(
@@ -723,7 +738,9 @@ def test_refresh_reports_enforcing_verification_failure_without_pinning_it(ident
     """
     session, _ = identity
     tampered = _enforcing()
-    tampered["decision"] = dict(tampered["decision"], resolved_model_id="global.anthropic.claude-opus-5")
+    tampered["decision"] = dict(
+        tampered["decision"], resolved_model_id="global.anthropic.claude-opus-5"
+    )
     monkeypatch.setattr(session, "_request", lambda: reply(model_policy=tampered))
 
     session.refresh()
@@ -738,7 +755,7 @@ def test_refresh_reports_enforcing_verification_failure_without_pinning_it(ident
     assert session.model_policy_report.verification_failed is True
     assert session.model_policy_report.enforcement_failure == "decision_altered"
     # Not pinned: a later refresh must be able to observe a rollback or recovery.
-    assert session._model_policy_reported is False
+    assert session._model_policy_seen is True
 
     # The operator rolls the posture back; the same session recovers on refresh.
     monkeypatch.setattr(session, "_request", lambda: reply(model_policy=policy_reply()))
@@ -775,3 +792,22 @@ def test_a_worker_cannot_declare_its_own_posture_or_model(identity, monkeypatch)
     assert "posture" not in captured and "model" not in captured
     # And the declared contract is a bare capability integer, not a grant.
     assert captured["model_policy_contract"] == MODEL_POLICY_CONTRACT_VERSION
+
+
+def test_each_refresh_observes_a_new_posture_and_missing_response_refuses(identity, monkeypatch):
+    session, _ = identity
+    policies = iter(
+        [
+            reply(model_policy=policy_reply()),
+            reply(model_policy=_enforcing()),
+            reply(model_policy=policy_reply()),
+            reply(),
+        ]
+    )
+    monkeypatch.setattr(session, "_request", lambda: next(policies))
+    for posture in ("report_only", "enforcing", "report_only"):
+        session.refresh()
+        assert session.model_policy_report.posture == posture
+        assert session.model_policy_report.enforced == (posture == "enforcing")
+    session.refresh()
+    assert session.model_policy_report.enforcement_failure == "decision_missing"

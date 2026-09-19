@@ -1613,3 +1613,28 @@ for versioned fail-closed loading with CI path gating, and the control-envelope 
 same Python→TypeScript boundary. See §4.1a, including the caveat that `pricing_policy`'s snapshots
 are hand-assembled rather than script-generated. No new convention is proposed, and none is needed.
 
+
+## Gateway-first SDK decision rollout
+
+The runtime obtains a fresh signed `POST /internal/v1/agent/model-decision`
+response immediately before each Claude SDK launch, including retries. The
+request contains a random challenge and the supported contract version; root,
+tenant and persona come from the protected execution. The response signature
+covers the complete proposal, including unavailable report-only proposals, and
+binds the challenge, invocation and attempt. Both credential acquisition and
+transport are bounded by ten seconds. A missing endpoint or unverifiable
+response refuses the launch; startup telemetry is never a fallback authority.
+
+Deploy the gateway endpoint before the corresponding worker image. Bootstrap
+capability is sent in the signed `X-Adp-Model-Policy-Contract` header so the
+unchanged JSON request remains compatible with old gateway schemas. This does
+not make the new SDK client compatible with an old gateway: its missing endpoint
+intentionally refuses inference. Roll back the worker before removing the
+gateway endpoint. Keep report_only, agent_models=false, probes disabled and
+budgets at zero throughout this code rollout. No candidate default is activated.
+
+Repository setup preserves the legacy model. Only a fresh enforcing decision at
+the SDK boundary may substitute it. A subsequent report_only rollback therefore
+restores the original assignment, including on retries in an existing process.
+Posture reads use an independent database connection and never expose pending
+settings edits from the request transaction.

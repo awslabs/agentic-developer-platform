@@ -146,7 +146,10 @@ class TestLiveRead:
         await _seed(db_session)
         reset_posture_cache()
         rogue = SimpleNamespace(enforcement_posture="quarantined", posture_revision=3)
-        monkeypatch.setattr(db_session, "scalar", AsyncMock(return_value=rogue))
+        monkeypatch.setattr(
+            "src.agentauth.runtime_posture._read_independent_committed_posture",
+            AsyncMock(return_value=(rogue.enforcement_posture, rogue.posture_revision)),
+        )
         with pytest.raises(RuntimePostureError) as err:
             await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
         assert err.value.reason == "runtime_posture_unsupported"
@@ -155,7 +158,10 @@ class TestLiveRead:
         await _seed(db_session)
         reset_posture_cache()
         rogue = SimpleNamespace(enforcement_posture="enforcing", posture_revision=0)
-        monkeypatch.setattr(db_session, "scalar", AsyncMock(return_value=rogue))
+        monkeypatch.setattr(
+            "src.agentauth.runtime_posture._read_independent_committed_posture",
+            AsyncMock(return_value=(rogue.enforcement_posture, rogue.posture_revision)),
+        )
         with pytest.raises(RuntimePostureError) as err:
             await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
         assert err.value.reason == "posture_revision_unsupported"
@@ -164,7 +170,10 @@ class TestLiveRead:
         """A database outage on the posture read must propagate, not soften."""
         await _seed(db_session)
         reset_posture_cache()
-        monkeypatch.setattr(db_session, "scalar", AsyncMock(side_effect=OperationalError("SELECT", {}, Exception("down"))))
+        monkeypatch.setattr(
+            "src.agentauth.runtime_posture._read_independent_committed_posture",
+            AsyncMock(side_effect=OperationalError("SELECT", {}, Exception("down"))),
+        )
         with pytest.raises(OperationalError):
             await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
 
@@ -265,15 +274,8 @@ class TestBoundedStaleness:
 
 
 class TestUncommittedChangesAreNeverCached:
-    async def test_a_pending_posture_write_refuses_rather_than_reporting_itself(self, db_session):
-        """A change that may still roll back is not a live posture at all.
-
-        Stricter than merely keeping it out of the cache, and deliberately so: the
-        posture describes committed platform state, so a session holding an
-        uncommitted write to it cannot be told what the posture is — not even for
-        one uncached hop.  Returning its own pending value, correctly labelled
-        uncacheable, still let that value govern a signed decision.
-        """
+    async def test_a_pending_posture_write_reads_the_independent_committed_value(self, db_session):
+        """A pending write cannot govern a decision, even for one uncached hop."""
         await _seed(db_session, posture="report_only", revision=2)
         reset_posture_cache()
 
@@ -282,8 +284,8 @@ class TestUncommittedChangesAreNeverCached:
         row.posture_revision = 3
         await db_session.flush()  # visible in-session, NOT committed
 
-        with pytest.raises(RuntimePostureError, match="runtime_posture_unavailable"):
-            await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
+        observed = await read_live_posture(db_session, compatibility_class=CLASS, now=NOW)
+        assert (observed.posture, observed.posture_revision) == ("report_only", 2)
 
         await db_session.rollback()
 
@@ -301,8 +303,8 @@ class TestUncommittedChangesAreNeverCached:
             row.enforcement_posture = "enforcing"
             row.posture_revision = 3
             await writer.flush()
-            with pytest.raises(RuntimePostureError):
-                await read_live_posture(writer, compatibility_class=CLASS, now=NOW)
+            observed = await read_live_posture(writer, compatibility_class=CLASS, now=NOW)
+            assert (observed.posture, observed.posture_revision) == ("report_only", 2)
             await writer.rollback()
 
         async with db_session_factory() as reader:

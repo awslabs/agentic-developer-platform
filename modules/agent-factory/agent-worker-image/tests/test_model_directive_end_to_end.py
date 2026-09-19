@@ -71,7 +71,9 @@ sys.path.insert(0, str(WEBHOOK_LAMBDA / "github"))
 WEBHOOK_SECRET = "pmm07-local-test-secret"
 os.environ.setdefault("WEBHOOK_SECRET", WEBHOOK_SECRET)
 os.environ.setdefault("WEBHOOK_SECRET_ARN", "")
-os.environ.setdefault("SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789012/adp-test-submit.fifo")
+os.environ.setdefault(
+    "SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789012/adp-test-submit.fifo"
+)
 os.environ.setdefault("IDENTITY_INDEX_TABLE", "adp-test-identity-index")
 os.environ.setdefault("RATE_LIMITS_TABLE", "adp-test-rate-limits")
 os.environ.setdefault("AWS_REGION", "us-east-1")
@@ -114,7 +116,9 @@ def _signed_delivery(comment_body: str) -> dict:
             "sender": SENDER,
         }
     )
-    signature = hmac.new(WEBHOOK_SECRET.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
+    signature = hmac.new(
+        WEBHOOK_SECRET.encode("utf-8"), body.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
     return {
         "headers": {
             "x-github-event": "issue_comment",
@@ -157,7 +161,9 @@ def _webhook_envelope(requested: str | None) -> dict:
     rate_decision.retry_after_seconds = 0
 
     correlation_store = MagicMock()
-    correlation_store.channel_key.side_effect = lambda provider, repo, kind, number: f"{provider}:repo={repo},{kind}={number}"
+    correlation_store.channel_key.side_effect = lambda provider, repo, kind, number: (
+        f"{provider}:repo={repo},{kind}={number}"
+    )
     correlation_store.read_pointer.return_value = {
         "correlation_id": "corr-pmm07-1",
         "triggering_invocation_id": None,
@@ -263,6 +269,17 @@ def contained_worker(monkeypatch):
     # them so this test performs no external mutation at all.
     monkeypatch.setattr("entrypoint.update_invocation_status", MagicMock())
     monkeypatch.setattr("entrypoint.post_provenance", MagicMock())
+    monkeypatch.setattr(
+        "lib.run_service_client.own_marker_fields",
+        lambda: {
+            "correlation_id": "chain-a",
+            "root_human_id": "human-a",
+            "is_human_rooted": "true",
+            "invocation_id": "run-a",
+            "chain_depth": "0",
+            "signature": "a" * 43,
+        },
+    )
     monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
     monkeypatch.setenv("ADP_GH_TOKEN_BROKER_ENABLED", "0")
     monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789012/q.fifo")
@@ -361,7 +378,11 @@ def _run_worker(
         # the same mock serves the pre-launch `gh`/`git` probes, so "the most
         # recent call" is only incidentally the harness and would start reading
         # some other command's environment the moment ordering changed.
-        launches = [call for call in subprocess_run.call_args_list if call.args and call.args[0][:1] == ["node"]]
+        launches = [
+            call
+            for call in subprocess_run.call_args_list
+            if call.args and call.args[0][:1] == ["node"]
+        ]
         assert len(launches) == 1, f"expected exactly one agent launch, got {len(launches)}"
         agent_env = launches[0].kwargs.get("env")
         assert agent_env is not None, "worker launched the agent with no explicit environment"
@@ -432,9 +453,7 @@ class TestPodDefaultAndOverridePrecedence:
         assert agent_env["ANTHROPIC_MODEL"] == "global.anthropic.claude-opus-4-8"
         assert "ADP_MODEL_REQUESTED" not in agent_env
 
-    def test_no_directive_and_no_pod_model_uses_the_built_in_default(
-        self, monkeypatch, tmp_path
-    ):
+    def test_no_directive_and_no_pod_model_uses_the_built_in_default(self, monkeypatch, tmp_path):
         envelope = _webhook_envelope(None)
         agent_env = _run_worker(envelope, monkeypatch, tmp_path, pod_model=None)
         assert agent_env["ANTHROPIC_MODEL"] == POD_DEFAULT_MODEL
@@ -453,9 +472,7 @@ class TestInvalidDirectiveIsLenientNotSubstituted:
         "requested",
         ["not-a-real-model", "gpt-4o", "meta.llama3-70b-instruct-v1:0", "opus"],
     )
-    def test_unresolvable_directive_runs_the_pod_default(
-        self, requested, monkeypatch, tmp_path
-    ):
+    def test_unresolvable_directive_runs_the_pod_default(self, requested, monkeypatch, tmp_path):
         envelope = _webhook_envelope(requested)
         assert "model_resolved" not in envelope
         agent_env = _run_worker(envelope, monkeypatch, tmp_path)
@@ -470,9 +487,7 @@ class TestInvalidDirectiveIsLenientNotSubstituted:
 class TestProposedResolutionNeverMovesExecution:
     """The proposal is recorded, never applied (design §3 decision 1, §8)."""
 
-    def test_a_refused_proposal_does_not_change_the_executed_model(
-        self, monkeypatch, tmp_path
-    ):
+    def test_a_refused_proposal_does_not_change_the_executed_model(self, monkeypatch, tmp_path):
         requested = "us.anthropic.claude-opus-4-6-v1"
         envelope = _webhook_envelope(requested)
         assert envelope["model_requested"] == requested
@@ -482,9 +497,7 @@ class TestProposedResolutionNeverMovesExecution:
         agent_env = _run_worker(envelope, monkeypatch, tmp_path)
         assert agent_env["ANTHROPIC_MODEL"] == requested
 
-    def test_a_proposal_is_not_read_as_the_execution_input(
-        self, monkeypatch, tmp_path
-    ):
+    def test_a_proposal_is_not_read_as_the_execution_input(self, monkeypatch, tmp_path):
         """Even a *present* proposal must not be what the worker executes.
 
         Constructed deliberately inconsistent: if the worker ever preferred
@@ -528,26 +541,20 @@ class TestEnforcingPostureIsConsumedByTheActualEntrypoint:
             }
         )
 
-    def test_a_verified_enforcing_decision_becomes_the_executed_model(
+    def test_bootstrap_does_not_replace_the_legacy_input_before_fresh_sdk_admission(
         self, monkeypatch, tmp_path
     ):
-        """The decision reaches ``ANTHROPIC_MODEL`` in the real agent environment.
+        """A rollback during setup must still recover the original legacy model.
 
-        Constructed so the gateway's model differs from both the directive and the
-        pod default: if the decision were ignored, this would run the directive's
-        Opus and the assertion would fail.
+        Actual enforcing substitution is tested at createPolicyQuery and the
+        resilientQuery retry boundary, after a fresh online decision.
         """
         envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
-        agent_env = _run_worker(
-            envelope, monkeypatch, tmp_path, policy_report=self._report()
-        )
-
-        assert agent_env["ANTHROPIC_MODEL"] == GATEWAY_MODEL
-        assert agent_env["ANTHROPIC_MODEL"] != POD_DEFAULT_MODEL
-        assert agent_env["ANTHROPIC_MODEL"] != "us.anthropic.claude-opus-4-6-v1"
+        agent_env = _run_worker(envelope, monkeypatch, tmp_path, policy_report=self._report())
+        assert agent_env["ANTHROPIC_MODEL"] == "us.anthropic.claude-opus-4-6-v1"
         assert agent_env["ADP_MODEL_POLICY_POSTURE"] == "enforcing"
-        assert agent_env["ADP_MODEL_POLICY_ENFORCED"] == "true"
-        # The requested model is still preserved separately for PMM-08 attribution.
+        assert agent_env["ADP_MODEL_POLICY_ENFORCED"] == "false"
+        assert agent_env["ADP_MODEL_POLICY_EXECUTION_PENDING"] == "true"
         assert agent_env["ADP_MODEL_REQUESTED"] == "us.anthropic.claude-opus-4-6-v1"
 
     @pytest.mark.parametrize("posture", ["disabled", "report_only"])
@@ -604,9 +611,7 @@ class TestEnforcingPostureIsConsumedByTheActualEntrypoint:
             is None
         )
 
-    def test_editable_environment_variables_cannot_force_enforcement(
-        self, monkeypatch, tmp_path
-    ):
+    def test_editable_environment_variables_cannot_force_enforcement(self, monkeypatch, tmp_path):
         """Posture comes from the verified decision, never from the environment.
 
         ``ADP_MODEL_POLICY_*`` are telemetry this worker writes. Anything in the
@@ -632,9 +637,7 @@ class TestEnforcingPostureIsConsumedByTheActualEntrypoint:
         assert agent_env["ADP_MODEL_POLICY_POSTURE"] == "report_only"
         assert agent_env["ADP_MODEL_POLICY_ENFORCED"] == "false"
 
-    def test_no_gateway_report_at_all_preserves_the_legacy_model(
-        self, monkeypatch, tmp_path
-    ):
+    def test_no_gateway_report_at_all_preserves_the_legacy_model(self, monkeypatch, tmp_path):
         """Mixed-version: an older gateway sends no policy, and nothing changes."""
         envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
         agent_env = _run_worker(envelope, monkeypatch, tmp_path)
@@ -695,9 +698,7 @@ class TestUnsignedPostureCannotDowngradeASignedDecision:
         session, _ = gateway_session
         # The signed body is an enforcing decision for this run/tenant/chain. Only
         # the outer metadata -- which the signature does not cover -- is changed.
-        policy = policy_reply(
-            runtime_posture="enforcing", reply_changes={"posture": outer_posture}
-        )
+        policy = policy_reply(runtime_posture="enforcing", reply_changes={"posture": outer_posture})
         monkeypatch.setattr(session, "_request", lambda: reply(model_policy=policy))
         try:
             session.refresh()
@@ -785,9 +786,7 @@ class TestUnsignedPostureCannotDowngradeASignedDecision:
         monkeypatch.setattr(
             session,
             "_request",
-            lambda: reply(
-                model_policy=policy_reply(schema_version=2, runtime_posture="enforcing")
-            ),
+            lambda: reply(model_policy=policy_reply(schema_version=2, runtime_posture="enforcing")),
         )
         session.refresh()
 
@@ -808,8 +807,6 @@ class TestUnsignedPostureCannotDowngradeASignedDecision:
         )
         envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
         assert (
-            _run_worker(
-                envelope, monkeypatch, tmp_path, policy_report=report, expect_exit=1
-            )
+            _run_worker(envelope, monkeypatch, tmp_path, policy_report=report, expect_exit=1)
             is None
         )

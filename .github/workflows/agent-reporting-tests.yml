@@ -62,6 +62,7 @@ jobs:
           npm test -- --runInBand --runTestsByPath
           src/model-policy-feedback.test.ts
           src/agent-worker-model-feedback-wiring.test.ts
+          src/model-policy-runtime.test.ts
 
   python-reporting:
     name: Transcript handoff and shared instructions

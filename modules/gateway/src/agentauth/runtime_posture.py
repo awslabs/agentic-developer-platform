@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import event, select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 from sqlalchemy.orm import Session as SyncSession
 from sqlalchemy.pool import SingletonThreadPool, StaticPool
 
@@ -53,7 +53,7 @@ class _AbsentInCommittedState:
     """Sentinel: an independent connection was available and found no row.
 
     Distinct from ``None``, which means *no independent connection exists* and a
-    guarded session read is the only option.  Collapsing the two is what let a
+    the read must be refused.  Collapsing the two is what let a
     caller's uncommitted insert be returned as live policy: the reader could not
     tell "the platform has no posture" from "I could not check".
     """
@@ -245,34 +245,14 @@ async def read_live_posture(
         _CACHE.pop(compatibility_class, None)
 
     independent = await _read_independent_committed_posture(session, compatibility_class=compatibility_class)
-    if independent is ABSENT_IN_COMMITTED_STATE:
-        # An independent connection *was* available and reported no row.  The
-        # platform therefore has no committed posture for this class, and the
-        # caller's own uncommitted insert is not a substitute: authority comes
-        # from committed platform state, not from the transaction asking the
-        # question.  Falling through to the session read here is what let an
-        # uncommitted ``report_only`` be returned as live policy.
+    if independent is ABSENT_IN_COMMITTED_STATE or independent is None:
+        # A session can be bound to an outer transaction whose writes are absent
+        # from its identity map and event markers. Only an independent committed
+        # read establishes authority; a session-visible fallback cannot do so.
         raise RuntimePostureError("runtime_posture_unavailable")
-    if independent is not None:
-        # Proven committed: read on a connection outside the caller's
-        # transaction, so neither a retained identity-map row nor the caller's
-        # own pending write can be mistaken for live platform state.
-        posture, revision = independent
-        cacheable = True
-    else:
-        # No independent connection is available at all (a session bound to one
-        # shared connection).  Report what the caller's transaction sees,
-        # re-reading attributes rather than trusting retained ones — but refuse
-        # outright if this session holds a posture write that may still roll
-        # back, rather than reporting it as live-but-uncacheable.  A value that
-        # can still disappear is not the platform's posture even for one hop.
-        if _has_uncommitted_posture_writes(session):
-            raise RuntimePostureError("runtime_posture_unavailable")
-        visible = await _read_session_visible_posture(session, compatibility_class=compatibility_class)
-        if visible is None:
-            raise RuntimePostureError("runtime_posture_unavailable")
-        posture, revision = visible
-        cacheable = True
+    posture, revision = independent
+    posture = coerce_posture(posture)
+    revision = coerce_posture_revision(revision)
 
     ttl = measured_cache_ttl_seconds()
     observation = LivePosture(
@@ -280,13 +260,13 @@ async def read_live_posture(
         posture=posture,
         posture_revision=revision,
         observed_at=current,
-        expires_at=current + timedelta(seconds=ttl if cacheable else 0),
+        expires_at=current + timedelta(seconds=ttl),
         source="live",
     )
     # A failed or reverted audited change must never become a live decision, and
     # an expired entry must be replaced by genuinely fresh committed state
     # rather than by a value carried over from before the rollback.
-    if ttl > 0 and cacheable:
+    if ttl > 0:
         _CACHE[compatibility_class] = observation
     return observation
 
@@ -306,6 +286,8 @@ def _independent_connection_source(session: AsyncSession) -> AsyncEngine | None:
     it must not be papered over by a pool that silently aliases connections.
     """
     engine = getattr(session, "bind", None)
+    if isinstance(engine, AsyncConnection):
+        engine = engine.engine
     if not isinstance(engine, AsyncEngine):
         return None
     sync_engine = getattr(engine, "sync_engine", None)
@@ -349,24 +331,3 @@ async def _read_independent_committed_posture(
         # caller's own pending write, not platform authority.
         return ABSENT_IN_COMMITTED_STATE
     return (coerce_posture(result[0]), coerce_posture_revision(result[1]))
-
-
-async def _read_session_visible_posture(
-    session: AsyncSession,
-    *,
-    compatibility_class: str,
-) -> tuple[RuntimePosture, int] | None:
-    """Read what the caller's own transaction sees, refreshing stale attributes.
-
-    ``populate_existing`` is essential: without it a retained identity-map row
-    is returned with its original attribute values even though the database has
-    moved on.
-    """
-    row = await session.scalar(
-        select(PersonaModelPolicySetting)
-        .where(PersonaModelPolicySetting.compatibility_class == compatibility_class)
-        .execution_options(populate_existing=True)
-    )
-    if row is None:
-        return None
-    return (coerce_posture(row.enforcement_posture), coerce_posture_revision(row.posture_revision))

@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { createPolicyQuery } from '../model-policy-runtime';
 import { IssueContext, CodeResult } from '../types';
 import { Logger } from './Logger';
 import { GitHubClient } from './GitHubClient';
@@ -160,7 +160,7 @@ export class FixOrchestrator {
   private async generateProposal(instructions: string, repoDir: string): Promise<string> {
     let proposal = '';
 
-    for await (const message of query({
+    for await (const message of await createPolicyQuery({
       prompt: `You are analyzing a PR branch to propose a targeted fix.
 
 ## Fix Instructions:
@@ -202,7 +202,7 @@ Do NOT reimplement the entire feature. Only propose changes related to the fix i
     let turnCount = 0;
     const filesModified: string[] = [];
 
-    for await (const message of query({
+    for await (const message of await createPolicyQuery({
       prompt: `You are applying a targeted fix to an existing PR.
 
 ## Fix Instructions:
