@@ -116,6 +116,24 @@ identity environment variables and never fall back to direct Door authentication
 These source changes do not mount keys, activate flags, provision IAM or remove
 live permissions. Scoped rollout and compatibility verification remain required.
 
+## Pod-bound task delivery (#5195)
+
+The gateway's `/internal/v1/agent/task/acquire`, `/heartbeat` and `/ack` routes
+accept empty typed bodies and identify the pod through SigV4 plus TokenReview.
+This precedes run bootstrap, so acquisition does not require a run credential.
+Gateway-only `ADP_RUN_TASKS_ENABLED=true` and `ADP_RUN_TASK_QUEUE_URL` configure
+the service; it defaults off. Protected workers always use this transport and
+never fall back to direct SQS. The gateway retains queue URLs and receipt handles.
+
+A durable assignment under the verified pod UID selects one dispatch-digest-bound
+envelope. Conditional versions fence competing receivers and expired leases; an
+acknowledged tombstone prevents the same pod from claiming another task. Bootstrap
+requires the assigned invocation/digest when task delivery is enabled. Visibility
+is server-derived, with bounded SQS timeouts and no SDK retry, and the worker begins
+heartbeats before bootstrap or clone. An ambiguous assignment commit does not
+release visibility. These source contracts must be exercised with a real queue and
+replacement pods in the scoped canary before removing the coding role's SQS grant.
+
 ## Run artifact uploads (#5195)
 
 Protected workers archive transcripts, tool spills, failed GitHub comments and git
@@ -177,12 +195,12 @@ merging the definitions does not authorize a broad apply or worker activation.
 
 Before activation:
 
-1. Move the remaining marker-signing and Knowledge Door shared-key functions behind
-   authenticated services or a supervisor isolated from agent-authored code. The
+1. Deploy and verify the marker, Knowledge Door, task and archive services above,
+   isolated from agent-authored code. The
    proposed deny-all-secrets boundary deliberately removes these reads; their
    current fallback/degradation is not functional acceptance. A child process or
    different environment variables under the same UID do not provide isolation.
-   Move shared queue/artifact housekeeping as part of the supervisor migration.
+   Remove shared queue/artifact grants only after these replacements are verified.
 2. Inventory all platform Kubernetes access for the old principal, including EKS
    access entries, aws-auth and implicit creator access. Remove it and verify
    isolation before enabling the existing customer task-source session mechanism.

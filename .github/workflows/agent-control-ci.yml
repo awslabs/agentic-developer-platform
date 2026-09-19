@@ -155,6 +155,8 @@ on:
       - 'modules/agent-factory/agent-worker-image/lib/control_renewal.py'
       - 'modules/agent-factory/agent-worker-image/lib/task_gateway_client.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_task_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/lib/run_service_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_run_service_client.py'
       - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_control_renewal.py'
@@ -734,7 +736,7 @@ jobs:
         working-directory: modules/agent-factory/agent-worker-image
         run: |
           pytest tests/test_adp_trigger.py tests/test_adp_trigger_control.py tests/test_run_identity.py tests/test_gateway_credential_client.py \
-            tests/test_control_renewal.py tests/test_task_credentials.py tests/test_task_gateway_client.py tests/test_transport_identity.py \
+            tests/test_control_renewal.py tests/test_task_credentials.py tests/test_task_gateway_client.py tests/test_run_service_client.py tests/test_transport_identity.py \
             tests/test_adp_cred.py tests/test_adp_cred_assume.py \
             tests/test_adp_review.py tests/test_reviewer_no_artifact_pr.py \
             tests/test_entrypoint.py::TestBedrockViaGateway tests/test_entrypoint.py::TestBedrockViaFlag \
