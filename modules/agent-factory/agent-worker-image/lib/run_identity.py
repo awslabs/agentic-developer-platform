@@ -75,6 +75,7 @@ class RunIdentitySession:
         self._write_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._attempt: int | None = None
+        self._model_policy_reported = False
 
     def _request(self) -> dict:
         session = botocore.session.get_session()
@@ -134,6 +135,22 @@ class RunIdentitySession:
             or any(ord(c) <= 32 or ord(c) >= 127 for c in token)
         ):
             raise RunIdentityError("invalid run identity response")
+        # PMM-06 report-only compatibility: the gateway may return a signed
+        # proposed decision, but this worker must keep the legacy assignment
+        # until PMM-09 enables enforcement.  Reporting the ignored proposal is
+        # intentional evidence; silently accepting or silently dropping it
+        # would make mixed-version rollout impossible to audit.
+        if not self._model_policy_reported:
+            policy = result.get("model_policy")
+            if isinstance(policy, dict) and policy.get("posture") == "report_only":
+                if policy.get("status") == "proposed":
+                    logger.info("Model-policy decision received and ignored by report-only worker")
+                else:
+                    logger.warning(
+                        "Model-policy decision unavailable in report-only mode (reason=%s)",
+                        policy.get("reason", "unknown"),
+                    )
+                self._model_policy_reported = True
         with self._write_lock:
             if self._stop.is_set():
                 return

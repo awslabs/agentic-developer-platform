@@ -290,6 +290,15 @@ async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRunt
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
+        from src.agentauth.model_policy import bootstrap_model_policy
+
+        result["model_policy"] = await run_in_threadpool(
+            bootstrap_model_policy,
+            store=runtime.store,
+            record=record,
+            grant=grant,
+            env=runtime.env,
+        )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except WorkClaimError as exc:
         if exc.code == "work_waiting":
