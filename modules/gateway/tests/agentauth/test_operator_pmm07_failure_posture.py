@@ -1,4 +1,5 @@
 """A failed proposal must retain the separately established committed posture."""
+# ruff: noqa: F811 - imported pytest fixtures are injected by name.
 
 import pytest
 from sqlalchemy import update
@@ -27,13 +28,15 @@ async def test_failed_proposal_retains_committed_live_posture(posture_sessions, 
     key = {"pk": {"S": "TENANT#tenant-a"}, "sk": {"S": "EXEC#run-live-developer"}}
     if failure == "direct_override_unresolved":
         policy_store.client.update_item(
-            TableName=policy_store.table, Key=key,
+            TableName=policy_store.table,
+            Key=key,
             UpdateExpression="SET direct_model_requested = :requested",
             ExpressionAttributeValues={":requested": {"S": "not-a-canonical-model"}},
         )
     else:
         policy_store.client.update_item(
-            TableName=policy_store.table, Key=key,
+            TableName=policy_store.table,
+            Key=key,
             UpdateExpression="REMOVE model_policy_snapshot, model_policy_snapshot_digest",
         )
     async with posture_sessions() as reader:

@@ -254,9 +254,7 @@ def test_every_unverified_posture_withholds_authority(store, kubernetes, monkeyp
     assert "credential" not in response.json()
 
 
-@pytest.mark.parametrize(
-    "shape", [SNAPSHOT_MISSING, SNAPSHOT_UNBOUND], ids=["snapshot-missing", "binding-missing"]
-)
+@pytest.mark.parametrize("shape", [SNAPSHOT_MISSING, SNAPSHOT_UNBOUND], ids=["snapshot-missing", "binding-missing"])
 @pytest.mark.parametrize("posture", ["enforcing", "report_only", "disabled"])
 def test_a_snapshot_failure_is_judged_on_the_posture_not_the_reason(store, kubernetes, monkeypatch, shape, posture):  # noqa: F811 - re-exported fixtures, see the import above
     """Once the posture is verified, the snapshot reason stops deciding anything.

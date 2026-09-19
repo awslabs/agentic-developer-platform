@@ -65,9 +65,7 @@ async def test_committed_rollback_refreshes_retained_orm_row_after_cache_expiry(
         first = await runtime.read_live_posture(reader, compatibility_class=CLASS, now=NOW)
         assert first.posture == "enforcing"
         async with posture_sessions() as operator:
-            await operator.execute(
-                update(PersonaModelPolicySetting).values(enforcement_posture="report_only", posture_revision=11)
-            )
+            await operator.execute(update(PersonaModelPolicySetting).values(enforcement_posture="report_only", posture_revision=11))
             await operator.commit()
         after = await runtime.read_live_posture(
             reader,
@@ -176,9 +174,7 @@ async def test_an_uncommitted_insert_is_refused_when_no_row_is_committed(posture
 async def test_audited_change_is_visible_to_a_new_session_within_the_bound(posture_sessions):
     """The positive case: a committed change does propagate, and is cacheable."""
     async with posture_sessions() as operator:
-        await operator.execute(
-            update(PersonaModelPolicySetting).values(enforcement_posture="report_only", posture_revision=11)
-        )
+        await operator.execute(update(PersonaModelPolicySetting).values(enforcement_posture="report_only", posture_revision=11))
         await operator.commit()
     async with posture_sessions() as reader:
         observed = await runtime.read_live_posture(reader, compatibility_class=CLASS, now=NOW)

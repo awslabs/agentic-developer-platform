@@ -1,5 +1,7 @@
-import asyncio
 """Missing snapshot material is never permission to skip live enforcement."""
+# ruff: noqa: F811 - imported pytest fixtures are injected by name.
+
+import asyncio
 
 import httpx
 import pytest
@@ -17,7 +19,9 @@ from tests.migrations.conftest_postgres import pg_server, pg_url  # noqa: F401
 @pytest.mark.integration
 @pytest.mark.parametrize("posture", ["report_only", "enforcing", None])
 @pytest.mark.parametrize("snapshot_shape", ["absent", "missing_binding"])
-async def test_real_bootstrap_missing_snapshot_obeys_committed_class_posture(posture_sessions, store, kubernetes, monkeypatch, posture, snapshot_shape):
+async def test_real_bootstrap_missing_snapshot_obeys_committed_class_posture(
+    posture_sessions, store, kubernetes, monkeypatch, posture, snapshot_shape
+):
     async with posture_sessions() as operator:
         if posture is None:
             await operator.execute(delete(PersonaModelPolicySetting))

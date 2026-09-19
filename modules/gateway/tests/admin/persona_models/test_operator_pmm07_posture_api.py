@@ -1,4 +1,5 @@
 """Operator review of the actual HTTP mutation boundary; external auth is injected."""
+
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -22,11 +23,22 @@ async def call_mutation(db, *, registered: bool, revision):
     if registered:
         db.add(User(id="canonical-admin", org_id="tenant-a", team_id="team-a", email="admin@example.test", cognito_sub="signed-admin-sub"))
     await db.commit()
-    context = TokenContext(user_id="signed-admin-sub", org_id="tenant-a", team_id="team-a", department_id="", account_type="human", is_admin=True, expires_at=datetime.now(UTC) + timedelta(hours=1), auth_source="jwt")
+    context = TokenContext(
+        user_id="signed-admin-sub",
+        org_id="tenant-a",
+        team_id="team-a",
+        department_id="",
+        account_type="human",
+        is_admin=True,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        auth_source="jwt",
+    )
     app = FastAPI()
     app.include_router(posture_routes.router)
+
     async def database():
         yield db
+
     app.dependency_overrides[get_db] = database
     app.dependency_overrides[get_current_user] = lambda: context
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

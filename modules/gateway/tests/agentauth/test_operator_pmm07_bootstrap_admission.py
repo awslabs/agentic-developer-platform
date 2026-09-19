@@ -5,6 +5,7 @@ use the real route/fixtures. Only the policy evaluation result is substituted;
 the property under test is whether the route issues authority to an old client
 that cannot consume enforcing policy. No live AWS or inference call is made.
 """
+# ruff: noqa: F811 - imported pytest fixtures are injected by name.
 
 from unittest.mock import AsyncMock
 

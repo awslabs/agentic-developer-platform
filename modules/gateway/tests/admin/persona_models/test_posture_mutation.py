@@ -28,7 +28,6 @@ from src.admin.persona_models.posture_service import (
 )
 from src.agentauth.runtime_posture import (
     DEFAULT_POSTURE_CACHE_TTL_SECONDS,
-    RuntimePostureError,
     read_live_posture,
     reset_posture_cache,
 )
@@ -62,6 +61,18 @@ async def concurrent_engine(tmp_path):
         await conn.run_sync(Base.metadata.create_all)
     yield engine
     await engine.dispose()
+
+
+@pytest.fixture
+async def test_engine(concurrent_engine):
+    # Posture reads require another physical connection even for sequential tests.
+    yield concurrent_engine
+
+
+@pytest.fixture
+async def db_engine(concurrent_engine):
+    # The admin test hierarchy uses db_engine for its request sessions.
+    yield concurrent_engine
 
 
 async def _seed(session, *, posture: str = "report_only", revision: int = 1):
@@ -316,12 +327,10 @@ class TestPendingChangeIsNeverLive:
                 expected_revision=1,
                 actor_id=ACTOR,
             )
-            # The writer cannot be told the posture at all while its own change
-            # may still roll back: a value that can still disappear is not the
-            # platform's posture, so it is refused rather than returned as
-            # live-but-uncacheable. Nothing can therefore leak to anyone else.
-            with pytest.raises(RuntimePostureError, match="runtime_posture_unavailable"):
-                await read_live_posture(writer, compatibility_class=CLASS, now=NOW)
+            # The independent connection sees only the committed report-only
+            # setting, never this writer's pending enforcing change.
+            observed = await read_live_posture(writer, compatibility_class=CLASS, now=NOW)
+            assert (observed.posture, observed.posture_revision) == ("report_only", 1)
             await writer.rollback()
 
         async with db_session_factory() as reader:

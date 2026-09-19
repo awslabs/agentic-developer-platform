@@ -1,4 +1,5 @@
 """Real PostgreSQL mutation -> live admission -> signed decision across rollback."""
+# ruff: noqa: F811 - imported pytest fixtures are injected by name.
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -53,7 +54,9 @@ async def test_audited_rollback_changes_signed_hops_without_mutating_snapshot(pg
             for model in (PersonaModelPolicySetting, User, ModelInvocabilityEvidence, AuditLog):
                 await conn.run_sync(model.__table__.create)
         async with sessions() as seed:
-            seed.add(PersonaModelPolicySetting(compatibility_class="claude-agent-sdk", revision=1, enforcement_posture="report_only", posture_revision=1))
+            seed.add(
+                PersonaModelPolicySetting(compatibility_class="claude-agent-sdk", revision=1, enforcement_posture="report_only", posture_revision=1)
+            )
             seed.add(User(id="user-a", org_id="tenant-a", team_id="team-a", email="operator@example.test", cognito_sub="operator-sub"))
             _add_invocability_evidence(seed, account_id="111111111111", outcome="proven", expires_at=current + timedelta(hours=1))
             await seed.commit()
@@ -66,25 +69,38 @@ async def test_audited_rollback_changes_signed_hops_without_mutating_snapshot(pg
             SIGNING_KEY_ENV: key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode(),
             SIGNING_KEY_ID_ENV: "operator-key",
         }
-        monkeypatch.setattr(bedrock_routing_resolver, "resolve", AsyncMock(return_value=BedrockTarget(account_id="111111111111", region="us-east-1", rung="user")))
+        monkeypatch.setattr(
+            bedrock_routing_resolver, "resolve", AsyncMock(return_value=BedrockTarget(account_id="111111111111", region="us-east-1", rung="user"))
+        )
 
         async def hop(seconds, expected_posture, expected_revision):
             clock[0] = current + timedelta(seconds=seconds)
             async with sessions() as session:
-                result = await policy_module.bootstrap_model_policy_live(session, store=policy_store, record=record, grant=_grant("github_event"), env=env)
+                result = await policy_module.bootstrap_model_policy_live(
+                    session, store=policy_store, record=record, grant=_grant("github_event"), env=env
+                )
             assert result["status"] == "proposed", result
             assert result["posture_verified"] is True
             decision = result["decision"]
-            assert (result["posture"], decision["runtime_posture"], decision["posture_revision"]) == (expected_posture, expected_posture, expected_revision)
+            assert (result["posture"], decision["runtime_posture"], decision["posture_revision"]) == (
+                expected_posture,
+                expected_posture,
+                expected_revision,
+            )
             assert decision["resolved_model_id"] == SONNET
             assert decision["snapshot_digest"] == digest
             assert decision["snapshot_runtime_posture"] == "report_only"
             verify_envelope(
-                result["assertion"], public_keys={"operator-key": key.public_key()},
-                expected_run_id=record.invocation_id, expected_generation=1,
-                expected_action="resolve_model", expected_command_id=digest,
+                result["assertion"],
+                public_keys={"operator-key": key.public_key()},
+                expected_run_id=record.invocation_id,
+                expected_generation=1,
+                expected_action="resolve_model",
+                expected_command_id=digest,
                 request_body=policy_module.canonical_json(decision),
-                expected_audience=MODEL_POLICY_AUDIENCE, expected_chain_id="chain-a", now=clock[0],
+                expected_audience=MODEL_POLICY_AUDIENCE,
+                expected_chain_id="chain-a",
+                now=clock[0],
             )
             assert policy_store._read("TENANT#tenant-a", "EXEC#run-live-developer") == original
             return result

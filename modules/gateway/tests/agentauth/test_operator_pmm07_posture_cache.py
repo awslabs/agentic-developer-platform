@@ -1,4 +1,6 @@
 """Operator regressions against real PostgreSQL sessions, with no model calls."""
+
+# ruff: noqa: F811 - imported pytest fixtures are injected by name.
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -11,6 +13,7 @@ from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url  
 
 CLASS = "claude-agent-sdk"
 NOW = datetime(2026, 9, 19, 17, 10, tzinfo=UTC)
+
 
 @pytest.fixture
 async def posture_sessions(pg_url):
@@ -28,6 +31,7 @@ async def posture_sessions(pg_url):
         runtime.reset_posture_cache()
         await engine.dispose()
 
+
 @pytest.mark.integration
 async def test_committed_rollback_refreshes_retained_orm_row_after_cache_expiry(posture_sessions):
     async with posture_sessions() as reader:
@@ -38,12 +42,17 @@ async def test_committed_rollback_refreshes_retained_orm_row_after_cache_expiry(
         async with posture_sessions() as operator:
             await operator.execute(update(PersonaModelPolicySetting).values(enforcement_posture="report_only", posture_revision=11))
             await operator.commit()
-        after = await runtime.read_live_posture(reader, compatibility_class=CLASS, now=NOW + timedelta(seconds=runtime.MAX_POSTURE_CACHE_TTL_SECONDS + 1))
+        after = await runtime.read_live_posture(
+            reader, compatibility_class=CLASS, now=NOW + timedelta(seconds=runtime.MAX_POSTURE_CACHE_TTL_SECONDS + 1)
+        )
         async with posture_sessions() as independent:
             database = await independent.scalar(select(PersonaModelPolicySetting))
             assert (database.enforcement_posture, database.posture_revision) == ("report_only", 11)
-            cached = await runtime.read_live_posture(independent, compatibility_class=CLASS, now=NOW + timedelta(seconds=runtime.MAX_POSTURE_CACHE_TTL_SECONDS + 2))
+            cached = await runtime.read_live_posture(
+                independent, compatibility_class=CLASS, now=NOW + timedelta(seconds=runtime.MAX_POSTURE_CACHE_TTL_SECONDS + 2)
+            )
             assert (after.posture, after.posture_revision, cached.posture, cached.posture_revision) == ("report_only", 11, "report_only", 11)
+
 
 @pytest.mark.integration
 async def test_savepoint_release_cannot_publish_rolled_back_outer_posture(posture_sessions):

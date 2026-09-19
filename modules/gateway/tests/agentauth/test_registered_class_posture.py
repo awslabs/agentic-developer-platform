@@ -197,9 +197,7 @@ def test_an_audited_rollback_is_observed_without_a_new_snapshot(store, kubernete
 
     async def _rollback():
         async with client.posture_sessions() as operator:
-            await operator.execute(
-                update(PersonaModelPolicySetting).values(enforcement_posture=posture, posture_revision=12)
-            )
+            await operator.execute(update(PersonaModelPolicySetting).values(enforcement_posture=posture, posture_revision=12))
             await operator.commit()
 
     asyncio.run(_rollback())

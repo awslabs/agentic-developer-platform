@@ -3341,8 +3341,14 @@ class TestClaimBoundWorkIsNotBranchInferred:
         # attempt matches and it holds the work claim. That admission — not the
         # branch — is what authorizes the run, so it is stubbed as succeeding
         # rather than bypassed. (A refused admission is the next test.)
+        from lib.run_identity import ModelPolicyReport
+
+        admitted_identity = MagicMock()
+        admitted_identity.model_policy_report = ModelPolicyReport(
+            status="unavailable", posture="report_only", posture_verified=True, reason="snapshot_missing"
+        )
         with patch(
-            "lib.run_identity.bootstrap_run_identity", return_value=MagicMock()
+            "lib.run_identity.bootstrap_run_identity", return_value=admitted_identity
         ) as mock_identity:
             result = main()
 
