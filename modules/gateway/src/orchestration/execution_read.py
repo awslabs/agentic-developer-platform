@@ -142,7 +142,9 @@ MAX_ACTIONS_PER_EXECUTION = 20
 # (`pr:node-7:cycle-1`), which is also why `_SCHEME_PATTERN` below exists: a
 # colon is only dangerous in the *leading* position where a browser reads it as a
 # URL scheme.
-_REF_PATTERN = re.compile(r"^(?:s3://)?[A-Za-z0-9][A-Za-z0-9._:/#@=-]{0,255}$")
+# Match the ledger's 512-character columns. Content-addressed review receipts
+# include tenant/run hashes and an integrity fragment, which can exceed 256.
+_REF_PATTERN = re.compile(r"^(?:s3://)?[A-Za-z0-9][A-Za-z0-9._:/#@=-]{0,511}$")
 
 # A leading URL scheme, which `_REF_PATTERN` alone would admit: `javascript:alert`
 # is made entirely of characters a legitimate reference also uses, so the pattern

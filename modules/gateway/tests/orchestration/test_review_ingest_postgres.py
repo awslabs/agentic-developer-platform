@@ -713,6 +713,7 @@ async def test_uploaded_bytes_remain_retrievable_after_sql_reload_and_changed_by
     import hashlib
     from urllib.parse import urlsplit
 
+    from src.orchestration.execution_read import _safe_ref
     from tests.agentauth.test_run_services import HEADERS
 
     pipeline = upload_pipeline
@@ -732,6 +733,7 @@ async def test_uploaded_bytes_remain_retrievable_after_sql_reload_and_changed_by
     async with sessions() as session:
         action = (await session.execute(select(OrchestrationAction).where(OrchestrationAction.org_id == ORG))).scalar_one()
         assert action.artifact_ref == action.receipt_ref == receipt["evidence_ref"]
+        assert _safe_ref(action.artifact_ref) == action.artifact_ref
     stored = urlsplit(action.artifact_ref)
     retrieved = pipeline.storage.get_object(Bucket=stored.netloc, Key=stored.path.lstrip("/"))["Body"].read()
     assert retrieved == raw
