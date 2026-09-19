@@ -1,0 +1,197 @@
+# Orchestration deployment manifest
+# =================================
+#
+# Issue #5150 (ENGINE-D1, parent #5131). The reviewed list of deployment targets
+# the orchestration engine is permitted to deploy to, and — for each — exactly
+# what a deploy to it may consist of.
+#
+# Parsed by `src/orchestration/deployment_manifest.py`. The deployed gateway loads
+# THIS file via `load_packaged_manifest()`; consumed by #5151 (dispatch) and #5152
+# (verification/rollback). Nothing in this repository dispatches a workflow from it
+# today.
+#
+# WHY IT LIVES INSIDE `src/` RATHER THAN IN A ROOT `config/` DIRECTORY
+# -------------------------------------------------------------------
+# The gateway image is built with `modules/gateway` as its docker build context
+# (`codebuild/bs-gateway-build.yml`: `cd modules/gateway && docker build .`), and
+# the Dockerfile carries the tree with `COPY src/ src/`. A repository-root
+# `config/` directory is outside that context, so no `COPY` could reach it — a
+# manifest kept there is unreachable from the running process by construction,
+# which would make this an approval the engine cannot read.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# "Deploy" is the one engine action whose blast radius is somebody else's
+# infrastructure. Without this file an agent would choose the pipeline, the
+# inputs and the release itself at run time. Each entry below turns those
+# choices into a lookup of something a human reviewed.
+#
+# An entry is an APPROVAL. Editing one grants the engine authority it did not
+# previously have, so changes here need the same review as a permission change —
+# not the lighter review a configuration tweak usually gets.
+#
+# WHY `definition_revision` IS PINNED
+# -----------------------------------
+# Pinning only `path` approves a *filename*, and a filename's contents change
+# with every merge — so the approval would silently transfer to whatever that
+# path contains later, including a rewritten job that deploys somewhere else.
+# `definition_revision` is the commit SHA of the workflow definition that was
+# actually reviewed. `resolve_manifest_entry` refuses a dispatch whose resolved
+# definition does not match it — and also refuses when the caller resolved no
+# revision at all, because "we did not check" must not read as "it matches". When a workflow legitimately changes, re-review it and update the
+# SHA. Do NOT widen the check to make a drifted definition run.
+#
+# WHY `allowed_inputs` LISTS VALUES AND NOT JUST NAMES
+# ----------------------------------------------------
+# Approving the input *name* `environment` would approve `environment: prod`
+# wherever it approved `environment: dev`. So each input maps to the exact set
+# of permitted values. An input absent from `allowed_inputs` may not be passed
+# at all; an input mapped to an empty value (`~`) may be passed only at the
+# workflow's own default, which permits pass-through without letting a caller
+# choose the value.
+#
+# WHY THE PILOT ENTRIES BELOW ARE `unresolved`
+# --------------------------------------------
+# Both entries are deliberately NOT enabled, and this is the honest state rather
+# than an oversight. Enabling one requires a registered environment connection
+# whose AWS account has been proven by real readback (the platform verifies a
+# connection by actually assuming into the account), AND a recorded concrete
+# deployment surface — the cluster and namespace, not just the account.
+#
+# The verified-connection evidence the platform stores today was captured for
+# model-invocation routing: it proves the account and role, but it does not
+# establish which cluster or namespace a deploy would land in. An account alone
+# is too coarse to serialize on (two independent clusters in one account would
+# block each other, and a lease people bypass protects nothing).
+#
+# So these entries record what is missing instead of guessing. No account id and
+# no credential is invented here to make an example executable: a fabricated
+# account id would name a real deployment surface that nobody verified, which is
+# a fabricated authorization. `resolve_manifest_entry` returns a typed block
+# naming the owner for an unresolved entry, which is the intended behavior.
+#
+# TO ENABLE AN ENTRY (deployment prerequisite, not a code change)
+# --------------------------------------------------------------
+#   1. Register the environment connection and verify it, so its account is
+#      proven by provider readback rather than asserted.
+#   2. Add the connection id to the accepted plan's permitted deployment targets
+#      (`ExecutionPolicy.environment_connection_ids`). The manifest and the
+#      in-force policy are checked independently and both must permit the target.
+#   3. Record the concrete surface in `resource_kind` / `resource_id`.
+#   4. Confirm `definition_revision` is the SHA of the reviewed definition. The
+#      engine now compares it against the revision the dispatcher actually
+#      resolved and refuses the dispatch on a mismatch — or when no revision was
+#      resolved at all — so a stale SHA here blocks rather than silently passes.
+#   5. Pin `artifact_revision` to the full 40-character commit SHA of the build
+#      this entry is approved to ship. Required for an enabled entry unless
+#      `docs_only: true`, and refused unless it is a full SHA — `latest`, `main`
+#      and a tag are all resolved by something other than the reviewer. Leave it
+#      as `~` while the entry is unresolved; do not invent a SHA to satisfy the
+#      check.
+#   6. Change `status` to `enabled` and remove `unresolved_reason`.
+
+schema_version: 1
+
+entries:
+  # --------------------------------------------------------------------------
+  # The existing pilot environment's gateway deployment.
+  # --------------------------------------------------------------------------
+  - entry_id: adp-dev-embark1-gateway
+    status: unresolved
+    unresolved_reason: >-
+      No registered environment connection for adp-dev-embark1 has been resolved
+      to a verified deployment surface. The stored connection evidence proves an
+      account and role but does not establish the EKS cluster and namespace a
+      deploy would land in, and an account alone is too coarse to serialize on.
+      Register and verify the environment connection, record its cluster and
+      namespace, then re-review this entry.
+
+    # Left null deliberately: naming a connection id here that is not resolvable
+    # to a verified target would look like an approval that had been granted.
+    connection_id: ~
+
+    # The components this entry covers. A deploy naming anything outside these is
+    # refused, so "deploy the gateway" cannot quietly become "deploy everything".
+    component_selectors:
+      - gateway-backend
+      - gateway-frontend
+
+    # The concrete deployment surface. Unset until readback establishes it — see
+    # the header note on why an account id is not a sufficient target.
+    resource_kind: ~
+    resource_id: ~
+
+    workflow:
+      # Real path and the SHA of the definition reviewed for this entry.
+      path: .github/workflows/gateway-deploy.yml
+      definition_revision: 870a05787075c838313e2a77f4b87747014136a6
+      allowed_inputs:
+        # Pilot environment only. `prod` is deliberately absent: this entry
+        # approves a dev deploy, and adding a value here is a permission change.
+        environment:
+          - dev
+        # Pass-through only, at the workflow's own default. The engine may not
+        # choose an account: the account comes from the verified connection, and
+        # letting a caller pass one would reintroduce the untrusted account
+        # string this story exists to eliminate.
+        account_id: ~
+        customer_account_id: ~
+
+    # Which build is shipped. Null means "the workflow's own resolution" — honest,
+    # because pinning a release SHA we have not got would be invention.
+    artifact_revision: ~
+
+    # Adapter NAMES that #5152 owns. Nothing here executes either of them, and a
+    # present rollback name is a permission, not an instruction.
+    verification_adapter: gateway-health-verification
+    rollback_adapter: gateway-revision-rollback
+
+    docs_only: false
+
+  # --------------------------------------------------------------------------
+  # The gateway's database migration step. Separate from the deploy above
+  # because it is a distinct approval: a migration's failure mode (a schema a
+  # running cohort cannot read) is not the deploy's, so approving one must not
+  # approve the other.
+  # --------------------------------------------------------------------------
+  - entry_id: adp-dev-embark1-gateway-migrations
+    status: unresolved
+    unresolved_reason: >-
+      Depends on the same unresolved connection and deployment surface as
+      adp-dev-embark1-gateway. Additionally, a migration entry must not be
+      enabled until the expected release image is verifiable at dispatch time,
+      so that a migration cannot be applied against an image other than the one
+      reviewed.
+
+    connection_id: ~
+
+    component_selectors:
+      - gateway-migrations
+
+    resource_kind: ~
+    resource_id: ~
+
+    workflow:
+      path: .github/workflows/run-gateway-migrations.yml
+      definition_revision: 870a05787075c838313e2a77f4b87747014136a6
+      allowed_inputs:
+        environment:
+          - dev
+        # Pass-through only. The image the migration runs against is the release
+        # image the deploy resolved; a caller-chosen value here would let a
+        # migration be applied against an unreviewed build.
+        expected_image: ~
+        account_id: ~
+        customer_account_id: ~
+
+    artifact_revision: ~
+
+    verification_adapter: alembic-single-head-verification
+
+    # No rollback adapter, and this omission is the reviewed decision rather than
+    # a gap. An automatic schema downgrade against a shared environment can
+    # destroy data a forward migration moved, so rollback here is an authorized
+    # human procedure and the engine is granted no permission to perform it.
+    rollback_adapter: ~
+
+    docs_only: false

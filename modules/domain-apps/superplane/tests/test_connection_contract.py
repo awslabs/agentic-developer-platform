@@ -35,6 +35,7 @@ from superplane_contracts import (
     scrub,
     validation_response,
 )
+from superplane_contracts.emission import SecretRedactingFilter
 
 CHECKED_AT = datetime(2026, 9, 17, 12, 0, 0, tzinfo=UTC)
 W1 = "ws-w1"
@@ -997,3 +998,473 @@ def test_root_install_redacts_propagated_application_records():
             existing.filters[:] = filters
         child.setLevel(old_level)
         child.propagate = old_propagate
+
+
+# ---------------------------------------------------------------------------
+# The supported container/object contract for redaction (issue #5053)
+# ---------------------------------------------------------------------------
+#
+# The review of U7 (#5294) found that `scrub` walked only `dict`, `list`, `tuple`
+# and strings, while its name and the acceptance criterion it serves ("no log line
+# contains a value or an ARN") imply universal coverage. Five shapes escaped, and
+# each is pinned below against BOTH the function and a real logging handler --
+# the handler tests are the ones that matter, because the handler is what writes
+# to CloudWatch and into an agent transcript.
+
+
+def _emitting_logger(name: str, formatter: logging.Formatter | None = None):
+    """A logger with redaction installed and a stream to inspect. Caller closes."""
+    import io
+
+    stream = io.StringIO()
+    logger = logging.getLogger(name)
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(formatter or logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    install_log_redaction(logger)
+    return logger, handler, stream
+
+
+@pytest.mark.parametrize(
+    "template,args",
+    [
+        (f"{FAKE_AWS_KEY} failed %s", ("operation",)),
+        (f"{FAKE_AWS_KEY} failed %(action)s", ({"action": "operation"},)),
+        (f"{FAKE_AWS_KEY} failed %s".encode(), ("operation",)),
+        ("quantity=%d", ("invalid-numeric-argument",)),
+        ("AKIA%s", ("IOSFODNN7EXAMPLE",)),
+        ("AKIA%(suffix)s", ({"suffix": "IOSFODNN7EXAMPLE"},)),
+        ("arn:%s", ("aws:secretsmanager:us-east-1:123456789012:secret:k",)),
+    ],
+)
+def test_unsafe_formatted_log_is_emitted_redacted_without_logging_errors(
+    template, args, capsys
+):
+    logger, handler, stream = _emitting_logger("superplane.formatted-secret")
+    try:
+        logger.error(template, *args)
+        assert stream.getvalue().strip() == "[REDACTED]"
+        assert capsys.readouterr().err == ""
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+
+@pytest.mark.parametrize("as_argument", [False, True])
+def test_log_redaction_checks_string_value_even_when_repr_is_safe(as_argument, capsys):
+    class Value:
+        def __repr__(self):
+            return "Value()"
+
+        def __str__(self):
+            return FAKE_AWS_KEY
+
+    logger, handler, stream = _emitting_logger("superplane.str-secret")
+    try:
+        if as_argument:
+            logger.error("value=%s", Value())
+        else:
+            logger.error(Value())
+        assert FAKE_AWS_KEY not in stream.getvalue()
+        assert "[REDACTED]" in stream.getvalue()
+        assert capsys.readouterr().err == ""
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+
+@pytest.mark.parametrize("factory", [bytes, bytearray])
+@pytest.mark.parametrize("secret", [FAKE_AWS_KEY, FAKE_ARN])
+def test_binary_secret_is_scrubbed_in_structured_log_extras(factory, secret):
+    class StructuredFormatter(logging.Formatter):
+        def format(self, record):
+            return repr(record.__dict__)
+
+    value = factory(secret.encode())
+    assert scrub(value) == "[REDACTED]"
+    logger, handler, stream = _emitting_logger(
+        "superplane.binary-extra", StructuredFormatter()
+    )
+    try:
+        logger.info("provider event", extra={"payload": {"detail": value}})
+        assert secret not in stream.getvalue()
+        assert "REDACTED" in stream.getvalue()
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+
+@pytest.mark.parametrize("key_kind", ["bytes", "tuple", "frozenset", "object"])
+@pytest.mark.parametrize("secret", [FAKE_AWS_KEY, FAKE_ARN])
+def test_secret_in_non_string_mapping_key_is_scrubbed(key_kind, secret):
+    class Key:
+        def __repr__(self):
+            return f"Key({secret})"
+
+    keys = {
+        "bytes": secret.encode(),
+        "tuple": ("provider", secret),
+        "frozenset": frozenset({secret}),
+        "object": Key(),
+    }
+    payload = {keys[key_kind]: "observation", "capacity": 2}
+    result = scrub(payload)
+    assert secret not in repr(result)
+    assert result["capacity"] == 2
+    record = logging.makeLogRecord({"msg": "provider event", "payload": payload})
+    SecretRedactingFilter().filter(record)
+    assert secret not in repr(record.__dict__)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_redacted_mapping_key_collision_cannot_restore_value(reverse):
+    entries = [(FAKE_AWS_KEY, "first"), ("[REDACTED]", "second")]
+    if reverse:
+        entries.reverse()
+    assert scrub(dict(entries)) == {"[REDACTED]": "[REDACTED]"}
+
+
+def test_binary_sensitive_field_names_hide_unshaped_values():
+    payload = {b"password": b"opaque-passphrase", "capacity": 2}
+    assert scrub(payload) == {b"password": "[REDACTED]", "capacity": 2}
+    record = logging.makeLogRecord({"msg": "provider event", **payload})
+    SecretRedactingFilter().filter(record)
+    assert "opaque-passphrase" not in repr(record.__dict__)
+    assert record.__dict__["capacity"] == 2
+
+
+@pytest.mark.parametrize(
+    "container",
+    [
+        {FAKE_AWS_KEY},
+        frozenset({FAKE_AWS_KEY}),
+        {FAKE_ARN},
+        frozenset({FAKE_ARN}),
+    ],
+    ids=["set-key", "frozenset-key", "set-arn", "frozenset-arn"],
+)
+def test_secrets_in_unordered_containers_are_redacted(container) -> None:
+    """Sets and frozensets were skipped entirely, so members passed through."""
+    rendered = repr(scrub(container))
+    assert FAKE_AWS_KEY not in rendered
+    assert FAKE_ARN not in rendered
+    assert "REDACTED" in rendered
+
+
+def test_a_set_of_secrets_cannot_escape_through_a_handler() -> None:
+    logger, handler, stream = _emitting_logger("superplane.set-redaction")
+    try:
+        logger.info("capabilities=%s", {FAKE_AWS_KEY, "gpu"})
+        emitted = stream.getvalue()
+        assert FAKE_AWS_KEY not in emitted
+        assert "REDACTED" in emitted
+        # The non-secret member survives: redaction must not blank the whole line.
+        assert "gpu" in emitted
+    finally:
+        logger.removeHandler(handler)
+
+
+@pytest.mark.parametrize("factory", ["userdict", "mappingproxy"])
+def test_secrets_in_non_dict_mappings_are_redacted(factory) -> None:
+    """Only a literal `dict` was traversed; other Mappings leaked.
+
+    `MappingProxyType` is what `vars(obj)` returns, so this is the shape produced
+    by the very natural `logger.info("state=%s", vars(connection))`.
+    """
+    import types
+    from collections import UserDict
+
+    payload = {"credential_id": "cred-1", "leaked": FAKE_AWS_KEY}
+    container = (
+        UserDict(payload)
+        if factory == "userdict"
+        else types.MappingProxyType(dict(payload))
+    )
+    rendered = repr(scrub(container))
+    assert FAKE_AWS_KEY not in rendered
+    assert "REDACTED" in rendered
+    # A non-secret sibling field is preserved, so the mapping stays useful.
+    assert "cred-1" in rendered
+
+
+def test_a_non_dict_mapping_cannot_escape_through_a_handler() -> None:
+    from collections import UserDict
+
+    logger, handler, stream = _emitting_logger("superplane.mapping-redaction")
+    try:
+        logger.info("state=%s", UserDict({"secret_access_key": FAKE_AWS_KEY}))
+        emitted = stream.getvalue()
+        assert FAKE_AWS_KEY not in emitted
+        assert "REDACTED" in emitted
+    finally:
+        logger.removeHandler(handler)
+
+
+def test_an_objects_rendering_cannot_carry_a_secret() -> None:
+    """The case no container rule reaches: an arbitrary object's `repr`.
+
+    The object is not secret-*shaped* itself, so it used to be returned untouched
+    and the handler rendered it -- with the key in it -- into the log.
+    """
+
+    class ProviderSession:
+        def __repr__(self) -> str:
+            return f"ProviderSession(token={FAKE_AWS_KEY})"
+
+    assert scrub(ProviderSession()) == "[REDACTED]"
+
+    logger, handler, stream = _emitting_logger("superplane.object-redaction")
+    try:
+        logger.info("session=%s", ProviderSession())
+        emitted = stream.getvalue()
+        assert FAKE_AWS_KEY not in emitted
+        assert "REDACTED" in emitted
+    finally:
+        logger.removeHandler(handler)
+
+
+def test_an_exception_argument_carrying_a_secret_is_withheld() -> None:
+    """An exception passed as an argument renders via `repr`/`str`.
+
+    A provider SDK error whose message embeds the credential is a realistic
+    source of this, and it is an object rather than a container.
+    """
+    logger, handler, stream = _emitting_logger("superplane.exc-arg-redaction")
+    try:
+        logger.info("provider rejected us: %s", ValueError(FAKE_ARN))
+        emitted = stream.getvalue()
+        assert FAKE_ARN not in emitted
+        assert "REDACTED" in emitted
+    finally:
+        logger.removeHandler(handler)
+
+
+def test_a_clean_object_is_not_withheld() -> None:
+    """Redaction is not blanket suppression: a safe object still renders.
+
+    Without this, `scrub` could "pass" every leak test by replacing everything,
+    which would make logs useless at exactly the moment they are needed.
+    """
+
+    class Connection:
+        def __repr__(self) -> str:
+            return "Connection(credential_id='cred-1', capacity=4)"
+
+    obj = Connection()
+    assert scrub(obj) is obj
+
+    logger, handler, stream = _emitting_logger("superplane.clean-object")
+    try:
+        logger.info("conn=%s", obj)
+        assert "cred-1" in stream.getvalue()
+    finally:
+        logger.removeHandler(handler)
+
+
+def test_an_object_whose_repr_raises_is_withheld() -> None:
+    """An object that cannot be inspected cannot be shown to be safe."""
+
+    class Hostile:
+        def __repr__(self) -> str:
+            raise RuntimeError("no repr for you")
+
+    assert scrub(Hostile()) == "[REDACTED]"
+
+
+def test_secrets_in_arbitrary_sequences_are_redacted() -> None:
+    """A non-list, non-tuple Sequence (e.g. `UserList`) was not traversed."""
+    from collections import UserList
+
+    rendered = repr(scrub(UserList([FAKE_ARN, "safe"])))
+    assert FAKE_ARN not in rendered
+    assert "REDACTED" in rendered
+    assert "safe" in rendered
+
+
+def test_strings_are_scalars_not_sequences() -> None:
+    """A str must not be walked per character, or no secret shape ever matches."""
+    assert scrub("plain-handle") == "plain-handle"
+    assert scrub(FAKE_AWS_KEY) == "[REDACTED]"
+
+
+def test_non_string_scalars_keep_their_types() -> None:
+    """Quota and capacity numbers must survive redaction unchanged.
+
+    `observed_capacity=0` is a meaningful reading (measured, none free) and
+    must not become a string or `None` on its way through a log.
+    """
+    scrubbed = scrub({"observed_capacity": 0, "quota_available": True, "ratio": 1.5})
+    assert scrubbed == {"observed_capacity": 0, "quota_available": True, "ratio": 1.5}
+    assert type(scrubbed["observed_capacity"]) is int
+    assert type(scrubbed["quota_available"]) is bool
+
+
+def test_container_types_are_preserved_where_reconstructable() -> None:
+    """A tuple stays a tuple and a dict stays a dict, so callers can rely on shape."""
+    assert type(scrub(("a", "b"))) is tuple
+    assert type(scrub({"a": 1})) is dict
+    assert type(scrub(["a"])) is list
+    assert isinstance(scrub({"a"}), set)
+
+
+@pytest.mark.parametrize("shape", ["dict", "list", "mixed"])
+def test_self_referencing_containers_terminate(shape) -> None:
+    """A cycle must not hang the process that is writing a log line."""
+    if shape == "dict":
+        container: object = {}
+        container["self"] = container  # type: ignore[index]
+        container["leak"] = FAKE_AWS_KEY  # type: ignore[index]
+    elif shape == "list":
+        container = []
+        container.append(container)  # type: ignore[attr-defined]
+        container.append(FAKE_AWS_KEY)  # type: ignore[attr-defined]
+    else:
+        inner: dict = {}
+        container = {"inner": inner, "leak": FAKE_ARN}
+        inner["outer"] = container
+
+    rendered = repr(scrub(container))
+    assert "RECURSION" in rendered
+    assert FAKE_AWS_KEY not in rendered
+    assert FAKE_ARN not in rendered
+
+
+def test_pathological_nesting_is_truncated_rather_than_overflowing() -> None:
+    """Depth is bounded, and a secret below the bound is still not emitted."""
+    payload: dict = {}
+    cursor = payload
+    for _ in range(200):
+        nxt: dict = {}
+        cursor["next"] = nxt
+        cursor = nxt
+    cursor["leak"] = FAKE_AWS_KEY
+
+    rendered = repr(scrub(payload))
+    assert FAKE_AWS_KEY not in rendered
+    assert "TRUNCATED" in rendered
+
+
+def test_the_deeply_nested_secret_is_not_merely_beyond_the_cutoff() -> None:
+    """Within the supported depth, a nested secret is redacted rather than dropped.
+
+    Paired with the test above so "not present" cannot be satisfied by truncating
+    everything: here the secret is well inside the bound and must be REDACTED.
+    """
+    payload: dict = {}
+    cursor = payload
+    for _ in range(5):
+        nxt: dict = {}
+        cursor["next"] = nxt
+        cursor = nxt
+    cursor["leak"] = FAKE_AWS_KEY
+
+    rendered = repr(scrub(payload))
+    assert FAKE_AWS_KEY not in rendered
+    assert "REDACTED" in rendered
+    assert "TRUNCATED" not in rendered
+
+
+def test_a_single_mapping_argument_is_redacted_despite_loggings_special_case() -> None:
+    """`record.args` is not always a tuple, and the filter must not assume it is.
+
+    `logging` documents a special case: a single non-empty Mapping argument is
+    stored as `record.args` ITSELF rather than wrapped in a one-tuple, so that
+    `%(name)s` templates work. A filter that switched on `dict`/`tuple` matched
+    neither for a `UserDict` and let the whole mapping through to the handler.
+
+    This is a separate defect from `scrub` skipping non-dict Mappings: fixing
+    `scrub` alone left this path leaking, because the filter never called it. It is
+    pinned separately for that reason -- a direct `scrub()` test cannot see it.
+    """
+    from collections import UserDict
+
+    logger, handler, stream = _emitting_logger(
+        "superplane.mapping-args", logging.Formatter("%(message)s")
+    )
+    try:
+        # Percent-style mapping interpolation: the documented reason for the case.
+        logger.info("%(secret_access_key)s", UserDict({"secret_access_key": FAKE_ARN}))
+        emitted = stream.getvalue()
+        assert FAKE_ARN not in emitted
+        assert "REDACTED" in emitted
+    finally:
+        logger.removeHandler(handler)
+
+
+def test_a_plain_dict_argument_still_interpolates_by_name() -> None:
+    """The mapping special case keeps working for non-secret values.
+
+    Guards the fix above against over-reach: redaction must not break
+    `%(field)s`-style logging, which is the whole reason the special case exists.
+    """
+    logger, handler, stream = _emitting_logger(
+        "superplane.mapping-args-clean", logging.Formatter("%(message)s")
+    )
+    try:
+        logger.info("credential=%(credential_id)s", {"credential_id": "cred-1"})
+        assert "credential=cred-1" in stream.getvalue()
+    finally:
+        logger.removeHandler(handler)
+
+
+@pytest.mark.parametrize(
+    "permissions,allowed",
+    [(frozenset({RENEW_CREDENTIAL_PERMISSION}), True), (frozenset(), False)],
+)
+def test_trusted_workspace_delegation_still_requires_operator_grant(
+    permissions, allowed
+):
+    ownership = VaultOwnership(
+        credential_id="cred-1",
+        owner_principal=OWNER,
+        delegated_to_workspaces=frozenset({"ws-1"}),
+    )
+    result = authorize_delegation(
+        principal="operator",
+        workspace_id="ws-1",
+        ownership=ownership,
+        reference=CredentialReference(
+            credential_id="cred-1", service="nebius", label="prod"
+        ),
+        granted_permissions=permissions,
+    )
+    assert result.allowed is allowed
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "xAKIA" + "Z" * 16,
+        "_arn:aws:secretsmanager:us-east-1:000000000000:secret:fake",
+        "sk-ant-api03-" + "x" * 40,
+        "%61rn%3Aaws%3Asecretsmanager%3Aus-east-1%3A000000000000%3Asecret%3Afake",
+        r"\u0061rn:aws:secretsmanager:us-east-1:000000000000:secret:fake",
+        "AKIA " + "Z" * 16,
+        "ar\u200bn:aws:secretsmanager:us-east-1:000000000000:secret:fake",
+        "&#97;rn:aws:secretsmanager:us-east-1:000000000000:secret:fake",
+    ],
+)
+def test_recoverable_secret_forms_are_refused_and_redacted(value):
+    from superplane_contracts.secrets import value_is_secret_shaped, redact_secret_spans
+
+    assert value_is_secret_shaped(value)
+    with pytest.raises(ContractViolation):
+        CredentialReference(credential_id="cred-1", service="nebius", label=value)
+    # A raw match elsewhere cannot suppress redaction of the encoded material.
+    redacted = redact_secret_spans(
+        "AKIA" + "Z" * 16 + " " + value, placeholder="[redacted]"
+    )
+    assert value not in redacted
+    assert not value_is_secret_shaped(redacted)
+
+
+def test_excessive_nested_transport_encoding_is_refused():
+    from urllib.parse import quote
+    from superplane_contracts.secrets import value_is_secret_shaped
+
+    value = "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake"
+    for _ in range(12):
+        value = quote(value, safe="")
+    assert value_is_secret_shaped(value)

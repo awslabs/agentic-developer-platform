@@ -556,6 +556,7 @@ class WebhookEventLogger:
                 e,
             )
             _emit_row_write_dropped(status=status, error_kind=type(e).__name__)
+            item["write_failed"] = True
 
         return item
 

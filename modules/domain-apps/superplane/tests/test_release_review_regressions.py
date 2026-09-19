@@ -119,6 +119,15 @@ def test_buildspec_runs_only_the_selected_domain_build(
     context = script.parent.parent / "src" / component
     context.mkdir(parents=True)
     (context / "Dockerfile").write_text("FROM scratch\n")
+    if component == "superplane-api":
+        shutil.copytree(
+            ROOT / RELEASE.parent / "src/superplane-api/scripts", context / "scripts"
+        )
+        for package in ("auth", "contracts"):
+            shutil.copytree(
+                ROOT / RELEASE.parent / package, script.parent.parent / package
+            )
+        assert not (context / "vendor").exists()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     trace = tmp_path / "calls"
@@ -127,6 +136,11 @@ def test_buildspec_runs_only_the_selected_domain_build(
         stub.write_text(
             '#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$BUILD_TRACE"\n'
             'case "$*" in *get-login-password*) echo test-password;; login*) cat >/dev/null;; esac\n'
+            'if [ "$1" = build ] && [ "$SOURCE_PATH" = src/superplane-api ]; then\n'
+            "  for package in auth contracts; do\n"
+            '    test -f "modules/domain-apps/superplane/$SOURCE_PATH/vendor/superplane-$package/pyproject.toml" || exit 91\n'
+            "  done\n"
+            "fi\n"
         )
         stub.chmod(0o755)
     adp_commit = "c" * 40
@@ -165,6 +179,16 @@ def test_buildspec_runs_only_the_selected_domain_build(
         assert not trace.exists(), "invalid inputs must fail before AWS or Docker"
     else:
         assert result.returncode == 0, result.stderr
+        if component == "superplane-api":
+            for source, package, sentinel in (
+                ("auth", "superplane_auth", "policy.py"),
+                ("contracts", "superplane_contracts", "emission.py"),
+            ):
+                assert (
+                    context / "vendor" / package.replace("_", "-") / package / sentinel
+                ).read_bytes() == (
+                    ROOT / RELEASE.parent / source / package / sentinel
+                ).read_bytes()
         calls = trace.read_text()
         # Tagged by the ADP commit; the origin revision rides along as a label. Both are
         # asserted because collapsing them is the regression this guards.
@@ -194,3 +218,19 @@ def test_buildspec_runs_only_the_selected_domain_build(
                 "ai-super-plane",
             )
         )
+
+
+def test_api_build_watches_every_staged_source_package():
+    import re
+
+    module = ROOT / RELEASE.parent
+    stage = (module / "src/superplane-api/scripts/stage-domain-auth.sh").read_text()
+    table = re.search(r"^packages=\((.*?)^\)", stage, re.MULTILINE | re.S)
+    sources = re.findall(r'"([^":]+):', table.group(1))
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/superplane-api-build.yml").read_text()
+    )
+    paths = workflow.get("on", workflow.get(True))["push"]["paths"]
+    assert sources
+    for source in sources:
+        assert f"{RELEASE.parent}/{source}/**" in paths

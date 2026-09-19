@@ -87,6 +87,7 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-github.py": (_CLI_DIR / "adp-github.py").resolve(),
     "adp-github-admin.py": (_CLI_DIR / "adp-github-admin.py").resolve(),
     "adp-superplane.py": (_CLI_DIR / "adp-superplane.py").resolve(),
+    "adp-models.py": (_CLI_DIR / "adp-models.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -107,6 +108,7 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-github.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-github-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-superplane.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-models.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 

@@ -91,6 +91,40 @@ class TokenContext(BaseModel):
     # collapse every non-human-rooted request in a tenant into one bogus
     # shared ledger line.
     attributed_user_id: str = ""
+    # Issue #5419 (PMM-02): the canonical service principal this service caller
+    # resolves to, via a registered, tenant-scoped `(org_id, alias_source,
+    # alias_id)` row in `service_principal_aliases`. Server-resolved at
+    # authentication time; there is deliberately no header for it.
+    #
+    # ADDITIVE and OPTIONAL: `user_id` semantics are unchanged, so every existing
+    # caller is unaffected. Empty means "this caller has no registered alias" —
+    # which for a service caller is a refusal, never a fallback to the raw
+    # subject. The raw subject is a different namespace per auth path
+    # (agent_registry `agent_name`, a `service_accounts` UUID, a Cognito
+    # `client_id`), and the approved design is explicit that none of them may
+    # own a preference.
+    #
+    # Empty for human callers, which resolve through `resolve_canonical_user_id`
+    # to a canonical `users.id` instead.
+    canonical_service_principal_id: str = ""
+    # Issue #5419: which alias source the above was resolved through. Needed
+    # because `auth_source` is too coarse to distinguish a Cognito M2M client
+    # from a legacy service-account exchange — both present as
+    # account_type="service", auth_source="jwt".
+    canonical_alias_source: str = ""
+    # Issue #5420 (PMM-03): model restrictions resolved from the authenticated
+    # Agent Registry row.  This is populated only by the IAM authentication
+    # adapter; request headers and bodies have no path to set it.  ``None``
+    # means the caller did not arrive through Agent Registry, while an empty
+    # list means the registry row has no explicit restriction and therefore
+    # inherits the versioned platform baseline.
+    registered_allowed_models: list[str] | None = None
+    # Issue #5420 (PMM-03): immutable primary key of the authenticated Agent
+    # Registry row.  ``user_id`` remains the human-readable ``agent_name`` for
+    # compatibility and is neither immutable nor unique, so privileged
+    # internal routes must bind to this field instead.  Populated only by the
+    # IAM registry adapter; no request header or body can set it.
+    agent_registry_id: str = ""
 
     # Issue #4323: the run/chain reservation targets this request actually
     # reserved against, stashed by the budget check so the reconcile on the way

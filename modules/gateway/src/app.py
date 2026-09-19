@@ -37,6 +37,7 @@ UNIT_MODULES = [
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
+    "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
@@ -120,6 +121,17 @@ UNIT_MODULES = [
     # row, and refuses to overwrite one a platform admin authored (§1.4 "admin wins",
     # which with one row per scope can only be enforced at write time).
     "src.admin.bedrock_routing.self_routes",
+    # Issue #5419 (PMM-02): persona-model preference self-service and administration.
+    # Two separate routers for the same reason bedrock_routing splits them: the self
+    # surface takes no target parameter at any position (the authz IS the shape),
+    # while the administration surface takes a canonical service principal ID and
+    # checks ORG_UPDATE as its first statement.
+    "src.admin.persona_models.self_routes",
+    "src.admin.persona_models.routes",
+    # Issue #5420 (PMM-03): read-only persona/model catalogue on the same
+    # /me/persona-models namespace. Kept in a separate module so catalogue
+    # policy/evidence logic does not broaden either PMM-02 write surface.
+    "src.admin.persona_models.catalogue_routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
@@ -168,6 +180,8 @@ async def lifespan(app: FastAPI):
             import src.shared.models.bedrock_routing  # noqa: F401  # Issue #4743
             import src.shared.models.budget  # noqa: F401
             import src.shared.models.organization  # noqa: F401
+            import src.shared.models.persona_model_catalogue  # noqa: F401  # Issue #5420
+            import src.shared.models.persona_models  # noqa: F401  # Issue #5419
             import src.shared.models.usage  # noqa: F401
             import src.shared.models.vault  # noqa: F401  # Issue #135
             from src.shared.database import get_engine
@@ -184,13 +198,16 @@ async def lifespan(app: FastAPI):
     # Initialize proxy service with single-account Bedrock pool
     try:
         from src.pool.simple_pool import SimplePoolService
-        from src.proxy.routes import set_proxy_service
+        from src.proxy.model_resolver import production_model_resolver
+        from src.proxy.routes import set_model_resolver, set_proxy_service
         from src.proxy.service import ProxyService
 
         pool = SimplePoolService()
-        proxy = ProxyService(pool_service=pool)
+        model_resolver = production_model_resolver(settings)
+        proxy = ProxyService(pool_service=pool, model_resolver=model_resolver)
+        set_model_resolver(model_resolver)
         set_proxy_service(proxy)
-        logger.info("Proxy service initialized with single-account pool")
+        logger.info("Proxy service initialized with single-account pool and deployed model policy")
     except Exception as e:
         logger.error(f"Failed to initialize proxy service: {e}")
 

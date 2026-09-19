@@ -286,7 +286,23 @@ data:
   # silently unobservable, so it is wired here deliberately rather than defaulted.
   # =============================================================================
   BG_BEDROCK_ROUTING_SHADOW_MODE: "__BEDROCK_ROUTING_SHADOW_MODE__"
+
+  # PMM-03 (#5420): faithful Claude Agent SDK invocability probing. These are
+  # deliberately literal fail-closed values, not permissive placeholders.
+  # PMM-09 owns the separately reviewed deployment that may enable them after
+  # the destination account and spend ceiling are explicitly approved.
+  BG_MODEL_PROBE_ENABLED: "false"
+  BG_MODEL_PROBE_MAX_SLOTS_PER_CYCLE: "0"
+  BG_MODEL_PROBE_BUDGET_USD_PER_CYCLE: "0"
+  BG_MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT: "0"
   BG_PLATFORM_BEDROCK_ACCOUNT_ID: "__PLATFORM_BEDROCK_ACCOUNT_ID__"
+
+  # PMM-03 / D3: active organization/team model-access constraints.  JSON is
+  # keyed by org ID or "org_id:team_id"; the team key wins.  Empty JSON means
+  # no explicit tenant policy and therefore the versioned platform baseline.
+  # A configured scope with [] is an intentional deny-all policy.
+  BG_MODEL_ALLOWED_MODELS_CONFIG: >-
+    __MODEL_ALLOWED_MODELS_CONFIG__
 
   # Saved Bedrock account mappings are always enforced. There is no rollout toggle.
 

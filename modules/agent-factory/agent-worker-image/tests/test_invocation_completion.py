@@ -1,4 +1,4 @@
-"""AIDLC gate answers are new work; completed queue deliveries are not."""
+"""New triggers are new work; completed queue deliveries are not."""
 
 from __future__ import annotations
 
@@ -107,6 +107,21 @@ def test_legacy_completion_and_existing_outcome_are_preserved(delivery):
     assert completion.is_delivery_completed(envelope) is True
     assert row(client, envelope)["status"] == {"S": "complete"}
     assert row(client, envelope)["summary"] == {"S": "existing outcome"}
+
+
+def test_legacy_aidlc_receipt_is_promoted_to_generic_completion(delivery):
+    client, envelope = delivery
+    client.update_item(
+        TableName="adp-test-webhook-events",
+        Key={
+            "event_id": {"S": envelope["message_id"]},
+            "arrived_at": {"S": envelope["arrived_at"]},
+        },
+        UpdateExpression="SET aidlc_delivery_completed = :done",
+        ExpressionAttributeValues={":done": {"BOOL": True}},
+    )
+    assert completion.is_delivery_completed(envelope) is True
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
 
 
 def test_receipt_survives_later_dashboard_status_updates(delivery):
@@ -226,7 +241,7 @@ def worker(delivery, monkeypatch, tmp_path):
             executions.append(envelope["message_id"])
             return MagicMock(returncode=exit_codes[-1], stdout="", stderr="")
         return MagicMock(
-            returncode=1 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
+            returncode=2 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
         )
 
     monkeypatch.setattr(entrypoint.subprocess, "run", run)
@@ -251,7 +266,7 @@ def test_main_completed_message_runs_once_and_new_answer_runs(worker):
     client, envelope, executions, _, ack, merged = worker
 
     def verify_receipt(*args):
-        assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": True}
+        assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
 
     ack.side_effect = verify_receipt
     assert entrypoint.main() == 0
@@ -262,6 +277,25 @@ def test_main_completed_message_runs_once_and_new_answer_runs(worker):
     seed(client, envelope)
     assert entrypoint.main() == 0
     assert executions == ["gate-answer-1", "gate-answer-2"]
+    merged.assert_not_called()
+
+
+def test_codex_issue_review_redelivery_runs_adapter_once(worker):
+    client, envelope, executions, _, ack, merged = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["payload"] = {
+        "issue": {"number": 42, "title": "Review this"},
+        "comment": {"body": "@agent-codex-reviewer review this issue"},
+    }
+    seed(client, envelope)
+
+    ack.side_effect = [RuntimeError("SQS unavailable"), None]
+    with pytest.raises(RuntimeError, match="SQS unavailable"):
+        entrypoint.main()
+    assert entrypoint.main() == 0
+
+    assert executions == ["gate-answer-1"]
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
     merged.assert_not_called()
 
 
@@ -291,11 +325,11 @@ def test_retryable_exit_preserves_message_then_retries(worker):
     exit_codes.append(entrypoint.AGENT_EXIT_RETRYABLE)
     assert entrypoint.main() == entrypoint.AGENT_EXIT_RETRYABLE
     ack.assert_not_called()
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": False}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": False}
     exit_codes.append(0)
     assert entrypoint.main() == 0
     assert len(executions) == 2
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": True}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
 
 
 def test_storage_read_failure_runs_and_acknowledges_nothing(worker, monkeypatch):
@@ -326,10 +360,10 @@ def test_interrupted_execution_can_retry(worker, monkeypatch):
     with pytest.raises(RuntimeError, match="worker interrupted"):
         entrypoint.main()
     ack.assert_not_called()
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": False}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": False}
     assert entrypoint.main() == 0
     assert len(executions) == 2
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": True}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
 
 
 def test_reported_terminal_failure_is_consumed_once(worker):
@@ -337,7 +371,7 @@ def test_reported_terminal_failure_is_consumed_once(worker):
     exit_codes.append(1)
     assert entrypoint.main() == 1
     ack.assert_called_once()
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": True}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
     assert entrypoint.main() == 0
     assert len(executions) == 1
     assert row(client, envelope)["status"] == {"S": "failed"}

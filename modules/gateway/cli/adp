@@ -52,7 +52,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-models.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -1403,6 +1403,12 @@ Run GPU workloads (uses the same sign-in — no second token to manage):
                             Register cloud accounts for Superplane
     superplane provider add Store a provider credential in ADP's vault (prompted)
 
+Configure agent persona models:
+    models catalog --persona KEY
+    models mappings list|set|reset
+    models explain --persona KEY
+    models service-principals list
+
   Administration:
     admin login           Sign in with a Cognito administrator account
     admin setup           Check and resume first-time setup
@@ -1542,6 +1548,7 @@ main() {
         # its own — that is the whole point of the verb existing here rather
         # than as a separate `superplane` CLI on the user's PATH.
         superplane) exec_python_helper "adp-superplane.py" "$@" ;;
+        models) exec_python_helper "adp-models.py" "$@" ;;
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.

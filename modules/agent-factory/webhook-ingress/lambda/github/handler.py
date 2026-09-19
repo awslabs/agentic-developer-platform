@@ -1918,8 +1918,12 @@ def _capture_invocation_event(
     delivery_id: str = "",
     sender_type: str = "",
     repo_id: int = 0,
-) -> None:
-    """Write enriched invocation row to DynamoDB (best-effort).
+) -> bool:
+    """Write the enriched invocation row and report whether it was durable.
+
+    Most callers retain best-effort semantics by ignoring the return value. The
+    independent reviewer treats ``False`` as a dispatch failure because its
+    gateway adapter uses this row as the assignment proof.
 
     Uses envelope's message_id/arrived_at as keys so the worker can UpdateItem
     on the same row. For terminal-at-ingress statuses (rate_limited, no_op),
@@ -1954,7 +1958,7 @@ def _capture_invocation_event(
     try:
         event_logger = _get_webhook_event_logger()
         if event_logger is None:
-            return
+            return False
 
         # Extract keys from envelope (THE KEY CONTRACT)
         event_id = envelope["message_id"] if envelope else None
@@ -2008,7 +2012,7 @@ def _capture_invocation_event(
                 command_body=comment_body,
             )
 
-        event_logger.log_event(
+        result = event_logger.log_event(
             event_id=event_id,
             arrived_at=arrived_at,
             tenant_id=tenant_id,
@@ -2038,9 +2042,11 @@ def _capture_invocation_event(
             engine_command_signing_key_id=key_id,
             engine_command_signed_payload=signed_payload,
         )
+        return not result.get("write_failed", False)
     except Exception as e:
         # Best-effort — never block the webhook response
         logger.warning("Failed to capture invocation event: %s", e)
+        return False
 
 
 def _sign_engine_command(

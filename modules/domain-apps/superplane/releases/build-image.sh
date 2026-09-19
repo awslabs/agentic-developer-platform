@@ -42,6 +42,12 @@ context="$maintained_root/$SOURCE_PATH"
 # The reference snapshot is read-only evidence and must never become a build context.
 [[ "$context" != *"ai-super-plane"* ]] || { echo "Refusing to build from the reference snapshot" >&2; exit 1; }
 
+# Sibling packages are generated build inputs and absent from a clean checkout.
+# Stage before touching AWS or Docker so missing maintained source fails locally.
+if [[ "$component" == "superplane-api" ]]; then
+  bash "$context/scripts/stage-domain-auth.sh"
+fi
+
 aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null
 aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
 tag="$REGISTRY/$ECR_REPO:$IMAGE_TAG"

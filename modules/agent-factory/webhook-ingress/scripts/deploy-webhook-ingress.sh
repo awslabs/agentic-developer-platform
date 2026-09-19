@@ -9,7 +9,8 @@ set -euo pipefail
 # or run standalone. It has two plan/runtime prerequisites that no other flow
 # builds:
 #
-#   1. The agent-worker image (adp-agent-runtime) the KEDA ScaledJob runs.
+#   1. The shared agent-worker image its KEDA
+#      ScaledJobs run.
 #      Terraform only references the :latest tag; it never validates it, so a
 #      missing image surfaces as ImagePullBackOff on the FIRST real agent run.
 #   2. The webhook Lambda zip in S3, which terraform reads at PLAN time
@@ -17,7 +18,7 @@ set -euo pipefail
 #
 # This script does all three as one cohesive, idempotent, re-runnable step
 # (mirrors modules/agent-factory/scripts/deploy-gateway.sh):
-#   [1/3] build adp-agent-runtime image via CodeBuild
+#   [1/3] build adp-agent-runtime via CodeBuild
 #   [2/3] package + upload the webhook Lambda zip to S3
 #   [3/3] terraform apply the webhook-ingress stack
 #
@@ -99,12 +100,12 @@ CODEBUILD_RUN="${REPO_ROOT}/platform/scripts/codebuild-run.sh"
 [ -x "$CODEBUILD_RUN" ] || [ -f "$CODEBUILD_RUN" ] || fail "codebuild-run.sh not found at $CODEBUILD_RUN"
 
 # ---------------------------------------------------------------------------
-# [1/3] Build the agent-worker image (adp-agent-runtime)
+# [1/3] Build the shared worker image
 # ---------------------------------------------------------------------------
-step "[1/3] Build agent-worker image (adp-agent-runtime)"
+step "[1/3] Build worker image (agent runtime with Codex adapters)"
 if [ -n "${ADP_RELEASE_DIR:-}" ]; then
   python3 "$REPO_ROOT/platform/scripts/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
-  ok "Using verified release worker image"
+  ok "Using verified release worker images"
 elif [ "$SKIP_IMAGE" = true ]; then
   warn "Skipping image build (--skip-image)."
 elif [ "$DRY_RUN" = true ]; then

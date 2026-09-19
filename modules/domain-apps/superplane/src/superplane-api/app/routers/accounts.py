@@ -4,14 +4,19 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware.auth import get_current_org
 from app.models.cloud_account import CloudAccount
-from app.models.credential import CredentialRegistry
+from app.models.credential import (
+    ClusterVaultAssignment,
+    CredentialAuditLog,
+    CredentialRegistry,
+)
+from app.models.provider_connection import STATUS_DISABLED, ProviderConnection
 from app.schemas.account import (
     AccountDeleteResponse,
     AccountListResponse,
@@ -33,7 +38,9 @@ router = APIRouter(tags=["accounts"])
 
 def _account_to_response(acct: CloudAccount) -> AccountResponse:
     """Convert a CloudAccount model to the API response schema."""
-    secret_arns = json.loads(acct.secret_arns_json) if acct.secret_arns_json else []
+    adp_credential_ids = (
+        json.loads(acct.adp_credential_ids_json) if acct.adp_credential_ids_json else []
+    )
     irsa_role_arns = (
         json.loads(acct.irsa_role_arns_json) if acct.irsa_role_arns_json else []
     )
@@ -46,7 +53,7 @@ def _account_to_response(acct: CloudAccount) -> AccountResponse:
         role_arn=acct.cross_account_role_arn,
         external_id=acct.external_id,
         status=acct.status,
-        secret_arns=secret_arns,
+        adp_credential_ids=adp_credential_ids,
         irsa_role_arns=irsa_role_arns,
         created_at=acct.created_at,
         updated_at=acct.updated_at,
@@ -61,7 +68,7 @@ def _credential_to_response(cred: CredentialRegistry) -> CredentialResponse:
         name=cred.friendly_name,
         provider=cred.provider,
         credential_type=cred.credential_type,
-        secret_arn=cred.secret_arn,
+        adp_credential_id=cred.adp_credential_id,
         status=cred.status,
         created_at=cred.created_at,
         updated_at=cred.updated_at,
@@ -107,7 +114,9 @@ async def register_account(
         cross_account_role_arn=body.role_arn,
         external_id=body.external_id,
         ingest_role_arn=body.ingest_role_arn,
-        secret_arns_json=json.dumps(body.secret_arns) if body.secret_arns else None,
+        adp_credential_ids_json=json.dumps(body.adp_credential_ids)
+        if body.adp_credential_ids
+        else None,
         irsa_role_arns_json=json.dumps(body.irsa_role_arns)
         if body.irsa_role_arns
         else None,
@@ -187,18 +196,24 @@ async def register_credential(
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> CredentialResponse:
-    """Register a credential ARN in the vault.
+    """Register an ADP credential reference.
 
-    The CLI stores the actual secret in the user's Secrets Manager, then
-    calls this endpoint to register the ARN with Superplane. The credential
-    value never crosses account boundaries.
+    Issue #5046 (U13b): the stored reference is an **ADP credential ID** — an opaque
+    handle only the ADP vault can resolve — not a Secrets Manager ARN. The credential
+    value never reaches Superplane, and neither does the address of the secret holding it,
+    so vault rotation and revocation remain the single control point.
+
+    The route accepts a reference that is well-formed. It does NOT establish that the
+    reference resolves: that ADP owns the credential and can read it under the relevant
+    account and KMS permissions is verified by the audited vault-owned migration and the
+    ADP-side client contract (U7), not here.
     """
     credential = CredentialRegistry(
         org_id=org_id,
         provider=body.provider,
         friendly_name=body.name,
         credential_type=body.credential_type,
-        secret_arn=body.secret_arn,
+        adp_credential_id=body.adp_credential_id,
         status="Active",
     )
     db.add(credential)
@@ -219,7 +234,10 @@ async def list_credentials(
     """List all registered credentials for the organization."""
     result = await db.execute(
         select(CredentialRegistry)
-        .where(CredentialRegistry.org_id == org_id)
+        .where(
+            CredentialRegistry.org_id == org_id,
+            CredentialRegistry.status != "Deregistered",
+        )
         .order_by(CredentialRegistry.created_at.desc())
     )
     credentials = result.scalars().all()
@@ -234,19 +252,25 @@ async def list_credentials(
 )
 async def delete_credential(
     credential_id: uuid.UUID,
+    request: Request,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> CredentialDeleteResponse:
     """Deregister a credential.
 
-    This removes the credential registration from Superplane — it does NOT
-    delete the secret from the user's Secrets Manager.
+    Retain the reference and audit history as a tombstone. Active connections and
+    cluster assignments must be disabled/replaced or detached first. This does not
+    revoke the credential in ADP's vault or at the provider.
     """
     result = await db.execute(
-        select(CredentialRegistry).where(
+        select(CredentialRegistry)
+        .where(
             CredentialRegistry.id == credential_id,
             CredentialRegistry.org_id == org_id,
+            CredentialRegistry.status != "Deregistered",
         )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
     credential = result.scalar_one_or_none()
 
@@ -255,7 +279,41 @@ async def delete_credential(
             status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found"
         )
 
-    await db.delete(credential)
+    connection = (
+        await db.execute(
+            select(ProviderConnection.id)
+            .where(
+                ProviderConnection.org_id == org_id,
+                ProviderConnection.adp_credential_id == credential.adp_credential_id,
+                ProviderConnection.status != STATUS_DISABLED,
+            )
+            .limit(1)
+        )
+    ).first()
+    assignment = (
+        await db.execute(
+            select(ClusterVaultAssignment.id)
+            .where(
+                ClusterVaultAssignment.credential_registry_id == credential_id,
+            )
+            .limit(1)
+        )
+    ).first()
+    if connection or assignment:
+        raise HTTPException(
+            status_code=409,
+            detail="credential is still in use; disable or replace its connections and detach cluster assignments first",
+        )
+    credential.status = "Deregistered"
+    caller = getattr(request.state, "caller", None)
+    db.add(
+        CredentialAuditLog(
+            org_id=org_id,
+            credential_registry_id=credential_id,
+            accessed_by=caller.principal.subject if caller else None,
+            action="Deregistered",
+        )
+    )
     await db.commit()
 
     logger.info("Deregistered credential %s for org %s", credential_id, org_id)

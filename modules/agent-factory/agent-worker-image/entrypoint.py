@@ -63,6 +63,8 @@ WORK_DIR = Path("/work/repo")
 PERSONAS_DIR = Path("/app/personas")
 SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
+CODEX_REVIEWER_BINARY = "/app/codex-reviewer/dist/index.js"
+CODEX_PERSONA_PREFIX = "agent-codex-"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
@@ -124,6 +126,26 @@ PERSONAS_REGISTERING_DRAFTS = frozenset({"aidlc"})
 _STS_TAG_FORBIDDEN = re.compile(r"[^A-Za-z0-9_.:/=+\-@]")
 
 
+def persona_runtime(persona: str) -> str:
+    """Select the model runtime from the trusted persona name only."""
+    if persona.startswith(CODEX_PERSONA_PREFIX) and len(persona) > len(CODEX_PERSONA_PREFIX):
+        return "codex"
+    return "claude"
+
+
+def worker_command(persona: str) -> list[str]:
+    """Return the packaged adapter command for a persona.
+
+    New Codex personas extend this one allow-list without changing the queue
+    contract, KEDA resources, or container image.
+    """
+    if persona_runtime(persona) == "claude":
+        return ["node", AGENT_BINARY]
+    if persona == "agent-codex-reviewer":
+        return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
+    raise ValueError(f"Codex persona is not packaged yet: {persona}")
+
+
 def _sanitize_for_sts_tag(value: str) -> str:
     return _STS_TAG_FORBIDDEN.sub("_", value)
 
@@ -140,7 +162,9 @@ ADP_GH_TOKEN_BROKER_ENV = "ADP_GH_TOKEN_BROKER_ENABLED"
 def _gh_token_broker_enabled(environ: dict | None = None) -> bool:
     """Return True when the GitHub-token gatekeeper is enabled (issue #4272)."""
     env = environ if environ is not None else os.environ
-    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
+    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(
+        ADP_GH_TOKEN_BROKER_ENV, ""
+    ).lower() in ("1", "true", "yes")
 
 
 # --- Issue #5223: mediated GitHub operations -----------------------------------
@@ -373,9 +397,11 @@ def _resolve_execution_token(
     Raises:
         RuntimeError: If PAT resolution or validation fails (no App fallback).
     """
-    pat_execution_enabled = environ.get(
-        "ADP_PAT_EXECUTION_ENABLED", ""
-    ).lower() in ("1", "true", "yes")
+    pat_execution_enabled = environ.get("ADP_PAT_EXECUTION_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     token_source = envelope.get("token_source")
 
     # Not enabled or not PAT → App path
@@ -419,8 +445,7 @@ def _resolve_execution_token(
             bootstrap_log.step_error(2, "pat_resolve", exc)
             bootstrap_log.close()
         raise RuntimeError(
-            "PAT mode requested (token_source=pat) but credential "
-            f"resolution failed: {exc}"
+            f"PAT mode requested (token_source=pat) but credential resolution failed: {exc}"
         ) from exc
 
     if bootstrap_log:
@@ -468,13 +493,9 @@ def _resolve_execution_token(
         raise err from exc
 
     if bootstrap_log:
-        bootstrap_log.step_success(
-            3, "pat_validate", github_login=github_login
-        )
+        bootstrap_log.step_success(3, "pat_validate", github_login=github_login)
 
-    return PatResolutionResult(
-        token_mode="pat", token=pat_token, github_login=github_login
-    )
+    return PatResolutionResult(token_mode="pat", token=pat_token, github_login=github_login)
 
 
 def parse_envelope(raw: str) -> dict:
@@ -769,6 +790,7 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     labeled fallback; never describe that potentially clipped record as full.
     Each read is best-effort so one missing artifact cannot hide the other.
     """
+
     def read(name: str) -> str:
         try:
             with open(os.path.join(directory, name), "r", encoding="utf-8") as fh:
@@ -783,10 +805,14 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     transcript_text = read("adp-run-transcript.md")
     if not transcript_text.strip():
         transcript_text = (
-            "_Archive source: GitHub display fallback. The independent explanation "
-            "transcript was unavailable; this record may be truncated or incomplete._\n\n"
-            + github_text
-        ) if github_text else ""
+            (
+                "_Archive source: GitHub display fallback. The independent explanation "
+                "transcript was unavailable; this record may be truncated or incomplete._\n\n"
+                + github_text
+            )
+            if github_text
+            else ""
+        )
     return github_text, transcript_text
 
 
@@ -830,7 +856,12 @@ def _upload_transcript_to_s3(
             Body=final_text.encode("utf-8"),
             ContentType="text/markdown",
         )
-        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text.encode("utf-8")))
+        logger.info(
+            "Transcript uploaded to s3://%s/%s (%d bytes)",
+            bucket,
+            key,
+            len(final_text.encode("utf-8")),
+        )
         return key
     except Exception as exc:
         logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
@@ -1131,6 +1162,90 @@ def _checkout_existing_work_branch(branch: str) -> None:
     run_cmd(["git", "checkout", branch], cwd=WORK_DIR)
 
 
+def _work_branch_is_disposable(branch: str) -> bool:
+    """Prove that cleanup would discard only empty commits or review transcripts.
+
+    Inspect every unmerged commit, not just the final diff: code subsequently
+    reverted is still committed work. Incomplete history and read failures must
+    preserve the branch. This deliberately does not use the PR-suppression
+    helper below, whose shallow, net-diff test is insufficient for deletion.
+    """
+    try:
+        if run_cmd(["git", "status", "--porcelain"], cwd=WORK_DIR).stdout.strip():
+            return False
+        head = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        remote = run_cmd(
+            ["git", "rev-parse", f"refs/remotes/origin/{branch}"], cwd=WORK_DIR
+        ).stdout.strip()
+        if head != remote:
+            return False  # Never reset an unpublished local checkpoint.
+        fetch = ["git", "fetch"]
+        if (
+            run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=WORK_DIR).stdout.strip()
+            == "true"
+        ):
+            fetch.append("--unshallow")
+        run_cmd([*fetch, "origin", "refs/heads/main:refs/remotes/origin/main"], cwd=WORK_DIR)
+        if (
+            run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=WORK_DIR).stdout.strip()
+            != "false"
+        ):
+            return False
+        revision_range = f"origin/main..{head}"
+        # Merges can carry conflict resolutions not represented by log's default
+        # per-commit diff. Preserve them rather than guessing about disposability.
+        if run_cmd(
+            ["git", "rev-list", "--min-parents=2", revision_range], cwd=WORK_DIR
+        ).stdout.strip():
+            return False
+        changed = run_cmd(
+            ["git", "log", "--format=", "--name-only", "-z", revision_range], cwd=WORK_DIR
+        ).stdout
+        files = [path for path in changed.split("\0") if path]
+        return all(path.startswith("data/code-review/") for path in files)
+    except (subprocess.CalledProcessError, OSError):
+        logger.warning("Could not prove branch %s disposable; preserving it", branch)
+        return False
+
+
+def _reuse_work_branch(branch: str, *, allow_cleanup: bool, persona: str, issue: int) -> None:
+    """Adopt the existing head, or replace disposable work behind a recovery ref.
+
+    A leased replacement avoids the delete/recreate gap and rejects any writer
+    racing bootstrap. No empty WIP commit is added to an adopted head (#5381).
+    """
+    _checkout_existing_work_branch(branch)
+    if not allow_cleanup or not _work_branch_is_disposable(branch):
+        logger.info("Preserving existing work branch %s without a WIP push", branch)
+        return
+    old_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+    recovery_ref = f"refs/heads/recovery/{branch.replace('/', '-')}-{old_sha}"
+    run_cmd(["git", "push", "origin", f"{old_sha}:{recovery_ref}"], cwd=WORK_DIR)
+    saved = (
+        run_cmd(["git", "ls-remote", "--exit-code", "--refs", "origin", recovery_ref], cwd=WORK_DIR)
+        .stdout.strip()
+        .split()
+    )
+    if saved != [old_sha, recovery_ref]:
+        raise RuntimeError(f"Recovery ref for {branch} did not verify; refusing cleanup")
+    run_cmd(["git", "reset", "--hard", "origin/main"], cwd=WORK_DIR)
+    run_cmd(
+        ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
+        cwd=WORK_DIR,
+    )
+    run_cmd(
+        [
+            "git",
+            "push",
+            f"--force-with-lease=refs/heads/{branch}:{old_sha}",
+            "origin",
+            f"HEAD:refs/heads/{branch}",
+        ],
+        cwd=WORK_DIR,
+    )
+    logger.info("Reset disposable branch %s; prior work retained at %s", branch, recovery_ref)
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -1179,6 +1294,11 @@ def main() -> int:
         raise
     tenant_id = envelope["tenant_id"]
     persona = envelope["persona"]
+    runtime = persona_runtime(persona)
+    is_codex_review = persona == "agent-codex-reviewer"
+    is_codex_pr_review = is_codex_review and isinstance(
+        (envelope.get("payload") or {}).get("pull_request"), dict
+    )
     source = envelope["source_ref"]
     installation_id = source["installation_id"]
     repo = source["repo"]
@@ -1236,28 +1356,33 @@ def main() -> int:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
 
-    # AIDLC can merge an intermediate gate and continue on the same branch.
-    # Legacy workers therefore deduplicate this exact delivery, not the branch.
+    # AIDLC can merge an intermediate gate and continue on the same branch, and
+    # a Codex issue review has no branch/PR terminal state. Legacy workers
+    # therefore deduplicate these paths by exact delivery, not by branch.
     # Do this before credentials, repository work or any in_progress write that
     # could overwrite an older worker's completed status. Protected dispatch
     # already binds/retires attempts and must not fall back to direct table I/O.
-    use_completion_receipt = persona in PERSONAS_EXTENDING_BRANCH and not authority_enabled()
+    use_completion_receipt = (
+        persona in PERSONAS_EXTENDING_BRANCH or (is_codex_review and not is_codex_pr_review)
+    ) and not authority_enabled()
     if use_completion_receipt:
         try:
             already_completed = is_delivery_completed(envelope)
         except InvocationCompletionError as exc:
-            logger.error("AIDLC delivery deferred: %s", exc)
+            logger.error("Delivery deferred: %s", exc)
             bootstrap_log.close()
             return AGENT_EXIT_RETRYABLE
         if already_completed:
-            logger.info("AIDLC delivery %s was already completed; acknowledging redelivery", message_id)
+            logger.info("Delivery %s was already completed; acknowledging redelivery", message_id)
             bootstrap_log.close()
             # Keep the existing outcome intact: a redelivery is not a new
             # invocation and must not overwrite complete with skipped.
             try:
                 _delete_message(queue_url, region, receipt_handle)
             except Exception:
-                logger.warning("Could not acknowledge completed AIDLC delivery; leaving it for retry")
+                logger.warning(
+                    "Could not acknowledge completed AIDLC delivery; leaving it for retry"
+                )
                 return AGENT_EXIT_RETRYABLE
             return 0
 
@@ -1265,7 +1390,7 @@ def main() -> int:
     # hooks, SDK tools or repository-selected dependencies can execute (#5028).
     from lib.run_identity import bootstrap_run_identity
 
-    bootstrap_run_identity(envelope)
+    run_identity = bootstrap_run_identity(envelope)
 
     # Read correlation context from SQS envelope.
     # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
@@ -1533,7 +1658,8 @@ def main() -> int:
     # the gateway's admission, never from the message. Same reasoning as the
     # aidlc/authority carve-out at the completion receipt above.
     if (
-        persona not in PERSONAS_EXTENDING_BRANCH
+        not is_codex_review
+        and persona not in PERSONAS_EXTENDING_BRANCH
         and not _invocation_identity_decides_replay(envelope)
         and _already_completed(repo, issue, token, mediated=_mediated_run)
     ):
@@ -1593,6 +1719,12 @@ def main() -> int:
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": effective_model,
     }
+    # PMM-07 report-only evidence.  This deliberately does not feed
+    # ``effective_model``: PMM-09 owns the enforcing flip after every runtime
+    # path and live admission gate is proven.  Older gateways/workers simply
+    # omit these comparison fields during the mixed-version rollout.
+    if run_identity is not None and run_identity.model_policy_report is not None:
+        env_vars.update(run_identity.model_policy_report.environment(effective_model))
 
     # Issue #5223: in mediated mode there is no token, so exporting these would
     # publish empty strings as if they were credentials. Removed rather than left
@@ -1624,7 +1756,14 @@ def main() -> int:
     # side adopts the env GITHUB_TOKEN as-is.
     elif _token_mode == "pat":
         env_vars["ADP_TOKEN_MODE"] = "pat"
-        for key in ("GH_APP_ID", "GH_APP_PRIVATE_KEY", "GH_APP_KEY", "GH_APP_INSTALLATION_ID", "GH_APP_TOKEN", "GH_APP_TOKEN_EXPIRES_AT"):
+        for key in (
+            "GH_APP_ID",
+            "GH_APP_PRIVATE_KEY",
+            "GH_APP_KEY",
+            "GH_APP_INSTALLATION_ID",
+            "GH_APP_TOKEN",
+            "GH_APP_TOKEN_EXPIRES_AT",
+        ):
             os.environ.pop(key, None)
         # Write PAT to the askpass token file so git-askpass-helper reads it.
         # TokenManager won't overwrite since it has no app credentials.
@@ -1820,33 +1959,49 @@ def main() -> int:
     bootstrap_log.step_success(6, "git_config")
 
     # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec
-    bootstrap_log.step_start(7, "wip_branch", branch=f"agent/issue-{issue}")
-    # Create or reset the agent branch + WIP commit BEFORE exec so that:
-    #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
-    #   2. Users see a "WIP" commit immediately on the branch.
-    #   3. Real agent commits stack cleanly on top.
-    #
-    # Branch convention `agent/issue-NNN` is fixed (A4 auto-merge, reviewer
-    # workflows, operators all rely on it). When this issue has been worked
-    # before — typically architect-then-developer in sequence — the remote
-    # branch already exists. Two cases:
-    #
-    #   (a) Stale branch, no open PR:  prior architect/developer run created
-    #       a WIP commit but no PR shipped. Force-reset to current main so
-    #       this run starts clean. Otherwise the agent's `git fetch`+`merge`
-    #       pulls in everything that landed on main since the prior run,
-    #       inflating the eventual PR diff with already-merged work.
-    #
-    #   (b) Branch with an open PR:  operator may be iterating, or an
-    #       earlier architect run shipped a PR (rare). Don't force-reset —
-    #       extend the existing branch so the PR's review state is preserved.
-    #
-    # SQS FIFO MessageGroupId=tenant#repo#issue serializes runs on the same
-    # issue, so concurrent-run race conditions don't apply here.
-    branch_name = f"agent/issue-{issue}"
+    review_head_ref = (
+        ((envelope.get("payload") or {}).get("pull_request") or {}).get("head") or {}
+    ).get("ref")
+    branch_name = (
+        review_head_ref
+        if is_codex_pr_review
+        else ("default-branch" if is_codex_review else f"agent/issue-{issue}")
+    )
+    bootstrap_log.step_start(7, "wip_branch", branch=branch_name)
+    # Attach checks to the work branch. Existing substantive work and open PR
+    # heads are adopted without a cosmetic commit. Only proven empty/transcript
+    # branches may be reset, after saving and verifying their recovery ref.
+    # The reset uses an exact lease: FIFO does not fence other GitHub writers.
     wip_sha: str = ""
     work_branch_ready = False
-    if _mediated_run:
+    if is_codex_review:
+        if _mediated_run:
+            raise RuntimeError(
+                "agent-codex-reviewer requires the default GitHub token; "
+                "mediated comment/push support is not configured"
+            )
+        if is_codex_pr_review:
+            if not isinstance(branch_name, str) or not branch_name:
+                raise RuntimeError("agent-codex-reviewer envelope has no PR head branch")
+            expected_review_sha = str(source.get("sha") or "")
+            _checkout_existing_work_branch(branch_name)
+            actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+            if actual_review_sha != expected_review_sha:
+                raise RuntimeError(
+                    f"review head changed before checkout: expected {expected_review_sha}, "
+                    f"found {actual_review_sha}"
+                )
+            bootstrap_step = "review_branch"
+        else:
+            branch_name = (
+                run_cmd(["git", "branch", "--show-current"], cwd=WORK_DIR).stdout.strip() or "HEAD"
+            )
+            actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+            bootstrap_step = "issue_review_base"
+        work_branch_ready = True
+        wip_sha = actual_review_sha
+        bootstrap_log.step_success(7, bootstrap_step, sha=wip_sha[:7])
+    elif _mediated_run:
         # Issue #5223: every provider step below — `ls-remote`, `gh pr list`,
         # `push --delete`, `push -u` — authenticates with the installation token a
         # mediated run does not have. None of them is needed here:
@@ -1884,6 +2039,8 @@ def main() -> int:
                 text=True,
                 check=False,
             )
+            if remote_check.returncode not in (0, 2):
+                raise RuntimeError(f"Could not determine whether work branch {branch_name} exists")
             remote_branch_exists = remote_check.returncode == 0
 
             if remote_branch_exists:
@@ -1912,53 +2069,37 @@ def main() -> int:
                 )
                 has_open_pr = bool(open_pr_check.stdout.strip())
 
-                if has_open_pr:
-                    # (b) Extend the existing branch — preserve the PR's review state.
-                    logger.info(
-                        "Branch %s exists with open PR; extending instead of resetting",
-                        branch_name,
-                    )
-                    _checkout_existing_work_branch(branch_name)
-                elif persona in PERSONAS_EXTENDING_BRANCH:
-                    # (a-aidlc) AIDLC stages commit artifacts sequentially on one
-                    # branch without opening a PR until the end. Never delete the
-                    # remote branch — fetch + extend so prior stage commits survive.
-                    # Issue #3430.
-                    logger.info(
-                        "Branch %s exists with no open PR; persona=%s is in "
-                        "PERSONAS_EXTENDING_BRANCH — extending instead of resetting",
-                        branch_name,
-                        persona,
-                    )
-                    _checkout_existing_work_branch(branch_name)
-                else:
-                    # (a) Stale branch, no PR — delete it and start fresh from main.
-                    logger.info(
-                        "Branch %s exists with no open PR; resetting from main",
-                        branch_name,
-                    )
-                    subprocess.run(
-                        ["git", "push", "--delete", "origin", branch_name],
-                        cwd=WORK_DIR,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+                _reuse_work_branch(
+                    branch_name,
+                    allow_cleanup=(
+                        open_pr_check.returncode == 0
+                        and not has_open_pr
+                        and persona not in PERSONAS_EXTENDING_BRANCH
+                    ),
+                    persona=persona,
+                    issue=issue,
+                )
             else:
                 # First run on this issue — clean creation
                 run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
 
             work_branch_ready = True
-            run_cmd(
-                ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
-                cwd=WORK_DIR,
-            )
-            run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
+            if not remote_branch_exists:
+                run_cmd(
+                    [
+                        "git",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        f"WIP: agent/{persona} starting #{issue}",
+                    ],
+                    cwd=WORK_DIR,
+                )
+                run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
             sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
             wip_sha = sha_result.stdout.strip()
             bootstrap_log.step_success(7, "wip_branch", sha=wip_sha[:7])
-            logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
+            logger.info("Work branch %s ready; sha=%s", branch_name, wip_sha[:7])
         except Exception as exc:
             bootstrap_log.step_error(7, "wip_branch", exc)
             # Never launch the model on main after a failed branch checkout. A WIP
@@ -1996,7 +2137,7 @@ def main() -> int:
             "Mediated mode: no GitHub check run is created (no checks:write credential); "
             "run status is reported through the authority transport instead"
         )
-    elif wip_sha:
+    elif wip_sha and not is_codex_review:
         try:
             cr = create_check_run(
                 repo=repo,
@@ -2076,14 +2217,15 @@ def main() -> int:
                 raise
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 
-    # Step 8: Remove trigger label
-    try:
-        run_cmd(
-            ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
-            env={**os.environ},
-        )
-    except subprocess.CalledProcessError:
-        logger.warning("Failed to remove label (non-fatal)")
+    # Step 8: Remove trigger label. PR-opened Codex reviews have no trigger label.
+    if not is_codex_review:
+        try:
+            run_cmd(
+                ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
+                env={**os.environ},
+            )
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to remove label (non-fatal)")
 
     # Step 9: Post "started" comment (idempotent via message_id)
     started_marker = f"<!-- adp-run:{message_id} -->"
@@ -2113,7 +2255,7 @@ def main() -> int:
             ],
             env={**os.environ},
         )
-        if not existing.stdout.strip():
+        if not is_codex_review and not existing.stdout.strip():
             run_cmd(
                 ["gh", "issue", "comment", str(issue), "--body", started_body, "-R", repo],
                 env={**os.environ},
@@ -2158,7 +2300,9 @@ def main() -> int:
         raise RuntimeError(RETIRED_BEDROCK_VIA[bedrock_via])
 
     if bedrock_via != "gateway":
-        raise RuntimeError("ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported.")
+        raise RuntimeError(
+            "ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported."
+        )
 
     # Start sigv4-proxy subprocess for gateway mode.
     # The proxy must sign with platform IRSA (which has execute-api:Invoke on
@@ -2182,7 +2326,9 @@ def main() -> int:
             _withhold_write_token(proxy_env)
         proxy_process = _start_sigv4_proxy(proxy_env, tenant_id)
         if proxy_process is None:
-            raise RuntimeError("Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing.")
+            raise RuntimeError(
+                "Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing."
+            )
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
@@ -2240,7 +2386,9 @@ def main() -> int:
     # Issue #3385 (C5): include token_mode provenance on the DDB row.
     _keda_job_name = os.environ.get("JOB_NAME", os.environ.get("HOSTNAME", ""))
     update_invocation_status(
-        message_id, arrived_at, "in_progress",
+        message_id,
+        arrived_at,
+        "in_progress",
         run_id=_keda_job_name,
         token_mode=_token_mode,
     )
@@ -2263,13 +2411,19 @@ def main() -> int:
     heartbeat = VisibilityHeartbeat(queue_url, region, receipt_handle)
     heartbeat.start()
 
-    logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
+    command = worker_command(persona)
+    logger.info(
+        "Execing runtime=%s command=%s persona=%s branch=%s",
+        runtime,
+        command,
+        persona,
+        branch_name,
+    )
     try:
-        result = subprocess.run(
-            ["node", AGENT_BINARY],
-            cwd=WORK_DIR,
-            env=agent_env,
-        )
+        run_options = {"cwd": WORK_DIR, "env": agent_env}
+        if is_codex_review:
+            run_options.update({"input": raw_message, "text": True, "capture_output": True})
+        result = subprocess.run(command, **run_options)
     finally:
         if task_config_path:
             Path(task_config_path).unlink(missing_ok=True)
@@ -2287,6 +2441,25 @@ def main() -> int:
     # that can take seconds or fail, and the window where a token remains valid
     # for a pod whose agent has already exited should be as short as possible.
     _teardown_agent_control(message_id, arrived_at, control_registered)
+
+    if is_codex_review:
+        output_lines = (result.stdout or "").strip().splitlines()
+        summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
+        if result.returncode == 0:
+            update_invocation_status(message_id, arrived_at, "complete", summary=summary)
+            if use_completion_receipt:
+                try:
+                    record_delivery_completed(envelope)
+                except InvocationCompletionError as exc:
+                    logger.error("Codex issue-review acknowledgement deferred: %s", exc)
+                    return AGENT_EXIT_RETRYABLE
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("Codex review completed and shared queue message was acknowledged")
+            return 0
+        error = (result.stderr or summary or "Codex review failed")[-1024:]
+        update_invocation_status(message_id, arrived_at, "failed", error_message=error)
+        logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
+        return result.returncode or 1
 
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
     # captured, so the identifier outlives the process that created it.
@@ -2787,7 +2960,10 @@ def _setup_agent_control(
 
             global _control_renewal_session
             _control_renewal_session = ControlRenewal(
-                run_id=message_id, generation=generation, token=token, expires_at=expires_at,
+                run_id=message_id,
+                generation=generation,
+                token=token,
+                expires_at=expires_at,
             )
             _control_renewal_session.start()
             agent_env["ADP_CONTROL_CREDENTIAL_FILE"] = str(_control_renewal_session.path)
@@ -3043,7 +3219,7 @@ def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
     """Reference the worker's single outcome report without trusting arbitrary URLs."""
     url = (meta or {}).get("outcome_comment_url")
     prefix = f"https://github.com/{repo}/issues/{issue}#issuecomment-"
-    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix):].isdigit():
+    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix) :].isdigit():
         return f"\n\n[Outcome, remaining work and next action]({url})."
     return ""
 
@@ -3139,12 +3315,16 @@ def _handle_success(
             # PR gets bound to its story. Registering only on the entrypoint-creates-PR
             # path below would miss the common case entirely — the same gap #1723 had
             # with the correlation marker.
-            binding_note = pr_binding_note(repo=repo, pr_number=self_pr, reviewer_artifact=persona == "reviewer")
+            binding_note = pr_binding_note(
+                repo=repo, pr_number=self_pr, reviewer_artifact=persona == "reviewer"
+            )
             if self_pr:
                 git_outcome = f"PR #{self_pr} is open: https://github.com/{repo}/pull/{self_pr}."
             else:
                 git_outcome = "No local changes remain to push; task completion is not verified by this check."
-            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(meta, repo, issue)
+            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
+                meta, repo, issue
+            )
             _post_comment(
                 repo,
                 issue,
@@ -3157,7 +3337,8 @@ def _handle_success(
                 message_id,
                 arrived_at,
                 "complete",
-                summary=f"{persona} — run ended; " + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
+                summary=f"{persona} — run ended; "
+                + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
             return 0
 
@@ -3240,14 +3421,20 @@ def _handle_success(
         # review transcripts and opens no PR, so there is nothing to bind; otherwise the
         # PR is either the agent's own or the one just created on `branch`.
         binding_pr = "" if transcript_only else (existing_pr_number or _find_open_pr(repo, branch))
-        binding_note = pr_binding_note(repo=repo, pr_number=binding_pr, reviewer_artifact=persona == "reviewer")
+        binding_note = pr_binding_note(
+            repo=repo, pr_number=binding_pr, reviewer_artifact=persona == "reviewer"
+        )
         if transcript_only:
-            git_outcome = f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+            git_outcome = (
+                f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+            )
         elif existing_pr_number:
             git_outcome = f"PR #{existing_pr_number} is open: https://github.com/{repo}/pull/{existing_pr_number}."
         else:
             git_outcome = f"PR opened on branch `{branch}`; merge and deployment are not verified by this check."
-        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(_read_result_metadata(), repo, issue)
+        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
+            _read_result_metadata(), repo, issue
+        )
         _post_comment(
             repo,
             issue,
@@ -3260,7 +3447,8 @@ def _handle_success(
             message_id,
             arrived_at,
             "complete",
-            summary=f"{persona} — run ended; " + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
+            summary=f"{persona} — run ended; "
+            + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )
     except subprocess.CalledProcessError as exc:
         logger.error("Post-agent git/PR step failed: %s", exc.stderr or exc)

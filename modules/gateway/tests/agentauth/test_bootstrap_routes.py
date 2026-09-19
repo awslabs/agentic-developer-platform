@@ -47,13 +47,14 @@ def store():
         yield store
 
 
-def provision(store, invocation="run-a"):
+def provision(store, invocation="run-a", **envelope_changes):
     envelope = {
         "message_id": invocation,
         "tenant_id": "tenant",
         "persona": "developer",
         "arrived_at": "2026-09-13T09:00:00Z",
         "source_ref": {"repo": "org/repo", "issue": 1},
+        **envelope_changes,
     }
     now = datetime.now(UTC)
     grant = DelegatedGrant(
@@ -68,6 +69,39 @@ def provision(store, invocation="run-a"):
     )
     store.provision_pending(envelope=envelope, grant=grant, now=now)
     return envelope, grant
+
+
+def test_direct_override_request_and_resolution_are_protected_separately(store):
+    provision(
+        store,
+        model_requested="sonnet46",
+        model_resolved="global.anthropic.claude-sonnet-4-6",
+    )
+
+    execution = store._read("TENANT#tenant", "EXEC#run-a")
+    assert execution["direct_model_requested"] == {"S": "sonnet46"}
+    assert execution["direct_model_override"] == {"S": "global.anthropic.claude-sonnet-4-6"}
+
+
+def test_direct_override_is_not_inherited_by_a_descendant_dispatch(store):
+    provision(
+        store,
+        invocation="root-run",
+        model_requested="sonnet46",
+        model_resolved="global.anthropic.claude-sonnet-4-6",
+    )
+    provision(
+        store,
+        invocation="child-run",
+        correlation={"parent_principal": "root-run#1"},
+    )
+
+    root = store._read("TENANT#tenant", "EXEC#root-run")
+    child = store._read("TENANT#tenant", "EXEC#child-run")
+    assert root["direct_model_requested"] == {"S": "sonnet46"}
+    assert root["direct_model_override"] == {"S": "global.anthropic.claude-sonnet-4-6"}
+    assert "direct_model_requested" not in child
+    assert "direct_model_override" not in child
 
 
 @pytest.fixture

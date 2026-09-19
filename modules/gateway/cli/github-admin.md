@@ -4,7 +4,7 @@ An ADP platform administrator wires GitHub sign-in and repository access for the
 whole deployment:
 
 ```sh
-adp admin github setup --new --github-org SOPHOS-IT
+adp admin github setup --new --github-org example-org
 adp admin github status
 adp admin github revalidate
 ```
@@ -22,7 +22,7 @@ under your personal GitHub account instead.
 ## Create a new GitHub App
 
 ```sh
-adp admin github setup --new --github-org SOPHOS-IT
+adp admin github setup --new --github-org example-org
 # Approve the App's ownership and permissions on GitHub, then:
 adp admin github setup
 ```

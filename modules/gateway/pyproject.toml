@@ -30,6 +30,15 @@ dependencies = [
     "python-multipart>=0.0.9",
     # Issue #143: Chat logging uses boto3 with asyncio.to_thread for async S3/Comprehend
     # No additional deps needed; aioboto3 could be added for native async support if needed
+    #
+    # Issue #5150: promoted from the `dev` extra to a runtime dependency. The
+    # running gateway now parses the reviewed deployment manifest
+    # (`orchestration/manifests/orchestration-deployments.yaml`) via
+    # `deployment_manifest.load_packaged_manifest()`. The Dockerfile installs with
+    # bare `pip install .`, which does not resolve extras, so leaving this in `dev`
+    # would pass every test and raise ModuleNotFoundError in the image. Five test
+    # modules (issue #5039) also import it; a runtime dep covers them too.
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -62,12 +71,6 @@ dev = [
     # so these tests execute there; on a 3.13 interpreter the fixtures skip
     # (importorskip) rather than fail.
     "pgserver>=0.1.4; python_version < '3.13'",
-    # Issue #5039: five test modules import yaml to assert on real YAML artifacts
-    # (the CloudFormation role template, the gateway-deploy.yml path filters, the
-    # pricing Lambda packaging) rather than on a re-typed copy. It resolved
-    # transitively via moto until now, so a future pin change would have broken
-    # collection in files that never asked for it. Declared where it is used.
-    "pyyaml>=6.0",
 ]
 # Issue #20: Playwright browser tests for frontend smoke testing
 browser = [
@@ -137,6 +140,12 @@ include = ["src*", "pricing_policy*"]
 # FileNotFoundError at runtime while working fine from a source checkout.
 [tool.setuptools.package-data]
 pricing_policy = ["snapshots/*.json"]
+# Issue #5150: the reviewed deployment manifest is read by the running gateway
+# (`deployment_manifest.load_packaged_manifest()`), so it has to be in the
+# distribution, not just in the repository. Same failure as the snapshots above:
+# omitted from a wheel, it raises at runtime while every test passes from a
+# source checkout.
+"src.orchestration.manifests" = ["*.yaml"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/cli/conftest.py" = ["N802", "E501"]

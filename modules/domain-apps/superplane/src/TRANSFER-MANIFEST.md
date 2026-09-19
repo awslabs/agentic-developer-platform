@@ -296,15 +296,142 @@ invocation; the bundle is written on every brokered request and cannot be delete
 (the Kubernetes client re-reads `ssl_ca_cert` per request), so the original form grew `/tmp`
 without bound once the verified path became reachable.
 
+#### U13b (#5046) — an ADP credential reference, never a copied secret ARN
+
+R7's schema half. The transferred API stored a credential's **Secrets Manager ARN** and its
+KMS key id, and `vault_sync.py` wrote that ARN straight into a workload cluster's
+`ExternalSecret`, so the cluster read the secret directly and ADP's vault never saw it
+happen. An ARN is the secret's address, so a copy of it is a second route to the material
+living outside the vault: rotation and revocation reach the vault's copy and not that one.
+
+| Path | Change |
+|------|--------|
+| `superplane-api/app/models/credential.py` | `credential_registry.secret_arn` and `kms_key_id` are replaced by `adp_credential_id`. Adds `validate_adp_credential_id()` and a `@validates` hook enforcing it. |
+| `superplane-api/app/models/cloud_account.py` | `cloud_accounts.secret_arns_json` → `adp_credential_ids_json`, with a `@validates` hook applying the same rule to every element. |
+| `superplane-api/app/schemas/account.py` | Request fields renamed; `@field_validator`s make a bad reference a 422 at the boundary instead of a 500 out of the flush. |
+| `superplane-api/app/services/vault_sync.py` | The ARN-to-`ExternalSecret` delivery path is withdrawn: an assignment is now marked failed with `sync_unavailable` audited. Vault-brokered delivery is U7/U7b. |
+| `superplane-api/alembic/versions/012_adp_credential_reference.py` | New revision, extending `011`. Refuses to run — before any DDL — if rows still hold a secret ARN, rather than guessing a reference for them. |
+| `superplane-api/tests/test_models.py`, `test_migrations.py`, `test_accounts.py`, `test_vault_sync.py` | Cover the rule at model, list-column, API-boundary and migration level. `test_all_tables_registered` is unchanged: the tables are the same, only columns moved. |
+
+Three properties are worth recording, because each is a place a later edit would quietly
+restore the defect:
+
+**The validator is the enforcement, not the rename.** `adp_credential_id` is a string
+column, so an ARN fits it exactly as well as it fit `secret_arn`; without a check the defect
+returns under a compliant column name. The rule therefore lives on the *model*, so it binds
+every writer — router, reconciler, backfill, fixture — and not only traffic that arrives
+through the validated API.
+
+**The ARN rule is a search, and secret values are matched by shape.** An anchored
+`startswith("arn:")` test is bypassed by a leading zero-width character or a `"cred <arn>"`
+prefix, and a length-only rule for secret *values* admits every credential short enough to
+fit the column — an AWS access key id, a GitHub PAT, a Slack or provider API key are all
+well under 255 characters. `tests/test_models.py::TestTheReferenceRuleCannotBeSteppedAround`
+pins each of those vectors, alongside the legitimate opaque handles that must keep working.
+
+**Boundary assertions were the hard part, and took three attempts.** The history is
+recorded because each attempt looked complete and the next one found it was not.
+
+1. The contract's `\b` asserts a non-word/word transition, so a leading **word** character
+   suppresses it entirely — `\barn:` does not match `_arn:aws:…` at all, while
+   `value.split("arn:")[1]` still recovers the whole address. `secret_arn:aws:…`, the old
+   column name joined to its old value, is the realistic form during this very rename.
+2. Replacing `\b` with `(?<![A-Za-z0-9])` closed the *separator* class but not the
+   *alphanumeric* one: `xAKIAIOSFODNN7EXAMPLE` was still stored and `stored[1:]` recovers
+   the key. A negative lookbehind narrows such a hole; it does not close it.
+3. So the shapes whose prefix is already distinctive — `AKIA`/`ASIA`, `gh[pousr]_`,
+   `xox[abposr]-`, `Bearer` — carry **no left assertion at all**; a preceding character
+   cannot make those sequences innocent. `AKIA|ASIA` drops its *trailing* assertion too,
+   because its body is a fixed `{16}` (`AKIAIOSFODNN7EXAMPLEx` escaped); the open-ended
+   bodies are greedy and absorb a trailing character regardless.
+
+`sk-` is the one shape that **keeps** its left lookaround, because `sk` is a common English
+word ending: without it, ordinary handles like `risk-<20+>`, `task-…`, `desk-…` and `ask-…`
+are refused. A prefix cannot separate `risk-01HQ8V3XK2WERTYUIOPASDFGH` from
+`xsk-ant-api03-…`, so a second unanchored `sk-` tier requiring a **30+** unbroken run does
+it by length instead. Measured: 0 false positives over 50k each of uuid4, ULID, 40-char hex
+and 44-char base62. The residual gap is stated rather than hidden — a laundered key whose
+unbroken run is 20–29 characters is still accepted, and closing it has no rule that also
+keeps `risk-`-style handles registerable. The ARN pattern is unanchored on both sides, since
+no legitimate handle contains `arn:<partition>:<service>:<region>:`.
+
+Two shapes additionally require a long unbroken alphanumeric run rather than just a prefix.
+Admitting hyphens in the `sk-` body without that would refuse ordinary handles such as
+`sk-prod-nebius-credential-ref1`; because the rule runs in a `@validates` hook, that is an
+unregisterable credential rather than a cosmetic 422 — a worse outcome than the leak being
+prevented. The accepted-handle corpus pins it.
+
+**Non-ASCII is refused outright, because a confusable can normalize back into an exact
+ARN.** The patterns match ASCII `arn`, `:` and `[a-z0-9._-]`, so an ARN written with U+FF1A
+fullwidth colons walked past them — and `unicodedata.normalize("NFKC", stored)` reproduced
+the original **byte for byte**, handing a live address to anything that normalizes: a
+JSON/YAML round-trip, a K8s label sanitizer, a non-Python client, an operator copying out
+of the UI. That is the `ExternalSecret` path this story exists to close. Rejecting the whole
+class beats normalizing-then-matching, because Cyrillic and combining-mark homoglyphs are
+not NFKC-equivalent to ASCII and would survive that approach. The ARN segment class also
+admits `.` and `_`, since `arn:aws:secrets_manager:…` reads as a usable ARN while a
+`[a-z0-9-]` class did not match its structure at all.
+
+**No refusal echoes submitted content.** The ARN branch quotes only the **matched ARN
+span**, never the submitted string. Rule order alone was not enough: ordering the
+non-echoing secret-shape rule first protects only secrets the shape patterns *recognize*,
+and a bare 40-character AWS secret access key or a JWT has no distinctive prefix to match,
+so `"<secret> <role-arn>"` fell through to the ARN branch and reflected 32 characters of
+live credential into a 422 body and the logs. The matched span stops at the 5th colon, so it
+carries no resource or secret name. `test_a_refusal_never_echoes_submitted_content_back`
+pins it, asserting on the discriminating substring `"must not be an ARN"` rather than on
+`"secret material"` — the ARN message contains that phrase too, so asserting on it cannot
+tell the branches apart and would pass under a reversed, unsafe order.
+
+One claim is deliberately *not* made: the new ARN rule is **not** a strict superset of the
+old prefix test. It requires the colon-separated structure, so bare fragments (`arn:aws`,
+`arn:aws:secretsmanager`) now pass. They carry no account id and no resource name, so they
+are not the address this record must not hold, while every complete ARN the prefix test
+caught is still caught along with the prefixed and embedded forms it missed.
+
+**`_ARN_PATTERN` and `_SECRET_VALUE_PATTERNS` mirror `superplane_contracts.secrets` rather
+than importing it.** This is the arrangement `app/services/provisioning.py` documents for
+the same reason: `releases/build-image.sh` pins the API's build context to
+`src/superplane-api`, so the contracts package is genuinely not importable at API runtime,
+and `alembic/env.py` imports `app.models`, which would make it a migration-runner
+requirement inside the same image too. Widening the build context is U23's (#5327).
+`TestTheMirroredSecretRulesAgreeWithTheContract` compares the two on **behaviour** rather
+than on pattern text — a string equality would have to be edited to whatever the code says,
+which is not a check. It asserts the direction of the difference: every value the contract
+calls secret-shaped must also be refused here, and each deliberate divergence is listed with
+a staleness assertion that fails if the contract gains the same fix, so an obsolete
+divergence cannot sit there unnoticed. The divergences are the boundary change above and the
+`sk-` body (the contract's `\bsk-[A-Za-z0-9]{20,}\b` stops at the first hyphen, so it matches
+no real `sk-ant-api03-…` key).
+
+**The contract's own copies have the same `\b` weakness, and the same alphanumeric-affix
+one.** `looks_like_arn("_arn:aws:…")` and `value_is_secret_shaped("xAKIAIOSFODNN7EXAMPLE")`
+both return `False`. Repairing `contracts/superplane_contracts/secrets.py` is deliberately
+*not* done here: `looks_like_arn` and `assert_no_secret_material` guard R7's inbound payload
+boundary for U7/U7b, and widening them is that story's call with that story's tests — its
+consumers (`CredentialReference.__post_init__`, `assert_no_secret_material`) need their own
+coverage. It is recorded here and asserted executably by
+`test_the_contracts_own_boundary_weakness_is_recorded_not_forgotten`, which fails the moment
+the contract is fixed — the signal to drop the local divergence. **This should be filed
+against U7/U7b rather than left as a manifest note.**
+
+What this does **not** establish: that any given `adp_credential_id` resolves — that ADP
+owns the credential, that account and KMS permissions allow reading it, or that rotation and
+revocation reach it. Those are R7 acceptances 6–7, verified only by the audited vault-owned
+migration, and deferred to U7. The `012` revision refuses rather than assuming it, so a
+deployed database still holding secret ARNs stops the migration instead of silently losing
+the pointer; `releases/superplane.lock.yaml` records that as a live gate.
+
 Superplane domain maintainers own this manually maintained inventory. Any further change
 from the adopted revision must be recorded here; the historical reference is deliberately
 not made available to CI as a build or comparison input.
 
 ### Migration ownership is unchanged
 
-`src/superplane-api/alembic/` (17 files under `versions/`, with `alembic.ini` — 13 at the
-transfer, two added by U13, U14's `010_add_workspace_grants.py`, and U15's
-`011_add_observation_receiver_tables.py`) is the **only** migration directory
+`src/superplane-api/alembic/` (18 files under `versions/`, with `alembic.ini` — 13 at the
+transfer, two added by U13, U14's `010_add_workspace_grants.py`, U15's
+`011_add_observation_receiver_tables.py`, and U13b's
+`012_adp_credential_reference.py`) is the **only** migration directory
 this transfer brings, and it belongs to the API's own database. It does not touch the gateway's migrations or any shared schema, and nothing
 in the transferred source or the build lanes can reach them. The guard on this predates
 U22 and still holds.

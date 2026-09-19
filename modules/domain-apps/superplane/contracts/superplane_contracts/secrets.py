@@ -41,9 +41,11 @@ construction rather than described in a docstring.
 
 from __future__ import annotations
 
+import html
 import re
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import unquote
 
 from .health import ContractViolation
 
@@ -121,23 +123,43 @@ _ALLOWED_KEY_NAMES: frozenset[str] = frozenset(
 # innocuous key. This is the case key-name matching structurally cannot see.
 _SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # AWS access key id — AKIA (long-lived) and ASIA (temporary session).
-    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     # PEM private key block of any flavour (RSA, EC, OPENSSH, PGP).
     re.compile(r"-----BEGIN(?: [A-Z]+)* PRIVATE KEY-----"),
     # GitHub tokens: personal, OAuth, user-to-server, server-to-server, refresh.
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}\b"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"),
     # Slack tokens.
-    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"xox[abposr]-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{10,}"),
     # A Bearer credential embedded in a header-ish string.
-    re.compile(r"\bBearer\s+[A-Za-z0-9\-._~+/]{16,}=*", re.IGNORECASE),
+    re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]{16,}=*", re.IGNORECASE),
     # Generic provider API keys, e.g. `sk-...` style.
-    re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
+    re.compile(r"(?<![A-Za-z0-9])sk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{20,}"),
+    re.compile(r"sk-(?:[A-Za-z0-9]+-)*[A-Za-z0-9]{30,}"),
 )
 
 # Any AWS ARN. Not narrowed to `secretsmanager`, because a KMS key ARN or an IAM
 # role ARN in a domain payload is the same class of pointer-into-the-account
 # disclosure and there is no reason this contract needs to carry one.
-_ARN_PATTERN = re.compile(r"\barn:[a-z0-9-]*:[a-z0-9-]+:[a-z0-9-]*:", re.IGNORECASE)
+_ARN_PATTERN = re.compile(r"arn:[a-z0-9._-]*:[a-z0-9._-]+:[a-z0-9._-]*:", re.IGNORECASE)
+
+
+def _decoded_forms(value: str) -> tuple[str, ...]:
+    """Inspect ordinary transport escapes and whitespace laundering, without
+    rewriting accepted metadata. Limit decoding work on attacker-supplied text.
+    """
+    forms = [value]
+    for layer in range(9):
+        decoded = html.unescape(unquote(forms[-1]))
+        decoded = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m[1], 16)), decoded)
+        if decoded == forms[-1]:
+            break
+        if layer == 8:
+            return ()  # Excessively nested escapes are refused, not left opaque.
+        forms.append(decoded)
+    invisible = (
+        r"[\s\x00-\x1f\x7f-\x9f\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]+"
+    )
+    return tuple(forms + [re.sub(invisible, "", form) for form in forms])
 
 
 def looks_like_arn(value: Any) -> bool:
@@ -149,7 +171,7 @@ def looks_like_arn(value: Any) -> bool:
     """
     if not isinstance(value, str):
         return False
-    return bool(_ARN_PATTERN.search(value))
+    return any(_ARN_PATTERN.search(form) for form in _decoded_forms(value))
 
 
 def key_names_secret(key: str) -> bool:
@@ -168,7 +190,34 @@ def value_is_secret_shaped(value: Any) -> bool:
         return False
     if looks_like_arn(value):
         return True
-    return any(pattern.search(value) for pattern in _SECRET_VALUE_PATTERNS)
+    forms = _decoded_forms(value)
+    return not forms or any(
+        pattern.search(form) for form in forms for pattern in _SECRET_VALUE_PATTERNS
+    )
+
+
+def redact_secret_spans(text: str, *, placeholder: str) -> str:
+    """Replace each secret-shaped span in `text`, leaving the rest intact.
+
+    Issue #5053 (U7b). Lives here rather than in `emission.py` because it must match
+    on exactly the patterns `value_is_secret_shaped` matches on; two copies of that
+    judgement would eventually disagree, and the direction they disagree in is a
+    span this function fails to redact.
+
+    Span-level, not value-level, and the distinction matters: use this ONLY where the
+    non-matching text is known-safe prose, such as a validator's own refusal message.
+    For a value of unknown provenance withhold the whole thing — any part of it could
+    be the secret. `emission.scrub` is that tool; this one is not a substitute.
+    """
+    if not isinstance(text, str):
+        return text
+    redacted = _ARN_PATTERN.sub(placeholder, text)
+    for pattern in _SECRET_VALUE_PATTERNS:
+        redacted = pattern.sub(placeholder, redacted)
+    # Mixed raw and encoded material must not leave the encoded half recoverable.
+    if value_is_secret_shaped(redacted):
+        return placeholder
+    return redacted
 
 
 def find_secret_material(payload: Any, *, _path: str = "") -> str | None:

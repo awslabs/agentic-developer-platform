@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "request_shape_normalization": "claude-code-current-date-reminder-v1",
+  "compatibility_class": "claude-agent-sdk",
+  "harness_contract_revision": "0.3.220",
+  "probe_prompt_sha256": "9e1fdea65b5ba7339557628bf074553ed86cc65ed9de38a3e870a33817b949e0",
+  "models": {
+    "global.anthropic.claude-opus-5": "94edf4f38f092445d7c109171272d45deb44fbb3a3efa9fe1bacf7f52ca33e8f",
+    "global.anthropic.claude-opus-4-8": "556d05676f5502a5f6fd8194b9944cc4ef61ed19429dc6e33fd03bbc0ec17c45",
+    "global.anthropic.claude-opus-4-7": "00693f8114827eab95ea9bf8145d18898990266a6067d4b928fefbc01abb954a",
+    "global.anthropic.claude-opus-4-6-v1": "0f6add5edeebe8d28336c850516a8d39dd9d1c43f3e40b0d9d64c6705704c84b",
+    "global.anthropic.claude-opus-4-5-20251101-v1:0": "ca37ab253e09f78e79c1b9de31d493bf3121f6c928d630d3058d34038de8eebd",
+    "global.anthropic.claude-sonnet-4-6": "dc8a7d4f36cd242931147701899fba69170391d85684e12298fd26c0c528a2fc",
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": "e090e66d658d764c0c0033b02f3426f7a7e24b8dd20f90bec6c499f59cdf2085",
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": "c251f281941a2ca7f0ef49b81b63107263a7d9df02452cfca51a924b86bd4f51",
+    "us.anthropic.claude-sonnet-4-6": "dc8a7d4f36cd242931147701899fba69170391d85684e12298fd26c0c528a2fc"
+  }
+}

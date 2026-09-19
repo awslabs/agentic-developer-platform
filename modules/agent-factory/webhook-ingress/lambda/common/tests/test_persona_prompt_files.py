@@ -181,28 +181,18 @@ def test_domain_persona_files_do_not_collide_with_each_other() -> None:
     )
 
 
-def test_no_mention_string_shadows_another() -> None:
-    """No mention string may be a substring of another.
-
-    `_extract_mention_persona()` returns on the first substring match in dict
-    order, so if `@agent-superplane` were registered alongside
-    `@agent-superplane-operator`, a comment naming the operator would dispatch
-    whichever came first in the dict. The `codex-last` comment in personas.py
-    manages one instance of this hazard by ordering; this test rules out the
-    hazard existing at all, which does not depend on anyone remembering the
-    ordering rule.
-    """
+def test_only_token_safe_codex_reviewer_extends_another_mention() -> None:
+    """Overlapping names stay exceptional and pinned to token-aware routing."""
     mentions = sorted(MENTION_TO_PERSONA)
-    shadowed = [
+    overlaps = [
         (outer, inner)
         for outer in mentions
         for inner in mentions
         if inner != outer and inner in outer
     ]
-    assert not shadowed, (
-        f"mention string(s) contain another as a substring, so first-match "
-        f"routing can misdispatch: {shadowed}"
-    )
+    assert overlaps == [("@agent-codex-reviewer", "@agent-codex")]
+    assert MENTION_TO_PERSONA["@agent-codex-reviewer"] == "agent-codex-reviewer"
+    assert MENTION_TO_PERSONA["@agent-codex"] == "codex"
 
 
 def test_superplane_personas_are_registered_with_their_files() -> None:

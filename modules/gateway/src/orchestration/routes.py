@@ -17,6 +17,15 @@ which CloudFront strips before the origin — see the prefix note below):
   (issue #4212): every node including ones that have never run, every edge, and
   per-node plus rolled-up cost. Gated on `USAGE_READ` for the same reason as the
   cost route.
+- GET  /orchestration/flows/{flow_id}/execution — execution progress and blocks
+  from the delivery ledger (issue #5145): per node and cycle, the phase, whether
+  it is runnable, the next scheduled check, the last real progress and — when
+  stuck — the typed block naming its owner, the required input and the gates still
+  outstanding. Read-only and gated on `USAGE_READ`: it adds no control and no
+  acceptance authority, and `controls.py` remains the sole human approval and
+  recovery surface. The projection lives in `execution_read.py`, which documents
+  why an operator read is org-scoped rather than presenting a work claim it does
+  not hold.
 
 **This is the operator plane, not the internal plane.** The distinction is the
 EPIC's central guarantee, not a routing detail. Agent pods can reach any
@@ -50,6 +59,7 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import asdict
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
@@ -79,6 +89,7 @@ from src.orchestration.dispatch_pass import (
 )
 from src.orchestration.display_state import FlowStatus
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
+from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
 from src.orchestration.models import DecisionKind, NodeState
 from src.orchestration.node_activity import NodeActivity, StoryExecution, load_story_execution
 from src.orchestration.policy_admission import load_in_force_policy
@@ -1503,4 +1514,270 @@ async def get_flow_graph(
         edges=[GraphEdgeResponse(from_node_id=edge.from_node_id, to_node_id=edge.to_node_id) for edge in edges],
         cost=_flow_cost_response(flow.id, aggregate),
         execution_policy=summarize_policy(policy_inputs.policy) if policy_inputs.policy is not None else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #5145 (ENGINE-K4): execution progress and blocks, read-only.
+# ---------------------------------------------------------------------------
+
+
+class ExecutionBlockResponse(BaseModel):
+    """Why delivery stopped, who clears it, and what they must supply.
+
+    Present only when the execution is actually blocked. `code` is a stable
+    `BlockCode` a client may branch on; `owner` and `required_input` are what turn
+    a status into a next step, which is the whole point — a bare "blocked" flag
+    sends an operator to logs that expire.
+
+    `remaining_gates` is informational. The gates themselves stay with the existing
+    `controls.py`/graph state, and this route neither approves nor bypasses one.
+
+    `progressed_at` is the last *real* progress, not the moment of blocking: the
+    store deliberately does not reset it when a row blocks, because it is the clock
+    that distinguishes "stuck for a minute" from "stuck since Tuesday".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    owner: str
+    required_input: str
+    remaining_gates: list[str]
+    progressed_at: str | None
+    detail: str | None
+
+
+class ExecutionActionResponse(BaseModel):
+    """One externally-visible step an execution took.
+
+    `resolved` is served explicitly rather than left to the client, because the
+    derivation has a trap: `unknown` is a settled record of an *unsettled* fact, so
+    a client testing `status != "prepared"` would treat an outcome nobody observed
+    as resolved evidence and could show delivery as complete on the strength of it.
+
+    `receipt_ref` null means the provider's own identifier is not recorded yet —
+    **pending**, not "nothing happened". A reference that failed sanitisation also
+    arrives null, which is the fail-closed direction.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    operation_key: str
+    kind: str
+    status: str
+    attempt: int
+    resolved: bool
+    artifact_ref: str | None
+    receipt_ref: str | None
+    created_at: str | None
+    observed_at: str | None
+
+
+class ExecutionSummaryResponse(BaseModel):
+    """One node's delivery cycle: where it is, whether it is moving, why not if not.
+
+    Keyed by `node_id` + `cycle` because that is the ledger's own identity — a
+    repair cycle is separate work with its own attempts and actions, and collapsing
+    cycles would present a retry as the original attempt.
+
+    `revision` is here so a client can reject a stale poll response: it advances by
+    exactly one per applied write, making "is this older than what I already show?"
+    a comparison rather than a guess about arrival order.
+
+    **Deliberately absent: the whole authority binding** — `claim_id`,
+    `claim_generation` and `accepted_plan_version`.
+
+    The first two are what the store's authority fence tests; publishing them would
+    put the values that satisfy the next authority check into a browser payload.
+
+    `accepted_plan_version` is absent for a different reason, which
+    `test_internal_plane_guard.py` caught in an earlier draft that served it: it is
+    an **acceptance record** — it names which approved plan authorized this
+    delivery. This router requires `PLAN_APPROVE` of any handler touching those
+    records, because reading "what was approved" under a spend-read permission is an
+    escalation. Both escapes were wrong: relaxing the guard, or promoting this route
+    so that viewing delivery *progress* would demand approval authority. Nothing
+    here needs the field — "why is delivery waiting and who acts next" is answered
+    by the phase, the block and the next check, and the authorizing plan is already
+    on the plans route under the permission that governs it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    node_id: str
+    cycle: int
+    phase: str
+    status: str
+    revision: int
+    attempts: int
+    next_check_at: str | None
+    deadline_at: str | None
+    progressed_at: str | None
+    progress_note: str | None
+    block: ExecutionBlockResponse | None
+    pending_action_key: str | None
+    notification_receipt_ref: str | None
+    handoff_receipt_ref: str | None
+    created_at: str | None
+    updated_at: str | None
+    actions: list[ExecutionActionResponse]
+    action_overflow: bool
+
+
+class FlowExecutionResponse(BaseModel):
+    """Execution progress and blocks for one flow (#5145).
+
+    `server_time` is what makes every other instant interpretable. A client
+    computing "stuck for three hours" against its own clock is computing against a
+    clock that may be wrong or in another zone; against this field it subtracts two
+    values from the same source.
+
+    `legacy` is true when the flow has **no execution rows at all**. That is a real
+    and permanent state — every flow delivered before this ledger existed has none —
+    and it means *no durable execution record*, which is emphatically not success.
+    The response is still 200: the flow exists, and a 404 would say otherwise.
+
+    `total` is the flow's whole execution count, so a client showing a page can say
+    how many it is not showing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    server_time: str
+    executions: list[ExecutionSummaryResponse]
+    total: int
+    limit: int
+    offset: int
+    legacy: bool
+
+
+def _iso(moment: datetime | None) -> str | None:
+    """Serialize an instant, or None. Always with an offset — see `_as_aware`."""
+    return moment.isoformat() if moment is not None else None
+
+
+@router.get("/flows/{flow_id}/execution", response_model=FlowExecutionResponse)
+async def get_flow_execution(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=MAX_EXECUTIONS_PER_PAGE)] = MAX_EXECUTIONS_PER_PAGE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> FlowExecutionResponse:
+    """Execution progress and blocks for one flow. Read-only (#5145).
+
+    Answers the question the graph view cannot: *why* is delivery waiting, and who
+    acts next. The graph's `state` says a story is running; this says it has been
+    blocked for three hours on a human gate, names who must approve it and what
+    they must supply.
+
+    **Gated on `USAGE_READ`**, the same permission as the flow-graph and cost reads,
+    and checked before any database read so a denied caller cannot learn whether the
+    flow exists. No new permission is introduced: this adds no control and no
+    acceptance authority, and existing `controls.py` remains the sole human
+    approval/recovery surface.
+
+    **Tenant isolation.** The flow is resolved under the caller's own authenticated
+    `org_id` before any ledger read, and the ledger query carries `org_id` in its
+    own predicate as well. An unknown or cross-tenant `flow_id` returns the same
+    **404** every other route in this router gives — never 403, which would confirm
+    the id exists somewhere and let a caller enumerate flows by status code.
+
+    **Why this does not call `execution_store.load_execution`.** That entry point
+    requires the `claim_id`/`claim_generation` of the work claim a caller holds, and
+    an operator holds none; a read presenting a claim it does not own reaches the
+    store's `claim_mismatch` arm, which withholds the record by design so a refusal
+    cannot disclose the binding that would satisfy it. The correct scoping is the
+    caller's own org — the access path `ix_orchestration_executions_flow_id` exists
+    for — and the store's fence is left untouched. See `execution_read.py`.
+
+    **An empty ledger is 200 with `legacy=true`**, not 404 and not an implied
+    success: the flow exists, and "no execution record" is the honest answer for
+    every flow delivered before this ledger existed.
+    """
+    await access.check_permission(
+        current_user,
+        Permission.USAGE_READ,
+        target_org_id=current_user.org_id,
+    )
+
+    repo = OrchestrationRepository(db)
+
+    # Org-filtered resolution BEFORE any ledger read, so a cross-tenant flow_id can
+    # never reach it. Same 404 as the rest of the router.
+    flow = await repo.get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail=f"no orchestration flow {flow_id!r} in this tenant")
+
+    view = await load_flow_execution_view(
+        db,
+        org_id=current_user.org_id,
+        flow_id=flow.id,
+        limit=limit,
+        offset=offset,
+    )
+
+    return FlowExecutionResponse(
+        flow_id=view.flow_id,
+        server_time=view.server_time.isoformat(),
+        total=view.total,
+        limit=view.limit,
+        offset=view.offset,
+        legacy=view.legacy,
+        executions=[
+            ExecutionSummaryResponse(
+                id=execution.id,
+                node_id=execution.node_id,
+                cycle=execution.cycle,
+                # `.value` on every enum: a `StrEnum` serializes as its value anyway,
+                # but being explicit keeps the wire format independent of that.
+                phase=execution.phase.value,
+                status=execution.status.value,
+                revision=execution.revision,
+                attempts=execution.attempts,
+                next_check_at=_iso(execution.next_check_at),
+                deadline_at=_iso(execution.deadline_at),
+                progressed_at=_iso(execution.progressed_at),
+                progress_note=execution.progress_note,
+                block=(
+                    ExecutionBlockResponse(
+                        code=execution.block.code.value,
+                        owner=execution.block.owner,
+                        required_input=execution.block.required_input,
+                        remaining_gates=list(execution.block.remaining_gates),
+                        progressed_at=_iso(execution.block.progressed_at),
+                        detail=execution.block.detail,
+                    )
+                    if execution.block is not None
+                    else None
+                ),
+                pending_action_key=execution.pending_action_key,
+                notification_receipt_ref=execution.notification_receipt_ref,
+                handoff_receipt_ref=execution.handoff_receipt_ref,
+                created_at=_iso(execution.created_at),
+                updated_at=_iso(execution.updated_at),
+                action_overflow=execution.action_overflow,
+                actions=[
+                    ExecutionActionResponse(
+                        id=action.id,
+                        operation_key=action.operation_key,
+                        kind=action.kind,
+                        status=action.status.value,
+                        attempt=action.attempt,
+                        resolved=action.resolved,
+                        artifact_ref=action.artifact_ref,
+                        receipt_ref=action.receipt_ref,
+                        created_at=_iso(action.created_at),
+                        observed_at=_iso(action.observed_at),
+                    )
+                    for action in execution.actions
+                ],
+            )
+            for execution in view.executions
+        ],
     )
