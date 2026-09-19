@@ -837,6 +837,7 @@ class TestRealPostgres:
         """
         import psycopg2
 
+        from alembic.script import ScriptDirectory
         from tests.migrations.conftest_postgres import downgrade, upgrade
 
         upgrade(pg_url, "head")
@@ -857,9 +858,10 @@ class TestRealPostgres:
             cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
             restored = {row[0] for row in cursor.fetchall()}
             cursor.execute("SELECT version_num FROM alembic_version")
-            # PMM-03 adds two linear successors in this integration branch, so
-            # an upgrade to ``head`` must advance through 056 and finish at 058.
-            assert cursor.fetchone()[0] == "058_model_probe_admission"
+            # Later migrations advance head; verify the real chain's current
+            # head rather than pinning this round trip to an old successor.
+            expected_head = ScriptDirectory(str(MIGRATIONS_DIR.parent)).get_current_head()
+            assert cursor.fetchone()[0] == expected_head
             cursor.execute(f"SELECT COUNT(*) FROM {SETTINGS}")
             assert cursor.fetchone()[0] == 1, "re-upgrade must re-seed exactly one settings row"
 
