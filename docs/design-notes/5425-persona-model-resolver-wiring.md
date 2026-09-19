@@ -1652,7 +1652,7 @@ publication. Deployment-owned `ADP_MODEL_ROOT_BINDINGS` maps the producer role,
 source, tenant and permitted personas. The response supplies the final canonical
 queue bytes; the worker hashes those exact bytes. Chat admission verifies a
 projected `adp-agent-bootstrap` token, the live pod/container/image and its
-immutable run binding. It then uses the same live selector and signed response
+immutable run binding. It needs no general internal-plane registry scope. It then uses the same live selector and signed response
 as the repository worker. Public Ed25519 keys are discovered only at the
 configured HTTPS gateway origin. Each retry repeats admission.
 

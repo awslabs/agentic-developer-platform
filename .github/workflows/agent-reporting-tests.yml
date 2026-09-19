@@ -115,8 +115,10 @@ jobs:
           PYTHONPATH: modules/agent-factory
         run: >-
           python -m pytest -q
-          platform/scripts/tests/test_model_root_config.py
           modules/agent-factory/tests/unit/test_model_root_client.py
           modules/agent-factory/tests/unit/test_legacy_model_guard.py
           modules/agent-factory/tests/unit/test_persona_model_runtime_inventory.py
           modules/agent-factory/tests/lambda/test_ingest_persona_pinning.py
+
+      - name: Verify model authority deployment rendering
+        run: python -m pytest -q platform/scripts/tests/test_model_root_config.py

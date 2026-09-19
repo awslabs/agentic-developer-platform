@@ -279,9 +279,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         user_id = payload.get("user", {}).get("id")
         if type(user_id) is not int or user_id < 1 or payload.get("user", {}).get("bot") is True:
             return _response(403, {"error": "Canonical human identity required"})
-        if envelope["persona"] == "agent":
-            envelope["persona"] = "developer"
-            envelope["intent"]["persona"] = "developer"
+        from common.personas import MENTION_TO_PERSONA
+
+        requested = envelope["persona"]
+        envelope["persona"] = (
+            "developer"
+            if requested == "agent"
+            else MENTION_TO_PERSONA.get(f"@agent-{requested}", requested)
+        )
+        envelope["intent"]["persona"] = envelope["persona"]
         envelope["message_id"] = envelope["correlation"]["correlation_id"]
         message_id = sqs_publisher.publish_envelope(
             envelope,

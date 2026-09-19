@@ -101,7 +101,6 @@ async def chat_context(root_client, store, report_only_db, db_session, tmp_path,
     runtime = AgentRuntime(store=store, workloads=verifier, env=env)
     root_client.gateway_app.include_router(chat_model.router)
     root_client.gateway_app.dependency_overrides[chat_model.chat_runtime] = lambda: runtime
-    monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
     from src.proxy.bedrock_routing import BedrockTarget
     from tests.agentauth.test_model_policy import SONNET, _add_invocability_evidence
 
@@ -187,3 +186,9 @@ async def test_other_pod_cannot_reuse_a_bound_chat_root(chat_context):
 async def test_queue_tampering_or_caller_selected_persona_never_gets_a_decision(chat_context):
     assert (await decide(chat_context, envelope_digest="b" * 64)).status_code == 404
     assert (await decide(chat_context, persona="operations")).status_code == 422
+
+
+async def test_forged_transport_header_without_pod_proof_cannot_get_model_authority(chat_context):
+    client, _, _, body = chat_context
+    response = await client.post("/internal/v1/agent/chat/model-decision", json=body, headers={"X-Caller-Identity": "forged"})
+    assert response.status_code == 404

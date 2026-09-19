@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse
 
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.external_roots import root_store
-from src.agentauth.routes import AgentRuntime, ModelDecisionRequest, require_agent_transport, resolved_model_response
+from src.agentauth.routes import AgentRuntime, ModelDecisionRequest, resolved_model_response
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WORKLOAD_HEADER, KubernetesWorkloadVerifier, WorkloadRefusedError
 from src.shared.database import get_db
@@ -27,7 +27,9 @@ def chat_runtime() -> AgentRuntime:
     return AgentRuntime(store=root_store(), workloads=KubernetesWorkloadVerifier.in_cluster(chat=True))
 
 
-router = APIRouter(prefix="/internal/v1/agent/chat", tags=["agent-authority"], dependencies=[Depends(require_agent_transport)])
+# The edge requires IAM. TokenReview additionally authenticates the exact pod,
+# image and service account here; chat needs no broad internal-plane registry scope.
+router = APIRouter(prefix="/internal/v1/agent/chat", tags=["agent-authority"])
 
 
 @router.post("/model-decision")

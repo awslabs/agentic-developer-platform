@@ -31,10 +31,13 @@ async def legacy_chat_preflight(request: Request, db=Depends(get_db)):
     This issues no model selection. The TLS/IAM response permits only unchanged
     legacy behavior while the committed platform posture is permissive.
     """
-    from src.agentauth.routes import require_agent_transport
     from src.agentauth.runtime_posture import RuntimePostureError, read_live_posture
+    from src.auth.middleware import extract_iam_identity_from_headers
 
-    await require_agent_transport(request)
+    # A read of the rollout posture needs a registered IAM identity, not the
+    # broad scope used by unrelated internal mutation endpoints.
+    if not request.headers.get("X-Caller-Identity") or extract_iam_identity_from_headers(request) is None:
+        raise HTTPException(403, "forbidden")
     try:
         posture = await read_live_posture(db, compatibility_class="claude-agent-sdk")
     except RuntimePostureError:

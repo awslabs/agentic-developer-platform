@@ -1,6 +1,7 @@
 """Public discovery and explicit retirement of the superseded raw chat harness."""
 
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import httpx
 from cryptography.hazmat.primitives import serialization
@@ -20,7 +21,7 @@ async def test_discovery_exposes_only_public_key_and_legacy_is_refused_on_enforc
     private = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
     monkeypatch.setenv(SIGNING_KEY_ID_ENV, "discovery-test")
     monkeypatch.setenv(SIGNING_KEY_ENV, private)
-    monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
+    monkeypatch.setattr("src.auth.middleware.extract_iam_identity_from_headers", Mock(return_value=SimpleNamespace(scope="agent")))
     app = FastAPI()
     app.include_router(model_policy_keys.router)
     app.dependency_overrides[get_db] = report_only_db
