@@ -266,6 +266,88 @@
     "observed_at": "2026-09-17T02:05:48Z"
   },
 
+"accepted_result_approve_publication_failed": {
+  "$comment": [
+    "The supervisor-reported case that the contract previously made UNREPRESENTABLE:",
+    "a functional review that completed with verdict 'approve' and zero blocking",
+    "findings, whose formal publication then returned HTTP 401. Validation used to gate",
+    "'approve' on approval_blockers(), which includes publication, so this document was",
+    "invalid and a producer could only drop the evidence or restate the verdict as",
+    "'incomplete'. Both erase what the reviewer found and lose the 401 an operator must",
+    "act on.",
+    "It is accepted now and is still NOT approval-capable: review_blockers() is empty,",
+    "publication_blockers() carries the 401, so approval_blockers() is non-empty and",
+    "every consumer keeps refusing to treat it as an approval. Retrying publication at",
+    "the unchanged head is a DISTINCT result (own result_id), which is why the ledger",
+    "keys on result identity and not on head alone."
+  ],
+  "name": "orchestration-review",
+  "version": 1,
+  "owner": "orchestration/review",
+  "result_id": "review-5146-u1-0004",
+  "scope": {
+    "org_id": "org-adp-dev",
+    "flow_id": "a94cb68e-03a2-4ddd-8c48-b542d1bf05e4",
+    "node_id": "126775e3-b681-4d2a-9f04-6560c5afb7fd",
+    "cycle": 1,
+    "execution_id": "exec-126775e3-0004"
+  },
+  "authority": {
+    "accepted_plan_version": 7,
+    "claim_id": "claim-126775e3-0001",
+    "claim_generation": 3
+  },
+  "repository": {
+    "provider_repository_id": 812349901,
+    "repo": "aws-e/adp"
+  },
+  "subject": {
+    "pr_number": 5292,
+    "provider_pr_node_id": "PR_kwDOAbCdEf4AbCdH",
+    "reviewed_head_sha": "c41f7b0d9e2a58361748ab0ce5df7210b96e48a3"
+  },
+  "lineage": {
+    "author_run_id": "run-author-7b2e91c4",
+    "reviewer_run_id": "4c1d90a8-55b7-4e2f-9a30-1f6c8ad70b52",
+    "reviewer_identity": "aws-e-adp-agent-dev[bot]"
+  },
+  "verdict": "approve",
+  "stages": [
+    {
+      "name": "functional",
+      "outcome": "completed"
+    },
+    {
+      "name": "security",
+      "outcome": "completed"
+    }
+  ],
+  "findings": [],
+  "evidence_refs": [
+    {
+      "kind": "test-run",
+      "ref": "check-run:105036077448",
+      "head_bound": true,
+      "summary": "Offline suite plus generator/field/provenance checks at the reviewed head.",
+      "stale": false
+    },
+    {
+      "kind": "artifact",
+      "ref": "contracts/provenance/v1/create-provenance-request.golden.json",
+      "head_bound": false,
+      "summary": "Contract the generated fixture was checked against; not tied to a commit.",
+      "stale": false
+    }
+  ],
+  "publication": {
+    "outcome": "failed",
+    "published_head_sha": null,
+    "reference": null,
+    "detail": "POST /repos/aws-e/adp/pulls/5292/reviews returned HTTP 401; the formal verdict was not recorded and must be retried at this unchanged head."
+  },
+  "observed_at": "2026-09-17T02:14:38Z"
+},
+
   "rejected_variants": [
     {
       "name": "security_only_stage_list",

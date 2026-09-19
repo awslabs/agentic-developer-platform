@@ -231,6 +231,7 @@ class ReviewEvidence:
     repo: str
     pr_number: int
     approval_blockers: tuple[str, ...]
+    publication_blockers: tuple[str, ...] = ()
 
     @property
     def is_complete_review(self) -> bool:
@@ -242,6 +243,28 @@ class ReviewEvidence:
         the checks that do.
         """
         return not self.approval_blockers
+
+    @property
+    def review_concluded_without_blockers(self) -> bool:
+        """The reviewing work finished clean, whatever happened to publication.
+
+        Exists so "the reviewer approved but publication returned 401" is legible as
+        itself rather than as "the reviewer found a problem". They are opposites in
+        cause and need opposite responses — retry the publication versus write new
+        code — and the observed handling collapsed the first into the second, then
+        dropped the artifact entirely.
+
+        Emphatically **not** approval. ``is_complete_review`` stays False while the
+        verdict is unpublished, because repository rules cannot read a verdict that
+        was never recorded; this property only separates the two questions so an
+        operator-facing surface can say which one is outstanding.
+        """
+        return not set(self.approval_blockers) - set(self.publication_blockers)
+
+    @property
+    def publication_is_outstanding(self) -> bool:
+        """The only thing standing between this artifact and a clean review is publishing it."""
+        return bool(self.publication_blockers) and self.review_concluded_without_blockers
 
 
 def parse_review_result(document: dict[str, Any]) -> Any:
@@ -506,6 +529,14 @@ def validate_review_result(
     if (functional is None or functional.outcome not in models.CONCLUSIVE_STAGE_OUTCOMES) and not blockers:
         blockers.append("the functional review stage did not conclude")
 
+    # Carried separately, not recomputed by the consumer: the contract owns which
+    # reasons are publication reasons, and a second local definition here is how the
+    # two sides drift. Read defensively because a producer pinned to an older
+    # contract build may not expose the split yet — and in that case an empty tuple
+    # is the safe answer, since it makes `publication_is_outstanding` False rather
+    # than claiming a clean review.
+    publication_blockers = tuple(getattr(result, "publication_blockers", lambda: ())())
+
     return ReviewEvidence(
         result=result,
         artifact_ref=review_artifact_ref(result),
@@ -513,6 +544,7 @@ def validate_review_result(
         repo=binding.repo,
         pr_number=binding.pr_number,
         approval_blockers=tuple(blockers),
+        publication_blockers=publication_blockers,
     )
 
 
@@ -608,6 +640,10 @@ def evidence_action_intent(evidence: ReviewEvidence) -> ActionIntent:
             "verdict": str(evidence.result.verdict),
             "publication": str(evidence.result.publication.outcome),
             "complete_review": "true" if evidence.is_complete_review else "false",
+            # The recorded case this exists for: verdict approve, publication 401.
+            # Without this the row shows an incomplete review and an operator cannot
+            # tell "retry the publication" from "the reviewer found a problem".
+            "publication_outstanding": "true" if evidence.publication_is_outstanding else "false",
         },
     )
 
@@ -802,6 +838,11 @@ def evidence_summary(evidence: ReviewEvidence) -> dict[str, object]:
         "blocking_findings": len(result.blocking_findings),
         "approval_blockers": list(evidence.approval_blockers),
         "complete_review": evidence.is_complete_review,
+        # Distinct from `complete_review`, which stays False for an unpublished
+        # verdict. This says *why* it is false: the reviewing work concluded and only
+        # the formal publication is outstanding. Still not an approval, and a caller
+        # must not read it as one — `complete_review` is the field that answers that.
+        "publication_outstanding": evidence.publication_is_outstanding,
         "observed_at": result.observed_at.isoformat(),
     }
 

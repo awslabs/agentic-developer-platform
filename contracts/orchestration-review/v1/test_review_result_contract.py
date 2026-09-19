@@ -58,6 +58,7 @@ ACCEPTED = {key: _strip_comments(GOLDEN[key]) for key in ACCEPTED_KEYS}
 APPROVE_DOC = ACCEPTED["accepted_result_approve"]
 SECURITY_ONLY_DOC = ACCEPTED["accepted_result_security_only_incomplete"]
 REFUSED_DOC = ACCEPTED["accepted_result_publication_refused"]
+PUBLICATION_FAILED_DOC = ACCEPTED["accepted_result_approve_publication_failed"]
 VARIANTS = GOLDEN["rejected_variants"]
 
 
@@ -408,6 +409,164 @@ class TestApprovalBlockersReportsEveryReason:
 
     def test_supported_approval_has_no_blockers(self):
         assert ReviewResult.model_validate(APPROVE_DOC).approval_blockers() == ()
+
+
+class TestCompletedReviewSurvivesAFailedPublication:
+    """A concluded functional verdict and a failed publication are both preserved.
+
+    The reported sequence: functional review completes, verdict is `approve`, zero
+    blocking findings, then the formal publication returns HTTP 401. Previously
+    `_approve_requires_conclusive_review` gated on `approval_blockers()`, which
+    includes publication, so this document did **not validate**. A producer holding
+    it had exactly two options — drop the artifact, or relabel the verdict
+    `incomplete` — and both destroy the record: the first loses the review entirely,
+    the second misreports what the reviewer concluded and hides the 401 that an
+    operator has to act on.
+
+    So these tests assert both halves at once, because either alone is a defect:
+    the verdict is preserved as `approve`, AND the result is still not
+    approval-capable. Granting approval here would be the worse bug, and
+    `test_it_is_not_approval_capable` exists to fail if a future change to the
+    split makes an unpublished approval look clean.
+    """
+
+    def test_the_document_validates(self):
+        ReviewResult.model_validate(PUBLICATION_FAILED_DOC)
+
+    def test_the_functional_verdict_is_preserved(self):
+        result = ReviewResult.model_validate(PUBLICATION_FAILED_DOC)
+        assert result.verdict is ReviewVerdict.APPROVE
+        assert result.review_blockers() == (), (
+            "the reviewing work concluded cleanly; only publication failed"
+        )
+
+    def test_the_publication_failure_is_preserved(self):
+        result = ReviewResult.model_validate(PUBLICATION_FAILED_DOC)
+        assert result.publication.outcome is PublicationOutcome.FAILED
+        assert result.publication.published_head_sha is None, (
+            "nothing was published, so no commit may be named as published"
+        )
+        blockers = result.publication_blockers()
+        assert len(blockers) == 1
+        assert "401" in blockers[0], (
+            f"the operator-actionable cause must survive into the reason: {blockers}"
+        )
+
+    def test_it_is_not_approval_capable(self):
+        """The preservation must not become a grant of approval."""
+        result = ReviewResult.model_validate(PUBLICATION_FAILED_DOC)
+        assert result.approval_blockers(), (
+            "an unpublished approval must still carry a blocker; repository rules "
+            "cannot read a verdict that was never recorded"
+        )
+
+    def test_the_two_blocker_questions_are_separable(self):
+        """ "Approved but unpublished" must be distinguishable from "found a blocker".
+
+        They need opposite responses — retry the publication, versus write new code —
+        so a consumer that cannot tell them apart cannot act correctly on either.
+        """
+        unpublished = ReviewResult.model_validate(PUBLICATION_FAILED_DOC)
+        found_blocker = ReviewResult.model_validate(REFUSED_DOC)
+        assert unpublished.review_blockers() == ()
+        assert unpublished.publication_blockers() != ()
+        assert found_blocker.review_blockers() != ()
+
+    def test_approval_blockers_is_still_the_whole_answer(self):
+        """The split must not let a reason go missing from the composed list."""
+        for doc in ACCEPTED.values():
+            result = ReviewResult.model_validate(doc)
+            assert set(result.approval_blockers()) == set(
+                result.review_blockers()
+            ) | set(result.publication_blockers())
+
+    def test_a_retry_at_the_same_head_is_a_distinct_result(self):
+        """Republishing later is a new observation, not an edit of this one.
+
+        Pins the fixture property the ledger relies on: the retry carries its own
+        `result_id`, so deduplicating on head alone would collapse the successful
+        publication into the failed one. That is the observed CONFLICT /
+        `action_already_settled`, covered in the gateway's Postgres suite.
+        """
+        failed = ReviewResult.model_validate(PUBLICATION_FAILED_DOC)
+        body = json.loads(json.dumps(PUBLICATION_FAILED_DOC))
+        body["result_id"] = f"{failed.result_id}-retry"
+        body["publication"] = {
+            "outcome": "published",
+            "published_head_sha": failed.subject.reviewed_head_sha,
+            "reference": "pullrequestreview-5229910599",
+            "detail": None,
+        }
+        retried = ReviewResult.model_validate(body)
+        assert retried.result_id != failed.result_id
+        assert retried.subject.reviewed_head_sha == failed.subject.reviewed_head_sha
+        assert retried.approval_blockers() == ()
+
+    def test_an_unexplained_failure_is_still_refused(self):
+        """Relaxing the approve gate must not also relax "explain yourself"."""
+        body = json.loads(json.dumps(PUBLICATION_FAILED_DOC))
+        body["publication"] = {"outcome": "failed", "detail": "  "}
+        with pytest.raises(ValidationError):
+            ReviewResult.model_validate(body)
+
+    def test_approve_over_an_open_blocker_is_still_refused(self):
+        """The narrowed gate must still refuse the finding-level defects."""
+        body = json.loads(json.dumps(PUBLICATION_FAILED_DOC))
+        body["findings"] = [
+            {
+                "finding_id": "still-blocking",
+                "stage": "functional",
+                "severity": FindingSeverity.BLOCKING.value,
+                "disposition": "open",
+                "summary": "An open blocking finding, alongside a failed publication.",
+                "evidence_refs": [],
+            }
+        ]
+        with pytest.raises(ValidationError):
+            ReviewResult.model_validate(body)
+
+    def test_approve_over_a_never_attempted_publication_is_still_refused(self):
+        """The line is attempted-and-failed versus never-attempted.
+
+        This is the boundary the relaxation had to respect. `not-attempted` is the
+        original defect — stages complete, exit 0, provider never called — and no
+        attempt exists whose outcome could support an approval claim. If this test
+        fails, the fix for the 401 case has swallowed the defect it was built beside.
+        """
+        body = json.loads(json.dumps(PUBLICATION_FAILED_DOC))
+        body["publication"] = {
+            "outcome": PublicationOutcome.NOT_ATTEMPTED.value,
+            "detail": "the run ended before attempting a formal verdict",
+        }
+        with pytest.raises(ValidationError, match="never attempted|silent-skip"):
+            ReviewResult.model_validate(body)
+
+    def test_a_provider_refusal_is_also_preserved(self):
+        """`refused` is an answer from the provider, so it is attempted too.
+
+        Included because the reviewer's conclusion is just as real when GitHub
+        declines to record it as when the call 401s, and losing it costs the same.
+        """
+        body = json.loads(json.dumps(PUBLICATION_FAILED_DOC))
+        body["publication"] = {
+            "outcome": PublicationOutcome.REFUSED.value,
+            "detail": "the provider declined to record the review",
+        }
+        result = ReviewResult.model_validate(body)
+        assert result.verdict is ReviewVerdict.APPROVE
+        assert result.approval_blockers(), "still not approval-capable"
+
+    def test_approve_with_an_unconcluded_functional_stage_is_still_refused(self):
+        body = json.loads(json.dumps(PUBLICATION_FAILED_DOC))
+        body["stages"] = [
+            {
+                "name": ReviewStageName.FUNCTIONAL.value,
+                "outcome": StageOutcome.NOT_RUN.value,
+                "detail": "the run ended before functional review",
+            }
+        ]
+        with pytest.raises(ValidationError):
+            ReviewResult.model_validate(body)
 
 
 # ---------------------------------------------------------------------------

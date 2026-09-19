@@ -85,6 +85,7 @@ def _doc(key: str) -> dict:
 APPROVE = _doc("accepted_result_approve")
 SECURITY_ONLY = _doc("accepted_result_security_only_incomplete")
 REFUSED = _doc("accepted_result_publication_refused")
+PUBLICATION_FAILED = _doc("accepted_result_approve_publication_failed")
 
 # Protected values, taken from the golden document so the happy path is a genuine
 # match rather than two hand-written constants that happen to agree.
@@ -187,6 +188,12 @@ def matching_state(document: dict) -> dict:
     }
 
 
+#: Accepted goldens other than APPROVE, which are validated against state derived
+#: from themselves. Built from the fixture rather than hand-listed so a document
+#: added to the shared artifact cannot silently be checked against APPROVE's state.
+_OWN_STATE_RESULT_IDS = {_doc(key)["result_id"] for key in GOLDEN if key.startswith("accepted_") and key != "accepted_result_approve"}
+
+
 def accept(document: dict | None = None, **overrides):
     """Validate a document against protected state, with the happy path as default.
 
@@ -198,7 +205,7 @@ def accept(document: dict | None = None, **overrides):
     # Keyed on `result_id`, which `patched()` never touches: a forged variant of
     # APPROVE is checked against APPROVE's state, so the one patched section is the
     # only thing that can differ. Another accepted golden gets its own state.
-    reference = body if body.get("result_id") in {SECURITY_ONLY["result_id"], REFUSED["result_id"]} else APPROVE
+    reference = body if body.get("result_id") in _OWN_STATE_RESULT_IDS else APPROVE
     base = matching_state(reference)
     base.update(overrides)
     return validate_review_result(body, **base)
@@ -723,6 +730,10 @@ class TestPersistenceCarriesReferencesOnly:
         intent = evidence_action_intent(accept())
         assert intent.kind == "review_evidence"
         assert intent.artifact_ref
+        # An exact set, not a subset: this row is operator-readable and surfaced in
+        # diagnostics, so a new key must be a deliberate decision that it is safe to
+        # persist. `publication_outstanding` is a boolean about the artifact, derived
+        # from the publication outcome already present on the line above.
         assert set(intent.detail) == {
             "repo",
             "pr_number",
@@ -730,6 +741,7 @@ class TestPersistenceCarriesReferencesOnly:
             "verdict",
             "publication",
             "complete_review",
+            "publication_outstanding",
         }
         assert all(isinstance(value, str) for value in intent.detail.values())
 
@@ -961,6 +973,125 @@ class TestExecutionIsBoundServerSide:
         """
         body = patched(APPROVE, scope={"execution_id": None})
         assert accept(body).is_complete_review
+
+
+# ---------------------------------------------------------------------------
+# A concluded review survives a failed publication
+# ---------------------------------------------------------------------------
+
+
+class TestConcludedReviewSurvivesAFailedPublication:
+    """Verdict `approve`, zero blockers, publication HTTP 401 — both facts persist.
+
+    The reported sequence. Previously the contract rejected this document outright
+    (approval was gated on publication), so a producer could only drop the artifact
+    or relabel the verdict `incomplete`. The first loses the review; the second
+    misreports what the reviewer concluded and hides the 401 an operator must act on.
+
+    Two properties are asserted together throughout, because either alone is a
+    defect. The functional verdict is preserved, AND nothing here grants approval:
+    `is_complete_review` stays False while the verdict is unpublished. Merge
+    eligibility remains #5148's decision and is not computed anywhere in this module.
+    """
+
+    def test_the_artifact_is_accepted_not_dropped(self):
+        evidence = accept(PUBLICATION_FAILED)
+        assert evidence.result.verdict.value == "approve", "the reviewer's actual conclusion must survive"
+
+    def test_the_publication_failure_is_preserved(self):
+        evidence = accept(PUBLICATION_FAILED)
+        assert evidence.result.publication.outcome.value == "failed"
+        assert evidence.publication_blockers, "the failure must be carried, not summarised away"
+        assert "401" in " ".join(evidence.publication_blockers), "the operator-actionable cause must survive"
+
+    def test_it_is_not_an_approval(self):
+        """The preservation must never become autonomous approval."""
+        evidence = accept(PUBLICATION_FAILED)
+        assert not evidence.is_complete_review
+        assert evidence.approval_blockers
+
+    def test_publication_is_identified_as_the_only_thing_outstanding(self):
+        evidence = accept(PUBLICATION_FAILED)
+        assert evidence.review_concluded_without_blockers
+        assert evidence.publication_is_outstanding
+
+    def test_a_real_review_blocker_is_not_reported_as_merely_unpublished(self):
+        """The distinction has to cut both ways or it is worthless.
+
+        `REFUSED` has a request-changes verdict *and* an unpublished verdict. If
+        `publication_is_outstanding` were True there, an operator would retry a
+        publication instead of reading the findings.
+        """
+        evidence = accept(REFUSED)
+        assert not evidence.review_concluded_without_blockers
+        assert not evidence.publication_is_outstanding
+
+    def test_a_fully_published_approval_has_nothing_outstanding(self):
+        evidence = accept(APPROVE)
+        assert evidence.is_complete_review
+        assert evidence.publication_blockers == ()
+        assert not evidence.publication_is_outstanding
+
+    def test_the_operator_surface_distinguishes_the_two_cases(self):
+        """`complete_review` alone cannot answer "why"; both rows must say which."""
+        unpublished = evidence_summary(accept(PUBLICATION_FAILED))
+        found_blocker = evidence_summary(accept(REFUSED))
+        assert unpublished["complete_review"] is False
+        assert unpublished["publication_outstanding"] is True
+        assert found_blocker["complete_review"] is False
+        assert found_blocker["publication_outstanding"] is False
+
+    def test_the_ledger_row_records_which_case_it_was(self):
+        intent = evidence_action_intent(accept(PUBLICATION_FAILED))
+        assert intent.detail["verdict"] == "approve"
+        assert intent.detail["publication"] == "failed"
+        assert intent.detail["complete_review"] == "false"
+        assert intent.detail["publication_outstanding"] == "true"
+
+    def test_recording_it_is_a_success_not_a_failure(self):
+        """The recording succeeded; what failed was the publication.
+
+        Marking the observation FAILED would discard the artifact at the ledger
+        boundary — the same loss, one layer down.
+        """
+        observation = evidence_observation(accept(PUBLICATION_FAILED))
+        assert observation.outcome.value == "succeeded"
+        assert "401" in (observation.detail or "")
+
+    def test_a_later_successful_publication_is_a_distinct_ledger_action(self):
+        """Retrying publication at the unchanged head must not collide with the failure.
+
+        This is the head-alone deduplication defect, in the exact shape that produced
+        it: same node, same cycle, same commit, different result. If these keys
+        matched, the successful publication would be refused as already settled and
+        the 401 would be the permanent record. The real-store sequence is
+        `test_review_evidence_postgres.py`; here the property is key distinctness.
+        """
+        failed = accept(PUBLICATION_FAILED)
+        published = {
+            "outcome": "published",
+            "published_head_sha": failed.reviewed_head_sha,
+            "reference": "pullrequestreview-5229910599",
+            "detail": None,
+        }
+        body = patched(PUBLICATION_FAILED, publication=published)
+        body["result_id"] = f"{PUBLICATION_FAILED['result_id']}-retry"
+        # State passed explicitly: `accept` keys its default state on `result_id`, and
+        # the retry deliberately carries a new one. The state is that of the document
+        # it is derived from, so the only difference under test is the result identity.
+        retried = validate_review_result(body, **matching_state(PUBLICATION_FAILED))
+
+        assert retried.reviewed_head_sha == failed.reviewed_head_sha, "the head must be unchanged for this to be the reported case"
+        assert retried.is_complete_review, "the retry published successfully"
+        assert evidence_operation_key(retried) != evidence_operation_key(failed)
+        assert retried.artifact_ref != failed.artifact_ref
+
+    def test_replaying_the_same_failed_result_still_converges(self):
+        """Preserving the failure must not turn a redelivery into a second review."""
+        first = accept(PUBLICATION_FAILED)
+        again = accept(PUBLICATION_FAILED)
+        assert evidence_operation_key(again) == evidence_operation_key(first)
+        assert again.artifact_ref == first.artifact_ref
 
 
 # ---------------------------------------------------------------------------

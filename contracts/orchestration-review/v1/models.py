@@ -240,6 +240,31 @@ PUBLICATION_ACCEPTED: frozenset[PublicationOutcome] = frozenset(
     {PublicationOutcome.PUBLISHED}
 )
 
+#: Outcomes where the producer actually *called* the provider, whatever came back.
+#:
+#: The distinction this draws is between two things that look alike in a blocker
+#: list and are opposites in cause. A `failed`/`refused` publication is an honest
+#: report: the reviewer concluded, attempted to record the verdict, and the provider
+#: answered with an error or a refusal. `not-attempted` is the silent skip this whole
+#: contract was built to expose — the run completed its stages, exited 0, and never
+#: reached for the provider at all.
+#:
+#: So `approve` is permitted over an attempted-and-failed publication, because
+#: refusing it makes the situation unrepresentable and forces the producer to either
+#: drop the artifact or misreport its verdict. `approve` over `not-attempted` stays
+#: refused, because there the missing verdict *is* the defect and nothing was
+#: observed that could support an approval claim.
+#:
+#: Being in this set is not approval-capability: only `PUBLICATION_ACCEPTED` is that,
+#: and `approval_blockers` reports every non-published outcome regardless.
+PUBLICATION_ATTEMPTED: frozenset[PublicationOutcome] = frozenset(
+    {
+        PublicationOutcome.PUBLISHED,
+        PublicationOutcome.REFUSED,
+        PublicationOutcome.FAILED,
+    }
+)
+
 
 class ReviewVerdict(StrEnum):
     """The reviewer's conclusion about the change at ``reviewed_head_sha``.
@@ -775,14 +800,40 @@ class ReviewResult(ContractEnvelope):
     @model_validator(mode="after")
     def _approve_requires_conclusive_review(self) -> ReviewResult:
         # Rejecting an unsupported `approve` at validation rather than only in
-        # `approval_blockers` means a producer cannot emit one at all. The three
-        # recorded shapes — approve with the functional stage skipped, approve with
-        # an open blocker, approve with no formal publication — all fail here.
+        # `approval_blockers` means a producer cannot emit one at all. Approve with
+        # the functional stage skipped, and approve over an open blocking finding,
+        # both fail here.
+        #
+        # Gated on `review_blockers`, NOT `approval_blockers`, and the difference is
+        # a repaired defect rather than a relaxation. A reviewer whose functional
+        # stage completed cleanly and whose publication then returned HTTP 401 has
+        # concluded `approve` about the code; including the publication blocker here
+        # made that artifact *invalid*, so the producer's only options were to drop
+        # the evidence or to restate the verdict as `incomplete`. Both were observed,
+        # and both erase what the reviewer actually found — while the publication
+        # failure, the thing an operator must act on, disappears entirely.
+        #
+        # This grants nothing. `approval_blockers` still reports the unpublished
+        # verdict, so such a result remains non-approval-capable to every consumer;
+        # what changes is that the failure is now *recorded* instead of unrepresentable.
+        # Merge eligibility is #5148's and `pr_bindings`' decision either way.
+        #
+        # `not-attempted` remains refused below. That case is not a transport failure
+        # but the original defect — stages complete, exit 0, provider never called —
+        # and there is no attempt whose outcome could support an approval claim.
         if self.verdict is ReviewVerdict.APPROVE:
-            blockers = self.approval_blockers()
+            blockers = self.review_blockers()
             if blockers:
                 raise ValueError(
                     f"verdict 'approve' is not supported by this result: {'; '.join(blockers)}"
+                )
+            if self.publication.outcome not in PUBLICATION_ATTEMPTED:
+                raise ValueError(
+                    f"verdict 'approve' with publication "
+                    f"{self.publication.outcome.value!r} is not supported: no formal "
+                    "verdict was ever attempted, which is the silent-skip failure this "
+                    "contract exists to expose. Report the attempt's real outcome, or "
+                    "use verdict 'incomplete'."
                 )
         return self
 
@@ -799,17 +850,25 @@ class ReviewResult(ContractEnvelope):
         """Findings that must prevent approval. See `ReviewFinding.blocks_approval`."""
         return tuple(finding for finding in self.findings if finding.blocks_approval)
 
-    def approval_blockers(self) -> tuple[str, ...]:
-        """Every reason this result cannot support approval. Empty means none found.
+    def review_blockers(self) -> tuple[str, ...]:
+        """Reasons the *review itself* did not reach a clean conclusion.
 
-        The single supported way to ask "is this evidence good enough?". It returns
-        reasons rather than a boolean so a caller logging the answer keeps the
-        *why*, and so a caller that ignores it is visibly ignoring something.
+        Everything in here is about the reviewing work: did the functional stage
+        conclude, is a blocking finding still open, did the reviewer say
+        request-changes, is result-level evidence stale. Publication is deliberately
+        excluded, and that separation is the whole point of this method existing.
 
-        An empty tuple means no blocker was found **in this artifact**. It is not a
-        merge decision and not a substitute for the provider-side requirements —
-        independent approving review, required checks, merge state — which
-        `pr_bindings.evidence_for_binding` owns.
+        A reviewer whose functional stage completed with no open blocker, and whose
+        formal publication then failed in transport, has genuinely concluded
+        "approve" about the code. Folding the publication failure in here would make
+        that situation *unrepresentable*: the producer could not emit the artifact at
+        all, leaving it to either drop the evidence or misreport the verdict as
+        `incomplete`. Both were observed, and both destroy the record of what the
+        reviewer actually found.
+
+        Callers deciding anything must use :meth:`approval_blockers`, which is this
+        plus publication. This method answers a narrower question and is not a
+        substitute for it.
         """
         reasons: list[str] = []
 
@@ -826,14 +885,6 @@ class ReviewResult(ContractEnvelope):
                 f"{finding.disposition.value}: {finding.summary}"
             )
 
-        if self.publication.outcome not in PUBLICATION_ACCEPTED:
-            detail = (self.publication.detail or "").strip() or "no detail recorded"
-            reasons.append(
-                f"the formal verdict was not published "
-                f"({self.publication.outcome.value}: {detail}), so repository rules "
-                "cannot read it"
-            )
-
         if self.verdict is ReviewVerdict.REQUEST_CHANGES:
             reasons.append("the reviewer's verdict is 'request-changes'")
         elif self.verdict is ReviewVerdict.INCOMPLETE:
@@ -845,6 +896,43 @@ class ReviewResult(ContractEnvelope):
             )
 
         return tuple(reasons)
+
+    def publication_blockers(self) -> tuple[str, ...]:
+        """Reasons the verdict is not readable by repository rules. Empty means it is.
+
+        Split out from :meth:`review_blockers` because the two fail independently and
+        a consumer must be able to tell them apart. "The reviewer approved but we
+        could not publish it" needs a retry of the publication; "the reviewer found a
+        blocker" needs new code. Collapsing both into one list made the first
+        indistinguishable from the second.
+        """
+        if self.publication.outcome in PUBLICATION_ACCEPTED:
+            return ()
+        detail = (self.publication.detail or "").strip() or "no detail recorded"
+        reason = (
+            f"the formal verdict was not published "
+            f"({self.publication.outcome.value}: {detail}), so repository rules "
+            f"cannot read it"
+        )
+        return (reason,)
+
+    def approval_blockers(self) -> tuple[str, ...]:
+        """Every reason this result cannot support approval. Empty means none found.
+
+        The single supported way to ask "is this evidence good enough?". It returns
+        reasons rather than a boolean so a caller logging the answer keeps the
+        *why*, and so a caller that ignores it is visibly ignoring something.
+
+        Both halves are included, so an unpublished approval is still not approval
+        here — a functional `approve` whose publication failed carries exactly one
+        blocker, which is the record the operator needs and not a grant of anything.
+
+        An empty tuple means no blocker was found **in this artifact**. It is not a
+        merge decision and not a substitute for the provider-side requirements —
+        independent approving review, required checks, merge state — which
+        `pr_bindings.evidence_for_binding` owns.
+        """
+        return self.review_blockers() + self.publication_blockers()
 
 
 def invalidate_for_head(result: ReviewResult, actual_head_sha: str) -> ReviewResult:
