@@ -42,6 +42,33 @@ def test_claim_admission_precedes_queue_publication(
     assert admit.called is authority
 
 
+def test_gitlab_unavailable_channel_is_recorded_without_report_only_mutation(
+    monkeypatch, caplog
+):
+    from common import gateway_client, sqs_publisher
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setattr(sqs_publisher, "SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
+    producer = MagicMock()
+    producer.send_message.return_value = {"MessageId": "gitlab-sqs-id"}
+    monkeypatch.setattr(sqs_publisher, "_sqs", producer)
+    admit = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway_client, "admit_issue_work", admit)
+    envelope = {
+        "channel": "gitlab",
+        "message_id": "gitlab-run",
+        "tenant_id": "",
+        "source_ref": {"repo": "group/repo", "issue": 7},
+    }
+
+    assert sqs_publisher.publish_envelope(envelope) == "gitlab-sqs-id"
+    assert not admit.called
+    assert "snapshot_unavailable_channel" in caplog.text
+    published = json.loads(producer.send_message.call_args.kwargs["MessageBody"])
+    assert published == envelope
+
+
 class TestPublishEnvelope:
     @patch("common.sqs_publisher.SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
     @patch.dict(

@@ -23,6 +23,7 @@ import {
   ENVELOPE_ISSUER,
   ENVELOPE_VERSION,
   MAX_ENVELOPE_TTL_SECONDS,
+  MODEL_POLICY_AUDIENCE,
   bodyDigest,
   parseVerificationKeys,
   verifyEnvelope,
@@ -236,6 +237,58 @@ describe('binding against the listener own facts', () => {
       nowMs,
     });
     expect(result).toEqual({ ok: false, reason: 'unknown_key' });
+  });
+});
+
+describe('model-policy audience and chain binding', () => {
+  const pair = generateKeyPairSync('ed25519');
+  const policyKeys = parseVerificationKeys(JSON.stringify({
+    policy: pair.publicKey.export({ format: 'pem', type: 'spki' }),
+  }));
+  const policyBody = Buffer.from('{"resolved_model_id":"global.anthropic.claude-sonnet-4-6"}', 'utf8');
+  const payload = {
+    v: ENVELOPE_VERSION,
+    iss: ENVELOPE_ISSUER,
+    aud: MODEL_POLICY_AUDIENCE,
+    alg: 'ed25519',
+    kid: 'policy',
+    tenant_id: 'tenant-a',
+    principal: 'run-a#1',
+    target_run_id: 'run-a',
+    target_generation: 1,
+    action: 'resolve_model',
+    command_id: 'snapshot-digest',
+    body_digest: bodyDigest(policyBody),
+    grant_id: 'grant-a',
+    revocation_epoch: 1,
+    chain_id: 'chain-a',
+    iat: fixture.now,
+    nbf: fixture.now,
+    exp: new Date(nowMs + 30_000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+  };
+  const raw = Buffer.from(JSON.stringify(payload, Object.keys(payload).sort()), 'utf8');
+  const signature = cryptoSign(null, Buffer.concat([Buffer.from(`${ENVELOPE_VERSION}.`), raw]), pair.privateKey);
+  const token = `${ENVELOPE_VERSION}.${raw.toString('base64url')}.${signature.toString('base64url')}`;
+
+  function verifyPolicy(chainId: string) {
+    return verifyEnvelope(token, policyKeys, {
+      runId: 'run-a',
+      generation: 1,
+      action: 'resolve_model',
+      commandId: 'snapshot-digest',
+      body: policyBody,
+      audience: MODEL_POLICY_AUDIENCE,
+      chainId,
+      nowMs,
+    });
+  }
+
+  it('accepts a decision only for its dedicated audience and chain', () => {
+    expect(verifyPolicy('chain-a').ok).toBe(true);
+  });
+
+  it('refuses replay onto another chain', () => {
+    expect(verifyPolicy('chain-b')).toEqual({ ok: false, reason: 'chain_mismatch' });
   });
 });
 

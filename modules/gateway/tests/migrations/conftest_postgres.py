@@ -106,6 +106,33 @@ def _ensure_pgcrypto_shim(pgserver) -> None:
         pytest.skip(f"cannot install the pgcrypto test shim into {extension_dir}: {exc}")
 
 
+class _ExternalServer:
+    """A server this process did not start, addressed by URI.
+
+    Exists so these tests can run on an interpreter where ``pgserver`` cannot be
+    imported. ``pgserver`` ships a PostgreSQL binary only for Python <= 3.12, so on
+    3.13 every real-PostgreSQL test *silently skips* — and a skipped
+    transaction-isolation test looks identical to a passing one in a CI summary.
+    Pointing ``BG_TEST_POSTGRES_URI`` at an already-running server (started from any
+    interpreter, or a service container) keeps the evidence real.
+    """
+
+    def __init__(self, uri: str) -> None:
+        self._uri = uri
+
+    def get_uri(self, database: str | None = None) -> str:
+        # Mirrors pgserver's signature: per-test databases are created on the
+        # server and addressed by swapping the database in the URI.
+        if not database:
+            return self._uri
+        base, _, query = self._uri.partition("?")
+        base = base.rsplit("/", 1)[0] + "/" + database
+        return base + ("?" + query if query else "")
+
+    def cleanup(self) -> None:  # the owner of an external server stops it
+        return None
+
+
 @pytest.fixture(scope="session")
 def pg_server(tmp_path_factory):
     """One PostgreSQL 16 instance for the whole session.
@@ -113,6 +140,11 @@ def pg_server(tmp_path_factory):
     Session-scoped because initdb costs a few seconds; per-test isolation comes
     from creating a separate database on it rather than a separate server.
     """
+    external = os.environ.get("BG_TEST_POSTGRES_URI")
+    if external:
+        _require_psycopg2()
+        yield _ExternalServer(external)
+        return
     pgserver = _require_pgserver()
     _require_psycopg2()
     _ensure_pgcrypto_shim(pgserver)

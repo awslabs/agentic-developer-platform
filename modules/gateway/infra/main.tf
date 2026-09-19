@@ -935,6 +935,24 @@ resource "aws_ssm_parameter" "budget_fail_mode" {
   }
 }
 
+# PMM-03 / D3: production organization/team model-access policy consumed by
+# both proxy admission and the gateway-signed per-hop model decision.  The
+# value is a JSON object: {"org-id":["canonical.model.*"],
+# "org-id:team-id":["canonical.model.id"]}.  Terraform creates the safe
+# no-explicit-policy baseline and never overwrites an operator-authored value.
+resource "aws_ssm_parameter" "model_allowed_models_config" {
+  name        = "/adp/${var.environment}/gateway/model-allowed-models-config"
+  description = "JSON organization/team model allowlists for gateway admission. PMM-03 D3."
+  type        = "String"
+  value       = "{}"
+
+  tags = local.common_tags
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # NOTE: EKS→RDS (5432) and EKS→Redis (6379) security group rules are owned by
 # platform infra (platform/infra/main.tf) — do NOT duplicate them here.
 # See: https://github.com/aws-e/adp/issues/2590

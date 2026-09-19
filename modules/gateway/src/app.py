@@ -198,13 +198,16 @@ async def lifespan(app: FastAPI):
     # Initialize proxy service with single-account Bedrock pool
     try:
         from src.pool.simple_pool import SimplePoolService
-        from src.proxy.routes import set_proxy_service
+        from src.proxy.model_resolver import production_model_resolver
+        from src.proxy.routes import set_model_resolver, set_proxy_service
         from src.proxy.service import ProxyService
 
         pool = SimplePoolService()
-        proxy = ProxyService(pool_service=pool)
+        model_resolver = production_model_resolver(settings)
+        proxy = ProxyService(pool_service=pool, model_resolver=model_resolver)
+        set_model_resolver(model_resolver)
         set_proxy_service(proxy)
-        logger.info("Proxy service initialized with single-account pool")
+        logger.info("Proxy service initialized with single-account pool and deployed model policy")
     except Exception as e:
         logger.error(f"Failed to initialize proxy service: {e}")
 

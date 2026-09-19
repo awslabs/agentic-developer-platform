@@ -20,6 +20,7 @@ SUBMIT_QUEUE_URL = os.environ.get("SUBMIT_QUEUE_URL", "")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 # SQS message size limit
 MAX_SQS_MESSAGE_BYTES = 256 * 1024
+MODEL_POLICY_UNAVAILABLE_CHANNEL = "snapshot_unavailable_channel"
 
 _sqs = None
 
@@ -50,20 +51,30 @@ def publish_envelope(envelope: dict) -> str | None:
         envelope = prepare_envelope(envelope)
     except ValueError:
         return None
-    if (
-        os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
-        and envelope.get("channel") != "gitlab"
-    ):
-        from common.gateway_client import admit_issue_work
-
-        if os.environ.get(
-            "AGENT_AUTHORITY_ENABLED", "false"
-        ).lower() != "true" or not admit_issue_work(envelope):
+    if os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true":
+        if envelope.get("channel") == "gitlab":
+            # GitLab does not yet have a trusted admission seam or canonical
+            # tenant/root identity. In report-only it remains behaviour-neutral,
+            # but the unavailable policy path is explicit evidence rather than a
+            # silent default. PMM-09 must not enforce until PMM-07 routes this
+            # channel through gateway admission.
             logger.warning(
-                "Work ownership admission refused run_id=%s; nothing published",
+                "Model-policy snapshot unavailable run_id=%s reason=%s "
+                "posture=report_only",
                 envelope.get("message_id"),
+                MODEL_POLICY_UNAVAILABLE_CHANNEL,
             )
-            return None
+        else:
+            from common.gateway_client import admit_issue_work
+
+            if os.environ.get(
+                "AGENT_AUTHORITY_ENABLED", "false"
+            ).lower() != "true" or not admit_issue_work(envelope):
+                logger.warning(
+                    "Work ownership admission refused run_id=%s; nothing published",
+                    envelope.get("message_id"),
+                )
+                return None
     message_body = json.dumps(envelope, default=str)
 
     send_kwargs = {
