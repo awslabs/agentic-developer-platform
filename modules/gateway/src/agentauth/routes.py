@@ -257,6 +257,16 @@ class AgentRuntime:
 
     def bootstrap(self, body: BootstrapRequest, token: str) -> dict:
         pod = self.workloads.verify(token)
+        from src.agentauth.task_delivery import TaskDeliveryError
+        from src.agentauth.task_delivery import enabled as tasks_enabled
+
+        if tasks_enabled(self.env):
+            from src.agentauth.task_routes import task_delivery
+
+            try:
+                task_delivery(self).require_assignment(pod.uid, body.invocation_id, body.envelope_digest)
+            except TaskDeliveryError:
+                raise BootstrapRefusedError("task assignment unavailable") from None
         from src.orchestration.work_admission import admit_deferred_bootstrap, enabled
 
         if enabled():

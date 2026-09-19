@@ -2161,6 +2161,7 @@ class TestSanitizeForStsTag:
 class TestBedrockViaGateway:
     """Tests for the ADP_BEDROCK_VIA=gateway path (sigv4-proxy subprocess)."""
 
+    @pytest.mark.parametrize("port", [None, "8181"])
     @pytest.mark.parametrize("protected", [False, True])
     @patch("entrypoint._stop_sigv4_proxy")
     @patch("entrypoint._start_sigv4_proxy")
@@ -2189,6 +2190,7 @@ class TestBedrockViaGateway:
         monkeypatch,
         tmp_path,
         protected,
+        port,
     ):
         """With ADP_BEDROCK_VIA=gateway + proxy healthy, sets ANTHROPIC_BEDROCK_BASE_URL."""
         from entrypoint import main
@@ -2200,7 +2202,10 @@ class TestBedrockViaGateway:
         monkeypatch.setenv(
             "SIGV4_PROXY_TARGET", "https://abc.execute-api.us-east-1.amazonaws.com/dev/agent"
         )
-        monkeypatch.setenv("SIGV4_PROXY_PORT", "9090")
+        if port is None:
+            monkeypatch.delenv("SIGV4_PROXY_PORT", raising=False)
+        else:
+            monkeypatch.setenv("SIGV4_PROXY_PORT", port)
         monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", str(protected).lower())
         if protected:
             monkeypatch.setattr(
@@ -2237,7 +2242,8 @@ class TestBedrockViaGateway:
         call_kwargs = mock_subprocess_run.call_args
         agent_env = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
         assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
-        assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == "http://127.0.0.1:9090"
+        assert agent_env["SIGV4_PROXY_PORT"] == (port or "9090")
+        assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == f"http://127.0.0.1:{port or '9090'}"
         # Must NOT have ANTHROPIC_BASE_URL (that routes to the broken translator)
         assert "ANTHROPIC_BASE_URL" not in agent_env
         if protected:

@@ -91,6 +91,7 @@ from datetime import UTC, datetime
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from src.agentauth.artifact_keys import own_transcript_key
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, _key
 from src.agentauth.execution import ExecutionRecord, ExecutionStateError, ExecutionStatus, evaluate_execution_state
 from src.agentauth.policy import AgentAuthorizationService, PolicyError
@@ -319,6 +320,8 @@ class AgentRegistrationService:
                 continue
             if not isinstance(raw, str):
                 raise RegistrationRefusedError("unsupported field")
+            if field == "transcript_key" and not own_transcript_key(record, raw):
+                raise RegistrationRefusedError("unsupported transcript")
             names[f"#f{index}"] = field
             values[f":f{index}"] = {"S": raw[:bound]}
             sets.append(f"#f{index} = :f{index}")

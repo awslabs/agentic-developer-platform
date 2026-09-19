@@ -567,3 +567,52 @@ def test_customer_region_does_not_change_platform_status_signature(enabled, http
     status_gateway_client.record_status("in_progress", {})
     calls, _ = http
     assert "/us-east-1/execute-api/aws4_request" in calls[0]["headers"]["Authorization"]
+
+
+class TestTranscriptArchive:
+    def test_real_signing_and_receipt_verification(self, enabled, monkeypatch):
+        import hashlib
+        content = "a transcript with café"
+        sent = []
+
+        class Session:
+            trust_env = True
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def post(self, url, **kwargs):
+                sent.append((url, kwargs, self.trust_env))
+                return FakeResponse(body={"key": "runs/own/transcript.md", "sha256": hashlib.sha256(content.encode()).hexdigest()})
+
+        monkeypatch.setattr(status_gateway_client.requests, "Session", Session)
+        assert status_gateway_client.upload_transcript(content) == "runs/own/transcript.md"
+        url, request, proxies = sent[0]
+        assert url == ENDPOINT + "/self/artifacts/transcript"
+        assert request["data"] == content.encode()
+        assert request["headers"]["X-Adp-Run-Credential"] == CREDENTIAL
+        assert request["headers"]["X-Adp-Workload-Token"] == WORKLOAD_TOKEN
+        assert "platform-key/" in request["headers"]["Authorization"]
+        assert request["timeout"] == 35 and request["allow_redirects"] is False and proxies is False
+
+    def test_digest_mismatch_is_not_a_success(self, enabled, monkeypatch):
+        monkeypatch.setattr(status_gateway_client, "_post_bytes", lambda *a, **k: {"key": "runs/own/transcript.md", "sha256": "wrong"})
+        with pytest.raises(StatusGatewayError, match="invalid transcript"):
+            status_gateway_client.upload_transcript("text")
+
+    @pytest.mark.parametrize("size", [0, 8 * 1024 * 1024 + 1])
+    def test_bounds_before_network(self, enabled, monkeypatch, size):
+        send = MagicMock()
+        monkeypatch.setattr(status_gateway_client, "_post_bytes", send)
+        with pytest.raises(StatusGatewayError, match="maximum 8 MiB"):
+            status_gateway_client.upload_transcript("x" * size)
+        send.assert_not_called()
+
+    def test_entrypoint_refusal_never_falls_back_to_s3(self, enabled, monkeypatch):
+        import entrypoint
+        upload = MagicMock(side_effect=StatusGatewayError("refused"))
+        direct = MagicMock(side_effect=AssertionError("direct S3 forbidden"))
+        monkeypatch.setattr(status_gateway_client, "upload_transcript", upload)
+        monkeypatch.setattr(entrypoint.boto3, "client", direct)
+        monkeypatch.setenv("AGENT_RUN_LOGS_BUCKET", "shared-bucket")
+        assert entrypoint._upload_transcript_to_s3("text", "owner/repo", 1, "run", "today", "developer") is None
+        upload.assert_called_once_with("text")
+        direct.assert_not_called()

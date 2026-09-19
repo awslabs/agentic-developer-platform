@@ -145,8 +145,11 @@ def _post(path: str, body: dict, *, success_statuses: tuple[int, ...] = (200,)) 
     - **The workload token** proves *which pod* is presenting that credential,
       which is what makes a leaked credential useless elsewhere.
     """
+    return _post_bytes(path, json.dumps(body).encode(), content_type="application/json", success_statuses=success_statuses)
+
+
+def _post_bytes(path: str, data: bytes, *, content_type: str, success_statuses: tuple[int, ...] = (200,), timeout_seconds: int = _TIMEOUT_SECONDS) -> dict:
     url = _base_url() + path
-    data = json.dumps(body).encode()
     try:
         workload_token = read_workload_token()
     except RunIdentityError:
@@ -160,7 +163,7 @@ def _post(path: str, body: dict, *, success_statuses: tuple[int, ...] = (200,)) 
         raise StatusGatewayError("worker transport identity unavailable")
 
     headers = {
-        "Content-Type": "application/json",
+        "Content-Type": content_type,
         WORKLOAD_HEADER: workload_token,
         CREDENTIAL_HEADER: _read_credential(),
     }
@@ -180,7 +183,7 @@ def _post(path: str, body: dict, *, success_statuses: tuple[int, ...] = (200,)) 
                 url,
                 data=data,
                 headers=dict(signed.headers),
-                timeout=_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
                 allow_redirects=False,
                 stream=True,
             ) as response:
@@ -261,3 +264,17 @@ def clear_control(generation: int) -> None:
     remove control from a run that is still going.
     """
     _post("/control/registration/clear", {"control_generation": generation})
+
+
+def upload_transcript(content: str) -> str:
+    """Archive only this run's transcript; no direct S3 fallback on refusal."""
+    import hashlib
+
+    data = content.encode("utf-8")
+    if not authority_enabled() or not 0 < len(data) <= 8 * 1024 * 1024:
+        raise StatusGatewayError("transcript upload unavailable (maximum 8 MiB)")
+    result = _post_bytes("/artifacts/transcript", data, content_type="application/octet-stream", timeout_seconds=35)
+    key = result.get("key")
+    if not isinstance(key, str) or not key.startswith("runs/") or result.get("sha256") != hashlib.sha256(data).hexdigest():
+        raise StatusGatewayError("invalid transcript upload receipt")
+    return key
