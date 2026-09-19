@@ -76,6 +76,7 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -106,15 +107,73 @@ __all__ = [
     "write_review_result",
 ]
 
-# Pinned to the shared contract. Spelled here rather than imported because the
-# repository's `contracts/` tree is not copied into this image (see the Dockerfile's
-# COPY list), so the validator is unavailable at runtime. The CI job in
-# `.github/workflows/orchestration-review-contract-tests.yml` validates what this
-# module emits against the real models, which is what keeps the two in step; the
-# alternative — trusting that two hand-maintained copies agree — is the #4029 defect.
+# Pinned to the shared contract. Still spelled here — these three values are what a
+# produced document must *carry*, so they have to exist before the validator is
+# consulted, and they must be readable in an artifact where the contract is somehow
+# absent. What changed (#5146) is that they are no longer the only thing keeping the
+# producer honest: the image now carries `contracts/` (see the Dockerfile), so
+# `contract_models()` below returns the real validator and
+# `lib/contract_selfcheck.py` fails the build if it is missing. The old arrangement —
+# constants duplicated here, agreement guaranteed only by a CI job — is the #4029
+# drift the shared contract exists to prevent.
 CONTRACT_NAME = "orchestration-review"
 CONTRACT_VERSION = 1
 CONTRACT_OWNER = "orchestration/review"
+
+#: Where the contract lands in the image (`/app/contracts/...`, beside `lib/`) and in
+#: a repository checkout (four parents up). Both are checked, in that order, so the
+#: same code path works in the image, in CI and in a developer's tree.
+_CONTRACT_RELATIVE = os.path.join("contracts", "orchestration-review", "v1")
+
+
+def _contract_candidates() -> tuple[str, ...]:
+    """Every directory the shared contract may legitimately live in, in priority order."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # /app or the image dir
+    repo_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
+    return (
+        os.path.join(here, _CONTRACT_RELATIVE),
+        os.path.join(repo_root, _CONTRACT_RELATIVE),
+    )
+
+
+def contract_models():
+    """The normative validator, or ``None`` when this artifact does not carry it.
+
+    ``None`` rather than an exception, and that is deliberate. This module is
+    fail-soft by contract: it runs after the review is already posted, from a call
+    site in ``entrypoint.py`` with no error handling, and losing the evidence artifact
+    because a build dropped a directory would be a worse outcome than emitting an
+    unvalidated one. So the caller degrades rather than dies — and
+    ``lib/contract_selfcheck.py`` makes the missing directory a failed *build*, which
+    is where that problem belongs.
+
+    Cached in ``sys.modules`` under a private name, registered before execution
+    because ``models.py`` defers its annotations and pydantic resolves them by module
+    lookup; executing before registering leaves ``ReviewResult`` unable to validate.
+    """
+    cached = sys.modules.get("_adp_review_contract_v1")
+    if cached is not None:
+        return cached
+    for directory in _contract_candidates():
+        path = os.path.join(directory, "models.py")
+        if not os.path.isfile(path):
+            continue
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_adp_review_contract_v1", path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["_adp_review_contract_v1"] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:  # noqa: BLE001 - fail-soft: see the module docstring
+            # A present-but-unimportable validator must not stay cached under the
+            # shared name for the next caller to mistake for a working one.
+            sys.modules.pop("_adp_review_contract_v1", None)
+            return None
+        return module
+    return None
 
 #: The dispatch fences this run holds, already published for #5144's handoff. Reused
 #: rather than duplicated: two env vars carrying the same tenant/node/cycle is two
@@ -900,6 +959,32 @@ def verdict_from_agent_report(report: dict, *, stages: list[StageReport]) -> str
     return "incomplete"
 
 
+def _narrowed_verdict(verdict: str, publication: dict[str, object]) -> str:
+    """Narrow ``approve`` to ``incomplete`` when no verdict was ever attempted.
+
+    ``verdict_from_agent_report`` decides from the stages, which is all it can see;
+    whether the verdict was *attempted* is only known once the publication block
+    exists. The contract refuses `approve` over `not-attempted` — deliberately, since
+    that pairing is the silent-skip failure it was written to expose — so composing the
+    two independently produced a document that could never validate. Before the image
+    carried the validator that document was simply written and refused later by the
+    gateway; now it would be refused here, which is better but still means an artifact
+    for a concluded review is never produced.
+
+    So the narrowing happens where both facts are in hand. `failed` and `refused` are
+    NOT narrowed: those are honest reports of an attempt the provider rejected, the
+    contract permits `approve` over them, and downgrading them would erase the
+    distinction between "the provider said no" and "we never asked".
+    """
+    if verdict == "approve" and publication.get("outcome") == "not-attempted":
+        logger.warning(
+            "review result: 'approve' claimed with no publication attempted; recording "
+            "'incomplete' — a verdict that was never submitted cannot approve anything"
+        )
+        return "incomplete"
+    return verdict
+
+
 def write_review_result(document: dict[str, object], *, path: str | None = None) -> str:
     """Write the artifact where a collector can pick it up. Returns the path written.
 
@@ -914,6 +999,27 @@ def write_review_result(document: dict[str, object], *, path: str | None = None)
     with open(target, "w", encoding="utf-8") as handle:
         handle.write(body + "\n")
     return target
+
+
+def _contract_rejection(document: dict[str, object]) -> str | None:
+    """Why the shared validator rejects this document, or ``None`` if it accepts it.
+
+    ``None`` is also returned when the artifact does not carry the validator, because
+    there is nothing to disagree with — an absent contract is a build problem
+    (``lib/contract_selfcheck.py``), not a reason to discard a delivered review's
+    evidence. The distinction matters: this function answers "does the contract refuse
+    this?", and "not checked" is deliberately not reported as "refused".
+    """
+    models = contract_models()
+    if models is None:
+        return None
+    try:
+        models.ReviewResult.model_validate(document)
+    except Exception as exc:  # noqa: BLE001 - any rejection must be reported, not raised
+        # Bounded: a pydantic error quotes the offending values, and this string goes
+        # into a public pull-request comment.
+        return str(exc).replace("\n", " ")[:400]
+    return None
 
 
 def review_result_note(
@@ -985,6 +1091,23 @@ def review_result_note(
         # retry — differ here, so they no longer fold onto a single immutable ledger
         # observation. A byte-identical redelivery still lands on the same id.
         document["result_id"] = _default_result_id(reviewed_head_sha, document)
+
+    # Validate against the normative validator before writing, now that the image
+    # carries it. The producer's own rules cannot catch a disagreement with the
+    # contract — that is what being a second implementation means — so previously a
+    # malformed artifact travelled all the way to the gateway to be refused
+    # `malformed_result`, where the reviewer run was long gone and the reason reached
+    # nobody who could act on it. Refused here, the reason is in the run's own closing
+    # comment. Skipped, with that stated, when the artifact does not carry the
+    # validator; `lib/contract_selfcheck.py` makes that a failed build.
+    invalid = _contract_rejection(document)
+    if invalid:
+        logger.warning("review result rejected by the shared contract: %s", invalid)
+        return (
+            "> **Review evidence not produced.** The structured result did not satisfy the "
+            f"shared review contract: {invalid}. This review is prose only: it grants no "
+            "approval and the engine cannot treat it as evidence about this revision."
+        )
 
     try:
         written = write_review_result(document, path=path)
@@ -1058,18 +1181,21 @@ def reviewer_evidence_note(
     )
     stages = stages_from_agent_report(report)
     submission = report.get("submission")
+    publication = publication_from_adp_review(
+        submission if isinstance(submission, dict) else None,
+        reviewed_head_sha=reviewed_head_sha,
+    )
     return review_result_note(
         repo=repo,
         provider_repository_id=provider_repository_id,
         pr_number=pr_number,
         provider_pr_node_id=provider_pr_node_id,
         reviewed_head_sha=reviewed_head_sha,
-        verdict=verdict_from_agent_report(report, stages=stages),
-        stages=stages,
-        publication=publication_from_adp_review(
-            submission if isinstance(submission, dict) else None,
-            reviewed_head_sha=reviewed_head_sha,
+        verdict=_narrowed_verdict(
+            verdict_from_agent_report(report, stages=stages), publication
         ),
+        stages=stages,
+        publication=publication,
         findings=findings_from_agent_report(report),
         evidence_refs=list(_evidence_refs(report.get("evidence_refs"))),
         reviewer_identity=_reported_identity(report),

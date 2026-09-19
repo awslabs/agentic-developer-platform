@@ -31,8 +31,10 @@ Deliberately NOT asserted anywhere in this file:
 from __future__ import annotations
 
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import event
@@ -1411,3 +1413,140 @@ class TestEvidenceIdentityIsPerResult:
         evidence = accept()
         assert HEAD in evidence.artifact_ref
         assert NODE in evidence.artifact_ref
+
+
+class TestTheValidatorIsPackagedWithTheArtifact:
+    """The shared contract must be reachable from a *deployed* gateway, not only a checkout.
+
+    Each test that reaches `_contract_models` clears the module cache first. The
+    cache is a real and wanted optimisation — the validator is imported once per
+    process — but a test that inherited a cached validator from an earlier test would
+    pass no matter what the path logic did.
+
+    The reproduced defect: `_CONTRACT_DIR` was `Path(__file__).parents[4]`, i.e. the
+    repository root. In the gateway image `src/` sits directly under `/app`, so
+    `parents[4]` does not exist and the expression raised `IndexError` at the moment
+    the first review evidence arrived — not the typed `CONTRACT_UNAVAILABLE` refusal
+    this module promises for a missing contract, but a bare index error out of a code
+    path every caller expects to fail closed with a reason.
+
+    And it *would* have been missing, because the gateway's docker build context is
+    `modules/gateway` (`codebuild/bs-gateway-build.yml`) while `contracts/` lives at
+    the repository root, outside that context, where no COPY can reach it. So the
+    module could not validate anything in production, and no test said so: every suite
+    runs from a checkout, where `parents[4]` happens to be right.
+    """
+
+    def test_a_deployed_layout_resolves_the_contract_beside_src(self, tmp_path):
+        """The image's layout: /app/src/... with /app/contracts alongside."""
+        app = tmp_path / "app"
+        (app / "src" / "orchestration").mkdir(parents=True)
+        staged = app / "contracts" / "orchestration-review" / "v1"
+        staged.mkdir(parents=True)
+        (staged / "models.py").write_text("", encoding="utf-8")
+        module_file = app / "src" / "orchestration" / "review_evidence.py"
+        module_file.write_text("", encoding="utf-8")
+
+        with patch.object(review_evidence_module, "__file__", str(module_file)):
+            assert review_evidence_module._contract_dir() == staged
+
+    def test_a_shallow_layout_refuses_instead_of_raising_indexerror(self, tmp_path):
+        """Four parents may not exist. The promise is a typed refusal, not a crash."""
+        shallow = tmp_path / "src" / "orchestration" / "review_evidence.py"
+        shallow.parent.mkdir(parents=True)
+        shallow.write_text("", encoding="utf-8")
+
+        sys.modules.pop("_adp_orchestration_review_v1", None)
+        with patch.object(review_evidence_module, "__file__", str(shallow)):
+            # The candidate list itself must not raise on a short path...
+            candidates = review_evidence_module._contract_candidates()
+            assert candidates
+            assert review_evidence_module._contract_dir() is None
+            # ...and the caller gets the arm it documents.
+            with pytest.raises(ReviewEvidenceError) as caught:
+                review_evidence_module._contract_models()
+        assert caught.value.code is ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE
+
+    def test_the_refusal_names_where_it_looked(self, tmp_path):
+        """"Not found" is only actionable if an operator can see the paths tried."""
+        shallow = tmp_path / "src" / "orchestration" / "review_evidence.py"
+        shallow.parent.mkdir(parents=True)
+        shallow.write_text("", encoding="utf-8")
+        sys.modules.pop("_adp_orchestration_review_v1", None)
+        with patch.object(review_evidence_module, "__file__", str(shallow)):
+            with pytest.raises(ReviewEvidenceError) as caught:
+                review_evidence_module._contract_models()
+        assert "contracts" in str(caught.value)
+
+    def test_a_present_but_unimportable_validator_is_a_typed_refusal(self, tmp_path):
+        """A partial copy or an absent pydantic must not escape as an arbitrary error."""
+        app = tmp_path / "app"
+        (app / "src" / "orchestration").mkdir(parents=True)
+        staged = app / "contracts" / "orchestration-review" / "v1"
+        staged.mkdir(parents=True)
+        (staged / "models.py").write_text("raise RuntimeError('half a file')", encoding="utf-8")
+        module_file = app / "src" / "orchestration" / "review_evidence.py"
+        module_file.write_text("", encoding="utf-8")
+
+        sys.modules.pop("_adp_orchestration_review_v1", None)
+        with patch.object(review_evidence_module, "__file__", str(module_file)):
+            with pytest.raises(ReviewEvidenceError) as caught:
+                review_evidence_module._contract_models()
+        assert caught.value.code is ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE
+        # And nothing half-initialised may be left cached for the next caller to
+        # find and treat as a working validator.
+        assert "_adp_orchestration_review_v1" not in sys.modules
+
+    def test_the_selfcheck_and_the_module_look_in_the_same_places(self):
+        """The build gate proves what the runtime needs, so they must agree.
+
+        `review_contract_selfcheck` spells its candidate paths independently — it has
+        to run in an artifact carrying almost nothing, so it cannot import this module.
+        Two independent copies of one path rule is how a gate starts verifying
+        something other than what the runtime reads.
+        """
+        from src.orchestration import review_contract_selfcheck
+
+        assert review_contract_selfcheck._candidates() == list(
+            review_evidence_module._contract_candidates()
+        )
+
+    def test_the_selfcheck_passes_here_and_fails_without_the_contract(self, tmp_path):
+        """The gate must be capable of failing, or it certifies nothing."""
+        from src.orchestration import review_contract_selfcheck
+
+        assert review_contract_selfcheck.run() == []
+
+        missing = tmp_path / "nowhere" / "contracts" / "orchestration-review" / "v1"
+        with patch.object(review_contract_selfcheck, "_candidates", lambda: [missing]):
+            failures = review_contract_selfcheck.run()
+        assert failures, "the selfcheck passed with no contract present"
+        assert "not in this artifact" in failures[0]
+
+    def test_the_selfcheck_catches_a_validator_that_rejects_the_fixture(self, tmp_path):
+        """Producer/consumer drift inside one artifact, which is the #4029 failure."""
+        from src.orchestration import review_contract_selfcheck
+
+        staged = tmp_path / "contracts" / "orchestration-review" / "v1"
+        staged.mkdir(parents=True)
+        # A validator that refuses everything, shipped beside the real fixture.
+        (staged / "models.py").write_text(
+            "CONTRACT_NAME = 'orchestration-review'\n"
+            "CONTRACT_VERSION = 1\n"
+            "class PublicationOutcome: pass\n"
+            "class ReviewVerdict: pass\n"
+            "class ReviewResult:\n"
+            "    @staticmethod\n"
+            "    def model_validate(payload):\n"
+            "        raise ValueError('no')\n",
+            encoding="utf-8",
+        )
+        (staged / "review-result.golden.json").write_text(
+            (GOLDEN_PATH).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        sys.modules.pop("_review_contract_selfcheck", None)
+        with patch.object(review_contract_selfcheck, "_candidates", lambda: [staged]):
+            failures = review_contract_selfcheck.run()
+        sys.modules.pop("_review_contract_selfcheck", None)
+        assert any("rejects the shipped fixture" in failure for failure in failures)

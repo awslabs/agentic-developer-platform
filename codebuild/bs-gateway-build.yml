@@ -20,6 +20,11 @@ phases:
       - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
   build:
     commands:
+      # Issue #5146: stage the shared review-result contract into the build context.
+      # It lives at the repository root so gateway, tick and worker share ONE
+      # validator; this context is `modules/gateway`, so no COPY could otherwise
+      # reach it. Must run BEFORE docker build, from the repo root.
+      - modules/gateway/scripts/stage-contracts.sh
       - cd modules/gateway
       - docker build --no-cache --pull -t $REGISTRY/adp-gateway:latest .
       # Issue #4969: gate the push on the image carrying the shared pricing policy
@@ -29,6 +34,14 @@ phases:
       # priced request, or as settlement quietly falling back to default rates.
       # Deliberately BEFORE the tag/push below: a mispriced image must not ship.
       - docker run --rm --entrypoint python $REGISTRY/adp-gateway:latest -m pricing_policy.selfcheck
+      # Issue #5146: prove the image carries the shared review-result contract and
+      # that the shipped validator accepts the shipped golden fixture. Same failure
+      # mode as pricing_policy and the same reason it is a build gate: contracts/ is
+      # COPY'd from a staged copy, not pip-installed, so a dropped COPY or an unrun
+      # staging script builds green and surfaces in production as every review
+      # evidence submission being refused `contract_unavailable` — a total outage of
+      # the review path, discovered on first use. Deliberately BEFORE the push.
+      - docker run --rm --entrypoint python $REGISTRY/adp-gateway:latest -m src.orchestration.review_contract_selfcheck
       - 'if [ -n "${IMAGE_TAG:-}" ]; then docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG; fi'
   post_build:
     commands:
@@ -36,7 +49,7 @@ phases:
       # alone does not prevent an image that failed its selfcheck from shipping.
       - |
         if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
-          echo "Build or pricing selfcheck failed; refusing to push the gateway image." >&2
+          echo "Build or a selfcheck (pricing / review contract) failed; refusing to push the gateway image." >&2
           exit 1
         fi
       - 'if [ "${PUBLISH_LATEST:-true}" = true ]; then docker push $REGISTRY/adp-gateway:latest; fi'

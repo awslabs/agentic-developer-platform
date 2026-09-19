@@ -115,11 +115,46 @@ REVIEW_CONTRACT_VERSION = 1
 #: with no `pyproject.toml` and no package install. Both the gateway and the worker
 #: reach it by path for exactly that reason, so there is ONE validator rather than
 #: a copy per consumer — the #4029 drift this whole pattern exists to prevent.
-#: `parents[4]` is the repository root: orchestration → src → gateway → modules → root.
-#: The same traversal `tests/internal/test_provenance_contract.py` uses to reach the
-#: provenance fixture, spelled here rather than shared because a helper importable
-#: from both would itself need a home.
-_CONTRACT_DIR = Path(__file__).resolve().parents[4] / "contracts" / "orchestration-review" / "v1"
+#:
+#: Two locations, checked in order, because the repository checkout and the deployed
+#: artifact have different shapes and only one of them was previously handled:
+#:
+#: 1. ``/app/contracts/orchestration-review/v1`` beside ``src/``, which is where the
+#:    build stages it. The gateway image's docker context is ``modules/gateway``
+#:    (`codebuild/bs-gateway-build.yml`), so a repository-root directory is outside
+#:    the context and no ``COPY`` can reach it — the same constraint
+#:    ``orchestration-deployments.yaml`` documents for itself. The build stages the
+#:    directory into the context first; ``stage-contracts.sh`` does that, and
+#:    ``selfcheck`` is the build gate that proves it happened.
+#: 2. The repository root, four parents up, for a source checkout and the tests.
+#:
+#: This ordering matters beyond tidiness. In the image ``src/`` sits directly under
+#: ``/app``, so the old unconditional ``parents[4]`` raised ``IndexError`` — not the
+#: typed ``CONTRACT_UNAVAILABLE`` refusal this module promises, but a bare crash out
+#: of a path that every caller expects to fail closed with a reason.
+_CONTRACT_RELATIVE = Path("contracts") / "orchestration-review" / "v1"
+
+
+def _contract_candidates() -> tuple[Path, ...]:
+    """Every location the shared contract may legitimately live, in priority order.
+
+    Returned as a tuple (rather than resolved to one path at import time) so the
+    refusal can name all of them: "not found" is only actionable if an operator can
+    see where it was looked for.
+    """
+    here = Path(__file__).resolve()
+    candidates = [here.parents[2] / _CONTRACT_RELATIVE]  # /app/contracts — the image
+    if len(here.parents) > 4:
+        candidates.append(here.parents[4] / _CONTRACT_RELATIVE)  # repo root — a checkout
+    return tuple(candidates)
+
+
+def _contract_dir() -> Path | None:
+    """The first candidate that actually carries ``models.py``, or ``None``."""
+    for candidate in _contract_candidates():
+        if (candidate / "models.py").is_file():
+            return candidate
+    return None
 
 
 def _contract_models() -> Any:
@@ -129,6 +164,12 @@ def _contract_models() -> Any:
     process which never handles review evidence does not depend on the contracts
     directory being present, and so the failure — if the directory is missing — is
     a clear error at the point of use rather than an import crash at startup.
+
+    Raises:
+        ReviewEvidenceError: ``CONTRACT_UNAVAILABLE`` when the validator is not
+            present or cannot be loaded. Never an ``IndexError`` or ``ImportError``:
+            an artifact built without the contract must refuse review evidence with a
+            reason an operator can act on, not crash somewhere further down.
     """
     import importlib.util
     import sys
@@ -136,21 +177,41 @@ def _contract_models() -> Any:
     cached = sys.modules.get("_adp_orchestration_review_v1")
     if cached is not None:
         return cached
-    path = _CONTRACT_DIR / "models.py"
-    if not path.is_file():
+    directory = _contract_dir()
+    if directory is None:
+        looked = ", ".join(str(candidate) for candidate in _contract_candidates())
         raise ReviewEvidenceError(
             ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE,
-            f"The review-result contract validator is not available at {path}.",
+            "The review-result contract validator is not available in this artifact "
+            f"(looked in: {looked}). This build does not carry the shared contract, so "
+            "it cannot validate review evidence.",
         )
+    path = directory / "models.py"
     spec = importlib.util.spec_from_file_location("_adp_orchestration_review_v1", path)
     if spec is None or spec.loader is None:
         raise ReviewEvidenceError(
             ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE,
-            "The review-result contract validator could not be loaded.",
+            f"The review-result contract validator at {path} could not be loaded.",
         )
     module = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec_module, and that ordering is load-bearing. `models.py`
+    # uses `from __future__ import annotations`, so pydantic resolves its annotations
+    # by looking the module up in `sys.modules` by name — a module executed before it
+    # is registered leaves `ReviewResult` with unresolved forward references, and
+    # every `model_validate` then fails with "is not fully defined" rather than
+    # validating. Reordering these two lines looks like tidying and breaks validation.
     sys.modules["_adp_orchestration_review_v1"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        # A models.py present but unimportable (an absent pydantic, a partial copy)
+        # must not leave a half-initialised module cached under the shared name for
+        # the next caller to find and treat as a working validator.
+        sys.modules.pop("_adp_orchestration_review_v1", None)
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE,
+            f"The review-result contract validator at {path} could not be imported: {exc!r}.",
+        ) from exc
     return module
 
 

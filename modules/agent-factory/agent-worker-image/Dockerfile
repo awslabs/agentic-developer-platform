@@ -271,6 +271,23 @@ COPY --chown=agent:agent modules/agent-factory/agent-worker-image/adp_review/ /a
 RUN printf '#!/bin/sh\nexec python3 -m adp_review "$@"\n' > /usr/local/bin/adp-review && \
     chmod +x /usr/local/bin/adp-review
 
+# Issue #5146: the shared review-result contract. ONE normative validator, read by
+# the gateway, the orchestration tick and this worker, so the producer here and the
+# consumer there cannot drift into disagreeing (the #4029 failure).
+#
+# Until now this image did NOT carry it, so `lib/review_result.py` spelled the
+# contract's constants and regex patterns locally and the only thing keeping the two
+# in step was a CI job. That is two hand-maintained copies of one rule, which is the
+# drift the shared contract exists to prevent — and the producer could not validate
+# its own output before emitting it, so a malformed artifact travelled all the way to
+# the gateway to be refused.
+#
+# This image's build context is the repository root (`codebuild/bs-agent-runtime.yml`
+# builds with `-f modules/.../Dockerfile .`), so unlike the gateway's context the
+# tree is reachable directly and needs no staging step. pydantic is already installed
+# above. `lib/contract_selfcheck.py` is the build gate.
+COPY --chown=agent:agent contracts/ /app/contracts/
+
 # Set working directory and switch to non-root user
 WORKDIR /work
 USER agent

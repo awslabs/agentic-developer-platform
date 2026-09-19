@@ -34,6 +34,7 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -173,11 +174,13 @@ def note(**overrides) -> str:
 def _load_models():
     """Import the normative validator from the contracts tree.
 
-    Skipped rather than failed when the tree is absent, because the Dockerfile does
-    not copy `contracts/` into the worker image: inside the image this test cannot
-    run, and pretending otherwise would make the image build look broken. In CI —
-    where `.github/workflows/orchestration-review-contract-tests.yml` runs from a
-    checkout — the tree is present and this test is the binding one.
+    Skipped rather than failed when the tree is absent, because these tests are not
+    shipped in the image and may be run from a partial checkout. The image itself DOES
+    carry the contract as of #5146 (`COPY contracts/ /app/contracts/`), and that is
+    asserted where it belongs — at build time, by `lib/contract_selfcheck.py`, which
+    fails the build rather than skipping. In CI, where
+    `.github/workflows/orchestration-review-contract-tests.yml` runs from a full
+    checkout, the tree is present and this test is the binding one.
     """
     if not _CONTRACT_DIR.is_dir():
         pytest.skip(f"contract tree not present at {_CONTRACT_DIR}")
@@ -1832,3 +1835,173 @@ class TestTheComposedEntryPoint:
             reviewed_head_sha=HEAD,
         )
         assert self.emitted(tmp_path)["subject"]["reviewed_head_sha"] == HEAD
+
+
+class TestTheValidatorIsPackagedWithTheImage:
+    """The producer must be able to validate its own output inside the shipped image.
+
+    Before #5146 this image did not carry `contracts/` at all. The contract's constants
+    and regexes were spelled locally in `lib/review_result.py`, and the only thing
+    keeping the two in step was a CI job — two hand-maintained copies of one rule,
+    which is the #4029 drift the shared contract exists to prevent. Worse, the producer
+    could not check its own document before emitting it, so a shape the contract refuses
+    travelled all the way to the gateway to be rejected `malformed_result`, long after
+    the reviewer run that could have reported it was gone.
+
+    These tests are about the packaging, not the document: that the validator resolves
+    from both the image layout and a checkout, that a missing one degrades instead of
+    crashing, and that the build gate which makes the missing case a failed build can
+    actually fail.
+    """
+
+    def test_the_validator_resolves_from_this_checkout(self):
+        from lib.review_result import contract_models
+
+        models = contract_models()
+        assert models is not None, "the contract did not resolve from the repository"
+        assert models.CONTRACT_NAME == CONTRACT_NAME
+        assert models.CONTRACT_VERSION == CONTRACT_VERSION
+
+    def test_the_image_layout_is_a_candidate(self):
+        """`/app/contracts` beside `/app/lib` — where the Dockerfile's COPY puts it."""
+        import lib.review_result as module
+
+        with patch.object(module, "__file__", "/app/lib/review_result.py"):
+            candidates = module._contract_candidates()
+        assert "/app/contracts/orchestration-review/v1" in candidates
+
+    def test_a_missing_validator_degrades_rather_than_raising(self):
+        """Fail-soft: losing a delivered review's evidence over a build fault is worse.
+
+        The absence is a *build* problem — `lib/contract_selfcheck.py` makes it a failed
+        build — so at runtime it must not raise into `entrypoint.py`, which has no error
+        handling at the call site.
+        """
+        import lib.review_result as module
+
+        sys.modules.pop("_adp_review_contract_v1", None)
+        with patch.object(module, "_contract_candidates", lambda: ("/nonexistent/contracts/v1",)):
+            assert module.contract_models() is None
+        sys.modules.pop("_adp_review_contract_v1", None)
+
+    def test_an_unimportable_validator_leaves_nothing_cached(self, tmp_path):
+        """A half-initialised module must not be found by the next caller."""
+        import lib.review_result as module
+
+        staged = tmp_path / "contracts" / "orchestration-review" / "v1"
+        staged.mkdir(parents=True)
+        (staged / "models.py").write_text("raise RuntimeError('half a file')", encoding="utf-8")
+
+        sys.modules.pop("_adp_review_contract_v1", None)
+        with patch.object(module, "_contract_candidates", lambda: (str(staged),)):
+            assert module.contract_models() is None
+        assert "_adp_review_contract_v1" not in sys.modules
+
+    def test_a_document_the_contract_refuses_is_not_written(self, dispatched, tmp_path):
+        """The producer refuses at the boundary that can now see the disagreement.
+
+        Asserted through the real composed entry point with a real rejection cause: a
+        report claiming `approve` while nothing was ever published. The contract refuses
+        that pairing deliberately — it is the silent-skip failure — and the run's own
+        closing comment now carries the reason instead of the gateway discovering it.
+        """
+        import lib.review_result as module
+
+        target = tmp_path / "result.json"
+        report = write_report(tmp_path, {"verdict": "approve", "stages": {"functional": "completed", "security": "completed"}})
+
+        # Force the refusal rather than relying on a shape that may become valid:
+        # what is under test is that a refusal prevents the write.
+        with patch.object(module, "_contract_rejection", lambda document: "1 validation error"):
+            text = reviewer_evidence_note(
+                repo=REPO,
+                pr_number=PR_NUMBER,
+                provider_repository_id=REPOSITORY_ID,
+                provider_pr_node_id=PR_NODE_ID,
+                reviewed_head_sha=HEAD,
+                result_path=str(target),
+                report_path=report,
+            )
+
+        assert not target.exists(), "a document the contract refuses was still written"
+        assert "not produced" in text
+        assert "shared review contract" in text
+        assert "grants no approval" in text
+
+    def test_an_absent_contract_is_not_reported_as_a_rejection(self, dispatched, tmp_path):
+        """"Not checked" must never be reported as "checked and refused"."""
+        import lib.review_result as module
+
+        sys.modules.pop("_adp_review_contract_v1", None)
+        with patch.object(module, "contract_models", lambda: None):
+            assert module._contract_rejection({"nonsense": True}) is None
+
+    def test_approve_over_an_unattempted_publication_is_narrowed(self, dispatched, tmp_path):
+        """The composed producer must not build a document the contract cannot accept.
+
+        `verdict_from_agent_report` decides from the stages; whether the verdict was
+        attempted is only known from the publication block. Composed independently they
+        produced `approve` + `not-attempted`, which the contract refuses — so a
+        concluded review with no submission yielded no artifact at all.
+        """
+        models = _load_models()
+        target = tmp_path / "result.json"
+        report = write_report(tmp_path, {"verdict": "approve", "stages": {"functional": "completed", "security": "completed"}})
+        reviewer_evidence_note(
+            repo=REPO,
+            pr_number=PR_NUMBER,
+            provider_repository_id=REPOSITORY_ID,
+            provider_pr_node_id=PR_NODE_ID,
+            reviewed_head_sha=HEAD,
+            result_path=str(target),
+            report_path=report,
+        )
+        document = json.loads(target.read_text(encoding="utf-8"))
+        assert document["publication"]["outcome"] == "not-attempted"
+        assert document["verdict"] == "incomplete"
+        # And the artifact validates, which is the point: it exists and is honest.
+        result = models.ReviewResult.model_validate(document)
+        assert result.approval_blockers()
+
+    def test_an_attempted_but_refused_publication_keeps_its_verdict(self, dispatched, tmp_path):
+        """`refused` is an honest attempt, and the contract permits `approve` over it.
+
+        Narrowing it too would erase the distinction between "the provider said no" and
+        "we never asked" — which is the distinction the publication enum exists for.
+        """
+        from lib.review_result import _narrowed_verdict
+
+        for outcome in ["refused", "failed", "published"]:
+            assert _narrowed_verdict("approve", {"outcome": outcome}) == "approve"
+        assert _narrowed_verdict("approve", {"outcome": "not-attempted"}) == "incomplete"
+        # Never widened, in either direction.
+        assert _narrowed_verdict("request-changes", {"outcome": "not-attempted"}) == "request-changes"
+        assert _narrowed_verdict("incomplete", {"outcome": "published"}) == "incomplete"
+
+    def test_the_selfcheck_passes_here_and_can_fail(self):
+        """The build gate must be capable of failing, or it certifies nothing."""
+        from lib import contract_selfcheck
+
+        assert contract_selfcheck.run() == []
+
+        import lib.review_result as module
+
+        sys.modules.pop("_adp_review_contract_v1", None)
+        with patch.object(module, "_contract_candidates", lambda: ("/nonexistent/contracts/v1",)):
+            failures = contract_selfcheck.run()
+        sys.modules.pop("_adp_review_contract_v1", None)
+        assert failures, "the selfcheck passed with no contract present"
+        assert "does not carry" in failures[0]
+
+    def test_the_selfcheck_catches_producer_contract_drift(self):
+        """The failure this packaging exists to prevent, asserted end to end.
+
+        A local constant that has drifted from the contract makes every document this
+        image emits refused `wrong_contract` by the gateway. The image must not ship
+        carrying both halves of that disagreement.
+        """
+        from lib import contract_selfcheck
+
+        with patch("lib.review_result.CONTRACT_VERSION", 99):
+            failures = contract_selfcheck.run()
+        assert any("CONTRACT_VERSION" in failure for failure in failures)
