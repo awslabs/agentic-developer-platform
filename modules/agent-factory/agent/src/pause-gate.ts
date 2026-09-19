@@ -679,6 +679,9 @@ export class PauseGate {
     this.clearExpiry();
     const held = [...this.parked];
     for (const entry of held) entry.release('admit');
+    // A released pause no longer owns a quiescence wait. Wake its continuations
+    // now so they clear timers and executor capacity without waiting for tools.
+    for (const waiter of [...this.quiescenceWaiters]) waiter();
     this.onEvent({ type: 'pause_released', expired });
     this.wakeOutput();
     this.log(`[pause-gate] released${expired ? ' (expired)' : ''}, admitting ${held.length} held tool(s)`);

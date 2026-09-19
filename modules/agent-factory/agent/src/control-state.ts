@@ -85,11 +85,11 @@ export type SubmitOutcome =
   | { kind: 'unsupported' };
 
 /**
- * Maximum pending commands. Configurable per revival-design §2 (default 10).
- * The cap exists because a paused run accumulates steers it cannot deliver until
- * resume; without a bound, a dashboard bug becomes unbounded pod memory. Over-cap
- * submissions are refused with 429 rather than silently dropped, so the submitter
- * learns the command was not accepted.
+ * Maximum live non-resume commands (default 10). Pending, delivered and executor
+ * work all consume capacity until both the journal and the executor settle.
+ * One separate slot is reserved for resume, so a full pause queue cannot block
+ * the command that releases it. A second live resume is refused with 429; retries
+ * of an accepted id still return that id's outcome before the capacity check.
  */
 export const DEFAULT_MAX_PENDING = 10;
 
@@ -118,6 +118,7 @@ interface JournalEntry {
   settledAt: number | null;
   authorization?: Readonly<QueuedAuthorization>;
   checking?: boolean;
+  executing?: boolean;
 }
 
 export interface ControlStateOptions {
@@ -218,7 +219,9 @@ export class ControlStateStore {
       return { kind: 'replayed', record: { ...existing.record } };
     }
 
-    if (this.pendingCount() >= this.maxPending) {
+    // Resume has one independent slot. Do not let ordinary work consume it,
+    // or repeated unique resumes turn that escape hatch into an unbounded queue.
+    if (this.liveCount(action === 'resume') >= (action === 'resume' ? 1 : this.maxPending)) {
       return { kind: 'queue_full' };
     }
 
@@ -297,10 +300,27 @@ export class ControlStateStore {
     try { handoff(); } catch {
       entry.record.status = 'unknown';
       entry.record.reason = 'SDK handoff outcome unknown';
+      entry.settledAt = this.now();
       this.touch();
+      this.prune();
       return false;
     }
     return true;
+  }
+
+  /** Hold admission capacity until the delivered executor actually finishes.
+   * A gate event can settle the journal before its async continuation returns.
+   * That does not authorize evicting its entry or admitting unlimited executors.
+   */
+  async executeDelivered(commandId: string, executor: () => Promise<void>): Promise<void> {
+    const entry = this.journal.get(commandId);
+    if (!entry || entry.record.status !== 'delivered' || entry.executing) return;
+    entry.executing = true;
+    try { await executor(); }
+    finally {
+      entry.executing = false;
+      this.prune();
+    }
   }
 
   /**
@@ -338,10 +358,11 @@ export class ControlStateStore {
       .map((entry) => ({ ...entry.record }));
   }
 
-  private pendingCount(): number {
+  private liveCount(resume: boolean): number {
     let count = 0;
     for (const entry of this.journal.values()) {
-      if (entry.record.status === 'pending') count += 1;
+      if ((entry.record.action === 'resume') === resume &&
+          (entry.settledAt === null || entry.executing || entry.checking)) count += 1;
     }
     return count;
   }
@@ -388,12 +409,12 @@ export class ControlStateStore {
   private prune(): void {
     const cutoff = this.now() - this.terminalRetentionMs;
     for (const [id, entry] of this.journal) {
-      if (entry.settledAt !== null && entry.settledAt < cutoff) {
+      if (entry.settledAt !== null && !entry.executing && !entry.checking && entry.settledAt < cutoff) {
         this.journal.delete(id);
       }
     }
 
-    const settled = [...this.journal.entries()].filter(([, entry]) => entry.settledAt !== null);
+    const settled = [...this.journal.entries()].filter(([, entry]) => entry.settledAt !== null && !entry.executing && !entry.checking);
     const excess = settled.length - this.maxTerminal;
     for (let i = 0; i < excess; i += 1) {
       this.journal.delete(settled[i][0]);

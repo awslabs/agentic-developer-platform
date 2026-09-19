@@ -564,7 +564,7 @@ export class ControlListener {
       // rejection would surface as an unhandled rejection and could take the
       // worker down over a control command.
       const run = () => {
-        void executor(action, commandId).catch((err: unknown) => {
+        void store.executeDelivered(commandId, () => executor(action, commandId)).catch((err: unknown) => {
           this.log('warn', 'control executor failed', { action, command_id: commandId,
             detail: (err as Error)?.message ?? String(err) });
           store.settle(commandId, 'rejected', 'control executor failed');

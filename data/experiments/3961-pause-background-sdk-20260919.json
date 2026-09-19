@@ -36,7 +36,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 9185,
+        "total_elapsed_ms": 9079,
         "denied_tools": []
       }
     },
@@ -79,7 +79,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 18518,
+        "total_elapsed_ms": 19563,
         "denied_tools": []
       }
     },
@@ -118,7 +118,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 8566,
+        "total_elapsed_ms": 8976,
         "denied_tools": []
       }
     },
@@ -157,7 +157,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 1,
         "controlled_service_exercised": true,
-        "total_elapsed_ms": 8057,
+        "total_elapsed_ms": 8154,
         "denied_tools": []
       }
     },
@@ -167,8 +167,8 @@
       "detail": "sessions=1 inits=1 sameAttempt=true heldAdmissions=1 heldWithoutSideEffects=true completed=true",
       "artifact": {
         "released_count": 1,
-        "session_id_before": "c9cad63a-f180-4394-a589-56bb1728c3d9",
-        "session_id_after": "c9cad63a-f180-4394-a589-56bb1728c3d9",
+        "session_id_before": "ebc08ae5-1688-4571-b595-2eb91c9da8e5",
+        "session_id_after": "ebc08ae5-1688-4571-b595-2eb91c9da8e5",
         "attempt_id_before": "attempt-1",
         "attempt_id_after": "attempt-1",
         "interrupt_called": false,
@@ -218,8 +218,8 @@
         "checkpoint_clock_setup": "constructor aged 16 minutes; live callbacks use real clock",
         "spill_readback_matches_tool_response": true,
         "model_returned_exact_locator": true,
-        "model_returned_text": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-l4wW01/.adp-spill/Read-toolu_bdrk_01Ew6FMSsaQ3yLkEUf5gDTPa.txt",
-        "expected_locator": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-l4wW01/.adp-spill/Read-toolu_bdrk_01Ew6FMSsaQ3yLkEUf5gDTPa.txt",
+        "model_returned_text": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-zXBBvF/.adp-spill/Read-toolu_bdrk_01DucZ6kUALGymhPNJ6DuXLS.txt",
+        "expected_locator": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-zXBBvF/.adp-spill/Read-toolu_bdrk_01DucZ6kUALGymhPNJ6DuXLS.txt",
         "settled_before_pause": true,
         "phase_during_hold": "paused",
         "no_write_during_hold": true,
@@ -229,13 +229,13 @@
     {
       "name": "real SDK hook timeout reports unavailable",
       "ok": true,
-      "detail": "reached=true aborted=true elapsed=1000 safetyRelease=false unavailable=true phase=running retry=unavailable",
+      "detail": "reached=true aborted=true elapsed=1002 safetyRelease=false unavailable=true phase=running retry=unavailable",
       "artifact": {
         "production_hook_factory": "createWorkerToolHooks",
         "fault": "CLI matcher timeout shortened to one second",
         "matcher_timeout_seconds": 1,
         "production_matcher_timeout_seconds": 180,
-        "callback_elapsed_ms": 1000,
+        "callback_elapsed_ms": 1002,
         "sdk_signal_aborted": true,
         "safety_release_used": false,
         "unavailable_event_observed": true,
@@ -269,11 +269,11 @@
     "aws_profile": "embark1",
     "region": "us-east-1",
     "model": "us.anthropic.claude-opus-4-6-v1",
-    "scope": "Standalone real-SDK fixture; not deployed gateway control or wave-2 acceptance. Eight measured scenarios use the production worker hook builder. The one-second matcher timeout is an explicit fault injection; the production budget remains unchanged. The checkpoint constructor timestamp alone is aged 16 minutes; all live callbacks and waits use real time. Fixture servers closed and directories removed in finally cleanup."
+    "scope": "Standalone real-SDK fixture; not deployed gateway control or wave-2 acceptance. Eight measured scenarios use the production worker hook builder. The one-second matcher timeout is an explicit fault injection; the production budget remains unchanged. The checkpoint constructor timestamp alone is aged 16 minutes; all live callbacks and waits use real time. Fixture servers closed and directories removed in finally cleanup. Queue capacity is separately exercised by signed loopback-listener regressions; this SDK fixture does not claim to load-test the listener."
   },
   "source_files_sha256": {
     "modules/agent-factory/agent/src/harnesses/claude-control.ts": "d4c7722eeecfd374757866af9bb74ac606feeb84622717f69a73bfc6844ab559",
-    "modules/agent-factory/agent/src/pause-gate.ts": "149952db6946d3e39a189d12a258ee951b1a1d8ca96664c4d3eb32c696c48aaa",
+    "modules/agent-factory/agent/src/pause-gate.ts": "2b12cbbe98096bb47c98ff78765d61390550b3828ac4906635681acb020ffdb7",
     "modules/agent-factory/agent/src/control-runtime.integration.ts": "07fc4f7a08b23abed2a98eb53656cbdbaae6a4348c807fb8f21ac30afe498a7a",
     "modules/agent-factory/agent/src/utils/resilientQuery.ts": "e98a88383cc029d72e0836cd7b4001151a6b7ce0099b409e83e0720825220ede",
     "modules/agent-factory/agent/src/developer-checkpoints.ts": "b0612d9d9048fb633d20331d077f8998719ad1fd6d836aa93419fbb7de4651ec",
@@ -281,7 +281,8 @@
     "modules/agent-factory/agent/src/utils/spill/store.ts": "d2619b09b66496a0534e88272bd259a28276dda4905b89fe4b06a5f75cade0e5",
     "modules/agent-factory/agent/src/control-runtime.ts": "03408582eda90af5aae118e00fdeaa426af97ef9d172b75edd74c505334189d5",
     "modules/agent-factory/agent/src/control-command-apply.ts": "2673f26984b3a8daad967037902a1efb78a80f443530def21adde4c8d9eee999",
-    "modules/agent-factory/agent/src/control-state.ts": "de79680fd5faf13a0877c67af077ffb6d167010e03d7643e6ce34bd5c578b90a"
+    "modules/agent-factory/agent/src/control-state.ts": "8233c89b38aa7d74bfdc62a792b93f85f2aa261ee107a66f367c1d131b7fc362",
+    "modules/agent-factory/agent/src/control-listener.ts": "75f17c5931d08d9b18cf705267d68c0e3cbb48abdefa4fb23ca1f24ad40d8adb"
   },
   "pre_repair_observation": {
     "production_spill_fixture": "The callback returned a locator but the real model wrote NO_LOCATOR. The native SDK rejected the string replacement against the Read output schema and retained the original output.",

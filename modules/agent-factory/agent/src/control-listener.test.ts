@@ -1738,3 +1738,144 @@ describe('socket-level failure', () => {
     await expect(listener.stop()).resolves.toBeUndefined();
   });
 });
+
+test.each([60_000, 1])('bounds delivered pauses through the signed listener and reserves resume (settle wait %i)', async settleTimeoutMs => {
+  const cap = 3;
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let peakTimers = 0;
+  const gate = new PauseGate({ settleTimeoutMs, scheduler: {
+    setTimer: (fn, ms) => {
+      const handle = setTimeout(() => { timers.delete(handle); fn(); }, ms);
+      timers.add(handle);
+      peakTimers = Math.max(peakTimers, timers.size);
+      return handle;
+    },
+    clearTimer: handle => { clearTimeout(handle as ReturnType<typeof setTimeout>); timers.delete(handle as ReturnType<typeof setTimeout>); },
+  } });
+  const work = await gate.admit('Read');
+  const store = new ControlStateStore({ generation: GENERATION,
+    supportedActions: new Set(['pause', 'resume']), maxPending: cap, maxTerminal: 5,
+    revalidate: async () => true });
+  let pauseStarts = 0;
+  let liveExecutors = 0;
+  let peakExecutors = 0;
+  const listener = new ControlListener({
+    bindAddress: '127.0.0.1', port: await freePort(), token: TOKEN,
+    tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    generation: GENERATION, runId: RUN_ID, envelopeKeys: ENVELOPE_KEYS,
+    store, logger: () => {}, executor: async (action, commandId) => {
+      liveExecutors += 1;
+      peakExecutors = Math.max(peakExecutors, liveExecutors);
+      if (action === 'pause') pauseStarts += 1;
+      try {
+        await applyControlCommand({ action, commandId, store, adapter: {
+          requestPause: options => gate.requestPause(options),
+          resumeFromPause: async () => { await gate.resume(); },
+        } });
+      } finally { liveExecutors -= 1; }
+    },
+  });
+  const started = await listener.start(ENABLED_ENV);
+  if (!started.started) throw new Error('listener failed');
+  const send = async (action: ControlAction, id: string) => {
+    const body = JSON.stringify({ command_id: id });
+    return request(started.port, 'POST', `/agent/${action}`, { body, envelope: envelopeFor(action, id, body) });
+  };
+  try {
+    const replies = [];
+    for (let i = 0; i < 25; i += 1) {
+      replies.push(await send('pause', `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`));
+    }
+    expect(replies.filter(reply => reply.status === 202)).toHaveLength(cap);
+    expect(replies.slice(cap).map(reply => reply.body)).toEqual(Array(25 - cap).fill({ error: 'queue_full' }));
+    expect(store.snapshot().commands).toHaveLength(cap);
+    expect(store.snapshot().commands.every(command => command.status === 'delivered')).toBe(true);
+    expect(pauseStarts).toBe(cap);
+    expect(peakExecutors).toBeLessThanOrEqual(cap);
+    expect(peakTimers).toBeLessThanOrEqual(cap + 1);
+    expect((await send('resume', UUID_B)).status).toBe(202);
+    for (let i = 0; i < 100 && (store.lookup(UUID_B).status !== 'applied' || liveExecutors > 0); i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    expect(store.lookup(UUID_B).status).toBe('applied');
+    expect(store.snapshot().commands.filter(command => command.action === 'pause').every(command => command.status === 'cancelled')).toBe(true);
+    expect(gate.currentPhase()).toBe('running');
+    expect(gate.activeToolCount()).toBe(1);
+    expect(liveExecutors).toBe(0);
+    expect(timers.size).toBe(0);
+    expect(peakExecutors).toBeLessThanOrEqual(cap + 1);
+    expect((await send('pause', UUID_A)).status).toBe(202);
+  } finally {
+    await gate.resume();
+    gate.settle(work.ticket);
+    gate.cancel();
+    await listener.stop();
+  }
+});
+
+test.each(['pause', 'resume'] as const)('retains %s executor capacity after early journal settlement', async action => {
+  let now = 1000;
+  let release!: () => void;
+  const done = new Promise<void>(resolve => { release = resolve; });
+  const store = new ControlStateStore({ generation: 1, supportedActions: new Set(['pause', 'resume']),
+    maxPending: 1, maxTerminal: 0, terminalRetentionMs: 1, now: () => now });
+  expect(store.submit(action, UUID_A, 'first').kind).toBe('accepted');
+  store.markDelivered(UUID_A);
+  const executor = store.executeDelivered(UUID_A, async () => {
+    store.settle(UUID_A, 'applied');
+    await done;
+  });
+  try {
+    now += 100;
+    expect(store.lookup(UUID_A).status).toBe('applied');
+    expect(store.submit(action, UUID_B, 'next').kind).toBe('queue_full');
+    expect(store.submit(action, UUID_A, 'first').kind).toBe('replayed');
+    expect(store.submit(action, UUID_A, 'different').kind).toBe('conflict');
+    const repeated = jest.fn(async () => {});
+    await store.executeDelivered(UUID_A, repeated);
+    await store.executeDelivered('missing', repeated);
+    expect(repeated).not.toHaveBeenCalled();
+  } finally { release(); await executor; }
+  expect(store.lookup(UUID_A).status).toBe('unknown');
+  expect(store.submit(action, UUID_B, 'next').kind).toBe('accepted');
+});
+
+test('unknown handoff outcomes are retained within the terminal cap rather than leaking live slots', async () => {
+  const store = new ControlStateStore({ generation: GENERATION, supportedActions: new Set(['pause']),
+    maxPending: 1, maxTerminal: 2, revalidate: async () => true });
+  for (let i = 0; i < 10; i += 1) {
+    const id = String(i);
+    expect(store.submit('pause', id, id, { envelope: 'proof', action: 'pause', command_id: id, body_base64: '' }).kind).toBe('accepted');
+    expect(await store.deliverAuthorized(id, () => { throw new Error('uncertain handoff'); })).toBe(false);
+    expect(store.lookup(id).status).toBe('unknown');
+  }
+  expect(store.snapshot().commands).toHaveLength(2);
+});
+
+test('reserves only one resume during delayed signed delivery, with retries replayed', async () => {
+  let release!: (allowed: boolean) => void;
+  const checked = new Promise<boolean>(resolve => { release = resolve; });
+  const store = new ControlStateStore({ generation: GENERATION, supportedActions: new Set(['pause', 'resume']),
+    maxPending: 1, revalidate: async () => checked });
+  const listener = new ControlListener({
+    bindAddress: '127.0.0.1', port: await freePort(), token: TOKEN,
+    tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    generation: GENERATION, runId: RUN_ID, envelopeKeys: ENVELOPE_KEYS,
+    store, logger: () => {}, executor: async (_action, id) => { store.settle(id, 'applied'); },
+  });
+  const started = await listener.start(ENABLED_ENV);
+  if (!started.started) throw new Error('listener failed');
+  const send = (action: ControlAction, id: string) => {
+    const body = JSON.stringify({ command_id: id });
+    return request(started.port, 'POST', `/agent/${action}`, { body, envelope: envelopeFor(action, id, body) });
+  };
+  try {
+    expect((await send('pause', UUID_A)).status).toBe(202);
+    expect((await send('resume', UUID_B)).status).toBe(202);
+    expect((await send('resume', UUID_B)).status).toBe(200);
+    for (let i = 0; i < 20; i += 1) {
+      expect((await send('resume', `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`)).status).toBe(429);
+    }
+    expect(store.snapshot().commands).toHaveLength(2);
+  } finally { release(false); await listener.stop(); }
+});
