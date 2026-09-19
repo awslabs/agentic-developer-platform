@@ -1,4 +1,4 @@
-"""Tests for Alembic migration 052 — the pending-amendment tables.
+"""Tests for Alembic migration 059 — the pending-amendment tables.
 
 Issue #4529 (EPIC #4191). This file is **mandatory**, and not only for coverage:
 `modules/gateway/alembic/**` is absent from `gateway-ci.yml`'s trigger paths, so a
@@ -67,7 +67,7 @@ def _load_migration(filename: str):
     return module
 
 
-MIG_052 = _load_migration("052_orchestration_pending_amendments.py")
+MIG_059 = _load_migration("059_orchestration_pending_amendments.py")
 
 
 def _run_migration(sync_conn, fn):
@@ -106,12 +106,12 @@ async def _upgrade(engine):
     # absent. That is also what keeps this an honestly "alembic-only, empty database"
     # fixture.
     async with engine.begin() as conn:
-        await conn.run_sync(_run_migration, MIG_052.upgrade)
+        await conn.run_sync(_run_migration, MIG_059.upgrade)
 
 
 async def _downgrade(engine):
     async with engine.begin() as conn:
-        await conn.run_sync(_run_migration, MIG_052.downgrade)
+        await conn.run_sync(_run_migration, MIG_059.downgrade)
 
 
 def _insert_request(
@@ -731,7 +731,7 @@ class TestNoBackfill:
         future edit that backfills or alters has to change this test, which is the review
         signal.
         """
-        source = (MIGRATIONS_DIR / "052_orchestration_pending_amendments.py").read_text()
+        source = (MIGRATIONS_DIR / "059_orchestration_pending_amendments.py").read_text()
         # Strip the docstring, which legitimately discusses backfill and ALTER.
         body = source.split('"""', 2)[-1]
         lowered = body.lower()
@@ -764,7 +764,7 @@ class TestNoBackfill:
         """
         import ast
 
-        source = (MIGRATIONS_DIR / "052_orchestration_pending_amendments.py").read_text()
+        source = (MIGRATIONS_DIR / "059_orchestration_pending_amendments.py").read_text()
         tree = ast.parse(source)
 
         touched: set[str] = set()
@@ -816,7 +816,7 @@ class TestPostgresRendering:
             opts={"as_sql": True, "output_buffer": _Buffer()},
         )
         with Operations.context(ctx):
-            MIG_052.upgrade()
+            MIG_059.upgrade()
         return "".join(chunks)
 
     def test_proposal_document_renders_as_jsonb(self):
@@ -878,16 +878,16 @@ class TestPostgresRendering:
 class TestRevisionChain:
     def test_revision_id_and_down_revision(self):
         """Chains onto the head that was real when this landed."""
-        assert MIG_052.revision == "052_orch_pending_amend"
-        assert MIG_052.down_revision == "051_orch_pr_bindings"
+        assert MIG_059.revision == "059_orch_pending_amend"
+        assert MIG_059.down_revision == "051_orch_pr_bindings"
 
     def test_revision_id_fits_the_alembic_version_column(self):
         """`alembic_version.version_num` is VARCHAR(32); a longer id fails at apply.
 
-        This is why the revision is `052_orch_pending_amend` rather than the filename
-        stem `052_orchestration_pending_amendments` (36 chars), which would exceed it.
+        This is why the revision is `059_orch_pending_amend` rather than the filename
+        stem `059_orchestration_pending_amendments` (36 chars), which would exceed it.
         """
-        assert len(MIG_052.revision) <= 32
+        assert len(MIG_059.revision) <= 32
 
     def test_migration_leaves_exactly_one_head(self):
         """Two heads is a broken deploy, and it is invisible until a pod runs
@@ -896,7 +896,7 @@ class TestRevisionChain:
         Asserts the *count*, not the head's name: the head advances with every migration
         that lands, and a name-pinned assertion turns every future migration into a
         spurious failure here — which trains people to edit this test rather than read it.
-        What must never change is that there is exactly one head, and that 052 is still on
+        What must never change is that there is exactly one head, and that 059 is still on
         the chain.
         """
         import ast
@@ -923,7 +923,7 @@ class TestRevisionChain:
         heads = sorted(rev for rev in revisions if rev not in parents)
 
         assert len(heads) == 1, f"expected exactly one head, got {heads}"
-        assert "052_orch_pending_amend" in revisions, "052 must still be on the chain"
+        assert "059_orch_pending_amend" in revisions, "059 must still be on the chain"
 
 
 class TestModelMigrationParity:
