@@ -270,6 +270,51 @@ async def test_a_repeat_report_still_completes_on_the_same_receipt(session):
     assert observation["handoff_receipt_ref"] == first.receipt_ref
 
 
+async def test_a_retry_does_not_inherit_the_previous_cycles_receipt(session):
+    """A new delivery cycle owes its own handoff; the old cycle's receipt is not it.
+
+    The fail-open this pins: cycle 1 hands off, then the story is re-dispatched. If
+    reconciliation resolves the receipt by anything looser than the current cycle, the
+    retry finds cycle 1's receipt, reads as handed off, and completes without the new
+    attempt ever committing one — the original defect, reintroduced by a retry.
+    """
+    node, dispatch = await _story(session, binding_marker=True)
+    await _bind(session, node, dispatch)
+    first_cycle = await _ledger(session, node)
+    committed = await commit_handoff(session, identity=first_cycle, now=datetime.now(UTC))
+    assert committed.accepted is True
+
+    # A second delivery cycle, with no receipt of its own. `node.attempts` is left
+    # alone deliberately: bumping it would invalidate the PR binding and the story
+    # would hold for THAT reason instead, making the test pass without exercising the
+    # cycle question at all.
+    outcome = await create_execution(
+        session,
+        identity=ExecutionIdentity(
+            org_id=node.org_id,
+            node_id=node.id,
+            cycle=first_cycle.cycle + 1,
+            accepted_plan_version=PLAN_VERSION,
+            claim_id=CLAIM_ID,
+            claim_generation=1,
+        ),
+        flow_id=node.flow_id,
+    )
+    assert outcome.kind is OutcomeKind.APPLIED
+
+    url, hold = await _story_evidence(
+        session,
+        node=node,
+        dispatch=_marked(dispatch),
+        source=StubSource(evidence=_green()),
+        installation_id=INSTALLATION,
+    )
+
+    # The durable outcome, not merely "no receipt found": the story stays held.
+    assert url is None
+    assert hold == missing_receipt_hold()
+
+
 # ---------------------------------------------------------------------------
 # Compatibility: an unmarked dispatch is untouched
 # ---------------------------------------------------------------------------

@@ -42,8 +42,12 @@ from sqlalchemy import select
 
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionStateError
-from src.agentauth.handoff_routes import router
-from src.agentauth.routes import get_agent_runtime, require_agent_transport
+from src.agentauth.registration_routes import (
+    RegistrationRuntime,
+    get_registration_runtime,
+    router,
+)
+from src.agentauth.routes import require_agent_transport
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.workload import WorkloadRefusedError
 from src.orchestration.dispatch_pass import attempt_run_id
@@ -156,16 +160,22 @@ async def handoff(db_session_factory, monkeypatch):
     async with db_session_factory() as session:
         session.add(Organization(id=ORG, name=ORG, github_installation_ids=[str(INSTALLATION)]))
         node, run = await _story(session, ISSUE)
-    runtime = MagicMock()
-    runtime.validate_flow = AsyncMock()
-    _authenticate(runtime, node, run)
+    agent_runtime = MagicMock()
+    agent_runtime.validate_flow = AsyncMock()
+    _authenticate(agent_runtime, node, run)
+    # The real RegistrationRuntime wrapping a mocked AgentRuntime, so the route is
+    # exercised through the transport it actually ships on — a mocked
+    # RegistrationRuntime would verify nothing about the wiring being changed here.
+    runtime = RegistrationRuntime(service=MagicMock(), runtime=agent_runtime)
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: db_session_factory)
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    app.dependency_overrides[get_registration_runtime] = lambda: runtime
     app.dependency_overrides[require_agent_transport] = lambda: None
     async with AsyncClient(transport=ASGITransport(app=app), base_url="https://gateway.test") as client:
-        yield SimpleNamespace(client=client, runtime=runtime, sessions=db_session_factory, node=node, run=run)
+        # `runtime` is the AgentRuntime mock: it owns `authenticate`/`validate_flow`,
+        # which is what the credential and workload assertions below inspect.
+        yield SimpleNamespace(client=client, runtime=agent_runtime, sessions=db_session_factory, node=node, run=run)
 
 
 async def _rows(handoff) -> list[OrchestrationExecution]:
@@ -418,6 +428,88 @@ async def test_a_refusal_carries_no_receipt_the_worker_could_mistake_for_one(han
 
     assert response.json()["receipt_ref"] is None
     assert response.json()["accepted"] is False
+
+
+async def test_superseded_attempt_cannot_commit_after_a_retry_advances_the_node(handoff):
+    """The reviewer's reproducer: an old caller must not get 201/accepted after a retry.
+
+    The node is re-dispatched (``attempts`` advances) after the worker authenticated
+    but before it reports. Resolving the *newest* execution here is what made this
+    caller succeed: it received a 201 and a receipt for a cycle it was never
+    dispatched to, so a superseded run's clean exit read as delivery of live work.
+
+    The receipt must also not exist for the new cycle afterwards — otherwise the
+    current attempt would find a receipt it never committed and skip its own handoff.
+    """
+    async with handoff.sessions() as session:
+        node = await session.get(OrchestrationNode, handoff.node.id)
+        node.attempts = node.attempts + 1
+        await session.commit()
+
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+
+    # 404, not 200-with-refusal: a run that is not the current attempt is in the
+    # authorization class, indistinguishable from an unknown run.
+    assert response.status_code == 404, response.text
+    rows = await _rows(handoff)
+    assert [row.handoff_receipt_ref for row in rows] == [None]
+
+
+async def test_a_receipt_is_never_minted_for_a_cycle_the_caller_was_not_dispatched_to(handoff):
+    """Binding is to the caller's own cycle, not to whichever execution is newest.
+
+    The discriminating case, and the reason it is written this way: the node's
+    ``attempts`` is left at 1, so this caller IS the current attempt and
+    ``resolve_registration_target`` admits it. Only the *cycle* resolution is under
+    test. Resolving the newest execution row instead gives this legitimate caller
+    cycle 2's fences, so it commits a receipt for work it was never dispatched to
+    while its own cycle stays unhanded-off — the failure is a wrong receipt, not a
+    refusal, which is why a test asserting only 404 cannot see it.
+    """
+    async with handoff.sessions() as session:
+        # A newer cycle's execution, as a repair cycle's dispatch would create.
+        outcome = await create_execution(
+            session,
+            identity=ExecutionIdentity(
+                org_id=ORG,
+                node_id=handoff.node.id,
+                cycle=2,
+                accepted_plan_version=PLAN_VERSION,
+                claim_id=CLAIM_ID,
+                claim_generation=1,
+            ),
+            flow_id=handoff.node.flow_id,
+        )
+        assert outcome.kind is OutcomeKind.APPLIED
+        await session.commit()
+
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["cycle"] == 1, f"caller was dispatched to cycle 1, got {body['cycle']}"
+    assert "cycle=1" in body["receipt_ref"], body["receipt_ref"]
+    async with handoff.sessions() as session:
+        rows = list((await session.scalars(select(OrchestrationExecution).order_by(OrchestrationExecution.cycle))).all())
+    assert [row.cycle for row in rows] == [1, 2]
+    # The caller's own cycle is handed off; the cycle it was never dispatched to is
+    # untouched, so the current attempt cannot find a receipt it did not commit.
+    assert rows[0].handoff_receipt_ref is not None
+    assert rows[1].handoff_receipt_ref is None
+
+
+async def test_the_current_attempt_still_commits_and_the_receipt_names_its_cycle(handoff):
+    """The fence refuses stale callers without blocking the legitimate one."""
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["accepted"] is True
+    # The echoed fences come from protected state, so the worker can confirm the
+    # receipt covers the work it actually did.
+    assert body["node_id"] == handoff.node.id
+    assert body["cycle"] == 1
+    assert f"cycle={body['cycle']}" in body["receipt_ref"]
 
 
 async def test_response_is_not_cacheable(handoff):

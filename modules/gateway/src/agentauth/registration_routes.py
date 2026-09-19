@@ -142,6 +142,25 @@ class RenewControlRequest(RegisterControlRequest):
     rotation_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
 
 
+class HandoffRequest(BaseModel):
+    """A delivery handoff for the caller's own run (#5144).
+
+    Note what is absent, and that ``extra="forbid"`` makes supplying one a 422 rather
+    than a silently ignored field: no ``org_id``, ``node_id``, ``cycle``,
+    ``accepted_plan_version``, ``claim_id``, ``claim_generation``, ``execution_id``,
+    ``action_id`` or ``run_id``. Every authority fence is resolved from the
+    ``NODE_DISPATCHED`` decision and the protected execution row, so a caller cannot
+    commit a handoff against work it was not dispatched for.
+
+    ``summary`` grants nothing — it is operator diagnostics, which is why it is the
+    single permitted field.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str | None = Field(default=None, max_length=4096)
+
+
 class RegistrationRuntime:
     """Binds the registration service to the per-request verified pod.
 
@@ -170,6 +189,18 @@ class RegistrationRuntime:
         context = await run_in_threadpool(self.runtime.authenticate, self.credential(request), request.headers.get(WORKLOAD_HEADER, ""))
         await self.runtime.validate_flow(context[2], context[3])
         return context[0]
+
+    async def validate_live_context(self, request: Request):
+        """Same verification as :meth:`validate_live`, returning the whole context.
+
+        The handoff route needs the caller's invocation and tenant, and the execution
+        record and grant, to resolve its authority fences. Exposed as a sibling rather
+        than by widening ``validate_live``'s return, so the existing callers' contract
+        is unchanged.
+        """
+        context = await run_in_threadpool(self.runtime.authenticate, self.credential(request), request.headers.get(WORKLOAD_HEADER, ""))
+        await self.runtime.validate_flow(context[2], context[3])
+        return context
 
     def status(self, request: Request, body: StatusRequest, *, pod=None) -> dict:
         self.service.record_status(
@@ -306,6 +337,116 @@ async def record_status(
         except WorkClaimError:
             raise HTTPException(409, "work ownership refused") from None
     return response
+
+
+@router.post("/handoff")
+async def commit_handoff_route(
+    body: HandoffRequest,
+    request: Request,
+    runtime: RegistrationRuntime = Depends(get_registration_runtime),
+) -> JSONResponse:
+    """Commit an idempotent handoff receipt plus a due continuation for this run (#5144).
+
+    On this router because it shares its transport exactly: the same ``/self`` prefix,
+    the same two proofs, the same ``AgentRuntime``. What it does **not** share is
+    ``/status``'s advisory posture — a status write is fail-soft by design, while a
+    handoff must fail closed, so this handler deliberately does not go through
+    ``_call`` and never reports an unverified handoff as accepted.
+
+    Idempotent: a repeated report, or a retry after a lost response, returns **the
+    same** receipt rather than minting a second one.
+
+    Never terminal. A committed handoff records that another party owes the next step,
+    so the execution stays due; this route cannot mark a lane complete.
+
+    Authorization failures collapse to 404 — a caller able to distinguish "bad
+    credential" from "superseded attempt" learns whether a run exists and how many
+    attempts it has had. A *handoff* refusal is different: ``superseded``/``stale``/
+    ``refused`` are answered 200 with the outcome, because the worker must act on them
+    (it may not report an accepted handoff) and they are only reachable after it
+    authenticated as itself.
+    """
+    from datetime import UTC, datetime
+
+    from src.orchestration.handoff import HandoffOutcome, commit_handoff, identity_for_attempt
+    from src.orchestration.pr_bindings import BindingError, resolve_registration_target
+    from src.shared.database import get_session_factory
+
+    try:
+        _, caller, record, grant = await runtime.validate_live_context(request)
+    except RegistrationRefusedError:
+        raise HTTPException(404, "not found") from None
+    except (WorkloadRefusedError, BootstrapRefusedError, CredentialError, ExecutionStateError):
+        raise HTTPException(404, "not found") from None
+    except AuthorityStoreError:
+        raise HTTPException(503, "agent authority unavailable") from None
+
+    try:
+        async with get_session_factory()() as session:
+            # The authenticated invocation IS the engine run id for a dispatched
+            # attempt, so the target resolves from verified identity. `expected_org_id`
+            # asserts the credential's tenant agrees with the resolved node's, rather
+            # than silently resolving another tenant's work.
+            target = await resolve_registration_target(
+                session,
+                run_id=caller.invocation_id,
+                expected_org_id=caller.tenant_id,
+            )
+            if target.flow_id != record.flow_id or target.flow_id != grant.flow_id:
+                raise HTTPException(404, "not found")
+
+            # Bound to the attempt THIS caller was dispatched to, under the node lock,
+            # not to whatever cycle is newest. A retry between authentication and this
+            # read makes the caller stale; resolving "newest" would hand it fences for
+            # a cycle it was never dispatched to and let it mint that cycle's receipt.
+            identity = await identity_for_attempt(
+                session,
+                org_id=target.org_id,
+                node_id=target.node_id,
+                attempt=target.attempt,
+                lock=True,
+            )
+            if identity is None:
+                # No execution for this attempt, or the attempt is no longer current.
+                # Neither is something to create or work around here.
+                raise HTTPException(404, "not found")
+
+            result = await commit_handoff(
+                session,
+                identity=identity,
+                now=datetime.now(UTC),
+                progress_note=(body.summary or None),
+            )
+            if result.accepted:
+                await session.commit()
+            else:
+                # A refusal must leave nothing written, including the lock's effects.
+                await session.rollback()
+    except HTTPException:
+        raise
+    except BindingError:
+        # A run that is not an engine dispatch is indistinguishable from one that does
+        # not exist, so this joins the authorization 404s.
+        raise HTTPException(404, "not found") from None
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(404, "not found") from None
+
+    return JSONResponse(
+        {
+            "outcome": result.outcome.value,
+            # Present only when genuinely durable, so a worker cannot mistake a reason
+            # string for a receipt.
+            "receipt_ref": result.receipt_ref if result.accepted else None,
+            "reason": result.reason,
+            "accepted": result.accepted,
+            # The fences the receipt is bound to, echoed from protected state so the
+            # worker can verify it got a receipt for the work it actually did.
+            "node_id": identity.node_id,
+            "cycle": identity.cycle,
+        },
+        status_code=201 if result.outcome is HandoffOutcome.COMMITTED else 200,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/control/registration")

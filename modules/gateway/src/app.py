@@ -54,12 +54,6 @@ UNIT_MODULES = [
     # #5301: the delivering run binds its own implementation PR to its story,
     # authenticated by the run credential rather than a self-declared run header.
     "src.agentauth.pr_binding_routes",
-    # #5144: the delivering run commits a durable continuation receipt before its
-    # handoff counts. Its own module rather than an extra route on
-    # registration_routes because that router's status path is deliberately
-    # fail-soft advisory, and this one must fail closed — keeping them separate is
-    # what stops the strict contract from inheriting the advisory one.
-    "src.agentauth.handoff_routes",
     "src.agentauth.service_authority",  # Human-only standing service delegation; never on the internal plane.
     "src.proxy.routes",
     "src.admin.routes",

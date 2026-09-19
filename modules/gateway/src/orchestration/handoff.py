@@ -130,6 +130,7 @@ __all__ = [
     "commit_handoff",
     "current_identity",
     "handoff_receipt_ref",
+    "identity_for_attempt",
     "handoff_required",
     "missing_receipt_hold",
     "outstanding_block",
@@ -398,6 +399,85 @@ async def current_identity(session: AsyncSession, *, org_id: str, node_id: str) 
             # handoff belongs to the cycle currently in flight.
             .order_by(OrchestrationExecution.cycle.desc())
             .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return ExecutionIdentity(
+        org_id=row.org_id,
+        node_id=row.node_id,
+        cycle=row.cycle,
+        accepted_plan_version=row.accepted_plan_version,
+        claim_id=row.claim_id,
+        claim_generation=row.claim_generation,
+    )
+
+
+async def identity_for_attempt(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    node_id: str,
+    attempt: int,
+    lock: bool = False,
+) -> ExecutionIdentity | None:
+    """The execution identity for a **named** attempt, not merely the newest one.
+
+    This exists because :func:`current_identity` answers a different question than
+    the write path needs to ask. It returns the node's newest cycle, which is right
+    for reconciliation (the engine wants whatever is in flight now) and wrong for a
+    worker commit: a worker may only commit against the cycle *it* was dispatched
+    to. If a retry advanced the node between the caller authenticating and this
+    read, ``current_identity`` would hand that caller the new cycle's fences and it
+    would mint a receipt for work it was never dispatched to do.
+
+    ``lock=True`` additionally takes the node row lock — the same lock
+    ``pr_bindings.register_binding`` uses, and for the same reason — and revalidates
+    that ``attempt`` is still current under it. That closes the window between
+    resolving the target and writing: without the lock, a concurrent retry can
+    increment ``attempts`` after the check and the write lands on superseded work.
+
+    Returns ``None`` when there is no execution for that exact attempt, when the
+    node is gone, or when the attempt is no longer current. Fail closed in every
+    case: the caller must treat ``None`` as "not authorized to commit", never as
+    "create one".
+    """
+    from sqlalchemy import select
+
+    from .models import OrchestrationExecution, OrchestrationNode
+
+    if lock:
+        # Locked and re-read rather than trusting the value resolved earlier. A
+        # retry that incremented `attempts` in between makes this caller stale, and
+        # committing for it would bind a receipt to a cycle it does not own.
+        node = (
+            await session.execute(
+                select(OrchestrationNode)
+                .where(OrchestrationNode.id == node_id, OrchestrationNode.org_id == org_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if node is None or node.attempts != attempt:
+            logger.info(
+                "handoff: refusing attempt %s on node %s — attempt is no longer current",
+                attempt,
+                node_id,
+            )
+            return None
+
+    row = (
+        await session.execute(
+            select(OrchestrationExecution)
+            .where(
+                OrchestrationExecution.org_id == org_id,
+                OrchestrationExecution.node_id == node_id,
+                # The attempt IS the cycle: `dispatch_pass` creates one execution per
+                # delivery cycle keyed on the already-incremented `node.attempts`.
+                # Matched exactly, so a caller cannot reach another cycle's row.
+                OrchestrationExecution.cycle == attempt,
+            )
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if row is None:
