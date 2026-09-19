@@ -497,9 +497,7 @@ class TestUncheckedEvidenceCannotReachTheLedger:
         document = _document(story, node_id=story["node_id"])
         async with sessions() as session:
             binding = (
-                await session.execute(
-                    select(OrchestrationPullRequestBinding).where(OrchestrationPullRequestBinding.node_id == story["node_id"])
-                )
+                await session.execute(select(OrchestrationPullRequestBinding).where(OrchestrationPullRequestBinding.node_id == story["node_id"]))
             ).scalar_one()
         state = {
             "reviewer_run_id": document["lineage"]["reviewer_run_id"],

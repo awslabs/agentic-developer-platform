@@ -115,10 +115,7 @@ def run() -> list[str]:
 
     golden_path = directory / "review-result.golden.json"
     if not golden_path.is_file():
-        failures.append(
-            f"the golden fixture is missing at {golden_path}; producer and consumer would "
-            "have no shared artifact to agree against"
-        )
+        failures.append(f"the golden fixture is missing at {golden_path}; producer and consumer would have no shared artifact to agree against")
         return failures
 
     try:
@@ -139,8 +136,7 @@ def run() -> list[str]:
             models.ReviewResult.model_validate(payload)
         except Exception as exc:
             failures.append(
-                f"the shipped validator rejects the shipped fixture {key!r}: {exc!r}. "
-                "The artifact's producer and consumer halves disagree."
+                f"the shipped validator rejects the shipped fixture {key!r}: {exc!r}. The artifact's producer and consumer halves disagree."
             )
 
     return failures
