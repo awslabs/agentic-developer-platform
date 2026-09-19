@@ -75,6 +75,7 @@ class TestModelCatalogueEndpoint:
             body = resp.json()
             for model in body["models"]:
                 assert "canonical_model_id" in model
+                assert "aliases" in model
                 assert "model_family" in model
                 assert "canonical_version" in model
                 assert "selectable" in model
