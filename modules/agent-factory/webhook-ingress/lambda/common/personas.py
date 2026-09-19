@@ -66,6 +66,27 @@ MENTION_TO_PERSONA: dict[str, str] = {
 
 # The canonical set of all valid personas — union of all mapping targets.
 # Used by spawn_persona() to reject unknown persona values before any work.
-VALID_PERSONAS: set[str] = set(MENTION_TO_PERSONA.values()) | set(
-    LABEL_TO_PERSONA.values()
-) | AUTOMATIC_PERSONAS
+VALID_PERSONAS: set[str] = (
+    set(MENTION_TO_PERSONA.values())
+    | set(LABEL_TO_PERSONA.values())
+    | AUTOMATIC_PERSONAS
+)
+
+# Harness compatibility is persona metadata, not a gateway default.  Keep it
+# beside the authoritative persona registry so an execution adapter cannot be
+# silently classified as whichever harness the gateway happens to know best.
+PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
+    "agent-codex-reviewer": "codex-sdk",
+    "aidlc": "claude-agent-sdk",
+    "architect": "claude-agent-sdk",
+    "codex": "claude-agent-sdk",
+    "developer": "claude-agent-sdk",
+    "malware-analysis-agent": "claude-agent-sdk",
+    "operations": "claude-agent-sdk",
+    "pm": "claude-agent-sdk",
+    "product": "claude-agent-sdk",
+    "pt-superpower": "claude-agent-sdk",
+    "reviewer": "claude-agent-sdk",
+    "superplane-operator": "claude-agent-sdk",
+    "superplane-researcher": "claude-agent-sdk",
+}

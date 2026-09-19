@@ -311,6 +311,7 @@ async def get_catalogue(
     )
 
     return ModelCatalogueResponse(
+        tenant_id=current_user.org_id,
         persona_key=persona_key,
         compatibility_class=compat_class,
         models=models,

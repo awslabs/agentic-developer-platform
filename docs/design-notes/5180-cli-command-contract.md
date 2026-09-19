@@ -33,6 +33,7 @@ existing shortcut is added.
 | `adp aws <action>` | #5182 | |
 | `adp admin github <action>` | #5183 | |
 | `adp github <action>` | #5184 | |
+| `adp models <action>` | #5423 | persona/model catalogue and self/service-principal mappings |
 
 ### `adp codex` is frozen
 

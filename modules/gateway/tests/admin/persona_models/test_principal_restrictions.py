@@ -282,9 +282,9 @@ class TestCatalogueAppliesGate4:
             principal_status="active",
         )
 
-        claude_rows = [r for r in rows if r.reason != "harness_incompatible"]
-        assert claude_rows
-        assert all(r.reason == "probing_disabled" for r in claude_rows)
+        assert rows
+        assert all(r.compatibility_class == "claude-agent-sdk" for r in rows)
+        assert all(r.reason == "probing_disabled" for r in rows)
 
     @pytest.mark.asyncio
     async def test_registry_allowed_models_restricts_catalogue(self, session):

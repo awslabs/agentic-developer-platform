@@ -23,6 +23,7 @@ This script replaces hand-editing _personas.py.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import textwrap
 from pathlib import Path
@@ -46,6 +47,29 @@ def _load_source() -> object:
     return module
 
 
+def _load_harness_revisions() -> dict[str, str]:
+    """Read exact SDK revisions from the owning runtime package manifests."""
+    root = _repo_root()
+    manifests = {
+        "claude-agent-sdk": (
+            root / "modules" / "agent-factory" / "agent" / "package.json",
+            "@anthropic-ai/claude-agent-sdk",
+        ),
+        "codex-sdk": (
+            root / "modules" / "agent-factory" / "codex-reviewer" / "package.json",
+            "@openai/codex-sdk",
+        ),
+    }
+    revisions: dict[str, str] = {}
+    for compatibility_class, (manifest_path, dependency) in manifests.items():
+        manifest = json.loads(manifest_path.read_text())
+        revision = manifest.get("dependencies", {}).get(dependency)
+        if not isinstance(revision, str) or not revision or revision[0] in "^~<>=*":
+            raise ValueError(f"{manifest_path} must pin {dependency} to an exact revision; got {revision!r}")
+        revisions[compatibility_class] = revision
+    return revisions
+
+
 def _format_dict(name: str, d: dict[str, str], type_hint: str) -> str:
     """Format a dict constant as Python source."""
     lines = [f"{name}: {type_hint} = {{"]
@@ -55,19 +79,36 @@ def _format_dict(name: str, d: dict[str, str], type_hint: str) -> str:
     return "\n".join(lines)
 
 
+def _format_set(name: str, values: set[str], type_hint: str) -> str:
+    """Format a set constant as deterministic Python source."""
+    lines = [f"{name}: {type_hint} = {{"]
+    for value in sorted(values):
+        lines.append(f'    "{value}",')
+    lines.append("}")
+    return "\n".join(lines)
+
+
 def _generate_output(module: object) -> tuple[str, int]:
     """Generate the staged copy content and return (content, persona_count)."""
     label_to_persona = dict(module.LABEL_TO_PERSONA)
     mention_to_persona = dict(module.MENTION_TO_PERSONA)
+    automatic_personas = set(getattr(module, "AUTOMATIC_PERSONAS", set()))
     valid_personas = set(module.VALID_PERSONAS)
+    persona_compatibility_class = dict(module.PERSONA_COMPATIBILITY_CLASS)
+    harness_revisions = _load_harness_revisions()
 
     # Sanity check
-    derived = set(label_to_persona.values()) | set(mention_to_persona.values())
+    derived = set(label_to_persona.values()) | set(mention_to_persona.values()) | automatic_personas
     if derived != valid_personas:
         print(
             f"WARNING: derived VALID_PERSONAS differs from source.\n  Derived: {sorted(derived)}\n  Source:  {sorted(valid_personas)}",
             file=sys.stderr,
         )
+    if set(persona_compatibility_class) != valid_personas:
+        raise ValueError("PERSONA_COMPATIBILITY_CLASS keys must exactly match VALID_PERSONAS")
+    missing_revisions = set(persona_compatibility_class.values()) - set(harness_revisions)
+    if missing_revisions:
+        raise ValueError(f"No exact harness revision is registered for compatibility classes: {sorted(missing_revisions)}")
 
     output = textwrap.dedent('''\
         """Staged copy of the authoritative persona registry — Issue #5420 (PMM-03).
@@ -89,8 +130,22 @@ def _generate_output(module: object) -> tuple[str, int]:
     output += "\n\n"
     output += _format_dict("MENTION_TO_PERSONA", mention_to_persona, "dict[str, str]")
     output += "\n\n"
-    output += "# The canonical set of all valid personas — union of all mapping targets.\n"
-    output += "VALID_PERSONAS: set[str] = set(MENTION_TO_PERSONA.values()) | set(LABEL_TO_PERSONA.values())\n"
+    output += _format_set("AUTOMATIC_PERSONAS", automatic_personas, "set[str]")
+    output += "\n\n"
+    output += _format_dict(
+        "PERSONA_COMPATIBILITY_CLASS",
+        persona_compatibility_class,
+        "dict[str, str]",
+    )
+    output += "\n\n"
+    output += _format_dict(
+        "COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION",
+        harness_revisions,
+        "dict[str, str]",
+    )
+    output += "\n\n"
+    output += "# The canonical set of all valid personas — union of all mapping targets and automatic personas.\n"
+    output += "VALID_PERSONAS: set[str] = set(MENTION_TO_PERSONA.values()) | set(LABEL_TO_PERSONA.values()) | AUTOMATIC_PERSONAS\n"
 
     return output, len(valid_personas)
 

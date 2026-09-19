@@ -12,6 +12,8 @@ on:
       # unconfigurable. Same lockstep pattern as #4029/#4539.
       - 'modules/gateway/scripts/sync_personas.py'
       - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/codex-reviewer/package.json'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
       - '.github/workflows/run-gateway-migrations.yml'
@@ -91,6 +93,8 @@ on:
       # unconfigurable. Same lockstep pattern as #4029/#4539.
       - 'modules/gateway/scripts/sync_personas.py'
       - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/codex-reviewer/package.json'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
       - '.github/workflows/run-gateway-migrations.yml'

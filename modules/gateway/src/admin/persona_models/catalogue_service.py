@@ -338,6 +338,7 @@ async def build_model_catalogue(
     compat_class = persona_compatibility_class(persona_key)
     if compat_class is None:
         return []
+    compatible_models = tuple(model for model in PLATFORM_MODEL_CATALOGUE if model.compatibility_class == compat_class)
 
     # Gate 4 is principal-level, so it is evaluated once rather than per model.
     principal_permitted, principal_reason = evaluate_principal_restrictions(
@@ -349,19 +350,23 @@ async def build_model_catalogue(
         # Still enumerate every model, each marked unselectable with its
         # reason: AC-01 requires the catalogue to stay honest about what
         # exists, and an empty list is indistinguishable from "no models".
-        return [_model_row(model, selectable=False, reason=principal_reason, permitted=False) for model in PLATFORM_MODEL_CATALOGUE]
+        return [_model_row(model, selectable=False, reason=principal_reason, permitted=False) for model in compatible_models]
 
     if policy_unavailable_reason:
-        return [_model_row(model, selectable=False, reason=policy_unavailable_reason, permitted=False) for model in PLATFORM_MODEL_CATALOGUE]
+        return [
+            _model_row(
+                model,
+                selectable=False,
+                reason=policy_unavailable_reason,
+                permitted=False,
+            )
+            for model in compatible_models
+        ]
 
     rows: list[ModelCatalogueRow] = []
-    for model in PLATFORM_MODEL_CATALOGUE:
-        # Gate 1: Harness compatibility
-        if model.compatibility_class != compat_class:
-            rows.append(_model_row(model, selectable=False, reason="harness_incompatible"))
-            continue
-
-        # Gate 2: Platform catalogue — by construction, all entries pass
+    for model in compatible_models:
+        # Gates 1-2: only this harness class's platform catalogue entries are
+        # enumerated. Other-class models are absent, never disabled choices.
         # (we are iterating the catalogue itself).
 
         # Gate 3: Tenant allowlist

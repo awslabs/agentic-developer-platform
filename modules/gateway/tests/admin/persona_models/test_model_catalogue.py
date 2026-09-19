@@ -124,3 +124,12 @@ class TestModelCatalogueRead:
             persona_key="nonexistent-persona",
         )
         assert models == []
+
+    @pytest.mark.asyncio
+    async def test_native_codex_persona_never_lists_claude_models(self, session):
+        """A valid class with no catalogue members returns an honest empty list."""
+        models = await build_model_catalogue(
+            session,
+            persona_key="agent-codex-reviewer",
+        )
+        assert models == []
