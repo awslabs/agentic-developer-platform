@@ -197,8 +197,12 @@ def _explain(client, persona, service_principal=None):
     return client.request("GET", _base_path(service_principal) + f"/explain/{segment(persona)}")
 
 
-def _catalogue(client, persona):
-    return client.request("GET", "/me/persona-models/catalog?" + urllib.parse.urlencode({"persona_key": persona}))
+def _catalogue(client, persona, service_principal=None):
+    _assert_target_allowed(client, service_principal)
+    return client.request(
+        "GET",
+        _base_path(service_principal) + "/catalog?" + urllib.parse.urlencode({"persona_key": persona}),
+    )
 
 
 def _match_catalogue_model(catalogue, requested):
@@ -214,26 +218,16 @@ def _match_catalogue_model(catalogue, requested):
     if len(exact) > 1:
         raise CliError("The server catalogue returned an ambiguous model alias.", "ambiguous_model")
     raise CliError(
-        f"Model '{requested}' is not identified by the server catalogue for this persona. "
-        "Use a canonical ID shown by `adp models catalog --persona ...`; this gateway does not yet publish aliases.",
+        f"Model '{requested}' is not present among the canonical IDs or pinned aliases returned by the server catalogue. "
+        "Use a value shown by `adp models catalog --persona ...`.",
         "unknown_model",
     )
 
 
-def _published_model(client, persona, model):
-    """Return catalogue resolution, or None when the server publishes no alias.
-
-    A normal write can still send the opaque input to the API, whose validator
-    is authoritative. A dry-run cannot: claiming validation without a server
-    preview endpoint would be a false positive.
-    """
-    catalogue = _catalogue(client, persona)
-    try:
-        row = _match_catalogue_model(catalogue, model)
-    except CliError as exc:
-        if exc.code == "unknown_model":
-            return None, catalogue
-        raise
+def _published_model(client, persona, model, service_principal=None):
+    """Resolve only canonical IDs and aliases published by the target catalogue."""
+    catalogue = _catalogue(client, persona, service_principal)
+    row = _match_catalogue_model(catalogue, model)
     reason = row.get("reason")
     if not row.get("selectable"):
         exit_code = 4 if reason in WAITABLE_REASONS else 5
@@ -255,6 +249,11 @@ def reject_secret_arguments(argv):
                 "secret_in_argv",
                 1,
             )
+
+
+def _principal_id(response):
+    """Accept the common human field and the explicit service-principal field."""
+    return response.get("canonical_service_principal_id") or response.get("principal_id")
 
 
 def _confirm(args, action):
@@ -305,32 +304,16 @@ def run(args, client):
         raise CliError(f"The gateway did not return persona '{args.persona}' in the effective mapping list.", "invalid_response")
 
     if args.action == "set":
-        # The current API has no delegated-principal catalogue or preview
-        # endpoint. Using the human caller's catalogue for an administered
-        # service principal would validate against the wrong destination.
-        if target and args.dry_run:
-            raise CliError(
-                "Dry-run for an administered service principal requires a target-scoped server preview endpoint; this gateway does not provide one.",
-                "dry_run_unavailable",
-                4,
-            )
-        model_row, catalogue = (None, None) if target else _published_model(client, args.persona, args.model)
-        if args.dry_run and model_row is None:
-            raise CliError(
-                "The gateway catalogue does not publish this alias, so the CLI cannot resolve it without writing. "
-                "Use a canonical ID shown by catalog.",
-                "dry_run_unavailable",
-                4,
-            )
-        canonical = model_row["canonical_model_id"] if model_row else None
-        already_saved = before.get("saved_model_id") == canonical if canonical else before.get("requested_alias") == args.model
+        model_row, catalogue = _published_model(client, args.persona, args.model, target)
+        canonical = model_row["canonical_model_id"]
+        already_saved = before.get("saved_model_id") == canonical
         detail = {
             "principal_kind": before_response.get("principal_kind"),
-            "principal_id": before_response.get("principal_id"),
+            "principal_id": _principal_id(before_response),
             "persona_key": args.persona,
             "requested_model": args.model,
             "canonical_model_id": canonical,
-            "compatibility_class": catalogue.get("compatibility_class") if catalogue else None,
+            "compatibility_class": catalogue.get("compatibility_class"),
             "changed": not already_saved,
         }
         if args.dry_run:
@@ -342,8 +325,7 @@ def run(args, client):
             detail.update(before)
             detail["changed"] = False
             return common.envelope("ok", _command_name(args), detail)
-        destination = canonical or args.model
-        _confirm(args, f"Set persona '{args.persona}' to '{destination}' for principal {before_response.get('principal_id')}.")
+        _confirm(args, f"Set persona '{args.persona}' to '{canonical}' for principal {_principal_id(before_response)}.")
         current = _entry_for(_list(client, target), args.persona)
         if not _same_entry(before, current):
             raise CliError("The mapping changed while this command was preparing. Read it and retry.", "revision_conflict")
@@ -374,7 +356,7 @@ def run(args, client):
         result = _explain(client, args.persona, target)
         result["changed"] = False
         return common.envelope("ok", _command_name(args), result)
-    _confirm(args, f"Reset persona '{args.persona}' for principal {before_response.get('principal_id')} to its class default.")
+    _confirm(args, f"Reset persona '{args.persona}' for principal {_principal_id(before_response)} to its class default.")
     current = _entry_for(_list(client, target), args.persona)
     if not _same_entry(before, current):
         raise CliError("The mapping changed while this command was preparing. Read it and retry.", "revision_conflict")

@@ -63,7 +63,7 @@ class StubApi:
         if path.endswith("/catalog?persona_key=architect"):
             return self.catalogue
         if path.endswith("/manageable-service-principals"):
-            return {"principals": [{"canonical_principal_id": "sp-1", "manageable": True}]}
+            return {"principals": [{"canonical_service_principal_id": "sp-1", "manageable": True}]}
         if "/explain/" in path:
             return {
                 "persona_key": "architect",
@@ -121,10 +121,29 @@ def test_admin_list_uses_only_the_canonical_service_principal_path() -> None:
     assert client.calls[0][1] == "/service-principals/sp%20%2F%201/persona-models"
 
 
+def test_service_projection_uses_the_explicit_canonical_field() -> None:
+    client = StubApi(before={"canonical_service_principal_id": "sp-1", "principal_kind": "service_account", "entries": mapping()["entries"]})
+    result = cli.run(
+        parse(
+            "mappings",
+            "set",
+            "--service-principal",
+            "sp-1",
+            "--persona",
+            "architect",
+            "--model",
+            CANONICAL,
+            "--dry-run",
+        ),
+        client,
+    )
+    assert result["detail"]["principal_id"] == "sp-1"
+
+
 def test_service_principal_discovery_uses_server_authority() -> None:
     client = StubApi()
     result = cli.run(parse("service-principals", "list"), client)
-    assert result["detail"]["principals"][0]["canonical_principal_id"] == "sp-1"
+    assert result["detail"]["principals"][0]["canonical_service_principal_id"] == "sp-1"
 
 
 def test_set_passes_the_observed_revision() -> None:
@@ -168,38 +187,38 @@ def test_missing_alias_metadata_is_an_explicit_contract_gap() -> None:
     client = StubApi(model_catalogue=catalogue())
     with pytest.raises(cli.CliError) as raised:
         cli.run(parse("mappings", "set", "--persona", "architect", "--model", "opus5", "--dry-run"), client)
-    assert raised.value.code == "dry_run_unavailable"
-    assert raised.value.exit_code == 4
+    assert raised.value.code == "unknown_model"
+    assert raised.value.exit_code == 5
     assert not hasattr(cli, "PERSONA_MODEL_ALIASES")
 
 
-def test_unpublished_alias_can_be_validated_by_the_authoritative_write_endpoint() -> None:
+def test_unpublished_alias_is_refused_without_a_write() -> None:
     client = StubApi(model_catalogue=catalogue())
-    result = cli.run(parse("mappings", "set", "--persona", "architect", "--model", "opus5", "--yes"), client)
-    put = next(call for call in client.calls if call[0] == "PUT")
-    assert put[2]["model"] == "opus5"
-    assert result["detail"]["effective_model_id"] == CANONICAL
-
-
-def test_admin_dry_run_refuses_instead_of_using_the_human_destination() -> None:
-    client = StubApi()
     with pytest.raises(cli.CliError) as raised:
-        cli.run(
-            parse(
-                "mappings",
-                "set",
-                "--service-principal",
-                "sp-1",
-                "--persona",
-                "architect",
-                "--model",
-                CANONICAL,
-                "--dry-run",
-            ),
-            client,
-        )
-    assert raised.value.code == "dry_run_unavailable"
-    assert raised.value.exit_code == 4
+        cli.run(parse("mappings", "set", "--persona", "architect", "--model", "opus5", "--yes"), client)
+    assert raised.value.code == "unknown_model"
+    assert not any(method == "PUT" for method, _path, _body in client.calls)
+
+
+def test_admin_dry_run_uses_the_target_catalogue_not_human_self() -> None:
+    client = StubApi()
+    result = cli.run(
+        parse(
+            "mappings",
+            "set",
+            "--service-principal",
+            "sp-1",
+            "--persona",
+            "architect",
+            "--model",
+            CANONICAL,
+            "--dry-run",
+        ),
+        client,
+    )
+    assert result["detail"]["dry_run"] is True
+    assert any(path == "/service-principals/sp-1/persona-models/catalog?persona_key=architect" for _method, path, _body in client.calls)
+    assert not any(path == "/me/persona-models/catalog?persona_key=architect" for _method, path, _body in client.calls)
     assert not any(method in {"PUT", "DELETE"} for method, _path, _body in client.calls)
 
 
