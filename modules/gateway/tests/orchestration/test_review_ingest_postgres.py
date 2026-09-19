@@ -71,12 +71,14 @@ from src.orchestration.pr_identity import PrIdentityError
 from src.orchestration.review_evidence import ReviewEvidenceRefusal
 from src.orchestration.review_ingest import ingest_review_result, resolve_review_context, verified_artifact_refs
 from src.orchestration.work_claims import OwnerKind
+from tests.agentauth.test_artifact_service import artifacts as artifacts_fixture
 
 # Re-exported through tests/migrations/conftest.py, but this file lives in
 # tests/orchestration/, so the fixtures are imported explicitly. `pg_server` is
 # session-scoped, so a run that also touches the migration tests shares one server.
 from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url  # noqa: F401
 
+artifacts = artifacts_fixture
 pytestmark = pytest.mark.integration
 
 # The same shared artifact every other suite reads. A hand-written document here
@@ -499,8 +501,11 @@ class TestWhichReferencesCount:
         sneaky = _ref("artifact", f"prefix-confusion/{OWN_PREFIX}review/abc.json")
         result = SimpleNamespace(evidence_refs=[mine, theirs, sneaky], findings=[])
 
-        trusted = await verified_artifact_refs(result, own_prefix=OWN_PREFIX, provider_check_refs=frozenset())
+        assert await verified_artifact_refs(result, own_prefix=OWN_PREFIX, provider_check_refs=frozenset()) == frozenset()
+        resolver = AsyncMock(return_value=True)
+        trusted = await verified_artifact_refs(result, own_prefix=OWN_PREFIX, provider_check_refs=frozenset(), resolve_artifact_ref=resolver)
         assert trusted == frozenset({mine.ref})
+        resolver.assert_awaited_once_with(mine.ref)
 
     async def test_an_unverifiable_kind_is_never_trusted(self):
         """A kind the server cannot resolve must not be waved through.
@@ -676,3 +681,83 @@ class TestTheRecordedEvidence:
         async with sessions() as session:
             actions = (await session.execute(select(OrchestrationAction))).scalars().all()
         assert actions == [], "the ingest path committed on its own"
+
+
+@pytest.fixture
+async def upload_pipeline(artifacts, story, sessions, monkeypatch):
+    """Real artifact route, S3 storage, observer and SQL; mock only external identity."""
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from tests.agentauth.test_run_services import GRANT, RECORD
+
+    client, runtime, storage = artifacts
+    record = replace(RECORD, tenant_id=ORG, invocation_id=REVIEWER_RUN, flow_id=story["flow_id"])
+    grant = replace(GRANT, tenant_id=ORG, principal=record.principal, flow_id=story["flow_id"])
+    runtime.authenticate.return_value = (SimpleNamespace(uid="pod-one"), "caller", record, grant)
+    runtime.store = SimpleNamespace(
+        _read=Mock(
+            return_value={
+                "orchestration_node_id": {"S": story["node_id"]},
+                "orchestration_node_attempt": {"N": "1"},
+                "installation_id": {"N": str(INSTALLATION)},
+                "persona": {"S": "reviewer"},
+            }
+        )
+    )
+    monkeypatch.setattr("src.shared.database.get_session_factory", lambda: sessions)
+    return SimpleNamespace(client=client, storage=storage, record=record, runtime=runtime)
+
+
+async def test_uploaded_bytes_remain_retrievable_after_sql_reload_and_changed_bytes_conflict(upload_pipeline, story, sessions):
+    import hashlib
+    from urllib.parse import urlsplit
+
+    from tests.agentauth.test_run_services import HEADERS
+
+    pipeline = upload_pipeline
+    body = document(story)
+    raw = json.dumps(body).encode()
+    with provider(checks=head_bound_check_refs(body)):
+        first = await pipeline.client.post("/internal/v1/agent/self/artifacts/review-result", content=raw, headers=HEADERS)
+        replay = await pipeline.client.post("/internal/v1/agent/self/artifacts/review-result", content=raw, headers=HEADERS)
+        body["findings"][0]["summary"] = "Different immutable review content under the same result ID"
+        changed = await pipeline.client.post("/internal/v1/agent/self/artifacts/review-result", json=body, headers=HEADERS)
+    assert first.status_code == replay.status_code == changed.status_code == 200
+    assert first.json() == replay.json()
+    assert first.json()["recorded"] is True
+    assert changed.json()["recorded"] is False
+    assert changed.json()["refusal"] == "not_recorded"
+    receipt = first.json()
+    async with sessions() as session:
+        action = (await session.execute(select(OrchestrationAction).where(OrchestrationAction.org_id == ORG))).scalar_one()
+        assert action.artifact_ref == action.receipt_ref == receipt["evidence_ref"]
+    stored = urlsplit(action.artifact_ref)
+    retrieved = pipeline.storage.get_object(Bucket=stored.netloc, Key=stored.path.lstrip("/"))["Body"].read()
+    assert retrieved == raw
+    assert stored.fragment == "sha256=" + hashlib.sha256(retrieved).hexdigest()
+    assert json.loads(retrieved)["findings"][0]["summary"] != body["findings"][0]["summary"]
+
+
+@pytest.mark.parametrize("storage_state", ["present", "absent", "corrupt", "wrong-kind"])
+async def test_artifact_citations_require_actual_stored_content(upload_pipeline, story, storage_state):
+    from src.agentauth.artifact_keys import artifact_prefix
+    from tests.agentauth.test_run_services import HEADERS
+
+    pipeline = upload_pipeline
+    uploaded = await pipeline.client.post("/internal/v1/agent/self/artifacts/transcript", content=b"actual test output", headers=HEADERS)
+    key = uploaded.json()["key"]
+    if storage_state == "absent":
+        pipeline.storage.delete_object(Bucket="run-logs", Key=key)
+    elif storage_state == "corrupt":
+        pipeline.storage.put_object(Bucket="run-logs", Key=key, Body=b"wrong bytes", ContentType="text/markdown")
+    elif storage_state == "wrong-kind":
+        key = artifact_prefix(pipeline.record) + "unsupported/" + "a" * 64 + ".json"
+    body = document(story)
+    body["evidence_refs"].append({"kind": "artifact", "ref": key, "head_bound": True})
+    with provider(checks=head_bound_check_refs(body)):
+        response = await pipeline.client.post("/internal/v1/agent/self/artifacts/review-result", json=body, headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["recorded"] is (storage_state == "present"), response.json()
+    if storage_state != "present":
+        assert response.json()["refusal"] == "untrusted_artifact"

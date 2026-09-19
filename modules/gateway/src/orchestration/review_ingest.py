@@ -81,7 +81,8 @@ nothing here activates any authority.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import select
@@ -287,8 +288,7 @@ async def resolve_review_context(
         # reviewer defect instead of a provider outage.
         raise ReviewEvidenceError(
             ReviewEvidenceRefusal.ARTIFACTS_UNVERIFIED,
-            "The provider's check runs for the reviewed commit could not be read, so the test evidence this review relies on "
-            "cannot be confirmed.",
+            "The provider's check runs for the reviewed commit could not be read, so the test evidence this review relies on cannot be confirmed.",
         ) from None
 
     return ResolvedReviewContext(
@@ -310,6 +310,7 @@ async def verified_artifact_refs(
     *,
     own_prefix: str,
     provider_check_refs: frozenset[str],
+    resolve_artifact_ref: Callable[[str], Awaitable[bool]] | None = None,
 ) -> frozenset[str]:
     """The head-bound references the server independently confirmed.
 
@@ -326,6 +327,10 @@ async def verified_artifact_refs(
     in that case instead (``HEAD_UNVERIFIED``), which is why this parameter is
     required rather than defaulted — a default would make the dangerous case the
     easy one to write.
+
+    ``resolve_artifact_ref`` is the storage service's bounded resolver: it checks
+    the server-supported kind, content-addressed key and actual stored digest.
+    Without it, an own-prefix string is unverified and cannot support a finding.
 
     Returns:
         The confirmed subset. Everything the document cites and this omits becomes
@@ -344,12 +349,11 @@ async def verified_artifact_refs(
             # Prefix, not substring: a reference merely *containing* another run's
             # prefix would otherwise verify, which is the cross-run confusion the
             # server-derived namespace exists to prevent.
-            if own_prefix and ref.ref.startswith(own_prefix):
+            if own_prefix and ref.ref.startswith(own_prefix) and resolve_artifact_ref is not None and await resolve_artifact_ref(ref.ref):
                 verified.add(ref.ref)
         elif ref.kind in CHECK_REF_KINDS and ref.ref in provider_check_refs:
             verified.add(ref.ref)
     return frozenset(verified)
-
 
 
 @dataclass(frozen=True)
@@ -399,6 +403,8 @@ async def ingest_review_result(
     reviewer_run_id: str,
     installation_id: int,
     own_artifact_prefix: str,
+    stored_artifact_ref: str | None = None,
+    resolve_artifact_ref: Callable[[str], Awaitable[bool]] | None = None,
 ) -> ReviewIngestOutcome:
     """Validate a submitted review result against protected state and record it.
 
@@ -409,8 +415,10 @@ async def ingest_review_result(
 
     ``document`` is the submitted artifact, parsed but otherwise untrusted.
     ``own_artifact_prefix`` is the reviewing run's server-derived artifact key
-    prefix, used to decide which head-bound references are verifiable; it must be
-    derived from the authenticated execution record, not from the request.
+    prefix, used to scope storage verification; it must be derived from the
+    authenticated execution record, not from the request. The production upload
+    supplies ``stored_artifact_ref`` as its server-owned S3 URI with SHA-256 so
+    both the prepared action and settled receipt remain retrievable after restart.
 
     Does **not** commit. The caller owns the transaction boundary because it also
     owns re-verifying the caller's authority after the write and before the commit
@@ -450,7 +458,9 @@ async def ingest_review_result(
         from src.orchestration.review_evidence import parse_review_result
 
         parsed = parse_review_result(document)
-        trusted = await verified_artifact_refs(parsed, own_prefix=own_artifact_prefix, provider_check_refs=context.provider_check_refs)
+        trusted = await verified_artifact_refs(
+            parsed, own_prefix=own_artifact_prefix, provider_check_refs=context.provider_check_refs, resolve_artifact_ref=resolve_artifact_ref
+        )
         evidence = validate_review_result(
             document,
             identity=context.identity,
@@ -477,5 +487,7 @@ async def ingest_review_result(
         )
         return ReviewIngestOutcome(evidence=None, refusal=error.code, detail=error.message, ledger=None)
 
+    if stored_artifact_ref is not None:
+        evidence = replace(evidence, artifact_ref=stored_artifact_ref)
     ledger = await record_review_evidence(session, identity=context.identity, evidence=evidence)
     return ReviewIngestOutcome(evidence=evidence, refusal=None, detail=None, ledger=ledger)

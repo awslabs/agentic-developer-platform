@@ -1477,7 +1477,7 @@ class TestTheValidatorIsPackagedWithTheArtifact:
         assert caught.value.code is ReviewEvidenceRefusal.CONTRACT_UNAVAILABLE
 
     def test_the_refusal_names_where_it_looked(self, tmp_path):
-        """"Not found" is only actionable if an operator can see the paths tried."""
+        """ "Not found" is only actionable if an operator can see the paths tried."""
         shallow = tmp_path / "src" / "orchestration" / "review_evidence.py"
         shallow.parent.mkdir(parents=True)
         shallow.write_text("", encoding="utf-8")
@@ -1516,9 +1516,7 @@ class TestTheValidatorIsPackagedWithTheArtifact:
         """
         from src.orchestration import review_contract_selfcheck
 
-        assert review_contract_selfcheck._candidates() == list(
-            review_evidence_module._contract_candidates()
-        )
+        assert review_contract_selfcheck._candidates() == list(review_evidence_module._contract_candidates())
 
     def test_the_selfcheck_passes_here_and_fails_without_the_contract(self, tmp_path):
         """The gate must be capable of failing, or it certifies nothing."""
@@ -1559,3 +1557,12 @@ class TestTheValidatorIsPackagedWithTheArtifact:
             failures = review_contract_selfcheck.run()
         sys.modules.pop("_review_contract_selfcheck", None)
         assert any("rejects the shipped fixture" in failure for failure in failures)
+
+
+@pytest.mark.parametrize("head", ["", " ", "not-a-provider-sha", False])
+def test_present_but_unusable_provider_head_refuses(head):
+    state = matching_state(APPROVE)
+    state["actual_head_sha"] = head
+    with pytest.raises(ReviewEvidenceError) as caught:
+        validate_review_result(APPROVE, **state)
+    assert caught.value.code is ReviewEvidenceRefusal.HEAD_UNVERIFIED

@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -592,13 +593,15 @@ def validate_review_result(
         # moved the head, which is the whole point of binding review to an exact
         # revision.
         unverified.append("the provider's current head was not read, so a later push may have invalidated this review")
+    elif not isinstance(actual_head_sha, str) or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", actual_head_sha) is None:
+        raise ReviewEvidenceError(ReviewEvidenceRefusal.HEAD_UNVERIFIED, "The provider returned no usable current head.")
     if trusted_artifact_refs is None and _head_bound_refs(result):
         # Only when the result actually leans on head-bound references. A review
         # citing none has nothing to verify, and reporting a missing check that does
         # not apply would train a reader to ignore the field.
         unverified.append("the head-bound artifact references this review relies on were not verified")
 
-    current_head = actual_head_sha or binding.head_sha
+    current_head = binding.head_sha if actual_head_sha is None else actual_head_sha
     if result.subject.reviewed_head_sha != current_head:
         # Refused rather than invalidated-and-accepted. `invalidate_for_head` exists
         # for a caller that wants to retain the downgraded artifact; as *evidence*

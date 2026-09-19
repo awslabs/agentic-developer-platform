@@ -87,10 +87,14 @@ class TestWhatTheReviewIsCheckedAgainst:
         taken from the document, a reviewer could nominate the story it reviewed, the
         attempt it reviewed, who it was, or whose artifacts count as its own.
         """
-        await observe_review_upload(RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify)
+        await observe_review_upload(
+            RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+        )
 
         assert observer.calls[0] == {
             "document": DOCUMENT,
+            "stored_artifact_ref": "s3://run-logs/review.json#sha256=abc",
+            "resolve_artifact_ref": None,
             "org_id": "tenant-one",
             "node_id": "node-one",
             "attempt": 3,
@@ -119,7 +123,9 @@ class TestWhatTheReviewIsCheckedAgainst:
             "artifact_prefix": "runs/attacker/",
             "own_artifact_prefix": "runs/attacker/",
         }
-        await observe_review_upload(RECORD, EXECUTION, document=hostile, reverify=observer.reverify)
+        await observe_review_upload(
+            RECORD, EXECUTION, document=hostile, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+        )
 
         call = observer.calls[0]
         assert call["reviewer_run_id"] == "run-one"
@@ -155,7 +161,9 @@ class TestWhatTheReviewIsCheckedAgainst:
         story to be checked against in the first place.
         """
         with pytest.raises((ValueError, KeyError)):
-            await observe_review_upload(RECORD, execution, document=DOCUMENT, reverify=observer.reverify)
+            await observe_review_upload(
+                RECORD, execution, document=DOCUMENT, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+            )
         assert observer.events == [], "a caller that is not a dispatched reviewer must do no work"
 
 
@@ -168,7 +176,9 @@ class TestNothingBecomesDurableWithoutARecheckedCredential:
         re-check has to be the last thing before durability — a check after the
         commit would only be able to report a write it can no longer undo.
         """
-        await observe_review_upload(RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify)
+        await observe_review_upload(
+            RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+        )
         assert observer.events == ["ingest", "reverify", "commit"]
 
     async def test_a_failed_recheck_leaves_nothing_committed(self, observer):
@@ -177,7 +187,9 @@ class TestNothingBecomesDurableWithoutARecheckedCredential:
             raise PermissionError("grant withdrawn")
 
         with pytest.raises(PermissionError):
-            await observe_review_upload(RECORD, EXECUTION, document=DOCUMENT, reverify=withdrawn)
+            await observe_review_upload(
+                RECORD, EXECUTION, document=DOCUMENT, reverify=withdrawn, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+            )
         assert observer.events == ["ingest", "reverify"], "the evidence was committed under a withdrawn credential"
 
     async def test_a_validation_refusal_carries_its_arm_and_commits_nothing(self, observer):
@@ -191,7 +203,9 @@ class TestNothingBecomesDurableWithoutARecheckedCredential:
         observer.outcome.detail = "The review examined a commit that is no longer the head."
 
         with pytest.raises(ReviewUploadRefusedError) as refused:
-            await observe_review_upload(RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify)
+            await observe_review_upload(
+                RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+            )
 
         assert refused.value.code == ReviewEvidenceRefusal.STALE_HEAD.value
         assert refused.value.detail == "The review examined a commit that is no longer the head."
@@ -209,7 +223,9 @@ class TestNothingBecomesDurableWithoutARecheckedCredential:
         observer.outcome.ledger = SimpleNamespace(reason="claim_superseded")
 
         with pytest.raises(ReviewUploadRefusedError) as refused:
-            await observe_review_upload(RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify)
+            await observe_review_upload(
+                RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+            )
 
         assert refused.value.code == "not_recorded"
         assert "retry" in refused.value.detail
@@ -223,13 +239,17 @@ class TestTheReceipt:
         The reference is what a later read resolves; findings prose in a transport
         receipt would be a second, unvalidated copy of the review.
         """
-        receipt = await observe_review_upload(RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify)
+        receipt = await observe_review_upload(
+            RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+        )
         assert receipt == {"recorded": True, "evidence_ref": "artifact:runs/x/review.json"}
 
     async def test_the_reference_is_read_from_the_recorded_evidence(self, observer):
         """Not recomputed here. One source, so the two cannot disagree."""
         observer.outcome.evidence = SimpleNamespace(artifact_ref="artifact:runs/other/review.json")
-        receipt = await observe_review_upload(RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify)
+        receipt = await observe_review_upload(
+            RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+        )
         assert receipt["evidence_ref"] == "artifact:runs/other/review.json"
 
 
@@ -244,5 +264,7 @@ class TestTheRefusalIsUsableByAnOperator:
             observer.outcome.refusal = arm
             observer.outcome.detail = "detail"
             with pytest.raises(ReviewUploadRefusedError) as refused:
-                await observe_review_upload(RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify)
+                await observe_review_upload(
+                    RECORD, EXECUTION, document=DOCUMENT, reverify=observer.reverify, stored_artifact_ref="s3://run-logs/review.json#sha256=abc"
+                )
             assert ReviewEvidenceRefusal(refused.value.code) is arm

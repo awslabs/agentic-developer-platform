@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 
 import boto3
 from botocore.config import Config
@@ -74,7 +75,7 @@ async def upload_artifact(kind: str, request: Request, runtime: AgentRuntime = D
                 # Stored first, then observed. The document survives a refusal: an
                 # attempted-and-refused review is a fact an operator needs, and a
                 # reviewer told "refused" with nothing retained cannot evidence it.
-                receipt |= await _observe_review_result(request, runtime, current, body=body)
+                receipt |= await _observe_review_result(request, runtime, current, body=body, receipt=receipt, storage=storage)
             final = await live_context(request, runtime)
             if current[1:] != final[1:]:
                 raise HTTPException(404, "not found")
@@ -83,7 +84,7 @@ async def upload_artifact(kind: str, request: Request, runtime: AgentRuntime = D
         raise HTTPException(503, "artifact storage unavailable") from None
 
 
-async def _observe_review_result(request: Request, runtime: AgentRuntime, context, *, body: bytes) -> dict:
+async def _observe_review_result(request: Request, runtime: AgentRuntime, context, *, body: bytes, receipt: dict, storage) -> dict:
     """Validate and record an uploaded review result (#5146).
 
     Only this kind reaches orchestration state, so the work lives in
@@ -122,8 +123,22 @@ async def _observe_review_result(request: Request, runtime: AgentRuntime, contex
         if (await live_context(request, runtime))[1:] != context[1:]:
             raise HTTPException(404, "not found")
 
+    verified: dict[str, bool] = {}
+
+    async def resolve_artifact_ref(key: str) -> bool:
+        if key not in verified:
+            verified[key] = await run_in_threadpool(_verify_stored_artifact, key, record=record, runtime=runtime, storage=storage)
+        return verified[key]
+
     try:
-        return await observe_review_upload(record, execution, document=document, reverify=reverify)
+        return await observe_review_upload(
+            record,
+            execution,
+            document=document,
+            reverify=reverify,
+            stored_artifact_ref=f"{receipt['uri']}#sha256={receipt['sha256']}",
+            resolve_artifact_ref=resolve_artifact_ref,
+        )
     except ReviewUploadRefusedError as refused:
         return {"recorded": False, "refusal": refused.code, "detail": refused.detail}
     except (KeyError, TypeError, ValueError):
@@ -131,3 +146,27 @@ async def _observe_review_result(request: Request, runtime: AgentRuntime, contex
         # not a dispatched reviewer, and indistinguishable from a run that does
         # not exist.
         raise HTTPException(404, "not found") from None
+
+
+def _verify_stored_artifact(key: str, *, record, runtime, storage) -> bool:
+    """Resolve only server-supported own-run keys and verify the stored bytes."""
+    prefix = artifact_prefix(record)
+    if not key.startswith(prefix):
+        return False
+    relative = key[len(prefix) :]
+    kind, separator, filename = relative.partition("/")
+    if not separator or kind not in _KINDS:
+        return False
+    bucket_env, extension, content_type = _KINDS[kind]
+    match = re.fullmatch(r"([a-f0-9]{64})\." + re.escape(extension), filename)
+    config = os.environ if runtime.env is None else runtime.env
+    bucket = config.get(bucket_env)
+    if match is None or not bucket:
+        return False
+    try:
+        obj = storage.get_object(Bucket=bucket, Key=key)
+        with obj["Body"] as source:
+            data = source.read(MAX_ARTIFACT_BYTES + 1)
+        return 0 < len(data) <= MAX_ARTIFACT_BYTES and obj.get("ContentType") == content_type and hashlib.sha256(data).hexdigest() == match[1]
+    except (BotoCoreError, ClientError, OSError):
+        return False

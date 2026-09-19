@@ -172,8 +172,8 @@ async def reviews(artifacts, monkeypatch):
     runtime.store = SimpleNamespace(_read=Mock(return_value=dict(REVIEW_EXECUTION)))
     observed = []
 
-    async def observe(record, execution, *, document, reverify):
-        observed.append({"record": record, "execution": execution, "document": document})
+    async def observe(record, execution, *, document, reverify, stored_artifact_ref, resolve_artifact_ref):
+        observed.append({"record": record, "execution": execution, "document": document, "stored_artifact_ref": stored_artifact_ref})
         await reverify()
         return {"recorded": True, "evidence_ref": "review-result:abc"}
 
@@ -255,7 +255,7 @@ class TestTheReviewResultIsStoredAndObserved:
 
         client, _, storage, _ = reviews
 
-        async def refuse(record, execution, *, document, reverify):
+        async def refuse(record, execution, *, document, reverify, **kwargs):
             raise ReviewUploadRefusedError("stale_head", "The review examined a commit that is no longer the head.")
 
         monkeypatch.setattr("src.agentauth.artifact_service.observe_review_upload", refuse)
@@ -336,7 +336,7 @@ class TestTheReviewResultIsStoredAndObserved:
         runtime.store = SimpleNamespace(_read=Mock(return_value=dict(REVIEW_EXECUTION)))
         after_recheck = []
 
-        async def observe(record, execution, *, document, reverify):
+        async def observe(record, execution, *, document, reverify, stored_artifact_ref, resolve_artifact_ref):
             if change == "revoked":
                 runtime.authenticate.side_effect = ExecutionStateError("revoked")
             else:

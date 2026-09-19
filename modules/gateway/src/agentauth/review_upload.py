@@ -119,7 +119,9 @@ def _reviewer_assignment(record: Any, execution: dict) -> tuple[str, int, int]:
     return node_id, attempt, installation_id
 
 
-async def observe_review_upload(record: Any, execution: dict, *, document: dict[str, Any], reverify: Any) -> dict[str, Any]:
+async def observe_review_upload(
+    record: Any, execution: dict, *, document: dict[str, Any], reverify: Any, stored_artifact_ref: str, resolve_artifact_ref=None
+) -> dict[str, Any]:
     """Record the uploaded review result as evidence, or refuse with its arm.
 
     ``record`` is the authenticated :class:`ExecutionRecord` and ``execution`` the
@@ -165,6 +167,8 @@ async def observe_review_upload(record: Any, execution: dict, *, document: dict[
             # The same prefix this upload was stored under, so a review citing its
             # own uploaded evidence verifies and one citing another run's does not.
             own_artifact_prefix=artifact_prefix(record),
+            stored_artifact_ref=stored_artifact_ref,
+            resolve_artifact_ref=resolve_artifact_ref,
         )
         if outcome.refusal is not None:
             # Nothing to commit: `ingest_review_result` writes only on success. The
