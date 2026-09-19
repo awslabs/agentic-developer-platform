@@ -2049,6 +2049,32 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             _checkout_existing_work_branch(branch_name)
             actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
             if actual_review_sha != expected_review_sha:
+                if all(
+                    re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)
+                    for sha in (expected_review_sha, actual_review_sha)
+                ):
+                    # An obsolete PR event cannot review a newer revision. Retrying
+                    # it holds the PR's FIFO group through every visibility timeout,
+                    # preventing the queued current-head review from starting.
+                    summary = json.dumps(
+                        {
+                            "status": "stale",
+                            "expected": expected_review_sha,
+                            "actual": actual_review_sha,
+                        }
+                    )
+                    update_invocation_status(
+                        message_id,
+                        arrived_at,
+                        "skipped",
+                        summary=summary,
+                        skip_reason="stale_review_head",
+                    )
+                    bootstrap_log.step_success(7, "stale_review_head", summary=summary)
+                    bootstrap_log.close()
+                    _delete_message(queue_url, region, receipt_handle)
+                    logger.info("Obsolete PR review acknowledged without executing a review")
+                    return 0
                 raise RuntimeError(
                     f"review head changed before checkout: expected {expected_review_sha}, "
                     f"found {actual_review_sha}"
