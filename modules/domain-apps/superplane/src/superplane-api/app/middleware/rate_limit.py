@@ -4,6 +4,7 @@ Uses a simple in-memory sliding window counter. In production, replace with
 Redis-backed rate limiting (e.g., via fastapi-limiter or custom Redis implementation).
 """
 
+import hashlib
 import logging
 import time
 from collections import defaultdict
@@ -71,29 +72,30 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._buckets: dict[str, RateLimitEntry] = defaultdict(RateLimitEntry)
 
     def _extract_key(self, request: Request) -> str:
-        """Extract a rate-limiting key from the request.
+        """Partition known observation callers by their configured identity.
 
-        Priority:
-        1. org_id from JWT (if available via request state)
-        2. Workspace ID from URL path
-        3. Client IP as fallback
+        Unauthenticated callers use the transport's client address; a spoofable
+        forwarded header cannot buy a fresh quota. Existing bearer traffic keeps
+        its token bucket. No raw credential is retained in a key or log.
         """
-        # Try to extract from path: /workspaces/{id}/...
-        path_parts = request.url.path.strip("/").split("/")
-        workspace_id = None
-        if len(path_parts) >= 2 and path_parts[0] == "workspaces":
-            workspace_id = path_parts[1]
+        auth_header = request.headers.get("authorization", "").strip()
+        if request.url.path.startswith("/internal/observations"):
+            from app.services.observations import load_submitters
 
-        # Try to get org_id from authorization header (lightweight parse)
-        auth_header = request.headers.get("authorization", "")
+            caller = load_submitters().resolve(auth_header) if auth_header else None
+            if caller is not None:
+                identity = hashlib.sha256(caller.submitter_id.encode()).hexdigest()
+                return f"observation:{identity}"
+            host = request.client.host if request.client else "unknown"
+            return f"observation:ip:{host}"
         org_key = "anonymous"
         if auth_header.startswith("Bearer "):
-            # Use a hash of the token as the key (don't decode here — too expensive)
-            token_hash = str(hash(auth_header))
-            org_key = f"token:{token_hash}"
-
-        if workspace_id:
-            return f"ws:{workspace_id}:{org_key}"
+            org_key = "token:" + hashlib.sha256(auth_header.encode()).hexdigest()
+        else:
+            org_key = "ip:" + (request.client.host if request.client else "unknown")
+        parts = request.url.path.strip("/").split("/")
+        if len(parts) >= 2 and parts[0] == "workspaces":
+            return f"ws:{parts[1]}:{org_key}"
         return f"global:{org_key}"
 
     async def dispatch(self, request: Request, call_next) -> Response:
