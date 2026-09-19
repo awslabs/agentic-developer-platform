@@ -137,10 +137,14 @@ usable independently of archival. The status service accepts transcript pointers
 only under the presenting run/attempt's transcript prefix, preventing an own-row
 write from becoming a read of another run's private artifact.
 
-The separate legacy Beads/Dolt S3 remote remains an outstanding source dependency:
-its shared repository state is not one of these five archive kinds. It must be
-mediated or explicitly migrated before the coding role's shared S3 access can be
-removed. This checkpoint is not complete artifact isolation or live acceptance.
+Protected workers use the existing GitHub task-tracking fallback instead of the
+optional shared Beads/Dolt S3 remote. They neither initialize that remote nor claim
+shared Beads tasks, and direct sync helpers explicitly refuse protected runs.
+Legacy Beads behavior is retained for the legacy cohort. This is a compatibility
+limitation: preserving shared Beads state for a future protected cohort requires a
+separately scoped service/migration. Environment guards select the runtime behavior;
+the protected IAM boundary must remove S3/SQS grants before isolation is enforced
+against agent-authored code. No live permission has been removed by this source.
 
 ## Prepared IAM contract
 

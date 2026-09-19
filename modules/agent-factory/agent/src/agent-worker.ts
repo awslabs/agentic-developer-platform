@@ -131,7 +131,7 @@ const AGENT_TYPE = process.env.AGENT_TYPE || 'developer';
 const AWS_REGION = workerAwsRegion();
 
 // Beads configuration - distributed state management (shared with PM)
-const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false';
+const BEADS_ENABLED = process.env.BEADS_ENABLED !== 'false' && !protectedArtifactRun();
 // Issue #4184: no `adp-agent-state` default — that bucket is in a foreign AWS
 // account and no IAM statement here permits it. Empty degrades to a clean no-op
 // (beads syncPull/syncPush guard on it); the real value arrives via
@@ -1990,6 +1990,8 @@ async function main(): Promise<void> {
   // Initialize Beads if available (shared state with PM)
   let beadsTaskId: string | null = null;
   let beadsAvailable = false;
+
+  if (protectedArtifactRun()) log('INFO', 'Protected run uses GitHub task tracking; shared Beads S3 sync is unavailable');
 
   if (BEADS_ENABLED) {
     configureBeads({
