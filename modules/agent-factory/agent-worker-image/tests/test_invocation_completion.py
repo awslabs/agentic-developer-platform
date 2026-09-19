@@ -408,3 +408,87 @@ def test_receipt_write_failure_does_not_ack(worker, monkeypatch):
     # The durable legacy status still avoids re-execution on redelivery.
     assert entrypoint.main() == 0
     assert len(executions) == 1
+
+
+@pytest.mark.parametrize("sha_length", [40, 64])
+@pytest.mark.parametrize("ack_fails", [False, True])
+def test_stale_pr_review_releases_queue_before_current_review(
+    worker, monkeypatch, sha_length, ack_fails
+):
+    client, envelope, executions, _, ack, _ = worker
+    expected, current = "a" * sha_length, "b" * sha_length
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha=expected)
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
+    attempts = 0
+
+    def verify_obsolete_receipt(*_args):
+        nonlocal attempts
+        attempts += 1
+        persisted = row(client, envelope)
+        assert persisted["status"] == {"S": "skipped"}
+        assert persisted["skip_reason"] == {"S": "stale_review_head"}
+        assert json.loads(persisted["summary"]["S"]) == {
+            "status": "stale",
+            "expected": expected,
+            "actual": current,
+        }
+        assert executions == []
+        if ack_fails and attempts == 1:
+            raise RuntimeError("SQS unavailable")
+
+    ack.side_effect = verify_obsolete_receipt
+    if ack_fails:
+        with pytest.raises(RuntimeError, match="SQS unavailable"):
+            entrypoint.main()
+    assert entrypoint.main() == 0
+    assert ack.call_count == 1 + int(ack_fails)
+    ack.assert_called_with(os.environ["QUEUE_URL"], "us-east-1", "receipt")
+    entrypoint.create_check_run.assert_not_called()
+    entrypoint._start_sigv4_proxy.assert_not_called()
+
+    # A new event for the actual head must still reach the review adapter.
+    ack.side_effect = None
+    envelope["message_id"] = "current-review"
+    envelope["source_ref"]["sha"] = current
+    seed(client, envelope)
+    assert entrypoint.main() == 0
+    assert executions == ["current-review"]
+    assert row(client, envelope)["status"] == {"S": "complete"}
+
+
+@pytest.mark.parametrize(
+    "expected,current", [("", "b" * 40), ("bad-sha", "b" * 40), ("a" * 40, "")]
+)
+def test_unverifiable_pr_head_does_not_acknowledge(worker, monkeypatch, expected, current):
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha=expected)
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
+    with pytest.raises(RuntimeError, match="review head changed before checkout"):
+        entrypoint.main()
+    ack.assert_not_called()
+    assert executions == []
+
+
+def test_pr_checkout_transport_failure_remains_retryable(worker, monkeypatch):
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha="a" * 40)
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    seed(client, envelope)
+    monkeypatch.setattr(
+        entrypoint,
+        "_checkout_existing_work_branch",
+        MagicMock(side_effect=RuntimeError("fetch unavailable")),
+    )
+    with pytest.raises(RuntimeError, match="fetch unavailable"):
+        entrypoint.main()
+    ack.assert_not_called()
+    assert executions == []
