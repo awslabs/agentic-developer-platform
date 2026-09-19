@@ -627,6 +627,7 @@ class VisibilityHeartbeat:
                 extend = heartbeat_task
             else:
                 sqs = boto3.client("sqs", region_name=self._region)
+
                 def extend():
                     return sqs.change_message_visibility(
                         QueueUrl=self._queue_url,
