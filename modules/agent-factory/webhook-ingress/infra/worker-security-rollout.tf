@@ -39,7 +39,7 @@ resource "aws_iam_role_policy_attachments_exclusive" "legacy_worker" {
 }
 
 variable "agent_authority_runtime_ready" {
-  description = "Release assertion that immutable gateway/worker revisions support run-bound marker/Door mediation and existing credential workflows; record canary evidence before enabling."
+  description = "Release assertion that immutable gateway/worker revisions support run-bound marker/Door/task/archive mediation and existing credential workflows; record canary evidence before enabling."
   type        = bool
   default     = false
 }
@@ -66,7 +66,7 @@ resource "terraform_data" "worker_security_rollout" {
     }
     precondition {
       condition     = !var.agent_authority_enabled || var.agent_authority_runtime_ready
-      error_message = "Protected workers require compatible immutable runtime revisions and marker/Door/credential canary evidence (#5195). Preparation can apply with agent_authority_prepared=true and agent_authority_enabled=false."
+      error_message = "Protected workers require compatible immutable runtime revisions and marker/Door/task/archive/credential canary evidence (#5195). Preparation can apply with agent_authority_prepared=true and agent_authority_enabled=false."
     }
     precondition {
       condition     = !var.agent_authority_enabled || var.agent_authority_legacy_workers_drained

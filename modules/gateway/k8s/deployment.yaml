@@ -80,6 +80,20 @@ spec:
                 name: adp-worker-authority-config
                 optional: true
           env:
+            # Shared service keys stay in the gateway; protected workers receive
+            # only authenticated own-run service results (#5195/#5210).
+            - name: ADP_MARKER_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-run-services
+                  key: marker-signing-key
+                  optional: true
+            - name: ADP_DOOR_SERVICE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: internal-api-key
+                  optional: true
             - name: AGENT_RUN_CREDENTIAL_KEY
               valueFrom:
                 secretKeyRef:

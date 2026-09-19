@@ -18,14 +18,8 @@ locals {
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/GET/internal/v1/user-credentials",
     "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/provenance*",
   ]
-  # Existing worker housekeeping still shares these stores. Per-run storage
-  # and queue access requires a separate supervisor rollout; these are exact
-  # environment/account resources, not a claim of per-run data isolation.
-  agent_authority_artifact_resources = [
-    "${aws_s3_bucket.agent_run_logs.arn}/*",
-    "arn:aws:s3:::adp-${var.environment}-agent-beads-state-${local.account_id}/*",
-    "arn:aws:s3:::adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}/*",
-  ]
+  # Protected task delivery and archives cross the run-authenticated gateway.
+  # No shared queue receipt or S3 bucket authority belongs in a worker role.
   agent_authority_boundary_allow = concat([
     for statement in local.agent_worker_scoped_policy.Statement : statement
     if contains([
@@ -46,18 +40,6 @@ locals {
       Condition = {
         StringEquals = { "kms:ViaService" = "dynamodb.${var.aws_region}.amazonaws.com" }
       }
-    },
-    {
-      Sid      = "WorkerQueue"
-      Effect   = "Allow"
-      Action   = ["sqs:ChangeMessageVisibility", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage"]
-      Resource = aws_sqs_queue.agent_submit.arn
-    },
-    {
-      Sid      = "WorkerArtifacts"
-      Effect   = "Allow"
-      Action   = ["s3:GetObject", "s3:PutObject"]
-      Resource = local.agent_authority_artifact_resources
     },
     {
       Sid      = "AuthenticatedGateway"
@@ -107,16 +89,16 @@ locals {
         Resource = "*"
       },
       {
-        Sid         = "DenyOtherArtifacts"
-        Effect      = "Deny"
-        Action      = ["s3:*"]
-        NotResource = local.agent_authority_artifact_resources
+        Sid      = "DenyDirectArtifacts"
+        Effect   = "Deny"
+        Action   = ["s3:*"]
+        Resource = "*"
       },
       {
-        Sid         = "DenyOtherQueues"
-        Effect      = "Deny"
-        Action      = ["sqs:*"]
-        NotResource = aws_sqs_queue.agent_submit.arn
+        Sid      = "DenyDirectQueues"
+        Effect   = "Deny"
+        Action   = ["sqs:*"]
+        Resource = "*"
       },
       {
         Sid         = "DenyOtherEncryptionKeys"

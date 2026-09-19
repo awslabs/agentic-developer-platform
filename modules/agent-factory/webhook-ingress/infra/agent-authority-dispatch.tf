@@ -18,6 +18,18 @@ resource "aws_iam_role_policy" "gateway_authorized_dispatch" {
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
         Resource = [aws_sqs_queue.agent_submit.arn]
+      },
+      {
+        Sid      = "DeliverOwnRunTask"
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:ChangeMessageVisibility", "sqs:DeleteMessage"]
+        Resource = [aws_sqs_queue.agent_submit.arn]
+      },
+      {
+        Sid      = "WriteOwnRunArtifacts"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = ["${aws_s3_bucket.agent_run_logs.arn}/runs/*"]
       }
     ]
   })

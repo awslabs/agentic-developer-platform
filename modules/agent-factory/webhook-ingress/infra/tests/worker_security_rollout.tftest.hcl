@@ -25,13 +25,13 @@ override_resource {
 override_resource {
   target          = aws_sqs_queue.agent_submit
   override_during = plan
-  values          = { arn = "arn:aws:sqs:us-east-1:123456789012:adp-dev-agent-submit.fifo" }
+  values          = { arn = "arn:aws:sqs:us-east-1:123456789012:adp-dev-agent-submit.fifo", url = "https://sqs.us-east-1.amazonaws.com/123456789012/adp-dev-agent-submit.fifo" }
 }
 
 override_resource {
   target          = aws_s3_bucket.agent_run_logs
   override_during = plan
-  values          = { arn = "arn:aws:s3:::adp-dev-agent-run-logs-123456789012" }
+  values          = { arn = "arn:aws:s3:::adp-dev-agent-run-logs-123456789012", bucket = "adp-dev-agent-run-logs-123456789012" }
 }
 
 # -----------------------------------------------------------------------------
@@ -139,6 +139,7 @@ override_resource {
   override_during = plan
   values = {
     arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/marker-signing-key"
+    id  = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/marker-signing-key"
   }
 }
 
@@ -282,4 +283,96 @@ run "retired_source_keeps_only_customer_sts_authority" {
     condition     = jsondecode(aws_iam_role_policy.agent_scaledjob_permissions.policy).Statement[2].Resource == "arn:aws:iam::123456789012:role/*"
     error_message = "The retired source must deny chaining into the platform account."
   }
+}
+
+
+# A fixture key only. Tests never read AWS; activation must use the existing
+# webhook key, not Terraform's public bootstrap placeholder.
+override_data {
+  target          = data.aws_secretsmanager_secret_version.worker_marker
+  override_during = plan
+  values = {
+    secret_string = "fixture-only-32-byte-key-never-deploy"
+    version_id    = "fixture-current-version"
+  }
+}
+
+run "preparation_does_not_read_or_project_marker_key_or_receive_tasks" {
+  command = plan
+  assert {
+    condition = (
+      length(data.aws_secretsmanager_secret_version.worker_marker) == 0 &&
+      length(kubernetes_secret.worker_run_services) == 0 &&
+      kubernetes_config_map.worker_gateway[0].data.ADP_RUN_TASKS_ENABLED == "false" &&
+      !contains(keys(kubernetes_config_map.worker_gateway[0].data), "ADP_RUN_TASK_QUEUE_URL")
+    )
+    error_message = "Preparation must not read/project service keys or activate task consumption."
+  }
+}
+
+run "active_run_services_are_gateway_owned" {
+  command = plan
+  variables {
+    agent_authority_enabled                = true
+    agent_authority_runtime_ready          = true
+    agent_authority_legacy_workers_drained = true
+    agent_worker_admission_paused          = true
+  }
+  assert {
+    condition = (
+      kubernetes_config_map.worker_gateway[0].data.ADP_RUN_TASKS_ENABLED == "true" &&
+      kubernetes_config_map.worker_gateway[0].data.ADP_RUN_TASK_QUEUE_URL == aws_sqs_queue.agent_submit.url &&
+      kubernetes_config_map.worker_gateway[0].data.AGENT_RUN_LOGS_BUCKET == aws_s3_bucket.agent_run_logs.bucket &&
+      kubernetes_config_map.worker_gateway[0].data.AGENT_FALLBACK_BUCKET == aws_s3_bucket.agent_run_logs.bucket &&
+      kubernetes_config_map.worker_gateway[0].data.ADP_DOOR_SERVICE_URL == var.agent_door_service_url
+    )
+    error_message = "Gateway task and archive settings must select only this environment's resources."
+  }
+  assert {
+    condition = (
+      kubernetes_secret.worker_run_services[0].metadata[0].namespace == var.gateway_namespace &&
+      kubernetes_secret.worker_run_services[0].data["marker-signing-key"] == data.aws_secretsmanager_secret_version.worker_marker[0].secret_string
+    )
+    error_message = "Project the existing marker key only to the gateway namespace."
+  }
+  assert {
+    condition = jsondecode(aws_iam_role_policy.gateway_authorized_dispatch[0].policy).Statement[2] == {
+      Sid      = "DeliverOwnRunTask", Effect = "Allow",
+      Action   = ["sqs:ReceiveMessage", "sqs:ChangeMessageVisibility", "sqs:DeleteMessage"],
+      Resource = [aws_sqs_queue.agent_submit.arn]
+    }
+    error_message = "Gateway task delivery needs receive/heartbeat/ack only on its queue."
+  }
+  assert {
+    condition = jsondecode(aws_iam_role_policy.gateway_authorized_dispatch[0].policy).Statement[3] == {
+      Sid      = "WriteOwnRunArtifacts", Effect = "Allow", Action = ["s3:PutObject"],
+      Resource = ["${aws_s3_bucket.agent_run_logs.arn}/runs/*"]
+    }
+    error_message = "Gateway archive writes must be limited to the run namespace."
+  }
+  assert {
+    condition = (
+      yamldecode(local.keda_trigger_auth_yaml).spec.podIdentity.identityOwner == "keda"
+    )
+    error_message = "KEDA must poll under its own identity now workers have no SQS access."
+  }
+}
+
+run "activation_refuses_placeholder_marker_key" {
+  command = plan
+  variables {
+    agent_authority_enabled                = true
+    agent_authority_runtime_ready          = true
+    agent_authority_legacy_workers_drained = true
+    agent_worker_admission_paused          = true
+  }
+  override_data {
+    target          = data.aws_secretsmanager_secret_version.worker_marker
+    override_during = plan
+    values = {
+      secret_string = "PLACEHOLDER_GENERATE_WITH_OPENSSL_RAND"
+      version_id    = "unseeded-version"
+    }
+  }
+  expect_failures = [kubernetes_secret.worker_run_services]
 }

@@ -16,5 +16,21 @@ if [[ " $refs " != *" adp-worker-authority-config "* ]]; then
   echo "Worker prerequisites prepared; deploy the compatible gateway template before activation."
   exit 0
 fi
+if [[ "$ADP_AUTHORITY_ENABLED" == true ]]; then
+  # Check references, never secret values. An old gateway template may consume
+  # the ConfigMap but lack the keys needed by the mediated run services.
+  secret_refs=$(kubectl --request-timeout=30s get deployment bedrockgateway -n "$ADP_NAMESPACE" \
+    -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="bedrockgateway")].env[*]}{.name}={.valueFrom.secretKeyRef.name}/{.valueFrom.secretKeyRef.key}{"\n"}{end}')
+  for required in \
+    'AGENT_RUN_CREDENTIAL_KEY=agent-authority-signing/run-credential-key' \
+    'AGENT_CONTROL_ENVELOPE_SIGNING_KEY=agent-authority-signing/envelope-signing-key' \
+    'ADP_MARKER_SIGNING_KEY=agent-run-services/marker-signing-key' \
+    'ADP_DOOR_SERVICE_KEY=bedrockgateway-secrets/internal-api-key'; do
+    if ! grep -Fqx -- "$required" <<< "$secret_refs"; then
+      echo "Gateway deployment is missing run-service secret reference: ${required%%=*}" >&2
+      exit 1
+    fi
+  done
+fi
 kubectl rollout restart deployment/bedrockgateway -n "$ADP_NAMESPACE"
 kubectl rollout status deployment/bedrockgateway -n "$ADP_NAMESPACE" --timeout=300s

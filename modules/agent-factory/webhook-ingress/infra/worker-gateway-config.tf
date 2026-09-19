@@ -4,6 +4,10 @@
 locals {
   worker_gateway_config = merge({
     AGENT_AUTHORITY_ENABLED               = tostring(var.agent_authority_enabled)
+    ADP_RUN_TASKS_ENABLED                 = tostring(var.agent_authority_enabled)
+    ADP_DOOR_SERVICE_URL                  = var.agent_door_service_url
+    AGENT_RUN_LOGS_BUCKET                 = aws_s3_bucket.agent_run_logs.bucket
+    AGENT_FALLBACK_BUCKET                 = aws_s3_bucket.agent_run_logs.bucket
     ADP_WORK_CLAIMS_ENABLED               = tostring(var.agent_authority_enabled)
     ADP_WORK_CLAIM_PRODUCER_ROLES         = aws_iam_role.lambda_execution.arn
     AGENT_WORKER_IMAGE_DIGESTS            = join(",", sort(tolist(var.agent_authority_worker_image_digests)))
@@ -15,6 +19,7 @@ locals {
     AGENT_AUTHORITY_TABLE    = aws_dynamodb_table.agent_authority.name
     WEBHOOK_EVENTS_TABLE     = aws_dynamodb_table.webhook_events.name
     AGENT_DISPATCH_QUEUE_URL = aws_sqs_queue.agent_submit.url
+    ADP_RUN_TASK_QUEUE_URL   = aws_sqs_queue.agent_submit.url
   } : {})
 }
 
@@ -31,6 +36,7 @@ resource "terraform_data" "worker_gateway_rollout" {
   count = local.agent_authority_provisioned ? 1 : 0
   triggers_replace = {
     configuration  = sha256(jsonencode(local.worker_gateway_config))
+    marker_version = var.agent_authority_enabled ? data.aws_secretsmanager_secret_version.worker_marker[0].version_id : "disabled"
     rollout_script = filesha256("${path.module}/../scripts/rollout-worker-gateway.sh")
   }
   provisioner "local-exec" {
@@ -45,6 +51,8 @@ resource "terraform_data" "worker_gateway_rollout" {
   depends_on = [
     kubernetes_config_map.worker_gateway,
     kubernetes_secret.agent_authority,
+    kubernetes_secret.worker_run_services,
+    aws_iam_role_policy.gateway_authorized_dispatch,
     kubernetes_cluster_role_binding.gateway_agent_tokenreview,
     kubernetes_role_binding.gateway_agent_pod_read,
     terraform_data.worker_security_rollout,

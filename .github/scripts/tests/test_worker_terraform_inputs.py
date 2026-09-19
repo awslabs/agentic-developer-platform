@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = ROOT / "modules/agent-factory/webhook-ingress/scripts"
@@ -102,11 +103,20 @@ def test_invalid_environment_cannot_select_another_states_path(deployment):
 
 
 @pytest.mark.parametrize(
-    "enabled,refs,success,restarts",
+    "enabled,refs,success,restarts,missing",
     [
-        ("false", "bedrockgateway-config", True, False),
-        ("true", "bedrockgateway-config", False, False),
-        ("true", "bedrockgateway-config adp-worker-authority-config", True, True),
+        ("false", "bedrockgateway-config", True, False, ""),
+        ("true", "bedrockgateway-config", False, False, ""),
+        ("true", "bedrockgateway-config adp-worker-authority-config", True, True, ""),
+        *[
+            ("true", "adp-worker-authority-config", False, False, key)
+            for key in (
+                "AGENT_RUN_CREDENTIAL_KEY",
+                "AGENT_CONTROL_ENVELOPE_SIGNING_KEY",
+                "ADP_MARKER_SIGNING_KEY",
+                "ADP_DOOR_SERVICE_KEY",
+            )
+        ],
     ],
 )
 def test_gateway_rollout_requires_the_terraform_config_before_activation(
@@ -115,6 +125,7 @@ def test_gateway_rollout_requires_the_terraform_config_before_activation(
     refs,
     success,
     restarts,
+    missing,
 ):
     root, scripts, env = deployment
     log = root / "commands.jsonl"
@@ -123,7 +134,7 @@ import json,os,sys
 with open(os.environ['COMMAND_LOG'], 'a') as output:
     output.write(json.dumps(sys.argv) + '\\n')
 if 'get' in sys.argv:
-    print(os.environ['CONFIG_REFS'])
+    print(os.environ['SECRET_REFS'] if 'secretKeyRef' in sys.argv[-1] else os.environ['CONFIG_REFS'])
 """
     for name in ("aws", "kubectl"):
         executable = root / "bin" / name
@@ -136,9 +147,24 @@ if 'get' in sys.argv:
             "ADP_NAMESPACE": "adp-gateway",
             "ADP_AUTHORITY_ENABLED": enabled,
             "CONFIG_REFS": refs,
+            "SECRET_REFS": "\n".join(
+                f"{entry['name']}={ref['name']}/{ref['key']}"
+                for container in yaml.safe_load(
+                    (ROOT / "modules/gateway/k8s/deployment.yaml").read_text()
+                )["spec"]["template"]["spec"]["containers"]
+                if container["name"] == "bedrockgateway"
+                for entry in container["env"]
+                if (ref := entry.get("valueFrom", {}).get("secretKeyRef"))
+            ),
             "COMMAND_LOG": str(log),
         }
     )
+    if missing:
+        env["SECRET_REFS"] = "\n".join(
+            line
+            for line in env["SECRET_REFS"].splitlines()
+            if not line.startswith(missing + "=")
+        )
     result = subprocess.run(
         ["bash", str(scripts / "rollout-worker-gateway.sh")],
         env=env,
@@ -146,6 +172,8 @@ if 'get' in sys.argv:
         capture_output=True,
     )
     assert (result.returncode == 0) == success, result.stderr
+    if missing:
+        assert f"missing run-service secret reference: {missing}" in result.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert any("restart" in call for call in calls) == restarts
     if restarts:

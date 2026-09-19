@@ -71,8 +71,10 @@ resource "aws_secretsmanager_secret_version" "github_app_key" {
 # retained 7 days for graceful rollover during S5 verification.
 # =============================================================================
 
+locals { marker_signing_secret_name = "adp/${var.environment}/webhook-ingress/marker-signing-key" }
+
 resource "aws_secretsmanager_secret" "marker_signing_key" {
-  name                    = "adp/${var.environment}/webhook-ingress/marker-signing-key"
+  name                    = local.marker_signing_secret_name
   description             = "HMAC-SHA256 key for signing correlation markers (cred-binding S4)"
   kms_key_id              = local.webhook_secrets_kms_key_arn
   recovery_window_in_days = 0

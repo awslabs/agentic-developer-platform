@@ -24,7 +24,7 @@ the dev-specific preparation overrides in #5176.
 The gateway consumes the Terraform ConfigMap after its base ConfigMap. Terraform
 restarts it when authority configuration changes and checks readiness before
 updating worker launches. Activation refuses a gateway template that cannot read
-this map. Signing secrets remain in the gateway namespace.
+this map and its signing/service secret references. Signing secrets remain in the gateway namespace.
 
 `deploy-all.sh` follows gateway-before-webhook ordering, then performs a second
 Terraform pass for the gateway-owned tick authority policy once webhook resource
@@ -40,6 +40,36 @@ key is `<environment>/modules/webhook-ingress/terraform.tfstate`;
 `ADP_STATE_REGION` supports centralized state storage. The default cluster is
 `adp-<environment>-eks-cluster`; `eks_cluster_name` supports custom names. A new
 environment never inherits a fallback dev cluster or state key.
+
+## Run services (#5195 / #5513)
+
+Protected workers have an explicit deny for **all direct S3 and SQS operations**,
+including their own environment's queue and archive bucket. The gateway receives
+receive/change-visibility/delete on the task queue and PutObject on the archive
+bucket's `runs/*` prefix. It selects the run/attempt path after authentication.
+KEDA uses its own operator identity to poll queue depth. Shared Beads/Dolt S3
+synchronization is unavailable to protected workers; they use GitHub task tracking.
+
+`ADP_RUN_TASKS_ENABLED` follows the authority activation flag; preparation leaves
+it false and omits `ADP_RUN_TASK_QUEUE_URL`. Both archive bucket settings select
+this environment's run-log bucket. `agent_door_service_url` selects a gateway-only
+Door origin; its default is the existing in-cluster service. The Door key reuses
+the gateway's existing `bedrockgateway-secrets/internal-api-key` reference.
+
+Activation reads **AWSCURRENT of the existing webhook marker secret** and projects
+it to `agent-run-services/marker-signing-key` in the gateway namespace. It never
+generates a replacement key. Empty, short and public placeholder values refuse
+the plan; preparation neither reads nor projects that key. The value is sensitive
+Terraform state, so the protected backend remains part of the trusted platform.
+Marker version changes trigger gateway rollout. The rollout helper verifies all
+four gateway signing/service secret references before restarting an active
+configuration; it never reads or prints secret values. Worker pods receive none
+of these shared signing/service keys.
+
+The gateway, worker and Door source from #5513 must be deployed and verified
+before asserting runtime readiness. A source merge or mocked-provider plan does
+not satisfy these canaries or release the existing hold. The rollout still needs
+the full IAM/Kubernetes inventory, including other clusters and legacy mappings.
 
 ## Stages
 
