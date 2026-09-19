@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,8 @@ from .schemas import (
     ManageableServicePrincipalsResponse,
     PreferenceDetailResponse,
     PreferenceListResponse,
+    ResetPreferenceRequest,
+    ResetPreferenceResponse,
     SetPreferenceRequest,
 )
 
@@ -138,7 +140,7 @@ async def list_my_preferences(
         raise _rejected(exc) from exc
 
     entries = await service.build_preference_list(db, org_id=current_user.org_id, principal_kind=kind, principal_id=pid)
-    return PreferenceListResponse(principal_kind=kind, principal_id=pid, entries=entries)
+    return PreferenceListResponse(tenant_id=current_user.org_id, principal_kind=kind, principal_id=pid, entries=entries)
 
 
 @router.get("/explain/{persona_key}", response_model=PreferenceDetailResponse)
@@ -153,7 +155,7 @@ async def explain_my_preference(
         result = await service.build_explain(db, org_id=current_user.org_id, principal_kind=kind, principal_id=pid, persona_key=persona_key)
     except service.PreferenceRejectedError as exc:
         raise _rejected(exc) from exc
-    return PreferenceDetailResponse(**result)
+    return PreferenceDetailResponse(tenant_id=current_user.org_id, **result)
 
 
 @router.put("/{persona_key}")
@@ -203,13 +205,14 @@ async def set_my_preference(
     # not inherit a human user-rung mapping, so skip that rung explicitly.
     # Local import avoids coupling the PMM-02 route module's import lifecycle
     # to the additive PMM-03 catalogue router.
-    from .catalogue_routes import resolve_effective_destination
+    from .catalogue_routes import resolve_effective_destination, self_service_restriction_policy
 
     account_id, region = await resolve_effective_destination(
         db,
         current_user,
         routing_user_id="" if kind == "service_account" else None,
     )
+    restriction_pattern_sets, policy_unavailable_reason = self_service_restriction_policy(current_user)
 
     try:
         row = await service.set_preference(
@@ -226,14 +229,18 @@ async def set_my_preference(
             validation_account_id=account_id,
             validation_region=region,
             validation_principal_status="active" if kind == "service_account" else None,
+            validation_service_restriction_pattern_sets=restriction_pattern_sets,
+            validation_policy_unavailable_reason=policy_unavailable_reason,
         )
     except service.PreferenceConflictError as exc:
-        platform_default = await service.get_platform_default(db)
-        default_model_id = platform_default.active_default_model_id if platform_default else None
+        compatibility_class, default_model_id, class_default_status = await service.get_persona_class_default(db, persona_key)
         return JSONResponse(
             status_code=409,
             content=ConflictResponse(
+                tenant_id=current_user.org_id,
                 persona_key=persona_key,
+                compatibility_class=compatibility_class,
+                harness_contract_revision=service.persona_harness_contract_revision(persona_key),
                 principal_kind=kind,
                 principal_id=pid,
                 effective_model_id=exc.row.canonical_model_id,
@@ -242,6 +249,8 @@ async def set_my_preference(
                 updated_at=exc.row.updated_at,
                 updated_by=exc.row.updated_by,
                 default_model_id=default_model_id,
+                default_source=compatibility_class,
+                class_default_status=class_default_status,
             ).model_dump(mode="json"),
         )
     except service.PreferenceRejectedError as exc:
@@ -283,7 +292,7 @@ async def set_my_preference(
     await db.commit()
 
     result = await service.build_explain(db, org_id=current_user.org_id, principal_kind=kind, principal_id=pid, persona_key=persona_key)
-    return PreferenceDetailResponse(**result)
+    return PreferenceDetailResponse(tenant_id=current_user.org_id, **result)
 
 
 @router.delete("/{persona_key}")
@@ -291,8 +300,9 @@ async def reset_my_preference(
     persona_key: str,
     current_user: Annotated[TokenContext, Depends(get_persona_model_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> PreferenceDetailResponse:
-    """Reset a persona preference so the platform default becomes effective."""
+    request: Annotated[ResetPreferenceRequest | None, Body()] = None,
+) -> ResetPreferenceResponse:
+    """Reset a preference so its compatibility-class default becomes effective."""
     try:
         kind, source, pid = await _resolve_caller(db, current_user)
     except service.PreferenceRejectedError as exc:
@@ -323,7 +333,36 @@ async def reset_my_preference(
 
     existing = await service.get_preference(db, org_id=current_user.org_id, principal_kind=kind, principal_id=pid, persona_key=persona_key)
 
-    removed = await service.reset_preference(db, org_id=current_user.org_id, principal_kind=kind, principal_id=pid, persona_key=persona_key)
+    try:
+        removed = await service.reset_preference(
+            db,
+            org_id=current_user.org_id,
+            principal_kind=kind,
+            principal_id=pid,
+            persona_key=persona_key,
+            expected_revision=request.expected_revision if request else None,
+        )
+    except service.PreferenceConflictError as exc:
+        compatibility_class, default_model_id, class_default_status = await service.get_persona_class_default(db, persona_key)
+        return JSONResponse(
+            status_code=409,
+            content=ConflictResponse(
+                tenant_id=current_user.org_id,
+                persona_key=persona_key,
+                compatibility_class=compatibility_class,
+                harness_contract_revision=service.persona_harness_contract_revision(persona_key),
+                principal_kind=kind,
+                principal_id=pid,
+                effective_model_id=exc.row.canonical_model_id,
+                current_model_id=exc.row.canonical_model_id,
+                current_revision=exc.row.revision,
+                updated_at=exc.row.updated_at,
+                updated_by=exc.row.updated_by,
+                default_model_id=default_model_id,
+                default_source=compatibility_class,
+                class_default_status=class_default_status,
+            ).model_dump(mode="json"),
+        )
 
     if removed and existing:
         await service.write_audit(
@@ -337,7 +376,7 @@ async def reset_my_preference(
                 "persona_key": persona_key,
                 "before_model": existing.canonical_model_id,
                 # The reset's whole effect is that no preference remains and the
-                # platform default becomes effective; an absent after_model would
+                # compatibility-class default becomes effective; an absent after_model would
                 # read as "not recorded" rather than "deliberately none".
                 "after_model": None,
                 "revision": existing.revision,
@@ -350,7 +389,7 @@ async def reset_my_preference(
     await db.commit()
 
     result = await service.build_explain(db, org_id=current_user.org_id, principal_kind=kind, principal_id=pid, persona_key=persona_key)
-    return PreferenceDetailResponse(**result)
+    return ResetPreferenceResponse(tenant_id=current_user.org_id, removed=removed, **result)
 
 
 @router.get("/manageable-service-principals", response_model=ManageableServicePrincipalsResponse)
@@ -374,4 +413,4 @@ async def list_manageable_service_principals(
     await ac.check_permission(current_user, Permission.ORG_UPDATE, target_org_id=current_user.org_id)
 
     principals = await service.list_manageable_service_principals(db, org_id=current_user.org_id)
-    return ManageableServicePrincipalsResponse(principals=principals)
+    return ManageableServicePrincipalsResponse(tenant_id=current_user.org_id, principals=principals)

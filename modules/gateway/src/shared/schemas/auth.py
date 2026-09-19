@@ -112,6 +112,19 @@ class TokenContext(BaseModel):
     # from a legacy service-account exchange — both present as
     # account_type="service", auth_source="jwt".
     canonical_alias_source: str = ""
+    # Issue #5420 (PMM-03): model restrictions resolved from the authenticated
+    # Agent Registry row.  This is populated only by the IAM authentication
+    # adapter; request headers and bodies have no path to set it.  ``None``
+    # means the caller did not arrive through Agent Registry, while an empty
+    # list means the registry row has no explicit restriction and therefore
+    # inherits the versioned platform baseline.
+    registered_allowed_models: list[str] | None = None
+    # Issue #5420 (PMM-03): immutable primary key of the authenticated Agent
+    # Registry row.  ``user_id`` remains the human-readable ``agent_name`` for
+    # compatibility and is neither immutable nor unique, so privileged
+    # internal routes must bind to this field instead.  Populated only by the
+    # IAM registry adapter; no request header or body can set it.
+    agent_registry_id: str = ""
 
     # Issue #4323: the run/chain reservation targets this request actually
     # reserved against, stashed by the budget check so the reconcile on the way

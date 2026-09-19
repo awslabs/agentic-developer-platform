@@ -28,6 +28,7 @@ from src.admin.persona_models.catalogue import (
     PERSONA_ALLOWED_PATTERNS,
     PLATFORM_MODEL_CATALOGUE,
     CatalogueModel,
+    aliases_for_model,
     catalogue_lookup,
     persona_compatibility_class,
     persona_is_configurable,
@@ -220,34 +221,38 @@ def is_probe_enabled() -> bool:
 def _model_matches_patterns(canonical_model_id: str, patterns: list[str] | None) -> bool:
     """Check if a model ID matches any fnmatch pattern in the list.
 
-    When patterns is None or empty, inherits the persona-selection baseline
-    (D3: no explicit allowlist inherits a versioned platform baseline).
+    Only ``None`` inherits the persona-selection baseline (D3: no explicit
+    allowlist inherits a versioned platform baseline).  An explicit empty list
+    is a configured deny-all policy and must never widen back to the baseline.
     """
-    effective = patterns if patterns else list(PERSONA_ALLOWED_PATTERNS)
+    effective = patterns if patterns is not None else list(PERSONA_ALLOWED_PATTERNS)
     return any(fnmatch.fnmatch(canonical_model_id, p) for p in effective)
+
+
+def _model_matches_service_restrictions(
+    canonical_model_id: str,
+    restriction_pattern_sets: list[list[str]] | None,
+) -> bool:
+    """Apply every explicit registered service-principal restriction.
+
+    One canonical service principal may have several active Agent Registry
+    aliases.  Its preference is shared by those aliases, so a model is safe to
+    save only when it satisfies every non-empty registry restriction.  Empty
+    ``allowed_models`` means that alias inherits the platform baseline; it is
+    not an explicit deny-all rule.
+    """
+    if not restriction_pattern_sets:
+        return True
+    return all(not patterns or any(fnmatch.fnmatch(canonical_model_id, pattern) for pattern in patterns) for patterns in restriction_pattern_sets)
 
 
 # ---------------------------------------------------------------------------
 # Service-principal restrictions — gate 4 (§3.1, operator round-4 item 4)
 # ---------------------------------------------------------------------------
-# What actually exists in this repo, verified rather than assumed:
-#
-#   * There is NO per-organization allowed-model-patterns table, column or
-#     migration anywhere in the gateway.
-#   * There is NO service-principal model-restriction column.  Neither
-#     ``ServiceAccount`` (shared/models/organization.py) nor ``Token`` has one.
-#   * Three mechanisms look like candidates and are all inert:
-#     ``ModelResolver._allowed_models_config`` is always ``{}`` with no
-#     production writer; the per-agent DynamoDB ``allowed_models`` is never
-#     copied into ``TokenContext`` and its ``X-Agent-AllowedModels`` header has
-#     no consumer in ``src/``.
-#
-# So "use the real service-principal policy inputs" cannot mean reading a
-# restriction table: there is none to read, and a gate that consults a store
-# nothing writes would report "permitted" for every model forever — a fake
-# gate is worse than an absent one, because it reads as enforcement.
-#
-# What this gate therefore does:
+# The Agent Registry ``allowed_models`` set is the existing registered
+# service-principal restriction.  PMM-03 makes it load-bearing instead of
+# leaving it stranded in DynamoDB.  Routes pass it as one or more server-
+# resolved pattern sets; callers never submit these patterns.  This gate also:
 #   * Enforces principal *status* where it is known.  A suspended or retired
 #     principal may select nothing; this is PMM-02's ``ServicePrincipal.status``
 #     vocabulary (active / suspended / retired), wired for real once PMM-02
@@ -258,8 +263,9 @@ def _model_matches_patterns(canonical_model_id: str, patterns: list[str] | None)
 #     preference validated *for* it.  Fail closed rather than fall back to a
 #     mutable name.
 #
-# A per-tenant allowlist remains a genuine schema gap.  It is called out in
-# the PR rather than faked here.
+# An organization with no explicit policy inherits the versioned platform
+# baseline through ``_model_matches_patterns``.  This is the locked D3 ruling,
+# not unrestricted access.
 
 PrincipalStatus = Literal["active", "suspended", "retired"]
 
@@ -276,10 +282,9 @@ def evaluate_principal_restrictions(
 
     Returns ``(permitted, reason)``.  ``reason`` is ``None`` when permitted.
 
-    This is a principal-level gate, not a per-model one: nothing that exists
-    today restricts *which* model a principal may pick, only *whether* it may
-    pick.  Modelling it per-model would imply a capability the schema does not
-    have.
+    This helper is the principal-level lifecycle/identity portion of gate 4.
+    The model-specific Agent Registry restriction is applied separately by
+    ``_model_matches_service_restrictions`` after the organization policy.
 
     Args:
         principal_kind: Canonical vocabulary — "human" or "service_account".
@@ -312,6 +317,8 @@ async def build_model_catalogue(
     account_id: str | None = None,
     region: str | None = None,
     tenant_allowed_patterns: list[str] | None = None,
+    service_restriction_pattern_sets: list[list[str]] | None = None,
+    policy_unavailable_reason: str | None = None,
     principal_kind: Literal["human", "service_account"] = "human",
     canonical_principal_id: str | None = None,
     principal_status: str | None = None,
@@ -332,6 +339,7 @@ async def build_model_catalogue(
     compat_class = persona_compatibility_class(persona_key)
     if compat_class is None:
         return []
+    compatible_models = tuple(model for model in PLATFORM_MODEL_CATALOGUE if model.compatibility_class == compat_class)
 
     # Gate 4 is principal-level, so it is evaluated once rather than per model.
     principal_permitted, principal_reason = evaluate_principal_restrictions(
@@ -343,16 +351,23 @@ async def build_model_catalogue(
         # Still enumerate every model, each marked unselectable with its
         # reason: AC-01 requires the catalogue to stay honest about what
         # exists, and an empty list is indistinguishable from "no models".
-        return [_model_row(model, selectable=False, reason=principal_reason, permitted=False) for model in PLATFORM_MODEL_CATALOGUE]
+        return [_model_row(model, selectable=False, reason=principal_reason, permitted=False) for model in compatible_models]
+
+    if policy_unavailable_reason:
+        return [
+            _model_row(
+                model,
+                selectable=False,
+                reason=policy_unavailable_reason,
+                permitted=False,
+            )
+            for model in compatible_models
+        ]
 
     rows: list[ModelCatalogueRow] = []
-    for model in PLATFORM_MODEL_CATALOGUE:
-        # Gate 1: Harness compatibility
-        if model.compatibility_class != compat_class:
-            rows.append(_model_row(model, selectable=False, reason="harness_incompatible"))
-            continue
-
-        # Gate 2: Platform catalogue — by construction, all entries pass
+    for model in compatible_models:
+        # Gates 1-2: only this harness class's platform catalogue entries are
+        # enumerated. Other-class models are absent, never disabled choices.
         # (we are iterating the catalogue itself).
 
         # Gate 3: Tenant allowlist
@@ -361,7 +376,12 @@ async def build_model_catalogue(
             rows.append(_model_row(model, selectable=False, reason="not_permitted", permitted=False))
             continue
 
-        # Gate 4 already evaluated above (principal-level, not per-model).
+        # Gate 4: every real Agent Registry restriction for this canonical
+        # service principal.  This is separate from the organization policy;
+        # neither may widen the other.
+        if not _model_matches_service_restrictions(model.canonical_model_id, service_restriction_pattern_sets):
+            rows.append(_model_row(model, selectable=False, reason="not_permitted", permitted=False))
+            continue
 
         # Gate 5: Invocability evidence
         evidence: ModelInvocabilityEvidence | None = None
@@ -458,6 +478,7 @@ def _model_row(
     """Compose a model catalogue row from a catalogue entry and gate results."""
     return ModelCatalogueRow(
         canonical_model_id=model.canonical_model_id,
+        aliases=list(aliases_for_model(model.canonical_model_id)),
         model_family=model.model_family,
         canonical_version=model.canonical_version,
         selectable=selectable,
@@ -488,6 +509,8 @@ async def validate_selection(
     account_id: str | None = None,
     region: str | None = None,
     tenant_allowed_patterns: list[str] | None = None,
+    service_restriction_pattern_sets: list[list[str]] | None = None,
+    policy_unavailable_reason: str | None = None,
     principal_status: str | None = None,
 ) -> SelectionResult | SelectionRejection:
     """Validate whether a model is selectable for a principal and persona.
@@ -590,6 +613,18 @@ async def validate_selection(
                 f"(kind={principal_kind}, status={principal_status or 'unknown'}) "
                 "may not configure a persona model."
             ),
+        )
+
+    if policy_unavailable_reason:
+        return SelectionRejection(
+            reason=policy_unavailable_reason,
+            message="The registered service-principal model policy could not be resolved safely.",
+        )
+
+    if not _model_matches_service_restrictions(resolved, service_restriction_pattern_sets):
+        return SelectionRejection(
+            reason="not_permitted",
+            message=f"'{resolved}' is not permitted by the registered service-principal model policy.",
         )
 
     # Gate 5: Invocability evidence — FAIL-CLOSED

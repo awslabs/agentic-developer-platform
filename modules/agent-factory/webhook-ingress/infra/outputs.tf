@@ -47,16 +47,6 @@ output "sqs_dlq_url" {
   value       = aws_sqs_queue.agent_submit_dlq.url
 }
 
-output "codex_review_queue_url" {
-  description = "Dedicated FIFO queue for independent Codex SDK PR reviews"
-  value       = aws_sqs_queue.codex_review.url
-}
-
-output "codex_review_dlq_url" {
-  description = "Dead-letter queue for independent Codex SDK PR reviews"
-  value       = aws_sqs_queue.codex_review_dlq.url
-}
-
 output "tenant_registry_table" {
   description = "DynamoDB tenant-registry table name"
   value       = aws_dynamodb_table.tenant_registry.name

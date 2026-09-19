@@ -2,7 +2,7 @@
 
 This module is the single source for:
   - The compatibility-class vocabulary (R2).
-  - The persona-to-class registry (all current personas → claude-agent-sdk).
+  - The persona-to-class registry staged from the execution source of truth.
   - The platform-supported model catalogue (seeded from the Lambda's curated
     invocability-verified list plus the D4 Claude-class candidate).
 
@@ -20,6 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from src.admin.persona_models._personas import (
+    COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION,
+)
+
 # ---------------------------------------------------------------------------
 # Compatibility-class vocabulary (R2, §2.4)
 # ---------------------------------------------------------------------------
@@ -32,21 +36,18 @@ COMPATIBILITY_CLASS_CODEX = "codex-sdk"
 
 COMPATIBILITY_CLASSES: frozenset[str] = frozenset({COMPATIBILITY_CLASS_CLAUDE, COMPATIBILITY_CLASS_CODEX})
 
-# The Claude Agent SDK version pinned in the agent worker.
-# Source: modules/agent-factory/agent/package.json → @anthropic-ai/claude-agent-sdk.
-# Update this when the SDK pin moves and re-run probes (§4.1b).
-HARNESS_CONTRACT_REVISION = "0.3.220"
+# Kept as the model-catalogue shorthand for the Claude request-shape manifest.
+# The value is generated from the exact agent runtime package.json pin.
+HARNESS_CONTRACT_REVISION = COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION[COMPATIBILITY_CLASS_CLAUDE]
 
 
 # ---------------------------------------------------------------------------
 # Persona-to-class registry (R2, §2.4)
 # ---------------------------------------------------------------------------
-# Every persona executing directly today maps to claude-agent-sdk.  The codex
-# persona is NOT an exception: its outer agent is the Claude SDK worker and
-# Codex is a bounded delegated tool (design §3.4).
-#
-# When #5433 registers native gpt-* personas, they register into this map
-# as codex-sdk entries.  That epic does not create a second registry.
+# The `codex` supervisor still uses the Claude SDK worker and delegates to a
+# bounded Codex tool.  The event-selected `agent-codex-reviewer`, however, is a
+# native Codex SDK adapter and is classified as codex-sdk by the authoritative
+# registry.  Future native personas extend that registry, not this module.
 
 # Personas that are registered but not configurable, with reason.
 _NOT_CONFIGURABLE: dict[str, str] = {
@@ -58,19 +59,38 @@ _NOT_CONFIGURABLE: dict[str, str] = {
 
 
 def persona_compatibility_class(persona_key: str) -> str | None:
-    """Return the compatibility class for a persona, or None if unknown.
-
-    All registered personas currently map to ``claude-agent-sdk``.
-    """
+    """Return the authoritative compatibility class, or None if unknown."""
     # Import here to avoid circular imports and to read from the staged copy.
     # The staged copy is asserted to match the authoritative source by a
     # parity test — see tests/admin/persona_models/test_persona_parity.py.
-    from src.admin.persona_models._personas import VALID_PERSONAS
+    from src.admin.persona_models._personas import PERSONA_COMPATIBILITY_CLASS
 
-    if persona_key not in VALID_PERSONAS:
-        return None
-    # All current personas execute through the Claude Agent SDK.
-    return COMPATIBILITY_CLASS_CLAUDE
+    return PERSONA_COMPATIBILITY_CLASS.get(persona_key)
+
+
+def compatibility_class_harness_contract_revision(compatibility_class: str) -> str | None:
+    """Return the server-owned harness revision for a compatibility class.
+
+    Values are generated from exact runtime package.json pins.  Unknown classes
+    deliberately receive no revision to borrow from another harness.
+    """
+    return COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION.get(compatibility_class)
+
+
+def persona_harness_contract_revision(persona_key: str) -> str:
+    """Return the authoritative harness revision or fail closed.
+
+    Every emitted preference row must identify the exact harness contract it
+    targets.  A newly registered compatibility class therefore cannot borrow
+    another class's revision or silently emit a null revision.
+    """
+    compatibility_class = persona_compatibility_class(persona_key)
+    if compatibility_class is None:
+        raise ValueError(f"Unknown persona key '{persona_key}'.")
+    revision = compatibility_class_harness_contract_revision(compatibility_class)
+    if revision is None:
+        raise RuntimeError(f"Persona '{persona_key}' has compatibility class '{compatibility_class}' without a registered harness contract revision.")
+    return revision
 
 
 def persona_is_configurable(persona_key: str) -> bool:
@@ -229,6 +249,11 @@ PERSONA_MODEL_ALIASES: dict[str, str] = {
     "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
+
+
+def aliases_for_model(canonical_model_id: str) -> tuple[str, ...]:
+    """Return every approved, pinned friendly alias for a catalogue model."""
+    return tuple(sorted(alias for alias, target in PERSONA_MODEL_ALIASES.items() if target == canonical_model_id))
 
 
 def resolve_alias(alias: str) -> str | None:

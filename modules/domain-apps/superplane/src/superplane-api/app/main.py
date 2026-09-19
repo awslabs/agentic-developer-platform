@@ -23,6 +23,7 @@ from app.routers.research import router as research_router
 from app.routers.events import router as events_router
 from app.routers.accounts import router as accounts_router
 from app.routers.internal import router as internal_router
+from app.routers.provider_handles import router as provider_handles_router
 from app.routers.quota import router as quota_router
 from app.routers.users import router as users_router
 from app.routers.workspaces import router as workspaces_router
@@ -112,3 +113,4 @@ app.include_router(events_router)
 app.include_router(accounts_router)
 app.include_router(users_router)
 app.include_router(internal_router)
+app.include_router(provider_handles_router)

@@ -138,6 +138,20 @@ INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/internal/observations/{cluster_id}/cost-history"),
         ("POST", "/internal/observations/{cluster_id}/events"),
         ("GET", "/internal/observations/{cluster_id}"),
+        # Provider-handle recording and reconciliation (issue #5054, U11c). Same
+        # class and same reason as the observation routes above: the caller is an
+        # adapter or B's recovery driver holding a workspace-scoped submitter
+        # credential, never a user token. Authentication is that endpoint family's
+        # authenticator; workspace claims are checked against its grant. Writes
+        # additionally verify live B authority for the exact stored operation.
+        ("POST", "/internal/provider-operations"),
+        ("POST", "/internal/provider-operations/{idempotency_key}/conclude"),
+        ("GET", "/internal/provider-operations"),
+        (
+            "POST",
+            "/internal/provider-operations/allocations/{allocation_id}"
+            "/release-assessment",
+        ),
     }
 )
 

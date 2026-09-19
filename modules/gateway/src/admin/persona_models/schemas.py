@@ -30,10 +30,14 @@ class PreferenceEntry(BaseModel):
     persona_key: str
     persona_display_name: str
     configurable: bool
+    compatibility_class: str
+    harness_contract_revision: str
 
     effective_model_id: str | None = None
+    effective_is_candidate: bool
     source: Literal["principal-mapping", "system-default"]
     status: Literal["configured", "not-configured", "unavailable", "disallowed", "stale"] = "not-configured"
+    class_default_status: Literal["candidate", "proven"] | None = None
 
     saved_model_id: str | None = None
     requested_alias: str | None = None
@@ -44,6 +48,7 @@ class PreferenceEntry(BaseModel):
 class PreferenceListResponse(BaseModel):
     """Full list of persona preferences for a principal."""
 
+    tenant_id: str
     principal_kind: str
     principal_id: str
     entries: list[PreferenceEntry]
@@ -52,10 +57,15 @@ class PreferenceListResponse(BaseModel):
 class PreferenceDetailResponse(BaseModel):
     """Single-persona explainer — why this model is effective."""
 
+    tenant_id: str
     persona_key: str
+    compatibility_class: str
+    harness_contract_revision: str
     effective_model_id: str | None = None
+    effective_is_candidate: bool
     source: Literal["principal-mapping", "system-default"]
     status: str
+    class_default_status: Literal["candidate", "proven"] | None = None
 
     saved_model_id: str | None = None
     requested_alias: str | None = None
@@ -63,7 +73,13 @@ class PreferenceDetailResponse(BaseModel):
     updated_at: datetime | None = None
 
     default_model_id: str | None = None
-    default_source: str = "claude-agent-sdk"
+    default_source: str
+
+
+class ResetPreferenceResponse(PreferenceDetailResponse):
+    """Reset result, including whether this request won the atomic delete."""
+
+    removed: bool
 
 
 # ── Request models ───────────────────────────────────────────────────────────
@@ -79,7 +95,23 @@ class SetPreferenceRequest(BaseModel):
     model: str = Field(min_length=1, description="Canonical model ID or a recognised alias")
     expected_revision: int | None = Field(
         default=None,
+        ge=1,
         description="Current revision for optimistic concurrency; omit for create-only",
+    )
+
+
+class ResetPreferenceRequest(BaseModel):
+    """Compare-and-delete fence for a saved preference.
+
+    A missing request body remains meaningful only when no row exists, making
+    an already-complete reset idempotent.  Removing an existing row requires
+    the revision the caller observed; the service enforces the comparison in
+    the DELETE statement rather than trusting a preceding read.
+    """
+
+    expected_revision: int = Field(
+        ge=1,
+        description="Current revision for an atomic reset; required when a saved row exists",
     )
 
 
@@ -112,6 +144,7 @@ class ManageableServicePrincipal(BaseModel):
 class ManageableServicePrincipalsResponse(BaseModel):
     """Discovery endpoint response — principals the caller may manage."""
 
+    tenant_id: str
     principals: list[ManageableServicePrincipal]
 
 
@@ -125,18 +158,23 @@ class ConflictResponse(BaseModel):
     is unambiguous: source, status and effective model are present.
     """
 
+    tenant_id: str
     persona_key: str
+    compatibility_class: str
+    harness_contract_revision: str
     principal_kind: str
     principal_id: str
     source: Literal["principal-mapping"] = "principal-mapping"
     status: Literal["configured"] = "configured"
     effective_model_id: str
+    effective_is_candidate: Literal[False] = False
     current_model_id: str
     current_revision: int
     updated_at: datetime
     updated_by: str
     default_model_id: str | None = None
-    default_source: str = "claude-agent-sdk"
+    default_source: str
+    class_default_status: Literal["candidate", "proven"] | None = None
 
 
 # ── Registration models ─────────────────────────────────────────────────────

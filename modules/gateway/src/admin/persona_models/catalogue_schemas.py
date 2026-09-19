@@ -64,6 +64,10 @@ class ModelCatalogueRow(BaseModel):
     """One model in the selectable-model catalogue."""
 
     canonical_model_id: str = Field(description="The versioned provider identifier.  Never a floating alias.")
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="Approved pinned aliases that resolve to this exact canonical identifier.",
+    )
     model_family: str = Field(description="E.g. 'Sonnet', 'Opus', 'Haiku'.")
     canonical_version: str = Field(description="E.g. '4.6', '4.5'.")
     selectable: bool = Field(description="The single boolean consumers branch on.")
@@ -112,6 +116,7 @@ class PersonaCatalogueResponse(BaseModel):
 class ModelCatalogueResponse(BaseModel):
     """Response for the selectable-model catalogue read."""
 
+    tenant_id: str = Field(description="Authenticated active tenant that scoped this catalogue.")
     persona_key: str = Field(description="The persona this catalogue is filtered for.")
     compatibility_class: str = Field(description="The persona's compatibility class.")
     models: list[ModelCatalogueRow]

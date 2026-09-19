@@ -72,7 +72,6 @@ locals {
   account_id             = data.aws_caller_identity.current.account_id
   lambda_artifact_bucket = var.lambda_artifact_bucket != "" ? var.lambda_artifact_bucket : "adp-terraform-state-${data.aws_caller_identity.current.account_id}"
   agent_image            = var.agent_image != "" ? var.agent_image : "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/adp-agent-runtime:latest"
-  codex_reviewer_image   = var.codex_reviewer_image != "" ? var.codex_reviewer_image : "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/adp-codex-reviewer:latest"
 
   # OIDC issuer URL from the EKS cluster — e.g.
   #   https://oidc.eks.us-east-1.amazonaws.com/id/ABC123...

@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 def _repo_root() -> Path:
@@ -30,6 +34,7 @@ class TestPersonaParity:
         # Import the staged copy (gateway runtime)
         from src.admin.persona_models._personas import LABEL_TO_PERSONA as STAGED_LABELS
         from src.admin.persona_models._personas import MENTION_TO_PERSONA as STAGED_MENTIONS
+        from src.admin.persona_models._personas import PERSONA_COMPATIBILITY_CLASS as STAGED_CLASSES
         from src.admin.persona_models._personas import VALID_PERSONAS as STAGED_VALID
 
         source_path = _repo_root() / "modules" / "agent-factory" / "webhook-ingress" / "lambda" / "common"
@@ -57,6 +62,77 @@ class TestPersonaParity:
 
         assert STAGED_LABELS == auth_module.LABEL_TO_PERSONA, "LABEL_TO_PERSONA mismatch"
         assert STAGED_MENTIONS == auth_module.MENTION_TO_PERSONA, "MENTION_TO_PERSONA mismatch"
+        assert STAGED_CLASSES == auth_module.PERSONA_COMPATIBILITY_CLASS, "PERSONA_COMPATIBILITY_CLASS mismatch"
+
+    def test_harness_revisions_match_exact_runtime_pins(self):
+        """Generated server metadata follows each owning SDK package pin."""
+        from src.admin.persona_models._personas import (
+            COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION,
+        )
+
+        root = _repo_root()
+        claude = json.loads((root / "modules" / "agent-factory" / "agent" / "package.json").read_text())
+        codex = json.loads((root / "modules" / "agent-factory" / "codex-reviewer" / "package.json").read_text())
+
+        assert COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION == {
+            "claude-agent-sdk": claude["dependencies"]["@anthropic-ai/claude-agent-sdk"],
+            "codex-sdk": codex["dependencies"]["@openai/codex-sdk"],
+        }
+
+    def test_sync_rejects_a_new_unclassified_persona(self):
+        """Adding a persona never silently assigns the Claude harness."""
+        script = _repo_root() / "modules" / "gateway" / "scripts" / "sync_personas.py"
+        spec = importlib.util.spec_from_file_location("sync_personas_under_test", script)
+        sync_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sync_module)
+        unclassified = SimpleNamespace(
+            LABEL_TO_PERSONA={},
+            MENTION_TO_PERSONA={},
+            AUTOMATIC_PERSONAS={"future-persona"},
+            VALID_PERSONAS={"future-persona"},
+            PERSONA_COMPATIBILITY_CLASS={},
+        )
+
+        with pytest.raises(ValueError, match="keys must exactly match VALID_PERSONAS"):
+            sync_module._generate_output(unclassified)
+
+    def test_sync_rejects_a_persona_category_it_cannot_emit(self):
+        """A new persona category fails the generator instead of silently dropping it.
+
+        Regression for the failure this PR inherited: AUTOMATIC_PERSONAS was added to
+        personas.py while the generator still derived VALID_PERSONAS from labels and
+        mentions only.  The generator printed a warning, exited 0, and wrote a staged
+        copy missing a persona -- surfacing later as an unexplained red parity test.
+        The drift must be reported where it is introduced.
+        """
+        script = _repo_root() / "modules" / "gateway" / "scripts" / "sync_personas.py"
+        spec = importlib.util.spec_from_file_location("sync_personas_drift_test", script)
+        sync_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sync_module)
+
+        # A persona reachable only through a category the generator does not emit.
+        undeclared_category = SimpleNamespace(
+            LABEL_TO_PERSONA={"developer": "developer"},
+            MENTION_TO_PERSONA={"@agent-developer": "developer"},
+            AUTOMATIC_PERSONAS=set(),
+            VALID_PERSONAS={"developer", "persona-from-a-future-category"},
+            PERSONA_COMPATIBILITY_CLASS={
+                "developer": "claude-agent-sdk",
+                "persona-from-a-future-category": "claude-agent-sdk",
+            },
+        )
+
+        with pytest.raises(ValueError, match="union of LABEL_TO_PERSONA"):
+            sync_module._generate_output(undeclared_category)
+
+    def test_gateway_ci_watches_both_harness_package_pins(self):
+        """A harness-only version bump must run generated-copy parity checks."""
+        workflow = (_repo_root() / ".github" / "workflows" / "gateway-ci.yml").read_text()
+        for manifest in (
+            "modules/agent-factory/agent/package.json",
+            "modules/agent-factory/codex-reviewer/package.json",
+        ):
+            assert workflow.count(manifest) == 2, f"{manifest} must trigger Gateway CI for both pull_request and push"
 
     def test_non_vacuous_match(self):
         """Anti-vacuity: at least 10 personas in the staged copy."""

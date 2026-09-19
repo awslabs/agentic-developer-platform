@@ -54,6 +54,7 @@ class TestFeaturesDefaults:
             "FEATURE_AGENT_CONTROL_ENABLED",
             "FEATURE_NEW_UI_ENABLED",
             "FEATURE_SUPERPLANE_ENABLED",
+            "FEATURE_AGENT_MODELS_ENABLED",
             "AGENT_CONTEXT_ENABLED",
         ]:
             monkeypatch.delenv(var, raising=False)
@@ -89,6 +90,9 @@ class TestFeaturesDefaults:
                 # infrastructure behind it belongs to later units — so "absent" must
                 # mean no route is reachable, not "reachable but broken".
                 "superplane": False,
+                # Issue #5422: Agent Models is enabled only by PMM-09 after the
+                # catalogue and runtime enforcement are ready.
+                "agent_models": False,
             }
         }
 
@@ -104,6 +108,16 @@ class TestIndividualFlags:
         # Other flags unaffected
         assert data["connections"] is True
         assert data["credentials"] is True
+
+    def test_agent_models_is_strict_and_can_be_enabled(self, client, monkeypatch):
+        monkeypatch.delenv("FEATURE_AGENT_MODELS_ENABLED", raising=False)
+        assert client.get("/features").json()["features"]["agent_models"] is False
+
+        monkeypatch.setenv("FEATURE_AGENT_MODELS_ENABLED", "true")
+        assert client.get("/features").json()["features"]["agent_models"] is True
+
+        monkeypatch.setenv("FEATURE_AGENT_MODELS_ENABLED", "invalid")
+        assert client.get("/features").json()["features"]["agent_models"] is False
 
     def test_knowledge_disabled(self, client, monkeypatch):
         monkeypatch.setenv("FEATURE_KNOWLEDGE_ENABLED", "false")

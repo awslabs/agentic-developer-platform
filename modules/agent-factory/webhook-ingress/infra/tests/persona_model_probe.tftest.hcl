@@ -54,6 +54,15 @@ override_data {
   }
 }
 
+override_resource {
+  target          = aws_iam_role.persona_model_probe
+  override_during = plan
+  values = {
+    arn = "arn:aws:iam::123456789012:role/adp-dev-persona-model-probe-role"
+    id  = "adp-dev-persona-model-probe-role"
+  }
+}
+
 run "probe_is_inert_and_bounded_by_default" {
   command = plan
 
@@ -77,8 +86,39 @@ run "probe_is_inert_and_bounded_by_default" {
   }
 
   assert {
-    condition     = kubernetes_cron_job_v1.persona_model_probe.spec[0].job_template[0].spec[0].template[0].spec[0].service_account_name == kubernetes_service_account.agent_scaledjob_sa.metadata[0].name
-    error_message = "The probe must reuse agent-scaledjob-sa and its reviewed IRSA permissions."
+    condition     = kubernetes_cron_job_v1.persona_model_probe.spec[0].job_template[0].spec[0].template[0].spec[0].service_account_name == kubernetes_service_account.persona_model_probe.metadata[0].name
+    error_message = "The probe must use its dedicated credential-bearing IRSA identity."
+  }
+
+  assert {
+    condition     = kubernetes_service_account.persona_model_probe.metadata[0].annotations["eks.amazonaws.com/role-arn"] == aws_iam_role.persona_model_probe.arn
+    error_message = "The dedicated probe service account and IAM role must remain one-to-one."
+  }
+
+  assert {
+    condition = jsondecode(aws_iam_role.persona_model_probe.assume_role_policy).Statement[0].Condition.StringEquals[
+      "oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE:sub"
+    ] == "system:serviceaccount:adp-agents:persona-model-probe-sa"
+    error_message = "Only the dedicated Kubernetes service account may assume the credential-bearing probe role."
+  }
+
+  assert {
+    condition = (
+      jsondecode(aws_dynamodb_table_item.persona_model_probe_agent_registry.item).agent_id.S == "persona-model-probe" &&
+      jsondecode(aws_dynamodb_table_item.persona_model_probe_agent_registry.item).agent_name.S == "persona-model-probe" &&
+      jsondecode(aws_dynamodb_table_item.persona_model_probe_agent_registry.item).role_arn.S == aws_iam_role.persona_model_probe.arn &&
+      jsondecode(aws_dynamodb_table_item.persona_model_probe_agent_registry.item).scope.S == "internal"
+    )
+    error_message = "The probe role must have exactly one dedicated immutable registry principal."
+  }
+
+  assert {
+    condition = toset(jsondecode(aws_iam_role_policy.persona_model_probe.policy).Statement[0].Resource) == toset([
+      "arn:aws:execute-api:us-east-1:123456789012:*/*/POST/internal/v1/persona-model-probes/claim",
+      "arn:aws:execute-api:us-east-1:123456789012:*/*/POST/internal/v1/persona-model-probes/*/start",
+      "arn:aws:execute-api:us-east-1:123456789012:*/*/POST/internal/v1/persona-model-probes/*/complete",
+    ])
+    error_message = "The probe role may invoke only the three credential-broker endpoints."
   }
 
   assert {

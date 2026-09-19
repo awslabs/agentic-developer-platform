@@ -10,7 +10,9 @@ from __future__ import annotations
 import pytest
 
 from src.admin.persona_models.catalogue import (
+    PERSONA_MODEL_ALIASES,
     PLATFORM_MODEL_CATALOGUE,
+    aliases_for_model,
     catalogue_lookup,
     resolve_alias,
 )
@@ -49,12 +51,16 @@ class TestAliasResolution:
 
     def test_all_aliases_resolve_to_catalogue_entries(self):
         """Every alias resolves to a model in the platform catalogue."""
-        from src.admin.persona_models.catalogue import PERSONA_MODEL_ALIASES
-
         for alias, expected_id in PERSONA_MODEL_ALIASES.items():
             result = resolve_alias(alias)
             assert result == expected_id
             assert catalogue_lookup(expected_id) is not None, f"Alias {alias} resolves to {expected_id} which is not in the catalogue"
+
+    def test_catalogue_publishes_every_approved_alias_exactly_once(self):
+        """Non-mutating clients can resolve aliases without a second registry."""
+        published = {alias: model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE for alias in aliases_for_model(model.canonical_model_id)}
+        assert published == PERSONA_MODEL_ALIASES
+        assert len(published) == sum(len(aliases_for_model(model.canonical_model_id)) for model in PLATFORM_MODEL_CATALOGUE)
 
     def test_fable_not_in_catalogue(self):
         """Fable 5.1 is NOT in the catalogue — #2300 lesson (§7)."""
@@ -116,5 +122,14 @@ class TestModelCatalogueRead:
         models = await build_model_catalogue(
             session,
             persona_key="nonexistent-persona",
+        )
+        assert models == []
+
+    @pytest.mark.asyncio
+    async def test_native_codex_persona_never_lists_claude_models(self, session):
+        """A valid class with no catalogue members returns an honest empty list."""
+        models = await build_model_catalogue(
+            session,
+            persona_key="agent-codex-reviewer",
         )
         assert models == []

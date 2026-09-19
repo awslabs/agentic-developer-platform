@@ -99,6 +99,8 @@ class TestAgentEntryToTokenContext:
         assert context.user_id == "test-agent"
         assert context.org_id == "test-org"
         assert context.team_id == "test-team"
+        assert context.agent_registry_id == "00000000-0000-0000-0000-000000000001"
+        assert context.registered_allowed_models == ["claude-sonnet"]
         assert context.department_id == ""
         assert context.account_type == "service"
         assert context.is_admin is False
@@ -156,6 +158,7 @@ class TestAgentEntryToTokenContext:
         context = agent_entry_to_token_context(entry)  # type: ignore[arg-type]
 
         assert context.credential_scopes == []
+        assert context.agent_registry_id == ""
 
 
 class TestAgentRegistryService:

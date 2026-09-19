@@ -78,11 +78,13 @@ def test_wired_queue_paths_reach_gateway_authority_and_blocked_paths_stay_visibl
     assert "publish_envelope(envelope)" in spawn
     assert "admit_issue_work(envelope)" in publisher
     assert "get_engine_authority_writer().provision(pending)" in engine
-    assert "resolve_stored_decision_with_live_admission" in bootstrap
+    # The gateway signs a report-only decision inside the bootstrap boundary,
+    # which is where live admission runs against the stored snapshot.
+    assert "bootstrap_model_policy_live" in bootstrap
 
-    # These assertions intentionally keep the three incomplete paths visible.
+    # These assertions intentionally keep the incomplete paths visible.
     # Removing a bypass without wiring its authority is not completion.
-    assert 'envelope.get("channel") != "gitlab"' in publisher
+    assert 'envelope.get("channel") == "gitlab"' in publisher
     assert _inventory()["invocation_paths"]["chat"]["state"] == "blocked"
     assert _inventory()["invocation_paths"]["arc_github_actions"]["state"] == "blocked"
 

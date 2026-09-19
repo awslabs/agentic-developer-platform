@@ -21,25 +21,27 @@ describe('persona-model requester feedback', () => {
   });
 
   it('warns when a resolved override is refused by live destination evidence', () => {
+    // Live admission runs inside the gateway before it signs, so an
+    // evidence refusal arrives as ``status=unavailable`` with the live
+    // reason -- the edge never sees a "proposed but refused" decision.
     const feedback = buildModelPolicyFeedback({
       ADP_MESSAGE_ID: 'run-2',
       ADP_MODEL_REQUESTED: 'sonnet46',
       ADP_MODEL_RESOLVED: 'global.anthropic.claude-sonnet-4-6',
       ADP_MODEL_POLICY_POSTURE: 'report_only',
-      ADP_MODEL_POLICY_STATUS: 'proposed',
-      ADP_MODEL_POLICY_ADMISSION_STATUS: 'refused',
-      ADP_MODEL_POLICY_ADMISSION_REASON: 'evidence_stale',
+      ADP_MODEL_POLICY_STATUS: 'unavailable',
+      ADP_MODEL_POLICY_REASON: 'evidence_stale',
     });
 
     expect(feedback?.body).toContain('refresh destination invocability evidence');
   });
 
-  it('is silent for admitted or absent direct requests', () => {
+  it('is silent for accepted or absent direct requests', () => {
     expect(buildModelPolicyFeedback({})).toBeNull();
     expect(buildModelPolicyFeedback({
       ADP_MODEL_REQUESTED: 'sonnet46',
       ADP_MODEL_RESOLVED: 'global.anthropic.claude-sonnet-4-6',
-      ADP_MODEL_POLICY_ADMISSION_STATUS: 'admitted',
+      ADP_MODEL_POLICY_STATUS: 'proposed',
     })).toBeNull();
   });
 

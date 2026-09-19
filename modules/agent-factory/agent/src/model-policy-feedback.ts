@@ -34,18 +34,19 @@ export function buildModelPolicyFeedback(
 ): ModelPolicyFeedback | null {
   const requested = env.ADP_MODEL_REQUESTED;
   const resolved = env.ADP_MODEL_RESOLVED;
-  const admission = env.ADP_MODEL_POLICY_ADMISSION_STATUS;
+  // PMM-06's merged decision contract reports a refusal as
+  // ``status=unavailable`` plus a stable ``reason``; a successfully resolved
+  // proposal is ``status=proposed``. There is no separate admission field to
+  // consult, so the refusal signal is the status itself.
   const policyStatus = env.ADP_MODEL_POLICY_STATUS;
-  const reason = bounded(
-    env.ADP_MODEL_POLICY_ADMISSION_REASON ?? env.ADP_MODEL_POLICY_REASON,
-    'model_policy_unavailable',
-  );
+  const reason = bounded(env.ADP_MODEL_POLICY_REASON, 'model_policy_unavailable');
 
-  // A valid direct override and an admitted proposed mapping need no warning.
-  // Absence of a directive also needs no requester feedback; ordinary mapping
-  // shadow telemetry remains operator-facing.
-  if (!requested || (resolved && admission === 'admitted')) return null;
-  if (resolved && admission !== 'refused' && policyStatus !== 'unavailable') return null;
+  // Feedback is requester-facing and only for a directive that did not stand.
+  // Absent a directive there is nothing to answer for, and an accepted
+  // proposal needs no warning: ordinary mapping shadow telemetry stays
+  // operator-facing so report-only does not comment on every healthy run.
+  if (!requested) return null;
+  if (policyStatus !== 'unavailable' && resolved) return null;
 
   const safeRequested = bounded(requested, '<invalid value>');
   const messageId = bounded(env.ADP_MESSAGE_ID, 'unknown-run');

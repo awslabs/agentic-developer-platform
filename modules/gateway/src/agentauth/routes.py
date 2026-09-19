@@ -12,7 +12,6 @@ import logging
 import os
 from datetime import UTC, datetime
 from functools import lru_cache, partial
-from typing import Annotated
 
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -282,8 +281,8 @@ def get_agent_runtime() -> AgentRuntime:
 async def bootstrap(
     body: BootstrapRequest,
     request: Request,
-    db: Annotated[AsyncSession, Depends(get_db)],
     runtime: AgentRuntime = Depends(get_agent_runtime),
+    db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     try:
         result = await run_in_threadpool(runtime.bootstrap, body, request.headers.get(WORKLOAD_HEADER, ""))
@@ -298,40 +297,14 @@ async def bootstrap(
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
-        from src.agentauth.model_policy import (
-            ModelPolicyError,
-            bootstrap_model_policy,
-            resolve_stored_decision_with_live_admission,
-        )
+        from src.agentauth.model_policy import bootstrap_model_policy_live
 
-        live_decision = None
-        live_failure = None
-        try:
-            live_decision = await resolve_stored_decision_with_live_admission(
-                db,
-                store=runtime.store,
-                record=record,
-            )
-        except ModelPolicyError as exc:
-            live_failure = exc.reason
-        except Exception:
-            # Report-only must not alter legacy execution. Do not expose a DB,
-            # routing or evidence exception to the worker.
-            live_failure = "live_admission_unavailable"
-            logger.warning(
-                "model-policy live admission unavailable",
-                extra={"invocation_id": record.invocation_id},
-                exc_info=True,
-            )
-
-        result["model_policy"] = await run_in_threadpool(
-            bootstrap_model_policy,
+        result["model_policy"] = await bootstrap_model_policy_live(
+            db,
             store=runtime.store,
             record=record,
             grant=grant,
             env=runtime.env,
-            live_decision=live_decision,
-            live_failure_reason=live_failure,
         )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except WorkClaimError as exc:

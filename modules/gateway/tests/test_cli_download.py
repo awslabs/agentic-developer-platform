@@ -104,6 +104,7 @@ class TestCliScriptDownload:
             # session the existing `adp login` already wrote, which is the whole
             # point of the story, so publishing it exposes nothing.
             "adp-superplane.py",
+            "adp-models.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

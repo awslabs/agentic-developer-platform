@@ -47,7 +47,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -96,6 +96,7 @@ class _ConfiguredSubmitter:
     credential: str
     signing_key: bytes
     workspaces: frozenset[str]
+    lease_scopes: frozenset[str] = frozenset()
 
 
 class ConfiguredSubmitterResolver:
@@ -114,12 +115,16 @@ class ConfiguredSubmitterResolver:
 
         matched: _ConfiguredSubmitter | None = None
         for entry in self._entries:
-            if hmac.compare_digest(credential, entry.credential):
+            if hmac.compare_digest(
+                credential.encode("utf-8"), entry.credential.encode("utf-8")
+            ):
                 matched = entry
         if matched is None:
             return None
         return Submitter(
-            submitter_id=matched.submitter_id, workspaces=matched.workspaces
+            submitter_id=matched.submitter_id,
+            workspaces=matched.workspaces,
+            lease_scopes=matched.lease_scopes,
         )
 
     def signing_key_for(self, credential: str) -> bytes | None:
@@ -132,7 +137,9 @@ class ConfiguredSubmitterResolver:
         import hmac
 
         for entry in self._entries:
-            if hmac.compare_digest(credential, entry.credential):
+            if hmac.compare_digest(
+                credential.encode("utf-8"), entry.credential.encode("utf-8")
+            ):
                 return entry.signing_key
         return None
 
@@ -164,6 +171,7 @@ def load_submitters(raw: str | None = None) -> ConfiguredSubmitterResolver:
         credential = item.get("credential")
         signing_key = item.get("signing_key")
         workspaces = item.get("workspaces")
+        lease_scopes = item.get("lease_scopes", [])
         if not isinstance(submitter_id, str) or not submitter_id.strip():
             continue
         if not isinstance(credential, str) or not credential:
@@ -174,12 +182,17 @@ def load_submitters(raw: str | None = None) -> ConfiguredSubmitterResolver:
             isinstance(w, str) for w in workspaces
         ):
             continue
+        if not isinstance(lease_scopes, list) or not all(
+            isinstance(v, str) for v in lease_scopes
+        ):
+            continue
         entries.append(
             _ConfiguredSubmitter(
                 submitter_id=submitter_id,
                 credential=credential,
                 signing_key=signing_key.encode("utf-8"),
                 workspaces=frozenset(w for w in workspaces if w),
+                lease_scopes=frozenset(lease_scopes),
             )
         )
     return ConfiguredSubmitterResolver(entries)
@@ -188,23 +201,25 @@ def load_submitters(raw: str | None = None) -> ConfiguredSubmitterResolver:
 async def resolve_cluster_workspace(
     db: AsyncSession, cluster_id: uuid.UUID
 ) -> str | None:
-    """The name of the workspace that owns `cluster_id`, or None.
+    """The immutable ID of the workspace that owns `cluster_id`, or None.
 
     None means "no single owner could be established" and must be treated as a
     refusal by the caller — never as "skip the ownership check". See the module
     docstring for why only the dedicated-cluster relation is consulted.
     """
     result = await db.execute(
-        select(Workspace.name).where(Workspace.cluster_id == cluster_id)
+        select(Workspace.id, Workspace.org_id, Cluster.org_id)
+        .join(Cluster, Workspace.cluster_id == Cluster.id)
+        .where(Workspace.cluster_id == cluster_id)
     )
-    owners = [row[0] for row in result.all()]
-    if len(owners) != 1:
+    owners = result.all()
+    if len(owners) != 1 or owners[0][1] != owners[0][2]:
         # Zero: no workspace claims this cluster as its dedicated one (it may not
         # exist, or may only be shared). More than one: the data contradicts
         # itself, and guessing an owner during an authorization decision is how a
         # cross-tenant write gets approved.
         return None
-    return owners[0]
+    return str(owners[0][0])
 
 
 def _body_digest(body: bytes) -> str:
@@ -386,20 +401,35 @@ async def list_scoped_clusters(
     workspace is absent from this list for exactly the reason its submissions are
     refused, so a monitor cannot observe a cluster it could not write to.
     """
-    if not submitter.workspaces:
-        # Fail-closed, and cheaply: an empty grant cannot match anything, and the
-        # `in_()` below would be an empty-set comparison some dialects warn about.
+    # A display-name grant is not authority over any workspace, even if its name
+    # happens to match. Parse before SQL so malformed config never causes a UUID
+    # cast error in PostgreSQL.
+    workspace_ids = []
+    for value in submitter.workspaces:
+        try:
+            workspace_ids.append(uuid.UUID(value))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not workspace_ids:
         return []
+    single_owner = (
+        select(Workspace.cluster_id)
+        .where(Workspace.cluster_id.is_not(None))
+        .group_by(Workspace.cluster_id)
+        .having(func.count(Workspace.id) == 1)
+    )
     result = await db.execute(
-        select(Cluster, Workspace.name)
+        select(Cluster, Workspace.id)
         .join(Workspace, Workspace.cluster_id == Cluster.id)
         .where(
             Cluster.status.in_(statuses),
-            Workspace.name.in_(submitter.workspaces),
+            Workspace.id.in_(workspace_ids),
+            Workspace.org_id == Cluster.org_id,
+            Cluster.id.in_(single_owner),
         )
         .order_by(Cluster.last_heartbeat.asc().nullsfirst())
     )
-    return [(row[0], row[1]) for row in result.all()]
+    return [(row[0], str(row[1])) for row in result.all()]
 
 
 async def authorized_cluster(
@@ -598,3 +628,26 @@ def _record_transition_event(
             ),
         )
     )
+
+
+async def authorize_lease_scope(
+    db: AsyncSession, submitter: Submitter, resource_type: str, resource_id: str
+) -> str:
+    """Authorize before lease storage and return the canonical resource identity.
+
+    The existing budget monitor requires a non-cluster global lease. It needs an
+    explicit deployment-owned grant; workspace membership never implies global
+    coordination authority. Arbitrary resource types are always refused.
+    """
+    if resource_type == "cluster_health":
+        try:
+            cluster_id = uuid.UUID(resource_id)
+        except (ValueError, AttributeError, TypeError):
+            raise ObservationRefused(_UNKNOWN_SUBJECT, status_code=404) from None
+        await authorized_cluster(db, submitter, cluster_id)
+        return str(cluster_id)
+    if (resource_type, resource_id) == ("budget_monitor", "global") and (
+        "budget_monitor/global" in submitter.lease_scopes
+    ):
+        return resource_id
+    raise ObservationRefused(_UNKNOWN_SUBJECT, status_code=404)

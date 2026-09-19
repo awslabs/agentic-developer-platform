@@ -181,6 +181,14 @@ def harness(tmp_path):
     for name in ("terraform-update.sh", "upgrade-scope.sh", "gateway-alb-vars.sh", "prepare-backends.py"):
         _write_exec(root / "platform" / "scripts" / name, (_DEPLOY_ALL.parent / name).read_text())
 
+    # deploy-all invokes this validator with python3 before continuing the
+    # gateway phase.  Keep the offline scope harness self-contained: the
+    # validator's own behavior is covered by platform/scripts/tests.
+    _write_exec(
+        root / "platform" / "scripts" / "validate-model-allowlist-config.py",
+        '#!/usr/bin/env python3\nprint("STUB-MODEL-ALLOWLIST-VALIDATOR")\n',
+    )
+
     # load-deploy-config.sh is *sourced*, so it must define what the script reads.
     _write_exec(
         root / "platform" / "scripts" / "load-deploy-config.sh",
