@@ -33,11 +33,26 @@ from pathlib import Path
 
 import boto3
 
+from lib.amendment_input import (
+    AMENDMENT_BASE_PATH_ENV,
+    AuthoringInputError,
+    materialize_authoring_input,
+)
 from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
-from lib.engine_registration import draft_registration_note
+from lib.engine_registration import (
+    AMENDMENT_BASE_HASH_ENV,
+    AMENDMENT_BASE_VERSION_ENV,
+    AMENDMENT_OUTPUT_PATH_ENV,
+    AMENDMENT_REQUEST_ENV,
+    AMENDMENT_REQUEST_TEXT_ENV,
+    FLOW_ID_ENV,
+    amendment_artifact_path,
+    amendment_registration_note,
+    draft_registration_note,
+)
 from lib.handoff_client import HANDOFF_EXPECT_ENV, HANDOFF_REQUIRED_ENV
 from lib.handoff_client import handoff_note as delivery_handoff_note
 from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
@@ -1192,6 +1207,112 @@ def _checkout_existing_work_branch(branch: str) -> None:
     run_cmd(["git", "checkout", branch], cwd=WORK_DIR)
 
 
+def _export_authoring_assignment(envelope: dict) -> None:
+    """Export this run's plan-amendment assignment and brief, or clear any stale one.
+
+    Issue #4529. When the engine commissions a run to amend a plan (a verified human
+    commented `replan:`), `authoring_dispatch._build_envelope` writes an `orchestration`
+    block naming the flow and the request. Two things are exported from it:
+
+    * **The assignment** — `flow_id` and `request_id`. These are the *authorization* for
+      the amendment route, not parameters to it: the server refuses unless the presented
+      `X-Agent-RunId` equals the `author_run_id` it bound to that request. The finish
+      path reads them via `engine_registration.authoring_assignment`.
+    * **The brief** — the human's request text, the base plan revision, and the path to
+      write the authored amendment to. The assignment says *which* job this is; the brief
+      says what the job *is*. Review of this story's first cut found the consequence of
+      omitting it: the artifact path had a consumer and no producer, so a correctly
+      summoned and correctly authorized author received two opaque identifiers and would
+      have followed its ordinary planning instructions — opening a flow nobody asked for,
+      stopping at a gate, filing nothing — while the request stayed recorded and owed.
+
+    Everything comes from the dispatch envelope and nowhere else. Taking any of it from
+    somewhere the model can reach (the issue body, a tool result, the repository) would
+    hand the agent the ability to name its own assignment.
+
+    Both-or-neither on the id pair, and absent for every other kind of run: a webhook
+    trigger, a code-story dispatch and a new-flow authoring run carry no `request_id`,
+    and their behaviour stays byte-identical to before this story.
+
+    **The no-assignment branch DELETES rather than leaving alone.** "Was it in the
+    environment already?" is not a question this process can answer safely — a value
+    planted by an earlier step, a pod spec or a reused process would otherwise be
+    inherited by a run that was never bound to it, and the registration client reads
+    exactly these names with no envelope of its own to cross-check against. Deleting
+    makes the envelope the only source in both directions. The brief is cleared on the
+    same branch for a sharper reason: a stale *id* is checked by the server and refused,
+    but a stale *instruction* ("amend this plan, here is what the human asked, write it
+    here") is simply followed, by a run nobody asked to amend anything.
+
+    Extracted from `main()` rather than inlined so the shape guards below are reachable
+    by a direct test. `main()` crashes earlier on a truthy non-dict `payload` (a
+    pre-existing defect on `origin/main` at its GitLab provider detection), so a
+    whole-run probe cannot prove this function tolerates one.
+    """
+    os.environ.pop(AMENDMENT_BASE_PATH_ENV, None)
+    orchestration_ctx = envelope.get("orchestration") or {}
+    amend_flow_id = amend_request_id = ""
+    if isinstance(orchestration_ctx, dict):
+        amend_flow_id = str(orchestration_ctx.get("flow_id") or "").strip()
+        amend_request_id = str(orchestration_ctx.get("request_id") or "").strip()
+
+    if not (amend_flow_id and amend_request_id):
+        # A node dispatch also has an `orchestration` block, with `node_id`/`attempt` and
+        # no `request_id` — hence the pair test rather than a `flow_id` test, which would
+        # export a flow for runs commissioned to amend nothing.
+        for stale in (
+            FLOW_ID_ENV,
+            AMENDMENT_REQUEST_ENV,
+            AMENDMENT_REQUEST_TEXT_ENV,
+            AMENDMENT_BASE_VERSION_ENV,
+            AMENDMENT_BASE_HASH_ENV,
+            AMENDMENT_OUTPUT_PATH_ENV,
+        ):
+            os.environ.pop(stale, None)
+        return
+
+    os.environ[FLOW_ID_ENV] = amend_flow_id
+    os.environ[AMENDMENT_REQUEST_ENV] = amend_request_id
+
+    # `payload.replan_request` is the human's words as the server stored them, already
+    # capped at `github_commands.REPLAN_TEXT_MAX_LEN` (2000) by the command parser. Not
+    # re-capped here: one cap applied twice with different limits is how the two halves
+    # of a contract drift apart.
+    #
+    # Each brief field is exported only when non-empty, so a field the server omitted is
+    # absent rather than present-and-blank. The instructions branch on the output path's
+    # presence, and a blank value would read as "write to nowhere". An empty `replan:` is
+    # a legitimate request — the human asked for a re-plan without saying what to change
+    # — and its absent text means the author works from the plan alone.
+    payload = envelope.get("payload") or {}
+    request_text = ""
+    if isinstance(payload, dict):
+        request_text = str(payload.get("replan_request") or "").strip()
+    for env_name, raw in (
+        (AMENDMENT_REQUEST_TEXT_ENV, request_text),
+        # The base revision comes from the same server-written block as the ids: the
+        # author amends what the human was looking at, not whatever a fresh read would
+        # return now.
+        (AMENDMENT_BASE_VERSION_ENV, orchestration_ctx.get("base_plan_version")),
+        (AMENDMENT_BASE_HASH_ENV, orchestration_ctx.get("base_plan_hash")),
+    ):
+        value = str(raw).strip() if raw is not None else ""
+        if value:
+            os.environ[env_name] = value
+        else:
+            os.environ.pop(env_name, None)
+
+    # Composed with the same helper `register_amendment_proposal` loads from, so the
+    # instruction the author follows and the file the client opens cannot diverge.
+    os.environ[AMENDMENT_OUTPUT_PATH_ENV] = str(amendment_artifact_path(WORK_DIR, amend_request_id))
+    logger.info(
+        "Authoring assignment: flow=%s request=%s base_version=%s",
+        amend_flow_id,
+        amend_request_id,
+        os.environ.get(AMENDMENT_BASE_VERSION_ENV, "(absent)"),
+    )
+
+
 def _work_branch_is_disposable(branch: str) -> bool:
     """Prove that cleanup would discard only empty commits or review transcripts.
 
@@ -1483,6 +1604,19 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if envelope.get("pr_binding_required") is True:
         os.environ[PR_BINDING_REQUIRED_ENV] = "true"
 
+    # Issue #4529: export this run's authoring assignment and brief. See the helper.
+    _export_authoring_assignment(envelope)
+    try:
+        base_path = materialize_authoring_input(envelope)
+        if base_path is not None:
+            os.environ[AMENDMENT_BASE_PATH_ENV] = base_path
+    except AuthoringInputError as exc:
+        bootstrap_log.step_error(1, "amendment_base_input", exc)
+        _fail_bootstrap_status(message_id, arrived_at, str(exc))
+        bootstrap_log.close()
+        return 1
+
+
     # Issue #5144: the engine marks a dispatch whose delivery must produce a durable
     # continuation receipt before this run's exit counts for anything. Same shape and
     # same reasoning as the marker above: trusted dispatch envelope only, and never
@@ -1766,6 +1900,75 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         "ANTHROPIC_MODEL", "global.anthropic.claude-opus-5"
     )
 
+    # PMM-07: under a verified ``enforcing`` posture the gateway's decision — not
+    # the envelope or the pod default — is what this run must launch on, and an
+    # enforcing posture the gateway could not satisfy must stop the run here,
+    # before any harness starts. Under ``disabled``/``report_only`` the legacy
+    # assignment above is preserved byte for byte.
+    #
+    # The posture is read from the verified gateway report, never from
+    # ``ADP_MODEL_POLICY_*`` in the environment: those are telemetry this process
+    # writes, and anything in the pod could set them.
+    policy_report = run_identity.model_policy_report if run_identity is not None else None
+    # Captured before any substitution.  PMM-08 attribution requires the legacy
+    # (pre-policy) assignment, the proposed model and the model actually executed
+    # to stay separately recoverable; passing the already-enforced value as the
+    # "legacy" one would make ``ADP_MODEL_POLICY_MATCH`` trivially true and erase
+    # the very difference the enforcement is being measured by.
+    legacy_model = effective_model
+    if policy_report is not None:
+        enforcement_failure = policy_report.enforcement_failure
+        if enforcement_failure is not None:
+            # Deliberately not a fallback to ``effective_model``: an enforcing
+            # failure that becomes report-only behaviour by exception handling is
+            # the bypass PMM-07 must make impossible. Failing the run is the only
+            # honest outcome, and the status says the model policy stopped it
+            # rather than blaming the agent.
+            logger.error(
+                "Refusing to launch: model policy could not be satisfied (reason=%s, "
+                "posture_determined=%s)",
+                enforcement_failure,
+                not policy_report.verification_failed,
+            )
+            bootstrap_log.step_error(
+                4,
+                "set_env",
+                RuntimeError(f"model policy unsatisfied: {enforcement_failure}"),
+            )
+            # The requester's message states what actually happened: the run was
+            # stopped before any inference, by policy. It must not be phrased as
+            # an agent failure, and a report-only run must never produce this
+            # message at all, since nothing is blocked there.
+            #
+            # Two distinct causes, told apart because they are not the same fact and
+            # a requester acts differently on each. An unverifiable response does not
+            # establish that enforcement was on -- only that the platform's answer
+            # could not be trusted to say -- so asserting "the platform is enforcing"
+            # there would be a claim the control flow does not support.
+            if policy_report.verification_failed:
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    "the gateway's agent model-policy response could not be verified, so the "
+                    "platform could not confirm whether a model policy is being enforced for "
+                    f"this run ({enforcement_failure}); the run was stopped before the agent "
+                    "started and no model was invoked",
+                )
+            else:
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    "the platform is enforcing an agent model policy and the gateway could not "
+                    f"authorize a model for this run ({enforcement_failure}); the run was "
+                    "stopped before the agent started and no model was invoked",
+                )
+            bootstrap_log.close()
+            return 1
+        # Bootstrap can precede the SDK launch by minutes of repository setup.
+        # Preserve the legacy input here; the SDK boundary obtains a fresh,
+        # challenge-bound decision and applies enforcement there. Otherwise an
+        # enforcing bootstrap would become the "legacy" model after rollback.
+
     env_vars = {
         "GITHUB_TOKEN": token,
         "GH_TOKEN": token,
@@ -1781,12 +1984,17 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": effective_model,
     }
-    # PMM-07 report-only evidence.  This deliberately does not feed
-    # ``effective_model``: PMM-09 owns the enforcing flip after every runtime
-    # path and live admission gate is proven.  Older gateways/workers simply
-    # omit these comparison fields during the mixed-version rollout.
-    if run_identity is not None and run_identity.model_policy_report is not None:
-        env_vars.update(run_identity.model_policy_report.environment(effective_model))
+    # PMM-07 attribution evidence.  These variables describe what happened; they
+    # are never an input, and the block above deliberately reads the posture from
+    # the verified report rather than from here.  ``legacy_model`` (not
+    # ``effective_model``) is passed so the pre-policy assignment stays visible
+    # even when enforcement replaced it -- that difference is the measurement.
+    # Older gateways/workers simply omit these fields during the mixed-version
+    # rollout, which is why nothing downstream may require them.
+    if policy_report is not None:
+        env_vars.update(policy_report.environment(legacy_model))
+        env_vars["ADP_MODEL_POLICY_ENFORCED"] = "false"
+        env_vars["ADP_MODEL_POLICY_EXECUTION_PENDING"] = "true"
 
     # Issue #5223: in mediated mode there is no token, so exporting these would
     # publish empty strings as if they were credentials. Removed rather than left
@@ -2049,6 +2257,32 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             _checkout_existing_work_branch(branch_name)
             actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
             if actual_review_sha != expected_review_sha:
+                if all(
+                    re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)
+                    for sha in (expected_review_sha, actual_review_sha)
+                ):
+                    # An obsolete PR event cannot review a newer revision. Retrying
+                    # it holds the PR's FIFO group through every visibility timeout,
+                    # preventing the queued current-head review from starting.
+                    summary = json.dumps(
+                        {
+                            "status": "stale",
+                            "expected": expected_review_sha,
+                            "actual": actual_review_sha,
+                        }
+                    )
+                    update_invocation_status(
+                        message_id,
+                        arrived_at,
+                        "skipped",
+                        summary=summary,
+                        skip_reason="stale_review_head",
+                    )
+                    bootstrap_log.step_success(7, "stale_review_head", summary=summary)
+                    bootstrap_log.close()
+                    _delete_message(queue_url, region, receipt_handle)
+                    logger.info("Obsolete PR review acknowledged without executing a review")
+                    return 0
                 raise RuntimeError(
                     f"review head changed before checkout: expected {expected_review_sha}, "
                     f"found {actual_review_sha}"
@@ -3272,6 +3506,27 @@ def _register_authored_draft(persona: str, issue: int) -> str:
     return draft_registration_note(work_dir=WORK_DIR, issue=issue)
 
 
+def _register_authored_amendment(persona: str) -> str:
+    """File the run's authored plan amendment with the engine; return a comment section.
+
+    Issue #4529, the amendment counterpart of `_register_authored_draft`, and separate
+    from it because the two are not alternatives: a new-flow proposal and an amendment
+    are different artifacts on different routes with different authorization, and a run
+    commissioned to amend emits the amendment while emitting no `proposal.json` at all.
+
+    Gated on the same persona set and ordered after the branch push for the same reason.
+    Takes no ids: `amendment_registration_note` reads the assignment from the env the
+    bootstrap exported out of the dispatch envelope, so this path cannot aim a
+    registration at a flow the server did not commission it for.
+
+    Fail-soft with no error handling here — the note never raises and returns "" when
+    this run was not commissioned to amend anything, which is every other run.
+    """
+    if persona not in PERSONAS_REGISTERING_DRAFTS:
+        return ""
+    return amendment_registration_note(work_dir=WORK_DIR)
+
+
 def _join_notes(summary: str, *notes: str) -> str:
     """Append whichever fail-soft notes were produced to the closing comment.
 
@@ -3378,6 +3633,12 @@ def _handle_success(
             # entrypoint finds nothing left to push. Registration therefore has to
             # be wired here too, not only on the PR-creating path below.
             draft_note = _register_authored_draft(persona, issue)
+            # #4529: and the amendment, if the engine commissioned this run for one.
+            # Exactly one of these two notes is non-empty on any real run — a new-flow
+            # proposal and an amendment are different artifacts — but both are called
+            # unconditionally so neither path can be the one that silently stops
+            # reporting, which is the drift `_join_notes` exists to prevent.
+            amendment_note = _register_authored_amendment(persona)
             # #5301: the agent opened its own PR during the run, so this is where that
             # PR gets bound to its story. Registering only on the entrypoint-creates-PR
             # path below would miss the common case entirely — the same gap #1723 had
@@ -3402,7 +3663,7 @@ def _handle_success(
                 issue,
                 message_id,
                 "completed",
-                _join_notes(summary, draft_note, binding_note, handoff),
+                _join_notes(summary, draft_note, amendment_note, binding_note, handoff),
                 check_run_url,
             )
             update_invocation_status(
@@ -3489,6 +3750,9 @@ def _handle_success(
             # edit the PR body to prepend the marker if it isn't already there.
             _ensure_pr_body_marker(repo, existing_pr_number, branch)
         draft_note = _register_authored_draft(persona, issue)
+        # #4529: and the amendment, if the engine commissioned this run for one. See the
+        # note on the other finish path above: both are called on both paths.
+        amendment_note = _register_authored_amendment(persona)
         # #5301: bind whichever PR carries this story's work. `transcript_only` pushes
         # review transcripts and opens no PR, so there is nothing to bind; otherwise the
         # PR is either the agent's own or the one just created on `branch`.
@@ -3517,7 +3781,7 @@ def _handle_success(
             issue,
             message_id,
             "completed",
-            _join_notes(summary, draft_note, binding_note, handoff),
+            _join_notes(summary, draft_note, amendment_note, binding_note, handoff),
             check_run_url,
         )
         update_invocation_status(

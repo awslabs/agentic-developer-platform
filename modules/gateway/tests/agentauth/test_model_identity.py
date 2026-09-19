@@ -114,6 +114,21 @@ async def test_unavailable_authority_has_no_legacy_fallback(context, runtime):
     assert not consumed
 
 
+@pytest.mark.parametrize("reason", ["stale_policy_version", "schema_unsupported"])
+async def test_authoring_policy_refusal_precedes_body_consumption(context, runtime, monkeypatch, reason):
+    from src.orchestration.execution_policy import Decision, DenyReason
+    from src.orchestration.policy_admission import AdmissionInputs
+
+    runtime.authenticate("credential", "pod")[3].authority.kind = "replan_request"
+    monkeypatch.setattr(
+        "src.orchestration.policy_admission.load_in_force_policy",
+        AsyncMock(return_value=AdmissionInputs(None, 2, Decision.block(DenyReason(reason), "accepted policy unavailable"))),
+    )
+    sent, consumed = await call(context, PROOF)
+    assert sent[0]["status"] == 403
+    assert not consumed
+
+
 async def test_legacy_worker_and_control_routes_keep_existing_auth(context, runtime):
     context.user_id = "scaledjob-worker"
     assert (await call(context, []))[0][0]["status"] == 200

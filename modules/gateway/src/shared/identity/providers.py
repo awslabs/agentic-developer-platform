@@ -34,6 +34,8 @@ class IdentityProvider(StrEnum):
 
     cognito = "cognito"
     github = "github"
+    # Instance-qualified immutable user ID, e.g. https://gitlab.example#42.
+    gitlab = "gitlab"
     slack = "slack"
     teams = "teams"
     discord = "discord"

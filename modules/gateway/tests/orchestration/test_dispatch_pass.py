@@ -66,6 +66,10 @@ from src.orchestration.models import (
 from src.orchestration.state import ActorKind, NodeState
 from src.shared.models.base import Base
 from src.shared.models.organization import Organization, User
+from tests.agentauth.conftest import report_only_db as report_only_db_fixture
+from tests.agentauth.conftest import test_engine  # noqa: F401
+
+report_only_db = report_only_db_fixture
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -1264,6 +1268,7 @@ async def test_protected_engine_publishes_committed_identity_and_live_flow(sessi
 
     import boto3
 
+    from src.activity.service import ActivityService, _build_chain_tree
     from src.agentauth.bootstrap import envelope_digest
     from src.agentauth.engine import validate_engine_authority
     from src.agentauth.grants import AgentAction
@@ -1277,6 +1282,7 @@ async def test_protected_engine_publishes_committed_identity_and_live_flow(sessi
     flow = await _make_flow(session)
     await _make_approval(session, flow)
     node = await _make_node(session, flow, kind=kind)
+    node.title = "Deploy the accepted production integration contracts"
     report = await run_dispatch_pass(session, _config())
     await session.commit()
     pending = list(report.pending)
@@ -1295,6 +1301,16 @@ async def test_protected_engine_publishes_committed_identity_and_live_flow(sessi
     assert row["engine_attempt"] == node.attempts
     assert row["actor_kind"] == "service"
     assert row["user_id"] == envelope["actor"]["user_id"]
+    # Real dispatch -> persisted row -> both activity representations. Testing
+    # only the envelope let engine runs ship with no topic in Agent Activity.
+    activity = ActivityService._map_item(row)
+    assert activity.topic == node.title
+    assert activity.repo == REPO
+    assert activity.issue_number == 4196
+    assert activity.source_url == f"https://github.com/{REPO}/issues/4196"
+    assert _build_chain_tree([row])[0].topic == node.title
+    # Summary is a worker outcome, not an invented result at dispatch time.
+    assert activity.summary is None
     record = store.bind(
         invocation_id=envelope["message_id"],
         digest=envelope_digest(envelope),
@@ -1324,19 +1340,37 @@ async def test_protected_engine_publishes_committed_identity_and_live_flow(sessi
         assert grant.allowed_actions == frozenset({AgentAction.MONITOR})
     runs.table.update_item(
         Key={"event_id": envelope["message_id"], "arrived_at": envelope["arrived_at"]},
-        UpdateExpression="SET #status = :complete, transcript_key = :transcript",
+        UpdateExpression="SET #status = :complete, transcript_key = :transcript, summary = :summary",
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":complete": "complete", ":transcript": "test/transcript.json"},
+        ExpressionAttributeValues={":complete": "complete", ":transcript": "test/transcript.json", ":summary": "Worker completed the task"},
     )
     report.pending = pending
     publish_pending(report, _config(), client=sqs, run_store=runs)
     assert report.publish_failed == 0
     assert sqs.envelope(1) == envelope
-    assert runs.get(committed["run_id"], committed["arrived_at"])["status"] == "complete"
+    persisted = runs.get(committed["run_id"], committed["arrived_at"])
+    assert persisted["status"] == "complete"
+    assert persisted["topic"] == node.title
+    assert persisted["summary"] == "Worker completed the task"
     assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 1
     await observe_results(session, run_store=runs, evidence=SimpleNamespace(merged_story=AsyncMock(return_value=None)))
     await session.refresh(node)
     assert node.state == (NodeState.AWAITING_GATE.value if kind == NodeKind.EVAL.value else NodeState.AWAITING_MERGE.value)
+
+
+@pytest.mark.parametrize("title", [None, "", "   ", "A" * 512])
+async def test_activity_topic_handles_legacy_envelopes_and_bounds_titles(session, title):
+    from src.orchestration.run_store import EngineRunStore
+
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    envelope = report.pending[0].envelope
+    if title is None:
+        envelope["orchestration"].pop("title")
+    else:
+        envelope["orchestration"]["title"] = title
+    row = EngineRunStore.build_item(envelope)
+    assert row["topic"] == ("A" * 120 if title and title.strip() else f"{REPO}#4196")
 
 
 async def _protected_execution(session, store, *, node_kwargs=None):
@@ -1455,7 +1489,7 @@ async def test_protected_engine_refuses_changed_committed_identity(session, prot
     assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 0
 
 
-async def test_engine_halt_blocks_bootstrap_refresh_http(session, session_factory, protected_engine, monkeypatch):
+async def test_engine_halt_blocks_bootstrap_refresh_http(session, session_factory, protected_engine, monkeypatch, report_only_db):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -1482,6 +1516,9 @@ async def test_engine_halt_blocks_bootstrap_refresh_http(session, session_factor
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    from src.shared.database import get_db
+
+    app.dependency_overrides[get_db] = report_only_db
     monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: session_factory)
     headers = {"X-Caller-Identity": "shared-worker-role", "X-Adp-Workload-Token": "verified-pod-proof"}

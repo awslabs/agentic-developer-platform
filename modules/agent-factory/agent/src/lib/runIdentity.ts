@@ -25,7 +25,7 @@ export function workerIdentityHeaders(): Record<string, string> {
 /** Platform calls must not switch to credentials loaded for an Operations task. */
 export async function workerAwsCredentialProvider() {
   const preserved = 'ADP_WORKER_IRSA_ROLE_ARN' in process.env || 'ADP_WORKER_IRSA_TOKEN_FILE' in process.env;
-  if (preserved || process.env.ADP_AGENT_AUTHORITY_ENABLED?.toLowerCase() === 'true') {
+  if (preserved || process.env.ADP_AGENT_AUTHORITY_ENABLED?.toLowerCase() === 'true' || process.env.ADP_ARC_MODEL_POLICY_ENABLED?.toLowerCase() === 'true') {
     const roleArn = process.env[preserved ? 'ADP_WORKER_IRSA_ROLE_ARN' : 'AWS_ROLE_ARN'];
     const webIdentityTokenFile = process.env[preserved ? 'ADP_WORKER_IRSA_TOKEN_FILE' : 'AWS_WEB_IDENTITY_TOKEN_FILE'];
     if (!roleArn || !webIdentityTokenFile) throw new Error('Platform worker IRSA identity unavailable');

@@ -95,7 +95,7 @@ if os.environ.get("ADP_GRAPH_TEST_DATABASE_URL"):
 
 
 @pytest.fixture
-async def graph_context(store, child_dispatch, session, session_factory, monkeypatch):
+async def graph_context(store, child_dispatch, session, session_factory, monkeypatch, report_only_db):
     await _make_org(session, org_id="tenant", installations=[123])
     flow = await _make_flow(session, org_id="tenant")
     flow.intent_ref = "42"
@@ -113,6 +113,9 @@ async def graph_context(store, child_dispatch, session, session_factory, monkeyp
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    from src.shared.database import get_db
+
+    app.dependency_overrides[get_db] = report_only_db
     # Use the real header name; the projected proof is distinct from transport.
     from src.agentauth.workload import WORKLOAD_HEADER
 

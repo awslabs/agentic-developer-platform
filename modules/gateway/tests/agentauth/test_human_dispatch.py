@@ -59,6 +59,50 @@ def envelope():
     }
 
 
+_SNAPSHOT_NOW = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
+
+
+def _report_only_snapshot():
+    """A minimal frozen report-only snapshot for the developer persona."""
+    from src.agentauth.model_policy import SNAPSHOT_AUDIENCE, SNAPSHOT_SCHEMA_VERSION, ModelPolicySnapshot
+
+    sonnet = "global.anthropic.claude-sonnet-4-6"
+    return ModelPolicySnapshot(
+        schema_version=SNAPSHOT_SCHEMA_VERSION,
+        tenant_id="tenant",
+        principal_kind="human",
+        principal_id="human",
+        # A saved mapping is deliberately present and DIFFERENT from the
+        # directive, so a dropped override would resolve to this instead of
+        # failing -- that is what makes the assertions above meaningful.
+        mappings={"developer": "global.anthropic.claude-opus-4-1"},
+        class_defaults={
+            "claude-agent-sdk": {
+                "model_id": sonnet,
+                "revision": 7,
+                "posture": "report_only",
+                "posture_revision": 2,
+                "harness_contract_revision": "0.3.220",
+            }
+        },
+        persona_contracts={
+            "developer": {
+                "compatibility_class": "claude-agent-sdk",
+                "harness_contract_revision": "0.3.220",
+            }
+        },
+        policy_revision="policy-7",
+        allowlist_policy_revision="allowlist-4",
+        catalogue_revision="catalogue-3",
+        correlation_id="chain-a",
+        root_invocation_id="root-a",
+        issued_at=_SNAPSHOT_NOW,
+        expires_at=_SNAPSHOT_NOW + timedelta(hours=2),
+        audience=SNAPSHOT_AUDIENCE,
+        source="live",
+    )
+
+
 def test_actual_human_writer_bootstraps_and_ignores_advisory_parent(store):
     now = datetime.now(UTC)
     final = webhook.provision_human_dispatch(envelope=envelope(), event=event(), client=store.client, now=now)
@@ -70,6 +114,157 @@ def test_actual_human_writer_bootstraps_and_ignores_advisory_parent(store):
     grant = store.live_grant(invocation_id=record.invocation_id, tenant_id="tenant", attempt=1, now=now)
     assert grant.authority.human_id == "human"
     assert "credential" not in final
+
+
+def test_actual_human_writer_carries_a_model_directive_to_the_resolver(store):
+    """PMM-07: a `/model` directive must survive the real Lambda writer.
+
+    Asserted against the writer the webhook actually calls and the attribute
+    names ``model_policy`` actually reads. The regression this pins is silent:
+    when the writer dropped these two fields, every request resolved from the
+    saved mapping instead, ``resolution_source`` stayed ``principal-mapping``,
+    and the user's explicit choice vanished with no refusal anywhere -- the
+    resolver could not even reach its ``direct_override_unresolved`` path.
+    """
+    from src.agentauth.model_policy import resolve_decision
+
+    directive = {
+        **envelope(),
+        "model_requested": "sonnet46",
+        # A published alias: the legacy assignment the worker executes and the
+        # canonical *proposed* value agree, which is the ordinary case.
+        "model_resolved": "global.anthropic.claude-sonnet-4-6",
+        "model_canonical": "global.anthropic.claude-sonnet-4-6",
+    }
+    final = webhook.provision_human_dispatch(envelope=directive, event=event(), client=store.client)
+    execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
+
+    assert execution["direct_model_requested"] == {"S": "sonnet46"}
+    assert execution["direct_model_override"] == {"S": "global.anthropic.claude-sonnet-4-6"}
+
+    # The requested alias and the resolved ID stay separate all the way into
+    # the decision, so attribution records what the user asked for.
+    decision = resolve_decision(
+        _report_only_snapshot(),
+        invocation_id=final["message_id"],
+        persona="developer",
+        direct_override=execution["direct_model_override"]["S"],
+        direct_requested=execution["direct_model_requested"]["S"],
+        now=_SNAPSHOT_NOW,
+    )
+    assert decision.resolution_source == "explicit-direct"
+    assert decision.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+    assert decision.requested_model_id == "sonnet46"
+    assert decision.runtime_posture == "report_only"
+
+
+def test_writer_omits_model_attributes_when_no_directive_was_given(store):
+    """An absent directive must stay absent, not become an empty override.
+
+    An empty-string attribute would read back as a falsy override but a
+    present key, which is how a "no directive" run could be mistaken for a
+    refused one.
+    """
+    final = webhook.provision_human_dispatch(envelope=envelope(), event=event(), client=store.client)
+    execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
+
+    assert "direct_model_requested" not in execution
+    assert "direct_model_override" not in execution
+
+
+def test_writer_keeps_an_unresolved_directive_visible_as_a_refusal(store):
+    """A rejected alias must reach the resolver as a refusal, not a silent default.
+
+    Edge validation sets ``model_resolved=None`` when it cannot resolve the
+    alias. Dropping ``model_requested`` too would let the run fall through to
+    the saved mapping -- the exact silent substitution the design forbids.
+    """
+    from src.agentauth.model_policy import ModelPolicyError, resolve_decision
+
+    directive = {
+        **envelope(),
+        "model_requested": "not-a-real-model",
+        "model_resolved": None,
+        "model_canonical": None,
+    }
+    final = webhook.provision_human_dispatch(envelope=directive, event=event(), client=store.client)
+    execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
+
+    assert execution["direct_model_requested"] == {"S": "not-a-real-model"}
+    assert "direct_model_override" not in execution
+
+    with pytest.raises(ModelPolicyError, match="direct_override_unresolved"):
+        resolve_decision(
+            _report_only_snapshot(),
+            invocation_id=final["message_id"],
+            persona="developer",
+            direct_override=None,
+            direct_requested=execution["direct_model_requested"]["S"],
+            now=_SNAPSHOT_NOW,
+        )
+
+
+def test_writer_proposes_only_the_published_value_while_legacy_still_executes(store):
+    """PMM-07: the *proposed* override is the canonical one, never the legacy one.
+
+    ``report_only`` runs two answers at once: the legacy assignment the worker
+    actually executes, and the strict proposed resolution the gateway records.
+    A regional ID the authority never published resolves on the legacy path (so
+    the user's run is unchanged) but must NOT be written as a proposed override
+    -- doing so would launder an unpublished model into a "proposed" decision
+    and make the resolver claim ``explicit-direct`` for something it never
+    selected. The correct proposed outcome is the refusal below.
+
+    This is the writer half of the silent-substitution repair; the executed
+    half is pinned in the worker's ``test_model_directive_end_to_end.py``.
+    """
+    from src.agentauth.model_policy import ModelPolicyError, resolve_decision
+
+    requested = "us.anthropic.claude-opus-4-6-v1"
+    directive = {
+        **envelope(),
+        "model_requested": requested,
+        # Legacy execution keeps the requested value ...
+        "model_resolved": requested,
+        # ... while the strict published check refuses it.
+        "model_canonical": None,
+    }
+    final = webhook.provision_human_dispatch(envelope=directive, event=event(), client=store.client)
+    execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
+
+    assert execution["direct_model_requested"] == {"S": requested}
+    assert "direct_model_override" not in execution
+
+    with pytest.raises(ModelPolicyError, match="direct_override_unresolved"):
+        resolve_decision(
+            _report_only_snapshot(),
+            invocation_id=final["message_id"],
+            persona="developer",
+            direct_override=None,
+            direct_requested=execution["direct_model_requested"]["S"],
+            now=_SNAPSHOT_NOW,
+        )
+
+
+def test_writer_never_records_the_legacy_value_as_the_proposed_override(store):
+    """Guards the specific line that reads ``model_canonical``, not ``model_resolved``.
+
+    Constructed so the two disagree: if the writer ever went back to reading
+    ``model_resolved``, ``direct_model_override`` would appear with the
+    unpublished regional ID and this test would fail.
+    """
+    requested = "eu.anthropic.claude-sonnet-4-6"
+    directive = {
+        **envelope(),
+        "model_requested": requested,
+        "model_resolved": requested,
+        "model_canonical": None,
+    }
+    final = webhook.provision_human_dispatch(envelope=directive, event=event(), client=store.client)
+    execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
+
+    assert "direct_model_override" not in execution
+    assert requested not in str(execution.get("direct_model_override", ""))
 
 
 def test_webhook_retry_preserves_identity_digest_and_authority_expiry(store):

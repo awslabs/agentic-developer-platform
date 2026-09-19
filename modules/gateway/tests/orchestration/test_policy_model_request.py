@@ -175,6 +175,51 @@ async def test_policy_expiry_during_upload_prevents_spending(model_path, assignm
     assert model_path.calls == 0
 
 
+@pytest.mark.parametrize("change", [None, "removed", "malformed", "new_version", "new_limit", "budget_disabled"])
+async def test_authoring_rechecks_policy_after_upload(model_path, assignment, session, monkeypatch, change):
+    from sqlalchemy import select
+
+    from src.orchestration.models import OrchestrationAcceptedPlan
+
+    assignment.grant = replace(assignment.grant, authority=replace(assignment.grant.authority, kind="replan_request"))
+    plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == assignment.flow.id))
+    original = plan.plan_document
+
+    async def amend_during_upload():
+        if change == "removed":
+            # Retain the original accepted policy in history while the new plan
+            # omits it; load_in_force_policy must classify withdrawal as refusal.
+            if plan.superseded_at is None:
+                plan.superseded_at = datetime.now(UTC)
+                session.add(
+                    OrchestrationAcceptedPlan(
+                        org_id=plan.org_id,
+                        flow_id=plan.flow_id,
+                        version=plan.version + 1,
+                        plan_document={key: value for key, value in original.items() if key != "execution_policy"},
+                        plan_hash="withdrawn-policy-test",
+                        accepted_by_decision_id=plan.accepted_by_decision_id,
+                    )
+                )
+        elif change == "malformed":
+            plan.plan_document = {**original, "execution_policy": {"invalid": True}}
+        elif change == "new_version":
+            plan.version = 2
+        elif change == "new_limit":
+            policy = {**original["execution_policy"], "limits": {**original["execution_policy"]["limits"], "max_spend_usd": "0.001"}}
+            plan.plan_document = {**original, "execution_policy": policy}
+        elif change == "budget_disabled":
+            monkeypatch.setenv("BUDGET_ENFORCEMENT_ENABLED", "false")
+        await session.flush()
+
+    sent, _ = await invoke(model_path, assignment, during_upload=amend_during_upload)
+    assert sent[0]["status"] == (200 if change is None else 503 if change == "budget_disabled" else 403)
+    assert model_path.calls == (1 if change is None else 0)
+    meter = await read_flow_meter(org_id=assignment.grant.tenant_id, flow_id=assignment.flow.id, policy=model_path.policy)
+    assert meter.total_usd == (Decimal("0.01") if change is None else 0)
+    assert not meter.has_pending
+
+
 # ---------------------------------------------------------------------------
 # Issue #5225: the reservation is bound to the exact quoted request
 # ---------------------------------------------------------------------------

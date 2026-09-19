@@ -49,6 +49,9 @@ def _subprocess_side_effect_fresh_branch(*args, **kwargs):
 @pytest.fixture(autouse=True)
 def ready_gateway_proxy(monkeypatch):
     """Main-sequence tests have a healthy proxy unless explicitly overridden."""
+    # Hosted reviewers inherit the worker's real queue. Tests must opt into a
+    # fake queue explicitly, never consume another live assignment from it.
+    monkeypatch.delenv("QUEUE_URL", raising=False)
     monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint.BootstrapLogger", MagicMock())
@@ -57,6 +60,10 @@ def ready_gateway_proxy(monkeypatch):
     monkeypatch.setattr("entrypoint.record_delivery_completed", MagicMock())
     monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
     monkeypatch.setenv("ADP_GH_TOKEN_BROKER_ENABLED", "0")
+    # main() exports runtime telemetry with os.environ.update, outside monkeypatch.
+    # Restore those writes too so later model-policy tests see their own run state.
+    with patch.dict(os.environ):
+        yield
 
 
 SAMPLE_ENVELOPE = {
@@ -390,12 +397,15 @@ class TestEntrypointMain:
         # Agent was executed
         assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
 
-    def test_missing_sqs_message(self, monkeypatch):
-        """Should return 1 when SQS_MESSAGE_BODY is not set."""
+    def test_missing_queue_configuration_does_not_receive_work(self, monkeypatch):
+        """The fixture removes even an inherited live worker queue."""
         from entrypoint import main
 
+        receiver = MagicMock(side_effect=AssertionError("test tried to receive live work"))
+        monkeypatch.setattr("entrypoint._receive_one_message", receiver)
         monkeypatch.delenv("SQS_MESSAGE_BODY", raising=False)
         assert main() == 1
+        receiver.assert_not_called()
 
     @patch("entrypoint.run_cmd")
     @patch("entrypoint.mint_installation_token")
@@ -3341,8 +3351,14 @@ class TestClaimBoundWorkIsNotBranchInferred:
         # attempt matches and it holds the work claim. That admission — not the
         # branch — is what authorizes the run, so it is stubbed as succeeding
         # rather than bypassed. (A refused admission is the next test.)
+        from lib.run_identity import ModelPolicyReport
+
+        admitted_identity = MagicMock()
+        admitted_identity.model_policy_report = ModelPolicyReport(
+            status="unavailable", posture="report_only", posture_verified=True, reason="snapshot_missing"
+        )
         with patch(
-            "lib.run_identity.bootstrap_run_identity", return_value=MagicMock()
+            "lib.run_identity.bootstrap_run_identity", return_value=admitted_identity
         ) as mock_identity:
             result = main()
 

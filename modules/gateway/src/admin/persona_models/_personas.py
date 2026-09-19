@@ -39,6 +39,7 @@ MENTION_TO_PERSONA: dict[str, str] = {
 
 AUTOMATIC_PERSONAS: set[str] = {
     "agent-codex-reviewer",
+    "intent-refinement",
 }
 
 PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
@@ -47,6 +48,7 @@ PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
     "architect": "claude-agent-sdk",
     "codex": "claude-agent-sdk",
     "developer": "claude-agent-sdk",
+    "intent-refinement": "claude-agent-sdk",
     "malware-analysis-agent": "claude-agent-sdk",
     "operations": "claude-agent-sdk",
     "pm": "claude-agent-sdk",

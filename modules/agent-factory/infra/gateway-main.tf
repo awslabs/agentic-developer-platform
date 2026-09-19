@@ -34,7 +34,10 @@ module "gateway_sessions" {
 # the API GW being created first, which is the correct ordering.
 
 module "gateway_lambda" {
-  source = "./modules/lambda-gateway"
+  source                   = "./modules/lambda-gateway"
+  model_policy_enabled     = var.chat_model_policy_enabled
+  model_control_endpoint   = var.chat_model_control_endpoint
+  model_root_admission_arn = var.chat_model_root_admission_arn
 
   name_prefix         = local.name_prefix
   environment         = var.environment
@@ -459,11 +462,13 @@ resource "kubernetes_config_map" "agent_gateway_config" {
   }
 
   data = {
-    INPUT_QUEUE_URL     = module.gateway_sqs.input_queue_url
-    RESPONSE_QUEUE_URL  = module.gateway_sqs.response_queue_url
-    SESSIONS_TABLE_NAME = module.gateway_sessions.table_name
-    AWS_REGION          = var.aws_region
-    AGENT_DIR           = "/app/agent"
+    INPUT_QUEUE_URL               = module.gateway_sqs.input_queue_url
+    RESPONSE_QUEUE_URL            = module.gateway_sqs.response_queue_url
+    SESSIONS_TABLE_NAME           = module.gateway_sessions.table_name
+    AWS_REGION                    = var.aws_region
+    AGENT_DIR                     = "/app/agent"
+    ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.chat_model_policy_enabled)
+    ADP_AGENT_CONTROL_ENDPOINT    = var.chat_model_control_endpoint
     # Use the `us.` cross-region inference profile (NOT `global.`): the `us.`
     # profile is available in every account we deploy to, whereas `global.` is
     # not enabled on all accounts (e.g. test account 919157478356 returns
