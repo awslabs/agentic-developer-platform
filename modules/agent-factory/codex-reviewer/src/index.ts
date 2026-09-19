@@ -17,10 +17,8 @@ function resultSummary(result: ReviewRunResult): string {
       return `Review requested changes with ${result.blockers} blocker(s)`;
     case "fixes_pushed":
       return `Mechanical review fixes pushed at ${result.sha}; awaiting fresh review`;
-    case "awaiting_human":
-      return `Reviewed ${result.sha}; distinct reviewer identity unavailable, awaiting human approval`;
     case "approved":
-      return `Reviewed and approved ${result.sha}; automatic merge disabled`;
+      return `Reviewed ${result.sha} with an approval verdict comment; automatic merge disabled`;
     case "merged":
       return `Reviewed and merged ${result.sha} as ${result.mergeSha}`;
   }

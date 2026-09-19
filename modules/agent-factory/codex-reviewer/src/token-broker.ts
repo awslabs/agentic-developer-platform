@@ -5,13 +5,7 @@ import { SignatureV4 } from "@smithy/signature-v4";
 interface BrokerResponse {
   token?: string;
   expires_at?: string;
-  identity?: "default" | "review";
-}
-
-export interface BrokerCredential {
-  token: string;
-  expiresAt: number;
-  identity: "default" | "review";
+  identity?: "default";
 }
 
 export class TokenBroker {
@@ -24,16 +18,11 @@ export class TokenBroker {
     private readonly installationId: number,
     private readonly repository: string,
     private readonly invocationId: string,
-    private readonly identity: "default" | "review" = "default",
   ) {}
 
   async getToken(): Promise<string> {
-    return (await this.getCredential()).token;
-  }
-
-  async getCredential(): Promise<BrokerCredential> {
     if (this.token && this.expiresAt - Date.now() > 10 * 60 * 1000) {
-      return { token: this.token, expiresAt: this.expiresAt, identity: this.grantedIdentity };
+      return this.token;
     }
     const [repoOwner, repoName] = this.repository.split("/");
     if (!repoOwner || !repoName) throw new Error("repository is invalid");
@@ -43,8 +32,8 @@ export class TokenBroker {
       repo_owner: repoOwner,
       repo_name: repoName,
       invocation_id: this.invocationId,
-      purpose: "independent agent-codex-reviewer GitHub access",
-      identity: this.identity,
+      purpose: "agent-codex-reviewer GitHub access",
+      identity: "default",
     });
     const url = new URL(endpoint);
     const signer = new SignatureV4({
@@ -78,15 +67,12 @@ export class TokenBroker {
     if (
       !result.token ||
       !Number.isFinite(expiresAt) ||
-      !["default", "review"].includes(result.identity ?? "")
+      result.identity !== "default"
     ) {
       throw new Error("GitHub token broker returned an incomplete response");
     }
     this.token = result.token;
     this.expiresAt = expiresAt;
-    this.grantedIdentity = result.identity as "default" | "review";
-    return { token: this.token, expiresAt, identity: this.grantedIdentity };
+    return this.token;
   }
-
-  private grantedIdentity: "default" | "review" = "default";
 }

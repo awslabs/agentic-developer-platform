@@ -29,9 +29,10 @@ A mechanical-fix run pushes to the existing developer PR branch and stops. The
 resulting `pull_request.synchronize` event must complete a new current-head
 review before approval or merge.
 
-Verdicts are submitted through the tenant's distinct reviewer GitHub App. If
-that App is not configured, the controller posts an advisory report, records
-`awaiting_human`, and refuses to merge rather than treating a comment as approval.
+The controller uses the tenant's existing default/developer GitHub App identity
+to publish verdict comments, push bounded fixes, and optionally merge. An
+approval verdict is deliberately a PR comment rather than a formal GitHub
+approval because an identity cannot independently approve its own work.
 
 ## Feature controls
 

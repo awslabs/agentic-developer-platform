@@ -89,17 +89,6 @@ export class GitHubClient {
     });
   }
 
-  async review(
-    number: number,
-    event: "APPROVE" | "REQUEST_CHANGES",
-    body: string,
-  ): Promise<void> {
-    await this.request(`/repos/${this.repository}/pulls/${number}/reviews`, {
-      method: "POST",
-      body: JSON.stringify({ event, body }),
-    });
-  }
-
   async checks(sha: string): Promise<ChecksState> {
     const [checks, statuses] = await Promise.all([
       this.request<CheckRunsResponse>(

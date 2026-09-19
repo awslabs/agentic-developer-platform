@@ -32,7 +32,6 @@ export type ReviewRunResult =
   | { status: "stale"; expected: string; actual: string }
   | { status: "changes_requested"; blockers: number }
   | { status: "fixes_pushed"; sha: string }
-  | { status: "awaiting_human"; sha: string }
   | { status: "approved"; sha: string }
   | { status: "merged"; sha: string; mergeSha: string };
 
@@ -217,28 +216,13 @@ async function waitForChecks(
 }
 
 async function publishVerdict(
-  authoring: GitHubClient,
-  reviewing: GitHubClient,
-  reviewBroker: TokenBroker,
+  github: GitHubClient,
   prNumber: number,
   verdict: ReviewVerdict,
   sha: string,
-): Promise<boolean> {
+): Promise<void> {
   const body = formatReviewComment(verdict, sha, `Codex SDK ${SDK_VERSION}`);
-  const credential = await reviewBroker.getCredential();
-  if (credential.identity !== "review") {
-    await authoring.comment(
-      prNumber,
-      `${body}\nA distinct reviewer GitHub App is not configured, so this is an advisory comment and a human approval is still required.`,
-    );
-    return false;
-  }
-  await reviewing.review(
-    prNumber,
-    verdict.verdict === "approve" ? "APPROVE" : "REQUEST_CHANGES",
-    body,
-  );
-  return true;
+  await github.comment(prNumber, body);
 }
 
 export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRunResult> {
@@ -254,15 +238,6 @@ export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRu
     envelope.message_id,
   );
   const github = new GitHubClient(envelope.repository, () => broker.getToken());
-  const reviewBroker = new TokenBroker(
-    gatewayEndpoint,
-    region,
-    envelope.installation_id,
-    envelope.repository,
-    envelope.message_id,
-    "review",
-  );
-  const reviewGithub = new GitHubClient(envelope.repository, () => reviewBroker.getToken());
   const expected = envelope.pull_request.expected_head_sha;
   const initialPr = await github.getPullRequest(envelope.pull_request.number);
   if (initialPr.state !== "open") return { status: "stale", expected, actual: initialPr.head.sha };
@@ -352,8 +327,6 @@ export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRu
         verdict = { ...verdict, summary: body };
         await publishVerdict(
           github,
-          reviewGithub,
-          reviewBroker,
           envelope.pull_request.number,
           verdict,
           expected,
@@ -409,8 +382,6 @@ export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRu
     if (requiresChanges(verdict)) {
       await publishVerdict(
         github,
-        reviewGithub,
-        reviewBroker,
         envelope.pull_request.number,
         verdict,
         expected,
@@ -424,15 +395,12 @@ export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRu
     if (beforeMerge.draft) {
       throw new Error("approved PR is still a draft; refusing to merge");
     }
-    const formallyApproved = await publishVerdict(
+    await publishVerdict(
       github,
-      reviewGithub,
-      reviewBroker,
       envelope.pull_request.number,
       verdict,
       expected,
     );
-    if (!formallyApproved) return { status: "awaiting_human", sha: expected };
     if ((process.env.CODEX_REVIEWER_MERGE_ENABLED ?? "false") !== "true") {
       return { status: "approved", sha: expected };
     }

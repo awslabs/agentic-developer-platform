@@ -27,7 +27,7 @@ test("a repair push is not represented as final approval", () => {
   assert.doesNotMatch(body, /— APPROVE/);
 });
 
-test("a verdict is submitted as a formal GitHub review", async () => {
+test("a verdict is posted as a PR comment with the default GitHub identity", async () => {
   const originalFetch = globalThis.fetch;
   let requested = "";
   let payload = "";
@@ -40,14 +40,11 @@ test("a verdict is submitted as a formal GitHub review", async () => {
     });
   };
   try {
-    const github = new GitHubClient("aws-e/adp", async () => "review-token");
-    await github.review(5471, "APPROVE", "Reviewed current head.");
+    const github = new GitHubClient("aws-e/adp", async () => "default-token");
+    await github.comment(5471, "Reviewed current head.");
   } finally {
     globalThis.fetch = originalFetch;
   }
-  assert.match(requested, /\/repos\/aws-e\/adp\/pulls\/5471\/reviews$/);
-  assert.deepEqual(JSON.parse(payload), {
-    event: "APPROVE",
-    body: "Reviewed current head.",
-  });
+  assert.match(requested, /\/repos\/aws-e\/adp\/issues\/5471\/comments$/);
+  assert.deepEqual(JSON.parse(payload), { body: "Reviewed current head." });
 });
