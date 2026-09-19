@@ -711,7 +711,7 @@ async def list_manageable_service_principals(
 
         result.append(
             {
-                "canonical_principal_id": sp.canonical_service_principal_id,
+                "canonical_service_principal_id": sp.canonical_service_principal_id,
                 "principal_kind": "service_account",
                 "display_name": sp.display_name,
                 "tenant_label": sp.org_id,

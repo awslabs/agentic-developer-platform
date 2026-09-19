@@ -1009,6 +1009,88 @@ async def test_ac10_admin_in_tenant_succeeds(client: AsyncClient, engine):
 
 
 @pytest.mark.asyncio
+async def test_ac10_managed_catalogue_uses_target_service_principal(client: AsyncClient):
+    """Managed catalogue and save evaluate the same target, never the admin."""
+    _set_context(client, _admin_context())
+
+    destination = AsyncMock(return_value=("222222222222", "us-west-2"))
+    catalogue = AsyncMock(return_value=[])
+    with (
+        patch(
+            "src.admin.persona_models.catalogue_routes.resolve_effective_destination",
+            destination,
+        ),
+        patch(
+            "src.admin.persona_models.catalogue_service.build_model_catalogue",
+            catalogue,
+        ),
+    ):
+        resp = await client.get(
+            f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/catalog",
+            params={"persona_key": "developer"},
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "persona_key": "developer",
+        "compatibility_class": "claude-agent-sdk",
+        "models": [],
+    }
+    routing_context = destination.await_args.args[1]
+    assert routing_context.user_id == TEST_SP_CANONICAL_ID
+    assert routing_context.canonical_service_principal_id == TEST_SP_CANONICAL_ID
+    assert routing_context.account_type == "service"
+    assert routing_context.team_id == ""
+    assert routing_context.department_id == ""
+    assert destination.await_args.kwargs["routing_user_id"] == ""
+    assert catalogue.await_args.kwargs == {
+        "persona_key": "developer",
+        "account_id": "222222222222",
+        "region": "us-west-2",
+        "principal_kind": "service_account",
+        "canonical_principal_id": TEST_SP_CANONICAL_ID,
+        "principal_status": "active",
+        "tenant_allowed_patterns": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_ac10_managed_catalogue_refuses_cross_tenant_target(client: AsyncClient, engine):
+    """The projection cannot be used to inspect another tenant's principal."""
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add(
+            ServicePrincipal(
+                canonical_service_principal_id="sp-b-catalogue-test",
+                org_id=TEST_ORG_B,
+                display_name="Org B Catalogue Target",
+                status="active",
+                approved_by="admin-b",
+            )
+        )
+        await session.commit()
+
+    _set_context(client, _admin_context())
+    resp = await client.get(
+        "/service-principals/sp-b-catalogue-test/persona-models/catalog",
+        params={"persona_key": "developer"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["reason"] == "principal_not_found"
+
+
+@pytest.mark.asyncio
+async def test_ac10_managed_catalogue_requires_human_org_admin(client: AsyncClient):
+    """A service caller cannot inspect another principal's model projection."""
+    _set_context(client, _service_context())
+    resp = await client.get(
+        f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/catalog",
+        params={"persona_key": "developer"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_ac10_admin_cross_tenant_refused(client: AsyncClient, engine):
     """AC-10: Admin in org A cannot administer service principals in org B."""
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -1212,7 +1294,8 @@ async def test_manageable_principals_succeeds_for_admin(client: AsyncClient):
     body = resp.json()
     principals = body["principals"]
     assert len(principals) >= 1
-    sp = next(p for p in principals if p["canonical_principal_id"] == TEST_SP_CANONICAL_ID)
+    sp = next(p for p in principals if p["canonical_service_principal_id"] == TEST_SP_CANONICAL_ID)
+    assert "canonical_principal_id" not in sp
     assert sp["display_name"] == "Test Worker"
 
 
@@ -1263,7 +1346,8 @@ async def test_register_service_principal_happy_path(client: AsyncClient, engine
     assert body["alias_source"] == "agent_registry"
     assert body["alias_id"] == "new-agent-42"
     assert body["status"] == "active"
-    new_canonical = body["canonical_principal_id"]
+    new_canonical = body["canonical_service_principal_id"]
+    assert "canonical_principal_id" not in body
     assert new_canonical  # non-empty
 
     # Verify audit record
@@ -1315,7 +1399,7 @@ async def test_link_alias_happy_path(client: AsyncClient, engine):
     body = resp.json()
     assert body["alias_source"] == "sa_registration"
     assert body["alias_id"] == "extra-sa-77"
-    assert body["canonical_principal_id"] == TEST_SP_CANONICAL_ID
+    assert body["canonical_service_principal_id"] == TEST_SP_CANONICAL_ID
     assert body["is_active"] is True
 
     # Verify audit record
@@ -1353,7 +1437,7 @@ async def test_revoke_alias_happy_path(client: AsyncClient, engine):
         json={"display_name": "Revoke Target", "alias_source": "sa_registration", "alias_id": "revoke-me-101"},
     )
     assert resp.status_code == 200
-    new_canonical = resp.json()["canonical_principal_id"]
+    new_canonical = resp.json()["canonical_service_principal_id"]
 
     # Get the alias row ID
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -1407,7 +1491,7 @@ async def test_reregister_after_revoke_creates_new_principal(client: AsyncClient
         json={"display_name": "Re-reg Target", "alias_source": "agent_registry", "alias_id": "rereg-agent-999"},
     )
     assert resp.status_code == 200
-    first_canonical = resp.json()["canonical_principal_id"]
+    first_canonical = resp.json()["canonical_service_principal_id"]
 
     # Get alias row ID and revoke
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -1430,7 +1514,7 @@ async def test_reregister_after_revoke_creates_new_principal(client: AsyncClient
         json={"display_name": "Re-reg Target v2", "alias_source": "agent_registry", "alias_id": "rereg-agent-999"},
     )
     assert resp.status_code == 200
-    second_canonical = resp.json()["canonical_principal_id"]
+    second_canonical = resp.json()["canonical_service_principal_id"]
 
     # The two canonical IDs must differ
     assert second_canonical != first_canonical, "Re-registration must create a new canonical principal"
@@ -2012,7 +2096,7 @@ async def test_lifecycle_api_suspend(client: AsyncClient, engine):
     body = resp.json()
     assert body["previous_status"] == "active"
     assert body["status"] == "suspended"
-    assert body["canonical_principal_id"] == TEST_SP_CANONICAL_ID
+    assert body["canonical_service_principal_id"] == TEST_SP_CANONICAL_ID
 
     # Verify audit
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -2983,7 +3067,7 @@ async def test_manageable_principals_reports_truthful_source(engine, seed_data):
     async with factory() as session:
         result = await svc.list_manageable_service_principals(session, org_id=TEST_ORG_A)
 
-    by_id = {p["canonical_principal_id"]: p for p in result}
+    by_id = {p["canonical_service_principal_id"]: p for p in result}
     assert by_id["sp-eb-truth"]["source"] == "eventbridge", "eventbridge mislabelled"
     assert by_id["sp-gha-truth"]["source"] == "github-actions", "github_actions mislabelled"
     assert by_id["sp-m2m-truth"]["source"] == "cognito-client", "cognito_m2m mislabelled"
