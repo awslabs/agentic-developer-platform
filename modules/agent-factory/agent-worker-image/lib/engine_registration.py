@@ -81,7 +81,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AMENDMENT_ARTIFACT_TEMPLATE",
+    "AMENDMENT_BASE_HASH_ENV",
+    "AMENDMENT_BASE_VERSION_ENV",
+    "AMENDMENT_OUTPUT_PATH_ENV",
     "AMENDMENT_REQUEST_ENV",
+    "AMENDMENT_REQUEST_TEXT_ENV",
     "DISABLED_ENV",
     "EngineRegistrationError",
     "FLOW_ID_ENV",
@@ -154,6 +158,49 @@ FLOW_ID_ENV = "ADP_FLOW_ID"
 #: keyed on the issue would make the second one overwrite the first — then register
 #: whichever file happened to be on disk against whichever assignment was live.
 AMENDMENT_ARTIFACT_TEMPLATE = "aidlc/spaces/amendments/{request_id}/proposal.json"
+
+# --- The authoring brief (the producer half of the contract above) ----------------
+#
+# The four names below are why a commissioned author knows what to do. The two ids
+# above identify the assignment; these describe the *job*, and without them a run
+# that was correctly summoned, correctly authorized and correctly bound still has no
+# idea what it was summoned for. Review of the first cut of #4529 found exactly that:
+# this module read an artifact path no instruction anywhere told an author to write,
+# so a real authoring run would have followed its ordinary planning instructions,
+# opened a flow nobody asked for and filed nothing.
+#
+# All four are exported by the entrypoint from the *dispatch envelope* and nowhere
+# else, alongside the two ids and under the same both-or-neither rule. The request
+# text is the human's words carried as DATA for the author to consider; nothing in
+# this platform executes it, and the server capped it at 2000 characters
+# (`github_commands.REPLAN_TEXT_MAX_LEN`) before it was ever stored.
+#
+# They are deliberately NOT read by this module. `register_amendment_proposal` needs
+# the assignment, not the brief — the server re-checks the base revision against its
+# own record, so a run that lied about its base version would be refused rather than
+# believed. They exist for the authoring *instructions* to consume, which is why they
+# are defined here (the module that owns the amendment contract) rather than in the
+# entrypoint that happens to export them: the instruction text and this file must
+# agree on the names, and a contract test pins that they do.
+
+#: The human's `replan:` words, verbatim and bounded. Data to consider, never executed.
+AMENDMENT_REQUEST_TEXT_ENV = "ADP_AMENDMENT_REQUEST_TEXT"
+
+#: The accepted plan version the amendment is authored against. Carried so the author
+#: amends what the human was looking at rather than re-reading and possibly seeing a
+#: different version.
+AMENDMENT_BASE_VERSION_ENV = "ADP_AMENDMENT_BASE_VERSION"
+
+#: The hash of that same accepted version. The server compares it on accept and
+#: returns a conflict if the plan moved underneath the draft.
+AMENDMENT_BASE_HASH_ENV = "ADP_AMENDMENT_BASE_HASH"
+
+#: The absolute path this run must write its authored amendment to — the same path
+#: `amendment_artifact_path` reads. Exported rather than left to the author to compose
+#: so that the producer and the consumer cannot disagree about it: an author that
+#: composes the path itself can get it subtly wrong (the issue-keyed shape is the
+#: obvious wrong guess) and the failure is a silent "no artifact found".
+AMENDMENT_OUTPUT_PATH_ENV = "ADP_AMENDMENT_OUTPUT_PATH"
 
 #: Composed rather than a constant because the flow and the request are both
 #: per-assignment. `{request_id}` goes in the query string because that is where the

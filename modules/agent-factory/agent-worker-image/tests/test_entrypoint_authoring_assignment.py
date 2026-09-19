@@ -45,7 +45,26 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import entrypoint  # noqa: E402
-from lib.engine_registration import AMENDMENT_REQUEST_ENV, FLOW_ID_ENV  # noqa: E402
+from lib.engine_registration import (  # noqa: E402
+    AMENDMENT_BASE_HASH_ENV,
+    AMENDMENT_BASE_VERSION_ENV,
+    AMENDMENT_OUTPUT_PATH_ENV,
+    AMENDMENT_REQUEST_ENV,
+    AMENDMENT_REQUEST_TEXT_ENV,
+    FLOW_ID_ENV,
+)
+
+#: Every name the export block owns. Used by the fixture's wipe and by the
+#: "nothing leaks" assertions, so adding a sixth variable to the block without adding
+#: it here cannot leave a stale-value test silently covering five of six names.
+ALL_ASSIGNMENT_ENV = (
+    FLOW_ID_ENV,
+    AMENDMENT_REQUEST_ENV,
+    AMENDMENT_REQUEST_TEXT_ENV,
+    AMENDMENT_BASE_VERSION_ENV,
+    AMENDMENT_BASE_HASH_ENV,
+    AMENDMENT_OUTPUT_PATH_ENV,
+)
 
 FLOW_ID = "flow-abc123"
 REQUEST_ID = "req-7c9a1e20"
@@ -149,7 +168,7 @@ def run_worker(monkeypatch, tmp_path):
         # so it passed identically whether the export assigned or merely defaulted.
         to_clear = ["ADP_TENANT_ID"]
         if clear_assignment:
-            to_clear += [FLOW_ID_ENV, AMENDMENT_REQUEST_ENV]
+            to_clear += list(ALL_ASSIGNMENT_ENV)
         for var in to_clear:
             monkeypatch.delenv(var, raising=False)
 
@@ -402,3 +421,224 @@ class TestTheAgentCannotNameItsOwnAssignment:
         assert_reached_the_export_block(envelope)
         assert FLOW_ID_ENV not in os.environ
         assert AMENDMENT_REQUEST_ENV not in os.environ
+
+
+class TestTheBriefReachesTheRun:
+    """The run is told what it was summoned to DO, not merely which assignment it is.
+
+    The two ids identify the assignment; they do not describe the job. Review of the
+    first cut of this story found the consequence: an artifact path with a consumer and
+    no producer. A correctly summoned, correctly authorized author received two opaque
+    identifiers, no request text, no base revision and no output path — so it would
+    have followed its ordinary planning instructions, opened a flow nobody asked for,
+    stopped at a gate and filed nothing, while the request stayed recorded and owed.
+
+    These assertions are the producer half of that contract. The consumer half (that
+    the authoring instructions name these same variables) is pinned by
+    `tests/test_amendment_authoring_contract.py`, which reads the real staged
+    instruction text against the real library constants. Neither implies the other:
+    exporting a variable no instruction mentions is the bug being fixed here, and an
+    instruction naming a variable nothing exports is the same bug mirrored.
+    """
+
+    def test_the_request_text_reaches_the_run(self, run_worker):
+        """The human's words. Without them the author knows a plan should change but not
+        how, which is the difference between doing the job and guessing at it."""
+        run_worker(AUTHORING_ENVELOPE)
+        assert_reached_the_export_block(AUTHORING_ENVELOPE)
+        assert os.environ.get(AMENDMENT_REQUEST_TEXT_ENV) == AUTHORING_ENVELOPE["payload"]["replan_request"]
+
+    def test_the_base_revision_reaches_the_run(self, run_worker):
+        """What was in force when the human asked. The author amends the version the
+        human was looking at; a fresh read could see a different one, and the server
+        refuses a draft whose base does not match the assignment."""
+        run_worker(AUTHORING_ENVELOPE)
+        assert_reached_the_export_block(AUTHORING_ENVELOPE)
+        assert os.environ.get(AMENDMENT_BASE_VERSION_ENV) == "4"
+        assert os.environ.get(AMENDMENT_BASE_HASH_ENV) == "cafebabe"
+
+    def test_the_output_path_is_the_one_the_client_reads(self, run_worker, tmp_path):
+        """The heart of the finding. The exported path is composed with the same helper
+        `register_amendment_proposal` loads from, so an author following the instruction
+        writes the file the client opens.
+
+        Asserted through the real helper rather than against a hardcoded string: a
+        change to `AMENDMENT_ARTIFACT_TEMPLATE` must move both sides together or fail
+        here, which is precisely the drift that produced a consumer with no producer.
+        """
+        from lib.engine_registration import amendment_artifact_path
+
+        run_worker(AUTHORING_ENVELOPE)
+        assert_reached_the_export_block(AUTHORING_ENVELOPE)
+        exported = os.environ.get(AMENDMENT_OUTPUT_PATH_ENV)
+        assert exported == str(amendment_artifact_path(entrypoint.WORK_DIR, REQUEST_ID))
+        # Absolute and inside the checkout: the author is given a path it can write to
+        # without resolving anything itself, and a relative path would land wherever the
+        # agent's shell happened to be.
+        assert Path(exported).is_absolute()
+        assert str(tmp_path) in exported
+
+    def test_the_output_path_is_keyed_on_the_request_not_the_issue(self, run_worker):
+        """Two `replan:` asks on one issue must not share a file. An issue-keyed path
+        would let the second overwrite the first, and then register whichever file was
+        on disk against whichever assignment was live."""
+        second = json.loads(json.dumps(AUTHORING_ENVELOPE))
+        second["orchestration"]["request_id"] = "req-second-ask"
+        run_worker(AUTHORING_ENVELOPE)
+        first_path = os.environ.get(AMENDMENT_OUTPUT_PATH_ENV)
+        run_worker(second)
+        assert_reached_the_export_block(second)
+        assert os.environ.get(AMENDMENT_OUTPUT_PATH_ENV) != first_path
+        assert "req-second-ask" in os.environ.get(AMENDMENT_OUTPUT_PATH_ENV, "")
+
+    def test_an_empty_replan_still_gets_an_assignment_and_a_path(self, run_worker):
+        """`replan:` with no text is a legitimate request — the human asked for a
+        re-plan without saying what to change — and the parser records it. The author
+        must still be commissioned and still be told where to write; it simply works
+        from the plan alone. The text is ABSENT rather than blank so the instructions do
+        not quote an empty request back at the human as if it said something.
+        """
+        envelope = json.loads(json.dumps(AUTHORING_ENVELOPE))
+        envelope["payload"]["replan_request"] = ""
+        run_worker(envelope)
+        assert_reached_the_export_block(envelope)
+        assert os.environ.get(FLOW_ID_ENV) == FLOW_ID
+        assert os.environ.get(AMENDMENT_OUTPUT_PATH_ENV)
+        assert AMENDMENT_REQUEST_TEXT_ENV not in os.environ
+
+    @pytest.mark.parametrize("field", ["base_plan_version", "base_plan_hash"])
+    def test_a_missing_base_field_is_absent_not_blank(self, run_worker, field):
+        """A blank base version would read to the author as "there is no base", which is
+        a different and wrong instruction. Absent means "not supplied"; the server holds
+        the authoritative base either way and checks it on accept."""
+        envelope = json.loads(json.dumps(AUTHORING_ENVELOPE))
+        del envelope["orchestration"][field]
+        run_worker(envelope)
+        assert_reached_the_export_block(envelope)
+        assert os.environ.get(FLOW_ID_ENV) == FLOW_ID, "the assignment itself must survive"
+        missing = AMENDMENT_BASE_VERSION_ENV if field == "base_plan_version" else AMENDMENT_BASE_HASH_ENV
+        assert missing not in os.environ
+
+    def test_an_absent_payload_leaves_the_run_commissioned_without_text(self, run_worker):
+        """The envelope is trusted for provenance, not for shape. A missing payload must
+        leave the run commissioned with no request text rather than raising out of a
+        bootstrap step — the assignment is still valid, the author just works from the
+        plan alone.
+
+        Only the absent/`null` case is driven through the whole run here. A payload that
+        is a non-empty *non-object* (a bare string, a list, a number) crashes earlier in
+        bootstrap, at `entrypoint.py`'s GitLab provider detection — `(envelope.get(
+        "payload") or {}).get("provider")` raises `AttributeError` on any truthy
+        non-dict. That is pre-existing on `origin/main` (three sites, the first at line
+        1313 there) and unrelated to this story, so it is filed separately rather than
+        fixed in this diff. The export block's own `isinstance` guard is proved directly
+        below instead of through a run that cannot get that far.
+        """
+        envelope = json.loads(json.dumps(AUTHORING_ENVELOPE))
+        del envelope["payload"]
+        run_worker(envelope)
+        assert_reached_the_export_block(envelope)
+        assert os.environ.get(FLOW_ID_ENV) == FLOW_ID
+        assert os.environ.get(AMENDMENT_OUTPUT_PATH_ENV), "the assignment must still be exported"
+        assert AMENDMENT_REQUEST_TEXT_ENV not in os.environ
+
+    @pytest.mark.parametrize("not_a_dict", ["replan: do a thing", ["replan"], 7])
+    def test_a_non_object_payload_leaves_the_assignment_intact_and_the_text_absent(
+        self, not_a_dict, monkeypatch, tmp_path
+    ):
+        """The export's shape guard, driven directly because the whole run cannot reach it.
+
+        The envelope is trusted for provenance, not for shape. A `payload` that is a
+        truthy non-object must leave the run commissioned with no request text rather
+        than raising — the assignment is still valid.
+
+        This calls `_export_authoring_assignment` rather than `main()` for the reason
+        given in the previous test: `main()` raises `AttributeError` on such a payload at
+        a pre-existing line of its own, so a whole-run probe would fail on somebody
+        else's defect and prove nothing about this guard. The function under test is the
+        real one, with the inputs `main()` hands it.
+        """
+        monkeypatch.setattr(entrypoint, "WORK_DIR", tmp_path)
+        for name in ALL_ASSIGNMENT_ENV:
+            monkeypatch.delenv(name, raising=False)
+
+        entrypoint._export_authoring_assignment(
+            {
+                "orchestration": {"flow_id": FLOW_ID, "request_id": REQUEST_ID, "base_plan_version": 4},
+                "payload": not_a_dict,
+            }
+        )
+
+        assert os.environ.get(FLOW_ID_ENV) == FLOW_ID
+        assert os.environ.get(AMENDMENT_REQUEST_ENV) == REQUEST_ID
+        assert os.environ.get(AMENDMENT_BASE_VERSION_ENV) == "4"
+        assert os.environ.get(AMENDMENT_OUTPUT_PATH_ENV)
+        assert AMENDMENT_REQUEST_TEXT_ENV not in os.environ
+
+    @pytest.mark.parametrize(
+        "envelope,kind",
+        [
+            (WEBHOOK_ENVELOPE, "webhook trigger"),
+            (NODE_DISPATCH_ENVELOPE, "node dispatch"),
+        ],
+    )
+    def test_an_unassigned_run_gets_no_brief_at_all(self, run_worker, envelope, kind):
+        """Every other kind of run behaves exactly as before. A node dispatch carries a
+        `flow_id` and a `payload`, so a brief exported on a looser condition would reach
+        runs that were commissioned to amend nothing."""
+        run_worker(envelope)
+        assert_reached_the_export_block(envelope)
+        for name in ALL_ASSIGNMENT_ENV:
+            assert name not in os.environ, f"a {kind} received {name}"
+
+    def test_a_stale_brief_is_cleared_for_an_unassigned_run(self, run_worker, monkeypatch):
+        """A leftover brief is worse than a leftover id, which is why it is deleted on
+        the same branch.
+
+        A stale id is checked by the server and refused. A stale *instruction* — "amend
+        this plan, here is what the human asked, write it here" — is followed, by a run
+        that was never asked to amend anything. Nothing downstream re-validates an
+        instruction against an envelope, so this deletion is the only thing standing
+        between a planted brief and an author acting on it.
+        """
+        for name in ALL_ASSIGNMENT_ENV:
+            monkeypatch.setenv(name, f"planted-{name}")
+
+        run_worker(WEBHOOK_ENVELOPE, clear_assignment=False)
+
+        assert_reached_the_export_block(WEBHOOK_ENVELOPE)
+        for name in ALL_ASSIGNMENT_ENV:
+            assert name not in os.environ, f"a webhook trigger inherited a planted {name}"
+
+    def test_a_planted_brief_loses_to_the_envelope(self, run_worker, monkeypatch):
+        """Set, not defaulted-into, for the brief as well as the ids. A planted request
+        text surviving alongside a real assignment would have the author amend the right
+        plan according to the wrong instruction — the hardest failure of this class to
+        notice, because everything about the run looks correctly commissioned."""
+        for name in ALL_ASSIGNMENT_ENV:
+            monkeypatch.setenv(name, f"planted-{name}")
+
+        run_worker(AUTHORING_ENVELOPE, clear_assignment=False)
+
+        assert_reached_the_export_block(AUTHORING_ENVELOPE)
+        assert os.environ.get(AMENDMENT_REQUEST_TEXT_ENV) == AUTHORING_ENVELOPE["payload"]["replan_request"]
+        assert os.environ.get(AMENDMENT_BASE_VERSION_ENV) == "4"
+        assert os.environ.get(AMENDMENT_BASE_HASH_ENV) == "cafebabe"
+        assert os.environ.get(AMENDMENT_OUTPUT_PATH_ENV) == str(
+            entrypoint.WORK_DIR / f"aidlc/spaces/amendments/{REQUEST_ID}/proposal.json"
+        )
+
+    def test_a_planted_brief_does_not_survive_a_partly_supplied_one(self, run_worker, monkeypatch):
+        """The mixed case: a real assignment whose server block omitted the base
+        revision, with a planted base revision already in the environment. The planted
+        value must not silently complete the brief — an author would then amend against
+        a version the server never named."""
+        envelope = json.loads(json.dumps(AUTHORING_ENVELOPE))
+        del envelope["orchestration"]["base_plan_version"]
+        monkeypatch.setenv(AMENDMENT_BASE_VERSION_ENV, "999")
+
+        run_worker(envelope, clear_assignment=False)
+
+        assert_reached_the_export_block(envelope)
+        assert os.environ.get(FLOW_ID_ENV) == FLOW_ID
+        assert AMENDMENT_BASE_VERSION_ENV not in os.environ

@@ -38,8 +38,13 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import (
+    AMENDMENT_BASE_HASH_ENV,
+    AMENDMENT_BASE_VERSION_ENV,
+    AMENDMENT_OUTPUT_PATH_ENV,
     AMENDMENT_REQUEST_ENV,
+    AMENDMENT_REQUEST_TEXT_ENV,
     FLOW_ID_ENV,
+    amendment_artifact_path,
     amendment_registration_note,
     draft_registration_note,
 )
@@ -1158,6 +1163,111 @@ def _checkout_existing_work_branch(branch: str) -> None:
     run_cmd(["git", "checkout", branch], cwd=WORK_DIR)
 
 
+def _export_authoring_assignment(envelope: dict) -> None:
+    """Export this run's plan-amendment assignment and brief, or clear any stale one.
+
+    Issue #4529. When the engine commissions a run to amend a plan (a verified human
+    commented `replan:`), `authoring_dispatch._build_envelope` writes an `orchestration`
+    block naming the flow and the request. Two things are exported from it:
+
+    * **The assignment** — `flow_id` and `request_id`. These are the *authorization* for
+      the amendment route, not parameters to it: the server refuses unless the presented
+      `X-Agent-RunId` equals the `author_run_id` it bound to that request. The finish
+      path reads them via `engine_registration.authoring_assignment`.
+    * **The brief** — the human's request text, the base plan revision, and the path to
+      write the authored amendment to. The assignment says *which* job this is; the brief
+      says what the job *is*. Review of this story's first cut found the consequence of
+      omitting it: the artifact path had a consumer and no producer, so a correctly
+      summoned and correctly authorized author received two opaque identifiers and would
+      have followed its ordinary planning instructions — opening a flow nobody asked for,
+      stopping at a gate, filing nothing — while the request stayed recorded and owed.
+
+    Everything comes from the dispatch envelope and nowhere else. Taking any of it from
+    somewhere the model can reach (the issue body, a tool result, the repository) would
+    hand the agent the ability to name its own assignment.
+
+    Both-or-neither on the id pair, and absent for every other kind of run: a webhook
+    trigger, a code-story dispatch and a new-flow authoring run carry no `request_id`,
+    and their behaviour stays byte-identical to before this story.
+
+    **The no-assignment branch DELETES rather than leaving alone.** "Was it in the
+    environment already?" is not a question this process can answer safely — a value
+    planted by an earlier step, a pod spec or a reused process would otherwise be
+    inherited by a run that was never bound to it, and the registration client reads
+    exactly these names with no envelope of its own to cross-check against. Deleting
+    makes the envelope the only source in both directions. The brief is cleared on the
+    same branch for a sharper reason: a stale *id* is checked by the server and refused,
+    but a stale *instruction* ("amend this plan, here is what the human asked, write it
+    here") is simply followed, by a run nobody asked to amend anything.
+
+    Extracted from `main()` rather than inlined so the shape guards below are reachable
+    by a direct test. `main()` crashes earlier on a truthy non-dict `payload` (a
+    pre-existing defect on `origin/main` at its GitLab provider detection), so a
+    whole-run probe cannot prove this function tolerates one.
+    """
+    orchestration_ctx = envelope.get("orchestration") or {}
+    amend_flow_id = amend_request_id = ""
+    if isinstance(orchestration_ctx, dict):
+        amend_flow_id = str(orchestration_ctx.get("flow_id") or "").strip()
+        amend_request_id = str(orchestration_ctx.get("request_id") or "").strip()
+
+    if not (amend_flow_id and amend_request_id):
+        # A node dispatch also has an `orchestration` block, with `node_id`/`attempt` and
+        # no `request_id` — hence the pair test rather than a `flow_id` test, which would
+        # export a flow for runs commissioned to amend nothing.
+        for stale in (
+            FLOW_ID_ENV,
+            AMENDMENT_REQUEST_ENV,
+            AMENDMENT_REQUEST_TEXT_ENV,
+            AMENDMENT_BASE_VERSION_ENV,
+            AMENDMENT_BASE_HASH_ENV,
+            AMENDMENT_OUTPUT_PATH_ENV,
+        ):
+            os.environ.pop(stale, None)
+        return
+
+    os.environ[FLOW_ID_ENV] = amend_flow_id
+    os.environ[AMENDMENT_REQUEST_ENV] = amend_request_id
+
+    # `payload.replan_request` is the human's words as the server stored them, already
+    # capped at `github_commands.REPLAN_TEXT_MAX_LEN` (2000) by the command parser. Not
+    # re-capped here: one cap applied twice with different limits is how the two halves
+    # of a contract drift apart.
+    #
+    # Each brief field is exported only when non-empty, so a field the server omitted is
+    # absent rather than present-and-blank. The instructions branch on the output path's
+    # presence, and a blank value would read as "write to nowhere". An empty `replan:` is
+    # a legitimate request — the human asked for a re-plan without saying what to change
+    # — and its absent text means the author works from the plan alone.
+    payload = envelope.get("payload") or {}
+    request_text = ""
+    if isinstance(payload, dict):
+        request_text = str(payload.get("replan_request") or "").strip()
+    for env_name, raw in (
+        (AMENDMENT_REQUEST_TEXT_ENV, request_text),
+        # The base revision comes from the same server-written block as the ids: the
+        # author amends what the human was looking at, not whatever a fresh read would
+        # return now.
+        (AMENDMENT_BASE_VERSION_ENV, orchestration_ctx.get("base_plan_version")),
+        (AMENDMENT_BASE_HASH_ENV, orchestration_ctx.get("base_plan_hash")),
+    ):
+        value = str(raw).strip() if raw is not None else ""
+        if value:
+            os.environ[env_name] = value
+        else:
+            os.environ.pop(env_name, None)
+
+    # Composed with the same helper `register_amendment_proposal` loads from, so the
+    # instruction the author follows and the file the client opens cannot diverge.
+    os.environ[AMENDMENT_OUTPUT_PATH_ENV] = str(amendment_artifact_path(WORK_DIR, amend_request_id))
+    logger.info(
+        "Authoring assignment: flow=%s request=%s base_version=%s",
+        amend_flow_id,
+        amend_request_id,
+        os.environ.get(AMENDMENT_BASE_VERSION_ENV, "(absent)"),
+    )
+
+
 def main() -> int:
     queue_url = os.environ.get("QUEUE_URL")
     if not queue_url:
@@ -1349,44 +1459,8 @@ def main() -> int:
     if envelope.get("pr_binding_required") is True:
         os.environ[PR_BINDING_REQUIRED_ENV] = "true"
 
-    # Issue #4529: an authoring assignment. When the engine commissions a run to amend
-    # a plan (a verified human commented `replan:`), `authoring_dispatch._build_envelope`
-    # writes an `orchestration` block naming the flow and the request; export both so
-    # the finish path can file the amendment against the assignment it was given.
-    #
-    # Read from the dispatch envelope ONLY. These two ids are the authorization for the
-    # amendment route, not parameters to it — the server refuses unless the presented
-    # run id equals the `author_run_id` it bound to this request — so taking them from
-    # anywhere the model can reach (the issue body, a tool result, the repo) would be
-    # handing the agent the ability to name its own assignment.
-    #
-    # Both or neither, and absent for every other kind of run: a webhook trigger, a
-    # code-story dispatch and a new-flow authoring run all carry no `request_id` in
-    # that block, and their behaviour must stay byte-identical to before.
-    #
-    # The `else` branch DELETES rather than leaving alone. A run the engine did not
-    # commission to amend anything must not be able to present an assignment, and
-    # "was it in the environment already?" is not a question this process can answer
-    # safely: an assignment left by an earlier step, a pod spec, or a reused process
-    # would otherwise be inherited by a run that was never bound to it, and the
-    # registration client reads exactly these names with no envelope of its own to
-    # cross-check against. Deleting makes the envelope the *only* source in both
-    # directions — present when it says so, gone when it does not.
-    orchestration_ctx = envelope.get("orchestration") or {}
-    amend_flow_id = amend_request_id = ""
-    if isinstance(orchestration_ctx, dict):
-        amend_flow_id = str(orchestration_ctx.get("flow_id") or "").strip()
-        amend_request_id = str(orchestration_ctx.get("request_id") or "").strip()
-    # A node dispatch also has an `orchestration` block, with `node_id`/`attempt`
-    # and no `request_id` — hence the pair test rather than a `flow_id` test, which
-    # would export a flow for runs that were commissioned to amend nothing.
-    if amend_flow_id and amend_request_id:
-        os.environ[FLOW_ID_ENV] = amend_flow_id
-        os.environ[AMENDMENT_REQUEST_ENV] = amend_request_id
-        logger.info("Authoring assignment: flow=%s request=%s", amend_flow_id, amend_request_id)
-    else:
-        for stale in (FLOW_ID_ENV, AMENDMENT_REQUEST_ENV):
-            os.environ.pop(stale, None)
+    # Issue #4529: export this run's authoring assignment and brief. See the helper.
+    _export_authoring_assignment(envelope)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
