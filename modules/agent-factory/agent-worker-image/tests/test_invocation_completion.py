@@ -241,7 +241,7 @@ def worker(delivery, monkeypatch, tmp_path):
             executions.append(envelope["message_id"])
             return MagicMock(returncode=exit_codes[-1], stdout="", stderr="")
         return MagicMock(
-            returncode=1 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
+            returncode=2 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
         )
 
     monkeypatch.setattr(entrypoint.subprocess, "run", run)
