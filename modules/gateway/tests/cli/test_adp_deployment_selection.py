@@ -103,6 +103,26 @@ def three_deployments(adp):
 
 
 class TestDeploymentVerb:
+    @pytest.mark.parametrize("mode", [0o755, 0o777])
+    def test_default_install_root_allows_reads_but_not_foreign_writes(self, adp, adp_home, adp_bin, mode) -> None:
+        # The shipped installer creates ~/.adp/bin with mkdir -p under the
+        # user's umask. That normally leaves the non-secret parent at 0755.
+        root = adp_home / ".adp"
+        shutil.copytree(adp_bin, root / "bin")
+        root.chmod(mode)
+
+        result = adp(["deployment", "add", "dev", "--url", DEV_URL])
+
+        if mode == 0o777:
+            assert result.returncode != 0
+            assert not (root / "deployments.json").exists()
+            return
+        assert result.returncode == 0, result.stderr
+        registry = root / "deployments.json"
+        record = json.loads(registry.read_text())["deployments"]["dev"]
+        assert registry.stat().st_mode & 0o777 == 0o600
+        assert (root / "deployments" / record["id"]).stat().st_mode & 0o777 == 0o700
+
     def test_list_on_a_fresh_machine_explains_how_to_start(self, adp) -> None:
         result = adp(["deployment", "list"])
 
@@ -193,6 +213,29 @@ class TestSelectionFlag:
 
         assert "preprod" in result.stdout
         assert "flag" in result.stdout
+
+    @pytest.mark.parametrize("session", ["absent", "valid", "expired"])
+    def test_status_json_reports_only_the_selected_session(self, three_deployments, resolved, seed_session, session) -> None:
+        store = Path(resolved("preprod")["config_dir"])
+        if session != "absent":
+            seed_session(store, PREPROD_URL)
+            tokens = {"access_token": "access-secret", "refresh_token": "refresh-secret", "expires_at": 9999999999 if session == "valid" else 1}
+            (store / "tokens.json").write_text(json.dumps(tokens))
+        before = {path.name: path.read_bytes() for path in store.glob("*.json")}
+
+        result = three_deployments(["--deployment", "preprod", "status", "--json"], {"ADP_DEPLOYMENT": "integration"})
+
+        assert result.returncode == (1 if session == "absent" else 0), result.stderr
+        document = json.loads(result.stdout)
+        assert document["command"] == "status"
+        assert document["status"] == ("unavailable" if session == "absent" else "configured")
+        assert document["detail"]["deployment"] == "preprod"
+        assert document["detail"]["gateway_url"] == PREPROD_URL + "/api"
+        assert document["detail"]["selection_source"] == "flag"
+        assert document["detail"]["signed_in"] == (session != "absent")
+        assert document["detail"]["access_token_state"] == session
+        assert "access-secret" not in result.stdout and "refresh-secret" not in result.stdout
+        assert {path.name: path.read_bytes() for path in store.glob("*.json")} == before
 
     def test_the_flag_beats_the_environment_variable(self, three_deployments) -> None:
         result = three_deployments(["--deployment", "preprod", "status"], {"ADP_DEPLOYMENT": "integration"})
@@ -290,6 +333,23 @@ class TestLegacyMachineUnchanged:
         result = legacy(["status"])
 
         assert result.returncode == 0, f"a pre-existing 0755 store must still work: {result.stderr}"
+
+    @pytest.mark.parametrize("mode", [0o755, 0o777])
+    def test_alias_adopts_readable_legacy_store_but_refuses_foreign_writes(self, legacy, adp_home, mode) -> None:
+        store = adp_home / ".bedrock-gateway"
+        store.chmod(mode)
+        original = (store / "tokens.json").read_bytes()
+        result = legacy(["deployment", "add", "dev", "--url", "https://gw.example.com"])
+
+        if mode == 0o777:
+            assert result.returncode != 0
+            assert (store / "tokens.json").read_bytes() == original
+            return
+        assert result.returncode == 0, result.stderr
+        assert legacy(["--deployment", "dev", "status"]).returncode == 0
+        assert (store / "tokens.json").read_bytes() == original
+        assert list(adp_home.rglob("tokens.json")) == [store / "tokens.json"]
+        assert store.stat().st_mode & 0o777 == 0o755
 
     def test_the_legacy_aws_profile_name_is_preserved(self, legacy, resolved) -> None:
         """Existing AWS_PROFILE=bedrock-gateway setups must keep working."""

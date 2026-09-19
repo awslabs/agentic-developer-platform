@@ -55,6 +55,12 @@ no later command needs a flag. `adp update` re-pulls from the same gateway;
 `adp update --rollback` undoes it. `sh install.sh --uninstall` removes the files
 and leaves your session alone.
 
+`adp status --json` reports the selected deployment, gateway, selection source
+and local session metadata in the shared JSON envelope. It never refreshes or
+contacts the gateway: `configured` means a cached session exists, including an
+expired access token that can refresh on use; `unavailable` exits 1 when no
+session exists. Credential values are excluded.
+
 **One login is shared by every tool.** `adp login` seeds `~/.bedrock-gateway/`
 once; both `setup` verbs only write config and never authenticate, so adding a
 second tool costs one command and no second sign-in.

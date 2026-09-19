@@ -65,6 +65,8 @@ directly and must not depend on the rest of the python surface being loadable.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
@@ -169,16 +171,18 @@ def legacy_state_dir():
     return adp_home() / "state"
 
 
-def private_directory(path):
+def private_directory(path, *, allow_readable=False):
     """Create (0700) and verify a directory we are about to keep secrets in.
 
-    Same contract as adp_common.private_directory, duplicated rather than imported
-    for the standalone-loadability reason in the module docstring.
+    The registry's non-secret parent may already be 0755 from installing
+    ~/.adp/bin; the legacy auth root may also already be 0755. Allow that
+    only for these existing roots. Foreign writes and symlinks are refused.
     """
     path = Path(path).absolute()
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    forbidden = 0o022 if allow_readable else 0o077
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & forbidden:
         raise DeploymentError(f"Use a private directory owned by you with permissions 0700: {path}", "unsafe_file")
     return path
 
@@ -258,7 +262,7 @@ def _read_json(path):
 
 def _write_json_private(path, value):
     path = Path(path)
-    private_directory(path.parent)
+    private_directory(path.parent, allow_readable=path == registry_path())
     handle, temporary = tempfile.mkstemp(prefix=".adp-", dir=path.parent)
     try:
         with os.fdopen(handle, "w") as output:
@@ -284,7 +288,7 @@ class _RegistryLock:
         self._held = False
 
     def __enter__(self):
-        private_directory(self._path.parent)
+        private_directory(self._path.parent, allow_readable=True)
         deadline = time.monotonic() + REGISTRY_LOCK_TIMEOUT_SECONDS
         while True:
             try:
@@ -536,21 +540,16 @@ class Deployment:
         pre-existing user's first command after upgrading fail with a permissions
         error about a directory they never chose the mode of — a regression, not a
         security win, since we are not the ones who created it and the token file
-        itself is written 0600. It is still refused if it is not a directory we
-        own, which is the case that actually matters.
+        itself is written 0600. Unsafe ownership, symlinks and group/world writes
+        are still refused.
         """
         if self.legacy:
-            self.config_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            info = self.config_dir.lstat()
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
-                raise DeploymentError(
-                    f"{self.config_dir} is not a directory you own — move it aside and sign in again.",
-                    "unsafe_file",
-                )
+            private_directory(self.config_dir, allow_readable=True)
         else:
             private_directory(self.config_dir)
         private_directory(self.state_dir)
-        private_directory(self.runtime_dir)
+        if not self.legacy:
+            private_directory(self.runtime_dir)
         private_directory(self.log_dir)
         return self
 
@@ -1068,6 +1067,52 @@ def listing():
     }
 
 
+def session_status():
+    """Read local session metadata without refreshing or exposing credentials."""
+    try:
+        selected = resolve()
+        selected.validate_config()
+    except DeploymentError as exc:
+        if exc.code != "deployment_not_found" or registry_path().exists() or os.environ.get("ADP_DEPLOYMENT_ID") or os.environ.get("ADP_DEPLOYMENT"):
+            raise
+        selected = None
+    root = selected.config_dir if selected else legacy_config_dir()
+    config = _read_json(root / "config.json")
+    tokens = _read_json(root / "tokens.json")
+    if (config is not None and not isinstance(config, dict)) or (tokens is not None and not isinstance(tokens, dict)):
+        raise DeploymentError("The local session files must contain JSON objects.", "deployment_state_unreadable")
+    signed_in = config is not None and tokens is not None
+    config, tokens = config or {}, tokens or {}
+    try:
+        expiry = int(tokens.get("expires_at") or 0)
+    except (ValueError, TypeError, OverflowError):
+        raise DeploymentError("The local session expiry is invalid.", "deployment_state_unreadable") from None
+    user = None
+    try:
+        payload = str(tokens.get("access_token") or "").split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        candidate = claims.get("username") or claims.get("sub")
+        if isinstance(candidate, str):
+            user = candidate
+    except (IndexError, ValueError, AttributeError, binascii.Error):
+        pass
+    detail = selected.describe() if selected else {"deployment": None, "deployment_id": None, "selection_source": "legacy"}
+    detail.update(
+        gateway_url=(selected.gateway_url if selected else "") or config.get("gateway_url") or None,
+        signed_in=signed_in,
+        user=user,
+        refresh_mode=config.get("refresh_via") or "cognito",
+        access_token_state=("valid" if expiry > time.time() else "expired") if signed_in else "absent",
+        expires_at=expiry if signed_in else None,
+    )
+    return {
+        "status": "configured" if signed_in else "unavailable",
+        "command": "status",
+        "detail": detail,
+        "next_action": None if signed_in else f"Run adp --deployment {selected.name} login" if selected else "Run adp login",
+    }, 0 if signed_in else 1
+
+
 def _result(status, name, registry, *, alias_of):
     record = registry["deployments"][name]
     detail = {
@@ -1138,6 +1183,7 @@ def main(argv=None):
     add_parser.add_argument("--url", required=True)
 
     subparsers.add_parser("list", parents=[shared], help="show registered deployments and the effective selection")
+    subparsers.add_parser("status", parents=[shared], help="print local session metadata (internal)")
 
     use_parser = subparsers.add_parser("use", parents=[shared], help="change the saved default")
     use_parser.add_argument("name")
@@ -1179,6 +1225,10 @@ def main(argv=None):
             _emit_result("deployment remove", detail, args.json)
         elif args.verb == "list":
             return _print_listing(listing(), args.json)
+        elif args.verb == "status":
+            detail, exit_code = session_status()
+            print(json.dumps(detail))
+            return exit_code
         elif args.verb == "canonicalize":
             print(canonical_url(args.url))
         elif args.verb == "helper-command":

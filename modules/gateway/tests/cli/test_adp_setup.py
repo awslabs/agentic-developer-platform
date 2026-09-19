@@ -88,6 +88,20 @@ class TestStatus:
         assert result.returncode == 0
         assert "expired" in result.stdout.lower()
 
+    @pytest.mark.parametrize("signed_in", [False, True])
+    def test_legacy_status_json_is_read_only_and_contains_no_credentials(self, run_adp, adp_home, signed_in) -> None:
+        if signed_in:
+            _write_session(adp_home, username="github_alice")
+        result = run_adp(["status", "--json"])
+
+        assert result.returncode == (0 if signed_in else 1), result.stderr
+        document = json.loads(result.stdout)
+        assert document["detail"]["signed_in"] == signed_in
+        assert document["detail"]["selection_source"] == "legacy"
+        assert document["detail"]["user"] == ("github_alice" if signed_in else None)
+        assert "refresh-token" not in result.stdout and "id-token" not in result.stdout
+        assert not (adp_home / ".adp" / "deployments.json").exists()
+
 
 class TestCodexSetup:
     def test_refuses_without_a_session_and_writes_nothing(self, run_adp, adp_home: Path) -> None:

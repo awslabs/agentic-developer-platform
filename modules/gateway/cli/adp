@@ -708,7 +708,8 @@ cmd_codex_launch() {
 
     # exec, so Codex owns the terminal: job control, Ctrl-C and its exit status
     # all reach the user directly instead of through a bash wrapper.
-    exec codex "${pinned[@]}" "$@"
+    # Bash 3.2 (macOS) treats an empty array as unset under nounset.
+    exec codex ${pinned[@]+"${pinned[@]}"} "$@"
 }
 
 # --- claude (launch) --------------------------------------------------------
@@ -741,9 +742,9 @@ cmd_claude_launch() {
         settings="$(printf '%s' "${settings}" | jq -c --arg helper "$(pinned_token_helper)" --arg url "${ADP_DEPLOYMENT_URL}" \
             '.apiKeyHelper = $helper | .env = ((.env // {}) + {ANTHROPIC_BEDROCK_BASE_URL: $url, CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1"})')"
         export ANTHROPIC_BEDROCK_BASE_URL="${ADP_DEPLOYMENT_URL}"
-        exec claude --settings "${settings}" "${rest[@]}"
+        exec claude --settings "${settings}" ${rest[@]+"${rest[@]}"}
     fi
-    exec claude "${rest[@]}"
+    exec claude ${rest[@]+"${rest[@]}"}
 }
 
 # --- login ------------------------------------------------------------------
@@ -857,6 +858,14 @@ cmd_import() {
 # Read-only day-1 confirmation and day-N "am I still good?". Exits non-zero
 # when there is no session, so it is usable in a script.
 cmd_status() {
+    if [ "${1:-}" = "--json" ] && [ $# -eq 1 ]; then
+        deployments status --json
+        return $?
+    fi
+    if [ $# -ne 0 ]; then
+        print_error "Usage: adp status [--json]"
+        return 1
+    fi
     # With three terminals on one machine, "Signed in as alice" is ambiguous
     # unless it says WHICH deployment and WHY that one was selected. Printed
     # first, and only when a named deployment is in play — on a legacy
@@ -1363,7 +1372,7 @@ Work with more than one ADP deployment (each keeps its own sign-in):
 Sign in (one login is shared by every tool):
     login [--gateway-url <url>] [--no-browser]
                           Browser-approval sign-in — no password, nothing pasted
-    status                Signed-in user, token validity, gateway, refresh mode
+    status [--json]       Signed-in user, token validity, gateway, refresh mode
     logout                Clear the local token store
     refresh               Force a token refresh now
     import                Headless fallback: paste a refresh token

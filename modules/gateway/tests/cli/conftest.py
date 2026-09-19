@@ -124,6 +124,7 @@ def adp_bin(cli_dir: Path, tmp_path: Path) -> Path:
         "adp-github.py",
         "adp-github-admin.py",
         "adp-superplane.py",
+        "adp-models.py",
     ):
         target = bin_dir / name
         target.write_bytes((cli_dir / name).read_bytes())

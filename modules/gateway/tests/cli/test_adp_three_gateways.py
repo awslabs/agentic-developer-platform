@@ -68,6 +68,8 @@ class RecordingGateway:
                 presented = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
                 ledger.append({"path": self.path, "token_owner": gateway.owner_of(presented)})
                 body = b"[]"
+                if self.path == "/api/me/persona-models":
+                    body = json.dumps({"tenant_id": f"tenant-{gateway.name}", "entries": []}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -180,6 +182,13 @@ def reset(gateways) -> None:
 
 @pytest.mark.parametrize("target", NAMES)
 class TestEachSelectionReachesOnlyItsOwnGateway:
+    def test_models_command_from_main_uses_the_selected_session(self, machine, gateways, target) -> None:
+        result = machine(["--deployment", target, "models", "mappings", "list", "--json"])
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["detail"]["tenant_id"] == f"tenant-{target}"
+        assert only(gateways, target) == [{"path": "/api/me/persona-models", "token_owner": target}]
+
     def test_the_explicit_flag_sends_the_right_token_to_the_right_gateway(self, machine, gateways, target) -> None:
         result = machine(["--deployment", target, "aws", "list"])
 

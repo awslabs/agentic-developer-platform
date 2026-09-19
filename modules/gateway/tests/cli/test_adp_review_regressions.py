@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -334,6 +335,13 @@ def test_named_deployments_work_without_the_ps_command(installed, tmp_path):
     assert shutil.which("ps", path=str(bare)) is None
 
     result = run("--deployment", "dev", "status", extra={"PATH": str(bare)})
+    if not Path("/proc/self/stat").is_file():
+        # macOS has no /proc: deliberately removing its bundled ps removes
+        # both identity sources, so a clear refusal is the correct outcome.
+        assert result.returncode == 5
+        assert "neither /proc nor 'ps' is available" in result.stderr
+        assert not result.stdout
+        return
     assert result.returncode != 5, f"named deployment unusable without ps: {result.stderr}"
     assert "dev" in result.stdout
     assert "identity" not in result.stderr
