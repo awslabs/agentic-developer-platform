@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
@@ -11,12 +12,19 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from moto import mock_aws
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
+from src.admin.persona_models.catalogue import HARNESS_CONTRACT_REVISION
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, envelope_digest
 from src.agentauth.grants import AgentAction, AuthorityReference, DelegatedGrant, TargetRelationship
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, router
 from src.agentauth.run_credential import CREDENTIAL_KEY_ENV, verify_credential
+from src.agentauth.runtime_posture import reset_posture_cache
 from src.agentauth.workload import BOOTSTRAP_AUDIENCE, WORKLOAD_HEADER, KubernetesWorkloadVerifier, VerifiedPod, WorkloadRefusedError
+from src.shared.database import get_db
+from src.shared.models.base import Base
+from src.shared.models.persona_models import PersonaModelPolicySetting
 
 DIGEST = "sha256:" + "a" * 64
 ENV = {CREDENTIAL_KEY_ENV: "test-only-isolated-gateway-key"}
@@ -165,14 +173,62 @@ def kubernetes(tmp_path):
     return verifier, state, token_path, seen
 
 
-def http_client(store, kubernetes, monkeypatch):
+def http_client(store, kubernetes, monkeypatch, *, posture="report_only", posture_revision=1):
+    """The real bootstrap app, with a genuinely committed runtime posture.
+
+    ``posture`` provisions the ``PersonaModelPolicySetting`` row that a deployed
+    environment gets by migration — dev already has exactly this committed
+    ``claude-agent-sdk`` / ``report_only`` row. It is provisioned rather than
+    assumed because bootstrap establishes the live posture from the persona's
+    registered compatibility class *before* touching the proposal snapshot, so a
+    missing row is a real readiness failure and must stay one. Passing
+    ``posture=None`` provisions nothing, which is the fail-closed case.
+
+    Committed on its own engine, not flushed into a test transaction: the reader
+    requires committed platform authority, and weakening it to accept a pending
+    write would be preserving a permissive production fallback to suit a fixture.
+    """
     app = FastAPI()
     app.include_router(router)
     runtime = AgentRuntime(store=store, workloads=kubernetes[0], env=ENV)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
+
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _provision():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        if posture is None:
+            return
+        async with session_factory() as session:
+            session.add(
+                PersonaModelPolicySetting(
+                    compatibility_class="claude-agent-sdk",
+                    harness_contract_revision=HARNESS_CONTRACT_REVISION,
+                    revision=1,
+                    posture_revision=posture_revision,
+                    enforcement_posture=posture,
+                )
+            )
+            await session.commit()
+
+    asyncio.run(_provision())
+    reset_posture_cache()
+
+    async def database():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = database
     auth = AsyncMock()
     monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", auth)
-    return TestClient(app), auth
+    client = TestClient(app)
+    # Exposed so a test can perform an audited posture change against the very
+    # same committed store the route reads, rather than reaching into the app's
+    # dependency overrides to reconstruct it.
+    client.posture_sessions = session_factory
+    return client, auth
 
 
 def test_bootstrap_http_binds_pod_and_recovers_identical_retry(store, kubernetes, monkeypatch):

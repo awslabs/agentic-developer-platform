@@ -463,6 +463,50 @@ def trusted_compatibility_class(snapshot: ModelPolicySnapshot, *, persona: str) 
     return compatibility_class
 
 
+def registered_compatibility_class(persona: str) -> str:
+    """The compatibility class from the gateway's own persona registry.
+
+    Unlike :func:`trusted_compatibility_class` this needs no snapshot, which is
+    the whole point: the posture is a property of the *class a persona belongs
+    to*, not of any particular proposal.  Reading it from the registry means a
+    run whose snapshot is missing, unparseable or unbound still has a known
+    class, so "we could not build a proposal" stops implying "enforcement does
+    not apply to this run".
+
+    The persona here is the trusted one the gateway itself recorded on the
+    protected execution, never a worker-supplied value, so this cannot be used
+    to nominate a class and thereby nominate the governing posture.
+
+    Raises:
+        ModelPolicyError: the persona is not a real persona, or is not registered
+            with a class.  Never substituted with a default class.
+    """
+    if persona not in VALID_PERSONAS:
+        raise ModelPolicyError("persona_incompatible")
+    compatibility_class = persona_compatibility_class(persona)
+    if not isinstance(compatibility_class, str) or not compatibility_class:
+        raise ModelPolicyError("persona_incompatible")
+    return compatibility_class
+
+
+async def establish_registered_posture(
+    session: AsyncSession,
+    *,
+    persona: str,
+    now: datetime | None = None,
+) -> LivePosture:
+    """Read the live posture for a persona's registered class.
+
+    The snapshot-independent entry point used at the top of bootstrap.  A failure
+    is a posture failure and reports no posture, exactly as before.
+    """
+    compatibility_class = registered_compatibility_class(persona)
+    try:
+        return await read_live_posture(session, compatibility_class=compatibility_class, now=now)
+    except RuntimePostureError as exc:
+        raise ModelPolicyError(exc.reason) from None
+
+
 async def establish_live_posture(
     session: AsyncSession,
     *,
@@ -1428,16 +1472,24 @@ async def bootstrap_model_policy_live(
         )
         or {}
     )
-    # Established first, from trusted snapshot facts, and deliberately outside
-    # the try/except below: a posture that was successfully read must survive
-    # every later failure so the response can say which posture the failure
-    # happened under.  A failure *here* is a posture failure and reports none.
+    # Established first, from the gateway's own persona registry, and deliberately
+    # outside the try/except below: a posture that was successfully read must
+    # survive every later failure so the response can say which posture the
+    # failure happened under.  A failure *here* is a posture failure, reports no
+    # posture, and is refused downstream.
+    #
+    # Deliberately NOT derived from the snapshot.  Doing that made the posture
+    # collateral damage of proposal parsing: a run with no snapshot, an unbound
+    # one or an unparseable one produced `posture=None`, which then had to be
+    # admitted by a reason-code exception to keep unenrolled runs working — and
+    # that exception was a total enforcement bypass, because missing snapshot
+    # material is a policy *failure*, not evidence that enforcement is off.  The
+    # registry has the class either way, so the posture is known either way and
+    # the bypass is unnecessary.
     live: LivePosture | None = None
     try:
-        snapshot = _parse_execution_snapshot(raw_execution, tenant_id=record.tenant_id)
-        live = await establish_live_posture(
+        live = await establish_registered_posture(
             session,
-            snapshot=snapshot,
             persona=raw_execution.get("persona", {}).get("S", ""),
         )
     except ModelPolicyError as exc:

@@ -286,30 +286,6 @@ def get_agent_runtime() -> AgentRuntime:
         raise HTTPException(503, "agent authority is not configured") from None
 
 
-#: The only reasons that mean "this run is not enrolled in the model policy at
-#: all", as opposed to "it is enrolled and we could not establish the posture".
-#:
-#: Deliberately a closed allowlist of two exact reason codes rather than a
-#: prefix, a substring or "anything that failed before the posture read".  Every
-#: other unverified outcome is a refusal, so a new failure mode added later fails
-#: closed by default instead of silently joining the admitted set.
-#:
-#: Both are raised by ``_parse_execution_snapshot`` strictly before any
-#: compatibility class exists: ``snapshot_missing`` when the execution carries
-#: neither snapshot nor digest, and ``snapshot_binding_missing`` when it carries
-#: no policy revision/correlation/root binding.  Neither can be produced by a
-#: run that *has* a snapshot, which is what makes admitting them safe: there is
-#: no selected model, no class and therefore no enforcement to bypass.  A worker
-#: cannot induce either one to escape enforcement, because the snapshot is
-#: written by the gateway's own admission path, not by the request.
-_NOT_ENROLLED_REASONS = frozenset({"snapshot_missing", "snapshot_binding_missing"})
-
-
-def _is_not_enrolled(model_policy: dict) -> bool:
-    """True only for an unverified result whose reason means "never enrolled"."""
-    return model_policy.get("status") == "unavailable" and model_policy.get("reason") in _NOT_ENROLLED_REASONS
-
-
 def _refuse_unconsumable_model_policy(
     model_policy: dict,
     *,
@@ -344,24 +320,19 @@ def _refuse_unconsumable_model_policy(
     capability and the platform's posture, and an operator needs to see that
     difference.  No detail about the posture leaves the gateway in the message.
 
-    The one thing this must *not* do is refuse a run that was never enrolled in
-    the model policy — see :data:`_NOT_ENROLLED_REASONS`.
+    There is deliberately no exception here for a run whose snapshot is missing
+    or unbound.  An earlier revision admitted those two reason codes on the theory
+    that "no snapshot" meant "not enrolled, nothing to enforce".  That was wrong
+    twice: the posture is a property of the persona's registered compatibility
+    class, so it is established regardless of the snapshot, and missing snapshot
+    material is a *policy failure* that enforcement has to catch rather than
+    proof enforcement does not apply.  Any run reaching this function with an
+    unverified posture is now genuinely a case where the platform cannot tell
+    what it is enforcing.  Bootstrap compatibility comes from establishing the
+    posture correctly upstream, not from admitting unverified runs here.
     """
     posture = model_policy.get("posture")
     verified = model_policy.get("posture_verified") is True
-    if not verified and _is_not_enrolled(model_policy):
-        # No snapshot was ever attached to this execution, so this run has no
-        # compatibility class, no proposed model and nothing to enforce.  There
-        # is no enforcement to bypass here and never was: this is the pre-PMM
-        # path every run still takes while the rollout is inactive.  Refusing it
-        # would convert "the feature is not enabled for this run" into a total
-        # bootstrap outage, which is strictly worse than the skew this gate
-        # exists to prevent and is not what an unknown posture means.
-        logger.info(
-            "Model policy not enrolled for this run; legacy admission",
-            extra={"invocation_id": invocation_id, "reason": model_policy.get("reason")},
-        )
-        return
     if not verified:
         logger.warning(
             "Withholding run authority: live model policy posture unverified",

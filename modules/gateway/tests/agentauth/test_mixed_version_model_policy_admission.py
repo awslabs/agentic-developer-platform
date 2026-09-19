@@ -184,18 +184,20 @@ def test_a_malformed_contract_claim_is_rejected_at_the_boundary(store, kubernete
     evaluate.assert_not_awaited()
 
 
-#: An execution that was never enrolled in the model policy: no snapshot was ever
-#: attached, so there is no compatibility class, no proposed model and nothing to
-#: enforce. This is the state of every run in every environment today.
-NOT_ENROLLED = {
+#: A run whose snapshot is missing entirely.  This is a policy *failure*, not
+#: evidence that the policy does not apply: the posture comes from the persona's
+#: registered compatibility class, so it is established either way.
+SNAPSHOT_MISSING = {
     "posture": None,
     "posture_verified": False,
     "status": "unavailable",
     "reason": "snapshot_missing",
 }
-#: The same, when the execution has a snapshot but no policy revision/chain
-#: binding — also raised before any compatibility class is established.
-NOT_ENROLLED_UNBOUND = {
+#: The same, when the execution has a snapshot and digest but no policy
+#: revision/chain binding.  Note this reason is reachable *with* snapshot
+#: material present, which is one reason it could never have been a safe proxy
+#: for "not enrolled".
+SNAPSHOT_UNBOUND = {
     "posture": None,
     "posture_verified": False,
     "status": "unavailable",
@@ -204,43 +206,15 @@ NOT_ENROLLED_UNBOUND = {
 
 
 @pytest.mark.parametrize(
-    "policy",
-    [NOT_ENROLLED, NOT_ENROLLED_UNBOUND],
-    ids=["snapshot-missing", "binding-missing"],
-)
-@pytest.mark.parametrize("contract", [None, MODEL_POLICY_CONTRACT_VERSION])
-def test_a_run_not_enrolled_in_the_policy_keeps_ordinary_admission(store, kubernetes, monkeypatch, policy, contract):  # noqa: F811 - re-exported fixtures, see the import above
-    """Never-enrolled is not unknown posture, and refusing it would be an outage.
-
-    This is the regression that matters most in this file. An unverified posture
-    normally means the platform cannot tell what it is enforcing, which is a
-    refusal. But a run with no snapshot has no class and no selected model, so
-    there is no enforcement to bypass — and since nothing enrols runs while the
-    rollout is inactive, treating it as unknown posture refused *every* bootstrap
-    in every environment. A gate that takes the whole platform down is not a
-    safer gate.
-    """
-    client, _ = http_client(store, kubernetes, monkeypatch)
-    evaluate = _with_policy(monkeypatch, policy)
-    extra = {} if contract is None else {"model_policy_contract": contract}
-
-    response = _bootstrap(client, store, body_extra=extra)
-
-    evaluate.assert_awaited_once()
-    assert response.status_code == 200, response.text
-    assert response.json()["credential"].startswith("adpr1.")
-    # Truthfully still unverified: the carve-out admits the run, it does not
-    # invent a posture for it.
-    assert response.json()["model_policy"] == policy
-
-
-@pytest.mark.parametrize(
     "reason",
     [
+        "snapshot_missing",
+        "snapshot_binding_missing",
         "runtime_posture_unavailable",
         "runtime_posture_unsupported",
         "posture_revision_unsupported",
         "compatibility_class_unknown",
+        "persona_incompatible",
         "parent_snapshot_missing",
         "snapshot_chain_mismatch",
         "decision_unavailable",
@@ -249,39 +223,64 @@ def test_a_run_not_enrolled_in_the_policy_keeps_ordinary_admission(store, kubern
         "",
     ],
 )
-def test_every_other_unverified_reason_is_still_refused(store, kubernetes, monkeypatch, reason):  # noqa: F811 - re-exported fixtures, see the import above
-    """The carve-out is a closed allowlist, so new failure modes fail closed.
+@pytest.mark.parametrize("contract", [None, MODEL_POLICY_CONTRACT_VERSION])
+def test_every_unverified_posture_withholds_authority(store, kubernetes, monkeypatch, reason, contract):  # noqa: F811 - re-exported fixtures, see the import above
+    """An unverified posture is refused for *every* reason, with no exceptions.
 
-    Each reason here reaches the route only *after* a compatibility class exists,
-    or means the posture read itself failed — in both cases the platform may be
-    enforcing and cannot tell. Anything not named in ``_NOT_ENROLLED_REASONS``
-    must keep withholding authority, including a missing or empty reason, so that
-    a failure mode added later does not silently join the admitted set.
+    This replaces an earlier pair of tests that asserted ``snapshot_missing`` and
+    ``snapshot_binding_missing`` were admitted, on the theory that a run with no
+    snapshot was "not enrolled" and had nothing to enforce. That reasoning was
+    wrong in both halves: the posture is read from the persona's registered
+    compatibility class and so exists regardless of the snapshot, and
+    ``snapshot_binding_missing`` is reachable with snapshot material present —
+    so the reason code was never a reliable signal for "no policy applies".
+    Because it was keyed only on the reason, it admitted runs under a committed
+    *enforcing* posture: a complete enforcement bypass.
+
+    Declaring the contract does not help and must not: the client's capability is
+    irrelevant when the platform cannot say what it is enforcing.
+
+    Bootstrap compatibility for ordinary runs is preserved upstream instead, by
+    establishing a real committed posture from the registered class —
+    see ``test_registered_class_posture.py``.
     """
     client, _ = http_client(store, kubernetes, monkeypatch)
     _with_policy(monkeypatch, {"posture": None, "posture_verified": False, "status": "unavailable", "reason": reason})
+    extra = {} if contract is None else {"model_policy_contract": contract}
 
-    response = _bootstrap(client, store)
+    response = _bootstrap(client, store, body_extra=extra)
 
     assert response.status_code == 409, response.text
     assert "credential" not in response.json()
 
 
-def test_a_not_enrolled_reason_cannot_admit_an_enforcing_posture(store, kubernetes, monkeypatch):  # noqa: F811 - re-exported fixtures, see the import above
-    """A verified enforcing posture is judged on the posture, not the reason.
+@pytest.mark.parametrize(
+    "shape", [SNAPSHOT_MISSING, SNAPSHOT_UNBOUND], ids=["snapshot-missing", "binding-missing"]
+)
+@pytest.mark.parametrize("posture", ["enforcing", "report_only", "disabled"])
+def test_a_snapshot_failure_is_judged_on_the_posture_not_the_reason(store, kubernetes, monkeypatch, shape, posture):  # noqa: F811 - re-exported fixtures, see the import above
+    """Once the posture is verified, the snapshot reason stops deciding anything.
 
-    Guards the carve-out against being used as a bypass: the admitted set is
-    defined by ``posture_verified is False`` *and* a never-enrolled reason. A
-    result that claims an enforcing posture is evaluated as enforcing even if it
-    also carries ``snapshot_missing``.
+    The same two reason codes that the removed bypass keyed on, now carrying a
+    posture established from the registered class. Each is admitted or refused
+    purely on that posture: ``report_only``/``disabled`` keep legacy admission
+    (the live configuration, and the thing the bypass was wrongly trying to
+    protect), while ``enforcing`` withholds authority because an unavailable
+    proposal under enforcement must stop the run rather than fall through to a
+    legacy model.
     """
     client, _ = http_client(store, kubernetes, monkeypatch)
     _with_policy(
         monkeypatch,
-        {"posture": "enforcing", "posture_verified": True, "status": "unavailable", "reason": "snapshot_missing"},
+        {**shape, "posture": posture, "posture_verified": True, "posture_revision": 11},
     )
 
-    response = _bootstrap(client, store)
+    response = _bootstrap(client, store, body_extra={"model_policy_contract": MODEL_POLICY_CONTRACT_VERSION})
 
-    assert response.status_code == 409, response.text
-    assert "credential" not in response.json()
+    if posture == "enforcing":
+        assert response.status_code == 409, response.text
+        assert "credential" not in response.json()
+    else:
+        assert response.status_code == 200, response.text
+        assert response.json()["credential"].startswith("adpr1.")
+        assert response.json()["model_policy"]["posture"] == posture
