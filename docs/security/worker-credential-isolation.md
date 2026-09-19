@@ -114,7 +114,33 @@ request and signs only the fixed gateway paths. Protected callers ignore mutable
 identity environment variables and never fall back to direct Door authentication.
 
 These source changes do not mount keys, activate flags, provision IAM or remove
-live permissions. Queue/artifact mediation and the scoped rollout remain required.
+live permissions. Scoped rollout and compatibility verification remain required.
+
+## Run artifact uploads (#5195)
+
+Protected workers archive transcripts, tool spills, failed GitHub comments and git
+backups with `POST /internal/v1/agent/self/artifacts/{kind}`. The five fixed kinds
+are `transcript`, `spill`, `comment`, `git-changes` and `git-manifest`. The gateway
+selects its configured logs/fallback bucket and derives the prefix from hashes of
+the verified tenant and invocation plus the current attempt. Content hashes make
+identical uploads converge. Neither request bodies nor headers select an object
+key, tenant, run, ACL, encryption key or bucket. Responses contain a URI, key and
+content digest; no S3 credentials or presigned capability is returned.
+
+Uploads are limited to 8 MiB and 30 seconds, with bounded S3 connection/read timeouts
+and no automatic retry. Run and workload proofs are checked after request streaming
+and again after the storage call. An upload completed during revocation can leave
+an object under its original run prefix, but no receipt is released to an expired
+caller. Workers report an explicit best-effort archive failure for oversized or
+refused artifacts and do not fall back to shared S3. Workspace spill locators remain
+usable independently of archival. The status service accepts transcript pointers
+only under the presenting run/attempt's transcript prefix, preventing an own-row
+write from becoming a read of another run's private artifact.
+
+The separate legacy Beads/Dolt S3 remote remains an outstanding source dependency:
+its shared repository state is not one of these five archive kinds. It must be
+mediated or explicitly migrated before the coding role's shared S3 access can be
+removed. This checkpoint is not complete artifact isolation or live acceptance.
 
 ## Prepared IAM contract
 

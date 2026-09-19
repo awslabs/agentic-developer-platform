@@ -1,3 +1,5 @@
+import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
+import { saveToS3Fallback } from './utils/ghPost';
 import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
  * Generic Agent Worker
@@ -550,26 +552,7 @@ async function postToMainIssue(mainIssueNumber: number | null, body: string): Pr
     writeOutboundCorrelation(`issue:${targetIssue}`, 'comment_post');
   } catch (err) {
     log('WARN', `GitHub post failed, saving to S3 fallback: ${(err as Error).message}`);
-    // Issue #4184: resolve the bucket from config, never from a hardcoded
-    // default. Unset → one ERROR + skip, not a doomed PutObject.
-    const bucket = resolveFallbackBucket(msg => log('ERROR', msg));
-    if (bucket) {
-      try {
-        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-        const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
-        const key = buildFallbackKey(targetIssue, 'comment');
-        await s3.send(new PutObjectCommand({
-          Bucket: bucket,
-          Key: key,
-          Body: markedBody,
-          ContentType: 'text/markdown',
-        }));
-        log('INFO', `Comment saved to s3://${bucket}/${key}`);
-        console.log(`📦 GitHub API failed — comment saved to S3: ${key}`);
-      } catch (s3Err) {
-        log('ERROR', `Both GitHub and S3 fallback failed: ${(s3Err as Error).message}`);
-      }
-    }
+    await saveToS3Fallback(targetIssue, 'comment', markedBody);
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
   }
@@ -632,25 +615,7 @@ async function postComment(body: string): Promise<void> {
     await gh(`issue comment ${ISSUE_NUMBER} --body-file "${tmpFile}"`);
   } catch (err) {
     log('WARN', `GitHub post failed, saving to S3 fallback: ${(err as Error).message}`);
-    // Issue #4184: see postToMainIssue — bucket from config, skip when unset.
-    const bucket = resolveFallbackBucket(msg => log('ERROR', msg));
-    if (bucket) {
-      try {
-        const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
-        const s3 = new S3Client({ region: workerAwsRegion(), credentials: workerAwsCredentials() });
-        const key = buildFallbackKey(ISSUE_NUMBER, 'comment');
-        await s3.send(new PutObjectCommand({
-          Bucket: bucket,
-          Key: key,
-          Body: body,
-          ContentType: 'text/markdown',
-        }));
-        log('INFO', `Comment saved to s3://${bucket}/${key}`);
-        console.log(`📦 GitHub API failed — comment saved to S3: ${key}`);
-      } catch (s3Err) {
-        log('ERROR', `Both GitHub and S3 fallback failed: ${(s3Err as Error).message}`);
-      }
-    }
+    await saveToS3Fallback(ISSUE_NUMBER, 'comment', body);
   } finally {
     try { fs.unlinkSync(tmpFile); } catch {}
   }
@@ -1804,7 +1769,9 @@ function sanitizeMemory(text: string): string {
 function buildWorkerSpillStore(): TmpSpillStore {
   const bucket = process.env.AGENT_RUN_LOGS_BUCKET || '';
 
-  const uploadToS3 = bucket
+  const uploadToS3 = protectedArtifactRun()
+    ? async (_key: string, body: string): Promise<void> => { await uploadRunArtifact('spill', body); }
+    : bucket
     ? async (key: string, body: string): Promise<void> => {
         const { S3Client, PutObjectCommand } = await import('@aws-sdk/client-s3');
         const s3 = new S3Client({ region: AWS_REGION, credentials: workerAwsCredentials() });
@@ -1876,6 +1843,15 @@ async function uploadGitChangesToS3(): Promise<void> {
     // entire output of a run that may have burned hours of model time. It was
     // silently AccessDenied on every occurrence. When the bucket is unconfigured,
     // say so on stdout too: a log line the operator never reads is not an alert.
+    if (protectedArtifactRun()) {
+      try {
+        const archive = await uploadRunArtifact('git-changes', fs.readFileSync(tarFile));
+        const manifest = `# Git Changes Backup\nArchive: ${archive.uri}\nFiles:\n${uniqueFiles.map(f => '- ' + f).join('\n')}\n`;
+        await uploadRunArtifact('git-manifest', manifest);
+        log('INFO', `Git changes archived at ${archive.uri} (${uniqueFiles.length} files)`);
+      } finally { try { fs.unlinkSync(tarFile); } catch {} }
+      return;
+    }
     const bucket = resolveFallbackBucket(msg => log('ERROR', msg));
     if (!bucket) {
       console.error(

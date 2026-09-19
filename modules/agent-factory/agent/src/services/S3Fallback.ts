@@ -1,3 +1,4 @@
+import { protectedArtifactRun, uploadRunArtifact } from '../lib/artifactGateway';
 import { workerAwsCredentials, workerAwsRegion } from '../lib/runIdentity';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { Logger } from '../components/Logger';
@@ -21,6 +22,10 @@ export class S3Fallback {
    * Returns the S3 URI on success, or null if S3 also fails.
    */
   async upload(label: string, content: string): Promise<string | null> {
+    if (protectedArtifactRun()) {
+      try { return (await uploadRunArtifact('comment', content)).uri; }
+      catch { this.logger.error('Own-run artifact archive unavailable', undefined, { component: 'S3Fallback' }); return null; }
+    }
     // Issue #4184: no hardcoded bucket default — resolve from config or skip.
     const bucket = resolveFallbackBucket(msg =>
       this.logger.error(msg, undefined, { component: 'S3Fallback' })

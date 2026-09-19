@@ -846,6 +846,16 @@ def _upload_transcript_to_s3(
     un-applied accounts) or if final_text is empty. Failures are logged but
     NEVER affect pod exit code — same contract as check-run finalize.
     """
+    from lib.status_gateway_client import authority_enabled, upload_transcript
+
+    if authority_enabled():
+        if not final_text:
+            return None
+        try:
+            return upload_transcript(final_text)
+        except Exception:
+            logger.warning("Own-run transcript upload unavailable (non-fatal; maximum 8 MiB)")
+            return None
     bucket = os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
     if not bucket or not final_text:
         return None
