@@ -57,12 +57,47 @@ def routine(resource, module, account):
     if module == "webhook-ingress" and address in (
             "null_resource.keda_scaledjob", "null_resource.agent_warm_pool", "null_resource.agent_image_prepull[0]"):
         old, new = before.get("triggers", {}), after.get("triggers", {})
-        return (order == ["delete", "create"]
+        # The ScaledJob carrier uses create_before_destroy so Terraform skips
+        # its destroy provisioner on replacement. The old delete/create order
+        # could delete the live ScaledJob and is no longer a routine upgrade.
+        expected = ["create", "delete"] if address == "null_resource.keda_scaledjob" else ["delete", "create"]
+        return (order == expected
                 and all(old.get(k) and old[k] == new.get(k) for k in ("namespace", "cluster_name", "cluster_region"))
                 and set(old) == set(new)
                 and set(new) <= {"namespace", "cluster_name", "cluster_region", "manifest_sha", "replicas"}
                 and bool(old.get("manifest_sha")) and bool(new.get("manifest_sha")))
     return False
+
+
+def retained_gitlab_version(resource, plan, module, account):
+    """Recognize only the placeholder-version ownership migration, not deletion.
+
+    The secret must remain managed and unchanged in the same saved plan. No
+    other credential forget, update, replacement or removal is exempted.
+    """
+    change = resource["change"]
+    before = change.get("before") or {}
+    if (module != "webhook-ingress"
+            or resource["address"] != "aws_secretsmanager_secret_version.gitlab_webhook_secret[0]"
+            or resource.get("type") != "aws_secretsmanager_secret_version"
+            or change["actions"] != ["forget"] or change.get("after") is not None
+            or not re.fullmatch(r"[0-9]{12}", account)):
+        return False
+    arn = before.get("secret_id", "")
+    match = re.fullmatch(
+        r"arn:(aws(?:-[a-z]+)*):secretsmanager:([a-z0-9-]+):" + account
+        + r":secret:(adp/[a-z][a-z0-9-]*/gitlab-webhook-secret)-[A-Za-z0-9]{6}", arn)
+    if not match or before.get("arn") != arn:
+        return False
+    retained = [r for r in plan["resource_changes"]
+                if r["address"] == "aws_secretsmanager_secret.gitlab_webhook_secret[0]"
+                and r.get("type") == "aws_secretsmanager_secret"]
+    if len(retained) != 1:
+        return False
+    secret = retained[0]["change"]
+    attrs = secret.get("before") or {}
+    return (secret["actions"] == ["no-op"] and attrs == secret.get("after")
+            and attrs.get("arn") == arn and attrs.get("name") == match[3])
 
 
 def protected_change(resource):
@@ -87,10 +122,11 @@ def evaluate(plan, module, account):
     actions.deletions(plan)
     allowed, blocked, protected = [], [], []
     for resource in plan["resource_changes"]:
-        if protected_change(resource):
+        retained_version = retained_gitlab_version(resource, plan, module, account)
+        if protected_change(resource) and not retained_version:
             protected.append(resource["address"])
         if set(resource["change"]["actions"]) & {"delete", "forget"}:
-            (allowed if routine(resource, module, account) else blocked).append(resource["address"])
+            (allowed if retained_version or routine(resource, module, account) else blocked).append(resource["address"])
     return {"routine": allowed, "blocked": blocked, "protected": protected}
 
 

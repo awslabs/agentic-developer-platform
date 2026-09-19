@@ -70,6 +70,14 @@ The legacy GitLab placeholder secret-version address uses a `removed` block with
 existing version or alter its stages. The secret itself remains managed. This
 requires Terraform 1.7 or later.
 
+The saved-plan gate recognizes that exact GitLab version `forget` only when
+the same target-account secret remains managed and unchanged in the plan.
+Credential updates, deletion, replacement, other forgotten credentials, or a
+missing/changed secret remain blocked. The ScaledJob carrier must use
+create-before-delete in the same cluster and namespace; delete-first replacement
+remains blocked. These checks recognize the migration shape, not release approval
+or live preservation evidence.
+
 ## Run services (#5195 / #5513)
 
 Protected workers have an explicit deny for **all direct S3 and SQS operations**,
