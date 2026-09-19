@@ -202,10 +202,19 @@ def provision_human_dispatch(
         #
         # Deliberately NOT copied into child dispatch: a one-run override
         # applies to its own hop, and descendants resolve their own personas.
+        #
+        # The override recorded here is the *canonical* (published) resolution,
+        # not the legacy assignment the worker executes. That is the whole point
+        # of the split: the gateway is the only authoritative selector (design
+        # §3 decision 9), so a directive the authority never published must reach
+        # the resolver as a refusal (``direct_override_unresolved``) even though
+        # the legacy path still runs its historic model unchanged while the
+        # posture is ``report_only``. Recording the legacy value here instead
+        # would launder an unpublished model into a "proposed" decision.
         direct_requested = envelope.get("model_requested")
         if isinstance(direct_requested, str) and direct_requested:
             execution["direct_model_requested"] = {"S": direct_requested}
-        direct_override = envelope.get("model_resolved")
+        direct_override = envelope.get("model_canonical")
         if isinstance(direct_override, str) and direct_override:
             execution["direct_model_override"] = {"S": direct_override}
         dispatch_personas = {

@@ -131,7 +131,10 @@ def test_actual_human_writer_carries_a_model_directive_to_the_resolver(store):
     directive = {
         **envelope(),
         "model_requested": "sonnet46",
+        # A published alias: the legacy assignment the worker executes and the
+        # canonical *proposed* value agree, which is the ordinary case.
         "model_resolved": "global.anthropic.claude-sonnet-4-6",
+        "model_canonical": "global.anthropic.claude-sonnet-4-6",
     }
     final = webhook.provision_human_dispatch(envelope=directive, event=event(), client=store.client)
     execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
@@ -178,7 +181,12 @@ def test_writer_keeps_an_unresolved_directive_visible_as_a_refusal(store):
     """
     from src.agentauth.model_policy import ModelPolicyError, resolve_decision
 
-    directive = {**envelope(), "model_requested": "not-a-real-model", "model_resolved": None}
+    directive = {
+        **envelope(),
+        "model_requested": "not-a-real-model",
+        "model_resolved": None,
+        "model_canonical": None,
+    }
     final = webhook.provision_human_dispatch(envelope=directive, event=event(), client=store.client)
     execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
 
@@ -194,6 +202,69 @@ def test_writer_keeps_an_unresolved_directive_visible_as_a_refusal(store):
             direct_requested=execution["direct_model_requested"]["S"],
             now=_SNAPSHOT_NOW,
         )
+
+
+def test_writer_proposes_only_the_published_value_while_legacy_still_executes(store):
+    """PMM-07: the *proposed* override is the canonical one, never the legacy one.
+
+    ``report_only`` runs two answers at once: the legacy assignment the worker
+    actually executes, and the strict proposed resolution the gateway records.
+    A regional ID the authority never published resolves on the legacy path (so
+    the user's run is unchanged) but must NOT be written as a proposed override
+    -- doing so would launder an unpublished model into a "proposed" decision
+    and make the resolver claim ``explicit-direct`` for something it never
+    selected. The correct proposed outcome is the refusal below.
+
+    This is the writer half of the silent-substitution repair; the executed
+    half is pinned in the worker's ``test_model_directive_end_to_end.py``.
+    """
+    from src.agentauth.model_policy import ModelPolicyError, resolve_decision
+
+    requested = "us.anthropic.claude-opus-4-6-v1"
+    directive = {
+        **envelope(),
+        "model_requested": requested,
+        # Legacy execution keeps the requested value ...
+        "model_resolved": requested,
+        # ... while the strict published check refuses it.
+        "model_canonical": None,
+    }
+    final = webhook.provision_human_dispatch(envelope=directive, event=event(), client=store.client)
+    execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
+
+    assert execution["direct_model_requested"] == {"S": requested}
+    assert "direct_model_override" not in execution
+
+    with pytest.raises(ModelPolicyError, match="direct_override_unresolved"):
+        resolve_decision(
+            _report_only_snapshot(),
+            invocation_id=final["message_id"],
+            persona="developer",
+            direct_override=None,
+            direct_requested=execution["direct_model_requested"]["S"],
+            now=_SNAPSHOT_NOW,
+        )
+
+
+def test_writer_never_records_the_legacy_value_as_the_proposed_override(store):
+    """Guards the specific line that reads ``model_canonical``, not ``model_resolved``.
+
+    Constructed so the two disagree: if the writer ever went back to reading
+    ``model_resolved``, ``direct_model_override`` would appear with the
+    unpublished regional ID and this test would fail.
+    """
+    requested = "eu.anthropic.claude-sonnet-4-6"
+    directive = {
+        **envelope(),
+        "model_requested": requested,
+        "model_resolved": requested,
+        "model_canonical": None,
+    }
+    final = webhook.provision_human_dispatch(envelope=directive, event=event(), client=store.client)
+    execution = store._read("TENANT#tenant", f"EXEC#{final['message_id']}")
+
+    assert "direct_model_override" not in execution
+    assert requested not in str(execution.get("direct_model_override", ""))
 
 
 def test_webhook_retry_preserves_identity_digest_and_authority_expiry(store):
