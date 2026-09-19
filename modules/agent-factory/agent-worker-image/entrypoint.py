@@ -33,6 +33,11 @@ from pathlib import Path
 
 import boto3
 
+from lib.amendment_input import (
+    AMENDMENT_BASE_PATH_ENV,
+    AuthoringInputError,
+    materialize_authoring_input,
+)
 from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
@@ -1205,6 +1210,7 @@ def _export_authoring_assignment(envelope: dict) -> None:
     pre-existing defect on `origin/main` at its GitLab provider detection), so a
     whole-run probe cannot prove this function tolerates one.
     """
+    os.environ.pop(AMENDMENT_BASE_PATH_ENV, None)
     orchestration_ctx = envelope.get("orchestration") or {}
     amend_flow_id = amend_request_id = ""
     if isinstance(orchestration_ctx, dict):
@@ -1461,6 +1467,15 @@ def main() -> int:
 
     # Issue #4529: export this run's authoring assignment and brief. See the helper.
     _export_authoring_assignment(envelope)
+    try:
+        base_path = materialize_authoring_input(envelope)
+        if base_path is not None:
+            os.environ[AMENDMENT_BASE_PATH_ENV] = base_path
+    except AuthoringInputError as exc:
+        bootstrap_log.step_error(1, "amendment_base_input", exc)
+        _fail_bootstrap_status(message_id, arrived_at, str(exc))
+        bootstrap_log.close()
+        return 1
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;

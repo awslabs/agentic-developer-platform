@@ -77,11 +77,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from lib.amendment_input import AMENDMENT_BASE_PATH_ENV
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "AMENDMENT_ARTIFACT_TEMPLATE",
     "AMENDMENT_BASE_HASH_ENV",
+    "AMENDMENT_BASE_PATH_ENV",
     "AMENDMENT_BASE_VERSION_ENV",
     "AMENDMENT_OUTPUT_PATH_ENV",
     "AMENDMENT_REQUEST_ENV",

@@ -213,6 +213,7 @@ def _build_envelope(
     repo: str,
     issue: int,
     installation_id: int,
+    base_input: dict[str, Any],
 ) -> dict[str, Any]:
     """The authoring assignment as an envelope, built explicitly.
 
@@ -270,7 +271,7 @@ def _build_envelope(
         # The human's words, as DATA for the author to consider. Nothing in this
         # platform executes this string; it is quoted into the authoring context the
         # same way an issue body is.
-        "payload": {"replan_request": request.request_text, "requested_by": request.requested_by},
+        "payload": {"replan_request": request.request_text, "requested_by": request.requested_by, "amendment_base": base_input},
         "arrived_at": utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
@@ -343,10 +344,9 @@ async def build_authoring_assignment(
     user_id = await resolve_root_user_entity_id(session, org_id, request.requested_by)
     cognito_sub = await resolve_user_entity_id(session, org_id, user_id)
 
-    # Written BEFORE anything is published — see the module docstring. Conditional on
-    # the column still being NULL inside `assign_author_run`, so two concurrent passes
-    # cannot both bind and a re-publish cannot re-point an existing assignment.
-    await assign_author_run(session, org_id=org_id, request_id=request.id, author_run_id=run_id)
+    from .authoring_input import AuthoringInputError, resolve_authoring_input
+
+    base_input = await resolve_authoring_input(session, org_id=org_id, request=request, author_run_id=run_id)
 
     envelope = _build_envelope(
         org_id=org_id,
@@ -357,7 +357,14 @@ async def build_authoring_assignment(
         repo=repo,
         issue=issue,
         installation_id=installation_id,
+        base_input=base_input,
     )
+    if len(json.dumps(envelope).encode("utf-8")) > 256 * 1024:
+        raise AuthoringInputError("authoring_input_envelope_too_large")
+
+    # Bind only after the complete input is resolvable and transportable. A refusal
+    # leaves the durable request queued without commissioning an unusable run.
+    await assign_author_run(session, org_id=org_id, request_id=request.id, author_run_id=run_id)
 
     logger.info(
         "authoring assignment built request=%s flow=%s run=%s base=v%s org=%s — envelope queued for publish",

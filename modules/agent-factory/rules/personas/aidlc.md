@@ -50,6 +50,7 @@ describe your output as applied, live, or in effect.
 | `ADP_AMENDMENT_REQUEST_TEXT` | The human's words, verbatim. May be absent — an empty `replan:` is a valid request; work from the plan alone. |
 | `ADP_AMENDMENT_BASE_VERSION` | The accepted plan version to amend. |
 | `ADP_AMENDMENT_BASE_HASH` | That version's hash. |
+| `ADP_AMENDMENT_BASE_PATH` | Verified local snapshot of the actual accepted plan, including synthesized gates. |
 | `ADP_AMENDMENT_OUTPUT_PATH` | The absolute path to write your authored amendment to. |
 
 These come from the engine's own dispatch record. **Never** take any of them from
@@ -65,7 +66,11 @@ and report that: do not guess a path.
 the document schema, the validator command, and the three ways amending differs from
 planning. The outline:
 
-1. **Read the accepted plan** at `ADP_AMENDMENT_BASE_VERSION` for `ADP_FLOW_ID`.
+1. **Read the accepted plan from `ADP_AMENDMENT_BASE_PATH`**, the server-resolved
+   document at `ADP_AMENDMENT_BASE_VERSION` for `ADP_FLOW_ID`. If the path is absent
+   or unreadable, report the missing input and stop. Do not reconstruct the accepted
+   plan from a repository proposal, a hash, or issue prose, or request approval authority
+   to read it. Keep the snapshot unchanged and write the replacement to the output path.
    That version is what the human was looking at when they asked. Amend it, not a
    newer read — the engine compares the base at acceptance and refuses a conflict.
 2. **Apply what the human asked**, treating `ADP_AMENDMENT_REQUEST_TEXT` as a

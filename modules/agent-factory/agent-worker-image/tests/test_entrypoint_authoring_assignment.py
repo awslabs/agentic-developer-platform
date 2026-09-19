@@ -35,6 +35,7 @@ delete a temp dir rather than someone's work.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -47,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import entrypoint  # noqa: E402
 from lib.engine_registration import (  # noqa: E402
     AMENDMENT_BASE_HASH_ENV,
+    AMENDMENT_BASE_PATH_ENV,
     AMENDMENT_BASE_VERSION_ENV,
     AMENDMENT_OUTPUT_PATH_ENV,
     AMENDMENT_REQUEST_ENV,
@@ -63,6 +65,7 @@ ALL_ASSIGNMENT_ENV = (
     AMENDMENT_REQUEST_TEXT_ENV,
     AMENDMENT_BASE_VERSION_ENV,
     AMENDMENT_BASE_HASH_ENV,
+    AMENDMENT_BASE_PATH_ENV,
     AMENDMENT_OUTPUT_PATH_ENV,
 )
 
@@ -94,10 +97,25 @@ AUTHORING_ENVELOPE = {
         "request_id": REQUEST_ID,
         "root_decision_id": "dec-99",
         "base_plan_version": 4,
-        "base_plan_hash": "cafebabe",
+        "base_plan_hash": ("a" * 64),
     },
     "payload": {"replan_request": "replan: gate the deploy wave", "requested_by": "jane-dev"},
     "arrived_at": "2026-09-19T14:22:00Z",
+}
+
+
+# The immutable input is transported with the same trusted dispatch envelope.
+_BASE_DOCUMENT = {"flow_slug": "demo", "nodes": [{"address": "demo/e/w/accept", "kind": "gate"}], "edges": []}
+AUTHORING_ENVELOPE["payload"]["amendment_base"] = {
+    "version": 1,
+    "org_id": AUTHORING_ENVELOPE["tenant_id"],
+    "flow_id": FLOW_ID,
+    "request_id": REQUEST_ID,
+    "author_run_id": AUTHOR_RUN_ID,
+    "base_plan_version": 4,
+    "base_plan_hash": "a" * 64,
+    "document_sha256": hashlib.sha256(json.dumps(_BASE_DOCUMENT, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    "document": _BASE_DOCUMENT,
 }
 
 #: A code-story dispatch, from `dispatch_pass._build_envelope`. This one is why the
@@ -455,7 +473,7 @@ class TestTheBriefReachesTheRun:
         run_worker(AUTHORING_ENVELOPE)
         assert_reached_the_export_block(AUTHORING_ENVELOPE)
         assert os.environ.get(AMENDMENT_BASE_VERSION_ENV) == "4"
-        assert os.environ.get(AMENDMENT_BASE_HASH_ENV) == "cafebabe"
+        assert os.environ.get(AMENDMENT_BASE_HASH_ENV) == ("a" * 64)
 
     def test_the_output_path_is_the_one_the_client_reads(self, run_worker, tmp_path):
         """The heart of the finding. The exported path is composed with the same helper
@@ -623,7 +641,7 @@ class TestTheBriefReachesTheRun:
         assert_reached_the_export_block(AUTHORING_ENVELOPE)
         assert os.environ.get(AMENDMENT_REQUEST_TEXT_ENV) == AUTHORING_ENVELOPE["payload"]["replan_request"]
         assert os.environ.get(AMENDMENT_BASE_VERSION_ENV) == "4"
-        assert os.environ.get(AMENDMENT_BASE_HASH_ENV) == "cafebabe"
+        assert os.environ.get(AMENDMENT_BASE_HASH_ENV) == ("a" * 64)
         assert os.environ.get(AMENDMENT_OUTPUT_PATH_ENV) == str(
             entrypoint.WORK_DIR / f"aidlc/spaces/amendments/{REQUEST_ID}/proposal.json"
         )
@@ -681,3 +699,40 @@ class TestTheBriefSurvivesIntoTheAgentProcess:
 
         for name in ALL_ASSIGNMENT_ENV:
             assert agent_env.get(name) == f"value-{name}", f"the mediated scrub removed {name} from the author's brief"
+
+
+def test_the_real_bootstrap_delivers_the_snapshot_to_the_agent_process(run_worker, monkeypatch):
+    seen = []
+    original = _subprocess_side_effect
+
+    def capture(*args, **kwargs):
+        command = args[0] if args else kwargs.get("args", [])
+        if command == entrypoint.worker_command("aidlc"):
+            path = kwargs["env"][AMENDMENT_BASE_PATH_ENV]
+            seen.append(json.loads(Path(path).read_text()))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_subprocess_side_effect", capture)
+    assert run_worker(AUTHORING_ENVELOPE) == 0
+    assert seen == [_BASE_DOCUMENT], "the actual agent subprocess must receive the accepted document"
+
+
+def test_bad_snapshot_stops_bootstrap_before_an_author_runs(run_worker, monkeypatch):
+    seen = []
+    original = _subprocess_side_effect
+
+    def capture(*args, **kwargs):
+        command = args[0] if args else kwargs.get("args", [])
+        if command == entrypoint.worker_command("aidlc"):
+            seen.append(command)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_subprocess_side_effect", capture)
+    failure = MagicMock()
+    monkeypatch.setattr(entrypoint, "_fail_bootstrap_status", failure)
+    envelope = json.loads(json.dumps(AUTHORING_ENVELOPE))
+    envelope["payload"]["amendment_base"]["author_run_id"] = "another-run"
+    assert run_worker(envelope) == 1
+    assert seen == []
+    assert failure.call_args.args[2] == "authoring_input_binding_mismatch"
+    assert AMENDMENT_BASE_PATH_ENV not in os.environ

@@ -695,8 +695,12 @@ amendment whose slug names a different flow — an address is a node's identity,
 a renamed flow would file every node under an address claiming to belong somewhere
 else.
 
-Read the plan you are amending at **`ADP_AMENDMENT_BASE_VERSION`** for
-**`ADP_FLOW_ID`**: that is the version the human was looking at when they asked.
+Read the actual accepted document from **`ADP_AMENDMENT_BASE_PATH`**, the verified
+local snapshot at **`ADP_AMENDMENT_BASE_VERSION`** for **`ADP_FLOW_ID`**. If the path
+is absent or unreadable, stop and report the missing input. Do not reconstruct this
+document from the repository's original proposal, a hash, or issue prose, and do not
+request approval authority to read it. Keep the snapshot unchanged; write the full
+replacement to the separate output path. This is the version the human was looking at when they asked.
 The engine records the base and compares it at acceptance, so an amendment authored
 against a newer read is refused as a conflict rather than silently applied.
 
