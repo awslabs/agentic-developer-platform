@@ -139,13 +139,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from src.shared.models.base import utcnow
 from src.shared.models.organization import Organization
@@ -427,6 +428,10 @@ class PendingPublish:
     node_attempt: int = 0
     node_kind: str = NodeKind.STORY.value
 
+    def invocation_id(self) -> str:
+        """The protected invocation this dispatch becomes. Never recomputed elsewhere."""
+        return attempt_run_id(self.node_id, self.node_attempt)
+
 
 @dataclass
 class DispatchPassReport:
@@ -472,6 +477,14 @@ class DispatchPassReport:
     # environment is visible as unwired instead of looking like an idle one.
     enabled: bool = True
     pending: list[PendingPublish] = field(default_factory=list)
+    # PMM-07: per-invocation model-policy snapshot receipts from
+    # `prepare_pending`, keyed by invocation id. Report-only evidence only --
+    # `{"status": "available"|"unavailable", ...}`. Deliberately NOT folded into
+    # `errors`/`publish_failed`: unavailable model-policy evidence must not make a
+    # correct dispatch look failed or stop it publishing while the posture is
+    # report-only. A protected-authority failure is different and *is* counted, as
+    # `publish_failed`, because that dispatch genuinely does not reach the queue.
+    model_policy_receipts: dict[str, dict[str, Any]] = field(default_factory=dict)
     per_org: dict[str, dict[str, int]] = field(default_factory=dict)
     # Typed `DenyReason` value -> count, for the pass's own observability. A dict
     # rather than a counter field per reason because #5128's reason vocabulary is
@@ -1027,6 +1040,99 @@ async def run_dispatch_pass(
             logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node_id, org_id)
             report.record(org_id, "errors")
 
+    return report
+
+
+async def prepare_pending(
+    session: AsyncSession,
+    report: DispatchPassReport,
+    *,
+    writer: Any | None = None,
+) -> DispatchPassReport:
+    """Provision protected authority and attach the model-policy snapshot.
+
+    **Post-commit, pre-publication.** Call this after the caller commits and
+    before :func:`publish_pending` (PMM-07).
+
+    Why here and nowhere else. A snapshot can only attach to a protected
+    execution that is still `pending`, and that record has exactly one such
+    window:
+
+    - *Earlier is impossible.* `_dispatch_one` reserves the work claim inside the
+      tick transaction, before any protected record exists, so
+      `admit_pending()` -- which is what carries `ensure_snapshot_report_only`
+      on every other path -- can only refuse with `dispatch_unresolved`.
+    - *Later is refused.* Once the worker bootstraps, its pod bind flips the
+      execution to `active` and `_persist_snapshot` refuses with
+      `dispatch_not_pending`. Attaching after a worker can bind would be racing
+      the run it is supposed to describe.
+
+    Provisioning here does not move the publish ahead of the commit: the rows are
+    already durable, and `publish_pending` remains the only thing that sends. The
+    writer's own provisioning is idempotent, so `publish_pending` re-provisioning
+    the same dispatch is harmless and a retry cannot double-publish.
+
+    Containment is per node, matching the rest of the pass. A protected-authority
+    failure drops that one dispatch and counts `publish_failed` -- it genuinely
+    will not reach the queue, and `publish_pending` would have failed it anyway.
+    Unavailable *model-policy* evidence is different and deliberately weaker: it
+    is recorded as a receipt and the dispatch still publishes unchanged, because
+    report-only must not let a proposal defect alter what executes or relax an
+    unrelated authority or work gate. The later runtime-posture stage is what
+    makes these failures enforcing, and only when enforcement is explicitly active.
+
+    The envelope is never mutated here beyond what the writer itself returns, so
+    the already-digested message `publish_pending` sends is byte-identical to the
+    one this function saw.
+    """
+    if not report.pending:
+        return report
+    if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+        # Unprotected environments have no execution record to attach to. Not an
+        # error: the inventory records those paths as unprotected, not blocked.
+        return report
+
+    from src.agentauth.model_policy import ensure_snapshot_report_only
+
+    if writer is None:
+        from src.agentauth.engine import get_engine_authority_writer
+
+        writer = get_engine_authority_writer()
+
+    prepared: list[PendingPublish] = []
+    for pending in report.pending:
+        invocation_id = pending.invocation_id()
+        try:
+            # Blocking DynamoDB writes: off the event loop so a slow round trip
+            # cannot stall the tick's other work.
+            envelope = await run_in_threadpool(writer.provision, pending)
+        except Exception:
+            logger.exception(
+                "orchestration dispatch: protected authority unavailable for node %s during preparation; no message sent",
+                pending.node_id,
+            )
+            report.record(pending.org_id, "publish_failed")
+            continue
+
+        # The writer returns the envelope it provisioned against. Replacing the
+        # pending envelope with it keeps a single source of truth for what is
+        # published, and `publish_pending`'s idempotent re-provision then returns
+        # the same thing rather than a divergent one.
+        prepared.append(replace(pending, envelope=envelope))
+
+        # Now, and only now, is there a `pending` protected record to attach to.
+        # `ensure_snapshot_report_only` already converts every specific failure
+        # into a receipt, so this cannot raise a model-policy error into the tick.
+        receipt = await ensure_snapshot_report_only(session, store=writer.store, invocation_id=invocation_id)
+        report.model_policy_receipts[invocation_id] = receipt
+        if receipt.get("status") != "available":
+            logger.warning(
+                "orchestration dispatch: model-policy evidence unavailable for node %s reason=%s; dispatch is unaffected",
+                pending.node_id,
+                receipt.get("reason"),
+            )
+
+    report.pending = prepared
     return report
 
 

@@ -106,9 +106,12 @@ const UNRENDERABLE = 'unavailable';
  * links or mentions.
  *
  * This is an allowlist, not a blocklist: only characters that legitimately
- * occur in a model id, a reason code or a run id survive
- * (``us.anthropic.claude-opus-4-6-v1``, ``direct_override_unresolved``, a
- * UUID). Everything else -- backtick, ``@``, ``<``, ``>``, ``[``, ``]``,
+ * occur in a model id, a reason code or a run id survive -- letters, digits,
+ * dot, underscore, colon and hyphen, which is every character a canonical model
+ * id, a code like ``direct_override_unresolved`` or a UUID is built from. (No
+ * example model id appears here on purpose: this module never names a model, and
+ * a literal in the text would be indexed as one this file selects.)
+ * Everything else -- backtick, ``@``, ``<``, ``>``, ``[``, ``]``,
  * ``(``, ``)``, ``*``, ``_``-adjacent emphasis pairs aside, whitespace and all
  * control characters -- is dropped rather than escaped, so there is no
  * escaping scheme to get wrong and no encoding trick to slip past. Because a

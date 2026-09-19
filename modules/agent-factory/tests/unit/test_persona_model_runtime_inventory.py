@@ -64,6 +64,10 @@ def test_every_required_invocation_path_has_an_explicit_resolution_state():
         assert path["state"] in {"wired_report_only", "blocked"}, name
         if path["state"] == "blocked":
             assert path.get("blocker"), name
+        else:
+            # A wired claim owes the same explicitness a blocked one does: the
+            # chain that reaches gateway authority, named rather than implied.
+            assert path.get("authority"), name
 
 
 def test_wired_queue_paths_reach_gateway_authority_and_blocked_paths_stay_visible():
@@ -82,8 +86,9 @@ def test_wired_queue_paths_reach_gateway_authority_and_blocked_paths_stay_visibl
     # which is where live admission runs against the stored snapshot.
     assert "bootstrap_model_policy_live" in bootstrap
 
-    # Only work admission attaches a snapshot, so a path that never reaches it
-    # cannot be reported as wired no matter how much of it exists in source.
+    # Only work admission attaches a snapshot on the queue paths, so one of those
+    # that never reaches it cannot be reported as wired no matter how much of it
+    # exists in source.
     assert "ensure_snapshot_report_only" in (
         ROOT / "modules/gateway/src/orchestration/work_admission.py"
     ).read_text()
@@ -91,26 +96,40 @@ def test_wired_queue_paths_reach_gateway_authority_and_blocked_paths_stay_visibl
     # These assertions intentionally keep the incomplete paths visible.
     # Removing a bypass without wiring its authority is not completion.
     assert 'envelope.get("channel") == "gitlab"' in publisher
-    for blocked in ("orchestration", "chat", "arc_github_actions"):
+    for blocked in ("gitlab", "chat", "arc_github_actions"):
         assert _inventory()["invocation_paths"][blocked]["state"] == "blocked", blocked
 
 
-def test_the_orchestration_blocker_stays_backed_by_a_reproducing_test():
-    """A "blocked" claim must cite evidence, not an assumption.
+def test_the_orchestration_path_attaches_its_snapshot_before_it_publishes():
+    """A "wired" claim must cite behavioural evidence, not an assumption.
 
-    The engine path looks wired in source -- it has an authority writer and a
-    protected execution record -- so the reason it is not is specific and easy
-    to lose. The named test reproduces the actual refusals; if it disappears,
-    the inventory claim has become unverifiable and this fails.
+    The engine reaches work admission for its *work claim* but not for its
+    snapshot: the claim is reserved inside the tick transaction, before any
+    protected execution record exists. Its snapshot is attached instead by
+    `prepare_pending`, in the post-commit/pre-publish window -- the only moment
+    the execution both exists and is still `pending`. That ordering is the whole
+    reason this path can be reported as wired, so the named test must drive the
+    real tick and pin it. If it disappears, the claim is unverifiable and this
+    fails.
     """
     orchestration = _inventory()["invocation_paths"]["orchestration"]
     evidence = ROOT / orchestration["verified_by"]
 
     assert evidence.is_file(), orchestration["verified_by"]
     body = evidence.read_text()
-    # The three refusals that together constitute the blocker.
-    for reason in ("dispatch_unresolved", "snapshot_missing", "dispatch_not_pending"):
-        assert reason in body, reason
+    # The evidence must exercise the real tick composition, not a helper in
+    # isolation: an uncalled helper is the failure this path is recovering from.
+    assert "tick_handler_module._run()" in body
+    assert 'ordered.index("commit") < ordered.index("provision")' in body
+    assert 'ordered.index("snapshot") < ordered.index("publish")' in body
+
+    engine = (ROOT / "modules/gateway/src/orchestration/dispatch_pass.py").read_text()
+    assert "ensure_snapshot_report_only" in engine
+    handler = (ROOT / "modules/gateway/src/orchestration/tick_handler.py").read_text()
+    assert "await prepare_pending(session, dispatch_report)" in handler
+    # Ordering, asserted on the source too: a preparation call that drifted after
+    # the send would be refused at runtime with `dispatch_not_pending`.
+    assert handler.index("await prepare_pending(") < handler.index("publish_pending(dispatch_report)")
 
 
 def test_gateway_selector_contains_no_model_literal_or_network_client():

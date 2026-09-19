@@ -42,7 +42,7 @@ import logging
 import os
 from typing import Any
 
-from src.orchestration.dispatch_pass import DispatchPassReport, publish_pending, run_dispatch_pass
+from src.orchestration.dispatch_pass import DispatchPassReport, prepare_pending, publish_pending, run_dispatch_pass
 from src.orchestration.engine_commands import EngineCommandReport, flush_engine_commands, run_engine_command_pass
 from src.orchestration.execution_runner import RunnerReport, run_execution_runner
 from src.orchestration.stall import StallConfig, StallReport, detect_stalls
@@ -466,6 +466,15 @@ async def _run() -> TickReport:
     recovers on a later tick — whereas publishing first and failing to commit would
     manufacture a run the graph has no record of.
 
+    **Preparation sits inside that same post-commit/pre-publish window** (PMM-07).
+    `prepare_pending` creates each dispatch's protected execution record and
+    attaches its model-policy snapshot there because that is the only moment the
+    record both exists and is still `pending`: before the commit there is no record
+    to key a snapshot to, and after the send a worker may bind the record and make
+    it `active`, at which point the snapshot is refused. If the commit rolls back,
+    this never runs and nothing is published — the graph and the protected store
+    agree that the dispatch did not happen.
+
     The engine-command pass is post-commit in the same way and for the same
     reason (#4527): it returns the markers to consume and the acks to post, and
     those happen only once the decisions they acknowledge are durable. Acking a
@@ -527,6 +536,17 @@ async def _run() -> TickReport:
         # rejection rows are evidence that must survive. The failure is surfaced
         # by the non-success return, not by throwing the good work away.
         await session.commit()
+
+        # Between the commit and the send is the one window in which a dispatch's
+        # protected execution record exists and is still `pending`, so it is the
+        # only place the model-policy snapshot can attach (PMM-07). Nothing has
+        # been queued yet, so no worker can be binding the record; the rows are
+        # already durable, so this does not move the send ahead of the commit.
+        # Mutates the report in place and never raises: a protected-authority
+        # failure drops that dispatch and counts `publish_failed`, while merely
+        # unavailable model-policy evidence is recorded as a receipt and changes
+        # nothing about what executes.
+        await prepare_pending(session, dispatch_report)
 
         # Only now, with the `running` rows durable, does anything reach the queue.
         # `publish_pending` mutates the report in place and never raises: a failed

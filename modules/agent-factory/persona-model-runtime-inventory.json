@@ -19,10 +19,10 @@
       "authority": "spawn_persona -> registered service authority -> gateway bootstrap"
     },
     "orchestration": {
-      "state": "blocked",
+      "state": "wired_report_only",
       "entrypoint": "modules/gateway/src/orchestration/dispatch_pass.py",
-      "blocker": "engine roots are admitted before their protected execution record exists, so no snapshot can be attached: _dispatch_one calls work_admission.admit() inside the tick transaction (dispatch_pass.py:953), but the execution/grant records are only written later by EngineAuthorityWriter.provision() in publish_pending (dispatch_pass.py:1073), after the tick commits. admit_pending() -- the only caller of ensure_snapshot_report_only -- refuses at that point with dispatch_unresolved because it reads the INVOCATION#/DISPATCH pointer that does not exist yet, and attaching after provision() is also refused: _persist_snapshot requires status=pending (model_policy.py:993) while the worker's pod bind has already flipped the execution to active, giving dispatch_not_pending. publish_pending is additionally synchronous and runs post-commit with no session. Closing this needs a reordering of engine admission/provision that owns the work-claim and snapshot in one transaction -- a change to the orchestration dispatch contract, not resolver wiring, and outside this story's boundary.",
-      "verified_by": "modules/gateway/tests/orchestration/test_engine_root_snapshot_gap.py"
+      "authority": "run_dispatch_pass -> tick commit -> prepare_pending (EngineAuthorityWriter.provision + ensure_snapshot_for_admission) -> publish_pending -> gateway bootstrap",
+      "verified_by": "modules/gateway/tests/orchestration/test_tick_dispatch_preparation.py"
     },
     "gitlab": {
       "state": "blocked",
