@@ -52,13 +52,16 @@ def _parser_ast() -> ast.Module:
 
 
 class TestTheFiveVerbs:
-    """Each v1 command resolves to its verb, and to nothing else."""
+    """Each command resolves to its verb, and to nothing else."""
 
     def test_accept(self):
         command = parse_engine_command("@agent-engine accept")
         assert command is not None
         assert command.verb is CommandVerb.ACCEPT
         assert command.gate_ref is None
+        # Plain `accept` carries no draft, so nothing downstream can read one off it
+        # and go looking for "the" amendment.
+        assert command.draft_ref is None
 
     def test_halt(self):
         assert parse_engine_command("@agent-engine halt").verb is CommandVerb.HALT
@@ -83,6 +86,97 @@ class TestTheFiveVerbs:
     def test_trailing_prose_after_a_bare_verb_is_ignored(self):
         """`halt` is the command; what follows is the human explaining themselves."""
         assert parse_engine_command("@agent-engine halt — this is going nowhere").verb is CommandVerb.HALT
+
+
+class TestAcceptAmendment:
+    """`accept amendment <draft-id>` (#4529) — the longest-prefix rule that matters.
+
+    `\\Aaccept\\b` matches "accept amendment 1234…" perfectly well, so if the specific
+    spelling were checked after the bare one, every amendment acceptance would silently
+    answer the acceptance GATE instead. That is not a cosmetic mis-parse: it is a
+    different write path, taken on the very plan the human was trying to replace, and
+    it would report success. Hence a test per direction rather than one happy path.
+    """
+
+    DRAFT = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+
+    def test_it_resolves_to_the_amendment_verb_and_carries_the_draft(self):
+        command = parse_engine_command(f"@agent-engine accept amendment {self.DRAFT}")
+        assert command.verb is CommandVerb.ACCEPT_AMENDMENT
+        assert command.draft_ref == self.DRAFT
+
+    def test_it_is_not_read_as_a_bare_accept(self):
+        """The failure this ordering exists to prevent, stated as its own test."""
+        command = parse_engine_command(f"@agent-engine accept amendment {self.DRAFT}")
+        assert command.verb is not CommandVerb.ACCEPT
+
+    def test_a_bare_accept_never_becomes_an_amendment_acceptance(self):
+        """The other direction, and the more dangerous one.
+
+        A human answering a gate must not have a whole replacement plan applied
+        because a draft happened to be pending. There is no "latest amendment"
+        resolution anywhere in the system, and this is where that starts.
+        """
+        for body in ("@agent-engine accept", "@agent-engine accept the plan", "@agent-engine accept now"):
+            assert parse_engine_command(body).verb is CommandVerb.ACCEPT, body
+            assert parse_engine_command(body).draft_ref is None, body
+
+    def test_the_id_is_case_normalised(self):
+        """Draft ids are lowercase hex; a human may paste them in any case.
+
+        Without normalising, an id typed back in caps resolves to no row and the
+        command is refused for a reason the commenter cannot see — the same failure
+        `gate 007` was fixed for.
+        """
+        assert parse_engine_command(f"@agent-engine accept amendment {self.DRAFT.upper()}").draft_ref == self.DRAFT
+
+    def test_amendment_with_no_id_is_recognised_but_carries_none(self):
+        """It must NOT fall through to the bare `accept`.
+
+        Falling through is the dangerous reading: the human asked to apply an
+        amendment and would instead answer the acceptance gate — a real state change
+        they did not request. Recognising the shape with `draft_ref=None` lets the
+        applier reply "name the draft" and write nothing.
+        """
+        command = parse_engine_command("@agent-engine accept amendment")
+        assert command.verb is CommandVerb.ACCEPT_AMENDMENT
+        assert command.draft_ref is None
+
+    def test_a_malformed_id_carries_none_rather_than_a_guess(self):
+        """Not a partial match, and not a fallthrough to bare `accept` either."""
+        for body in (
+            "@agent-engine accept amendment the-latest-one",
+            "@agent-engine accept amendment ../../etc/passwd",
+            "@agent-engine accept amendment 1234",  # too short to be a draft id
+        ):
+            command = parse_engine_command(body)
+            assert command.verb is CommandVerb.ACCEPT_AMENDMENT, body
+            assert command.draft_ref is None, body
+
+    def test_the_id_length_is_bounded(self):
+        """So no parse hands the applier an argument it must defend against.
+
+        The same rule as the gate ref. A 10KB "id" is matched only up to the draft-id
+        shape's ceiling, and what remains cannot be a real row.
+        """
+        command = parse_engine_command("@agent-engine accept amendment " + "a" * 5000)
+        assert command.verb is CommandVerb.ACCEPT_AMENDMENT
+        assert command.draft_ref is None or len(command.draft_ref) <= 36
+
+    def test_trailing_prose_after_the_id_is_ignored(self):
+        command = parse_engine_command(f"@agent-engine accept amendment {self.DRAFT} — looks right to me")
+        assert command.draft_ref == self.DRAFT
+
+    def test_it_is_not_an_authorization(self):
+        """A parsed id is a reference the text contained, nothing more.
+
+        The parser cannot know whether this draft exists, is in the commenter's
+        tenant, is on the flow under discussion, or is still pending — and it must not
+        try, because answering any of those here would tell anyone who can comment
+        which ids are real.
+        """
+        command = parse_engine_command("@agent-engine accept amendment " + "f" * 36)
+        assert command.draft_ref == "f" * 36
 
 
 class TestApproveGateArguments:
@@ -475,11 +569,18 @@ class TestNoParseIsAuthorization:
         No actor, no org, no permission — so nothing downstream can read authority
         off a parse result, which is exactly the "commenter identity trusted from
         the payload" bug class the issue names.
+
+        Equality-checked, so every new field is this review moment. `draft_ref`
+        (#4529) passes it for the same reason `gate_ref` does: it is a *reference the
+        text contained*, not a fact about the commenter. The applier still has to
+        establish that the draft exists, is in this tenant, is on the flow under
+        discussion, is pending, and that this commenter may accept it — none of which
+        this object asserts.
         """
         from src.orchestration.adapters.github_commands import EngineCommand
 
         fields = set(EngineCommand.__dataclass_fields__)
-        assert fields == {"verb", "gate_ref", "text"}
+        assert fields == {"verb", "gate_ref", "text", "draft_ref"}
 
     def test_a_parsed_command_is_frozen(self):
         """A request about text that already exists cannot be edited into another."""

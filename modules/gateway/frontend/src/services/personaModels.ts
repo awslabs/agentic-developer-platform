@@ -1,16 +1,47 @@
-/** Typed client for Agent Models (PMM-04, issue #5422). */
-
-import { apiClient, buildQueryString } from './api';
+/**
+ * Shared types and utilities for Agent Models (PMM-04, issue #5422).
+ *
+ * Self-service operations: `personaModelsSelf.ts` (no target parameter).
+ * Administered operations: `personaModelsAdmin.ts` (target as first argument).
+ *
+ * This module holds only the wire-shape types, the conflict type guard, and the
+ * error-message extractor shared by both paths. Design note section 6.1 explains
+ * why the split is structural: the absence of a target parameter on the self path
+ * is the security property; a shared scope helper would undermine it.
+ */
 
 export type PreferenceSource = 'principal-mapping' | 'system-default';
+
+/**
+ * Proof state of a compatibility class's default model, as decided by the server.
+ *
+ * `proven` means the class default crossed the real-harness invocation gate.
+ * `candidate` means a default is proposed but has never been proven.
+ * `null` means the class has NO default recorded at all — an actionable platform
+ * readiness gap (approved design, decision 4), never a fallback to another class.
+ *
+ * The page must render this field rather than deriving proof from
+ * `effective_is_candidate`: that boolean is false both for a proven default and
+ * for "no default exists", so deriving from it reports an absent default as proven.
+ */
+export type ClassDefaultStatus = 'candidate' | 'proven' | null;
 
 export interface PersonaPreference {
   persona_key: string;
   persona_display_name: string;
   configurable: boolean;
+  compatibility_class: string;
+  harness_contract_revision: string;
+  model_lifecycle?: string | null;
+  availability_status?: string;
+  availability_reason?: string | null;
+  warnings?: string[];
   effective_model_id: string | null;
+  effective_is_candidate: boolean;
   source: PreferenceSource;
   status: 'configured' | 'not-configured' | 'unavailable' | 'disallowed' | 'stale';
+  /** Server-owned proof state of the class default; null when none is recorded. */
+  class_default_status?: ClassDefaultStatus;
   saved_model_id: string | null;
   requested_alias: string | null;
   revision: number | null;
@@ -25,9 +56,18 @@ export interface PreferenceList {
 
 export interface PreferenceDetail {
   persona_key: string;
+  compatibility_class: string;
+  harness_contract_revision: string;
+  model_lifecycle?: string | null;
+  availability_status?: string;
+  availability_reason?: string | null;
+  warnings?: string[];
   effective_model_id: string | null;
+  effective_is_candidate: boolean;
   source: PreferenceSource;
   status: string;
+  /** Server-owned proof state of the class default; null when none is recorded. */
+  class_default_status?: ClassDefaultStatus;
   saved_model_id: string | null;
   requested_alias: string | null;
   revision: number | null;
@@ -65,6 +105,7 @@ export interface PriceContext {
 
 export interface ModelCatalogueRow {
   canonical_model_id: string;
+  aliases: string[];
   model_family: string;
   canonical_version: string;
   selectable: boolean;
@@ -97,63 +138,12 @@ export interface ManageableServicePrincipals {
   principals: ManageableServicePrincipal[];
 }
 
-export interface PersonaModelScope {
-  kind: 'self' | 'service';
-  canonicalPrincipalId?: string;
-}
-
 export interface PersonaModelConflict {
   persona_key: string;
   current_model_id: string;
   current_revision: number;
   effective_model_id: string;
   default_model_id: string | null;
-}
-
-function scopeBase(scope: PersonaModelScope): string {
-  if (scope.kind === 'self') return '/me/persona-models';
-  if (!scope.canonicalPrincipalId) throw new Error('Managed scope requires a canonical principal ID.');
-  return `/service-principals/${encodeURIComponent(scope.canonicalPrincipalId)}/persona-models`;
-}
-
-export function getPersonaCatalogue(signal?: AbortSignal): Promise<PersonaCatalogue> {
-  return apiClient.get('/me/persona-models/catalog', signal);
-}
-
-export function getModelCatalogue(
-  scope: PersonaModelScope,
-  personaKey: string,
-  signal?: AbortSignal,
-): Promise<ModelCatalogue> {
-  return apiClient.get(
-    `${scopeBase(scope)}/catalog${buildQueryString({ persona_key: personaKey })}`,
-    signal,
-  );
-}
-
-export function getPreferences(scope: PersonaModelScope, signal?: AbortSignal): Promise<PreferenceList> {
-  return apiClient.get(scopeBase(scope), signal);
-}
-
-export function getManageableServicePrincipals(signal?: AbortSignal): Promise<ManageableServicePrincipals> {
-  return apiClient.get('/me/persona-models/manageable-service-principals', signal);
-}
-
-export function setPreference(
-  scope: PersonaModelScope,
-  personaKey: string,
-  model: string,
-  expectedRevision?: number,
-): Promise<PreferenceDetail> {
-  return apiClient.put(`${scopeBase(scope)}/${encodeURIComponent(personaKey)}`, {
-    model,
-    ...(expectedRevision === undefined ? {} : { expected_revision: expectedRevision }),
-  });
-}
-
-export function resetPreference(scope: PersonaModelScope, personaKey: string): Promise<PreferenceDetail> {
-  // PMM-02's merged DELETE route currently accepts no request body.
-  return apiClient.delete(`${scopeBase(scope)}/${encodeURIComponent(personaKey)}`);
 }
 
 export function isPersonaModelConflict(error: unknown): error is PersonaModelConflict {

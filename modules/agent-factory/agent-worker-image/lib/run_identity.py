@@ -8,6 +8,7 @@ compares the complete queue-envelope digest with its protected dispatch record.
 from __future__ import annotations
 
 import atexit
+import base64
 import hashlib
 import json
 import logging
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -24,15 +26,67 @@ import botocore.auth
 import botocore.awsrequest
 import botocore.session
 import requests
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 logger = logging.getLogger(__name__)
 WORKLOAD_TOKEN_ENV = "ADP_WORKLOAD_TOKEN_FILE"
 CREDENTIAL_FILE_ENV = "ADP_RUN_CREDENTIAL_FILE"
 CONTROL_ENDPOINT_ENV = "ADP_AGENT_CONTROL_ENDPOINT"
 WORKLOAD_HEADER = "X-Adp-Workload-Token"
+MODEL_POLICY_KEYS_ENV = "ADP_CONTROL_ENVELOPE_KEYS"
+MODEL_POLICY_KEYS_FILE_ENV = "ADP_CONTROL_ENVELOPE_KEYS_FILE"
+MODEL_POLICY_AUDIENCE = "adp-agent-model-policy"
+MODEL_POLICY_ACTION = "resolve_model"
+MODEL_POLICY_SCHEMA_VERSION = 1
+#: What this worker promises to *honour*, declared to the gateway on bootstrap.
+#:
+#: Distinct from ``MODEL_POLICY_SCHEMA_VERSION``, which versions the decision
+#: payload's shape.  This asserts a capability: "if you hand me an enforcing
+#: decision, I will execute on it or fail, and I will not quietly launch on my
+#: legacy assignment instead".  The gateway withholds run authority from a client
+#: that does not declare it while enforcing, because version skew would otherwise
+#: bypass enforcement invisibly.
+#:
+#: It is a capability assertion only and confers no authority whatsoever: the
+#: gateway decides the posture and the model, and declaring a higher number here
+#: cannot obtain a decision, relax a gate, or alter what is signed.
+MODEL_POLICY_CONTRACT_VERSION = 1
+MODEL_POLICY_CONTRACT_HEADER = "X-Adp-Model-Policy-Contract"
+#: The closed posture vocabulary this worker understands.  ``enforcing`` is
+#: supported *in source* here so the runtime can be proven end-to-end; every
+#: actually configured environment remains ``report_only``, and the flip itself
+#: is PMM-09's separate, audited operational change.
+MODEL_POLICY_POSTURES = frozenset({"disabled", "report_only", "enforcing"})
+ENVELOPE_VERSION = "adpe1"
+ENVELOPE_ISSUER = "adp-gateway-control"
+MAX_ENVELOPE_TTL_SECONDS = 30
 _MAX_TOKEN_BYTES = 8192
+_MAX_ENVELOPE_BYTES = 8192
+_MAX_KEY_CONFIG_BYTES = 64 * 1024
 _MAX_POLICY_FIELD_BYTES = 256
 _RESOLUTION_SOURCES = frozenset({"explicit-direct", "principal-mapping", "system-default"})
+_REQUIRED_ENVELOPE_CLAIMS = frozenset(
+    {
+        "iss",
+        "aud",
+        "alg",
+        "kid",
+        "tenant_id",
+        "principal",
+        "target_run_id",
+        "target_generation",
+        "action",
+        "command_id",
+        "body_digest",
+        "grant_id",
+        "revocation_epoch",
+        "iat",
+        "nbf",
+        "exp",
+    }
+)
 
 
 class RunIdentityError(Exception):
@@ -43,35 +97,167 @@ class WorkOwnershipPending(RunIdentityError):
     """The gateway retained an authorized child behind its active parent."""
 
 
+class ModelPolicyVerificationError(ValueError):
+    """A proposed gateway decision is not authentic or bound to this run."""
+
+    def __init__(self, reason: str, *, authenticated: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        #: True only when the assertion's signature and bindings all verified and
+        #: the decision was rejected for a later, non-authenticity reason — today
+        #: solely an unsupported ``schema_version``.
+        #:
+        #: It gates whether the response's posture may be believed at all.  An
+        #: authenticated decision carries its ``runtime_posture`` inside the signed
+        #: body, so salvaging it is reading verified platform state.  A decision
+        #: that failed verification carries nothing: its posture is whatever the
+        #: response happened to say, and believing the permissive half of that is
+        #: the bypass this stage exists to close.
+        self.authenticated = authenticated
+
+
 @dataclass(frozen=True)
 class ModelPolicyReport:
-    """Sanitized, non-authoritative report-only evidence from bootstrap.
+    """Sanitized evidence from bootstrap, and — under ``enforcing`` — an input.
 
-    The proposed model is intentionally not an execution input.  The gateway
-    response is authenticated transport, but worker-side signature verification
-    and enforcing consumption belong to the later PMM-06/PMM-09 gate.
+    Under ``disabled`` and ``report_only`` the proposed model is deliberately
+    *not* an execution input: the legacy assignment still runs and this is pure
+    comparison evidence.  Under ``enforcing`` the verified decision is what the
+    harness must launch on, and a run that cannot honour it must fail rather than
+    fall back.  Which of those applies is decided by the gateway and read from
+    :attr:`posture` — never inferred from this worker's own configuration, which
+    an operator could edit.
+
+    ``enforcing`` is supported in source so the path is provable end to end.  No
+    configured environment is set to it; PMM-09 owns that operational flip.
     """
 
     status: Literal["proposed", "unavailable"]
+    #: The live posture the gateway verified for this hop.  ``None`` only when the
+    #: gateway could not establish one, which is never treated as permissive.
+    posture: Literal["disabled", "report_only", "enforcing"] | None = None
+    #: Whether the gateway proved the posture against committed platform state.
+    posture_verified: bool = False
     reason: str | None = None
-    tenant_id: str | None = None
-    persona: str | None = None
-    principal_kind: Literal["human", "service_account"] | None = None
-    compatibility_class: str | None = None
     requested_model_id: str | None = None
     resolved_model_id: str | None = None
     resolution_source: str | None = None
     snapshot_digest: str | None = None
     policy_revision: str | None = None
     catalogue_revision: str | None = None
+    snapshot_allowlist_policy_revision: str | None = None
+    live_allowlist_policy_revision: str | None = None
+    allowlist_policy_drift: bool | None = None
     posture_revision: int | None = None
+    assertion_key_id: str | None = None
+    #: True when this report describes a response whose authenticity could not be
+    #: established, so nothing in it — including :attr:`posture` — is evidence.
+    #:
+    #: Kept separate from ``posture is None``, which also describes an older
+    #: gateway that simply sends no posture.  That case is a structurally sound
+    #: response and keeps its existing permissive treatment; this one is not, and
+    #: must refuse under :attr:`enforcement_failure` because the worker cannot rule
+    #: out that the platform was enforcing.
+    verification_failed: bool = False
+
+    @property
+    def enforced(self) -> bool:
+        """True only for a verified enforcing posture with a usable decision.
+
+        Every condition is required, and none may be relaxed:
+
+        * the posture must be ``enforcing`` — not merely "not report_only";
+        * it must be *verified*, so an unknown posture never enforces and never
+          silently becomes permissive either (the gateway withholds authority for
+          that case, and this is the second, independent check);
+        * there must be a signed proposal with a resolved model to execute on.
+
+        The caller uses this to decide whether to *substitute* the model.  It is
+        not the place that decides whether to *refuse*: an enforcing posture whose
+        decision is unusable must stop the run, which is
+        :meth:`enforcement_failure`, because returning False here would silently
+        hand the run back to its legacy assignment.
+        """
+        return (
+            self.posture == "enforcing"
+            and self.posture_verified
+            and self.status == "proposed"
+            and bool(self.resolved_model_id)
+        )
+
+    @property
+    def enforcement_failure(self) -> str | None:
+        """The refusal reason when enforcing is active but unusable, else None.
+
+        The asymmetry is the point.  Under ``enforcing`` an unavailable or
+        unverified decision cannot be downgraded to report-only behaviour by
+        exception handling or default substitution: that is exactly the bypass
+        PMM-07 has to make impossible.  Under ``disabled``/``report_only`` the
+        same unavailable decision is not a failure at all, because the legacy
+        assignment is the correct outcome there.
+
+        A response whose authenticity failed refuses regardless of the posture it
+        appeared to carry.  The posture in such a response is not platform state —
+        it is an unsigned field in a message already established as untrustworthy,
+        and reading "report_only" out of it to keep going is indistinguishable from
+        an attacker stripping enforcement.  Since the worker cannot tell which
+        posture was actually live, it must not proceed, so this is the one place
+        unknown-under-failure differs from unknown-under-an-older-gateway: the
+        latter is a sound response from a platform with no posture to apply.
+        """
+        if self.verification_failed:
+            return self.reason or "decision_unverifiable"
+        if self.posture != "enforcing":
+            return None
+        if not self.posture_verified:
+            return "posture_unverified"
+        if self.status != "proposed":
+            return self.reason or "decision_unavailable"
+        if not self.resolved_model_id:
+            return "decision_malformed"
+        return None
+
+    def effective_model(self, legacy_model: str) -> str:
+        """The model this run must actually use.
+
+        Returns the gateway's resolved model only under a verified enforcing
+        proposal; otherwise the unchanged legacy assignment.  Callers must consult
+        :attr:`enforcement_failure` first — this method deliberately cannot
+        express "refuse", so using it alone under a broken enforcing posture would
+        preserve legacy behaviour and defeat enforcement.
+        """
+        if self.enforced:
+            assert self.resolved_model_id is not None  # narrowed by ``enforced``
+            return self.resolved_model_id
+        return legacy_model
 
     def environment(self, legacy_model: str) -> dict[str, str]:
-        """Return comparison telemetry without changing ``ANTHROPIC_MODEL``."""
+        """Return policy telemetry for this run.
+
+        Under ``disabled``/``report_only`` this is comparison evidence only and
+        ``ANTHROPIC_MODEL`` is untouched.  Under a verified enforcing proposal the
+        caller substitutes the model; the variables here still describe what
+        happened rather than driving it, and no consumer may treat them as
+        authority — they are ordinary environment variables that anything in the
+        pod could have written.
+        """
         values = {
-            "ADP_MODEL_POLICY_POSTURE": "report_only",
+            # Reported, never assumed.  Hard-coding ``report_only`` here made the
+            # telemetry lie under any other posture, and lying in the permissive
+            # direction is the worst available default.
+            "ADP_MODEL_POLICY_POSTURE": self.posture or "unknown",
+            "ADP_MODEL_POLICY_POSTURE_VERIFIED": str(self.posture_verified).lower(),
+            "ADP_MODEL_POLICY_ENFORCED": str(self.enforced).lower(),
             "ADP_MODEL_POLICY_STATUS": self.status,
         }
+        if self.snapshot_allowlist_policy_revision is not None:
+            values["ADP_MODEL_POLICY_SNAPSHOT_ALLOWLIST_REVISION"] = (
+                self.snapshot_allowlist_policy_revision
+            )
+        if self.live_allowlist_policy_revision is not None:
+            values["ADP_MODEL_POLICY_LIVE_ALLOWLIST_REVISION"] = self.live_allowlist_policy_revision
+        if self.allowlist_policy_drift is not None:
+            values["ADP_MODEL_POLICY_ALLOWLIST_DRIFT"] = str(self.allowlist_policy_drift).lower()
         if self.status == "unavailable":
             values["ADP_MODEL_POLICY_REASON"] = self.reason or "unknown"
             return values
@@ -83,6 +269,7 @@ class ModelPolicyReport:
                 "ADP_MODEL_POLICY_POLICY_REVISION": self.policy_revision or "",
                 "ADP_MODEL_POLICY_CATALOGUE_REVISION": self.catalogue_revision or "",
                 "ADP_MODEL_POLICY_POSTURE_REVISION": str(self.posture_revision),
+                "ADP_MODEL_POLICY_ASSERTION_KEY_ID": self.assertion_key_id or "",
                 "ADP_MODEL_POLICY_LEGACY_MODEL": legacy_model,
                 "ADP_MODEL_POLICY_MATCH": str(self.resolved_model_id == legacy_model).lower(),
             }
@@ -90,40 +277,6 @@ class ModelPolicyReport:
         if self.requested_model_id:
             values["ADP_MODEL_POLICY_REQUESTED_MODEL"] = self.requested_model_id
         return values
-
-    def shadow_event(
-        self,
-        legacy_model: str,
-        *,
-        invocation_id: str,
-        channel: str,
-        trigger: str,
-    ) -> dict[str, object] | None:
-        """Build one structured, behaviour-neutral comparison log event."""
-        if self.status != "proposed":
-            return None
-        return {
-            "event": "persona_model_shadow_comparison",
-            "schema_version": 1,
-            "invocation_id": invocation_id,
-            "tenant_id": self.tenant_id,
-            "persona": self.persona,
-            "principal_kind": self.principal_kind,
-            "channel": channel,
-            "trigger": trigger,
-            "compatibility_class": self.compatibility_class,
-            "legacy_model": legacy_model,
-            "proposed_model": self.resolved_model_id,
-            "mapping_exists": self.resolution_source == "principal-mapping",
-            "resolution_source": self.resolution_source,
-            "matches_legacy": self.resolved_model_id == legacy_model,
-            "snapshot_digest": self.snapshot_digest,
-            "policy_revision": self.policy_revision,
-            "catalogue_revision": self.catalogue_revision,
-            "posture_revision": self.posture_revision,
-            "runtime_posture": "report_only",
-            "admission_refusal": False,
-        }
 
 
 def _safe_policy_text(value: object, *, optional: bool = False) -> str | None:
@@ -139,56 +292,348 @@ def _safe_policy_text(value: object, *, optional: bool = False) -> str | None:
     return value
 
 
-def parse_model_policy_report(value: object, *, invocation_id: str) -> ModelPolicyReport:
-    """Strictly reduce a bootstrap policy response to report-only telemetry."""
-    if not isinstance(value, dict) or value.get("posture") != "report_only":
+def _canonical_policy_json(value: dict) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        raise ModelPolicyVerificationError("decision_malformed") from None
+
+
+def _decode_urlsafe(value: str) -> bytes:
+    try:
+        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    except (ValueError, TypeError):
+        raise ModelPolicyVerificationError("decision_unverifiable") from None
+
+
+def _parse_timestamp(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ModelPolicyVerificationError("decision_unverifiable")
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise ModelPolicyVerificationError("decision_unverifiable") from None
+
+
+def _verification_keys(raw: str) -> dict[str, Ed25519PublicKey]:
+    """Parse the same staged JSON/compact public-key formats as the Node worker."""
+    keys: dict[str, Ed25519PublicKey] = {}
+    if not raw or len(raw.encode("utf-8")) > _MAX_KEY_CONFIG_BYTES:
+        return keys
+    if raw.lstrip().startswith("{"):
+        try:
+            entries = json.loads(raw)
+        except (TypeError, ValueError):
+            return keys
+        if not isinstance(entries, dict):
+            return keys
+        for key_id, pem in entries.items():
+            if not isinstance(key_id, str) or not key_id or not isinstance(pem, str):
+                continue
+            try:
+                key = serialization.load_pem_public_key(pem.encode("ascii"))
+            except (ValueError, TypeError, UnicodeEncodeError):
+                continue
+            if isinstance(key, Ed25519PublicKey):
+                keys[key_id] = key
+        return keys
+
+    for entry in raw.split(","):
+        key_id, separator, encoded = entry.partition(":")
+        if not separator or not key_id.strip() or not encoded.strip():
+            continue
+        try:
+            decoded = base64.b64decode(encoded.strip(), validate=True)
+            if len(decoded) == 32:
+                keys[key_id.strip()] = Ed25519PublicKey.from_public_bytes(decoded)
+        except (ValueError, TypeError):
+            continue
+    return keys
+
+
+def load_model_policy_verification_keys(
+    env: dict[str, str] | None = None,
+) -> dict[str, Ed25519PublicKey]:
+    """Load public verification keys only; a worker never receives a signer."""
+    source = env if env is not None else os.environ
+    raw = source.get(MODEL_POLICY_KEYS_ENV, "").strip()
+    key_file = source.get(MODEL_POLICY_KEYS_FILE_ENV, "").strip()
+    if key_file:
+        try:
+            candidate = Path(key_file).read_bytes()
+            if len(candidate) <= _MAX_KEY_CONFIG_BYTES:
+                raw = candidate.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            # The staged environment value remains an independently usable
+            # rotation source when the projected file is temporarily absent.
+            pass
+    return _verification_keys(raw)
+
+
+def _verify_model_policy_assertion(
+    token: object,
+    *,
+    decision_body: bytes,
+    invocation_id: str,
+    attempt: int,
+    tenant_id: str,
+    correlation_id: str,
+    snapshot_digest: str,
+    public_keys: dict[str, Ed25519PublicKey],
+    now: datetime | None = None,
+) -> str:
+    if not isinstance(token, str) or not token or len(token) > _MAX_ENVELOPE_BYTES:
+        raise ModelPolicyVerificationError("decision_unavailable")
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != ENVELOPE_VERSION:
+        raise ModelPolicyVerificationError("decision_unverifiable")
+    try:
+        body = _decode_urlsafe(parts[1])
+        signature = _decode_urlsafe(parts[2])
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, TypeError, ValueError, ModelPolicyVerificationError):
+        raise ModelPolicyVerificationError("decision_unverifiable") from None
+    if not isinstance(payload, dict) or payload.get("v") != ENVELOPE_VERSION:
+        raise ModelPolicyVerificationError("decision_unverifiable")
+    if any(payload.get(claim) in (None, "") for claim in _REQUIRED_ENVELOPE_CLAIMS):
+        raise ModelPolicyVerificationError("decision_unverifiable")
+    string_claims = _REQUIRED_ENVELOPE_CLAIMS - {"target_generation", "revocation_epoch"}
+    if any(not isinstance(payload[claim], str) for claim in string_claims):
+        raise ModelPolicyVerificationError("decision_unverifiable")
+    if any(type(payload[claim]) is not int for claim in ("target_generation", "revocation_epoch")):
+        raise ModelPolicyVerificationError("decision_unverifiable")
+    if payload["alg"] != "ed25519":
+        raise ModelPolicyVerificationError("decision_algorithm_unsupported")
+    if payload["iss"] != ENVELOPE_ISSUER:
+        raise ModelPolicyVerificationError("decision_untrusted_issuer")
+    if payload["aud"] != MODEL_POLICY_AUDIENCE:
+        raise ModelPolicyVerificationError("decision_audience_mismatch")
+    key = public_keys.get(payload["kid"])
+    if key is None:
+        raise ModelPolicyVerificationError("decision_unknown_key")
+    try:
+        key.verify(
+            signature,
+            ENVELOPE_VERSION.encode("ascii") + b"." + body,
+        )
+    except InvalidSignature:
+        raise ModelPolicyVerificationError("decision_bad_signature") from None
+    if (
+        payload["target_run_id"] != invocation_id
+        or payload["principal"] != f"{invocation_id}#{attempt}"
+    ):
+        raise ModelPolicyVerificationError("decision_target_mismatch")
+    if payload["target_generation"] != attempt:
+        raise ModelPolicyVerificationError("decision_generation_mismatch")
+    if payload["tenant_id"] != tenant_id:
+        raise ModelPolicyVerificationError("decision_cross_tenant")
+    if payload["action"] != MODEL_POLICY_ACTION:
+        raise ModelPolicyVerificationError("decision_action_mismatch")
+    if payload["command_id"] != snapshot_digest:
+        raise ModelPolicyVerificationError("decision_snapshot_mismatch")
+    if payload.get("chain_id") != correlation_id:
+        raise ModelPolicyVerificationError("decision_chain_mismatch")
+    if payload["body_digest"] != hashlib.sha256(decision_body).hexdigest():
+        raise ModelPolicyVerificationError("decision_altered")
+    if payload["revocation_epoch"] < 1:
+        raise ModelPolicyVerificationError("decision_unverifiable")
+    issued = _parse_timestamp(payload["iat"])
+    not_before = _parse_timestamp(payload["nbf"])
+    expires = _parse_timestamp(payload["exp"])
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if current >= expires:
+        raise ModelPolicyVerificationError("decision_expired")
+    if current < not_before or issued > not_before:
+        raise ModelPolicyVerificationError("decision_not_yet_valid")
+    if (expires - not_before).total_seconds() > MAX_ENVELOPE_TTL_SECONDS:
+        raise ModelPolicyVerificationError("decision_validity_too_long")
+    return payload["kid"]
+
+
+def parse_model_policy_report(
+    value: object,
+    *,
+    invocation_id: str,
+    attempt: int = 1,
+    tenant_id: str | None = None,
+    correlation_id: str | None = None,
+    public_keys: dict[str, Ed25519PublicKey] | None = None,
+    now: datetime | None = None,
+) -> ModelPolicyReport:
+    """Verify a bootstrap policy response and reduce it to a usable report.
+
+    Accepts all three postures.  ``report_only`` and ``disabled`` yield evidence
+    the caller ignores for execution; ``enforcing`` yields a decision the caller
+    must execute on or refuse.  An unrecognised posture is rejected outright
+    rather than coerced to the permissive value.
+
+    A verified posture with no consumable decision is still returned (with
+    ``status="unavailable"``), because the *caller's* correct behaviour depends on
+    the posture it failed under: legacy assignment under report_only, refusal
+    under enforcing.  Discarding the posture here would force that decision to be
+    guessed from local configuration.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("invalid model-policy response")
+    posture = value.get("posture")
+    verified = value.get("posture_verified")
+    if posture is not None and posture not in MODEL_POLICY_POSTURES:
+        raise ValueError("invalid model-policy response")
+    if type(verified) is not bool:
+        # Absent or non-boolean: an older gateway that cannot prove the posture.
+        # Treated as unverified, never as verified-permissive.
+        verified = False
+    if posture is None and verified:
+        # "Verified" with no posture is self-contradictory; trust neither half.
         raise ValueError("invalid model-policy response")
     status = value.get("status")
     if status == "unavailable":
+        evidence = value.get("evidence")
+        snapshot_allowlist_revision = None
+        live_allowlist_revision = None
+        allowlist_drift = None
+        if evidence is not None:
+            if not isinstance(evidence, dict):
+                raise ValueError("invalid model-policy evidence")
+            snapshot_allowlist_revision = _safe_policy_text(
+                evidence.get("snapshot_allowlist_policy_revision")
+            )
+            live_allowlist_revision = _safe_policy_text(
+                evidence.get("live_allowlist_policy_revision")
+            )
+            allowlist_drift = evidence.get("allowlist_policy_drift")
+            if type(allowlist_drift) is not bool:
+                raise ValueError("invalid model-policy evidence")
         return ModelPolicyReport(
             status="unavailable",
+            posture=posture,
+            posture_verified=verified,
             reason=_safe_policy_text(value.get("reason")),
+            snapshot_allowlist_policy_revision=snapshot_allowlist_revision,
+            live_allowlist_policy_revision=live_allowlist_revision,
+            allowlist_policy_drift=allowlist_drift,
         )
     if status != "proposed" or not isinstance(value.get("decision"), dict):
-        raise ValueError("invalid model-policy response")
+        raise ModelPolicyVerificationError("decision_malformed")
     decision = value["decision"]
-    tenant_id = _safe_policy_text(decision.get("tenant_id"))
-    persona = _safe_policy_text(decision.get("persona"))
-    principal_kind = _safe_policy_text(decision.get("principal_kind"))
-    compatibility_class = _safe_policy_text(decision.get("compatibility_class"))
     resolved = _safe_policy_text(decision.get("resolved_model_id"))
     requested = _safe_policy_text(decision.get("requested_model_id"), optional=True)
     source = _safe_policy_text(decision.get("resolution_source"))
     digest = _safe_policy_text(decision.get("snapshot_digest"))
     policy_revision = _safe_policy_text(decision.get("policy_revision"))
     catalogue_revision = _safe_policy_text(decision.get("catalogue_revision"))
+    snapshot_allowlist_revision = _safe_policy_text(
+        decision.get("snapshot_allowlist_policy_revision")
+    )
+    live_allowlist_revision = _safe_policy_text(decision.get("live_allowlist_policy_revision"))
+    allowlist_drift = decision.get("allowlist_policy_drift")
     posture_revision = decision.get("posture_revision")
+    decision_tenant = _safe_policy_text(decision.get("tenant_id"))
+    decision_chain = _safe_policy_text(decision.get("correlation_id"))
     if (
         decision.get("invocation_id") != invocation_id
-        or decision.get("runtime_posture") != "report_only"
+        # The signed decision's own posture must match the envelope's. They are
+        # produced together by the gateway, so disagreement means the response was
+        # assembled from mismatched parts and neither half can be trusted.
+        or decision.get("runtime_posture") != posture
         or source not in _RESOLUTION_SOURCES
-        or principal_kind not in {"human", "service_account"}
         or len(digest) != 64
         or any(char not in "0123456789abcdef" for char in digest)
         or type(posture_revision) is not int
         or posture_revision < 1
+        or type(allowlist_drift) is not bool
         or not isinstance(value.get("assertion"), str)
         or not value["assertion"].startswith("adpe1.")
     ):
-        raise ValueError("invalid model-policy response")
+        raise ModelPolicyVerificationError("decision_malformed")
+    if tenant_id is not None and decision_tenant != tenant_id:
+        raise ModelPolicyVerificationError("decision_cross_tenant")
+    if correlation_id is not None and decision_chain != correlation_id:
+        raise ModelPolicyVerificationError("decision_chain_mismatch")
+    key_id = _verify_model_policy_assertion(
+        value.get("assertion"),
+        decision_body=_canonical_policy_json(decision),
+        invocation_id=invocation_id,
+        attempt=attempt,
+        tenant_id=tenant_id or decision_tenant,
+        correlation_id=correlation_id or decision_chain,
+        snapshot_digest=digest,
+        public_keys=public_keys or {},
+        now=now,
+    )
+    if decision.get("schema_version") != MODEL_POLICY_SCHEMA_VERSION:
+        # Raised *after* the assertion verified, so this decision is authentic and
+        # merely too new for this worker to execute on.  Flagged as authenticated so
+        # its signed ``runtime_posture`` may be believed: the mixed-version case
+        # where a newer gateway is still report-only must keep its exact legacy
+        # behaviour rather than refuse, while the same skew under enforcing refuses.
+        raise ModelPolicyVerificationError("snapshot_unsupported_revision", authenticated=True)
     return ModelPolicyReport(
         status="proposed",
-        tenant_id=tenant_id,
-        persona=persona,
-        principal_kind=principal_kind,
-        compatibility_class=compatibility_class,
+        posture=posture,
+        posture_verified=verified,
         requested_model_id=requested,
         resolved_model_id=resolved,
         resolution_source=source,
         snapshot_digest=digest,
         policy_revision=policy_revision,
         catalogue_revision=catalogue_revision,
+        snapshot_allowlist_policy_revision=snapshot_allowlist_revision,
+        live_allowlist_policy_revision=live_allowlist_revision,
+        allowlist_policy_drift=allowlist_drift,
         posture_revision=posture_revision,
+        assertion_key_id=key_id,
+    )
+
+
+def _unconsumable_report(
+    policy: object, *, reason: str, authenticated: bool = False
+) -> ModelPolicyReport:
+    """Build the report for a response that could not be consumed.
+
+    The outer ``posture`` is *not* signed.  Only the ``runtime_posture`` inside the
+    decision body is, so the outer value is evidence exactly when the assertion
+    over that body verified and the two agree.  ``authenticated`` says whether that
+    happened.
+
+    Salvaging the posture unconditionally, as an earlier revision did, inverted the
+    guarantee.  A signed ``enforcing`` decision whose unsigned outer posture read
+    ``report_only``, ``disabled``, absent or unrecognised produced a report with no
+    enforcement failure, and the run launched on its legacy model — a verification
+    failure converted into permission by the very field the failure proved
+    untrustworthy.  Anyone able to influence the response could strip enforcement
+    by editing one unsigned word.
+
+    So the posture is carried only when authenticated *and* coherent, and an
+    unauthenticated failure is marked :attr:`ModelPolicyReport.verification_failed`
+    instead, which refuses.  Refusing cannot itself be the unsafe direction: the
+    worst case is stopping a run the platform was only observing, which is visible
+    and recoverable, where the opposite is silent unenforced execution.
+    """
+    posture = policy.get("posture") if isinstance(policy, dict) else None
+    if posture not in MODEL_POLICY_POSTURES:
+        posture = None
+    if authenticated:
+        # The signed body is the authority; the unsigned outer value is believed
+        # only insofar as it matches it.  Disagreement means the response was
+        # assembled from mismatched parts, so neither half is evidence.
+        decision = policy.get("decision") if isinstance(policy, dict) else None
+        signed = decision.get("runtime_posture") if isinstance(decision, dict) else None
+        if posture is None or signed != posture:
+            authenticated = False
+            posture = None
+    return ModelPolicyReport(
+        status="unavailable",
+        posture=posture if authenticated else None,
+        # Never verified here by construction: a consumable decision is what failed.
+        posture_verified=False,
+        reason=reason,
+        verification_failed=not authenticated,
     )
 
 
@@ -219,6 +664,16 @@ class RunIdentitySession:
             raise RunIdentityError("agent authority endpoint is not configured")
         self._url = base + "/bootstrap"
         self._invocation_id = envelope["message_id"]
+        self._tenant_id = envelope.get("tenant_id")
+        correlation = envelope.get("correlation")
+        self._correlation_id = (
+            correlation.get("correlation_id") if isinstance(correlation, dict) else None
+        )
+        if not all(
+            isinstance(item, str) and item
+            for item in (self._invocation_id, self._tenant_id, self._correlation_id)
+        ):
+            raise RunIdentityError("protected model-policy binding unavailable")
         self._digest = hashlib.sha256(
             json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
         ).hexdigest()
@@ -228,7 +683,8 @@ class RunIdentitySession:
         self._write_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._attempt: int | None = None
-        self._model_policy_reported = False
+        self.pod_deadline_at: str | None = None
+        self._model_policy_seen = False
         self.model_policy_report: ModelPolicyReport | None = None
 
     def _request(self) -> dict:
@@ -239,13 +695,20 @@ class RunIdentitySession:
         if credentials is None:
             raise RunIdentityError("worker transport identity unavailable")
         data = json.dumps(
-            {"invocation_id": self._invocation_id, "envelope_digest": self._digest}
+            {
+                "invocation_id": self._invocation_id,
+                "envelope_digest": self._digest,
+            }
         ).encode()
         signed = botocore.awsrequest.AWSRequest(
             method="POST",
             url=self._url,
             data=data,
-            headers={"Content-Type": "application/json", WORKLOAD_HEADER: read_workload_token()},
+            headers={
+                "Content-Type": "application/json",
+                WORKLOAD_HEADER: read_workload_token(),
+                MODEL_POLICY_CONTRACT_HEADER: str(MODEL_POLICY_CONTRACT_VERSION),
+            },
         )
         botocore.auth.SigV4Auth(
             credentials.get_frozen_credentials(),
@@ -294,30 +757,69 @@ class RunIdentitySession:
         # until PMM-09 enables enforcement.  Reporting the ignored proposal is
         # intentional evidence; silently accepting or silently dropping it
         # would make mixed-version rollout impossible to audit.
-        if not self._model_policy_reported:
-            policy = result.get("model_policy")
-            # Absence is expected while an older gateway is still serving a
-            # mixed-version rollout.  Keep looking on refresh so a newly
-            # upgraded gateway can still emit comparison evidence.
-            if policy is not None:
-                try:
-                    self.model_policy_report = parse_model_policy_report(
-                        policy,
-                        invocation_id=self._invocation_id,
-                    )
-                except ValueError:
-                    self.model_policy_report = ModelPolicyReport(
-                        status="unavailable",
-                        reason="invalid_gateway_report",
-                    )
-                if self.model_policy_report.status == "proposed":
-                    logger.info("Model-policy decision received and ignored by report-only worker")
-                else:
-                    logger.warning(
-                        "Model-policy decision unavailable in report-only mode (reason=%s)",
-                        self.model_policy_report.reason,
-                    )
-                self._model_policy_reported = True
+        policy = result.get("model_policy")
+        # Absence is expected while an older gateway is still serving a
+        # mixed-version rollout.  Keep looking on refresh so a newly
+        # upgraded gateway can still emit comparison evidence.
+        if policy is not None:
+            try:
+                self.model_policy_report = parse_model_policy_report(
+                    policy,
+                    invocation_id=self._invocation_id,
+                    attempt=attempt,
+                    tenant_id=self._tenant_id,
+                    correlation_id=self._correlation_id,
+                    public_keys=load_model_policy_verification_keys(),
+                )
+            except ModelPolicyVerificationError as exc:
+                self.model_policy_report = _unconsumable_report(
+                    policy, reason=exc.reason, authenticated=exc.authenticated
+                )
+            except ValueError:
+                self.model_policy_report = _unconsumable_report(policy, reason="decision_malformed")
+            # The message must describe what actually happened. A report-only
+            # warning that implies the run was blocked before inference is a
+            # false statement about enforcement, and an operator reading it
+            # would conclude the gate works when nothing was gated.
+            report = self.model_policy_report
+            failure = report.enforcement_failure
+            if failure is not None and report.verification_failed:
+                # Truthful about the uncertainty: an unverifiable response does
+                # not establish that the platform was enforcing, so claiming it
+                # was would be as wrong as claiming it was not. What *is* known
+                # is that the posture cannot be determined, which is why the run
+                # stops.
+                logger.error(
+                    "Model-policy response could not be verified, so the live posture is "
+                    "unknown and may be enforcing; run must not proceed on its legacy "
+                    "model (reason=%s)",
+                    failure,
+                )
+            elif failure is not None:
+                logger.error(
+                    "Enforcing model policy cannot be satisfied; run must not proceed "
+                    "on its legacy model (reason=%s)",
+                    failure,
+                )
+            elif report.enforced:
+                logger.info("Enforcing model policy: launching on the gateway-decided model")
+            elif report.status == "proposed":
+                logger.info(
+                    "Model-policy decision received and recorded; posture=%s leaves the "
+                    "existing model assignment in effect (nothing was blocked)",
+                    report.posture or "unknown",
+                )
+            else:
+                logger.warning(
+                    "Model-policy decision unavailable (posture=%s, reason=%s); the "
+                    "existing model assignment stays in effect and no inference was "
+                    "blocked",
+                    report.posture or "unknown",
+                    report.reason,
+                )
+            self._model_policy_seen = True
+        elif self._model_policy_seen:
+            self.model_policy_report = _unconsumable_report(None, reason="decision_missing")
         with self._write_lock:
             if self._stop.is_set():
                 return
@@ -331,6 +833,15 @@ class RunIdentitySession:
             finally:
                 Path(temporary).unlink(missing_ok=True)
             self._attempt = attempt
+            # Lifecycle time comes from the gateway's verified Kubernetes Job,
+            # never from a TTL starting after clone/registration. Pin the first
+            # response so credential renewal cannot extend a running pause.
+            if self.pod_deadline_at is None:
+                try:
+                    deadline = _parse_timestamp(result.get("pod_deadline_at"))
+                    self.pod_deadline_at = deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
+                except (ValueError, TypeError, ModelPolicyVerificationError):
+                    self.pod_deadline_at = "1970-01-01T00:00:00Z"
 
     def start(self) -> None:
         deadline = time.monotonic() + 1800
@@ -343,6 +854,8 @@ class RunIdentitySession:
                     raise RunIdentityError("work ownership startup deadline exceeded") from None
                 logger.info("Authorized child is waiting for its parent to release work ownership")
         os.environ[CREDENTIAL_FILE_ENV] = str(self.credential_path)
+        os.environ["ADP_RUN_ATTEMPT"] = str(self._attempt)
+        os.environ["ADP_POD_DEADLINE_AT"] = self.pod_deadline_at or "1970-01-01T00:00:00Z"
         self._thread = threading.Thread(
             target=self._renew, name="adp-run-identity-refresh", daemon=True
         )

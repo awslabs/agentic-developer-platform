@@ -33,11 +33,28 @@ from pathlib import Path
 
 import boto3
 
+from lib.amendment_input import (
+    AMENDMENT_BASE_PATH_ENV,
+    AuthoringInputError,
+    materialize_authoring_input,
+)
 from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
-from lib.engine_registration import draft_registration_note
+from lib.engine_registration import (
+    AMENDMENT_BASE_HASH_ENV,
+    AMENDMENT_BASE_VERSION_ENV,
+    AMENDMENT_OUTPUT_PATH_ENV,
+    AMENDMENT_REQUEST_ENV,
+    AMENDMENT_REQUEST_TEXT_ENV,
+    FLOW_ID_ENV,
+    amendment_artifact_path,
+    amendment_registration_note,
+    draft_registration_note,
+)
+from lib.handoff_client import HANDOFF_EXPECT_ENV, HANDOFF_REQUIRED_ENV
+from lib.handoff_client import handoff_note as delivery_handoff_note
 from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
 from lib.pr_binding import binding_note as pr_binding_note
 from lib.invocation_completion import (
@@ -63,6 +80,8 @@ WORK_DIR = Path("/work/repo")
 PERSONAS_DIR = Path("/app/personas")
 SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
+CODEX_REVIEWER_BINARY = "/app/codex-reviewer/dist/index.js"
+CODEX_PERSONA_PREFIX = "agent-codex-"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
@@ -124,6 +143,26 @@ PERSONAS_REGISTERING_DRAFTS = frozenset({"aidlc"})
 _STS_TAG_FORBIDDEN = re.compile(r"[^A-Za-z0-9_.:/=+\-@]")
 
 
+def persona_runtime(persona: str) -> str:
+    """Select the model runtime from the trusted persona name only."""
+    if persona.startswith(CODEX_PERSONA_PREFIX) and len(persona) > len(CODEX_PERSONA_PREFIX):
+        return "codex"
+    return "claude"
+
+
+def worker_command(persona: str) -> list[str]:
+    """Return the packaged adapter command for a persona.
+
+    New Codex personas extend this one allow-list without changing the queue
+    contract, KEDA resources, or container image.
+    """
+    if persona_runtime(persona) == "claude":
+        return ["node", AGENT_BINARY]
+    if persona == "agent-codex-reviewer":
+        return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
+    raise ValueError(f"Codex persona is not packaged yet: {persona}")
+
+
 def _sanitize_for_sts_tag(value: str) -> str:
     return _STS_TAG_FORBIDDEN.sub("_", value)
 
@@ -140,7 +179,9 @@ ADP_GH_TOKEN_BROKER_ENV = "ADP_GH_TOKEN_BROKER_ENABLED"
 def _gh_token_broker_enabled(environ: dict | None = None) -> bool:
     """Return True when the GitHub-token gatekeeper is enabled (issue #4272)."""
     env = environ if environ is not None else os.environ
-    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
+    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(
+        ADP_GH_TOKEN_BROKER_ENV, ""
+    ).lower() in ("1", "true", "yes")
 
 
 # --- Issue #5223: mediated GitHub operations -----------------------------------
@@ -373,9 +414,11 @@ def _resolve_execution_token(
     Raises:
         RuntimeError: If PAT resolution or validation fails (no App fallback).
     """
-    pat_execution_enabled = environ.get(
-        "ADP_PAT_EXECUTION_ENABLED", ""
-    ).lower() in ("1", "true", "yes")
+    pat_execution_enabled = environ.get("ADP_PAT_EXECUTION_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     token_source = envelope.get("token_source")
 
     # Not enabled or not PAT → App path
@@ -419,8 +462,7 @@ def _resolve_execution_token(
             bootstrap_log.step_error(2, "pat_resolve", exc)
             bootstrap_log.close()
         raise RuntimeError(
-            "PAT mode requested (token_source=pat) but credential "
-            f"resolution failed: {exc}"
+            f"PAT mode requested (token_source=pat) but credential resolution failed: {exc}"
         ) from exc
 
     if bootstrap_log:
@@ -468,13 +510,9 @@ def _resolve_execution_token(
         raise err from exc
 
     if bootstrap_log:
-        bootstrap_log.step_success(
-            3, "pat_validate", github_login=github_login
-        )
+        bootstrap_log.step_success(3, "pat_validate", github_login=github_login)
 
-    return PatResolutionResult(
-        token_mode="pat", token=pat_token, github_login=github_login
-    )
+    return PatResolutionResult(token_mode="pat", token=pat_token, github_login=github_login)
 
 
 def parse_envelope(raw: str) -> dict:
@@ -506,6 +544,11 @@ def _receive_one_message(queue_url: str, region: str):
     receive semantics; for single-message-at-a-time processing the defaults
     are fine.
     """
+    if authority_enabled():
+        from lib.task_gateway_client import own_task
+
+        body = own_task()
+        return body, "run-bound-task" if body is not None else None
     sqs = boto3.client("sqs", region_name=region)
     resp = sqs.receive_message(
         QueueUrl=queue_url,
@@ -523,6 +566,11 @@ def _receive_one_message(queue_url: str, region: str):
 
 def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
     """Ack-by-delete so the message doesn't come back after visibility timeout."""
+    if authority_enabled():
+        from lib.task_gateway_client import acknowledge_task
+
+        acknowledge_task()
+        return
     boto3.client("sqs", region_name=region).delete_message(
         QueueUrl=queue_url,
         ReceiptHandle=receipt_handle,
@@ -590,17 +638,25 @@ class VisibilityHeartbeat:
         """Heartbeat loop: sleep for interval, then extend visibility."""
         # Create a per-thread SQS client (boto3 clients are not thread-safe).
         try:
-            sqs = boto3.client("sqs", region_name=self._region)
+            if authority_enabled():
+                from lib.task_gateway_client import heartbeat_task
+
+                extend = heartbeat_task
+            else:
+                sqs = boto3.client("sqs", region_name=self._region)
+
+                def extend():
+                    return sqs.change_message_visibility(
+                        QueueUrl=self._queue_url,
+                        ReceiptHandle=self._receipt_handle,
+                        VisibilityTimeout=HEARTBEAT_EXTEND,
+                    )
         except Exception as exc:
             logger.warning("Heartbeat: failed to create SQS client: %s", exc)
             return
         while not self._stop_event.wait(timeout=HEARTBEAT_INTERVAL):
             try:
-                sqs.change_message_visibility(
-                    QueueUrl=self._queue_url,
-                    ReceiptHandle=self._receipt_handle,
-                    VisibilityTimeout=HEARTBEAT_EXTEND,
-                )
+                extend()
                 self._extensions += 1
                 self._consecutive_failures = 0
                 logger.debug("Heartbeat extended visibility (extensions=%d)", self._extensions)
@@ -769,6 +825,7 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     labeled fallback; never describe that potentially clipped record as full.
     Each read is best-effort so one missing artifact cannot hide the other.
     """
+
     def read(name: str) -> str:
         try:
             with open(os.path.join(directory, name), "r", encoding="utf-8") as fh:
@@ -783,10 +840,14 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     transcript_text = read("adp-run-transcript.md")
     if not transcript_text.strip():
         transcript_text = (
-            "_Archive source: GitHub display fallback. The independent explanation "
-            "transcript was unavailable; this record may be truncated or incomplete._\n\n"
-            + github_text
-        ) if github_text else ""
+            (
+                "_Archive source: GitHub display fallback. The independent explanation "
+                "transcript was unavailable; this record may be truncated or incomplete._\n\n"
+                + github_text
+            )
+            if github_text
+            else ""
+        )
     return github_text, transcript_text
 
 
@@ -803,6 +864,16 @@ def _upload_transcript_to_s3(
     un-applied accounts) or if final_text is empty. Failures are logged but
     NEVER affect pod exit code — same contract as check-run finalize.
     """
+    from lib.status_gateway_client import authority_enabled, upload_transcript
+
+    if authority_enabled():
+        if not final_text:
+            return None
+        try:
+            return upload_transcript(final_text)
+        except Exception:
+            logger.warning("Own-run transcript upload unavailable (non-fatal; maximum 8 MiB)")
+            return None
     bucket = os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
     if not bucket or not final_text:
         return None
@@ -830,7 +901,12 @@ def _upload_transcript_to_s3(
             Body=final_text.encode("utf-8"),
             ContentType="text/markdown",
         )
-        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text.encode("utf-8")))
+        logger.info(
+            "Transcript uploaded to s3://%s/%s (%d bytes)",
+            bucket,
+            key,
+            len(final_text.encode("utf-8")),
+        )
         return key
     except Exception as exc:
         logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
@@ -1131,9 +1207,211 @@ def _checkout_existing_work_branch(branch: str) -> None:
     run_cmd(["git", "checkout", branch], cwd=WORK_DIR)
 
 
+def _export_authoring_assignment(envelope: dict) -> None:
+    """Export this run's plan-amendment assignment and brief, or clear any stale one.
+
+    Issue #4529. When the engine commissions a run to amend a plan (a verified human
+    commented `replan:`), `authoring_dispatch._build_envelope` writes an `orchestration`
+    block naming the flow and the request. Two things are exported from it:
+
+    * **The assignment** — `flow_id` and `request_id`. These are the *authorization* for
+      the amendment route, not parameters to it: the server refuses unless the presented
+      `X-Agent-RunId` equals the `author_run_id` it bound to that request. The finish
+      path reads them via `engine_registration.authoring_assignment`.
+    * **The brief** — the human's request text, the base plan revision, and the path to
+      write the authored amendment to. The assignment says *which* job this is; the brief
+      says what the job *is*. Review of this story's first cut found the consequence of
+      omitting it: the artifact path had a consumer and no producer, so a correctly
+      summoned and correctly authorized author received two opaque identifiers and would
+      have followed its ordinary planning instructions — opening a flow nobody asked for,
+      stopping at a gate, filing nothing — while the request stayed recorded and owed.
+
+    Everything comes from the dispatch envelope and nowhere else. Taking any of it from
+    somewhere the model can reach (the issue body, a tool result, the repository) would
+    hand the agent the ability to name its own assignment.
+
+    Both-or-neither on the id pair, and absent for every other kind of run: a webhook
+    trigger, a code-story dispatch and a new-flow authoring run carry no `request_id`,
+    and their behaviour stays byte-identical to before this story.
+
+    **The no-assignment branch DELETES rather than leaving alone.** "Was it in the
+    environment already?" is not a question this process can answer safely — a value
+    planted by an earlier step, a pod spec or a reused process would otherwise be
+    inherited by a run that was never bound to it, and the registration client reads
+    exactly these names with no envelope of its own to cross-check against. Deleting
+    makes the envelope the only source in both directions. The brief is cleared on the
+    same branch for a sharper reason: a stale *id* is checked by the server and refused,
+    but a stale *instruction* ("amend this plan, here is what the human asked, write it
+    here") is simply followed, by a run nobody asked to amend anything.
+
+    Extracted from `main()` rather than inlined so the shape guards below are reachable
+    by a direct test. `main()` crashes earlier on a truthy non-dict `payload` (a
+    pre-existing defect on `origin/main` at its GitLab provider detection), so a
+    whole-run probe cannot prove this function tolerates one.
+    """
+    os.environ.pop(AMENDMENT_BASE_PATH_ENV, None)
+    orchestration_ctx = envelope.get("orchestration") or {}
+    amend_flow_id = amend_request_id = ""
+    if isinstance(orchestration_ctx, dict):
+        amend_flow_id = str(orchestration_ctx.get("flow_id") or "").strip()
+        amend_request_id = str(orchestration_ctx.get("request_id") or "").strip()
+
+    if not (amend_flow_id and amend_request_id):
+        # A node dispatch also has an `orchestration` block, with `node_id`/`attempt` and
+        # no `request_id` — hence the pair test rather than a `flow_id` test, which would
+        # export a flow for runs commissioned to amend nothing.
+        for stale in (
+            FLOW_ID_ENV,
+            AMENDMENT_REQUEST_ENV,
+            AMENDMENT_REQUEST_TEXT_ENV,
+            AMENDMENT_BASE_VERSION_ENV,
+            AMENDMENT_BASE_HASH_ENV,
+            AMENDMENT_OUTPUT_PATH_ENV,
+        ):
+            os.environ.pop(stale, None)
+        return
+
+    os.environ[FLOW_ID_ENV] = amend_flow_id
+    os.environ[AMENDMENT_REQUEST_ENV] = amend_request_id
+
+    # `payload.replan_request` is the human's words as the server stored them, already
+    # capped at `github_commands.REPLAN_TEXT_MAX_LEN` (2000) by the command parser. Not
+    # re-capped here: one cap applied twice with different limits is how the two halves
+    # of a contract drift apart.
+    #
+    # Each brief field is exported only when non-empty, so a field the server omitted is
+    # absent rather than present-and-blank. The instructions branch on the output path's
+    # presence, and a blank value would read as "write to nowhere". An empty `replan:` is
+    # a legitimate request — the human asked for a re-plan without saying what to change
+    # — and its absent text means the author works from the plan alone.
+    payload = envelope.get("payload") or {}
+    request_text = ""
+    if isinstance(payload, dict):
+        request_text = str(payload.get("replan_request") or "").strip()
+    for env_name, raw in (
+        (AMENDMENT_REQUEST_TEXT_ENV, request_text),
+        # The base revision comes from the same server-written block as the ids: the
+        # author amends what the human was looking at, not whatever a fresh read would
+        # return now.
+        (AMENDMENT_BASE_VERSION_ENV, orchestration_ctx.get("base_plan_version")),
+        (AMENDMENT_BASE_HASH_ENV, orchestration_ctx.get("base_plan_hash")),
+    ):
+        value = str(raw).strip() if raw is not None else ""
+        if value:
+            os.environ[env_name] = value
+        else:
+            os.environ.pop(env_name, None)
+
+    # Composed with the same helper `register_amendment_proposal` loads from, so the
+    # instruction the author follows and the file the client opens cannot diverge.
+    os.environ[AMENDMENT_OUTPUT_PATH_ENV] = str(amendment_artifact_path(WORK_DIR, amend_request_id))
+    logger.info(
+        "Authoring assignment: flow=%s request=%s base_version=%s",
+        amend_flow_id,
+        amend_request_id,
+        os.environ.get(AMENDMENT_BASE_VERSION_ENV, "(absent)"),
+    )
+
+
+def _work_branch_is_disposable(branch: str) -> bool:
+    """Prove that cleanup would discard only empty commits or review transcripts.
+
+    Inspect every unmerged commit, not just the final diff: code subsequently
+    reverted is still committed work. Incomplete history and read failures must
+    preserve the branch. This deliberately does not use the PR-suppression
+    helper below, whose shallow, net-diff test is insufficient for deletion.
+    """
+    try:
+        if run_cmd(["git", "status", "--porcelain"], cwd=WORK_DIR).stdout.strip():
+            return False
+        head = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        remote = run_cmd(
+            ["git", "rev-parse", f"refs/remotes/origin/{branch}"], cwd=WORK_DIR
+        ).stdout.strip()
+        if head != remote:
+            return False  # Never reset an unpublished local checkpoint.
+        fetch = ["git", "fetch"]
+        if (
+            run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=WORK_DIR).stdout.strip()
+            == "true"
+        ):
+            fetch.append("--unshallow")
+        run_cmd([*fetch, "origin", "refs/heads/main:refs/remotes/origin/main"], cwd=WORK_DIR)
+        if (
+            run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=WORK_DIR).stdout.strip()
+            != "false"
+        ):
+            return False
+        revision_range = f"origin/main..{head}"
+        # Merges can carry conflict resolutions not represented by log's default
+        # per-commit diff. Preserve them rather than guessing about disposability.
+        if run_cmd(
+            ["git", "rev-list", "--min-parents=2", revision_range], cwd=WORK_DIR
+        ).stdout.strip():
+            return False
+        changed = run_cmd(
+            ["git", "log", "--format=", "--name-only", "-z", revision_range], cwd=WORK_DIR
+        ).stdout
+        files = [path for path in changed.split("\0") if path]
+        return all(path.startswith("data/code-review/") for path in files)
+    except (subprocess.CalledProcessError, OSError):
+        logger.warning("Could not prove branch %s disposable; preserving it", branch)
+        return False
+
+
+def _reuse_work_branch(branch: str, *, allow_cleanup: bool, persona: str, issue: int) -> None:
+    """Adopt the existing head, or replace disposable work behind a recovery ref.
+
+    A leased replacement avoids the delete/recreate gap and rejects any writer
+    racing bootstrap. No empty WIP commit is added to an adopted head (#5381).
+    """
+    _checkout_existing_work_branch(branch)
+    if not allow_cleanup or not _work_branch_is_disposable(branch):
+        logger.info("Preserving existing work branch %s without a WIP push", branch)
+        return
+    old_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+    recovery_ref = f"refs/heads/recovery/{branch.replace('/', '-')}-{old_sha}"
+    run_cmd(["git", "push", "origin", f"{old_sha}:{recovery_ref}"], cwd=WORK_DIR)
+    saved = (
+        run_cmd(["git", "ls-remote", "--exit-code", "--refs", "origin", recovery_ref], cwd=WORK_DIR)
+        .stdout.strip()
+        .split()
+    )
+    if saved != [old_sha, recovery_ref]:
+        raise RuntimeError(f"Recovery ref for {branch} did not verify; refusing cleanup")
+    run_cmd(["git", "reset", "--hard", "origin/main"], cwd=WORK_DIR)
+    run_cmd(
+        ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
+        cwd=WORK_DIR,
+    )
+    run_cmd(
+        [
+            "git",
+            "push",
+            f"--force-with-lease=refs/heads/{branch}:{old_sha}",
+            "origin",
+            f"HEAD:refs/heads/{branch}",
+        ],
+        cwd=WORK_DIR,
+    )
+    logger.info("Reset disposable branch %s; prior work retained at %s", branch, recovery_ref)
+
+
 def main() -> int:
+    if authority_enabled():
+        # Lease starts at task assignment, before clone/bootstrap/model startup.
+        # Always stop it on early refusal as well as normal harness termination.
+        heartbeat = VisibilityHeartbeat("", os.environ.get("AWS_REGION", "us-east-1"), "")
+        try:
+            return _main(task_heartbeat=heartbeat)
+        finally:
+            heartbeat.stop()
+    return _main()
+
+
+def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     queue_url = os.environ.get("QUEUE_URL")
-    if not queue_url:
+    if not queue_url and task_heartbeat is None:
         logger.error("QUEUE_URL env var is not set")
         return 1
     region = os.environ.get("AWS_REGION", "us-east-1")
@@ -1144,6 +1422,9 @@ def main() -> int:
         # receive. Exit clean (not an error — KEDA will handle scaling).
         logger.info("No message available after long-poll; exiting cleanly")
         return 0
+
+    if task_heartbeat is not None:
+        task_heartbeat.start()
 
     # --- Bootstrap Logger: initialized after first parse to get correlation_id ---
     # We do a lightweight pre-parse to extract correlation_id before the full
@@ -1179,6 +1460,11 @@ def main() -> int:
         raise
     tenant_id = envelope["tenant_id"]
     persona = envelope["persona"]
+    runtime = persona_runtime(persona)
+    is_codex_review = persona == "agent-codex-reviewer"
+    is_codex_pr_review = is_codex_review and isinstance(
+        (envelope.get("payload") or {}).get("pull_request"), dict
+    )
     source = envelope["source_ref"]
     installation_id = source["installation_id"]
     repo = source["repo"]
@@ -1236,28 +1522,33 @@ def main() -> int:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
 
-    # AIDLC can merge an intermediate gate and continue on the same branch.
-    # Legacy workers therefore deduplicate this exact delivery, not the branch.
+    # AIDLC can merge an intermediate gate and continue on the same branch, and
+    # a Codex issue review has no branch/PR terminal state. Legacy workers
+    # therefore deduplicate these paths by exact delivery, not by branch.
     # Do this before credentials, repository work or any in_progress write that
     # could overwrite an older worker's completed status. Protected dispatch
     # already binds/retires attempts and must not fall back to direct table I/O.
-    use_completion_receipt = persona in PERSONAS_EXTENDING_BRANCH and not authority_enabled()
+    use_completion_receipt = (
+        persona in PERSONAS_EXTENDING_BRANCH or (is_codex_review and not is_codex_pr_review)
+    ) and not authority_enabled()
     if use_completion_receipt:
         try:
             already_completed = is_delivery_completed(envelope)
         except InvocationCompletionError as exc:
-            logger.error("AIDLC delivery deferred: %s", exc)
+            logger.error("Delivery deferred: %s", exc)
             bootstrap_log.close()
             return AGENT_EXIT_RETRYABLE
         if already_completed:
-            logger.info("AIDLC delivery %s was already completed; acknowledging redelivery", message_id)
+            logger.info("Delivery %s was already completed; acknowledging redelivery", message_id)
             bootstrap_log.close()
             # Keep the existing outcome intact: a redelivery is not a new
             # invocation and must not overwrite complete with skipped.
             try:
                 _delete_message(queue_url, region, receipt_handle)
             except Exception:
-                logger.warning("Could not acknowledge completed AIDLC delivery; leaving it for retry")
+                logger.warning(
+                    "Could not acknowledge completed AIDLC delivery; leaving it for retry"
+                )
                 return AGENT_EXIT_RETRYABLE
             return 0
 
@@ -1312,6 +1603,35 @@ def main() -> int:
     # trigger, or a legacy dispatch) must keep its existing behaviour exactly.
     if envelope.get("pr_binding_required") is True:
         os.environ[PR_BINDING_REQUIRED_ENV] = "true"
+
+    # Issue #4529: export this run's authoring assignment and brief. See the helper.
+    _export_authoring_assignment(envelope)
+    try:
+        base_path = materialize_authoring_input(envelope)
+        if base_path is not None:
+            os.environ[AMENDMENT_BASE_PATH_ENV] = base_path
+    except AuthoringInputError as exc:
+        bootstrap_log.step_error(1, "amendment_base_input", exc)
+        _fail_bootstrap_status(message_id, arrived_at, str(exc))
+        bootstrap_log.close()
+        return 1
+
+    # Issue #5144: the engine marks a dispatch whose delivery must produce a durable
+    # continuation receipt before this run's exit counts for anything. Same shape and
+    # same reasoning as the marker above: trusted dispatch envelope only, and never
+    # defaulted on, so a webhook trigger or a legacy dispatch keeps its existing
+    # behaviour exactly. The worker does not get to decide that it owes a handoff.
+    if envelope.get("handoff_required") is True:
+        os.environ[HANDOFF_REQUIRED_ENV] = "true"
+        # The fences this dispatch was admitted under. The worker compares the
+        # gateway's receipt against them so an acceptance for *some other* run — a
+        # different cycle, a superseded ownership generation, another tenant's node —
+        # cannot be reported as this run's handoff. Trusted dispatch envelope only,
+        # exactly like the marker above; the worker never authors these, and the
+        # gateway never reads authority back from them.
+        expect = envelope.get("handoff_expect")
+        if isinstance(expect, dict):
+            os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
@@ -1533,7 +1853,8 @@ def main() -> int:
     # the gateway's admission, never from the message. Same reasoning as the
     # aidlc/authority carve-out at the completion receipt above.
     if (
-        persona not in PERSONAS_EXTENDING_BRANCH
+        not is_codex_review
+        and persona not in PERSONAS_EXTENDING_BRANCH
         and not _invocation_identity_decides_replay(envelope)
         and _already_completed(repo, issue, token, mediated=_mediated_run)
     ):
@@ -1578,7 +1899,79 @@ def main() -> int:
         "ANTHROPIC_MODEL", "global.anthropic.claude-opus-5"
     )
 
+    # PMM-07: under a verified ``enforcing`` posture the gateway's decision — not
+    # the envelope or the pod default — is what this run must launch on, and an
+    # enforcing posture the gateway could not satisfy must stop the run here,
+    # before any harness starts. Under ``disabled``/``report_only`` the legacy
+    # assignment above is preserved byte for byte.
+    #
+    # The posture is read from the verified gateway report, never from
+    # ``ADP_MODEL_POLICY_*`` in the environment: those are telemetry this process
+    # writes, and anything in the pod could set them.
+    policy_report = run_identity.model_policy_report if run_identity is not None else None
+    # Captured before any substitution.  PMM-08 attribution requires the legacy
+    # (pre-policy) assignment, the proposed model and the model actually executed
+    # to stay separately recoverable; passing the already-enforced value as the
+    # "legacy" one would make ``ADP_MODEL_POLICY_MATCH`` trivially true and erase
+    # the very difference the enforcement is being measured by.
+    legacy_model = effective_model
+    if policy_report is not None:
+        enforcement_failure = policy_report.enforcement_failure
+        if enforcement_failure is not None:
+            # Deliberately not a fallback to ``effective_model``: an enforcing
+            # failure that becomes report-only behaviour by exception handling is
+            # the bypass PMM-07 must make impossible. Failing the run is the only
+            # honest outcome, and the status says the model policy stopped it
+            # rather than blaming the agent.
+            logger.error(
+                "Refusing to launch: model policy could not be satisfied (reason=%s, "
+                "posture_determined=%s)",
+                enforcement_failure,
+                not policy_report.verification_failed,
+            )
+            bootstrap_log.step_error(
+                4,
+                "set_env",
+                RuntimeError(f"model policy unsatisfied: {enforcement_failure}"),
+            )
+            # The requester's message states what actually happened: the run was
+            # stopped before any inference, by policy. It must not be phrased as
+            # an agent failure, and a report-only run must never produce this
+            # message at all, since nothing is blocked there.
+            #
+            # Two distinct causes, told apart because they are not the same fact and
+            # a requester acts differently on each. An unverifiable response does not
+            # establish that enforcement was on -- only that the platform's answer
+            # could not be trusted to say -- so asserting "the platform is enforcing"
+            # there would be a claim the control flow does not support.
+            if policy_report.verification_failed:
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    "the gateway's agent model-policy response could not be verified, so the "
+                    "platform could not confirm whether a model policy is being enforced for "
+                    f"this run ({enforcement_failure}); the run was stopped before the agent "
+                    "started and no model was invoked",
+                )
+            else:
+                _fail_bootstrap_status(
+                    message_id,
+                    arrived_at,
+                    "the platform is enforcing an agent model policy and the gateway could not "
+                    f"authorize a model for this run ({enforcement_failure}); the run was "
+                    "stopped before the agent started and no model was invoked",
+                )
+            bootstrap_log.close()
+            return 1
+        # Bootstrap can precede the SDK launch by minutes of repository setup.
+        # Preserve the legacy input here; the SDK boundary obtains a fresh,
+        # challenge-bound decision and applies enforcement there. Otherwise an
+        # enforcing bootstrap would become the "legacy" model after rollback.
+
     env_vars = {
+        # Reporting context for fresh SDK admission events; never authorization.
+        "ADP_DISPATCH_CHANNEL": str(envelope.get("channel") or "unknown")[:64],
+        "ADP_DISPATCH_TRIGGER": str(envelope.get("intent", {}).get("trigger") or "unknown")[:64],
         "GITHUB_TOKEN": token,
         "GH_TOKEN": token,
         "GIT_ASKPASS": "/usr/local/bin/git-askpass-helper",
@@ -1593,23 +1986,17 @@ def main() -> int:
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": effective_model,
     }
-    # PMM-07 report-only evidence.  This deliberately does not feed
-    # ``effective_model``: PMM-09 owns the enforcing flip after every runtime
-    # path and live admission gate is proven.  Older gateways/workers simply
-    # omit these comparison fields during the mixed-version rollout.
-    if run_identity is not None and run_identity.model_policy_report is not None:
-        model_policy_report = run_identity.model_policy_report
-        env_vars.update(model_policy_report.environment(effective_model))
-        shadow_event = model_policy_report.shadow_event(
-            effective_model,
-            invocation_id=message_id,
-            channel=str(envelope.get("channel") or "unknown")[:64],
-            trigger=str(envelope.get("intent", {}).get("trigger") or "unknown")[:64],
-        )
-        if shadow_event is not None:
-            # One-line JSON is intentionally queryable in CloudWatch. It contains
-            # canonical policy facts but no bearer credential or model output.
-            logger.info("PMM09_MODEL_SHADOW %s", json.dumps(shadow_event, sort_keys=True, separators=(",", ":")))
+    # PMM-07 attribution evidence.  These variables describe what happened; they
+    # are never an input, and the block above deliberately reads the posture from
+    # the verified report rather than from here.  ``legacy_model`` (not
+    # ``effective_model``) is passed so the pre-policy assignment stays visible
+    # even when enforcement replaced it -- that difference is the measurement.
+    # Older gateways/workers simply omit these fields during the mixed-version
+    # rollout, which is why nothing downstream may require them.
+    if policy_report is not None:
+        env_vars.update(policy_report.environment(legacy_model))
+        env_vars["ADP_MODEL_POLICY_ENFORCED"] = "false"
+        env_vars["ADP_MODEL_POLICY_EXECUTION_PENDING"] = "true"
 
     # Issue #5223: in mediated mode there is no token, so exporting these would
     # publish empty strings as if they were credentials. Removed rather than left
@@ -1641,7 +2028,14 @@ def main() -> int:
     # side adopts the env GITHUB_TOKEN as-is.
     elif _token_mode == "pat":
         env_vars["ADP_TOKEN_MODE"] = "pat"
-        for key in ("GH_APP_ID", "GH_APP_PRIVATE_KEY", "GH_APP_KEY", "GH_APP_INSTALLATION_ID", "GH_APP_TOKEN", "GH_APP_TOKEN_EXPIRES_AT"):
+        for key in (
+            "GH_APP_ID",
+            "GH_APP_PRIVATE_KEY",
+            "GH_APP_KEY",
+            "GH_APP_INSTALLATION_ID",
+            "GH_APP_TOKEN",
+            "GH_APP_TOKEN_EXPIRES_AT",
+        ):
             os.environ.pop(key, None)
         # Write PAT to the askpass token file so git-askpass-helper reads it.
         # TokenManager won't overwrite since it has no app credentials.
@@ -1837,33 +2231,75 @@ def main() -> int:
     bootstrap_log.step_success(6, "git_config")
 
     # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec
-    bootstrap_log.step_start(7, "wip_branch", branch=f"agent/issue-{issue}")
-    # Create or reset the agent branch + WIP commit BEFORE exec so that:
-    #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
-    #   2. Users see a "WIP" commit immediately on the branch.
-    #   3. Real agent commits stack cleanly on top.
-    #
-    # Branch convention `agent/issue-NNN` is fixed (A4 auto-merge, reviewer
-    # workflows, operators all rely on it). When this issue has been worked
-    # before — typically architect-then-developer in sequence — the remote
-    # branch already exists. Two cases:
-    #
-    #   (a) Stale branch, no open PR:  prior architect/developer run created
-    #       a WIP commit but no PR shipped. Force-reset to current main so
-    #       this run starts clean. Otherwise the agent's `git fetch`+`merge`
-    #       pulls in everything that landed on main since the prior run,
-    #       inflating the eventual PR diff with already-merged work.
-    #
-    #   (b) Branch with an open PR:  operator may be iterating, or an
-    #       earlier architect run shipped a PR (rare). Don't force-reset —
-    #       extend the existing branch so the PR's review state is preserved.
-    #
-    # SQS FIFO MessageGroupId=tenant#repo#issue serializes runs on the same
-    # issue, so concurrent-run race conditions don't apply here.
-    branch_name = f"agent/issue-{issue}"
+    review_head_ref = (
+        ((envelope.get("payload") or {}).get("pull_request") or {}).get("head") or {}
+    ).get("ref")
+    branch_name = (
+        review_head_ref
+        if is_codex_pr_review
+        else ("default-branch" if is_codex_review else f"agent/issue-{issue}")
+    )
+    bootstrap_log.step_start(7, "wip_branch", branch=branch_name)
+    # Attach checks to the work branch. Existing substantive work and open PR
+    # heads are adopted without a cosmetic commit. Only proven empty/transcript
+    # branches may be reset, after saving and verifying their recovery ref.
+    # The reset uses an exact lease: FIFO does not fence other GitHub writers.
     wip_sha: str = ""
     work_branch_ready = False
-    if _mediated_run:
+    if is_codex_review:
+        if _mediated_run:
+            raise RuntimeError(
+                "agent-codex-reviewer requires the default GitHub token; "
+                "mediated comment/push support is not configured"
+            )
+        if is_codex_pr_review:
+            if not isinstance(branch_name, str) or not branch_name:
+                raise RuntimeError("agent-codex-reviewer envelope has no PR head branch")
+            expected_review_sha = str(source.get("sha") or "")
+            _checkout_existing_work_branch(branch_name)
+            actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+            if actual_review_sha != expected_review_sha:
+                if all(
+                    re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)
+                    for sha in (expected_review_sha, actual_review_sha)
+                ):
+                    # An obsolete PR event cannot review a newer revision. Retrying
+                    # it holds the PR's FIFO group through every visibility timeout,
+                    # preventing the queued current-head review from starting.
+                    summary = json.dumps(
+                        {
+                            "status": "stale",
+                            "expected": expected_review_sha,
+                            "actual": actual_review_sha,
+                        }
+                    )
+                    update_invocation_status(
+                        message_id,
+                        arrived_at,
+                        "skipped",
+                        summary=summary,
+                        skip_reason="stale_review_head",
+                    )
+                    bootstrap_log.step_success(7, "stale_review_head", summary=summary)
+                    bootstrap_log.close()
+                    _delete_message(queue_url, region, receipt_handle)
+                    logger.info("Obsolete PR review acknowledged without executing a review")
+                    return 0
+                raise RuntimeError(
+                    f"review head changed before checkout: expected {expected_review_sha}, "
+                    f"found {actual_review_sha}"
+                )
+            bootstrap_step = "review_branch"
+        else:
+            branch_name = (
+                run_cmd(["git", "branch", "--show-current"], cwd=WORK_DIR).stdout.strip() or "HEAD"
+            )
+            actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+            bootstrap_step = "issue_review_base"
+        work_branch_ready = True
+        wip_sha = actual_review_sha
+        bootstrap_log.step_success(7, bootstrap_step, sha=wip_sha[:7])
+    elif _mediated_run:
         # Issue #5223: every provider step below — `ls-remote`, `gh pr list`,
         # `push --delete`, `push -u` — authenticates with the installation token a
         # mediated run does not have. None of them is needed here:
@@ -1901,6 +2337,8 @@ def main() -> int:
                 text=True,
                 check=False,
             )
+            if remote_check.returncode not in (0, 2):
+                raise RuntimeError(f"Could not determine whether work branch {branch_name} exists")
             remote_branch_exists = remote_check.returncode == 0
 
             if remote_branch_exists:
@@ -1929,53 +2367,37 @@ def main() -> int:
                 )
                 has_open_pr = bool(open_pr_check.stdout.strip())
 
-                if has_open_pr:
-                    # (b) Extend the existing branch — preserve the PR's review state.
-                    logger.info(
-                        "Branch %s exists with open PR; extending instead of resetting",
-                        branch_name,
-                    )
-                    _checkout_existing_work_branch(branch_name)
-                elif persona in PERSONAS_EXTENDING_BRANCH:
-                    # (a-aidlc) AIDLC stages commit artifacts sequentially on one
-                    # branch without opening a PR until the end. Never delete the
-                    # remote branch — fetch + extend so prior stage commits survive.
-                    # Issue #3430.
-                    logger.info(
-                        "Branch %s exists with no open PR; persona=%s is in "
-                        "PERSONAS_EXTENDING_BRANCH — extending instead of resetting",
-                        branch_name,
-                        persona,
-                    )
-                    _checkout_existing_work_branch(branch_name)
-                else:
-                    # (a) Stale branch, no PR — delete it and start fresh from main.
-                    logger.info(
-                        "Branch %s exists with no open PR; resetting from main",
-                        branch_name,
-                    )
-                    subprocess.run(
-                        ["git", "push", "--delete", "origin", branch_name],
-                        cwd=WORK_DIR,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+                _reuse_work_branch(
+                    branch_name,
+                    allow_cleanup=(
+                        open_pr_check.returncode == 0
+                        and not has_open_pr
+                        and persona not in PERSONAS_EXTENDING_BRANCH
+                    ),
+                    persona=persona,
+                    issue=issue,
+                )
             else:
                 # First run on this issue — clean creation
                 run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
 
             work_branch_ready = True
-            run_cmd(
-                ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
-                cwd=WORK_DIR,
-            )
-            run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
+            if not remote_branch_exists:
+                run_cmd(
+                    [
+                        "git",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        f"WIP: agent/{persona} starting #{issue}",
+                    ],
+                    cwd=WORK_DIR,
+                )
+                run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
             sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
             wip_sha = sha_result.stdout.strip()
             bootstrap_log.step_success(7, "wip_branch", sha=wip_sha[:7])
-            logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
+            logger.info("Work branch %s ready; sha=%s", branch_name, wip_sha[:7])
         except Exception as exc:
             bootstrap_log.step_error(7, "wip_branch", exc)
             # Never launch the model on main after a failed branch checkout. A WIP
@@ -2013,7 +2435,7 @@ def main() -> int:
             "Mediated mode: no GitHub check run is created (no checks:write credential); "
             "run status is reported through the authority transport instead"
         )
-    elif wip_sha:
+    elif wip_sha and not is_codex_review:
         try:
             cr = create_check_run(
                 repo=repo,
@@ -2093,14 +2515,15 @@ def main() -> int:
                 raise
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 
-    # Step 8: Remove trigger label
-    try:
-        run_cmd(
-            ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
-            env={**os.environ},
-        )
-    except subprocess.CalledProcessError:
-        logger.warning("Failed to remove label (non-fatal)")
+    # Step 8: Remove trigger label. PR-opened Codex reviews have no trigger label.
+    if not is_codex_review:
+        try:
+            run_cmd(
+                ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
+                env={**os.environ},
+            )
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to remove label (non-fatal)")
 
     # Step 9: Post "started" comment (idempotent via message_id)
     started_marker = f"<!-- adp-run:{message_id} -->"
@@ -2130,7 +2553,7 @@ def main() -> int:
             ],
             env={**os.environ},
         )
-        if not existing.stdout.strip():
+        if not is_codex_review and not existing.stdout.strip():
             run_cmd(
                 ["gh", "issue", "comment", str(issue), "--body", started_body, "-R", repo],
                 env={**os.environ},
@@ -2175,7 +2598,9 @@ def main() -> int:
         raise RuntimeError(RETIRED_BEDROCK_VIA[bedrock_via])
 
     if bedrock_via != "gateway":
-        raise RuntimeError("ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported.")
+        raise RuntimeError(
+            "ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported."
+        )
 
     # Start sigv4-proxy subprocess for gateway mode.
     # The proxy must sign with platform IRSA (which has execute-api:Invoke on
@@ -2199,11 +2624,16 @@ def main() -> int:
             _withhold_write_token(proxy_env)
         proxy_process = _start_sigv4_proxy(proxy_env, tenant_id)
         if proxy_process is None:
-            raise RuntimeError("Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing.")
+            raise RuntimeError(
+                "Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing."
+            )
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = "http://127.0.0.1:9090"
+            agent_env["SIGV4_PROXY_PORT"] = proxy_env.get("SIGV4_PROXY_PORT") or "9090"
+            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = (
+                f"http://127.0.0.1:{agent_env['SIGV4_PROXY_PORT']}"
+            )
             if agent_env.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
                 # Only this loopback hop is unsigned. The proxy authenticates
                 # upstream with protected IRSA and the current run/pod proof.
@@ -2257,7 +2687,9 @@ def main() -> int:
     # Issue #3385 (C5): include token_mode provenance on the DDB row.
     _keda_job_name = os.environ.get("JOB_NAME", os.environ.get("HOSTNAME", ""))
     update_invocation_status(
-        message_id, arrived_at, "in_progress",
+        message_id,
+        arrived_at,
+        "in_progress",
         run_id=_keda_job_name,
         token_mode=_token_mode,
     )
@@ -2277,16 +2709,23 @@ def main() -> int:
     # Start SQS visibility heartbeat — keeps the message in-flight for the
     # duration of the agent run without requiring a 6h base visibility timeout.
     # A dead worker's heartbeat stops → message frees in ~5min for retry.
-    heartbeat = VisibilityHeartbeat(queue_url, region, receipt_handle)
-    heartbeat.start()
+    heartbeat = task_heartbeat or VisibilityHeartbeat(queue_url, region, receipt_handle)
+    if task_heartbeat is None:
+        heartbeat.start()
 
-    logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
+    command = worker_command(persona)
+    logger.info(
+        "Execing runtime=%s command=%s persona=%s branch=%s",
+        runtime,
+        command,
+        persona,
+        branch_name,
+    )
     try:
-        result = subprocess.run(
-            ["node", AGENT_BINARY],
-            cwd=WORK_DIR,
-            env=agent_env,
-        )
+        run_options = {"cwd": WORK_DIR, "env": agent_env}
+        if is_codex_review:
+            run_options.update({"input": raw_message, "text": True, "capture_output": True})
+        result = subprocess.run(command, **run_options)
     finally:
         if task_config_path:
             Path(task_config_path).unlink(missing_ok=True)
@@ -2304,6 +2743,25 @@ def main() -> int:
     # that can take seconds or fail, and the window where a token remains valid
     # for a pod whose agent has already exited should be as short as possible.
     _teardown_agent_control(message_id, arrived_at, control_registered)
+
+    if is_codex_review:
+        output_lines = (result.stdout or "").strip().splitlines()
+        summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
+        if result.returncode == 0:
+            update_invocation_status(message_id, arrived_at, "complete", summary=summary)
+            if use_completion_receipt:
+                try:
+                    record_delivery_completed(envelope)
+                except InvocationCompletionError as exc:
+                    logger.error("Codex issue-review acknowledgement deferred: %s", exc)
+                    return AGENT_EXIT_RETRYABLE
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("Codex review completed and shared queue message was acknowledged")
+            return 0
+        error = (result.stderr or summary or "Codex review failed")[-1024:]
+        update_invocation_status(message_id, arrived_at, "failed", error_message=error)
+        logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
+        return result.returncode or 1
 
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
     # captured, so the identifier outlives the process that created it.
@@ -2692,11 +3150,10 @@ def _setup_agent_control(
     the flag is off, nothing is minted, nothing is written and no port is
     advertised — the row is byte-identical to a run without this feature (FR-1.1).
 
-    **The token's lifetime is bounded by the pod's, not by a fixed window.** The
-    expiry is derived from ``ADP_POD_DEADLINE_SECONDS`` — the same
-    ``activeDeadlineSeconds`` Kubernetes enforces on this pod — so a token cannot
-    outlive the process it authenticates; a leaked token from a finished run is
-    already expired even if terminal cleanup never ran.
+    A verified absolute Kubernetes deadline bounds the token when available.
+    The configured TTL alone is only a duration cap; registration occurs after
+    bootstrap and cannot establish when the Job started. Without lifecycle
+    evidence the read channel remains usable, while pause remains unavailable.
 
     **The generation is assigned by the invocation row, not read from config.**
     ``register_control_endpoint`` returns it from an atomic increment, so a retry
@@ -2729,11 +3186,21 @@ def _setup_agent_control(
         token = secrets.token_urlsafe(32)
         port = _control_port()
 
-        # Bound by the pod deadline so the credential cannot outlive the listener
-        # that honours it.
+        # Bootstrap receives the absolute Kubernetes lifetime from the gateway.
+        # A TTL minted after clone does not establish when a Job began. Missing
+        # lifecycle evidence leaves reads available but disables worker pause.
+        expiry = time.time() + _control_token_ttl_seconds()
+        try:
+            deadline = datetime.fromisoformat(
+                agent_env.get("ADP_POD_DEADLINE_AT", "").replace("Z", "+00:00")
+            )
+            if deadline.tzinfo is not None and deadline.timestamp() > time.time():
+                expiry = min(expiry, deadline.timestamp())
+        except (ValueError, TypeError):
+            pass
         expires_at = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(time.time() + _control_token_ttl_seconds()),
+            time.gmtime(expiry),
         )
 
         # The generation comes back from the write. It is not computed here: see
@@ -2804,7 +3271,10 @@ def _setup_agent_control(
 
             global _control_renewal_session
             _control_renewal_session = ControlRenewal(
-                run_id=message_id, generation=generation, token=token, expires_at=expires_at,
+                run_id=message_id,
+                generation=generation,
+                token=token,
+                expires_at=expires_at,
             )
             _control_renewal_session.start()
             agent_env["ADP_CONTROL_CREDENTIAL_FILE"] = str(_control_renewal_session.path)
@@ -2822,19 +3292,11 @@ def _setup_agent_control(
 
 
 def _control_token_ttl_seconds() -> int:
-    """Token TTL, bounded by the deadline Kubernetes actually enforces.
+    """Configured duration cap, not evidence of an absolute workload deadline.
 
-    Reads ``ADP_POD_DEADLINE_SECONDS``, which the ScaledJob renders from the same
-    ``var.agent_pod_deadline_seconds`` it passes to ``activeDeadlineSeconds``. The
-    two therefore cannot drift: whatever wall-clock limit the pod is killed at is
-    the limit the credential expires at.
-
-    Falls back to ``MAX_CONTROL_TOKEN_TTL_SECONDS`` when unset or unparseable, and
-    never exceeds it. The cap is not redundant with the deadline: an operator can
-    raise ``agent_pod_deadline_seconds``, and an unbounded TTL would silently turn
-    a leaked token into a near-permanent one. A too-short TTL only costs the
-    ability to control a long run's tail; a too-long one is a live credential for
-    a pod that no longer exists.
+    The verified Kubernetes deadline is applied separately during registration
+    and by the worker pause gate. Never add this duration to registration time
+    and treat that result as the Job's lifetime.
     """
     raw = os.environ.get("ADP_POD_DEADLINE_SECONDS", "").strip()
     if raw.isdigit() and int(raw) > 0:
@@ -3046,6 +3508,27 @@ def _register_authored_draft(persona: str, issue: int) -> str:
     return draft_registration_note(work_dir=WORK_DIR, issue=issue)
 
 
+def _register_authored_amendment(persona: str) -> str:
+    """File the run's authored plan amendment with the engine; return a comment section.
+
+    Issue #4529, the amendment counterpart of `_register_authored_draft`, and separate
+    from it because the two are not alternatives: a new-flow proposal and an amendment
+    are different artifacts on different routes with different authorization, and a run
+    commissioned to amend emits the amendment while emitting no `proposal.json` at all.
+
+    Gated on the same persona set and ordered after the branch push for the same reason.
+    Takes no ids: `amendment_registration_note` reads the assignment from the env the
+    bootstrap exported out of the dispatch envelope, so this path cannot aim a
+    registration at a flow the server did not commission it for.
+
+    Fail-soft with no error handling here — the note never raises and returns "" when
+    this run was not commissioned to amend anything, which is every other run.
+    """
+    if persona not in PERSONAS_REGISTERING_DRAFTS:
+        return ""
+    return amendment_registration_note(work_dir=WORK_DIR)
+
+
 def _join_notes(summary: str, *notes: str) -> str:
     """Append whichever fail-soft notes were produced to the closing comment.
 
@@ -3060,7 +3543,7 @@ def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
     """Reference the worker's single outcome report without trusting arbitrary URLs."""
     url = (meta or {}).get("outcome_comment_url")
     prefix = f"https://github.com/{repo}/issues/{issue}#issuecomment-"
-    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix):].isdigit():
+    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix) :].isdigit():
         return f"\n\n[Outcome, remaining work and next action]({url})."
     return ""
 
@@ -3152,29 +3635,45 @@ def _handle_success(
             # entrypoint finds nothing left to push. Registration therefore has to
             # be wired here too, not only on the PR-creating path below.
             draft_note = _register_authored_draft(persona, issue)
+            # #4529: and the amendment, if the engine commissioned this run for one.
+            # Exactly one of these two notes is non-empty on any real run — a new-flow
+            # proposal and an amendment are different artifacts — but both are called
+            # unconditionally so neither path can be the one that silently stops
+            # reporting, which is the drift `_join_notes` exists to prevent.
+            amendment_note = _register_authored_amendment(persona)
             # #5301: the agent opened its own PR during the run, so this is where that
             # PR gets bound to its story. Registering only on the entrypoint-creates-PR
             # path below would miss the common case entirely — the same gap #1723 had
             # with the correlation marker.
-            binding_note = pr_binding_note(repo=repo, pr_number=self_pr, reviewer_artifact=persona == "reviewer")
+            binding_note = pr_binding_note(
+                repo=repo, pr_number=self_pr, reviewer_artifact=persona == "reviewer"
+            )
             if self_pr:
                 git_outcome = f"PR #{self_pr} is open: https://github.com/{repo}/pull/{self_pr}."
             else:
                 git_outcome = "No local changes remain to push; task completion is not verified by this check."
-            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(meta, repo, issue)
+            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
+                meta, repo, issue
+            )
+            # #5144: reported on BOTH terminal-success paths, for the same reason the
+            # binding note is — this is the common path for a persona that pushes its
+            # own work, and wiring the handoff only on the PR-creating path below would
+            # leave exactly the case the issue is about silently unrecorded.
+            handoff = delivery_handoff_note(summary=f"{persona} — {git_outcome}")
             _post_comment(
                 repo,
                 issue,
                 message_id,
                 "completed",
-                _join_notes(summary, draft_note, binding_note),
+                _join_notes(summary, draft_note, amendment_note, binding_note, handoff),
                 check_run_url,
             )
             update_invocation_status(
                 message_id,
                 arrived_at,
                 "complete",
-                summary=f"{persona} — run ended; " + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
+                summary=f"{persona} — run ended; "
+                + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
             return 0
 
@@ -3253,31 +3752,46 @@ def _handle_success(
             # edit the PR body to prepend the marker if it isn't already there.
             _ensure_pr_body_marker(repo, existing_pr_number, branch)
         draft_note = _register_authored_draft(persona, issue)
+        # #4529: and the amendment, if the engine commissioned this run for one. See the
+        # note on the other finish path above: both are called on both paths.
+        amendment_note = _register_authored_amendment(persona)
         # #5301: bind whichever PR carries this story's work. `transcript_only` pushes
         # review transcripts and opens no PR, so there is nothing to bind; otherwise the
         # PR is either the agent's own or the one just created on `branch`.
         binding_pr = "" if transcript_only else (existing_pr_number or _find_open_pr(repo, branch))
-        binding_note = pr_binding_note(repo=repo, pr_number=binding_pr, reviewer_artifact=persona == "reviewer")
+        binding_note = pr_binding_note(
+            repo=repo, pr_number=binding_pr, reviewer_artifact=persona == "reviewer"
+        )
         if transcript_only:
-            git_outcome = f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+            git_outcome = (
+                f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+            )
         elif existing_pr_number:
             git_outcome = f"PR #{existing_pr_number} is open: https://github.com/{repo}/pull/{existing_pr_number}."
         else:
             git_outcome = f"PR opened on branch `{branch}`; merge and deployment are not verified by this check."
-        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(_read_result_metadata(), repo, issue)
+        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
+            _read_result_metadata(), repo, issue
+        )
+        # #5144: the second terminal-success path. `handoff_note` never raises — the
+        # branch is pushed and the PR is open by now, so bookkeeping must not destroy
+        # delivered work — but its failure is visible, because an unrecorded handoff
+        # means the engine holds this work as still-due.
+        handoff = delivery_handoff_note(summary=f"{persona} — {git_outcome}")
         _post_comment(
             repo,
             issue,
             message_id,
             "completed",
-            _join_notes(summary, draft_note, binding_note),
+            _join_notes(summary, draft_note, amendment_note, binding_note, handoff),
             check_run_url,
         )
         update_invocation_status(
             message_id,
             arrived_at,
             "complete",
-            summary=f"{persona} — run ended; " + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
+            summary=f"{persona} — run ended; "
+            + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )
     except subprocess.CalledProcessError as exc:
         logger.error("Post-agent git/PR step failed: %s", exc.stderr or exc)

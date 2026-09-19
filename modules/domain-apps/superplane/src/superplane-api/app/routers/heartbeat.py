@@ -40,6 +40,7 @@ from app.models.observation import ObservationReceipt
 from app.routers.internal import verify_internal_token
 from app.schemas.proxy import HeartbeatRequest, HeartbeatResponse
 from app.services import leases as lease_service
+from superplane_contracts.auth import MAX_OBSERVATION_BODY_BYTES
 from app.services import observations as observation_service
 
 from superplane_contracts import (
@@ -239,7 +240,12 @@ async def submit_observation(
     Go and Python differ on number formatting, key order and escaping — so the
     body is read with `await request.body()` and passed through unmodified.
     """
-    body = await request.body()
+    chunks = bytearray()
+    async for chunk in request.stream():
+        if len(chunks) + len(chunk) > MAX_OBSERVATION_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="observation body too large")
+        chunks.extend(chunk)
+    body = bytes(chunks)
     try:
         observation, applied = await observation_service.record_observation(
             db, body=body, headers=dict(request.headers)
@@ -251,6 +257,16 @@ async def submit_observation(
             status_code=refusal.status_code, detail=refusal.reason
         ) from None
 
+    if applied:
+        submitter = await _authenticated_submitter(request)
+        delivery = getattr(request.app.state, "observation_delivery", {})
+        delivery[submitter.submitter_id] = {
+            "workspace": observation.subject.workspace,
+            "cluster_id": observation.subject.cluster_id,
+            "reported_at": observation.reported_at.isoformat(),
+            "status": observation.status.value,
+        }
+        request.app.state.observation_delivery = delivery
     return ObservationAccepted(
         applied=applied,
         cluster_id=observation.subject.cluster_id,
@@ -269,7 +285,15 @@ async def acquire_lease(
     db: AsyncSession = Depends(get_session),
 ) -> LeaseGranted:
     """Acquire or renew a lease, replacing the monitor's `reconcile_locks` writes."""
-    scope = lease_service.scope_for(body.resource_type, body.resource_id)
+    try:
+        resource_id = await observation_service.authorize_lease_scope(
+            db, submitter, body.resource_type, body.resource_id
+        )
+    except observation_service.ObservationRefused as refusal:
+        raise HTTPException(
+            status_code=refusal.status_code, detail=refusal.reason
+        ) from None
+    scope = lease_service.scope_for(body.resource_type, resource_id)
     try:
         granted = await lease_service.acquire(
             db,
@@ -303,7 +327,15 @@ async def release_lease(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, bool]:
     """Release a lease held by this authenticated caller."""
-    scope = lease_service.scope_for(body.resource_type, body.resource_id)
+    try:
+        resource_id = await observation_service.authorize_lease_scope(
+            db, submitter, body.resource_type, body.resource_id
+        )
+    except observation_service.ObservationRefused as refusal:
+        raise HTTPException(
+            status_code=refusal.status_code, detail=refusal.reason
+        ) from None
+    scope = lease_service.scope_for(body.resource_type, resource_id)
     try:
         await lease_service.release(
             db,

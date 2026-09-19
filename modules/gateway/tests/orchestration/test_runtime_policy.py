@@ -632,3 +632,48 @@ class TestCoordinatorCredentialBoundary:
         work = await _coordinator_assignment(session)
         result = await check(session, work, "/internal/v1/credential-raw-read")
         assert result.reason is DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE
+
+
+class TestAnUnrecognizedAuthorityIsRefusedHere:
+    """The fence #4529 put at this boundary, guarded.
+
+    `authorize_worker_credential` used to read `!= AUTHORITY_GATE_DECISION -> permit`,
+    which means "not the engine kind, therefore legacy, therefore unrestricted" — it
+    treated the *absence* of a rule as permission, at the function fronting GitHub
+    installation-token minting and model credentials. `c6064c50` replaced that with an
+    explicit accept-list plus an explicit denial.
+
+    Restoring the fail-open, however, failed **no test in the repository** — not the
+    dedicated authoring-refusal suite, not the model-identity or github-operation
+    suites, not the vault/assume-role route tests (all of which are happy-path and
+    permit either way). The security fix was real and unguarded, which is the state
+    where a later refactor silently undoes it. These two tests are that guard.
+
+    They also document why the two fixtures repaired alongside them had to change:
+    `"human_event"` is not in `RECOGNIZED_AUTHORITY_KINDS` and is minted nowhere in
+    `src/`, so those fixtures were only ever green *because* of the fail-open.
+    """
+
+    async def test_an_unrecognized_kind_is_blocked_not_permitted(self, session, assignment) -> None:
+        """The mutation-caught case. A kind outside the platform's vocabulary is a bug
+        or a forgery; the honest answer at a credential boundary is refusal."""
+        assignment.grant = replace(
+            assignment.grant,
+            authority=AuthorityReference("human_event", "approval", APPROVER, assignment.grant.tenant_id),
+        )
+        result = await check(session, assignment)
+        assert not result.permitted
+        assert result.reason is DenyReason.AUTHORITY_KIND_NOT_RECOGNIZED
+
+    @pytest.mark.parametrize("kind", ["github_event", "service_policy"])
+    async def test_the_two_legacy_kinds_keep_their_permit(self, session, assignment, kind: str) -> None:
+        """The other half of the fence, so a future tightening that denies everything
+        but `gate_decision` fails here instead of breaking real GitHub-rooted and
+        service-rooted workers. `c6064c50` preserved these two deliberately; without
+        this test, "deny unless gate_decision" would look like a pure improvement.
+        """
+        assignment.grant = replace(
+            assignment.grant,
+            authority=AuthorityReference(kind, "approval", APPROVER, assignment.grant.tenant_id),
+        )
+        assert (await check(session, assignment)).permitted

@@ -23,6 +23,12 @@ mock_provider "aws" {}
 mock_provider "kubernetes" {}
 mock_provider "helm" {}
 
+override_data {
+  target          = data.aws_ssm_parameter.gateway_apigw_invoke_url
+  override_during = plan
+  values          = { value = "https://example123.execute-api.us-east-1.amazonaws.com/dev" }
+}
+
 run "enforcement_preconditions_hold" {
   command = plan
 

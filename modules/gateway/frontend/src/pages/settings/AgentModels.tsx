@@ -1,24 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from '@/components/ui/Alert';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import {
-  getManageableServicePrincipals,
-  getModelCatalogue,
-  getPersonaCatalogue,
-  getPreferences,
   isPersonaModelConflict,
   personaModelErrorMessage,
-  resetPreference,
-  setPreference,
   type ManageableServicePrincipal,
   type ModelCatalogue,
   type ModelCatalogueRow,
   type PersonaCatalogueRow,
-  type PersonaModelScope,
   type PersonaPreference,
   type PreferenceDetail,
 } from '@/services/personaModels';
+import * as selfApi from '@/services/personaModelsSelf';
+import * as adminApi from '@/services/personaModelsAdmin';
+
+type ScopeKind = 'self' | 'service';
 
 interface LoadedState {
   personas: PersonaCatalogueRow[];
@@ -27,18 +24,99 @@ interface LoadedState {
 }
 
 function permissionDenied(error: unknown): boolean {
-  const detail = (error as { detail?: unknown })?.detail;
+  const value = error as { error?: unknown; reason?: unknown; detail?: unknown } | null;
+  if (value?.error === 'access_denied' || value?.reason === 'access_denied') return true;
+  const detail = value?.detail;
+  if (detail && typeof detail === 'object') {
+    const structured = detail as { error?: unknown; reason?: unknown };
+    if (structured.error === 'access_denied' || structured.reason === 'access_denied') return true;
+  }
   return typeof detail === 'string' && /permission|human caller|administration requires/i.test(detail);
 }
 
-function availability(model: ModelCatalogueRow | undefined): { label: string; className: string } {
+function formatEvidenceDate(iso: string): string {
+  try {
+    const date = new Date(iso);
+    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  } catch {
+    return iso;
+  }
+}
+
+function availability(
+  model: ModelCatalogueRow | undefined,
+  preference?: PersonaPreference,
+): { label: string; className: string } {
+  if (preference?.model_lifecycle === 'retired' || model?.retired || model?.reason === 'retired') {
+    return { label: 'Retired', className: 'text-red-700' };
+  }
+  if ((preference?.status === 'disallowed' || preference?.availability_status === 'disallowed') || model?.permitted === false || model?.reason === 'not_permitted') {
+    return { label: 'Not permitted', className: 'text-red-700' };
+  }
+  if ((preference?.status === 'stale' || preference?.availability_status === 'stale') || model?.reason === 'evidence_stale' || model?.evidence?.stale) {
+    return { label: 'Evidence stale', className: 'text-amber-700' };
+  }
+  if (preference?.effective_is_candidate) return { label: 'Not yet certified', className: 'text-gray-600' };
+  if ((preference?.status === 'unavailable' || preference?.availability_status === 'unavailable') || model?.reason === 'not_invocable' || model?.invocable === false) {
+    return { label: 'Unavailable', className: 'text-red-700' };
+  }
+  if (model?.reason === 'harness_incompatible') {
+    return { label: 'Incompatible', className: 'text-red-700' };
+  }
+  if (preference?.effective_is_candidate) {
+    return { label: 'Not yet certified', className: 'text-gray-600' };
+  }
+  if (preference?.availability_status === 'unknown') return { label: 'Availability unknown', className: 'text-gray-600' };
   if (!model) return { label: 'Availability unknown', className: 'text-gray-600' };
   if (model.invocable === true && !model.evidence?.stale) {
     return { label: 'Verified', className: 'text-green-700' };
   }
-  if (model.invocable === false) return { label: 'Unavailable', className: 'text-red-700' };
-  if (model.evidence?.stale) return { label: 'Evidence stale', className: 'text-amber-700' };
   return { label: 'Not yet certified', className: 'text-gray-600' };
+}
+
+/**
+ * Describe where the effective model came from, using the server's own proof state.
+ *
+ * A saved mapping is the person's choice, and the class default's proof state says
+ * nothing about it. Otherwise the class default is reported as exactly what the
+ * server recorded: proven, candidate, or absent. `effective_is_candidate` cannot
+ * stand in for this, because it is false both for a proven default and for a class
+ * with no default at all — which is how an absent default came to render as "proven".
+ */
+function effectiveSourceLabel(preference: PersonaPreference | undefined): string {
+  if (!preference) return 'Source unknown';
+  if (preference.source === 'principal-mapping') return 'Your choice';
+
+  const compatibilityClass = preference.compatibility_class;
+  const status = preference.class_default_status;
+  if (status === 'proven') return `${compatibilityClass} class default (proven)`;
+  if (status === 'candidate') return `${compatibilityClass} class default (candidate)`;
+  if (preference.effective_model_id) {
+    // A default model is in effect but the server did not state its proof state.
+    // Report the uncertainty rather than upgrading it to proven.
+    return `${compatibilityClass} class default (proof state unknown)`;
+  }
+  return `No ${compatibilityClass} class default is configured`;
+}
+
+function EvidenceProvenance({ model }: { model: ModelCatalogueRow | undefined }) {
+  if (!model?.evidence) return null;
+  const { verified_at, expires_at, stale } = model.evidence;
+  if (stale) {
+    return (
+      <p className="text-xs text-amber-700" data-testid="evidence-provenance">
+        Last verified <time dateTime={verified_at}>{formatEvidenceDate(verified_at)}</time>
+        {' (expired '}
+        <time dateTime={expires_at}>{formatEvidenceDate(expires_at)}</time>)
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-gray-500" data-testid="evidence-provenance">
+      Verified <time dateTime={verified_at}>{formatEvidenceDate(verified_at)}</time>,
+      expires <time dateTime={expires_at}>{formatEvidenceDate(expires_at)}</time>
+    </p>
+  );
 }
 
 function reasonLabel(reason: string | null): string {
@@ -67,9 +145,19 @@ function mergeDetail(entries: PersonaPreference[], detail: PreferenceDetail): Pe
     entry.persona_key === detail.persona_key
       ? {
           ...entry,
+          model_lifecycle: detail.model_lifecycle,
+          availability_status: detail.availability_status,
+          availability_reason: detail.availability_reason,
+          warnings: detail.warnings,
           effective_model_id: detail.effective_model_id,
+          compatibility_class: detail.compatibility_class,
+          harness_contract_revision: detail.harness_contract_revision,
+          effective_is_candidate: detail.effective_is_candidate,
           source: detail.source,
           status: detail.status as PersonaPreference['status'],
+          // Carried from the response so a reset back to the class default reports the
+          // server's current proof state rather than the pre-mutation value.
+          class_default_status: detail.class_default_status ?? null,
           saved_model_id: detail.saved_model_id,
           requested_alias: detail.requested_alias,
           revision: detail.revision,
@@ -80,6 +168,7 @@ function mergeDetail(entries: PersonaPreference[], detail: PreferenceDetail): Pe
 }
 
 function PersonaCard({
+  scopeIdentity,
   persona,
   preference,
   catalogue,
@@ -90,6 +179,7 @@ function PersonaCard({
   onReset,
   onReload,
 }: {
+  scopeIdentity: string;
   persona: PersonaCatalogueRow;
   preference?: PersonaPreference;
   catalogue?: ModelCatalogue;
@@ -101,10 +191,14 @@ function PersonaCard({
   onReload: () => void;
 }) {
   const [draft, setDraft] = useState(preference?.saved_model_id ?? '');
-  useEffect(() => setDraft(preference?.saved_model_id ?? ''), [preference?.saved_model_id]);
+  useEffect(
+    () => setDraft(preference?.saved_model_id ?? ''),
+    [preference?.saved_model_id, scopeIdentity],
+  );
 
   const effective = catalogue?.models.find((model) => model.canonical_model_id === preference?.effective_model_id);
-  const state = availability(effective);
+  const state = availability(effective, preference);
+  const effectivePrice = effective ? priceLabel(effective) : null;
   const canSave = Boolean(
     persona.configurable &&
       draft &&
@@ -126,11 +220,14 @@ function PersonaCard({
           <p className="break-words text-sm font-medium text-gray-900 dark:text-white">
             {effective ? `${effective.model_family} ${effective.canonical_version}` : preference?.effective_model_id || 'No effective model'}
           </p>
-          <p className="text-xs text-gray-500">
-            {preference?.source === 'principal-mapping' ? 'Personal mapping' : 'Platform default'}
+          <p className="text-xs text-gray-500" data-testid={`effective-source-${persona.key}`}>
+            {effectiveSourceLabel(preference)}
           </p>
           <p className={`mt-2 text-sm font-medium ${state.className}`}>{state.label}</p>
-          {effective?.harness_contract_revision && <p className="text-xs text-gray-500">Harness revision {effective.harness_contract_revision}</p>}
+          {preference?.warnings?.map((warning) => <p key={warning} role="status" className="text-sm text-amber-700">{warning}</p>)}
+          <EvidenceProvenance model={effective} />
+          {preference && <p className="text-xs text-gray-500">Harness revision {preference.harness_contract_revision}</p>}
+          {effectivePrice && <p className="text-xs text-gray-500">{effectivePrice}</p>}
         </div>
 
         <div>
@@ -142,6 +239,10 @@ function PersonaCard({
             <fieldset disabled={busy}>
               <legend className="text-xs font-medium uppercase tracking-wide text-gray-500">Saved model</legend>
               <p className="mb-2 text-xs text-gray-500">{preference?.saved_model_id || 'Not set'}</p>
+              {!catalogue && <div role="alert" className="text-sm text-amber-700">
+                <p>Model catalogue unavailable. Saved preferences and warnings remain visible.</p>
+                <Button size="sm" variant="secondary" onClick={onReload}>Retry catalogue</Button>
+              </div>}
               <div className="space-y-2" role="radiogroup" aria-label={`Model for ${persona.display_name}`}>
                 {(catalogue?.models ?? []).map((model) => (
                   <label
@@ -150,7 +251,7 @@ function PersonaCard({
                   >
                     <input
                       type="radio"
-                      name={`model-${persona.key}`}
+                      name={`model-${scopeIdentity}-${persona.key}`}
                       value={model.canonical_model_id}
                       checked={draft === model.canonical_model_id}
                       disabled={!model.selectable}
@@ -160,6 +261,15 @@ function PersonaCard({
                       <span className="font-medium">{model.model_family} {model.canonical_version}</span>
                       <span className="block break-all text-xs text-gray-500">{model.canonical_model_id}</span>
                       {!model.selectable && <span className="block text-xs text-gray-600">{reasonLabel(model.reason)}</span>}
+                      {model.evidence && (
+                        <span className={`block text-xs ${model.evidence.stale ? 'text-amber-700' : 'text-gray-500'}`}>
+                          {model.evidence.stale ? 'Last verified' : 'Verified'}{' '}
+                          <time dateTime={model.evidence.verified_at}>{formatEvidenceDate(model.evidence.verified_at)}</time>
+                          {model.evidence.stale ? ' (expired ' : ', expires '}
+                          <time dateTime={model.evidence.expires_at}>{formatEvidenceDate(model.evidence.expires_at)}</time>
+                          {model.evidence.stale ? ')' : ''}
+                        </span>
+                      )}
                       {priceLabel(model) && <span className="block text-xs text-gray-500">{priceLabel(model)}</span>}
                     </span>
                   </label>
@@ -194,7 +304,8 @@ function PersonaCard({
 }
 
 export default function AgentModels() {
-  const [scope, setScope] = useState<PersonaModelScope>({ kind: 'self' });
+  const [scopeKind, setScopeKind] = useState<ScopeKind>('self');
+  const [adminPrincipalId, setAdminPrincipalId] = useState<string | undefined>(undefined);
   const [principals, setPrincipals] = useState<ManageableServicePrincipal[]>([]);
   const [scopeLoadWarning, setScopeLoadWarning] = useState<string | null>(null);
   const [data, setData] = useState<LoadedState | null>(null);
@@ -203,20 +314,34 @@ export default function AgentModels() {
   const [busyPersonas, setBusyPersonas] = useState<Record<string, boolean>>({});
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [conflicts, setConflicts] = useState<Record<string, boolean>>({});
+  const loadGeneration = useRef(0);
+  const loadController = useRef<AbortController | null>(null);
 
-  const load = useCallback(async (activeScope: PersonaModelScope, signal?: AbortSignal) => {
+  const load = useCallback(async (activeKind: ScopeKind, activePrincipalId?: string) => {
+    const generation = loadGeneration.current + 1;
+    loadGeneration.current = generation;
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
+    const isCurrent = () => !controller.signal.aborted && loadGeneration.current === generation;
     setLoading(true);
     setLoadError(null);
     try {
       const [personaResponse, preferenceResponse] = await Promise.all([
-        getPersonaCatalogue(signal),
-        getPreferences(activeScope, signal),
+        selfApi.getPersonaCatalogue(controller.signal),
+        activeKind === 'self'
+          ? selfApi.getPreferences(controller.signal)
+          : adminApi.getPreferences(activePrincipalId!, controller.signal),
       ]);
-      const catalogues = await Promise.all(
-        personaResponse.personas
-          .filter((persona) => persona.configurable)
-          .map((persona) => getModelCatalogue(activeScope, persona.key, signal)),
+      const catalogueResults = await Promise.allSettled(
+        personaResponse.personas.map((persona) =>
+          activeKind === 'self'
+            ? selfApi.getModelCatalogue(persona.key, controller.signal)
+            : adminApi.getModelCatalogue(activePrincipalId!, persona.key, controller.signal),
+        ),
       );
+      if (!isCurrent()) return;
+      const catalogues = catalogueResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
       setData({
         personas: personaResponse.personas,
         preferences: preferenceResponse.entries,
@@ -225,17 +350,20 @@ export default function AgentModels() {
       setRowErrors({});
       setConflicts({});
     } catch (error) {
-      if (signal?.aborted) return;
+      if (!isCurrent()) return;
       setData(null);
       setLoadError(personaModelErrorMessage(error, 'Could not load Agent Models.'));
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (isCurrent()) {
+        setLoading(false);
+        if (loadController.current === controller) loadController.current = null;
+      }
     }
   }, []);
 
   useEffect(() => {
     const controller = new AbortController();
-    getManageableServicePrincipals(controller.signal)
+    selfApi.getManageableServicePrincipals(controller.signal)
       .then((response) => setPrincipals(response.principals.filter((principal) => principal.manageable)))
       .catch((error) => {
         if (!controller.signal.aborted && !permissionDenied(error)) {
@@ -246,18 +374,28 @@ export default function AgentModels() {
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void load(scope, controller.signal);
-    return () => controller.abort();
-  }, [load, scope]);
+    void load(scopeKind, adminPrincipalId);
+    return () => {
+      loadGeneration.current += 1;
+      loadController.current?.abort();
+      loadController.current = null;
+    };
+  }, [load, scopeKind, adminPrincipalId]);
 
   const selectedPrincipal = useMemo(
-    () => principals.find((principal) => principal.canonical_service_principal_id === scope.canonicalPrincipalId),
-    [principals, scope.canonicalPrincipalId],
+    () => principals.find((principal) => principal.canonical_service_principal_id === adminPrincipalId),
+    [principals, adminPrincipalId],
   );
-  const nothingCertified = Boolean(
-    data && Object.values(data.catalogues).every((catalogue) => catalogue.models.every((model) => !model.selectable)),
-  );
+  const scopeIdentity = scopeKind === 'self' ? 'self' : `service:${adminPrincipalId}`;
+  const mutationInFlight = Object.values(busyPersonas).some(Boolean);
+  const nothingCertified = useMemo(() => {
+    if (!data) return false;
+    const eligible = Object.values(data.catalogues)
+      .flatMap((catalogue) => catalogue.models)
+      .filter((model) => !model.retired && model.permitted !== false && model.reason !== 'harness_incompatible');
+    return eligible.length > 0 && eligible.every((model) =>
+      model.reason === 'probing_disabled' || model.reason === 'not_yet_certified');
+  }, [data]);
 
   const applyMutation = (detail: PreferenceDetail) => {
     setData((current) => current && ({ ...current, preferences: mergeDetail(current.preferences, detail) }));
@@ -269,7 +407,10 @@ export default function AgentModels() {
     setRowErrors((current) => ({ ...current, [persona.key]: '' }));
     setConflicts((current) => ({ ...current, [persona.key]: false }));
     try {
-      applyMutation(await setPreference(scope, persona.key, model, preference?.revision ?? undefined));
+      const result = scopeKind === 'self'
+        ? await selfApi.setPreference(persona.key, model, preference?.revision ?? undefined)
+        : await adminApi.setPreference(adminPrincipalId!, persona.key, model, preference?.revision ?? undefined);
+      applyMutation(result);
     } catch (error) {
       if (isPersonaModelConflict(error)) {
         setConflicts((current) => ({ ...current, [persona.key]: true }));
@@ -282,16 +423,41 @@ export default function AgentModels() {
   };
 
   const reset = async (persona: PersonaCatalogueRow) => {
+    const preference = data?.preferences.find((entry) => entry.persona_key === persona.key);
+    if (!preference?.saved_model_id || preference.revision == null) {
+      setRowErrors((current) => ({
+        ...current,
+        [persona.key]: 'The current mapping revision is unavailable. Reload before resetting.',
+      }));
+      return;
+    }
     setBusyPersonas((current) => ({ ...current, [persona.key]: true }));
     setRowErrors((current) => ({ ...current, [persona.key]: '' }));
     setConflicts((current) => ({ ...current, [persona.key]: false }));
     try {
-      applyMutation(await resetPreference(scope, persona.key));
+      const result = scopeKind === 'self'
+        ? await selfApi.resetPreference(persona.key, preference.revision)
+        : await adminApi.resetPreference(adminPrincipalId!, persona.key, preference.revision);
+      applyMutation(result);
     } catch (error) {
-      setRowErrors((current) => ({ ...current, [persona.key]: personaModelErrorMessage(error, 'This mapping could not be reset.') }));
+      if (isPersonaModelConflict(error)) {
+        setConflicts((current) => ({ ...current, [persona.key]: true }));
+      } else {
+        setRowErrors((current) => ({ ...current, [persona.key]: personaModelErrorMessage(error, 'This mapping could not be reset.') }));
+      }
     } finally {
       setBusyPersonas((current) => ({ ...current, [persona.key]: false }));
     }
+  };
+
+  const switchToSelf = () => {
+    setScopeKind('self');
+    setAdminPrincipalId(undefined);
+  };
+
+  const switchToAdmin = (principalId: string) => {
+    setScopeKind('service');
+    setAdminPrincipalId(principalId);
   };
 
   return (
@@ -302,11 +468,11 @@ export default function AgentModels() {
       </div>
 
       {principals.length > 0 && (
-        <fieldset className="rounded-lg border border-gray-200 p-4">
+        <fieldset disabled={mutationInFlight} className="rounded-lg border border-gray-200 p-4">
           <legend className="px-1 text-sm font-medium">Configuration scope</legend>
           <div className="flex flex-wrap gap-3">
             <label className="flex items-center gap-2">
-              <input type="radio" name="scope" checked={scope.kind === 'self'} onChange={() => setScope({ kind: 'self' })} />
+              <input type="radio" name="scope" checked={scopeKind === 'self'} onChange={switchToSelf} />
               My own agents
             </label>
             {principals.map((principal) => (
@@ -314,8 +480,8 @@ export default function AgentModels() {
                 <input
                   type="radio"
                   name="scope"
-                  checked={scope.kind === 'service' && scope.canonicalPrincipalId === principal.canonical_service_principal_id}
-                  onChange={() => setScope({ kind: 'service', canonicalPrincipalId: principal.canonical_service_principal_id })}
+                  checked={scopeKind === 'service' && adminPrincipalId === principal.canonical_service_principal_id}
+                  onChange={() => switchToAdmin(principal.canonical_service_principal_id)}
                 />
                 {principal.display_name} ({principal.tenant_label}, {principal.source})
               </label>
@@ -335,8 +501,8 @@ export default function AgentModels() {
       {loading && <div className="flex items-center gap-3"><Spinner /><span>Loading Agent Models…</span></div>}
       {!loading && loadError && (
         <Alert variant="error" title="Agent Models could not be loaded">
-          <p>{loadError} This is not a statement that the platform default is in effect.</p>
-          <Button className="mt-3" size="sm" variant="outline" onClick={() => load(scope)}>Retry</Button>
+          <p>{loadError} This is not a statement that any effective model is known.</p>
+          <Button className="mt-3" size="sm" variant="outline" onClick={() => load(scopeKind, adminPrincipalId)}>Retry</Button>
         </Alert>
       )}
       {!loading && data && (
@@ -349,7 +515,8 @@ export default function AgentModels() {
           <div className="space-y-4">
             {data.personas.map((persona) => (
               <PersonaCard
-                key={persona.key}
+                key={`${scopeIdentity}:${persona.key}`}
+                scopeIdentity={scopeIdentity}
                 persona={persona}
                 preference={data.preferences.find((entry) => entry.persona_key === persona.key)}
                 catalogue={data.catalogues[persona.key]}
@@ -358,7 +525,7 @@ export default function AgentModels() {
                 conflict={Boolean(conflicts[persona.key])}
                 onSave={(model) => void save(persona, model)}
                 onReset={() => void reset(persona)}
-                onReload={() => void load(scope)}
+                onReload={() => void load(scopeKind, adminPrincipalId)}
               />
             ))}
           </div>

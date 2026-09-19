@@ -217,6 +217,9 @@ Open the repo in any AI editor (Claude Code, Kiro, Cursor) and say *"Read the de
 
 ## Directory Structure
 
+For installation and everyday use of the `adp` command, see the
+**[ADP CLI guide and command reference](docs/adp-cli/README.md)**.
+
 ```
 adp/
 ├── platform/                    # Shared infrastructure

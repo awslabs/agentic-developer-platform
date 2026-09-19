@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - 'platform/evals/persona-model-rollout/**'
+      - 'modules/agent-factory/agent/src/model-policy-runtime.ts'
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/gateway/src/agentauth/model_policy.py'
       - '.github/workflows/persona-model-rollout-readiness.yml'
   workflow_dispatch:
 

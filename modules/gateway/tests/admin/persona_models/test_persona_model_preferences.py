@@ -98,10 +98,11 @@ import asyncio
 import os
 import re
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -121,6 +122,7 @@ from src.shared.models.persona_models import (
     ServicePrincipal,
     ServicePrincipalAlias,
 )
+from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
 
 os.environ["TESTING"] = "1"
@@ -330,9 +332,18 @@ async def client(engine, seed_data):
     app.dependency_overrides[get_persona_model_current_user] = override_get_current_user
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        c._app = app  # type: ignore[attr-defined]
-        yield c
+    # PMM-02 route tests do not own the external Agent Registry.  Keep their
+    # managed-principal fixture on the no-explicit-restriction path; dedicated
+    # PMM-03 tests exercise the real resolver and override this seam when they
+    # need to prove route propagation.
+    managed_policy = AsyncMock(return_value=([], None))
+    with patch(
+        "src.admin.persona_models.catalogue_routes.resolve_managed_service_restriction_policy",
+        managed_policy,
+    ):
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            c._app = app  # type: ignore[attr-defined]
+            yield c
     app.dependency_overrides.clear()
 
 
@@ -359,6 +370,8 @@ def _patch_validator():
         account_id=None,
         region=None,
         principal_status=None,
+        service_restriction_pattern_sets=None,
+        policy_unavailable_reason=None,
     ):
         return model.strip()
 
@@ -425,9 +438,62 @@ async def test_ac02_save_and_list(client: AsyncClient):
 
     assert entries["developer"]["source"] == "principal-mapping"
     assert entries["developer"]["saved_model_id"] == "us.anthropic.claude-opus-4-6"
+    assert entries["developer"]["class_default_status"] is None
+    assert entries["developer"]["effective_is_candidate"] is False
     assert entries["reviewer"]["source"] == "principal-mapping"
     assert entries["architect"]["source"] == "system-default"
     assert entries["architect"]["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
+    assert entries["architect"]["compatibility_class"] == "claude-agent-sdk"
+    assert entries["architect"]["harness_contract_revision"] == "0.3.220"
+    assert entries["architect"]["effective_is_candidate"] is False
+    assert entries["architect"]["class_default_status"] == "proven"
+    assert entries["agent-codex-reviewer"]["compatibility_class"] == "codex-sdk"
+    assert entries["agent-codex-reviewer"]["harness_contract_revision"] == "0.155.1"
+    assert entries["agent-codex-reviewer"]["effective_model_id"] is None
+    assert entries["agent-codex-reviewer"]["effective_is_candidate"] is False
+    assert entries["agent-codex-reviewer"]["class_default_status"] is None
+
+
+@pytest.mark.asyncio
+async def test_class_candidate_is_visible_but_never_reported_as_proven(client: AsyncClient, engine):
+    """AC-05e: default proof state comes from the class-keyed server record."""
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        setting = await session.get(PersonaModelPolicySetting, "claude-agent-sdk")
+        assert setting is not None
+        setting.active_default_model_id = None
+        setting.candidate_default_model_id = "us.anthropic.claude-sonnet-4-6"
+        await session.commit()
+
+    resp = await client.get("/me/persona-models")
+    assert resp.status_code == 200
+    architect = next(entry for entry in resp.json()["entries"] if entry["persona_key"] == "architect")
+    assert architect["compatibility_class"] == "claude-agent-sdk"
+    assert architect["harness_contract_revision"] == "0.3.220"
+    assert architect["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
+    assert architect["effective_is_candidate"] is True
+    assert architect["class_default_status"] == "candidate"
+    assert architect["class_default_status"] != "proven"
+
+
+def test_class_default_projection_preserves_proven_candidate_and_absent_states():
+    """AC-05e: absence is not silently upgraded to candidate or proven."""
+    from src.admin.persona_models.service import project_class_default
+
+    assert project_class_default(None) == (None, None)
+    assert project_class_default(
+        PersonaModelPolicySetting(
+            compatibility_class="claude-agent-sdk",
+            candidate_default_model_id="candidate-model",
+        )
+    ) == ("candidate-model", "candidate")
+    assert project_class_default(
+        PersonaModelPolicySetting(
+            compatibility_class="claude-agent-sdk",
+            candidate_default_model_id="next-candidate",
+            active_default_model_id="proven-model",
+        )
+    ) == ("proven-model", "proven")
 
 
 # ── AC-03: Bad persona, invalid kind, unknown principal ──────────────────────
@@ -802,11 +868,16 @@ async def test_ac08_reset_and_audit_survives(client: AsyncClient, engine):
         assert resp.status_code == 200
 
     # Reset
-    resp = await client.delete("/me/persona-models/developer")
+    resp = await client.request("DELETE", "/me/persona-models/developer", json={"expected_revision": 1})
     assert resp.status_code == 200
     data = resp.json()
+    assert data["removed"] is True
     assert data["source"] == "system-default"
     assert data["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
+    assert data["compatibility_class"] == "claude-agent-sdk"
+    assert data["harness_contract_revision"] == "0.3.220"
+    assert data["effective_is_candidate"] is False
+    assert data["class_default_status"] == "proven"
 
     # Audit trail survives
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -820,6 +891,40 @@ async def test_ac08_reset_and_audit_survives(client: AsyncClient, engine):
         events = {row.event_type for row in audit_rows}
         assert "persona_model_self_set" in events, "Save audit row missing"
         assert "persona_model_self_reset" in events, "Reset audit row missing"
+
+
+@pytest.mark.asyncio
+async def test_reset_response_names_candidate_class_default(client: AsyncClient, engine):
+    """AC-05e: reset cannot launder a class candidate into proven status."""
+    with _patch_validator():
+        saved = await client.put(
+            "/me/persona-models/developer",
+            json={"model": "us.anthropic.claude-opus-4-6"},
+        )
+    assert saved.status_code == 200
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        setting = await session.get(PersonaModelPolicySetting, "claude-agent-sdk")
+        assert setting is not None
+        setting.active_default_model_id = None
+        setting.candidate_default_model_id = "us.anthropic.claude-sonnet-4-6"
+        await session.commit()
+
+    response = await client.request(
+        "DELETE",
+        "/me/persona-models/developer",
+        json={"expected_revision": 1},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["removed"] is True
+    assert data["source"] == "system-default"
+    assert data["effective_model_id"] == "us.anthropic.claude-sonnet-4-6"
+    assert data["compatibility_class"] == "claude-agent-sdk"
+    assert data["harness_contract_revision"] == "0.3.220"
+    assert data["effective_is_candidate"] is True
+    assert data["class_default_status"] == "candidate"
 
 
 @pytest.mark.asyncio
@@ -884,7 +989,7 @@ async def test_ac08_reset_audit_records_what_was_removed(client: AsyncClient, en
     with _patch_validator():
         await client.put("/me/persona-models/developer", json={"model": "model-to-be-removed"})
 
-    resp = await client.delete("/me/persona-models/developer")
+    resp = await client.request("DELETE", "/me/persona-models/developer", json={"expected_revision": 1})
     assert resp.status_code == 200
 
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -900,6 +1005,128 @@ async def test_ac08_reset_audit_records_what_was_removed(client: AsyncClient, en
     assert details["principal_source"] == "self", "Reset audit dropped the provenance the set event carries"
     assert details["updated_by_source"] == "self"
     assert row.actor_id == TEST_USER_ID
+
+
+@pytest.mark.asyncio
+async def test_reset_requires_and_atomically_enforces_observed_revision(client: AsyncClient):
+    """A destructive reset cannot race a newer mapping update."""
+    with _patch_validator():
+        created = await client.put("/me/persona-models/developer", json={"model": "model-one"})
+        assert created.status_code == 200
+        updated = await client.put(
+            "/me/persona-models/developer",
+            json={"model": "model-two", "expected_revision": 1},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["revision"] == 2
+
+    blind = await client.delete("/me/persona-models/developer")
+    assert blind.status_code == 409
+    assert blind.json()["tenant_id"] == TEST_ORG_A
+    assert blind.json()["current_revision"] == 2
+
+    stale = await client.request(
+        "DELETE",
+        "/me/persona-models/developer",
+        json={"expected_revision": 1},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["current_revision"] == 2
+    assert stale.json()["current_model_id"] == "model-two"
+
+    still_current = await client.get("/me/persona-models/explain/developer")
+    assert still_current.status_code == 200
+    assert still_current.json()["saved_model_id"] == "model-two"
+    assert still_current.json()["revision"] == 2
+
+    reset = await client.request(
+        "DELETE",
+        "/me/persona-models/developer",
+        json={"expected_revision": 2},
+    )
+    assert reset.status_code == 200
+    assert reset.json()["tenant_id"] == TEST_ORG_A
+    assert reset.json()["saved_model_id"] is None
+    assert reset.json()["removed"] is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reset_reports_only_the_atomic_delete_winner(concurrent_engine):
+    """A reset that loses after its read returns False instead of claiming a delete."""
+    factory = async_sessionmaker(concurrent_engine, expire_on_commit=False)
+    from src.admin.persona_models import service as svc
+
+    async with factory() as session:
+        session.add(
+            PersonaModelPreference(
+                id=new_uuid(),
+                org_id=TEST_ORG_A,
+                principal_kind="human",
+                principal_source="self",
+                principal_id=TEST_USER_ID,
+                persona_key="developer",
+                canonical_model_id="model-one",
+                revision=1,
+                updated_by=TEST_USER_ID,
+                updated_by_source="self",
+            )
+        )
+        await session.commit()
+
+    async with factory() as losing_session, factory() as winning_session:
+        stale_row = await svc.get_preference(
+            losing_session,
+            org_id=TEST_ORG_A,
+            principal_kind="human",
+            principal_id=TEST_USER_ID,
+            persona_key="developer",
+        )
+        assert stale_row is not None
+        losing_session.expunge(stale_row)
+        await losing_session.rollback()
+
+        won = await svc.reset_preference(
+            winning_session,
+            org_id=TEST_ORG_A,
+            principal_kind="human",
+            principal_id=TEST_USER_ID,
+            persona_key="developer",
+            expected_revision=1,
+        )
+        await winning_session.commit()
+
+        # Deterministically reproduce the interleaving: the loser already read
+        # revision 1, but its atomic DELETE runs only after the winner committed.
+        with patch.object(svc, "get_preference", AsyncMock(return_value=stale_row)):
+            lost = await svc.reset_preference(
+                losing_session,
+                org_id=TEST_ORG_A,
+                principal_kind="human",
+                principal_id=TEST_USER_ID,
+                persona_key="developer",
+                expected_revision=1,
+            )
+        await losing_session.commit()
+
+    assert won is True
+    assert lost is False
+
+    async with factory() as session:
+        remaining = list(await session.scalars(select(PersonaModelPreference)))
+    assert remaining == []
+
+
+@pytest.mark.asyncio
+async def test_preference_responses_name_the_authenticated_active_tenant(client: AsyncClient):
+    """CLI-visible read shapes carry server-derived tenant context."""
+    listed = await client.get("/me/persona-models")
+    explained = await client.get("/me/persona-models/explain/developer")
+    catalogued = await client.get("/me/persona-models/catalog", params={"persona_key": "developer"})
+
+    assert listed.status_code == explained.status_code == catalogued.status_code == 200
+    assert listed.json()["tenant_id"] == TEST_ORG_A
+    assert explained.json()["tenant_id"] == TEST_ORG_A
+    assert catalogued.json()["tenant_id"] == TEST_ORG_A
 
 
 @pytest.mark.asyncio
@@ -985,6 +1212,22 @@ async def test_ac10_admin_in_tenant_succeeds(client: AsyncClient, engine):
             json={"model": "us.anthropic.claude-opus-4-6"},
         )
         assert resp.status_code == 200
+        assert resp.json()["tenant_id"] == TEST_ORG_A
+
+    blind_reset = await client.delete(f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/developer")
+    assert blind_reset.status_code == 409
+    reset = await client.request(
+        "DELETE",
+        f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/developer",
+        json={"expected_revision": 1},
+    )
+    assert reset.status_code == 200
+    assert reset.json()["tenant_id"] == TEST_ORG_A
+    assert reset.json()["removed"] is True
+
+    repeated_reset = await client.delete(f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/developer")
+    assert repeated_reset.status_code == 200
+    assert repeated_reset.json()["removed"] is False
 
     routing_context = destination.await_args.args[1]
     assert routing_context.canonical_service_principal_id == TEST_SP_CANONICAL_ID
@@ -1014,6 +1257,7 @@ async def test_ac10_managed_catalogue_uses_target_service_principal(client: Asyn
     _set_context(client, _admin_context())
 
     destination = AsyncMock(return_value=("222222222222", "us-west-2"))
+    restriction_policy = AsyncMock(return_value=([["*sonnet*"]], None))
     catalogue = AsyncMock(return_value=[])
     with (
         patch(
@@ -1024,6 +1268,10 @@ async def test_ac10_managed_catalogue_uses_target_service_principal(client: Asyn
             "src.admin.persona_models.catalogue_service.build_model_catalogue",
             catalogue,
         ),
+        patch(
+            "src.admin.persona_models.catalogue_routes.resolve_managed_service_restriction_policy",
+            restriction_policy,
+        ),
     ):
         resp = await client.get(
             f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/catalog",
@@ -1032,6 +1280,7 @@ async def test_ac10_managed_catalogue_uses_target_service_principal(client: Asyn
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
+        "tenant_id": TEST_ORG_A,
         "persona_key": "developer",
         "compatibility_class": "claude-agent-sdk",
         "models": [],
@@ -1050,8 +1299,13 @@ async def test_ac10_managed_catalogue_uses_target_service_principal(client: Asyn
         "principal_kind": "service_account",
         "canonical_principal_id": TEST_SP_CANONICAL_ID,
         "principal_status": "active",
+        "service_restriction_pattern_sets": [["*sonnet*"]],
+        "policy_unavailable_reason": None,
         "tenant_allowed_patterns": None,
     }
+    restriction_policy.assert_awaited_once()
+    assert restriction_policy.await_args.kwargs["org_id"] == TEST_ORG_A
+    assert restriction_policy.await_args.kwargs["canonical_service_principal_id"] == TEST_SP_CANONICAL_ID
 
 
 @pytest.mark.asyncio
@@ -1217,7 +1471,12 @@ async def test_ac11_platform_default_not_writable_via_self(client: AsyncClient, 
         for probe in probes:
             resp = await client.put(f"/me/persona-models/{probe}", json={"model": "platform-default-override-attempt"})
             assert resp.status_code in (200, 404, 422), f"Unexpected status {resp.status_code} for persona_key={probe!r}"
-            resp = await client.delete(f"/me/persona-models/{probe}")
+            revision = resp.json().get("revision") if resp.status_code == 200 else None
+            resp = await client.request(
+                "DELETE",
+                f"/me/persona-models/{probe}",
+                json={"expected_revision": revision},
+            )
             assert resp.status_code in (200, 404, 422), f"Unexpected status {resp.status_code} for persona_key={probe!r}"
 
     async with factory() as session:
@@ -1326,6 +1585,7 @@ async def test_reset_idempotent(client: AsyncClient):
     assert resp.status_code == 200
     data = resp.json()
     assert data["source"] == "system-default"
+    assert data["removed"] is False
 
 
 # ── Service-principal lifecycle (Gate 2) ────────────────────────────────────
@@ -3074,3 +3334,137 @@ async def test_manageable_principals_reports_truthful_source(engine, seed_data):
 
     # The seed data's agent_registry alias should also be truthful
     assert by_id[TEST_SP_CANONICAL_ID]["source"] == "agent-registry"
+
+
+def _cost_row(*, owner_kind: str, owner_id: str, org_id: str = TEST_ORG_A, chain_id: str = "chain-1", amount: str = "1.000000"):
+    return UsageLog(
+        id=new_uuid(),
+        org_id=org_id,
+        department_id="",
+        team_id="",
+        user_id="metered-worker",
+        account_type="service",
+        model="global.anthropic.claude-sonnet-4-6",
+        input_tokens=10,
+        output_tokens=5,
+        cost_usd=Decimal(amount),
+        latency_ms=1,
+        status_code=200,
+        persona_key="architect",
+        preference_owner_kind=owner_kind,
+        preference_owner_id=owner_id,
+        chain_id=chain_id,
+        pricing_confidence="verified",
+        pricing_source_kind="database",
+        pricing_generation_id=1,
+        pricing_pointer_revision=1,
+        pricing_snapshot_version="v1",
+        pricing_policy_version=1,
+    )
+
+
+@pytest.fixture
+async def cost_client(engine, seed_data):
+    """Minimal real FastAPI surface, isolated from unrelated legacy routers."""
+    from src.admin.persona_models.routes import router as admin_router
+    from src.admin.persona_models.self_routes import get_persona_model_current_user
+    from src.admin.persona_models.self_routes import router as self_router
+    from src.shared.database import get_db
+
+    app = FastAPI()
+    app.include_router(self_router)
+    app.include_router(admin_router)
+
+    async def override_get_db():
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            yield session
+
+    context = _human_context()
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = lambda: context
+    app.dependency_overrides[get_persona_model_current_user] = lambda: context
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+        http._app = app  # type: ignore[attr-defined]
+        yield http
+
+
+async def test_cost_route_derives_self_owner_and_ignores_injected_owner(cost_client: AsyncClient, engine):
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add_all(
+            [
+                _cost_row(owner_kind="human", owner_id=TEST_USER_ID, amount="1.250000"),
+                _cost_row(owner_kind="human", owner_id=TEST_OTHER_USER_ID, amount="99.000000"),
+            ]
+        )
+        await session.commit()
+
+    response = await cost_client.get(f"/me/persona-models/costs?principal_id={TEST_OTHER_USER_ID}")
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["principal_kind"], body["principal_id"]) == ("human", TEST_USER_ID)
+    assert Decimal(body["amount_usd"]) == Decimal("1.250000")
+    assert body["principal_dimension"] == "preference_owner"
+    assert "invoice reconciliation is not established" in body["caveat"]
+
+
+async def test_cost_route_managed_principal_is_admin_and_chain_scoped(cost_client: AsyncClient, engine):
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add_all(
+            [
+                _cost_row(owner_kind="service_account", owner_id=TEST_SP_CANONICAL_ID, chain_id="wanted", amount="2.000000"),
+                _cost_row(owner_kind="service_account", owner_id=TEST_SP_CANONICAL_ID, chain_id="other", amount="9.000000"),
+            ]
+        )
+        await session.commit()
+
+    _set_context(cost_client, _admin_context())
+    response = await cost_client.get(f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/costs?chain_id=wanted")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["principal_id"] == TEST_SP_CANONICAL_ID
+    assert body["chain_id"] == "wanted"
+    assert Decimal(body["amount_usd"]) == Decimal("2.000000")
+
+    _set_context(cost_client, _service_context())
+    assert (await cost_client.get(f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/costs")).status_code == 403
+
+
+async def test_cost_route_rejects_cross_tenant_or_unknown_managed_target(cost_client: AsyncClient, engine):
+    other_id = "sp-other-tenant-cost"
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        session.add(
+            ServicePrincipal(
+                canonical_service_principal_id=other_id,
+                org_id=TEST_ORG_B,
+                display_name="Other tenant",
+                status="active",
+                approved_by="other-admin",
+            )
+        )
+        await session.commit()
+
+    _set_context(cost_client, _admin_context())
+    cross_tenant = await cost_client.get(f"/service-principals/{other_id}/persona-models/costs")
+    unknown = await cost_client.get("/service-principals/no-such-principal/persona-models/costs")
+    assert cross_tenant.status_code == 422
+    assert unknown.status_code == 422
+
+
+@pytest.mark.parametrize("managed", [False, True])
+async def test_empty_cost_routes_retain_class_default_context(cost_client, managed):
+    if managed:
+        _set_context(cost_client, _admin_context())
+        path = f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/costs"
+    else:
+        path = "/me/persona-models/costs"
+    response = await cost_client.get(path)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "unknown" and result["amount_usd"] is None
+    assert result["preferences"]
+    assert all(entry["compatibility_class"] and entry["source"] == "system-default" for entry in result["preferences"])
+    assert all("class_default_status" in entry for entry in result["preferences"])

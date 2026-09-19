@@ -31,11 +31,17 @@ jobs:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'skill-agent'
     runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     permissions:
+      id-token: write
       contents: write
       issues: write
       pull-requests: write
 
     env:
+      # Gateway-first opt-in rollout; actual policy remains report_only.
+      ADP_ARC_MODEL_POLICY_ENABLED: ${{ vars.ADP_ARC_MODEL_POLICY_ENABLED || 'false' }}
+      ADP_AGENT_CONTROL_ENDPOINT: ${{ vars.ADP_ARC_MODEL_CONTROL_ENDPOINT }}
+      # This generic skill-assisted coding entrypoint executes the developer persona.
+      AGENT_TYPE: developer
       ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
       REPO_OWNER: ${{ inputs.repo_owner || github.repository_owner }}
       REPO_NAME: ${{ inputs.repo_name || github.event.repository.name }}
@@ -179,6 +185,11 @@ jobs:
               sky api login -e "$SKYPILOT_API" 2>/dev/null && echo "Connected to SkyPilot API server" || echo "Using local SkyPilot mode"
             fi
           fi
+
+      - name: Verify gateway model authority before the harness
+        if: vars.ADP_ARC_MODEL_POLICY_ENABLED == 'true'
+        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        run: npx ts-node src/arc-model-preflight.ts
 
       - name: Run Skill Agent
         working-directory: ./adp-agent-src/modules/agent-factory/agent

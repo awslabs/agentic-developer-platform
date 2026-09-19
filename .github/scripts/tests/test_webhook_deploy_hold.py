@@ -72,7 +72,15 @@ def detect(repo, event="push"):
     return result, values, summary.read_text() if summary.exists() else ""
 
 
-@pytest.mark.parametrize("paths", [(INFRA,), (INFRA, CODE)])
+@pytest.mark.parametrize(
+    "paths",
+    [
+        (INFRA,),
+        (INFRA, CODE),
+        ("environments/dev/modules/webhook-ingress.tfvars",),
+        ("environments/dev/modules/webhook-ingress.tfvars.json", CODE),
+    ],
+)
 def test_hold_blocks_infra_and_mixed_releases_on_later_commits(repo, paths):
     change(repo, *paths)
     result, outputs, summary = detect(repo)
@@ -152,3 +160,10 @@ def test_workflow_uses_guard_before_all_mutating_jobs():
     for job in ("deploy-infra", "update-code"):
         assert "package" in jobs[job]["needs"]
         assert "needs.package.result == 'success'" in jobs[job]["if"]
+
+
+def test_other_environment_overlay_does_not_trigger_default_dev_deploy(repo):
+    change(repo, "environments/prod/modules/webhook-ingress.tfvars")
+    result, outputs, _ = detect(repo)
+    assert result.returncode == 0, result.stderr
+    assert outputs == {"code": "false", "infra": "false", "infra_held": "false"}

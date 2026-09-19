@@ -14,6 +14,7 @@ on:
       - 'modules/gateway/lambda/shared/pricing_fallback.py'
       - 'modules/gateway/lambda/shared/*.py'
       - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - 'modules/gateway/lambda/shared/root_principal.py'
       # Issue #4969: shared pricing policy, vendored into both budget Lambda zips
@@ -95,7 +96,7 @@ jobs:
           FRONTEND=false
           MIGRATIONS=false
           BUDGET_LAMBDAS=false
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/)'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/migrate-before-rollout\.py)'; then
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
@@ -104,12 +105,8 @@ jobs:
           if echo "$CHANGED" | grep -qE '^modules/gateway/alembic/versions/'; then
             MIGRATIONS=true
             echo "::warning::New Alembic migration detected in this push"
-            # #4123: migration files are baked into the image, and the migrate
-            # job execs `alembic upgrade head` inside the running pod (/app). A
-            # migration-only push must therefore ALSO rebuild+redeploy the image,
-            # or the migrate job runs the OLD in-pod migration files against the
-            # DB — which is exactly how #4123's over-long revision id kept failing
-            # even after the fix had merged. Force a backend rebuild.
+            # Migration files are baked into the release image. Build it before
+            # the pre-serving Job runs `alembic upgrade head` from that release.
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/lambda/(budget-usage-tracker/|pricing-refresh/|shared/.*\.py$)'; then
@@ -339,6 +336,15 @@ jobs:
           # param to "false" + `kubectl rollout restart` to stop observing.
           BEDROCK_ROUTING_SHADOW_MODE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-shadow-mode" "true")
 
+          # PMM-03 / D3: production org/team model allowlists. Canonicalize and
+          # validate before rendering so malformed policy fails deployment
+          # instead of silently widening admission to the platform default.
+          MODEL_ALLOWED_MODELS_CONFIG_RAW=$(get_ssm "/adp/${ENVIRONMENT}/gateway/model-allowed-models-config" "__ADP_SSM_UNAVAILABLE__")
+          MODEL_ALLOWED_MODELS_CONFIG=$(printf '%s' "$MODEL_ALLOWED_MODELS_CONFIG_RAW" | python3 platform/scripts/validate-model-allowlist-config.py)
+          MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG//\\/\\\\}
+          MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG_SED//&/\\&}
+          MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG_SED//|/\\|}
+
           # Issue #3960: CIDRs the gateway may dial an in-pod control listener in.
           # This is the SSRF allowlist for the one outbound path that deliberately
           # targets PRIVATE addresses, so it cannot be defaulted to something
@@ -361,6 +367,12 @@ jobs:
           AGENT_DISPATCH_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
           BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
           AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
+          ADP_MODEL_ROOT_BINDINGS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/model-root-bindings" "[]")
+          ADP_MODEL_ROOT_BINDINGS_SED=$(printf '%s' "$ADP_MODEL_ROOT_BINDINGS_RAW" | python3 platform/scripts/render-model-root-config.py bindings)
+          ADP_ARC_MODEL_BINDINGS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/arc-model-bindings" "[]")
+          ADP_ARC_MODEL_BINDINGS_SED=$(printf '%s' "$ADP_ARC_MODEL_BINDINGS_RAW" | python3 platform/scripts/render-model-root-config.py bindings)
+          ADP_CHAT_WORKER_IMAGE_DIGESTS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/chat-authority-worker-images" "")
+          ADP_CHAT_WORKER_IMAGE_DIGESTS_SED=$(printf '%s' "$ADP_CHAT_WORKER_IMAGE_DIGESTS_RAW" | python3 platform/scripts/render-model-root-config.py images)
           AGENT_AUTHORITY_KEY_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-key-id" "disabled")
           AGENT_TASK_SOURCE_ROLE_ARN=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-role-arn" "")
           AGENT_TASK_SOURCE_EKS_CLUSTER=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-eks-cluster" "")
@@ -397,6 +409,7 @@ jobs:
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
               -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
               -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
+              -e "s|__MODEL_ALLOWED_MODELS_CONFIG__|${MODEL_ALLOWED_MODELS_CONFIG_SED}|g" \
               -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
               -e "s|__AGENT_AUTHORITY_ENABLED__|${AGENT_AUTHORITY_ENABLED}|g" \
               -e "s|__ADP_WORK_CLAIMS_ENABLED__|${ADP_WORK_CLAIMS_ENABLED}|g" \
@@ -406,6 +419,9 @@ jobs:
               -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
               -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
               -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
+              -e "s|__ADP_MODEL_ROOT_BINDINGS__|${ADP_MODEL_ROOT_BINDINGS_SED}|g" \
+              -e "s|__ADP_ARC_MODEL_BINDINGS__|${ADP_ARC_MODEL_BINDINGS_SED}|g" \
+              -e "s|__ADP_CHAT_WORKER_IMAGE_DIGESTS__|${ADP_CHAT_WORKER_IMAGE_DIGESTS_SED}|g" \
               -e "s|__AGENT_AUTHORITY_KEY_ID__|${AGENT_AUTHORITY_KEY_ID}|g" \
               -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
               -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
@@ -469,8 +485,11 @@ jobs:
             esac
           done
 
-      - name: Roll out new image
+      - name: Migrate schema then roll out new image
         run: |
+          set -euo pipefail
+          RENDERED_DEPLOYMENT=$(mktemp)
+          trap 'rm -f "$RENDERED_DEPLOYMENT"' EXIT
           EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
@@ -536,7 +555,16 @@ jobs:
               -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
               -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_MODELS_ENABLED__|${FEATURE_AGENT_MODELS_ENABLED}|g" \
-              modules/gateway/k8s/deployment.yaml | kubectl apply -f - -n ${{ env.NAMESPACE }}
+              modules/gateway/k8s/deployment.yaml > "$RENDERED_DEPLOYMENT"
+
+          # Nullable schema expansion must finish before the new ORM can serve.
+          # A bounded lock/index failure leaves the previous release serving.
+          python3 modules/gateway/scripts/migrate-before-rollout.py \
+            --manifest "$RENDERED_DEPLOYMENT" \
+            --image "${REGISTRY}/adp-gateway:${{ github.sha }}" \
+            --namespace "${{ env.NAMESPACE }}"
+          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${{ github.sha }}|g" \
+            "$RENDERED_DEPLOYMENT" | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
           # Stamp the image tag for this build. The manifest has a generic
           # placeholder; this line pins to the commit SHA for audit.

@@ -332,6 +332,14 @@ class DenyReason(StrEnum):
     ATTEMPT_LIMIT_EXCEEDED = "attempt_limit_exceeded"
     CONCURRENCY_LIMIT_EXCEEDED = "concurrency_limit_exceeded"
     MACHINE_ACCEPTANCE_NOT_PERMITTED = "machine_acceptance_not_permitted"
+    # Issue #4529. The grant's `AuthorityReference.kind` is not one this decision
+    # point handles. Its own reason rather than `ACTION_NOT_PERMITTED` because the
+    # operator response differs and the audit meaning is different: the assignment's
+    # action was never reached, so nothing was evaluated about what it wanted to do.
+    # This is "I do not recognize what authorizes you", which is a fail-CLOSED default
+    # for an authority kind nobody taught this surface about — not a judgement that a
+    # known caller asked for too much.
+    AUTHORITY_KIND_NOT_RECOGNIZED = "authority_kind_not_recognized"
     # --- Coordination (#5224) ---------------------------------------------
     # Distinct from `ACTION_NOT_PERMITTED` because the operator responses differ:
     # the scope refusals mean "this coordinator is bounded and you are outside the

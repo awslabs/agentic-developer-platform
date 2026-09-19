@@ -210,6 +210,15 @@ class TestIssuerAudienceAndAlgorithm:
 
 
 class TestValidity:
+    @pytest.mark.parametrize("ttl", [0, -1, -3600, True, False, None, "1", "invalid", 0.5, 1.5, float("nan"), float("inf")])
+    def test_signer_refuses_invalid_lifetimes(self, gateway, ttl):
+        with pytest.raises(EnvelopeError, match="lifetime"):
+            _sign(gateway, ttl_seconds=ttl)
+
+    def test_one_second_lifetime_is_valid(self, gateway):
+        proof = _verify(gateway, _sign(gateway, ttl_seconds=1))
+        assert (proof.expires_at - proof.issued_at).total_seconds() == 1
+
     def test_an_expired_envelope_is_refused(self, gateway):
         token = _sign(gateway, ttl_seconds=10)
         with pytest.raises(EnvelopeError, match="expired"):

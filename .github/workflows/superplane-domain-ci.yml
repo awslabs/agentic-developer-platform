@@ -53,6 +53,10 @@ on:
       # The feature gate's four surfaces. Read as text by the registration suite, so an
       # edit to one without the others must be able to trigger it.
       - 'modules/gateway/src/features/routes.py'
+      - 'modules/gateway/src/domain_proxy/**'
+      - 'modules/gateway/src/app.py'
+      - 'modules/gateway/pyproject.toml'
+      - 'modules/gateway/tests/features/test_superplane_proxy.py'
       - 'modules/gateway/frontend/src/services/features.ts'
       - 'modules/gateway/frontend/src/App.tsx'
       - 'modules/gateway/frontend/src/components/Navigation.tsx'
@@ -145,14 +149,16 @@ jobs:
         run: |
           set -euo pipefail
           ruff check \
-            src/features/routes.py \
+            src/features/routes.py src/domain_proxy/ \
             tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_proxy.py \
             tests/features/test_superplane_registration.py \
             tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py
           ruff format --check \
-            src/features/routes.py \
+            src/features/routes.py src/domain_proxy/ \
             tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_proxy.py \
             tests/features/test_superplane_registration.py \
             tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py
@@ -330,6 +336,83 @@ jobs:
             --cov-config=/tmp/superplane-receiver-cov.ini \
             --cov-report=term-missing --cov-fail-under=85
 
+      - name: Enforce coverage on the provider-connection routes and service
+        # Issue #5053 (U7b) requires >=85% on the API and service logic it changed. The
+        # suite runs in an earlier step with no --cov-fail-under, so nothing enforced it.
+        #
+        # Scoped to the connection modules and credential lifecycle route, for the same reason as the receiver
+        # gate above: these five routes guard credential references behind two
+        # independent authorization checks, and an app-wide aggregate dominated by 40+
+        # transferred modules would let exactly this logic rot behind the average.
+        #
+        # The greenlet concurrency setting is not optional here either, and this story
+        # re-measured it rather than inheriting the claim: 92% with it, 69% without, on
+        # identical code. Without it the register handler's body reports as unreached
+        # while a test asserts on its exact response string — which reads as a coverage
+        # gap and invites lowering the gate instead of fixing the measurement.
+        #
+        # Measured at 94% (routers) / 90% (service) when written. The gate is the issue's
+        # 85%, not those numbers: a threshold pinned to the current value turns an honest
+        # refactor into a CI failure.
+        working-directory: modules/domain-apps/superplane/src/superplane-api
+        run: |
+          set -euo pipefail
+          pip install 'pytest-cov>=5.0.0' -c ../../releases/transfer-constraints.txt
+          cat > /tmp/superplane-connections-cov.ini <<'INI'
+          [run]
+          concurrency = greenlet,thread
+          INI
+          ruff check --isolated --select E4,E7,E9,F,I app/routers/provider_connections.py \
+            app/services/provider_connections.py app/services/credential_evidence.py \
+            app/routers/accounts.py tests/test_provider_connections_postgres.py \
+            app/migration_version.py app/schema_boundary.py app/installation.py \
+            app/skypilot_proxy.py app/routers/installation.py app/organization_binding.py \
+            app/installation_bootstrap.py alembic/versions/015_add_adp_org_binding.py alembic/env.py
+          python3 -m pytest tests/test_workspaces.py tests/test_accounts.py \
+            -v --tb=short \
+            --cov=app.routers.provider_connections \
+            --cov=app.services.provider_connections \
+            --cov=app.services.credential_evidence \
+            --cov=app.routers.accounts \
+            --cov-config=/tmp/superplane-connections-cov.ini \
+            --cov-report=term-missing --cov-fail-under=85
+
+      - name: Enforce coverage on provider-handle persistence
+        # Issue #5054 (U11c) requires >=85% on the API/service logic it changed.
+        # Scoped to the three modules this story wrote, for the same reason as the
+        # step above: an app-wide percentage lets exactly this code rot behind an
+        # aggregate dominated by modules the story did not touch.
+        #
+        # The greenlet concurrency setting is required here for the same reason and
+        # was verified the same way: these are async SQLAlchemy paths, and without
+        # it coverage.py never sees those frames. Measured both ways on this
+        # story's suite — 96% with, 84% without, and the lines it reports as missed
+        # without the setting include the committed-write `return` that the passing
+        # 201-status assertion proves executed. pytest-cov is installed by the step
+        # above; it is not re-installed here.
+        working-directory: modules/domain-apps/superplane/src/superplane-api
+        run: |
+          set -euo pipefail
+          cat > /tmp/superplane-handles-cov.ini <<'INI'
+          [run]
+          concurrency = greenlet,thread
+          INI
+          # The transferred tree is excluded from the general module lint pass.
+          # Explicitly lint these maintained provider modules and regressions.
+          ruff check --isolated --select E4,E7,E9,F,I app/services/provider_handles.py app/services/provider_authority.py \
+            app/services/provider_inventory.py app/routers/provider_handles.py \
+            app/models/provider_handle.py tests/test_provider_handles.py \
+            tests/test_provider_handles_postgres.py \
+            alembic/versions/013_add_provider_operations.py
+          python3 -m pytest tests/test_provider_handles.py -v --tb=short \
+            --cov=app.services.provider_handles \
+            --cov=app.services.provider_authority \
+            --cov=app.services.provider_inventory \
+            --cov=app.routers.provider_handles \
+            --cov=app.models.provider_handle \
+            --cov-config=/tmp/superplane-handles-cov.ini \
+            --cov-report=term-missing --cov-fail-under=85
+
       - name: Set up Go for the transferred components
         # Pinned to the version the transferred go.mod files declare (go 1.23.0), so the
         # toolchain that judges this code is the one it was written against.
@@ -451,6 +534,7 @@ jobs:
         run: |
           python3 -m pytest \
             tests/features/test_superplane_flag.py \
+            tests/features/test_superplane_proxy.py \
             tests/features/test_superplane_registration.py \
             tests/features/test_superplane_deploy_scope.py \
             tests/e2e/test_superplane_route_gated.py \

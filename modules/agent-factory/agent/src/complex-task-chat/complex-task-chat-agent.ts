@@ -84,7 +84,7 @@ async function main(): Promise<void> {
       const artifacts = buildArtifactStore();
       const draftStore = buildDraftStore();
       await processOne(msg, { context, memory, artifacts, draftStore, sqs });
-    });
+    }, msg.Body);
   }
 }
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import tempfile
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
@@ -11,12 +13,18 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from moto import mock_aws
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from src.admin.persona_models.catalogue import HARNESS_CONTRACT_REVISION
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, envelope_digest
 from src.agentauth.grants import AgentAction, AuthorityReference, DelegatedGrant, TargetRelationship
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, router
 from src.agentauth.run_credential import CREDENTIAL_KEY_ENV, verify_credential
+from src.agentauth.runtime_posture import reset_posture_cache
 from src.agentauth.workload import BOOTSTRAP_AUDIENCE, WORKLOAD_HEADER, KubernetesWorkloadVerifier, VerifiedPod, WorkloadRefusedError
+from src.shared.database import get_db
+from src.shared.models.base import Base
+from src.shared.models.persona_models import PersonaModelPolicySetting
 
 DIGEST = "sha256:" + "a" * 64
 ENV = {CREDENTIAL_KEY_ENV: "test-only-isolated-gateway-key"}
@@ -83,6 +91,27 @@ def test_direct_override_request_and_resolution_are_protected_separately(store):
     assert execution["direct_model_override"] == {"S": "global.anthropic.claude-sonnet-4-6"}
 
 
+def test_direct_override_is_not_inherited_by_a_descendant_dispatch(store):
+    provision(
+        store,
+        invocation="root-run",
+        model_requested="sonnet46",
+        model_resolved="global.anthropic.claude-sonnet-4-6",
+    )
+    provision(
+        store,
+        invocation="child-run",
+        correlation={"parent_principal": "root-run#1"},
+    )
+
+    root = store._read("TENANT#tenant", "EXEC#root-run")
+    child = store._read("TENANT#tenant", "EXEC#child-run")
+    assert root["direct_model_requested"] == {"S": "sonnet46"}
+    assert root["direct_model_override"] == {"S": "global.anthropic.claude-sonnet-4-6"}
+    assert "direct_model_requested" not in child
+    assert "direct_model_override" not in child
+
+
 @pytest.fixture
 def kubernetes(tmp_path):
     token_path = tmp_path / "gateway-token"
@@ -115,6 +144,9 @@ def kubernetes(tmp_path):
                     }
                 },
             )
+        if "/jobs/" in request.url.path:
+            assert request.url.path == "/apis/batch/v1/namespaces/adp-agents/jobs/job-a"
+            return httpx.Response(state.get("job_status", 200), json=state.get("job", {}))
         return httpx.Response(
             200,
             json={
@@ -123,10 +155,12 @@ def kubernetes(tmp_path):
                     "name": "worker-a",
                     "namespace": "adp-agents",
                     "deletionTimestamp": "now" if state["deleted"] else None,
+                    **state.get("metadata", {}),
                 },
                 "spec": {
                     "serviceAccountName": "agent-scaledjob-sa",
                     "containers": [{"name": "agent-worker", "env": [{"name": "ADP_AGENT_AUTHORITY_ENABLED", "value": "true"}]}],
+                    **state.get("spec", {}),
                 },
                 "status": {
                     "phase": state["phase"],
@@ -144,14 +178,64 @@ def kubernetes(tmp_path):
     return verifier, state, token_path, seen
 
 
-def http_client(store, kubernetes, monkeypatch):
+def http_client(store, kubernetes, monkeypatch, *, posture="report_only", posture_revision=1):
+    """The real bootstrap app, with a genuinely committed runtime posture.
+
+    ``posture`` provisions the ``PersonaModelPolicySetting`` row that a deployed
+    environment gets by migration — dev already has exactly this committed
+    ``claude-agent-sdk`` / ``report_only`` row. It is provisioned rather than
+    assumed because bootstrap establishes the live posture from the persona's
+    registered compatibility class *before* touching the proposal snapshot, so a
+    missing row is a real readiness failure and must stay one. Passing
+    ``posture=None`` provisions nothing, which is the fail-closed case.
+
+    Committed on its own engine, not flushed into a test transaction: the reader
+    requires committed platform authority, and weakening it to accept a pending
+    write would be preserving a permissive production fallback to suit a fixture.
+    """
     app = FastAPI()
     app.include_router(router)
     runtime = AgentRuntime(store=store, workloads=kubernetes[0], env=ENV)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
+
+    database_directory = tempfile.TemporaryDirectory(prefix="adp-bootstrap-test-")
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_directory.name}/posture.sqlite")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _provision():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        if posture is None:
+            return
+        async with session_factory() as session:
+            session.add(
+                PersonaModelPolicySetting(
+                    compatibility_class="claude-agent-sdk",
+                    harness_contract_revision=HARNESS_CONTRACT_REVISION,
+                    revision=1,
+                    posture_revision=posture_revision,
+                    enforcement_posture=posture,
+                )
+            )
+            await session.commit()
+
+    asyncio.run(_provision())
+    reset_posture_cache()
+
+    async def database():
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = database
     auth = AsyncMock()
     monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", auth)
-    return TestClient(app), auth
+    client = TestClient(app)
+    # Exposed so a test can perform an audited posture change against the very
+    # same committed store the route reads, rather than reaching into the app's
+    # dependency overrides to reconstruct it.
+    client.posture_sessions = session_factory
+    client.database_directory = database_directory
+    return client, auth
 
 
 def test_bootstrap_http_binds_pod_and_recovers_identical_retry(store, kubernetes, monkeypatch):
@@ -234,6 +318,60 @@ def test_tokenreview_must_match_live_approved_pod(kubernetes, field, value):
     kubernetes[1][field] = value
     with pytest.raises(WorkloadRefusedError):
         kubernetes[0].verify("pod-token")
+
+
+def lifecycle_job(kubernetes):
+    state = kubernetes[1]
+    state["metadata"] = {
+        "creationTimestamp": "2026-09-19T10:50:00Z",
+        "ownerReferences": [{"controller": True, "kind": "Job", "apiVersion": "batch/v1", "name": "job-a", "uid": "job-uid"}],
+    }
+    state["job"] = {
+        "metadata": {"uid": "job-uid", "name": "job-a", "namespace": "adp-agents", "creationTimestamp": "2026-09-19T10:00:00Z"},
+        "spec": {"activeDeadlineSeconds": 3600},
+        "status": {"startTime": "2026-09-19T10:00:05Z"},
+    }
+    return state
+
+
+def test_bootstrap_projects_job_deadline_including_time_before_replacement_pod(store, kubernetes, monkeypatch):
+    lifecycle_job(kubernetes)
+    envelope, _ = provision(store)
+    client, _ = http_client(store, kubernetes, monkeypatch)
+    response = client.post(
+        "/internal/v1/agent/bootstrap",
+        json={"invocation_id": "run-a", "envelope_digest": envelope_digest(envelope)},
+        headers={"X-Caller-Identity": "registered-worker-transport", WORKLOAD_HEADER: "pod-token"},
+    )
+    assert response.status_code == 200
+    assert response.json()["pod_deadline_at"] == "2026-09-19T11:00:00Z"
+    assert kubernetes[0].verify("pod-token").deadline_at == "2026-09-19T11:00:00Z"
+
+
+@pytest.mark.parametrize("failure", ["missing", "denied", "replaced", "cross-namespace", "invalid-time", "no-limit", "bad-limit"])
+def test_unverified_job_deadline_disables_pause_without_disabling_identity(kubernetes, failure):
+    state = lifecycle_job(kubernetes)
+    if failure in {"missing", "denied"}:
+        state["job_status"] = 404 if failure == "missing" else 403
+    elif failure == "replaced":
+        state["job"]["metadata"]["uid"] = "replacement-job"
+    elif failure == "cross-namespace":
+        state["job"]["metadata"]["namespace"] = "victim"
+    elif failure == "invalid-time":
+        state["job"]["metadata"]["creationTimestamp"] = "invalid"
+    elif failure == "no-limit":
+        state["job"]["spec"].clear()
+    else:
+        state["job"]["spec"]["activeDeadlineSeconds"] = True
+    verified = kubernetes[0].verify("pod-token")
+    assert verified.uid == "pod-a"
+    assert verified.deadline_at is None
+
+
+def test_pod_limit_can_only_tighten_owning_job_deadline(kubernetes):
+    state = lifecycle_job(kubernetes)
+    state["spec"] = {"activeDeadlineSeconds": 120}
+    assert kubernetes[0].verify("pod-token").deadline_at == "2026-09-19T10:52:00Z"
 
 
 def test_gateway_token_is_not_returned_in_failure(kubernetes):
@@ -344,10 +482,10 @@ def test_connected_status_rechecks_revocation_on_each_request(store, connected_h
     assert client.get("/internal/v1/agent/status?run=run-b", headers=headers).status_code == 404
 
 
-def test_connected_control_authorized_unsupported_returns_501(connected_http):
+def test_connected_control_without_signing_key_fails_closed(connected_http):
     client, headers, _ = connected_http
     response = client.post("/internal/v1/agent/control/run-b/pause", json={"command_id": "same-command"}, headers=headers)
-    assert response.status_code == 501
+    assert response.status_code == 404
     assert client.post("/internal/v1/agent/control/unrelated/pause", json={"command_id": "same-command"}, headers=headers).status_code == 404
     assert client.post("/internal/v1/agent/control/run-b/abort", json={"command_id": "same-command"}, headers=headers).status_code == 404
 

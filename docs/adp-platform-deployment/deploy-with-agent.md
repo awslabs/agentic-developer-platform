@@ -126,6 +126,13 @@ equivalents — deploy-quickstart.md sequences them; don't skip them.
 `--skip-frontend`, `--skip-broker`, `--skip-admin-bootstrap`,
 `--skip-webhook-ingress`, `--local` (Docker instead of CodeBuild), `--destroy`.
 
+Worker security prerequisites are Terraform-managed across environments. See
+[the worker rollout procedure](../security/terraform-worker-rollout.md) for
+preparation, activation, admission pause and legacy-role retirement settings.
+Preparation defaults on; activation requires compatible runtimes and live
+acceptance. The standard deploy includes the tick's preparation pass after
+webhook-owned resource identifiers become available.
+
 ## Silent-failure gotchas — read these before the agent path
 
 deploy-quickstart.md has two `⚠️` sections under the webhook stack that document

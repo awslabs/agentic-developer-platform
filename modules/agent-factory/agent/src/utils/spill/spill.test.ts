@@ -348,7 +348,7 @@ describe('createSpillHookCallback', () => {
     const store = new FakeSpillStore();
     const hook = createSpillHookCallback({ store, log: () => {} });
 
-    const out = await hook(hookInput({ tool_response: { stdout: bigPayload() } }));
+    const out = await hook(hookInput({ tool_response: { stdout: bigPayload(), stderr: '', interrupted: false } }));
 
     expect(out).not.toEqual({});
     expect(store.writes).toHaveLength(1);
@@ -889,5 +889,40 @@ describe('ArtifactSpillStore', () => {
     expect(readBack.wasSpilled).toBe(false);
     expect(readBack.modelSees).toBe(payload);
     fs.rmSync(locator, { force: true });
+  });
+});
+
+describe('SDK native output schema preservation', () => {
+  it('keeps the Read text result shape so the CLI accepts the locator', async () => {
+    const store = new FakeSpillStore();
+    const response = { type: 'text', file: { filePath: '/work/test.txt', content: bigPayload(), numLines: 800, startLine: 1, totalLines: 800 } };
+    const hook = createSpillHookCallback({ store, log: () => {} });
+    const result = await hook(hookInput({ tool_name: 'Read', tool_input: { file_path: '/work/test.txt' }, tool_response: response }));
+    expect(result).toMatchObject({ hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: {
+      type: 'text', file: { filePath: response.file.filePath, content: expect.stringContaining('Locator:'), totalLines: 800 },
+    } } });
+    expect(JSON.parse(store.writes[0].body)).toEqual(response);
+  });
+
+  it('keeps Bash status and background metadata while replacing its text streams', async () => {
+    const store = new FakeSpillStore();
+    const response = { stdout: bigPayload(), stderr: 'failure details', interrupted: true, backgroundTaskId: 'bg-1', timedOutAfterMs: 1000 };
+    const hook = createSpillHookCallback({ store, log: () => {} });
+    const result = await hook(hookInput({ tool_name: 'Bash', tool_response: response }));
+    expect(result).toMatchObject({ hookSpecificOutput: { updatedToolOutput: {
+      stdout: expect.stringContaining('Locator:'), stderr: '', interrupted: true, backgroundTaskId: 'bg-1', timedOutAfterMs: 1000,
+    } } });
+    expect(JSON.parse(store.writes[0].body)).toEqual(response);
+  });
+
+  it.each([
+    ['Read', { type: 'image', file: { base64: bigPayload() } }],
+    ['Bash', { stdout: bigPayload(), stderr: '', interrupted: false, isImage: true }],
+    ['unknown', { content: bigPayload() }],
+  ])('leaves unsupported %s shapes intact instead of returning a CLI-invalid string', async (toolName, response) => {
+    const store = new FakeSpillStore();
+    const hook = createSpillHookCallback({ store, log: () => {} });
+    expect(await hook(hookInput({ tool_name: toolName as string, tool_response: response }))).toEqual({});
+    expect(store.writes).toHaveLength(0);
   });
 });

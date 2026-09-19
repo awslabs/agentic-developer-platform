@@ -16,6 +16,7 @@ from functools import lru_cache, partial
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
@@ -24,7 +25,15 @@ from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, issue
 from src.agentauth.composition import build_authorization_service, build_control_adapter
 from src.agentauth.dispatch import FAN_OUT_CAPABILITY, FAN_OUT_CAPABILITY_FIELD, DispatchRequest, DispatchService
 from src.agentauth.execution import ExecutionStateError, evaluate_execution_state
-from src.agentauth.grants import LIVE_CONTROL_ACTIONS, AgentAction
+from src.agentauth.grants import (
+    AUTHORITY_GATE_DECISION,
+    AUTHORITY_GITHUB_EVENT,
+    AUTHORITY_REPLAN_REQUEST,
+    AUTHORITY_SERVICE_POLICY,
+    LIVE_CONTROL_ACTIONS,
+    AgentAction,
+)
+from src.agentauth.model_policy import MODEL_POLICY_CONTRACT_VERSION
 from src.agentauth.policy import PolicyError
 from src.agentauth.revalidation import RevalidationRequest, revalidate_command
 from src.agentauth.run_credential import CredentialError, verify_credential
@@ -33,6 +42,7 @@ from src.agentauth.waves import WaveRequest
 from src.agentauth.workload import WORKLOAD_HEADER, KubernetesWorkloadVerifier, WorkloadRefusedError
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.orchestration.work_claims import WorkClaimError
+from src.shared.database import get_db
 
 logger = logging.getLogger("bedrockgateway.agentauth.routes")
 
@@ -51,6 +61,20 @@ class BootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     invocation_id: str = Field(min_length=1, max_length=128)
     envelope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    #: The model-policy contract this client can actually consume.  Absent means
+    #: a previously shipped client: it cannot honour an enforcing decision, so it
+    #: is admitted only under a verified non-enforcing posture.  Declared by the
+    #: client rather than inferred, because the gateway cannot otherwise tell a
+    #: capable worker from one that will ignore the payload — and it is a
+    #: *capability* claim only, never authority: everything it could unlock is
+    #: still decided by the gateway from its own committed state.
+    model_policy_contract: int | None = Field(default=None, ge=1, le=64, strict=True)
+
+
+class ModelDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    nonce: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_policy_contract: int = Field(strict=True, ge=1, le=64)
 
 
 class AgentRuntime:
@@ -102,18 +126,46 @@ class AgentRuntime:
         is authorized can keep ignoring the result — refusal is still an
         exception.
         """
-        if grant.authority.kind in {"github_event", "service_policy"}:
+        if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY}:
             return None
-        if grant.authority.kind != "gate_decision":
+        if grant.authority.kind not in {AUTHORITY_GATE_DECISION, AUTHORITY_REPLAN_REQUEST}:
             raise BootstrapRefusedError("unsupported authority source")
-        from src.agentauth.engine import validate_engine_authority
+        from src.agentauth.engine import validate_authoring_authority, validate_engine_authority
         from src.shared.database import get_session_factory
 
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         try:
             async with get_session_factory()() as session:
+                if grant.authority.kind == AUTHORITY_REPLAN_REQUEST:
+                    # Issue #4529. Re-proves the amendment-authoring assignment against
+                    # live state — tenant, flow, run binding and base revision — and
+                    # returns no graph attribution, because an authoring run owns no
+                    # node and its spend must not be charged to one.
+                    await validate_authoring_authority(session=session, execution=execution or {}, grant=grant)
+                    return None
                 return await validate_engine_authority(session=session, execution=execution or {}, grant=grant, store=self.store)
+        except BootstrapRefusedError:
+            # Issue #4529: a deliberate refusal passes through with its own reason.
+            #
+            # Both validators end in `except BootstrapRefusedError: raise` followed by a
+            # relabelling `except Exception`, specifically so that "we decided no" stays
+            # distinguishable from "we could not decide". Re-wrapping everything here
+            # defeated that: every refusal — a stolen authoring assignment, a halted
+            # node, a base revision that moved — reached the caller as "engine authority
+            # unavailable", which reads as an outage. An operator seeing it would go
+            # looking for a broken database instead of the run presenting a stale
+            # assignment, and the two have opposite responses.
+            #
+            # Not a security change: both paths deny. The refusal text is already
+            # deliberately coarse — one sentence for every way an authoring assignment
+            # can fail, so a caller cannot tell "no such request" from "not your
+            # request" — so passing it through leaks nothing that the inner functions
+            # have not already decided to say.
+            raise
         except Exception:
+            # Genuinely unexpected: the session could not be opened, the store read
+            # failed, something raised a shape neither validator anticipated. Still
+            # fail-closed, and still deliberately unspecific.
             raise BootstrapRefusedError("engine authority unavailable") from None
 
     async def enroll_coordinator(self, record, grant):
@@ -122,7 +174,7 @@ class AgentRuntime:
 
         config = os.environ if self.env is None else self.env
         repo = config.get("BG_ORCH_DISPATCH_REPO", "")
-        if grant.authority.kind != "github_event" or not repo:
+        if grant.authority.kind != AUTHORITY_GITHUB_EVENT or not repo:
             return record, grant
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         if not execution or execution.get("persona", {}).get("S") not in {"operations", "aidlc"}:
@@ -196,7 +248,7 @@ class AgentRuntime:
         return self._dispatcher
 
     async def dispatch_request(self, body, credential_token, workload_token, *, context):
-        if context[3].authority.kind != "gate_decision":
+        if context[3].authority.kind != AUTHORITY_GATE_DECISION:
             cleared = await self.resolve_fan_out(body, context)
             return await run_in_threadpool(partial(self.dispatch, body, credential_token, workload_token, context=context, fan_out_cleared=cleared))
         from src.agentauth.graph_dispatch import dispatch_graph
@@ -233,21 +285,38 @@ class AgentRuntime:
         pod, _, _, _ = context or self.authenticate(credential_token, workload_token)
         return self.adapter.status(credential_token=credential_token, target_run_id=run_id, presented_workload_binding=pod.uid).to_public_dict()
 
-    def control(self, run_id: str, action: AgentAction, body: bytes, credential_token: str, workload_token: str, *, context=None) -> None:
+    async def control(self, run_id: str, action: AgentAction, body: bytes, credential_token: str, workload_token: str, *, context=None):
+        from src.activity.control_service import ControlError, ControlService
+
         pod, _, _, _ = context or self.authenticate(credential_token, workload_token)
-        self.adapter.prepare_command(
+        prepared = await run_in_threadpool(
+            self.adapter.prepare_command,
             credential_token=credential_token,
             target_run_id=run_id,
             action=action,
             request_body=body,
             presented_workload_binding=pod.uid,
         )
-        # This runtime ships no command implementation. Enabling a policy verb
-        # alone must never return success without actually forwarding its effect.
-        raise PolicyError(501, f"{action.value} is not implemented in this deployment")
+        config = os.environ if self.env is None else self.env
+        service = ControlService(table_name=config.get("WEBHOOK_EVENTS_TABLE"), env=self.env, authority_store=self.store)
+        try:
+            result, status = await service.command_for_agent(prepared, request_body=body)
+            return JSONResponse(result.model_dump(), status_code=status, headers={"Cache-Control": "no-store"})
+        except ControlError as exc:
+            raise PolicyError(exc.status_code, exc.detail) from None
 
     def bootstrap(self, body: BootstrapRequest, token: str) -> dict:
         pod = self.workloads.verify(token)
+        from src.agentauth.task_delivery import TaskDeliveryError
+        from src.agentauth.task_delivery import enabled as tasks_enabled
+
+        if tasks_enabled(self.env):
+            from src.agentauth.task_routes import task_delivery
+
+            try:
+                task_delivery(self).require_assignment(pod.uid, body.invocation_id, body.envelope_digest)
+            except TaskDeliveryError:
+                raise BootstrapRefusedError("task assignment unavailable") from None
         from src.orchestration.work_admission import admit_deferred_bootstrap, enabled
 
         if enabled():
@@ -256,7 +325,10 @@ class AgentRuntime:
             from_thread.run(admit_deferred_bootstrap, self.store, body.invocation_id, body.envelope_digest)
         now = datetime.now(UTC)
         record = self.store.bind(invocation_id=body.invocation_id, digest=body.envelope_digest, pod=pod, now=now)
-        return issue_bound_credential(record, now=now, env=self.env)
+        result = issue_bound_credential(record, now=now, env=self.env)
+        if pod.deadline_at is not None:
+            result["pod_deadline_at"] = pod.deadline_at
+        return result
 
 
 @lru_cache(maxsize=1)
@@ -275,10 +347,96 @@ def get_agent_runtime() -> AgentRuntime:
         raise HTTPException(503, "agent authority is not configured") from None
 
 
+def _refuse_unconsumable_model_policy(
+    model_policy: dict,
+    *,
+    client_contract: int | None,
+    invocation_id: str,
+) -> None:
+    """Withhold run authority when this client cannot honour the live policy.
+
+    The mixed-version case the gateway has to own.  A worker built before the
+    enforcing contract existed ignores the ``model_policy`` payload entirely and
+    launches on its legacy model assignment.  Issuing it an ordinary bound
+    credential would mean the platform believed it was enforcing while that run
+    quietly did whatever it used to — enforcement bypassed by version skew, with
+    nothing in the evidence to show it.  Refusing here is the only place that can
+    prevent it: the decision to withhold authority belongs to the gateway, which
+    alone knows the committed posture.
+
+    Three refusals, and none of them is a fallback:
+
+    * an ``enforcing`` posture (proposal or refusal) for a client that does not
+      declare the contract — it would not act on either;
+    * an unverified posture on a run that *is* enrolled in the policy — the
+      platform does not know what it is enforcing, so it cannot know this client
+      is safe to admit;
+    * an enforcing *refusal* for any client — under enforcement an unavailable
+      proposal must stop the run, not let it continue on legacy.
+
+    A verified ``report_only``/``disabled`` posture admits every client, including
+    an unavailable proposal: that is exactly the current live configuration and
+    legacy behaviour is correct there.  Raised as 409 rather than 404 because the
+    request is well-formed and authorized — the conflict is between the client's
+    capability and the platform's posture, and an operator needs to see that
+    difference.  No detail about the posture leaves the gateway in the message.
+
+    There is deliberately no exception here for a run whose snapshot is missing
+    or unbound.  An earlier revision admitted those two reason codes on the theory
+    that "no snapshot" meant "not enrolled, nothing to enforce".  That was wrong
+    twice: the posture is a property of the persona's registered compatibility
+    class, so it is established regardless of the snapshot, and missing snapshot
+    material is a *policy failure* that enforcement has to catch rather than
+    proof enforcement does not apply.  Any run reaching this function with an
+    unverified posture is now genuinely a case where the platform cannot tell
+    what it is enforcing.  Bootstrap compatibility comes from establishing the
+    posture correctly upstream, not from admitting unverified runs here.
+    """
+    posture = model_policy.get("posture")
+    verified = model_policy.get("posture_verified") is True
+    if not verified:
+        logger.warning(
+            "Withholding run authority: live model policy posture unverified",
+            extra={"invocation_id": invocation_id, "reason": model_policy.get("reason")},
+        )
+        raise HTTPException(409, "model policy unavailable")
+    if posture != "enforcing":
+        return
+    if model_policy.get("status") != "proposed":
+        logger.warning(
+            "Withholding run authority: enforcing posture with no admissible proposal",
+            extra={"invocation_id": invocation_id, "reason": model_policy.get("reason")},
+        )
+        raise HTTPException(409, "model policy unavailable")
+    if client_contract is None or client_contract < MODEL_POLICY_CONTRACT_VERSION:
+        logger.warning(
+            "Withholding run authority: client cannot consume an enforcing decision",
+            extra={"invocation_id": invocation_id, "client_contract": client_contract},
+        )
+        raise HTTPException(409, "model policy contract unsupported")
+
+
 @router.post("/bootstrap")
-async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRuntime = Depends(get_agent_runtime)) -> JSONResponse:
+async def bootstrap(
+    body: BootstrapRequest,
+    request: Request,
+    runtime: AgentRuntime = Depends(get_agent_runtime),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
     try:
+        # Keep the original JSON body usable against older gateways, whose
+        # BootstrapRequest rejects unknown fields. Accept the earlier JSON
+        # declaration during this rollout as well, with no contradictory claims.
+        header_contract = request.headers.get("X-Adp-Model-Policy-Contract")
+        client_contract = body.model_policy_contract
+        if header_contract is not None:
+            if not header_contract.isascii() or not header_contract.isdecimal() or not 1 <= int(header_contract) <= 64:
+                raise HTTPException(422, "invalid model policy contract")
+            if client_contract is not None and client_contract != int(header_contract):
+                raise HTTPException(422, "conflicting model policy contract")
+            client_contract = int(header_contract)
         result = await run_in_threadpool(runtime.bootstrap, body, request.headers.get(WORKLOAD_HEADER, ""))
+        pod_deadline_at = result.get("pod_deadline_at")
         caller = verify_credential(result["credential"], env=runtime.env)
         record = await run_in_threadpool(runtime.store.authority.load_execution, invocation_id=caller.invocation_id, tenant_id=caller.tenant_id)
         grant = await run_in_threadpool(
@@ -290,15 +448,23 @@ async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRunt
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
-        from src.agentauth.model_policy import bootstrap_model_policy
+        if pod_deadline_at is not None:
+            result["pod_deadline_at"] = pod_deadline_at
+        from src.agentauth.model_policy import bootstrap_model_policy_live
 
-        result["model_policy"] = await run_in_threadpool(
-            bootstrap_model_policy,
+        model_policy = await bootstrap_model_policy_live(
+            db,
             store=runtime.store,
             record=record,
             grant=grant,
             env=runtime.env,
         )
+        _refuse_unconsumable_model_policy(
+            model_policy,
+            client_contract=client_contract,
+            invocation_id=record.invocation_id,
+        )
+        result["model_policy"] = model_policy
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except WorkClaimError as exc:
         if exc.code == "work_waiting":
@@ -344,6 +510,9 @@ async def _agent_call(request: Request, runtime: AgentRuntime, method, *args) ->
             result = await method(*call_args, context=context)
         else:
             result = await run_in_threadpool(method, *call_args, context=context)
+        if isinstance(result, JSONResponse):
+            audit("allowed", result.status_code)
+            return result
         audit("allowed", 202 if isinstance(args[0], DispatchRequest) else 200)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except (BootstrapRefusedError, WorkloadRefusedError, CredentialError, ExecutionStateError):
@@ -355,6 +524,77 @@ async def _agent_call(request: Request, runtime: AgentRuntime, method, *args) ->
     except AuthorityStoreError:
         audit("unavailable", 503)
         raise HTTPException(503, "agent authority unavailable") from None
+
+
+async def resolved_model_response(*, db, runtime, record, grant, nonce: str, client_contract: int, response_context: dict | None = None) -> dict:
+    """Sign the full fresh response after the caller proves its execution binding."""
+    from src.agentauth.envelope import sign_envelope
+    from src.agentauth.model_policy import MODEL_POLICY_AUDIENCE, bootstrap_model_policy_live, canonical_json
+
+    policy = await bootstrap_model_policy_live(db, store=runtime.store, record=record, grant=grant, env=runtime.env)
+    _refuse_unconsumable_model_policy(policy, client_contract=client_contract, invocation_id=record.invocation_id)
+    result = {
+        "nonce": nonce,
+        "invocation_id": record.invocation_id,
+        "tenant_id": record.tenant_id,
+        "attempt": record.current_attempt,
+        "model_policy": policy,
+        "context": response_context or {},
+    }
+    assertion = sign_envelope(
+        tenant_id=record.tenant_id,
+        principal=record.principal,
+        target_run_id=record.invocation_id,
+        target_generation=record.current_attempt,
+        action="model_policy_response",
+        command_id=nonce,
+        request_body=canonical_json(result),
+        grant_id=grant.grant_id,
+        revocation_epoch=grant.revocation_epoch,
+        flow_id=grant.flow_id,
+        authority_reference_id=grant.authority.reference_id,
+        audience=MODEL_POLICY_AUDIENCE,
+        env=runtime.env,
+    )
+    from src.usage.model_policy_evidence import record_model_evidence
+
+    await run_in_threadpool(record_model_evidence, store=runtime.store, record=record, result=result)
+    return {"result": result, "assertion": assertion}
+
+
+@router.post("/model-decision")
+async def model_decision(
+    body: ModelDecisionRequest,
+    request: Request,
+    runtime: AgentRuntime = Depends(get_agent_runtime),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """Issue fresh model authority immediately before an SDK launch or retry.
+
+    Neither persona nor root is supplied by the worker. They come from its
+    protected execution. The entire response, including unavailable proposals,
+    is signed and bound to a one-use client challenge so unsigned error metadata
+    cannot turn enforcement into permission or replay a prior report-only read.
+    """
+
+    async def resolve(_body, _credential, _workload, *, context):
+        _, _, record, grant = context
+        from src.orchestration.work_admission import worker_checkpoint
+
+        await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
+        return await resolved_model_response(
+            db=db,
+            runtime=runtime,
+            record=record,
+            grant=grant,
+            nonce=body.nonce,
+            client_contract=body.model_policy_contract,
+        )
+
+    try:
+        return await _agent_call(request, runtime, resolve, body)
+    except WorkClaimError:
+        raise HTTPException(409, "work ownership unavailable") from None
 
 
 @router.get("/status")

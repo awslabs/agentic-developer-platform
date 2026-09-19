@@ -326,7 +326,16 @@ async def test_shared_secret_cannot_access_probe_routes(db_session, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_other_internal_irsa_principal_cannot_release_probe_credentials():
+@pytest.mark.parametrize(
+    "principal",
+    [
+        "scaledjob-worker",
+        "authority-worker",
+        "agent-codex-reviewer",
+        "deploy-runner",
+    ],
+)
+async def test_other_internal_irsa_principal_cannot_release_probe_credentials(principal):
     request = Request(
         {
             "type": "http",
@@ -341,7 +350,12 @@ async def test_other_internal_irsa_principal_cannot_release_probe_credentials():
     )
 
     async def _verified_as_other_principal(request, **_kwargs):
-        request.state.token_context = SimpleNamespace(user_id="deploy-runner")
+        request.state.token_context = SimpleNamespace(
+            user_id=principal,
+            agent_registry_id=principal,
+            org_id="__platform__",
+            scope="internal",
+        )
 
     with (
         patch(
@@ -351,6 +365,86 @@ async def test_other_internal_irsa_principal_cannot_release_probe_credentials():
         pytest.raises(HTTPException) as exc,
     ):
         await verify_model_probe_irsa(request, x_caller_identity="arn:aws:sts::111111111111:assumed-role/deploy/run")
+    assert exc.value.status_code == 403
+    assert exc.value.detail["error"] == "probe_worker_required"
+
+
+@pytest.mark.asyncio
+async def test_dedicated_probe_irsa_is_the_only_accepted_principal():
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/internal/v1/persona-model-probes/claim",
+            "headers": [],
+            "query_string": b"",
+            "scheme": "https",
+            "server": ("test", 443),
+            "client": ("127.0.0.1", 1),
+        }
+    )
+
+    async def _verified_as_probe(request, **_kwargs):
+        request.state.token_context = SimpleNamespace(
+            user_id="persona-model-probe",
+            agent_registry_id="persona-model-probe",
+            org_id="__platform__",
+            scope="internal",
+        )
+
+    with patch(
+        "src.internal.persona_model_probe_routes.verify_internal_or_irsa",
+        new=AsyncMock(side_effect=_verified_as_probe),
+    ):
+        await verify_model_probe_irsa(
+            request,
+            x_caller_identity="arn:aws:sts::111111111111:assumed-role/persona-model-probe/session",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("agent_registry_id", "org_id", "scope"),
+    [
+        ("tenant-generated-uuid", "__platform__", "internal"),
+        ("persona-model-probe", "tenant-org", "internal"),
+        ("persona-model-probe", "__platform__", "shared"),
+    ],
+)
+async def test_probe_name_lookalike_cannot_release_credentials(agent_registry_id, org_id, scope):
+    """A matching mutable agent_name is not the dedicated probe identity."""
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/internal/v1/persona-model-probes/claim",
+            "headers": [],
+            "query_string": b"",
+            "scheme": "https",
+            "server": ("test", 443),
+            "client": ("127.0.0.1", 1),
+        }
+    )
+
+    async def _verified_as_lookalike(request, **_kwargs):
+        request.state.token_context = SimpleNamespace(
+            user_id="persona-model-probe",
+            agent_registry_id=agent_registry_id,
+            org_id=org_id,
+            scope=scope,
+        )
+
+    with (
+        patch(
+            "src.internal.persona_model_probe_routes.verify_internal_or_irsa",
+            new=AsyncMock(side_effect=_verified_as_lookalike),
+        ),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await verify_model_probe_irsa(
+            request,
+            x_caller_identity="arn:aws:sts::111111111111:assumed-role/lookalike/session",
+        )
     assert exc.value.status_code == 403
     assert exc.value.detail["error"] == "probe_worker_required"
 

@@ -30,6 +30,10 @@ def _is_enabled_strict(env_var: str) -> bool:
     value = os.environ.get(env_var)
     if value is not None:
         return value.lower() == "true"
+    if env_var == "FEATURE_SUPERPLANE_ENABLED":
+        from src.domain_proxy.superplane import enabled
+
+        return enabled()
     return False
 
 

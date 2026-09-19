@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,7 @@ from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
+from src.usage.persona_cost import get_persona_cost_report
 
 from . import catalogue_routes, catalogue_service, service
 from .catalogue import persona_compatibility_class
@@ -30,10 +31,13 @@ from .schemas import (
     AliasResponse,
     ConflictResponse,
     LinkAliasRequest,
+    PersonaCostResponse,
     PreferenceDetailResponse,
     PreferenceListResponse,
     RegisterServicePrincipalRequest,
     RegisterServicePrincipalResponse,
+    ResetPreferenceRequest,
+    ResetPreferenceResponse,
     SetPreferenceRequest,
     StatusTransitionRequest,
     StatusTransitionResponse,
@@ -73,7 +77,45 @@ async def list_service_principal_preferences(
         raise _rejected(exc) from exc
 
     entries = await service.build_preference_list(db, org_id=current_user.org_id, principal_kind="service_account", principal_id=canonical_id)
-    return PreferenceListResponse(principal_kind="service_account", principal_id=canonical_id, entries=entries)
+    return PreferenceListResponse(
+        tenant_id=current_user.org_id,
+        principal_kind="service_account",
+        principal_id=canonical_id,
+        entries=entries,
+    )
+
+
+@router.get("/{canonical_id}/persona-models/costs", response_model=PersonaCostResponse)
+async def get_service_principal_persona_costs(
+    canonical_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    chain_id: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+) -> PersonaCostResponse:
+    """Return tenant-scoped usage-ledger costs for an administered principal."""
+    await _require_human_org_admin(db, current_user)
+    try:
+        await service.validate_target_service_principal(
+            db,
+            canonical_id=canonical_id,
+            org_id=current_user.org_id,
+        )
+    except service.PreferenceRejectedError as exc:
+        raise _rejected(exc) from exc
+    report = await get_persona_cost_report(
+        db,
+        org_id=current_user.org_id,
+        principal_kind="service_account",
+        principal_id=canonical_id,
+        chain_id=chain_id,
+    )
+    return PersonaCostResponse(
+        **{
+            **report.__dict__,
+            "status": report.status.value,
+            "entries": [entry.__dict__ for entry in report.entries],
+        }
+    )
 
 
 @router.get("/{canonical_id}/persona-models/catalog", response_model=ModelCatalogueResponse)
@@ -125,6 +167,11 @@ async def get_service_principal_catalogue(
         target_context,
         routing_user_id="",
     )
+    restriction_pattern_sets, policy_unavailable_reason = await catalogue_routes.resolve_managed_service_restriction_policy(
+        db,
+        org_id=current_user.org_id,
+        canonical_service_principal_id=canonical_id,
+    )
     models = await catalogue_service.build_model_catalogue(
         db,
         persona_key=persona_key,
@@ -133,9 +180,12 @@ async def get_service_principal_catalogue(
         principal_kind="service_account",
         canonical_principal_id=canonical_id,
         principal_status=target.status,
+        service_restriction_pattern_sets=restriction_pattern_sets,
+        policy_unavailable_reason=policy_unavailable_reason,
         tenant_allowed_patterns=None,
     )
     return ModelCatalogueResponse(
+        tenant_id=current_user.org_id,
         persona_key=persona_key,
         compatibility_class=compatibility_class,
         models=models,
@@ -164,7 +214,7 @@ async def explain_service_principal_preference(
     except service.PreferenceRejectedError as exc:
         raise _rejected(exc) from exc
 
-    return PreferenceDetailResponse(**result)
+    return PreferenceDetailResponse(tenant_id=current_user.org_id, **result)
 
 
 @router.put("/{canonical_id}/persona-models/{persona_key}")
@@ -262,6 +312,11 @@ async def set_service_principal_preference(
         target_context,
         routing_user_id="",
     )
+    restriction_pattern_sets, policy_unavailable_reason = await catalogue_routes.resolve_managed_service_restriction_policy(
+        db,
+        org_id=current_user.org_id,
+        canonical_service_principal_id=canonical_id,
+    )
 
     try:
         row = await service.set_preference(
@@ -278,14 +333,18 @@ async def set_service_principal_preference(
             validation_account_id=account_id,
             validation_region=region,
             validation_principal_status=target.status,
+            validation_service_restriction_pattern_sets=restriction_pattern_sets,
+            validation_policy_unavailable_reason=policy_unavailable_reason,
         )
     except service.PreferenceConflictError as exc:
-        platform_default = await service.get_platform_default(db)
-        default_model_id = platform_default.active_default_model_id if platform_default else None
+        compatibility_class, default_model_id, class_default_status = await service.get_persona_class_default(db, persona_key)
         return JSONResponse(
             status_code=409,
             content=ConflictResponse(
+                tenant_id=current_user.org_id,
                 persona_key=persona_key,
+                compatibility_class=compatibility_class,
+                harness_contract_revision=service.persona_harness_contract_revision(persona_key),
                 principal_kind="service_account",
                 principal_id=canonical_id,
                 effective_model_id=exc.row.canonical_model_id,
@@ -294,6 +353,8 @@ async def set_service_principal_preference(
                 updated_at=exc.row.updated_at,
                 updated_by=exc.row.updated_by,
                 default_model_id=default_model_id,
+                default_source=compatibility_class,
+                class_default_status=class_default_status,
             ).model_dump(mode="json"),
         )
     except service.PreferenceRejectedError as exc:
@@ -343,7 +404,7 @@ async def set_service_principal_preference(
         principal_id=canonical_id,
         persona_key=persona_key,
     )
-    return PreferenceDetailResponse(**result)
+    return PreferenceDetailResponse(tenant_id=current_user.org_id, **result)
 
 
 @router.delete("/{canonical_id}/persona-models/{persona_key}")
@@ -352,7 +413,8 @@ async def reset_service_principal_preference(
     persona_key: str,
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> PreferenceDetailResponse:
+    request: Annotated[ResetPreferenceRequest | None, Body()] = None,
+) -> ResetPreferenceResponse:
     """Reset a service principal's preference so the default becomes effective."""
     await _require_human_org_admin(db, current_user)
 
@@ -400,13 +462,36 @@ async def reset_service_principal_preference(
         persona_key=persona_key,
     )
 
-    removed = await service.reset_preference(
-        db,
-        org_id=current_user.org_id,
-        principal_kind="service_account",
-        principal_id=canonical_id,
-        persona_key=persona_key,
-    )
+    try:
+        removed = await service.reset_preference(
+            db,
+            org_id=current_user.org_id,
+            principal_kind="service_account",
+            principal_id=canonical_id,
+            persona_key=persona_key,
+            expected_revision=request.expected_revision if request else None,
+        )
+    except service.PreferenceConflictError as exc:
+        compatibility_class, default_model_id, class_default_status = await service.get_persona_class_default(db, persona_key)
+        return JSONResponse(
+            status_code=409,
+            content=ConflictResponse(
+                tenant_id=current_user.org_id,
+                persona_key=persona_key,
+                compatibility_class=compatibility_class,
+                harness_contract_revision=service.persona_harness_contract_revision(persona_key),
+                principal_kind="service_account",
+                principal_id=canonical_id,
+                effective_model_id=exc.row.canonical_model_id,
+                current_model_id=exc.row.canonical_model_id,
+                current_revision=exc.row.revision,
+                updated_at=exc.row.updated_at,
+                updated_by=exc.row.updated_by,
+                default_model_id=default_model_id,
+                default_source=compatibility_class,
+                class_default_status=class_default_status,
+            ).model_dump(mode="json"),
+        )
 
     if removed and existing:
         await service.write_audit(
@@ -436,7 +521,7 @@ async def reset_service_principal_preference(
         principal_id=canonical_id,
         persona_key=persona_key,
     )
-    return PreferenceDetailResponse(**result)
+    return ResetPreferenceResponse(tenant_id=current_user.org_id, removed=removed, **result)
 
 
 # ── Service-principal lifecycle ─────────────────────────────────────────────

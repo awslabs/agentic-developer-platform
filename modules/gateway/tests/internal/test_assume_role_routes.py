@@ -182,7 +182,12 @@ def _mock_sts_response():
 
 class TestAssumeRoleHappyPath:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("authority_kind", ["human_event", "gate_decision"])
+    # Both kinds must be ones the platform actually mints. `"human_event"` was neither in
+    # `RECOGNIZED_AUTHORITY_KINDS` nor minted anywhere in `src/`; the case passed only
+    # because `authorize_worker_credential` fail-open-permitted every unrecognized kind,
+    # which #4529 closed. `github_event` is the kind this case means — a customer role
+    # delivered to a worker rooted in a verified GitHub event, with no engine policy.
+    @pytest.mark.parametrize("authority_kind", ["github_event", "gate_decision"])
     async def test_protected_worker_preserves_existing_customer_role_delivery_without_execution_policy(self, db, monkeypatch, authority_kind):
         """Protected authentication must preserve user-created deployment roles.
 

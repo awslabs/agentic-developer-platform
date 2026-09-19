@@ -23,7 +23,7 @@ class TestPersonaCatalogueEndpoint:
             assert resp.status_code == 200
             body = resp.json()
             assert "personas" in body
-            assert len(body["personas"]) == 12
+            assert len(body["personas"]) == 14
 
     @pytest.mark.asyncio
     async def test_persona_row_shape(self, session):
@@ -65,6 +65,19 @@ class TestModelCatalogueEndpoint:
             assert body["persona_key"] == "developer"
             assert body["compatibility_class"] == "claude-agent-sdk"
             assert len(body["models"]) == 9
+
+    @pytest.mark.asyncio
+    async def test_codex_reviewer_never_receives_claude_catalogue_fallback(self, session):
+        ctx = member_context()
+        async with client_for(session, ctx) as client:
+            resp = await client.get(
+                "/me/persona-models/catalog",
+                params={"persona_key": "agent-codex-reviewer"},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["compatibility_class"] == "codex-sdk"
+            assert body["models"] == []
 
     @pytest.mark.asyncio
     async def test_model_row_shape(self, session):

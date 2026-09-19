@@ -65,7 +65,13 @@ def _prepare(monkeypatch, tmp_path, entrypoint, *, mediated: str | None):
     # That flag also binds the pod to its protected invocation over the network.
     # Stubbed so these tests stay about mediation wiring; the binding itself is
     # covered in test_run_identity.py.
-    monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", MagicMock())
+    from lib.run_identity import ModelPolicyReport
+
+    identity = MagicMock()
+    identity.model_policy_report = ModelPolicyReport(
+        status="unavailable", posture="report_only", posture_verified=True, reason="snapshot_missing"
+    )
+    monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", MagicMock(return_value=identity))
     monkeypatch.setenv("GH_APP_ID", _BROKERED_APP_ID)
     if mediated is None:
         monkeypatch.delenv("ADP_MEDIATED_GITHUB_ENABLED", raising=False)

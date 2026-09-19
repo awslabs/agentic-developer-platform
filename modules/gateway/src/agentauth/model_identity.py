@@ -19,6 +19,12 @@ from starlette.responses import JSONResponse
 from src.agentauth.adapter import CREDENTIAL_HEADER
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionStateError
+from src.agentauth.grants import (
+    AUTHORITY_GATE_DECISION,
+    AUTHORITY_REPLAN_REQUEST,
+    AUTHORITY_SERVICE_POLICY,
+    RECOGNIZED_AUTHORITY_KINDS,
+)
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
@@ -68,22 +74,42 @@ class AgentModelIdentityMiddleware:
                 raise BootstrapRefusedError("model run assertion mismatch")
             if request.headers.get("X-Agent-OrgId", caller.tenant_id) != caller.tenant_id:
                 raise BootstrapRefusedError("model tenant assertion mismatch")
+            # Recognized-authority handling (#4529). Previously this block keyed on two
+            # inequalities — `!= "service_policy"` for root resolution and
+            # `== "gate_decision"` for policy admission — so an authority kind nobody
+            # had taught this path about reached the provider with no policy check, no
+            # budget binding, and `flow_id` dropped from its run binding. That last
+            # part is the quiet one: spend still happened, it just was not attributed
+            # to the flow that caused it, so it could not be seen or capped.
+            if grant.authority.kind not in RECOGNIZED_AUTHORITY_KINDS:
+                raise BootstrapRefusedError("unsupported authority source")
             root = grant.authority.human_id
-            if grant.authority.kind != "service_policy":
+            if grant.authority.kind != AUTHORITY_SERVICE_POLICY:
                 async with get_session_factory()() as session:
                     root = await resolve_root_user_entity_id(session, caller.tenant_id, root)
-                    if grant.authority.kind == "gate_decision":
+                    if grant.authority.kind in {AUTHORITY_GATE_DECISION, AUTHORITY_REPLAN_REQUEST}:
                         from src.orchestration.flow_meter import meter_target
                         from src.orchestration.policy_admission import load_in_force_policy
                         from src.orchestration.runtime_policy import authorize_worker_credential
 
                         execution = await run_in_threadpool(runtime.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
                         inputs = await load_in_force_policy(session, org_id=caller.tenant_id, flow_id=grant.flow_id)
-                        decision = await authorize_worker_credential(
-                            session, execution=execution or {}, grant=grant, broker_path="model", inputs=inputs
-                        )
-                        if not decision.permitted:
-                            raise ModelPolicyRefusedError(decision)
+                        if inputs.refusal is not None:
+                            raise ModelPolicyRefusedError(inputs.refusal)
+                        # An authoring run has no graph node, so the assignment-level
+                        # check below does not apply to it and `authorize_worker_credential`
+                        # refuses its kind outright. Metering still must: the ruling is
+                        # that a replan author works under "existing applicable budget
+                        # constraints", and an authoring job that could spend outside its
+                        # flow's accepted budget would be a way to spend a flow's money
+                        # without touching the flow. So this kind skips the assignment
+                        # check and keeps the budget binding below.
+                        if grant.authority.kind == AUTHORITY_GATE_DECISION:
+                            decision = await authorize_worker_credential(
+                                session, execution=execution or {}, grant=grant, broker_path="model", inputs=inputs
+                            )
+                            if not decision.permitted:
+                                raise ModelPolicyRefusedError(decision)
                         if inputs.policy is not None:
                             if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
                                 raise AuthorityStoreError("policy budget enforcement unavailable")
@@ -139,9 +165,23 @@ class AgentModelIdentityMiddleware:
                 # immediately before spending.
                 attribution = await runtime.validate_flow(record, grant)
                 async with get_session_factory()() as session:
-                    decision = await authorize_worker_credential(session, execution=execution or {}, grant=grant, broker_path="model")
-                    if not decision.permitted:
-                        raise ModelPolicyRefusedError(decision)
+                    # Same kind test as the pre-upload check, and it must stay the same
+                    # one: this is that check repeated after the body arrived, not a
+                    # different policy. An authoring run is re-proved by the
+                    # `authenticate` + `validate_flow` pair immediately above, which is
+                    # the live re-proof available for a kind that owns no graph node.
+                    if grant.authority.kind == AUTHORITY_GATE_DECISION:
+                        decision = await authorize_worker_credential(session, execution=execution or {}, grant=grant, broker_path="model")
+                        if not decision.permitted:
+                            raise ModelPolicyRefusedError(decision)
+                    elif grant.authority.kind == AUTHORITY_REPLAN_REQUEST:
+                        current_inputs = await load_in_force_policy(session, org_id=caller.tenant_id, flow_id=grant.flow_id)
+                        if current_inputs.refusal is not None:
+                            raise ModelPolicyRefusedError(current_inputs.refusal)
+                        if current_inputs.plan_version != inputs.plan_version or current_inputs.policy != inputs.policy:
+                            raise BootstrapRefusedError("authoring model policy changed during upload")
+                        if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
+                            raise AuthorityStoreError("policy budget enforcement unavailable")
                 # The quote is evidence about specific bytes priced at a specific
                 # published revision. Re-verify that binding here — after upload
                 # and reauthentication, immediately before the reservation — so a
@@ -168,8 +208,24 @@ class AgentModelIdentityMiddleware:
                 tenant_id=caller.tenant_id,
                 user_id=root,
                 root_human_id=root,
-                is_human_rooted=grant.authority.kind != "service_policy",
-                flow_id=grant.flow_id if grant.authority.kind == "gate_decision" else None,
+                is_human_rooted=grant.authority.kind != AUTHORITY_SERVICE_POLICY,
+                # Both engine kinds bind their flow, so an authoring run's spend is
+                # attributed to the flow it was commissioned to amend rather than
+                # floating free of it. Dropping `flow_id` here is what previously made
+                # a non-`gate_decision` run's cost invisible to flow-level accounting.
+                flow_id=grant.flow_id if grant.authority.kind in {AUTHORITY_GATE_DECISION, AUTHORITY_REPLAN_REQUEST} else None,
+            )
+            # Issue #5426: attach only the protected PMM-06 snapshot projection.
+            # This is report-only evidence and therefore degrades to None; it can
+            # neither deny the provider call nor be supplied by the worker.
+            from src.usage.model_policy_evidence import HEADER, protected_usage_attribution
+
+            context._persona_usage_attribution = await run_in_threadpool(
+                protected_usage_attribution,
+                store=runtime.store,
+                record=record,
+                decision_id=request.headers.get(HEADER),
+                approving_human_id=grant.authority.human_id or None,
             )
             # Issue #4898: attach the verified graph assignment so the shared
             # usage writer can persist `usage_logs.graph_address`. Captured HERE —

@@ -59,7 +59,15 @@ export function configureBeads(newConfig: Partial<BeadsConfig>): void {
 }
 
 export function isBeadsEnabled(): boolean {
-  return config.enabled;
+  return config.enabled && !protectedBeadsRun();
+}
+
+function protectedBeadsRun(): boolean {
+  return process.env.ADP_AGENT_AUTHORITY_ENABLED?.toLowerCase() === 'true';
+}
+
+function requireLegacyBeadsSync(): void {
+  if (protectedBeadsRun()) throw new Error('Shared Beads S3 sync is unavailable for protected runs; use GitHub task tracking');
 }
 
 export function getBeadsConfig(): BeadsConfig {
@@ -209,6 +217,7 @@ export async function isBeadsInitialized(cwd: string = process.cwd()): Promise<b
  * Initialize beads in the current directory
  */
 export async function initializeBeads(cwd: string = process.cwd()): Promise<void> {
+  requireLegacyBeadsSync();
   log('INFO', 'Initializing beads...');
 
   // Initialize with stealth mode (don't commit .beads to git)
@@ -235,6 +244,7 @@ export async function initializeBeads(cwd: string = process.cwd()): Promise<void
  * Sync with remote (pull latest state)
  */
 export async function syncPull(cwd: string = process.cwd()): Promise<void> {
+  requireLegacyBeadsSync();
   if (!config.s3Bucket) {
     log('WARN', 'No S3 bucket configured, skipping sync');
     return;
@@ -253,6 +263,7 @@ export async function syncPull(cwd: string = process.cwd()): Promise<void> {
  * Sync with remote (push current state)
  */
 export async function syncPush(cwd: string = process.cwd()): Promise<void> {
+  requireLegacyBeadsSync();
   if (!config.s3Bucket) {
     log('WARN', 'No S3 bucket configured, skipping sync');
     return;
@@ -535,7 +546,7 @@ export async function startWork(
   agentName: string,
   cwd: string = process.cwd()
 ): Promise<{ task: BeadsTask; context: string } | null> {
-  if (!config.enabled) {
+  if (!isBeadsEnabled()) {
     log('INFO', 'Beads disabled, skipping startWork');
     return null;
   }
@@ -583,7 +594,7 @@ export async function completeWork(
   reason: string,
   cwd: string = process.cwd()
 ): Promise<BeadsTask | null> {
-  if (!config.enabled) {
+  if (!isBeadsEnabled()) {
     log('INFO', 'Beads disabled, skipping completeWork');
     return null;
   }
@@ -609,7 +620,7 @@ export async function reportFailure(
   errorMessage: string,
   cwd: string = process.cwd()
 ): Promise<void> {
-  if (!config.enabled) {
+  if (!isBeadsEnabled()) {
     return;
   }
 

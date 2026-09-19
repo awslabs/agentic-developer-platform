@@ -17,7 +17,7 @@ from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
 from src.agentauth.bootstrap import BootstrapRefusedError, _key, envelope_digest
-from src.agentauth.grants import AgentAction
+from src.agentauth.grants import AUTHORITY_GATE_DECISION, AgentAction
 from src.agentauth.policy import PolicyError
 from src.orchestration.models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from src.orchestration.state import NodeState
@@ -162,7 +162,7 @@ async def register_wave(*, service, session_factory, body, credential_token, wor
     parent = await run_in_threadpool(service.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
     if (
         not parent
-        or grant.authority.kind != "gate_decision"
+        or grant.authority.kind != AUTHORITY_GATE_DECISION
         or parent.get("parent_principal")
         or parent.get("coordinator_flow_id") != {"S": grant.flow_id}
         or body.repo != configured_repo

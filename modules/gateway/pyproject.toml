@@ -59,6 +59,17 @@ dev = [
     "moto==5.0.27",
     "ruff==0.9.6",
     "pytest-timeout==2.3.1",
+    # CI wall-clock: the suite is ~13.9k tests that previously ran strictly
+    # serially, taking ~45min. xdist runs them across processes; split shards
+    # them across runners. Measured on one machine over a 4.2k-test slice:
+    # serial 477s -> -n 4 205s -> -n 8 138s (scaling is sublinear, so shard
+    # across runners too rather than only raising -n).
+    # NEVER pass `-n auto`: nproc inside the ARC runner reports the node's 32
+    # cores, not the pod's cgroup limit, so auto oversubscribes ~4-8x and is
+    # slower than a pinned value. Keep -n aligned to the runner's cpu limit
+    # (see modules/agent-factory/infra/modules/arc-runner/main.tf).
+    "pytest-xdist==3.8.0",
+    "pytest-split==0.11.0",
     "aiosqlite>=0.20.0",
     "psycopg2-binary>=2.9.9",
     # Issue #4969: a real PostgreSQL 16 server for tests/migrations/. The V2
@@ -146,6 +157,7 @@ pricing_policy = ["snapshots/*.json"]
 # omitted from a wheel, it raises at runtime while every test passes from a
 # source checkout.
 "src.orchestration.manifests" = ["*.yaml"]
+"src.domain_proxy" = ["*.json"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/cli/conftest.py" = ["N802", "E501"]

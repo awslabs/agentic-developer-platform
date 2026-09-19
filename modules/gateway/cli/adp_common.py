@@ -32,13 +32,82 @@ class Parser(argparse.ArgumentParser):
         raise CliError(message, "usage_error", 1)
 
 
+_UNRESOLVED = object()
+_deployment = _UNRESOLVED
+
+# The selection variables the front door exports. Their presence is what tells us
+# a selection was actually requested, as opposed to a machine that has simply
+# never registered a deployment — the two need opposite treatment when resolution
+# fails, so this is checked exactly rather than guessed at.
+_SELECTION_VARIABLES = ("ADP_DEPLOYMENT_ID", "ADP_DEPLOYMENT")
+
+
+def deployment():
+    """The one deployment this process runs against — resolved ONCE, then cached.
+
+    Caching is the safety property, not an optimization (Issue #5413). A command
+    reads the gateway URL and then fetches a token; if each read re-consulted the
+    saved default, a concurrent `adp deployment use` in another terminal could
+    change the answer in between and send one deployment's token to another
+    deployment's gateway. One resolution per process makes that impossible.
+
+    Returns None on a machine with no named deployment and no selection, which is
+    what keeps the pre-#5413 paths working untouched for existing users.
+    """
+    global _deployment
+    if _deployment is _UNRESOLVED:
+        _deployment = _resolve_deployment()
+    return _deployment
+
+
+def _resolve_deployment():
+    selected = any(os.environ.get(variable) for variable in _SELECTION_VARIABLES)
+    registered = (Path(os.environ.get("ADP_HOME") or Path.home() / ".adp") / "deployments.json").exists()
+    module = load_provider("adp_deployments.py")
+    if module is None:
+        # A partial install (the sibling file is missing). Degrading to the legacy
+        # single-deployment paths keeps `adp login`/`adp update` usable, which is
+        # how a user repairs that install.
+        if selected or registered:
+            raise CliError("Deployment resolver is missing. Reinstall the CLI.", "deployment_state_unreadable")
+        return None
+    try:
+        resolved = module.resolve()
+        resolved.validate_config()
+        if not resolved.legacy:
+            module.lease(resolved, os.getpid())
+        return resolved
+    except module.DeploymentError as exc:
+        if selected or registered or exc.code != "deployment_not_found":
+            # A selection WAS requested and could not be honoured. Never fall back:
+            # a fallback here is precisely how a credential reaches a deployment
+            # the user did not name.
+            raise CliError(str(exc), exc.code, exc.exit_code) from None
+        return None
+
+
 def config_path():
-    return Path.home() / ".bedrock-gateway/config.json"
+    resolved = deployment()
+    return (resolved.config_dir if resolved else Path.home() / ".bedrock-gateway") / "config.json"
+
+
+def state_dir():
+    resolved = deployment()
+    return resolved.state_dir if resolved else Path.home() / ".adp/state"
 
 
 def gateway_url():
+    """The base URL of the selected deployment's API.
+
+    A registered deployment's URL comes from the registry, because that binding is
+    what the user selected and what must stay pinned for the whole command. The
+    config file is the fallback, and remains the only source on a legacy machine
+    that has no registry at all.
+    """
+    resolved = deployment()
     try:
-        base = json.loads(config_path().read_text())["gateway_url"].rstrip("/")
+        base = (resolved.gateway_url if resolved else "") or json.loads(config_path().read_text())["gateway_url"]
+        base = base.rstrip("/")
         parsed = urllib.parse.urlsplit(base)
         local = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
         if not parsed.hostname or (parsed.scheme != "https" and not (parsed.scheme == "http" and local)):
@@ -57,8 +126,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def access_token():
     helper = Path(__file__).resolve().with_name("bg-cognito-auth.sh")
+    # The helper is handed THIS process's already-resolved deployment rather than
+    # being left to resolve again (Issue #5413). Re-resolving in the child is the
+    # drift window: it would read the saved default a second time, and this call
+    # sits between reading the gateway URL and sending the request — the one place
+    # a changed answer means a token posted to the wrong gateway.
+    resolved = deployment()
+    environment = {**os.environ, **(resolved.environment() if resolved else {})}
     try:
-        token = subprocess.run(["bash", str(helper), "token"], capture_output=True, text=True, timeout=120, check=True).stdout.strip()
+        token = subprocess.run(
+            ["bash", str(helper), "token"], capture_output=True, text=True, timeout=120, check=True, env=environment
+        ).stdout.strip()
         if not token or any(char.isspace() for char in token):
             raise ValueError
         return token
@@ -153,7 +231,53 @@ def read_private_json(path):
 def state_path(name):
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
         raise CliError("Invalid state name.")
-    return private_directory(Path.home() / ".adp/state") / (name + ".json")
+    return private_directory(state_dir()) / (name + ".json")
+
+
+def deployment_stamp():
+    """Identity to record in a handoff file, so a later resume can prove it is ours.
+
+    Issue #5413. A handoff directory outlives the command that wrote it, gets
+    emailed to an administrator, and comes back minutes or days later. By then the
+    saved default may name a different deployment, so the returning `--resume` must
+    be able to tell whose setup it is holding. The gateway URL alone is not that
+    answer: it is the deployment's current binding, not its identity, and two
+    records can be re-pointed or renamed while a handoff is in flight.
+
+    The stable id is recorded because it is the filesystem authority for a
+    deployment; the name is recorded only so the error message can say something a
+    person recognises. Neither is a secret, which is why they may be written into a
+    directory the user is about to hand to somebody else.
+    """
+    resolved = deployment()
+    return {"deployment_id": resolved.id if resolved else "", "deployment": resolved.name if resolved else ""}
+
+
+def check_handoff_deployment(metadata, what="setup"):
+    """Refuse another deployment's handoff BEFORE anything is created or assigned.
+
+    Issue #5413. Ordering is the whole point: this runs while the only thing that
+    has happened is reading a file, so a resume aimed at the wrong deployment
+    changes nothing anywhere — no role provisioned, no routing rule assigned, no
+    state overwritten.
+
+    A handoff written before this change carries no stamp. That is accepted rather
+    than rejected: refusing it would strand a setup a user is part-way through, and
+    the pre-existing gateway-URL check still applies to it.
+    """
+    recorded = (metadata or {}).get("deployment_id")
+    if not recorded:
+        return
+    resolved = deployment()
+    current_id = resolved.id if resolved else ""
+    if recorded != current_id:
+        raise CliError(
+            f"This {what} belongs to deployment {metadata.get('deployment') or recorded!r}, "
+            f"but this command is running against {(resolved.name if resolved else 'the legacy deployment')!r}. "
+            f"Nothing was changed. Rerun it with --deployment {metadata.get('deployment') or '<name>'}.",
+            "deployment_mismatch",
+            1,
+        )
 
 
 def read_state(name):
@@ -178,7 +302,7 @@ def save_session(result):
                 raise CliError("A token refresh is still running. Retry adp admin login.") from None
             time.sleep(0.1)
     try:
-        config = json.loads(config_path().read_text())
+        config = json.loads(config_path().read_text()) if config_path().exists() else {"gateway_url": gateway_url()}
         config.update({key: result[key] for key in ("client_id", "user_pool_id", "region")})
         config.update(refresh_via="gateway", identity_pool_id="")
         tokens = {key: result[key] for key in ("access_token", "id_token", "refresh_token")}

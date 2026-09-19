@@ -41,7 +41,7 @@ def test_ready_agent_pr_dispatches_reviewer(pr_event, action):
     intent, reason = extract_intent_with_reason("pull_request", pr_event)
 
     assert reason is None
-    assert intent.persona == "reviewer"
+    assert intent.persona == "agent-codex-reviewer"
     assert intent.trigger == f"pr_{action}"
 
 
@@ -52,7 +52,7 @@ def test_marking_existing_draft_ready_is_the_review_handoff(pr_event):
     assert extract_intent_with_reason("pull_request", pr_event)[0] is None
     pr_event["action"] = "ready_for_review"
     pr_event["pull_request"]["draft"] = False
-    assert extract_intent_with_reason("pull_request", pr_event)[0].persona == "reviewer"
+    assert extract_intent_with_reason("pull_request", pr_event)[0].persona == "agent-codex-reviewer"
 
 
 def test_ready_event_preserves_agent_branch_filter(pr_event):
@@ -74,5 +74,5 @@ def test_ready_pr_push_preserves_bot_loop_guard(pr_event):
         assert intent is None
         assert reason == skip_reasons.BOT_SYNCHRONIZE_DEDUP
     else:
-        assert intent.persona == "reviewer"
+        assert intent.persona == "agent-codex-reviewer"
         assert reason is None

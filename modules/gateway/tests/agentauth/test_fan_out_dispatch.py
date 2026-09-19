@@ -48,7 +48,7 @@ STORIES = (5333, 5337, 5338)
 
 
 @pytest.fixture
-async def fan_out_context(store, child_dispatch, session, session_factory, monkeypatch):
+async def fan_out_context(store, child_dispatch, session, session_factory, monkeypatch, report_only_db):
     """A root Operations coordinator with no orchestration flow of its own.
 
     Deliberately *not* enrolled into a flow: with no flow naming issue 42 as its
@@ -71,6 +71,9 @@ async def fan_out_context(store, child_dispatch, session, session_factory, monke
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    from src.shared.database import get_db
+
+    app.dependency_overrides[get_db] = report_only_db
     original = store._read("TENANT#tenant", f"EXEC#{child_dispatch.invocation}")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway.test") as client:
         yield SimpleNamespace(
@@ -261,7 +264,9 @@ async def test_child_inherits_neither_capability_nor_repository_scope(fan_out_co
     assert (await send(ctx, story_body(5333, persona="reviewer"), headers=child_headers)).status_code == 202
 
 
-async def test_gate_decision_root_cannot_bypass_the_graph_with_this_scope(store, child_dispatch, session, session_factory, monkeypatch):
+async def test_gate_decision_root_cannot_bypass_the_graph_with_this_scope(
+    store, child_dispatch, session, session_factory, monkeypatch, report_only_db
+):
     """Issue #5365 CD-9: an orchestration-rooted coordinator keeps the graph path.
 
     Its launch was a verified human webhook, so the marker *is* on its grant. But
@@ -286,6 +291,9 @@ async def test_gate_decision_root_cannot_bypass_the_graph_with_this_scope(store,
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    from src.shared.database import get_db
+
+    app.dependency_overrides[get_db] = report_only_db
     original = store._read("TENANT#tenant", f"EXEC#{child_dispatch.invocation}")
     headers = {"X-Caller-Identity": "shared-role", WORKLOAD_HEADER: "root-pod-proof"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://gateway.test") as client:

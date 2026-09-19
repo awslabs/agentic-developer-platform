@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from src.budget.run_binding import RunBinding
     from src.orchestration.dispatch import GraphAttribution
     from src.orchestration.provider_quotes import ProviderQuote
+    from src.usage.persona_attribution import PersonaUsageAttribution
 
 
 class AuthExchangeRequest(BaseModel):
@@ -112,6 +113,19 @@ class TokenContext(BaseModel):
     # from a legacy service-account exchange — both present as
     # account_type="service", auth_source="jwt".
     canonical_alias_source: str = ""
+    # Issue #5420 (PMM-03): model restrictions resolved from the authenticated
+    # Agent Registry row.  This is populated only by the IAM authentication
+    # adapter; request headers and bodies have no path to set it.  ``None``
+    # means the caller did not arrive through Agent Registry, while an empty
+    # list means the registry row has no explicit restriction and therefore
+    # inherits the versioned platform baseline.
+    registered_allowed_models: list[str] | None = None
+    # Issue #5420 (PMM-03): immutable primary key of the authenticated Agent
+    # Registry row.  ``user_id`` remains the human-readable ``agent_name`` for
+    # compatibility and is neither immutable nor unique, so privileged
+    # internal routes must bind to this field instead.  Populated only by the
+    # IAM registry adapter; no request header or body can set it.
+    agent_registry_id: str = ""
 
     # Issue #4323: the run/chain reservation targets this request actually
     # reserved against, stashed by the budget check so the reconcile on the way
@@ -173,6 +187,11 @@ class TokenContext(BaseModel):
     # leave it None, which persists as a NULL address meaning "unavailable" —
     # never zero spend, and never a guessed node.
     _graph_attribution: "GraphAttribution | None" = PrivateAttr(default=None)
+    # Issue #5426: persona/chain/preference-owner evidence derived from PMM-06's
+    # protected model-policy snapshot.  A private attribute is the security
+    # boundary: headers, bodies and ``TokenContext(**caller_data)`` cannot stamp
+    # a persona or service principal onto their own usage rows.
+    _persona_usage_attribution: "PersonaUsageAttribution | None" = PrivateAttr(default=None)
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
     _policy_request_id: str | None = PrivateAttr(default=None)

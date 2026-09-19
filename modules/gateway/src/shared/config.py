@@ -192,6 +192,13 @@ class Settings(BaseSettings):
     # before proxying; per-tenant access is still enforced via the model allowlist.
     mantle_allowed_models: str = "openai.*"
 
+    # PMM-03 / D3: production organization and team model-access policy.
+    # JSON object keyed by ``org_id`` or ``org_id:team_id`` with canonical
+    # model glob lists as values.  The gateway deployment renders this from
+    # SSM; an absent key inherits the versioned platform baseline, while a
+    # present empty list denies all models for that scope.
+    model_allowed_models_config: dict[str, list[str]] = Field(default_factory=dict)
+
     # Issue #3175: Credential-authorization binding (S2).
     # When True, credential endpoints ENFORCE registry-based user resolution:
     # missing invocation_id or empty authorized_user_id → 403.

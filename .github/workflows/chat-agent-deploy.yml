@@ -30,6 +30,7 @@ on:
         default: false
 
 env:
+  ADP_CHAT_MODEL_POLICY_ENABLED: ${{ vars.ADP_CHAT_MODEL_POLICY_ENABLED || 'false' }}
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway-agents

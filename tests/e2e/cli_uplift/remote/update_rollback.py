@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import os
 import re
 import shutil
@@ -417,9 +418,12 @@ def _claude_setup(config, evidence, cli, home, prefix):
     env_block = document.get("env") or {}
     cli.run(["claude", "setup"], expected=0, json_output=False)
 
+    helper_argv = shlex.split(document.get("apiKeyHelper") or "")
     evidence["claude_setup"] = {
-        "api_key_helper_is_installed_absolute_path": document.get("apiKeyHelper")
-        == f"{prefix / 'adp'} token",
+        "api_key_helper_is_installed_absolute_path": len(helper_argv) >= 2
+        and helper_argv[-1] == "token"
+        and Path(helper_argv[-2]).is_absolute()
+        and Path(helper_argv[-2]).resolve() == (prefix / "adp").resolve(),
         "api_key_helper_ttl_ms": document.get("apiKeyHelperTtlMs"),
         "bedrock_enabled": env_block.get("CLAUDE_CODE_USE_BEDROCK") == "1",
         "bedrock_auth_skipped": env_block.get("CLAUDE_CODE_SKIP_BEDROCK_AUTH") == "1",

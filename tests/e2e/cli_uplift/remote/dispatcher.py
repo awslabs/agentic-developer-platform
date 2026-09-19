@@ -44,6 +44,14 @@ PURPOSES = {
     # E14 — `adp update`, `adp update --rollback`, an interrupted install, and
     # the `codex setup`/`claude setup` verbs plus both launchers.
     "update_rollback": ("update_rollback", {}),
+    # E16/E17 (#5413) — one installed CLI against three real deployments. Two
+    # purposes sharing one module, in the `personal_aws` pattern: `overlap` proves
+    # three concurrent tool sessions do not cross, `lifecycle` proves a default
+    # switch, a refresh and one logout leave the other two correctly routed.
+    "multi_deployment_concurrency": ("multi_deployment", {"mode": "overlap"}),
+    "multi_deployment_lifecycle": ("multi_deployment", {"mode": "lifecycle"}),
+    # Diagnostic checkpoint only; deliberately not mapped to an acceptance case.
+    "multi_deployment_sessions": ("multi_deployment_sessions", {}),
 }
 
 
