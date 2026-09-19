@@ -46,6 +46,7 @@ UNIT_MODULES = [
     "src.agentauth.registration_routes",
     "src.agentauth.run_services",
     "src.agentauth.knowledge_service",
+    "src.agentauth.task_routes",
     # #5223: mediated GitHub operations. A separate module from
     # registration_routes even though it shares the /self prefix, because this is
     # the only route on that prefix that reaches an external provider and holds an
