@@ -326,6 +326,87 @@ def test_missing_installation_id_degrades_to_the_runs_own_identity(monkeypatch):
 # ---- exit codes ------------------------------------------------------------
 
 
+def test_cli_reads_rotated_token_instead_of_expired_inherited_token(monkeypatch, tmp_path, capsys):
+    """Long reviews outlive the initial GH_TOKEN; the existing mount is refreshed."""
+    from adp_review import __main__ as cli
+
+    token_file = tmp_path / "token"
+    monkeypatch.setenv("ADP_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("GH_TOKEN", "expired-inherited-token")
+    monkeypatch.setenv("GITHUB_TOKEN", "another-expired-token")
+    monkeypatch.delenv("ADP_REVIEW_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "mint_review_token", lambda **kwargs: (None, "default"))
+    observed = []
+
+    def api(method, path, payload, token):
+        observed.append(token)
+        assert payload["commit_id"] == "a" * 40
+        assert payload["event"] == "APPROVE"
+        if token != token_file.read_text().strip():
+            return 401, '{"message":"Bad credentials"}'
+        return _ok_review()
+
+    monkeypatch.setattr(review_client, "_api", api)
+    for token in ("rotated-token-one", "rotated-token-two"):
+        token_file.write_text(token + "\n")
+        with pytest.raises(SystemExit) as result:
+            cli.cmd_submit(
+                [
+                    "--repo",
+                    _REPO,
+                    "--pr",
+                    str(_PR),
+                    "--event",
+                    "APPROVE",
+                    "--body",
+                    _BODY,
+                    "--commit",
+                    "a" * 40,
+                ]
+            )
+        assert result.value.code == EXIT_OK
+        output = capsys.readouterr()
+        assert json.loads(output.out)["verdict_recorded"] is True
+        assert "same identity that authored" not in output.err
+        assert "GitHub will refuse" not in output.err
+        assert token not in output.out + output.err
+        assert "expired-inherited-token" not in output.out + output.err
+    assert observed == ["rotated-token-one", "rotated-token-two"]
+
+
+def test_explicit_review_token_takes_precedence_over_regular_rotated_token(monkeypatch, tmp_path):
+    token_file = tmp_path / "token"
+    token_file.write_text("ordinary-bot-token")
+    monkeypatch.setenv("ADP_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("ADP_REVIEW_TOKEN", "explicit-reviewer-token")
+    assert review_client._github_token() == "explicit-reviewer-token"
+
+
+@pytest.mark.parametrize("file_state", ["missing", "empty", "unreadable"])
+def test_token_without_usable_mount_keeps_existing_environment_fallback(
+    monkeypatch, tmp_path, file_state
+):
+    token_file = tmp_path / "token"
+    if file_state == "empty":
+        token_file.write_text(" \n")
+    elif file_state == "unreadable":
+        token_file.mkdir()
+    monkeypatch.setenv("ADP_TOKEN_FILE", str(token_file))
+    monkeypatch.delenv("ADP_REVIEW_TOKEN", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "ordinary-environment-token")
+    assert review_client._github_token() == "ordinary-environment-token"
+
+
+def test_default_identity_does_not_claim_a_pr_specific_verdict_capability(monkeypatch, capsys):
+    from adp_review import __main__ as cli
+
+    monkeypatch.setattr(cli, "mint_review_token", lambda **kwargs: (None, "default"))
+    with pytest.raises(SystemExit) as result:
+        cli.cmd_identity(["--repo", _REPO])
+    assert result.value.code == EXIT_PENDING_APPROVAL
+    assert json.loads(capsys.readouterr().out)["can_record_verdict"] is None
+
+
 def test_exit_codes_separate_recorded_from_published_only():
     """A caller checking only `exit == 0` must never conclude a verdict exists."""
     assert EXIT_OK == 0
