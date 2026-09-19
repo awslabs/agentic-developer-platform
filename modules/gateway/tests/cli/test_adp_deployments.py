@@ -33,6 +33,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -422,7 +423,8 @@ class TestRemove:
         def fail_cleanup(path):
             assert path == store
             assert "integration" not in deployments.load_registry()["deployments"]
-            assert not (deployments.adp_home() / "registry.lock").exists()
+            with (deployments.adp_home() / "registry.lock").open("r+") as lock:
+                deployments.fcntl.flock(lock, deployments.fcntl.LOCK_EX | deployments.fcntl.LOCK_NB)
             raise OSError("simulated cleanup failure")
 
         monkeypatch.setattr(deployments.shutil, "rmtree", fail_cleanup)
@@ -757,6 +759,78 @@ class TestCommandLineSurface:
 
 
 class TestConcurrentRegistryWrites:
+    def test_forced_stale_lock_never_allows_overlapping_contenders(self, isolated_home: Path) -> None:
+        lock_path = isolated_home / "registry.lock"
+        isolated_home.mkdir(mode=0o700)
+        lock_path.touch(mode=0o600)
+        stale_time = time.time() - 60
+        os.utime(lock_path, (stale_time, stale_time))
+        worker = r"""
+import importlib.util
+import os
+import sys
+import time
+from pathlib import Path
+
+module_path, role, shared_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("contender_deployments", module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+shared = Path(shared_path)
+marker = shared / "critical-section"
+overlap = shared / "overlap"
+
+if role == "holder":
+    with module._RegistryLock():
+        try:
+            marker.mkdir()
+            owns_marker = True
+        except FileExistsError:
+            overlap.touch()
+            owns_marker = False
+        (shared / "holder-entered").touch()
+        while not (shared / "release-holder").exists():
+            time.sleep(0.01)
+        if owns_marker:
+            marker.rmdir()
+else:
+    (shared / "contender-ready").touch()
+    with module._RegistryLock():
+        if marker.exists():
+            overlap.touch()
+        (shared / "contender-entered").touch()
+"""
+        holder = subprocess.Popen([sys.executable, "-c", worker, str(MODULE_PATH), "holder", str(isolated_home)], env=os.environ.copy())
+        contender = None
+        try:
+            deadline = time.monotonic() + 10
+            while not (isolated_home / "holder-entered").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert (isolated_home / "holder-entered").exists()
+
+            os.utime(lock_path, (stale_time, stale_time))
+            contender = subprocess.Popen(
+                [sys.executable, "-c", worker, str(MODULE_PATH), "contender", str(isolated_home)], env=os.environ.copy()
+            )
+            while not (isolated_home / "contender-ready").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert (isolated_home / "contender-ready").exists()
+            time.sleep(0.2)
+            assert not (isolated_home / "contender-entered").exists()
+            assert not (isolated_home / "overlap").exists()
+
+            (isolated_home / "release-holder").touch()
+            assert holder.wait(timeout=10) == 0
+            assert contender.wait(timeout=10) == 0
+            assert (isolated_home / "contender-entered").exists()
+            assert not (isolated_home / "overlap").exists()
+        finally:
+            (isolated_home / "release-holder").touch()
+            for process in (holder, contender):
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=10)
+
     def test_parallel_adds_all_land(self) -> None:
         """Registry writes serialize briefly; none may be lost to a lost update."""
         names = ["dev", "integration", "preprod", "sandbox", "scratch"]

@@ -107,7 +107,6 @@ LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 LEGACY_AWS_PROFILE = "bedrock-gateway"
 
 REGISTRY_LOCK_TIMEOUT_SECONDS = 10
-REGISTRY_LOCK_STALE_SECONDS = 30
 
 
 class DeploymentError(Exception):
@@ -278,52 +277,60 @@ def _write_json_private(path, value):
 class _RegistryLock:
     """Brief exclusive hold on the registry, for read-modify-write only.
 
-    mkdir is the primitive because it is atomic on POSIX and needs no flock(1)
-    (macOS does not ship one). Deliberately NOT held across a login, a network
-    call or a token refresh: those take minutes, and blocking every other
-    terminal's `deployment list` behind one browser approval would be its own bug.
+    The persistent file is locked through the Python fcntl API available on the
+    supported macOS/Linux platforms. The kernel releases ownership when the
+    process exits, so no age-based reclamation can remove a current owner's lock.
+    Deliberately NOT held across a login, a network call or a token refresh: those
+    take minutes, and blocking every other terminal's `deployment list` behind
+    one browser approval would be its own bug.
     """
 
     def __init__(self):
         self._path = adp_home() / "registry.lock"
-        self._held = False
+        self._handle = None
 
     def __enter__(self):
         private_directory(self._path.parent, allow_readable=True)
-        deadline = time.monotonic() + REGISTRY_LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                self._path.mkdir(mode=0o700)
-                self._held = True
-                return self
-            except FileExistsError:
-                if self._stale():
-                    self._remove()
-                    continue
-                if time.monotonic() >= deadline:
-                    raise DeploymentError(
-                        f"Another adp command is updating the deployment registry. Retry, or remove {self._path} if nothing is running.",
-                        "deployment_busy",
-                    ) from None
-                time.sleep(0.05)
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = None
+        try:
+            descriptor = os.open(self._path, flags, 0o600)
+            handle = os.fdopen(descriptor, "r+")
+        except OSError as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise DeploymentError(f"Could not open the deployment registry lock {self._path}: {exc}", "unsafe_file") from None
+        try:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                raise DeploymentError(f"Use a private lock file owned by you with permissions 0600: {self._path}", "unsafe_file")
+            deadline = time.monotonic() + REGISTRY_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._handle = handle
+                    return self
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise DeploymentError(
+                            "Another adp command is updating the deployment registry. Retry after it finishes.",
+                            "deployment_busy",
+                        ) from None
+                    time.sleep(0.05)
+        except BaseException:
+            handle.close()
+            raise
 
     def __exit__(self, *_):
-        if self._held:
-            self._remove()
-            self._held = False
+        if self._handle is not None:
+            try:
+                fcntl.flock(self._handle, fcntl.LOCK_UN)
+            finally:
+                self._handle.close()
+                self._handle = None
         return False
-
-    def _stale(self):
-        try:
-            return (time.time() - self._path.stat().st_mtime) >= REGISTRY_LOCK_STALE_SECONDS
-        except OSError:
-            return False
-
-    def _remove(self):
-        try:
-            self._path.rmdir()
-        except OSError:
-            pass
 
 
 def _empty_registry():
