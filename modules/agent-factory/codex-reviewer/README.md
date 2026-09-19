@@ -48,6 +48,14 @@ Git and bounded-fix checks remain in force.
   head.
 - `CODEX_REVIEWER_MODEL` selects the gateway model identifier.
 
+## Adding another Codex persona
+
+Keep transport unchanged. Register the persona name through the existing
+catalogue, package its adapter in `adp-agent-runtime`, and extend the shared
+entrypoint's persona-to-command allow-list. For example,
+`agent-codex-architect` should select its adapter from `persona`; it must not
+add an engine field, queue, webhook dispatcher, or GitHub identity.
+
 ## Local verification
 
 ```bash
