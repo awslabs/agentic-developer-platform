@@ -225,7 +225,7 @@ async def _adopt_lane_for_resume(
             required_input="resolve this tenant's configured repository identity before adopting its lane",
             detail=f"repository identity unavailable ({exc.code if isinstance(exc, WorkClaimError) else type(exc).__name__})",
         )
-    claim = await db.scalar(candidates.where(OrchestrationWorkClaim.provider_repository_id == repository_id))
+    claim = await db.scalar(candidates.where(OrchestrationWorkClaim.provider_repository_id == repository_id).with_for_update())
     if claim is None:
         return None
 
@@ -245,6 +245,14 @@ async def _adopt_lane_for_resume(
             owner="platform-operator",
             required_input="resolve the in-force execution policy for this flow before adopting its lane",
             detail=f"in-force policy could not be resolved: {inputs.refusal}",
+        )
+
+    if inputs.policy is None or not inputs.policy.policy_id or not inputs.policy.policy_hash:
+        return outstanding_block(
+            BlockCode.AUTHORITY_UNVERIFIABLE,
+            owner="plan-owner",
+            required_input="accept an execution policy before adopting this legacy lane",
+            detail="an accepted plan alone does not authorize autonomous lane adoption",
         )
 
     decision_id = await _latest_approval_decision_id(db, org_id=org_id, flow_id=node.flow_id)

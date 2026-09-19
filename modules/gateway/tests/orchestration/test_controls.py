@@ -900,16 +900,30 @@ class TestLegacyLaneAdoptionThroughResume:
         a `PLAN_ACCEPTED` decision are seeded because adoption is policy-bound: the
         route resolves both server-side and refuses without them.
         """
+        from decimal import Decimal
+
+        from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits, stamp_policy
         from src.orchestration.models import OrchestrationAcceptedPlan
         from src.orchestration.work_claims import ClaimBinding, ClaimOwner, OwnerKind, bind_run, claim_work
 
         flow = await seed_flow(session, slug=f"legacy-{issue}")
+        policy = stamp_policy(
+            ExecutionPolicy(
+                org_id=ORG_A,
+                repository_ids=["acme/work"],
+                allowed_actions=[Action.DEVELOP],
+                expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+                limits=PolicyLimits(max_wall_clock_seconds=86400, max_spend_usd=Decimal("100"), max_attempts_per_node=10, max_concurrent_actions=5),
+            ),
+            principal_id=USER_ID,
+            org_id=ORG_A,
+        )
         session.add(
             OrchestrationAcceptedPlan(
                 org_id=ORG_A,
                 flow_id=flow.id,
                 version=3,
-                plan_document={},
+                plan_document={"execution_policy": policy.model_dump(mode="json")},
                 plan_hash=f"plan-{issue}",
             )
         )
@@ -1367,3 +1381,18 @@ class TestLegacyLaneAdoptionThroughResume:
         assert response.status_code == 403
         assert await state_of(session, node.id) == NodeState.AWAITING_MERGE.value
         assert (await session.get(OrchestrationWorkClaim, receipt.claim_id)).state == ClaimState.HELD.value
+
+    @pytest.mark.asyncio
+    async def test_accepted_plan_without_execution_policy_cannot_adopt(self, session, app_with_router):
+        from src.orchestration.models import ClaimState, OrchestrationAcceptedPlan, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        flow, node, receipt = await self._held_story(session, run_id="legacy-run")
+        await session.execute(update(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id).values(plan_document={}))
+        await session.flush()
+        self._resolver(app_with_router, {"legacy-run": _exited_row()})
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+        assert response.status_code == 409, response.text
+        claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
+        assert (claim.state, claim.generation, claim.active_run_id) == (ClaimState.HELD.value, receipt.generation, "legacy-run")
+        assert self._blocks(await decisions_for(session, flow.id))[-1][1]["block_code"] == "authority_unverifiable"
