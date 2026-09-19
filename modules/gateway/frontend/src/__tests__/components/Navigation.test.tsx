@@ -68,6 +68,33 @@ describe('Navigation', () => {
       system_dashboard: true,
       logs: true,
       gitlab: false,
+      agent_models: false,
+    });
+  });
+
+  describe('Agent Models link (feature-gated, Issue #5422)', () => {
+    it('is absent until the strict rollout flag is enabled', () => {
+      renderNavigation();
+      expect(screen.queryByText('Agent Models')).not.toBeInTheDocument();
+    });
+
+    it('is available to an ordinary authenticated user when enabled', () => {
+      mockUseFeatures.mockReturnValue({
+        chat: true,
+        knowledge: true,
+        indexing: true,
+        connections: true,
+        credentials: true,
+        system_dashboard: true,
+        logs: true,
+        gitlab: false,
+        agent_models: true,
+      });
+      renderNavigation();
+      expect(screen.getByText('Agent Models').closest('a')).toHaveAttribute(
+        'href',
+        '/settings/agent-models',
+      );
     });
   });
 
