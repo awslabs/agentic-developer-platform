@@ -1,0 +1,290 @@
+# Superplane + SkyPilot release lock — Issue #5041 (U2), EPIC #4910.
+#
+# WHAT THIS FILE IS FOR
+#
+# Every later deploy resolves what to run against this file, so that "which revision is
+# actually running" has an answer that does not depend on when somebody last pulled. The
+# practice is new to ADP: there is no digest-pinning precedent to reuse here. The existing
+# cyber lanes deploy floating tags (cyber-k8s-deploy.yml, cyber/scripts/deploy.sh), and
+# upstream's own SkyPilot manifests deploy `berkeleyskypilot/skypilot:latest` in all three
+# of infra/skypilot-api/02-*, 03-* and templates/skypilot-api.yaml.
+#
+# That floating tag is not a theoretical hazard. At the time this lock was authored the two
+# refs resolved to different images:
+#
+#     berkeleyskypilot/skypilot:latest -> sha256:3bc8bf8f4d83023bae2260b15d01f7581fa2c3e225b75983d92c7f781252662d
+#     berkeleyskypilot/skypilot:0.12.0 -> sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019
+#
+# A deploy reading the first one cannot say what it ran. This file pins the second.
+#
+# WHY THERE ARE TWO MAPS AND NOT ONE
+#
+# `images` and `pending_images` exist because the things this lock covers are not equally
+# knowable, and collapsing them would require inventing a value.
+#
+#   `images`         — digest resolved and verifiable. A deploy may use these.
+#   `pending_images` — the image does not exist yet, because building it needs access ADP
+#                      does not have. These entries carry NO digest field at all.
+#
+# The three Superplane images are built from aws-innovate/AISuperPlane, which the hosted
+# agent token cannot read (it is scoped to this repository). Their digests therefore cannot
+# exist until the access grant below is resolved. A placeholder digest would be worse than
+# a floating tag: a tag is visibly unpinned, whereas a fabricated `sha256:` looks
+# authoritative and would be believed. So they are recorded as pending, with the gate that
+# blocks them named, and `tests/test_lock.py` asserts they carry no digest — which keeps
+# this a declaration of what is unresolved rather than a place a tag can hide.
+#
+# Consequently the smoke check (`all(...startswith('sha256:') for i in d['images']...)`)
+# passes over resolved entries only, and passes honestly.
+
+schema_version: 1
+
+# ── Historical origin (provenance, NOT a build input) ────────────────────────────────
+#
+# U22 (#5326) transferred the three components into ADP ownership, so this block changed
+# meaning: it is now the HISTORICAL ORIGIN of the transferred files, recorded separately
+# from the ADP commit that maintains them (see `maintained_source` below). The issue
+# requires those two facts be kept apart — conflating them is how a reader loses the
+# ability to say whether a file has been changed since the transfer.
+#
+# The revision below remains the exact revision the maintained tree was adopted at. All
+# 161 transferred files were byte-identical at adoption, verified by Git blob id. The
+# maintained tree's intentional test-only divergences are recorded in
+# ../src/TRANSFER-MANIFEST.md. This revision still matches
+# spike/provenance.py:UPSTREAM_REVISION, which U12's parity fixtures cite, and
+# tests/test_lock.py asserts the two have not drifted.
+#
+# Upstream is now a historical origin only. Future maintained changes land in ADP.
+upstream:
+  repository: https://github.com/aws-innovate/AISuperPlane
+  revision: 5d543c952493f0765133b92e93301b0b24d028ee
+  role: historical origin of the transferred components; not a build input and not a
+    maintenance target after U22
+
+# ── Maintained source (what builds actually read) ────────────────────────────────────
+#
+# The answer to "where does the code being built live" after U22. Build lanes read these
+# in-repository paths, which is why `source_access` below is resolved: no upstream access,
+# no PAT and no reference tree is involved in building any of the three components.
+maintained_source:
+  repository: this repository (aws-e/adp)
+  root: modules/domain-apps/superplane/src
+  transferred_by:
+    issue: 5326
+    unit: U22
+  # The ADP commit the files were adopted FROM (the pinned reference the issue names).
+  # Recorded separately from `upstream.revision` on purpose: this is an ADP fact, that is
+  # an upstream fact, and a single "revision" field could only carry one of them.
+  adopted_from_adp_commit: 8f01c1edfc6052671e214bc944cedaab51cc939b
+  components:
+    superplane-api: src/superplane-api
+    superplane-controller: src/superplane-controller
+    superplane-platform-monitor: src/superplane-platform-monitor
+
+# ── How the pinned source is obtained ────────────────────────────────────────────────
+#
+# RESOLVED BY U22 (#5326) via the third candidate mechanism that was recorded here while
+# this was unresolved: "a transferred source location inside ADP's control". The grant
+# question that blocked these lanes — read access to a repository ADP does not own — no
+# longer applies to these three components, because ADP now maintains their source.
+#
+# This is a source-location fact, not an authorization claim. It does NOT assert the
+# components are deployable, that their inherited defects are repaired, or that any
+# credential was granted: U13 still owns migration repair, U14 auth enforcement, and U23
+# the deployable full release.
+source_access:
+  status: resolved
+  mechanism: a transferred source location inside ADP's control
+  resolved_by:
+    issue: 5326
+    unit: U22
+  # Kept after resolution: these remain the wrong ways to obtain this source, and
+  # tests/test_build_source_is_declared.py still enforces that no lane uses either.
+  ruled_out:
+    - why: the hosted agent token is scoped to this repository, so a checkout of the
+        upstream repository fails for everyone rather than only in CI — and after U22
+        there is no reason to reach upstream for these components at all
+      mechanism: actions/checkout of aws-innovate/AISuperPlane
+    - why: it is read-only evidence at the revision above, verified inert; building from
+        it would ship evidence as a product, and it must not become a second writable
+        runtime tree alongside the maintained one
+      mechanism: the reference snapshot on the planning branch
+
+# ── Resolved pins ────────────────────────────────────────────────────────────────────
+#
+# Digest-addressed and verifiable. Keys are referenced by name from the deploy side (U3),
+# so treat them as a contract.
+images:
+  skypilot-api: sha256:de41a5c61e6b62700795c64368cd1560348f27f33ebb8d7c0eb4faaba0d75019
+
+# Provenance for each entry in `images`: which registry/repository/tag the digest was
+# resolved from, so a reader can re-resolve it and get the same answer.
+image_sources:
+  skypilot-api:
+    registry: registry-1.docker.io
+    repository: berkeleyskypilot/skypilot
+    # The tag is recorded for auditability ONLY — deploys use the digest above. This tag
+    # is mutable and may point elsewhere later; that is exactly why the digest is the pin.
+    tag: 0.12.0
+    resolved_by: >-
+      GET /v2/berkeleyskypilot/skypilot/manifests/0.12.0, docker-content-digest header
+    # Chosen to match the version the upstream controller's SkyPilot client reports
+    # (src/superplane-controller, HealthResponse Version "0.12.0"), so the pinned runtime
+    # is the one the controller was written against rather than a newer arbitrary release.
+    selected_because: matches the SkyPilot version the upstream controller reports
+
+# ── Not yet built ────────────────────────────────────────────────────────────────────
+#
+# No `digest` key by construction — see the header. These stay in `pending_images` after
+# U22, and that is the honest state: the source-access blocker is gone (the source is now
+# in this repository, at the `source_path` below), but NO IMAGE HAS BEEN BUILT, so there is
+# no digest to record. Writing one would be fabricating the exact value the header explains
+# must never be invented. tests/test_lock.py asserts these carry no digest.
+#
+# `source_path` replaces the former `upstream_path`: it is the maintained in-repository
+# directory the build context comes from, relative to `maintained_source.root`. The
+# component's Dockerfile lives there and the lane builds it from a clean ADP checkout.
+#
+# What still stands between these entries and a digest is a BUILD RUN, plus the repairs
+# their own stories own (U13 migrations, U14 auth). Promotion to `images` remains a
+# reviewed commit, never an automated push.
+pending_images:
+  superplane-api:
+    source_path: src/superplane-api
+    ecr_repository: adp-superplane-api
+    build_workflow: .github/workflows/superplane-api-build.yml
+    blocked_by: no build has run yet
+  superplane-controller:
+    source_path: src/superplane-controller
+    ecr_repository: adp-superplane-controller
+    build_workflow: .github/workflows/superplane-controller-build.yml
+    blocked_by: no build has run yet
+  superplane-platform-monitor:
+    source_path: src/superplane-platform-monitor
+    ecr_repository: adp-superplane-platform-monitor
+    build_workflow: .github/workflows/superplane-monitor-build.yml
+    blocked_by: no build has run yet
+
+# ── SkyPilot configuration inputs ────────────────────────────────────────────────────
+#
+# Pinned alongside the image because a reproducible runtime with a floating configuration
+# is not reproducible. U2 owns these release inputs; U3 owns deployment
+# (docs/design-notes/4910-skypilot-eks-migration-amendment.md).
+#
+# Values that would name an environment are deliberately absent: the approved plan records
+# no AWS account and no adp-cred label, and upstream's infra/skypilot-api/config.env
+# carries UPSTREAM's account id (605440105851), which is not ADP's target and must not be
+# adopted as one by being copied into a lock file.
+skypilot_config:
+  # From infra/skypilot-api/sky-config.yaml at the pinned revision.
+  allowed_clouds:
+    - aws
+    - lambda
+    - nebius
+    - kubernetes
+  namespace: skypilot
+  # Postgres-backed, not the SQLite variant: SQLite loses SkyPilot's cluster/job state on
+  # pod replacement, and U19's handover work needs that state to survive a restart.
+  state_backend: postgres
+  api_manifest: infra/skypilot-api/03-skypilot-api-postgres.yaml
+  deployment_target:
+    status: unresolved
+    needs:
+      - AWS account id and region
+      - adp-cred label
+    note: >-
+      Required by emission lint Rule 2 and not invented here. Upstream's config.env account
+      id is upstream's, not ADP's.
+
+# ── Schema compatibility ─────────────────────────────────────────────────────────────
+#
+# Recorded as OBSERVED, not asserted as a version.
+#
+# CHAIN REPAIRED BY U13 (#5045). `single_head` is now true. What the chain looked like
+# before, kept because it is the defect this field exists to track: revision id `006` was
+# declared by three files and `007` by three more, and three files declared a parent of
+# `"005"` — an id no file declares (the real one is `005_add_research_proposals`).
+#
+# The earlier note here, and the issue, both described that as "two heads with no merge".
+# It was worse. Alembic's own `ScriptDirectory` raised `KeyError: '005'` building its
+# revision map, so the chain could not be LOADED — no alembic command worked against it,
+# not `upgrade`, not `heads`, not `current`. That distinction is why the repair relinked
+# the six conflicting files onto unique ids and explicit parents instead of adding a merge
+# revision: a merge point resolves two VALID heads, and this graph failed before a merge
+# could be consulted.
+#
+# Revisions 001-005 were left byte-identical. They are the only revisions that could
+# plausibly have been applied anywhere, and rewriting an applied migration invalidates a
+# deployed database's recorded history. Every id that changed belonged to a file that was
+# unreachable by construction, so no recorded history can reference it.
+#
+# Two tables the models declare (`api_keys`, `budget_alerts`) were created by no migration
+# at all; 008 and 009 add them. U14's 010 then adds the server-held workspace grant table,
+# and U15's 011 adds observation receipts and leases. The chain now renders 20 CREATE
+# TABLEs for the 20 tables `Base.metadata` declares.
+#
+# WHY `status` IS STILL `unverified`, AND WHY THAT IS NOT A LEFTOVER
+#
+# `status: verified` in this file means verified AGAINST A REAL DATABASE. That has not
+# happened and cannot happen from CI: `superplane-domain-ci.yml` is a deliberately
+# credential-free offline lane with no PostgreSQL service, and the issue's own live smoke
+# check (`alembic upgrade head` against an ephemeral empty database) plus R4 acceptance 3
+# (the data-preserving upgrade) are recorded as DEFERRED behind an account, authorized
+# database access and a backup target that remain unresolved.
+#
+# What has been established offline, by `src/superplane-api/tests/test_migrations.py`:
+# exactly one head and one base, every revision on the path to head, no duplicate ids, no
+# dangling parent, model/migration table parity, 001-005 pinned by content hash, and the
+# whole chain rendering as PostgreSQL DDL through Alembic's offline (`--sql`) mode. That
+# last one COMPILES every migration for the real dialect; it never opens a connection, so
+# it does not observe anything that depends on existing rows.
+#
+# So `check_migration_contract.py` still refuses — now on the unverified status and the
+# missing runner-image digest rather than on the chain — and that is the intended state.
+# Flipping `status` here would assert exactly the claim the deferred acceptance exists to
+# gate. Whoever runs that live verification owns this field.
+schema:
+  migration_tool: alembic
+  config: src/superplane-api/alembic.ini
+  status: unverified
+  single_head: true
+  observed:
+    # U13 repaired the transferred chain and added two missing-table revisions;
+    # U14 added 010 for workspace grants; U15 added 011 for observation receipts
+    # and leases. U13b (#5046) adds 012, which replaces the copied secret ARN in
+    # credential_registry/cloud_accounts with an opaque ADP credential reference.
+    # All additions extend the same linear head.
+    #
+    # U13b authored its revision as `011` on 010 before U15 merged its own `011` onto
+    # that same parent. Both files coexisting is not a Git conflict, but it leaves the
+    # chain two-headed, and `alembic upgrade head` then applies NOTHING rather than
+    # choosing. U13b was renumbered to 012 onto U15's revision instead. Free to do:
+    # `status` below is still `unverified`, so no database has this chain applied.
+    #
+    # U11c (#5054) adds 013 for `provider_operations`: the durable record of a provider
+    # operation's idempotency identity, written before the provider call it identifies.
+    # Additive (one CREATE TABLE plus its indexes) and extends 012, so the chain stays
+    # single-headed and `head` below moves rather than gaining a sibling.
+    version_files: 19
+    # declared `revision =` id: number of files declaring it. NOT a filename-prefix count.
+    # Empty since the repair; kept as a key so the contract test that derives this from the
+    # tree keeps asserting it stays empty rather than skipping a missing field.
+    duplicate_revision_ids: {}
+    head: 013_add_provider_operations
+    base: 001_initial
+  compatible_with: null
+  blocked_by:
+    issue: 5045
+    unit: U13
+    why: >-
+      the chain is single-headed as of #5045, but no schema compatibility claim is made
+      here until `alembic upgrade head` has run against a real database — the live smoke
+      check and R4 acceptance 3 that would establish it are deferred behind an unresolved
+      account, database access and backup target.
+      Head 012 (#5046, U13b) adds a second, independent live gate on top of that one: it
+      refuses to run against a database whose credential rows still hold secret ARNs,
+      because an ADP credential ID cannot be derived from one. Remapping those rows onto
+      credentials verified as ADP-owned and ADP-readable is the audited vault-owned
+      migration (R7 acceptances 6-7, owned by U7), which has not run. So a deployed
+      database with existing credential rows will be REFUSED by `alembic upgrade head`
+      until that audited migration completes — by design, leaving the database unchanged.

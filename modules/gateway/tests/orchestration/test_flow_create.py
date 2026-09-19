@@ -21,10 +21,14 @@ into promotion state:
     detail and writes nothing, whether or not the advisory CLI ran.
   - **Idempotency (R-NF2)**: the identical document resubmitted creates no second
     flow, and is reported as already-compiled with a 200 rather than a 201.
-  - **Dispatchability is visible at submission**: an org that does not resolve to
-    exactly one GitHub installation produces a successful submission that can
-    never dispatch. Surfaced in the response rather than left as a silent
-    `undispatchable` counter a tick later.
+  - **Dispatchability is visible at submission, with EVERY cause**: a plan can
+    trip several independent dispatch preconditions — a story/eval node with no
+    routable issue reference, an org that does not resolve to exactly one GitHub
+    installation, an unconfigured dispatch repository. Each produces a successful
+    submission that can never dispatch. All of them are surfaced in the response
+    rather than left as a silent `undispatchable` counter a tick later, and
+    surfaced *together*: a submitter told one of three causes fixes it,
+    resubmits, and hits the same silent stall (#4334).
   - **Commit boundary**: the route commits, so the rows survive the request. A
     partially-committed graph — nodes but no edges — would make dispatch run work
     out of dependency order.
@@ -64,6 +68,19 @@ USER_ID = "cognito-sub-operator"
 ROUTE = "/orchestration/flows"
 
 
+@pytest.fixture(autouse=True)
+def dispatch_repo_configured(monkeypatch):
+    """A configured dispatch target repository, for every test by default.
+
+    Autouse because "the engine has somewhere to deliver into" is the normal
+    state of a deployed environment, and it is a precondition of dispatch — so a
+    test asserting a plan is dispatchable must have it set or it is asserting
+    against a misconfigured gateway. The unconfigured case is a real cause and is
+    covered explicitly by its own test, which unsets this.
+    """
+    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "aws-e/adp")
+
+
 @pytest.fixture
 async def session():
     """In-memory SQLite session with working SAVEPOINTs. See module docstring."""
@@ -95,7 +112,13 @@ def address(node_ref: str, *, epic: str = "epic-1", wave: str = "wave-1") -> str
 
 
 def valid_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
-    """A well-formed two-node wave: one story feeding its eval."""
+    """A well-formed two-node wave: one story feeding its eval.
+
+    Note the eval node carries no `issue_ref`. Evaluations dispatch to an issue
+    exactly as stories do, so this proposal is well-formed as a *document* and
+    still not fully routable — which is why the dispatchability tests below build
+    their own fully-routed proposal rather than reusing this one.
+    """
     payload = {
         "flow_slug": FLOW,
         "title": "Delivery loop",
@@ -112,6 +135,39 @@ def valid_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
     }
     payload.update(overrides)
     return LoopProposal(**payload)
+
+
+def routable_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
+    """A plan every node of which can actually be dispatched.
+
+    Story and eval both carry an issue; the gate deliberately does not, because a
+    gate is presented by the tick and never consumes a worker. So this document is
+    the positive control for "no false positives": if the route flags anything
+    here, it is flagging a plan the engine would dispatch.
+    """
+    payload = {
+        "flow_slug": FLOW,
+        "title": "Delivery loop",
+        "org_id": org_id,
+        "spec_revision": SPEC_REVISION,
+        "intent_ref": "4120",
+        "nodes": [
+            ProposedNode(address=address("story-a"), kind="story", title="Story A", issue_ref="4320"),
+            ProposedNode(address=address("eval"), kind="eval", title="Wave 1 eval", issue_ref="4321"),
+            ProposedNode(address=address("gate"), kind="gate", title="Wave 1 gate"),
+        ],
+        "edges": [
+            ProposedEdge(from_address=address("story-a"), to_address=address("eval")),
+            ProposedEdge(from_address=address("eval"), to_address=address("gate")),
+        ],
+    }
+    payload.update(overrides)
+    return LoopProposal(**payload)
+
+
+def causes_of(body: dict) -> set[str]:
+    """The stable cause ids from a submission response."""
+    return {cause["cause"] for cause in body["dispatch_blocked_causes"]}
 
 
 def invalid_proposal(*, org_id: str = ORG_A) -> LoopProposal:
@@ -641,11 +697,211 @@ class TestDispatchabilityIsVisibleAtSubmission:
     """
 
     @pytest.mark.asyncio
+    async def test_a_fully_routed_plan_is_dispatchable(self, session, app_with_router):
+        """No false positives: a plan the engine would dispatch is reported clean.
+
+        The load-bearing direction of this test is the *negative* space. Every
+        cause added to this route is a chance to flag a healthy plan, and a route
+        that reported everything blocked would be as useless as one that reported
+        nothing — the operator would learn to ignore it.
+        """
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        client = client_for(app_with_router, permitted=True)
+
+        body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
+
+        assert body["dispatchable"] is True
+        assert body["dispatch_blocked_reason"] is None
+        assert body["dispatch_blocked_causes"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_gate_without_an_issue_ref_is_not_flagged(self, session, app_with_router):
+        """Gates are presented by the tick and never consume a worker.
+
+        `routable_proposal` carries a gate with no `issue_ref` and is asserted
+        dispatchable above; this pins the reason why, so a future tightening of the
+        issue-routing rule to "every node" fails here rather than reporting every
+        real plan blocked.
+        """
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        client = client_for(app_with_router, permitted=True)
+
+        flow_id = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()["flow_id"]
+
+        nodes = await submitted_flow_nodes(session, flow_id)
+        gate = nodes[address("gate")]
+        assert gate.issue_ref is None, "the fixture must actually exercise a gate with no issue"
+
+    @pytest.mark.asyncio
+    async def test_a_story_without_an_issue_ref_is_reported(self, session, app_with_router):
+        """The precondition that was previously reported by nothing.
+
+        The engine checks this one FIRST, so a plan tripping it never dispatched
+        and the submitter was told only about the installation — or, when the
+        installation was fine, nothing at all.
+        """
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        client = client_for(app_with_router, permitted=True)
+
+        proposal = routable_proposal()
+        proposal.nodes[0].issue_ref = None
+
+        body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
+
+        assert body["dispatchable"] is False
+        assert causes_of(body) == {"missing_issue_ref"}
+        assert "story-a" in body["dispatch_blocked_reason"]
+
+    @pytest.mark.asyncio
+    async def test_an_eval_without_an_issue_ref_is_reported(self, session, app_with_router):
+        """Evaluations dispatch to an issue exactly as stories do.
+
+        `_fetch_ready_nodes` selects both kinds, so an eval with no issue stalls
+        identically. Reporting only stories would leave the eval half of every
+        wave silently undeliverable.
+        """
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        client = client_for(app_with_router, permitted=True)
+
+        proposal = routable_proposal()
+        proposal.nodes[1].issue_ref = None
+
+        body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
+
+        assert body["dispatchable"] is False
+        assert causes_of(body) == {"missing_issue_ref"}
+        assert "eval" in body["dispatch_blocked_reason"]
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_issue_ref_is_reported_distinctly(self, session, app_with_router):
+        """A separate cause from a missing one: it needs a different fix.
+
+        Missing means nobody has filed the issue yet. Malformed means the plan
+        document names something that is not an issue number, which will never
+        resolve itself no matter how long the operator waits.
+        """
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        client = client_for(app_with_router, permitted=True)
+
+        proposal = routable_proposal()
+        proposal.nodes[0].issue_ref = "not-an-issue"
+
+        body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
+
+        assert body["dispatchable"] is False
+        assert causes_of(body) == {"malformed_issue_ref"}
+
+    @pytest.mark.asyncio
+    async def test_all_routing_blockers_are_reported_together(self, session, app_with_router):
+        """The substance of #4334: causes are enumerated, not short-circuited.
+
+        A plan tripping three preconditions and told one sends the operator to fix
+        that one, resubmit, and get the same silent nothing — which is the bug
+        being fixed, reappearing one cause later.
+        """
+        await seed_org(session, ORG_A, installation_ids=["12345", "67890"])
+        client = client_for(app_with_router, permitted=True)
+
+        proposal = routable_proposal()
+        proposal.nodes[0].issue_ref = None
+        proposal.nodes[1].issue_ref = "not-an-issue"
+
+        body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
+
+        assert body["dispatchable"] is False
+        assert causes_of(body) == {"missing_issue_ref", "malformed_issue_ref", "ambiguous_installation"}
+        reason = body["dispatch_blocked_reason"]
+        assert "exactly one GitHub installation" in reason
+        assert "story-a" in reason and "eval" in reason
+
+    @pytest.mark.asyncio
+    async def test_an_unconfigured_dispatch_repo_is_reported_as_unknown(self, session, app_with_router, monkeypatch):
+        """A gateway with no dispatch repository cannot confirm the plan is routable.
+
+        Reported as `unknown_dispatch_repo` rather than a confirmed block: the
+        gateway pod and the scheduled tick read this setting from separate places,
+        so this process's view is evidence about the gateway and not proof about
+        the deployed tick. Claiming the tick is broken would be a guess; claiming
+        the plan is fine would hide a real cause.
+        """
+        monkeypatch.delenv("BG_ORCH_DISPATCH_REPO", raising=False)
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        client = client_for(app_with_router, permitted=True)
+
+        body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
+
+        assert body["dispatchable"] is False
+        assert causes_of(body) == {"unknown_dispatch_repo"}
+
+    @pytest.mark.asyncio
+    async def test_the_disabled_sentinel_counts_as_unconfigured(self, session, app_with_router, monkeypatch):
+        """Terraform writes the literal "disabled" when no repo is set.
+
+        `agent-authority-coordinator.tf` cannot write an empty SSM SecureString, so
+        the unconfigured state reaches the pod as this string. Treating it as a
+        configured repository named "disabled" would report every plan dispatchable
+        on exactly the environments where none is.
+        """
+        monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "disabled")
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        client = client_for(app_with_router, permitted=True)
+
+        body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
+
+        assert causes_of(body) == {"unknown_dispatch_repo"}
+
+    @pytest.mark.asyncio
+    async def test_a_cause_detail_names_only_the_submitters_own_nodes(self, session, app_with_router):
+        """Tenant isolation of the reason string itself.
+
+        The detail must identify the blocked node well enough to fix it while
+        carrying nothing from outside the caller's own flow. `node_ref` is a
+        tenant-local address; a node id or an installation id would not be.
+        """
+        await seed_org(session, ORG_A, installation_ids=["12345", "67890"])
+        client = client_for(app_with_router, permitted=True)
+
+        proposal = routable_proposal()
+        proposal.nodes[0].issue_ref = None
+        body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
+
+        details = " ".join(cause["detail"] for cause in body["dispatch_blocked_causes"])
+        assert "12345" not in details and "67890" not in details, "installation ids must not appear in a reason string"
+
+    @pytest.mark.asyncio
+    async def test_the_route_agrees_with_the_dispatch_guard_on_the_same_node(self, session, app_with_router):
+        """Behavioural proof that the predicate is shared, not merely similar.
+
+        The structural `is` assertion below proves the route imports the engine's
+        function. This proves the two produce the same verdict on real committed
+        rows: for every node of a submitted flow, the route's per-node cause and
+        `routing_blocker_for_node` — the function `_dispatch_one_unclaimed` itself
+        branches on — must agree. If they ever diverged, the route would promise
+        dispatchable for a plan the engine silently refuses.
+        """
+        from src.orchestration.dispatch_pass import RoutingBlocker, routing_blocker_for_node
+
+        await seed_org(session, ORG_A, installation_ids=["12345"])
+        client = client_for(app_with_router, permitted=True)
+
+        proposal = routable_proposal()
+        proposal.nodes[0].issue_ref = None  # story: missing
+        proposal.nodes[1].issue_ref = "not-an-issue"  # eval: malformed
+        body = client.post(ROUTE, json=proposal.model_dump(mode="json")).json()
+
+        nodes = await submitted_flow_nodes(session, body["flow_id"])
+        blockers = {routing_blocker_for_node(kind=n.kind, issue_ref=n.issue_ref) for n in nodes.values()}
+
+        # The gate contributes None; the story and eval contribute one each.
+        assert blockers == {None, RoutingBlocker.MISSING_ISSUE_REF, RoutingBlocker.MALFORMED_ISSUE_REF}
+        assert causes_of(body) >= {b.value for b in blockers if b is not None}, "the route must report exactly what the engine's guard refuses"
+
+    @pytest.mark.asyncio
     async def test_exactly_one_installation_is_dispatchable(self, session, app_with_router):
         await seed_org(session, ORG_A, installation_ids=["12345"])
         client = client_for(app_with_router, permitted=True)
 
-        body = client.post(ROUTE, json=valid_proposal().model_dump(mode="json")).json()
+        body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
         assert body["dispatchable"] is True
         assert body["dispatch_blocked_reason"] is None
@@ -655,10 +911,11 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=[])
         client = client_for(app_with_router, permitted=True)
 
-        body = client.post(ROUTE, json=valid_proposal().model_dump(mode="json")).json()
+        body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
         assert "exactly one GitHub installation" in body["dispatch_blocked_reason"]
+        assert causes_of(body) == {"ambiguous_installation"}
 
     @pytest.mark.asyncio
     async def test_two_installations_are_reported_undispatchable(self, session, app_with_router):
@@ -667,10 +924,30 @@ class TestDispatchabilityIsVisibleAtSubmission:
         await seed_org(session, ORG_A, installation_ids=["12345", "67890"])
         client = client_for(app_with_router, permitted=True)
 
-        body = client.post(ROUTE, json=valid_proposal().model_dump(mode="json")).json()
+        body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
 
         assert body["dispatchable"] is False
         assert "exactly one GitHub installation" in body["dispatch_blocked_reason"]
+        assert causes_of(body) == {"ambiguous_installation"}
+
+    @pytest.mark.asyncio
+    async def test_the_installation_reason_wording_is_unchanged(self, session, app_with_router):
+        """#4334's named regression check: the pre-existing string is preserved.
+
+        Asserted by equality, not substring. This response field predates the
+        multi-cause change and anything already matching on its wording — a
+        dashboard, a log query, the wave-4 evaluation harness — must be unaffected
+        by causes being added around it.
+        """
+        await seed_org(session, ORG_A, installation_ids=[])
+        client = client_for(app_with_router, permitted=True)
+
+        body = client.post(ROUTE, json=routable_proposal().model_dump(mode="json")).json()
+
+        assert body["dispatch_blocked_reason"] == (
+            f"org {ORG_A!r} does not resolve to exactly one GitHub installation, so no node in this flow can be "
+            "dispatched; the engine will count every node undispatchable until exactly one installation is configured"
+        )
 
     @pytest.mark.asyncio
     async def test_undispatchable_still_commits_the_plan(self, session, app_with_router):
@@ -690,17 +967,65 @@ class TestDispatchabilityIsVisibleAtSubmission:
         assert await count_rows(session, OrchestrationNode) == 2
 
     @pytest.mark.asyncio
+    async def test_a_plan_blocked_on_every_cause_still_commits_with_201(self, session, app_with_router):
+        """The report-not-rejection contract, at the worst case it has to hold for.
+
+        A plan tripping every precondition is still a validly approved plan whose
+        rows are exactly what a correct submission produces. Turning the fullest
+        report into a refusal would present an operational data problem as a
+        malformed document — the second bug class #4334's impact table names.
+        """
+        await seed_org(session, ORG_A, installation_ids=["12345", "67890"])
+        client = client_for(app_with_router, permitted=True)
+
+        proposal = routable_proposal()
+        proposal.nodes[0].issue_ref = None
+        proposal.nodes[1].issue_ref = "not-an-issue"
+
+        response = client.post(ROUTE, json=proposal.model_dump(mode="json"))
+
+        assert response.status_code == 201, "a fully-blocked plan is reported, never rejected"
+        assert response.json()["dispatchable"] is False
+        assert await count_rows(session, OrchestrationFlow) == 1
+        assert await count_rows(session, OrchestrationNode) == 3
+
+    @pytest.mark.asyncio
+    async def test_an_undispatchable_resubmission_is_still_200(self, session, app_with_router):
+        """Idempotency is unaffected by the cause enumeration.
+
+        The causes are computed after the commit on both paths, so a resubmission
+        reports the same blockers while still creating nothing — a client must not
+        see a retry of a blocked plan as a fresh 201.
+        """
+        await seed_org(session, ORG_A, installation_ids=[])
+        client = client_for(app_with_router, permitted=True)
+        payload = routable_proposal().model_dump(mode="json")
+
+        first = client.post(ROUTE, json=payload)
+        second = client.post(ROUTE, json=payload)
+
+        assert first.status_code == 201
+        assert second.status_code == 200
+        assert second.json()["already_compiled"] is True
+        assert causes_of(second.json()) == causes_of(first.json()), "a resubmission must report the same blockers"
+
+    @pytest.mark.asyncio
     async def test_the_route_uses_the_same_resolver_as_dispatch(self):
         """Structural, not behavioural.
 
         If the route computed dispatchability its own way, the two would drift — and
         the drift would be invisible in the worst direction: the route promising a
         plan is dispatchable that dispatch then silently refuses.
+
+        Both preconditions are asserted the same way. `routing_blocker_for_node` is
+        the function `_dispatch_one_unclaimed` itself branches on, so an `is` match
+        here means the route cannot be evaluating a copy of the rule.
         """
         from src.orchestration import routes as routes_module
-        from src.orchestration.dispatch_pass import resolve_installation_id
+        from src.orchestration.dispatch_pass import resolve_installation_id, routing_blocker_for_node
 
         assert routes_module.resolve_installation_id is resolve_installation_id
+        assert routes_module.routing_blocker_for_node is routing_blocker_for_node
 
 
 class TestAmendmentRegression:

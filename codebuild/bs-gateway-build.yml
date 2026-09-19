@@ -29,7 +29,7 @@ phases:
       # priced request, or as settlement quietly falling back to default rates.
       # Deliberately BEFORE the tag/push below: a mispriced image must not ship.
       - docker run --rm --entrypoint python $REGISTRY/adp-gateway:latest -m pricing_policy.selfcheck
-      - '[ -n "${IMAGE_TAG:-}" ] && docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG || true'
+      - 'if [ -n "${IMAGE_TAG:-}" ]; then docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG; fi'
   post_build:
     commands:
       # CodeBuild also enters post_build after a failed build phase. Ordering
@@ -39,5 +39,5 @@ phases:
           echo "Build or pricing selfcheck failed; refusing to push the gateway image." >&2
           exit 1
         fi
-      - docker push $REGISTRY/adp-gateway:latest
-      - '[ -n "${IMAGE_TAG:-}" ] && docker push $REGISTRY/adp-gateway:$IMAGE_TAG || true'
+      - 'if [ "${PUBLISH_LATEST:-true}" = true ]; then docker push $REGISTRY/adp-gateway:latest; fi'
+      - 'if [ -n "${IMAGE_TAG:-}" ]; then docker push $REGISTRY/adp-gateway:$IMAGE_TAG; fi'

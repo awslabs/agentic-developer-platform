@@ -45,6 +45,7 @@ async def verify_broker_worker(request: Request) -> None:
 
     context = None
     request.state.agent_user_credential_authority = None
+    request.state.agent_authorized_action = None
     try:
         if request.url.path == "/internal/v1/user-credentials" and request.method == "GET":
             body = dict(request.query_params)
@@ -87,6 +88,7 @@ async def verify_broker_worker(request: Request) -> None:
             )
             raise BootstrapRefusedError("worker credential policy refused")
         if isinstance(decision, WorkerCredentialDecision):
+            request.state.agent_authorized_action = decision.action
             request.state.agent_github_permissions = decision.permissions
             request.state.agent_github_not_after = decision.not_after
             request.state.agent_user_credential_authority = decision if decision.provider_permissions else None

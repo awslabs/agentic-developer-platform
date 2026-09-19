@@ -50,6 +50,12 @@ def test_admin_submodule_imports_without_token_secret():
     assert result.returncode == 0, f"src.admin.access_control failed to import without BG_TOKEN_SECRET_KEY:\n{result.stderr}"
 
 
+def test_work_claims_imports_without_token_secret():
+    """The dispatch pass lazily imports work claims on its first live launch."""
+    result = _import_in_scrubbed_subprocess("from src.orchestration.work_claims import claim_work")
+    assert result.returncode == 0, f"work_claims dragged web auth into the tick Lambda:\n{result.stderr}"
+
+
 def test_admin_lazy_exports_still_resolve():
     """The app-facing surface of `src.admin` must survive the lazy rewrite."""
     import src.admin as admin
@@ -70,3 +76,9 @@ def test_admin_unknown_attribute_raises():
         pass
     else:
         raise AssertionError("expected AttributeError for unknown export")
+
+
+def test_activity_lazy_router_exports_still_resolve():
+    import src.activity as activity
+
+    assert activity.router is activity.activity_router

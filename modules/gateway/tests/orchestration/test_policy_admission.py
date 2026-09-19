@@ -818,3 +818,11 @@ async def test_enforced_policy_checks_actual_issue_claim(session, monkeypatch, m
     assert decision.permitted is (mismatch is None)
     if mismatch:
         assert decision.reason is DenyReason.WORK_NOT_OWNED
+
+
+@pytest.fixture(autouse=True)
+def provider_repository_identity(monkeypatch):
+    """Dispatch resolves immutable GitHub identity even with work claims off."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=12345))

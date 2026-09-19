@@ -31,6 +31,9 @@ const mockFeatures: FeatureFlags = {
   orchestration_engine: false,
   budget_spend: false,
   agent_control: false,
+  new_ui: false,
+  superplane: false,
+  agent_models: false,
 };
 
 vi.mock('@/hooks/useFeatures', () => ({

@@ -32,6 +32,7 @@ provider "aws" {
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
+data "aws_partition" "current" {}
 
 data "terraform_remote_state" "platform" {
   backend = "s3"
@@ -934,6 +935,24 @@ resource "aws_ssm_parameter" "budget_fail_mode" {
   }
 }
 
+# PMM-03 / D3: production organization/team model-access policy consumed by
+# both proxy admission and the gateway-signed per-hop model decision.  The
+# value is a JSON object: {"org-id":["canonical.model.*"],
+# "org-id:team-id":["canonical.model.id"]}.  Terraform creates the safe
+# no-explicit-policy baseline and never overwrites an operator-authored value.
+resource "aws_ssm_parameter" "model_allowed_models_config" {
+  name        = "/adp/${var.environment}/gateway/model-allowed-models-config"
+  description = "JSON organization/team model allowlists for gateway admission. PMM-03 D3."
+  type        = "String"
+  value       = "{}"
+
+  tags = local.common_tags
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # NOTE: EKS→RDS (5432) and EKS→Redis (6379) security group rules are owned by
 # platform infra (platform/infra/main.tf) — do NOT duplicate them here.
 # See: https://github.com/aws-e/adp/issues/2590
@@ -985,6 +1004,7 @@ module "budget_lambda" {
   name_prefix = local.name_prefix
   common_tags = local.common_tags
   aws_region  = var.aws_region
+  account_id  = data.aws_caller_identity.current.account_id
 
   # S3 Chat Logs Bucket
   chat_logs_bucket_name = module.s3_chat_logs[0].bucket_name
@@ -1145,6 +1165,13 @@ module "orchestration_tick" {
   webhook_events_table_name     = var.orchestration_agent_authority_enabled ? local.worker_events_table : var.orchestration_webhook_events_table
   webhook_events_kms_key_arn    = var.orchestration_agent_authority_enabled ? local.worker_events_key : var.orchestration_webhook_events_kms_key_arn
   github_app_secret_arn_pattern = var.orchestration_github_app_secret_arn_pattern
+
+  # Issue #4539: command attribution. The tick verifies the signature the webhook
+  # Lambda wrote before it trusts any authority field on the row. The secret belongs
+  # to the webhook-ingress state, so it arrives by ARN like the four above; empty
+  # leaves the verifier without a key, which quarantines every command rather than
+  # applying it unverified.
+  engine_command_signing_key_secret_arn = var.orchestration_engine_command_signing_key_secret_arn
 
   # Issue #2380: CloudWatch Log Group KMS encryption (CKV_AWS_158)
   cloudwatch_kms_key_arn = aws_kms_key.cloudwatch.arn
@@ -1726,7 +1753,7 @@ resource "aws_iam_role_policy" "gateway_ingestion_sqs_publish" {
           "sqs:SendMessage",
           "sqs:GetQueueUrl"
         ]
-        Resource = var.agent_context_ingestion_queue_arn
+        Resource = var.agent_context_ingestion_queue_arn != "" ? var.agent_context_ingestion_queue_arn : "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.cluster_name}-context-ingestion"
       }
     ]
   })

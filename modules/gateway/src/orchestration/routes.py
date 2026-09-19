@@ -17,6 +17,15 @@ which CloudFront strips before the origin — see the prefix note below):
   (issue #4212): every node including ones that have never run, every edge, and
   per-node plus rolled-up cost. Gated on `USAGE_READ` for the same reason as the
   cost route.
+- GET  /orchestration/flows/{flow_id}/execution — execution progress and blocks
+  from the delivery ledger (issue #5145): per node and cycle, the phase, whether
+  it is runnable, the next scheduled check, the last real progress and — when
+  stuck — the typed block naming its owner, the required input and the gates still
+  outstanding. Read-only and gated on `USAGE_READ`: it adds no control and no
+  acceptance authority, and `controls.py` remains the sole human approval and
+  recovery surface. The projection lives in `execution_read.py`, which documents
+  why an operator read is org-scoped rather than presenting a work claim it does
+  not hold.
 
 **This is the operator plane, not the internal plane.** The distinction is the
 EPIC's central guarantee, not a routing detail. Agent pods can reach any
@@ -46,14 +55,16 @@ untestable end-to-end. It is a read, gated on the same permission.
 
 import json
 import logging
+import os
 import re
 from collections import defaultdict
 from dataclasses import asdict
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -70,12 +81,28 @@ from src.orchestration.cost import (
     get_cost_by_address_prefixes,
     get_flow_cost,
 )
-from src.orchestration.dispatch_pass import resolve_installation_id
+from src.orchestration.dispatch_pass import (
+    REPO_ENV,
+    RoutingBlocker,
+    resolve_installation_id,
+    routing_blocker_for_node,
+)
 from src.orchestration.display_state import FlowStatus
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
-from src.orchestration.models import DecisionKind
-from src.orchestration.node_activity import NodeActivity, load_story_activity
+from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
+from src.orchestration.models import DecisionKind, NodeState
+from src.orchestration.node_activity import NodeActivity, StoryExecution, load_story_execution
 from src.orchestration.policy_admission import load_in_force_policy
+from src.orchestration.pr_bindings import (
+    BindingError,
+    BindingRefusal,
+    active_bindings_for_flow,
+    binding_summary,
+    completion_candidate,
+    hold_explanation,
+    recover_binding,
+)
+from src.orchestration.pr_identity import PrIdentityError, resolve_pr_identity
 from src.orchestration.proposal import LoopProposal, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.shared.database import get_db
@@ -123,6 +150,25 @@ class AmendmentResponse(BaseModel):
     already_amended: bool
 
 
+class DispatchBlockedCause(BaseModel):
+    """One reason a submitted plan cannot be delivered.
+
+    `cause` is a stable id a client may key off; `detail` is human-readable prose
+    that stays free to be reworded. Split that way because the two have different
+    consumers — a dashboard branches on the id, an operator reads the detail.
+
+    `detail` names only the submitter's own nodes, by their tenant-local
+    `node_ref`. Never another tenant's data and never an installation id: the
+    ambiguous-installation cause reports how many installations resolved, which
+    is what the submitter needs to fix it, and not which ones.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cause: str
+    detail: str
+
+
 class FlowCreatedResponse(BaseModel):
     """The outcome of submitting an approved plan.
 
@@ -130,14 +176,27 @@ class FlowCreatedResponse(BaseModel):
     nothing was written — the route returns 200 rather than 201 in that case, so a
     retried submission is distinguishable from a first one by status code alone.
 
-    `dispatchable` / `dispatch_blocked_reason` are not decoration. A flow whose org
-    has no single unambiguous GitHub installation compiles perfectly and then never
-    dispatches: every node is counted `undispatchable` by the tick and the
-    submitter is told nothing. That is the invisible-stall class this EPIC exists
-    to remove, so the condition is surfaced here, at submission, where the person
-    who can fix it is still watching. `dispatchable=False` does NOT mean the
-    submission failed — the rows are committed and are exactly what a correct
-    submission produces; it means the plan cannot yet be delivered.
+    `dispatchable` / `dispatch_blocked_reason` / `dispatch_blocked_causes` are not
+    decoration. A flow that trips any dispatch precondition compiles perfectly and
+    then never dispatches: every node is counted `undispatchable` by the tick and
+    the submitter is told nothing. That is the invisible-stall class this EPIC
+    exists to remove, so the conditions are surfaced here, at submission, where
+    the person who can fix them is still watching.
+
+    **All causes, not the first (#4334).** The engine enforces several independent
+    preconditions and checks issue routing *before* the installation, so a report
+    naming one of them sends the submitter to fix that one, resubmit, and hit the
+    same silent stall. `dispatch_blocked_causes` enumerates every cause; the
+    single `dispatch_blocked_reason` string remains as their joined prose, with
+    the installation cause keeping its original wording so existing consumers of
+    that string are unaffected.
+
+    `dispatchable=False` does NOT mean the submission failed — the rows are
+    committed and are exactly what a correct submission produces; it means the
+    plan cannot yet be delivered. Nor does `dispatchable=True` promise immediate
+    execution: it means the *routing* prerequisites hold at submission time.
+    Policy admission, gates, ownership and capacity are all evaluated later, by
+    the tick, and none of them are reported here.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -151,6 +210,7 @@ class FlowCreatedResponse(BaseModel):
     already_compiled: bool
     dispatchable: bool
     dispatch_blocked_reason: str | None
+    dispatch_blocked_causes: list[DispatchBlockedCause] = []
 
 
 class PlanVersionResponse(BaseModel):
@@ -164,6 +224,119 @@ class PlanVersionResponse(BaseModel):
     accepted_by_decision_id: str | None
     superseded_at: str | None
     created_at: str
+
+
+# Cause ids for the preconditions that are NOT per-node. The per-node ones come
+# from `RoutingBlocker` in `dispatch_pass`, so the two vocabularies are declared
+# where their rule lives rather than restated as one list here.
+_CAUSE_AMBIGUOUS_INSTALLATION = "ambiguous_installation"
+_CAUSE_UNKNOWN_DISPATCH_REPO = "unknown_dispatch_repo"
+
+# The sentinel Terraform writes to SSM when no dispatch repository is configured
+# (`agent-authority-coordinator.tf`), which reaches the pod as this literal
+# rather than as an empty string. Treated as unconfigured, exactly as an empty
+# value is.
+_DISPATCH_REPO_DISABLED = "disabled"
+
+
+async def _dispatch_blocked_causes(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    flow_id: str,
+    installation_id: int | None,
+) -> list[DispatchBlockedCause]:
+    """Every reason this flow cannot be delivered, in the order dispatch checks them.
+
+    Enumerated rather than short-circuited at the first: a submitter told one of
+    three causes fixes it, resubmits, and gets the same silent stall (#4334).
+
+    Each cause is evaluated by the same code dispatch enforces, never a restatement
+    of it — `routing_blocker_for_node` for the per-node issue-routing rule and
+    `resolve_installation_id` for the tenant installation (resolved by the caller
+    and passed in, since it is also needed for the `dispatchable` flag). A second
+    implementation of a fail-closed check would be free to drift, and the drift is
+    invisible in the worst direction.
+
+    Bounded: one read of the just-compiled flow's nodes, scoped to `org_id`, with
+    no per-node query. `installation_id` is resolved once for the whole flow
+    because it is a property of the org, not of a node.
+    """
+    causes: list[DispatchBlockedCause] = []
+
+    # --- Configuration: is there a repository to dispatch into at all? ---
+    #
+    # Reported as *unknown* rather than as a confirmed block. The gateway pod and
+    # the scheduled tick are configured from separate places (the pod's configmap
+    # versus the tick's own Terraform-stamped environment), so this process's view
+    # is evidence about the gateway, not proof about the deployed tick. Naming it
+    # `unknown_dispatch_repo` keeps the honest reading available; claiming the
+    # tick is misconfigured from here would be a guess, and claiming the plan is
+    # fine would hide a real and common cause.
+    if (os.environ.get(REPO_ENV) or "").strip() in ("", _DISPATCH_REPO_DISABLED):
+        causes.append(
+            DispatchBlockedCause(
+                cause=_CAUSE_UNKNOWN_DISPATCH_REPO,
+                detail=(
+                    "no dispatch target repository is configured for this gateway, so the engine may have no repository to "
+                    "deliver into; confirm the deployed engine's dispatch configuration"
+                ),
+            )
+        )
+
+    # --- Per-node: story and evaluation nodes need a routable issue. ---
+    #
+    # Checked FIRST by dispatch, which is why reporting only the installation
+    # cause was insufficient. Gate nodes are correctly exempt — they are presented
+    # by the tick and never consume a worker — and that exemption comes from the
+    # shared predicate rather than a kind check written here.
+    repo = OrchestrationRepository(db)
+    missing: list[str] = []
+    malformed: list[str] = []
+    for node in await repo.list_nodes(org_id=org_id, flow_id=flow_id):
+        blocker = routing_blocker_for_node(kind=node.kind, issue_ref=node.issue_ref)
+        if blocker is RoutingBlocker.MISSING_ISSUE_REF:
+            missing.append(f"{node.kind} node {node.node_ref!r}")
+        elif blocker is RoutingBlocker.MALFORMED_ISSUE_REF:
+            malformed.append(f"{node.kind} node {node.node_ref!r} (issue_ref {node.issue_ref!r})")
+
+    # One cause per blocker kind rather than per node: a plan with forty
+    # issue-less stories has one problem to fix, not forty. The node references
+    # are listed in the detail so the submitter still knows which ones, and they
+    # are `node_ref`s — tenant-local addresses from the flow just compiled under
+    # the caller's own org.
+    if missing:
+        causes.append(
+            DispatchBlockedCause(
+                cause=RoutingBlocker.MISSING_ISSUE_REF.value,
+                detail=f"{len(missing)} node(s) have no issue_ref and cannot be dispatched: {', '.join(sorted(missing))}",
+            )
+        )
+    if malformed:
+        causes.append(
+            DispatchBlockedCause(
+                cause=RoutingBlocker.MALFORMED_ISSUE_REF.value,
+                detail=f"{len(malformed)} node(s) have an issue_ref that is not an issue number: {', '.join(sorted(malformed))}",
+            )
+        )
+
+    # --- Tenant: exactly one GitHub installation. ---
+    #
+    # Last because dispatch checks it last, and the ordering is what makes the
+    # joined reason string read in the order an operator would hit the causes.
+    if installation_id is None:
+        causes.append(
+            DispatchBlockedCause(
+                cause=_CAUSE_AMBIGUOUS_INSTALLATION,
+                # Deliberately does not report *which* installations resolved, or
+                # how many: the count is another org's-shape detail that the
+                # submitter does not need in order to fix it, and this string is
+                # logged and rendered widely.
+                detail=f"org {org_id!r} does not resolve to exactly one GitHub installation",
+            )
+        )
+
+    return causes
 
 
 async def _resolve_actor_role(access: AccessControl, current_user: TokenContext) -> str:
@@ -245,14 +418,28 @@ async def create_flow(
     # validly approved plan, and refusing it here would make an operational data
     # problem look like a rejected document.
     installation_id = await resolve_installation_id(db, org_id=actor.org_id)
-    dispatch_blocked_reason = (
-        None
-        if installation_id is not None
-        else (
+    causes = await _dispatch_blocked_causes(
+        db,
+        org_id=actor.org_id,
+        flow_id=result.flow_id,
+        installation_id=installation_id,
+    )
+
+    # The installation cause keeps its ORIGINAL wording verbatim when it is the
+    # cause, so a consumer matching on that string is unaffected by this change
+    # (#4334 names it as a regression check). Other causes are joined onto it in
+    # the order dispatch checks them.
+    reasons = [
+        (
             f"org {actor.org_id!r} does not resolve to exactly one GitHub installation, so no node in this flow can be "
             "dispatched; the engine will count every node undispatchable until exactly one installation is configured"
         )
-    )
+        if cause.cause == _CAUSE_AMBIGUOUS_INSTALLATION
+        else cause.detail
+        for cause in causes
+    ]
+    dispatch_blocked_reason = "; ".join(reasons) if reasons else None
+    dispatchable = not causes
 
     # 200, not 201, for a resubmission: nothing was created, and a client
     # reporting "N nodes created" must not present a retry as a fresh submission.
@@ -268,13 +455,20 @@ async def create_flow(
         result.nodes_created,
         result.edges_created,
         result.already_compiled,
-        installation_id is not None,
+        dispatchable,
     )
 
     if dispatch_blocked_reason is not None:
         # Logged at warning as well as returned: the submitter sees the response,
         # but whoever is watching the engine wonder why nothing moved sees this.
-        logger.warning("plan_submitted flow=%s is undispatchable: %s", result.flow_id, dispatch_blocked_reason)
+        # The cause ids are logged alongside the prose so a log search can find
+        # every plan blocked by one cause without matching on wording.
+        logger.warning(
+            "plan_submitted flow=%s is undispatchable causes=%s: %s",
+            result.flow_id,
+            ",".join(cause.cause for cause in causes),
+            dispatch_blocked_reason,
+        )
 
     return FlowCreatedResponse(
         flow_id=result.flow_id,
@@ -284,8 +478,174 @@ async def create_flow(
         nodes_created=result.nodes_created,
         edges_created=result.edges_created,
         already_compiled=result.already_compiled,
-        dispatchable=installation_id is not None,
+        dispatchable=dispatchable,
         dispatch_blocked_reason=dispatch_blocked_reason,
+        dispatch_blocked_causes=causes,
+    )
+
+
+class RecoverBindingRequest(BaseModel):
+    """An operator attesting which pull request delivered a historical story (#5301).
+
+    The operator names the PR and the basis for recovery. Immutable identity and
+    current head are verified against GitHub; optional identity assertions support
+    older callers and must agree with provider truth.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider_repository_id: int | None = Field(default=None, gt=0)
+    provider_pr_node_id: str | None = Field(default=None, min_length=1, max_length=255)
+    repo: str = Field(min_length=3, max_length=255, pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+    pr_number: int = Field(gt=0)
+    head_sha: str | None = Field(default=None, min_length=7, max_length=64, pattern=r"^[0-9a-fA-F]+$")
+    reason: str = Field(min_length=10, max_length=2000)
+    replaces_reason: str | None = Field(default=None, min_length=10, max_length=2000)
+
+
+class RecoverBindingResponse(BaseModel):
+    """The recovered association, plus whatever still stands between it and passing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    bound_pull_request: dict
+    # Non-None when the recovery alone does not make the story completable. Recording
+    # an association is not the same as satisfying the evidence, and conflating the
+    # two is how a backfill quietly becomes an approval.
+    remaining_hold: str | None = None
+
+
+@router.post("/flows/{flow_id}/nodes/{node_id}/pull-request-recovery", response_model=RecoverBindingResponse)
+async def recover_story_binding(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: RecoverBindingRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> RecoverBindingResponse:
+    """Attributed recovery of a story delivered before pull-request binding existed.
+
+    For the stories this issue's fix leaves stranded: their PR merged, but no binding
+    was ever registered because the contract did not exist when they ran, so
+    reconciliation now holds them with `NO_BINDING`.
+
+    Deliberately *not* automatic, and the alternatives were considered and refused.
+    Searching titles or branch names for a candidate and adopting it is what #5301
+    names as not-the-fix — it is a guess, and a guess that completes a story is worse
+    than a hold. So a named human with approval authority states which PR delivered
+    the work and why, and the row records both (`registered_by`,
+    `registered_by_kind=HUMAN`, `recovery_reason`).
+
+    Gated on `PLAN_APPROVE`, matching every other route here that changes what the
+    engine will act on. `USAGE_READ` would be wrong in the other direction: this is a
+    write that can let a story pass, so it belongs with approval authority rather
+    than with reads.
+
+    What it does **not** do: assert that the PR is merged, green or reviewed. The
+    recovery establishes only the association, and reconciliation then verifies the
+    same four requirements against the provider that a self-registered binding
+    faces. So this cannot complete a story whose evidence is missing — it returns the
+    remaining hold instead. That is what keeps the path from becoming a way to pass
+    work by asserting it.
+    """
+    await access.check_permission(
+        current_user,
+        Permission.PLAN_APPROVE,
+        target_org_id=current_user.org_id,
+    )
+
+    repo_reader = OrchestrationRepository(db)
+    # Org-filtered before any node read, so a cross-tenant flow_id cannot reach it,
+    # and 404 rather than 403 for the same reason `get_flow_graph` gives: a 403
+    # confirms the id exists somewhere.
+    flow = await repo_reader.get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail=f"no orchestration flow {flow_id!r} in this tenant")
+
+    node = await repo_reader.get_node(org_id=current_user.org_id, node_id=node_id)
+    if node is None or node.flow_id != flow.id or node.kind != "story":
+        raise HTTPException(status_code=404, detail="story not found in this flow")
+
+    # A historical dispatch may lack immutable IDs; preserve any authority it
+    # does contain instead of allowing recovery to silently change repository.
+    dispatch = {}
+    for decision in await repo_reader.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.node_id != node.id or decision.kind != DecisionKind.NODE_DISPATCHED.value:
+            continue
+        try:
+            detail = json.loads(decision.reason or "{}")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(detail, dict) and detail.get("attempt") == node.attempts:
+            dispatch = detail
+    if dispatch.get("repo") and dispatch["repo"].lower() != body.repo.lower():
+        raise HTTPException(status_code=409, detail="pull request repository does not match the story dispatch")
+
+    installation_id = await resolve_installation_id(db, org_id=current_user.org_id)
+    if not installation_id:
+        # Without an installation the binding could never be verified against the
+        # provider, so recording it would produce a permanent hold with a confusing
+        # reason. Refused up front with the actual cause.
+        raise HTTPException(
+            status_code=409,
+            detail="this tenant has no usable GitHub installation, so a recovered binding could not be verified",
+        )
+
+    try:
+        identity = await resolve_pr_identity(org_id=current_user.org_id, installation_id=installation_id, repo=body.repo, pr_number=body.pr_number)
+    except PrIdentityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if (
+        (body.provider_repository_id is not None and body.provider_repository_id != identity.provider_repository_id)
+        or (body.provider_pr_node_id is not None and body.provider_pr_node_id != identity.provider_pr_node_id)
+        or (body.head_sha is not None and body.head_sha.lower() != identity.head_sha.lower())
+        or (dispatch.get("provider_repository_id") is not None and dispatch["provider_repository_id"] != identity.provider_repository_id)
+    ):
+        raise HTTPException(status_code=409, detail="pull request identity does not match GitHub or the story dispatch")
+
+    try:
+        binding = await recover_binding(
+            db,
+            org_id=current_user.org_id,
+            node_id=node_id,
+            pr=identity,
+            installation_id=installation_id,
+            actor_id=current_user.user_id,
+            reason=body.reason,
+            replaces_reason=body.replaces_reason,
+        )
+    except BindingError as exc:
+        # UNKNOWN_RUN here means "no such story in this tenant" — 404, and the same
+        # answer a cross-tenant node id gets, so neither reveals the other.
+        if exc.code in (BindingRefusal.UNKNOWN_RUN, BindingRefusal.NOT_A_STORY):
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+
+    if binding.flow_id != flow.id:
+        # The node exists in this tenant but under a different flow. Refused after
+        # the fact rather than trusting the path pair, so a mismatched flow_id cannot
+        # file a binding against a story the caller did not name.
+        raise HTTPException(status_code=404, detail=f"story {node_id!r} is not part of flow {flow_id!r}")
+
+    await db.commit()
+    logger.info(
+        "pr_binding_recovered flow=%s node=%s pr=%s#%s by=%s",
+        flow.id,
+        node_id,
+        body.repo,
+        body.pr_number,
+        current_user.user_id,
+    )
+
+    refusal = completion_candidate(binding)
+    return RecoverBindingResponse(
+        node_id=node_id,
+        bound_pull_request=binding_summary(binding),
+        remaining_hold=hold_explanation(refusal)
+        if refusal
+        else "Pull request registered; merge, checks and independent review verification are pending.",
     )
 
 
@@ -884,6 +1244,7 @@ class GraphNodeResponse(BaseModel):
     attempts: int
     run_id: str | None = None
     activity: NodeActivity | None = None
+    execution_history: StoryExecution | None = None
     issue_url: str | None = None
     result_summary: str | None = None
     configuration_problem: str | None = None
@@ -896,6 +1257,19 @@ class GraphNodeResponse(BaseModel):
     # apart, and the contract requires them to look different — a stall means "go
     # find out why this is wedged", a failure means the work itself failed.
     stalled: bool
+    # The pull request bound to this story, and why it is not completing (#5301).
+    #
+    # Load-bearing for diagnosis, and the reason the original failure was expensive:
+    # a story in `awaiting_merge` said only "waiting for the issue to be completed by
+    # a merged pull request", which was true, unactionable, and describing something
+    # that could never happen. Surfacing the bound PR answers "which PR is this
+    # waiting on"; `binding_hold` answers "and what is missing" in terms an operator
+    # can act on.
+    #
+    # Both are None for a legacy dispatch, which has no binding and keeps the old
+    # generic message — so this never claims a binding exists where one does not.
+    bound_pull_request: dict | None = None
+    binding_hold: str | None = None
     cost: NodeCostResponse
     created_at: str
     updated_at: str | None
@@ -1018,6 +1392,10 @@ async def get_flow_graph(
         except (ValueError, TypeError):
             continue
 
+    # One query for every story's bound PR (#5301), so the journey view can say which
+    # pull request a waiting story is waiting on and what is missing from it.
+    bindings = await active_bindings_for_flow(db, org_id=current_user.org_id, flow_id=flow.id)
+
     # Keyed by address because that is what `get_flow_cost` returns them under.
     # Built once rather than searched per node: a linear scan inside the node loop
     # would make this quadratic in node count for no benefit.
@@ -1033,6 +1411,36 @@ async def get_flow_graph(
         result = result_summaries.get(node.id, {})
         if result.get("attempt") != node.attempts:
             result = {}
+        # Recovered historical and completed stories retain their delivery PR.
+        # Evidence is current only for the exact binding revision it observed.
+        bound_pull_request: dict | None = None
+        binding_hold: str | None = None
+        candidate = bindings.get(node.id)
+        has_current_binding = candidate is not None and not isinstance(candidate, BindingRefusal) and candidate.attempt == node.attempts
+        if has_current_binding:
+            bound_pull_request = binding_summary(candidate)
+        if (dispatch.get("pr_binding_required") or candidate is not None) and node.state in (NodeState.RUNNING.value, NodeState.AWAITING_MERGE.value):
+            if isinstance(candidate, BindingRefusal):
+                binding_hold = hold_explanation(candidate)
+            elif has_current_binding:
+                refusal = completion_candidate(candidate)
+                if refusal:
+                    binding_hold = hold_explanation(refusal)
+                else:
+                    observed_binding = result.get("binding") or {}
+                    current_observation = (
+                        isinstance(observed_binding, dict)
+                        and observed_binding.get("id") == candidate.id
+                        and observed_binding.get("revision") == candidate.revision
+                    )
+                    binding_hold = (
+                        result.get("evidence")
+                        if current_observation
+                        else "Pull request registered; merge, checks and independent review verification are pending."
+                    )
+            else:
+                binding_hold = hold_explanation(BindingRefusal.NO_BINDING)
+
         source_repo = dispatch.get("repo", "")
         source_issue = dispatch.get("issue")
         issue_url = (
@@ -1059,6 +1467,8 @@ async def get_flow_graph(
                     "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
                 ),
                 stalled=node.id in stalled_node_ids,
+                bound_pull_request=bound_pull_request,
+                binding_hold=binding_hold,
                 # `get_flow_cost` returns one entry per node passed in, so the
                 # fallback is unreachable today. It is UNKNOWN rather than a zero
                 # anyway: if that ever stops holding, the honest answer is "we do
@@ -1082,13 +1492,15 @@ async def get_flow_graph(
             )
         )
 
-    activity = await load_story_activity(
-        org_id=current_user.org_id,
-        run_ids=[node.run_id for node in graph_nodes if node.kind == "story" and node.state in ("running", "awaiting_merge") and node.run_id],
-    )
-    for node in graph_nodes:
-        if node.kind == "story" and node.state in ("running", "awaiting_merge"):
-            node.activity = activity.get(node.run_id)
+    # Retain observed history after merge or interruption. Queued/replaced
+    # stories must not borrow a previous attempt's activity.
+    history_nodes = [node for node in graph_nodes if node.kind == "story" and node.run_id and node.state not in ("pending", "ready", "superseded")]
+    executions = await load_story_execution(org_id=current_user.org_id, run_ids=[node.run_id for node in history_nodes])
+    for node in history_nodes:
+        execution = executions.get(node.run_id)
+        node.execution_history = execution
+        if node.state in ("running", "awaiting_merge"):
+            node.activity = execution.activity if execution else None
 
     return FlowGraphResponse(
         flow_id=flow.id,
@@ -1102,4 +1514,270 @@ async def get_flow_graph(
         edges=[GraphEdgeResponse(from_node_id=edge.from_node_id, to_node_id=edge.to_node_id) for edge in edges],
         cost=_flow_cost_response(flow.id, aggregate),
         execution_policy=summarize_policy(policy_inputs.policy) if policy_inputs.policy is not None else None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Issue #5145 (ENGINE-K4): execution progress and blocks, read-only.
+# ---------------------------------------------------------------------------
+
+
+class ExecutionBlockResponse(BaseModel):
+    """Why delivery stopped, who clears it, and what they must supply.
+
+    Present only when the execution is actually blocked. `code` is a stable
+    `BlockCode` a client may branch on; `owner` and `required_input` are what turn
+    a status into a next step, which is the whole point — a bare "blocked" flag
+    sends an operator to logs that expire.
+
+    `remaining_gates` is informational. The gates themselves stay with the existing
+    `controls.py`/graph state, and this route neither approves nor bypasses one.
+
+    `progressed_at` is the last *real* progress, not the moment of blocking: the
+    store deliberately does not reset it when a row blocks, because it is the clock
+    that distinguishes "stuck for a minute" from "stuck since Tuesday".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    owner: str
+    required_input: str
+    remaining_gates: list[str]
+    progressed_at: str | None
+    detail: str | None
+
+
+class ExecutionActionResponse(BaseModel):
+    """One externally-visible step an execution took.
+
+    `resolved` is served explicitly rather than left to the client, because the
+    derivation has a trap: `unknown` is a settled record of an *unsettled* fact, so
+    a client testing `status != "prepared"` would treat an outcome nobody observed
+    as resolved evidence and could show delivery as complete on the strength of it.
+
+    `receipt_ref` null means the provider's own identifier is not recorded yet —
+    **pending**, not "nothing happened". A reference that failed sanitisation also
+    arrives null, which is the fail-closed direction.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    operation_key: str
+    kind: str
+    status: str
+    attempt: int
+    resolved: bool
+    artifact_ref: str | None
+    receipt_ref: str | None
+    created_at: str | None
+    observed_at: str | None
+
+
+class ExecutionSummaryResponse(BaseModel):
+    """One node's delivery cycle: where it is, whether it is moving, why not if not.
+
+    Keyed by `node_id` + `cycle` because that is the ledger's own identity — a
+    repair cycle is separate work with its own attempts and actions, and collapsing
+    cycles would present a retry as the original attempt.
+
+    `revision` is here so a client can reject a stale poll response: it advances by
+    exactly one per applied write, making "is this older than what I already show?"
+    a comparison rather than a guess about arrival order.
+
+    **Deliberately absent: the whole authority binding** — `claim_id`,
+    `claim_generation` and `accepted_plan_version`.
+
+    The first two are what the store's authority fence tests; publishing them would
+    put the values that satisfy the next authority check into a browser payload.
+
+    `accepted_plan_version` is absent for a different reason, which
+    `test_internal_plane_guard.py` caught in an earlier draft that served it: it is
+    an **acceptance record** — it names which approved plan authorized this
+    delivery. This router requires `PLAN_APPROVE` of any handler touching those
+    records, because reading "what was approved" under a spend-read permission is an
+    escalation. Both escapes were wrong: relaxing the guard, or promoting this route
+    so that viewing delivery *progress* would demand approval authority. Nothing
+    here needs the field — "why is delivery waiting and who acts next" is answered
+    by the phase, the block and the next check, and the authorizing plan is already
+    on the plans route under the permission that governs it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    node_id: str
+    cycle: int
+    phase: str
+    status: str
+    revision: int
+    attempts: int
+    next_check_at: str | None
+    deadline_at: str | None
+    progressed_at: str | None
+    progress_note: str | None
+    block: ExecutionBlockResponse | None
+    pending_action_key: str | None
+    notification_receipt_ref: str | None
+    handoff_receipt_ref: str | None
+    created_at: str | None
+    updated_at: str | None
+    actions: list[ExecutionActionResponse]
+    action_overflow: bool
+
+
+class FlowExecutionResponse(BaseModel):
+    """Execution progress and blocks for one flow (#5145).
+
+    `server_time` is what makes every other instant interpretable. A client
+    computing "stuck for three hours" against its own clock is computing against a
+    clock that may be wrong or in another zone; against this field it subtracts two
+    values from the same source.
+
+    `legacy` is true when the flow has **no execution rows at all**. That is a real
+    and permanent state — every flow delivered before this ledger existed has none —
+    and it means *no durable execution record*, which is emphatically not success.
+    The response is still 200: the flow exists, and a 404 would say otherwise.
+
+    `total` is the flow's whole execution count, so a client showing a page can say
+    how many it is not showing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    flow_id: str
+    server_time: str
+    executions: list[ExecutionSummaryResponse]
+    total: int
+    limit: int
+    offset: int
+    legacy: bool
+
+
+def _iso(moment: datetime | None) -> str | None:
+    """Serialize an instant, or None. Always with an offset — see `_as_aware`."""
+    return moment.isoformat() if moment is not None else None
+
+
+@router.get("/flows/{flow_id}/execution", response_model=FlowExecutionResponse)
+async def get_flow_execution(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=MAX_EXECUTIONS_PER_PAGE)] = MAX_EXECUTIONS_PER_PAGE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> FlowExecutionResponse:
+    """Execution progress and blocks for one flow. Read-only (#5145).
+
+    Answers the question the graph view cannot: *why* is delivery waiting, and who
+    acts next. The graph's `state` says a story is running; this says it has been
+    blocked for three hours on a human gate, names who must approve it and what
+    they must supply.
+
+    **Gated on `USAGE_READ`**, the same permission as the flow-graph and cost reads,
+    and checked before any database read so a denied caller cannot learn whether the
+    flow exists. No new permission is introduced: this adds no control and no
+    acceptance authority, and existing `controls.py` remains the sole human
+    approval/recovery surface.
+
+    **Tenant isolation.** The flow is resolved under the caller's own authenticated
+    `org_id` before any ledger read, and the ledger query carries `org_id` in its
+    own predicate as well. An unknown or cross-tenant `flow_id` returns the same
+    **404** every other route in this router gives — never 403, which would confirm
+    the id exists somewhere and let a caller enumerate flows by status code.
+
+    **Why this does not call `execution_store.load_execution`.** That entry point
+    requires the `claim_id`/`claim_generation` of the work claim a caller holds, and
+    an operator holds none; a read presenting a claim it does not own reaches the
+    store's `claim_mismatch` arm, which withholds the record by design so a refusal
+    cannot disclose the binding that would satisfy it. The correct scoping is the
+    caller's own org — the access path `ix_orchestration_executions_flow_id` exists
+    for — and the store's fence is left untouched. See `execution_read.py`.
+
+    **An empty ledger is 200 with `legacy=true`**, not 404 and not an implied
+    success: the flow exists, and "no execution record" is the honest answer for
+    every flow delivered before this ledger existed.
+    """
+    await access.check_permission(
+        current_user,
+        Permission.USAGE_READ,
+        target_org_id=current_user.org_id,
+    )
+
+    repo = OrchestrationRepository(db)
+
+    # Org-filtered resolution BEFORE any ledger read, so a cross-tenant flow_id can
+    # never reach it. Same 404 as the rest of the router.
+    flow = await repo.get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail=f"no orchestration flow {flow_id!r} in this tenant")
+
+    view = await load_flow_execution_view(
+        db,
+        org_id=current_user.org_id,
+        flow_id=flow.id,
+        limit=limit,
+        offset=offset,
+    )
+
+    return FlowExecutionResponse(
+        flow_id=view.flow_id,
+        server_time=view.server_time.isoformat(),
+        total=view.total,
+        limit=view.limit,
+        offset=view.offset,
+        legacy=view.legacy,
+        executions=[
+            ExecutionSummaryResponse(
+                id=execution.id,
+                node_id=execution.node_id,
+                cycle=execution.cycle,
+                # `.value` on every enum: a `StrEnum` serializes as its value anyway,
+                # but being explicit keeps the wire format independent of that.
+                phase=execution.phase.value,
+                status=execution.status.value,
+                revision=execution.revision,
+                attempts=execution.attempts,
+                next_check_at=_iso(execution.next_check_at),
+                deadline_at=_iso(execution.deadline_at),
+                progressed_at=_iso(execution.progressed_at),
+                progress_note=execution.progress_note,
+                block=(
+                    ExecutionBlockResponse(
+                        code=execution.block.code.value,
+                        owner=execution.block.owner,
+                        required_input=execution.block.required_input,
+                        remaining_gates=list(execution.block.remaining_gates),
+                        progressed_at=_iso(execution.block.progressed_at),
+                        detail=execution.block.detail,
+                    )
+                    if execution.block is not None
+                    else None
+                ),
+                pending_action_key=execution.pending_action_key,
+                notification_receipt_ref=execution.notification_receipt_ref,
+                handoff_receipt_ref=execution.handoff_receipt_ref,
+                created_at=_iso(execution.created_at),
+                updated_at=_iso(execution.updated_at),
+                action_overflow=execution.action_overflow,
+                actions=[
+                    ExecutionActionResponse(
+                        id=action.id,
+                        operation_key=action.operation_key,
+                        kind=action.kind,
+                        status=action.status.value,
+                        attempt=action.attempt,
+                        resolved=action.resolved,
+                        artifact_ref=action.artifact_ref,
+                        receipt_ref=action.receipt_ref,
+                        created_at=_iso(action.created_at),
+                        observed_at=_iso(action.observed_at),
+                    )
+                    for action in execution.actions
+                ],
+            )
+            for execution in view.executions
+        ],
     )

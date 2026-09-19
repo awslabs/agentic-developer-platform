@@ -277,7 +277,7 @@ class TestSuccessfulPublish:
 
         assert result["statusCode"] == 202
         envelope = mock_sqs.call_args[0][0]
-        assert envelope["persona"] == "reviewer"
+        assert envelope["persona"] == "agent-codex-reviewer"
         assert envelope["source_ref"]["pr"] == 15
         assert envelope["source_ref"]["sha"] == "abc123"
         assert envelope["intent"]["trigger"] == "pr_opened"

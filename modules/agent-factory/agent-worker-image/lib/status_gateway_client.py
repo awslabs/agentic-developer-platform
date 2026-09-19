@@ -134,7 +134,7 @@ def _read_credential() -> str:
     return token
 
 
-def _post(path: str, body: dict) -> dict:
+def _post(path: str, body: dict, *, success_statuses: tuple[int, ...] = (200,)) -> dict:
     """Send one signed, authenticated request and return its parsed response.
 
     Three layers of authentication, each covering a different gap:
@@ -184,7 +184,7 @@ def _post(path: str, body: dict) -> dict:
                 allow_redirects=False,
                 stream=True,
             ) as response:
-                if response.status_code != 200:
+                if response.status_code not in success_statuses:
                     # The status code is safe to log; the body is not — it is the
                     # gateway's refusal reason, and the gateway deliberately keeps
                     # those uniform to the caller.
@@ -235,6 +235,22 @@ def register_control(*, token: str, token_expires_at: str) -> int:
         # gateway sends, which is indistinguishable from an attack.
         raise StatusGatewayError("gateway returned no usable control generation")
     return generation
+
+
+def post_self(path: str, body: dict) -> dict:
+    """Send an authenticated write to this run's own ``/self`` surface (#5301).
+
+    The public form of :func:`_post`, for callers whose payload has no
+    purpose-built helper here. Same three-layer authentication and the same
+    property that matters: the caller never names the row it is writing, so a
+    ``/self`` path can only ever address the execution the run credential and
+    workload token together identify.
+
+    Exposed so :mod:`lib.pr_binding` does not import the private ``_post``, which
+    would put the authentication contract's only enforcement point behind a name
+    nothing is obliged to keep stable.
+    """
+    return _post(path, body, success_statuses=(200, 201))
 
 
 def clear_control(generation: int) -> None:

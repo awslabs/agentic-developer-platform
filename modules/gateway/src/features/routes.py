@@ -109,5 +109,22 @@ async def get_features(_current_user=Depends(get_current_user)):
             # every page reachable under /next enforces the same server-side
             # authorization as its current-UI counterpart.
             "new_ui": _is_enabled_strict("FEATURE_NEW_UI_ENABLED"),
+            # Fail-closed: the Superplane domain app (Issue #5037, EPIC #4910). Strict
+            # for the reason the story's first acceptance criterion states directly —
+            # while this gate is off, no existing ADP surface may change behaviour and
+            # no Superplane route may be reachable on any tenant. `_is_enabled` would
+            # invert that: the route would be live in every environment the moment the
+            # gateway image shipped, and unsetting the var would not turn it off again.
+            #
+            # The module directory this gates is a skeleton whose infrastructure is not
+            # this unit's to deploy (Terraform is U3's, pinned images U2's). So a `true`
+            # here would advertise a route whose backing services do not exist yet —
+            # failing in front of a user rather than staying invisible until its owners
+            # have landed. Off is the correct state until then.
+            "superplane": _is_enabled_strict("FEATURE_SUPERPLANE_ENABLED"),
+            # Fail-closed rollout control for the per-persona model preferences
+            # page (Issue #5422). PMM-09 enables it only after model evidence and
+            # runtime enforcement are ready; absence must therefore remain off.
+            "agent_models": _is_enabled_strict("FEATURE_AGENT_MODELS_ENABLED"),
         }
     }

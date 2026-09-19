@@ -230,6 +230,7 @@ class GatewayCredentialClient:
         repo_name: str,
         invocation_id: str | None = None,
         purpose: str | None = None,
+        identity: str | None = None,
     ) -> dict[str, Any]:
         """Mint a repo-scoped GitHub App installation token via the gateway.
 
@@ -253,11 +254,22 @@ class GatewayCredentialClient:
             invocation_id: The run's invocation id. Defaults to ADP_MESSAGE_ID.
                 The gateway rejects a request without one (fail-closed binding).
             purpose: Optional audit purpose string.
+            identity: Which App identity to mint as (issue #5350). ``None`` (the
+                default, used by every bootstrap caller) leaves the field off the
+                request entirely, so the gateway applies its own default and old
+                gateways are unaffected. ``"review"`` asks for the distinct reviewer
+                App so a review is not a self-review.
 
         Returns:
-            ``{"token": "ghs_...", "expires_at": "<iso8601>", "app_id": "<id>"}``.
+            ``{"token": "ghs_...", "expires_at": "<iso8601>", "app_id": "<id>",
+            "identity": "default"|"review"}``.
             ``app_id`` is the App's PUBLIC identifier (not a credential) — the
             caller needs it for the bot commit identity and for GH_APP_ID.
+            ``identity`` is the identity the gateway ACTUALLY used, which may not be
+            the one requested: a "review" request falls back to the authoring
+            identity when no reviewer App is configured. Callers that need a formal
+            verdict must read it rather than assume they got what they asked for.
+            Absent when talking to a gateway that predates #5350.
 
         Raises:
             GatewayCredentialError: On any HTTP or network error. Deliberately
@@ -274,13 +286,18 @@ class GatewayCredentialClient:
         resolved_invocation_id = invocation_id or os.environ.get("ADP_MESSAGE_ID")
         if resolved_invocation_id:
             payload["invocation_id"] = resolved_invocation_id
+        # Omitted rather than defaulted, so a request to a pre-#5350 gateway is
+        # byte-for-byte what it was before.
+        if identity:
+            payload["identity"] = identity
 
         logger.info(
-            "Minting GitHub installation token via gateway (%s mode): installation_id=%s repo=%s/%s",
+            "Minting GitHub installation token via gateway (%s mode): installation_id=%s repo=%s/%s identity=%s",
             "sigv4" if self._use_sigv4 else "legacy",
             installation_id,
             repo_owner,
             repo_name,
+            identity or "default",
         )
 
         result = self._make_request(endpoint, payload)

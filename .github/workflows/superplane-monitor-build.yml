@@ -1,0 +1,229 @@
+name: Superplane Platform Monitor Build
+
+# Builds the Superplane Platform Monitor image from maintained ADP source — Issue #5041 (U2), EPIC #4910.
+# Source ownership transferred by Issue #5326 (U22).
+#
+# Pattern copied from cyber-worker-build.yml (zip source -> S3 -> CodeBuild -> ECR), which is
+# the established image-build lane in this repo. Two things differ deliberately:
+#
+# 1. THE BUILD CONTEXT COMES FROM THE LOCK, NOT FROM THIS FILE. Which directory gets built is
+#    read from modules/domain-apps/superplane/releases/superplane.lock.yaml by
+#    resolve_lock.py. No branch name, no `:latest`, no path spelled out here. An unchanged
+#    lock therefore yields identical inputs on every run (R2 acc. 3). If you find yourself
+#    adding a ref or a hardcoded source path to this file, the lock has stopped being the
+#    mechanism.
+#
+# 2. IT STILL DOES NOT REACH UPSTREAM. Before U22 this lane failed closed at the resolve step
+#    because building needed read access to aws-innovate/AISuperPlane that ADP does not have:
+#    the hosted token is scoped to this repository, so that checkout fails for everyone and a
+#    lane built on it would report a confusing transient-looking error instead of a named
+#    missing grant. U22 removed the need rather than obtaining the grant — the source is now
+#    maintained in this repository, so `actions/checkout@v7` of THIS repo is the whole source
+#    acquisition. The fail-closed branch below is retained for any component whose
+#    `source_access` is still unresolved.
+#
+# The read-only reference snapshot (planning branch, ai-super-plane/reference/) is NOT a build
+# input: it is evidence at upstream 5d543c95, and building from it would ship evidence as a
+# product and pin a stale revision. tests/test_build_source_is_declared.py asserts this file
+# references neither it nor an upstream checkout.
+#
+# IMAGE TAGGING CHANGED WITH THE TRANSFER. The tag is the ADP commit, because that is now
+# what identifies what was built: the origin revision is frozen at the transfer point, so
+# tagging by it would make every later ADP fix overwrite the previous image under an
+# unchanged tag. The origin revision is preserved as an image LABEL instead (see
+# releases/build-image.sh), which keeps the provenance without pretending it is a version.
+
+on:
+  # Triggered by the lock AND by the maintained source, because after U22 either one can
+  # change what the image contains. Watching only the lock would mean a fix to the
+  # transferred code never produced a new image — the exact gap that makes an ADP-owned
+  # component drift from the image running in a cluster.
+  push:
+    branches: [main]
+    paths:
+      - 'modules/domain-apps/superplane/src/superplane-platform-monitor/**'
+      - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
+      - 'modules/domain-apps/superplane/releases/resolve_lock.py'
+      - 'modules/domain-apps/superplane/releases/build-image.sh'
+      - 'modules/domain-apps/superplane/releases/buildspecs/monitor.yml'
+      - '.github/workflows/superplane-monitor-build.yml'
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+  CODEBUILD_PROJECT: adp-dev-superplane-monitor
+  LOCK_IMAGE: superplane-platform-monitor
+
+concurrency:
+  group: superplane-monitor-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Superplane Platform Monitor Image
+    runs-on: arc-runner-org
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # ARC's system Python is PEP 668 externally managed. Use the same managed
+      # interpreter pattern as the repository's other Python workflows so installing
+      # the resolver's only dependency never writes into the runner image.
+      - name: Setup Python for the lock resolver
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML for the lock resolver
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+
+      # ── 1. Resolve the build context FROM THE LOCK ──────────────────────
+      # Exit 78 means the lock is fine but a source-access grant is missing. Unreachable for
+      # this component since U22 (its source_access is resolved), and retained because a
+      # component added in the not-yet-granted state must stop with a named cause rather
+      # than a checkout error that reads like a transient CI fault.
+      - name: Resolve build inputs from the release lock
+        run: |
+          set -euo pipefail
+          set +e
+          OUT=$(python3 modules/domain-apps/superplane/releases/resolve_lock.py "${LOCK_IMAGE}")
+          RC=$?
+          set -e
+          echo "$OUT"
+          if [ "$RC" -eq 78 ]; then
+            {
+              echo "### Superplane Platform Monitor build — blocked"
+              echo ""
+              echo "The source-access mechanism for this component is unresolved, so there is"
+              echo "no authorized way to obtain its source. This is a missing access grant,"
+              echo "not a build failure. See \`source_access\` in"
+              echo "\`modules/domain-apps/superplane/releases/superplane.lock.yaml\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          [ "$RC" -eq 0 ] || exit "$RC"
+          echo "$OUT" >> "$GITHUB_ENV"
+
+      # ── 2. Verify the maintained source is present in this checkout ─────
+      # The one place source is established, kept as an explicit step so it cannot be added
+      # ad hoc somewhere else. There is nothing to fetch: `actions/checkout` above already
+      # brought it, because U22 moved the code into this repository. What remains is proving
+      # the directory the LOCK names actually exists here — otherwise a lock entry renamed
+      # without moving the files would fail later, inside `docker build`, as a missing-file
+      # error that says nothing about the lock.
+      - name: Verify maintained source is present
+        run: |
+          set -euo pipefail
+          test -d "${SUPERPLANE_SOURCE_DIR}" || {
+            echo "::error::The lock names ${SUPERPLANE_SOURCE_DIR}, which is not in this checkout." >&2
+            echo "Maintained Superplane source lives in this repository (U22, #5326); update the lock's source_path or restore the directory." >&2
+            exit 1
+          }
+          test -f "${SUPERPLANE_SOURCE_DIR}/Dockerfile" || {
+            echo "::error::${SUPERPLANE_SOURCE_DIR} has no Dockerfile, so there is nothing to build." >&2
+            exit 1
+          }
+          echo "Building ${LOCK_IMAGE} from ${SUPERPLANE_SOURCE_DIR} (origin provenance: ${ORIGIN_REPOSITORY} @ ${ORIGIN_REVISION})."
+
+      - name: Load deployment config
+        uses: ./.github/actions/load-deploy-config
+
+      - name: Install zip + AWS CLI
+        run: |
+          set -e
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zip unzip curl
+          fi
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
+            unzip -q /tmp/awscli.zip -d /tmp
+            sudo /tmp/aws/install
+            rm -rf /tmp/awscli.zip /tmp/aws
+          fi
+          aws --version
+
+      # ── 3. Ensure CodeBuild project exists ─────────────────────────────
+      - name: Ensure CodeBuild project
+        run: |
+          set -euo pipefail
+          CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
+          SERVICE_ROLE_ARN=$(aws iam get-role \
+            --role-name "$CB_ROLE_NAME" \
+            --query 'Role.Arn' --output text 2>/dev/null || echo "")
+          if [ -z "$SERVICE_ROLE_ARN" ]; then
+            echo "${CB_ROLE_NAME} missing — a separately approved build-role setup is required; this domain lane does not deploy platform infrastructure." >&2
+            exit 1
+          fi
+
+          SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
+          EXISTS=$(aws codebuild batch-get-projects \
+            --names "${CODEBUILD_PROJECT}" \
+            --region "${AWS_REGION}" \
+            --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
+
+          CMD="create-project"
+          [ "$EXISTS" -gt 0 ] && CMD="update-project"
+
+          aws codebuild $CMD --region "${AWS_REGION}" \
+            --name "${CODEBUILD_PROJECT}" \
+            --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"modules/domain-apps/superplane/releases/buildspecs/monitor.yml\"}" \
+            --artifacts '{"type":"NO_ARTIFACTS"}' \
+            --environment '{
+              "type":"LINUX_CONTAINER",
+              "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
+              "computeType":"BUILD_GENERAL1_MEDIUM",
+              "privilegedMode":true
+            }' \
+            --service-role "$SERVICE_ROLE_ARN" > /dev/null
+
+      # ── 4. Build via CodeBuild ─────────────────────────────────────────
+      # ORIGIN_* are passed for the provenance labels only; nothing in the build fetches
+      # them. IMAGE_TAG is github.sha — see the tagging note in the header.
+      - name: Build image via CodeBuild
+        id: build
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: ${{ env.CODEBUILD_PROJECT }}
+          region: ${{ env.AWS_REGION }}
+          state_bucket: ${{ env.STATE_BUCKET }}
+          environment_variables: >-
+            "name=AWS_REGION,value=${{ env.AWS_REGION }}"
+            "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}"
+            "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}"
+            "name=REGISTRY,value=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+            "name=ECR_REPO,value=${{ env.ECR_REPO }}"
+            "name=ORIGIN_REPOSITORY,value=${{ env.ORIGIN_REPOSITORY }}"
+            "name=ORIGIN_REVISION,value=${{ env.ORIGIN_REVISION }}"
+            "name=SOURCE_PATH,value=${{ env.SOURCE_PATH }}"
+            "name=SUPERPLANE_SOURCE_DIR,value=${{ env.SUPERPLANE_SOURCE_DIR }}"
+            "name=IMAGE_TAG,value=${{ github.sha }}"
+
+      # ── 5. Report the digest that was actually produced ────────────────
+      # The digest is read back from ECR rather than assumed, so the value that reaches the
+      # lock is the registry's own answer. Moving it into `images` (and removing the
+      # `pending_images` entry) is a reviewed commit, not an automated push: the lock is a
+      # human-auditable record of what we chose to run.
+      - name: Report produced digest
+        run: |
+          set -euo pipefail
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "${ECR_REPO}" \
+            --image-ids "imageTag=${{ github.sha }}" \
+            --region "${AWS_REGION}" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          {
+            echo "### Superplane Platform Monitor build"
+            echo ""
+            echo "- **Built from**: \`${SUPERPLANE_SOURCE_DIR}\` (maintained in this repository)"
+            echo "- **ADP commit**: \`${{ github.sha }}\`"
+            echo "- **Origin provenance**: \`${ORIGIN_REPOSITORY}\` @ \`${ORIGIN_REVISION}\`"
+            echo "- **ECR repository**: \`${ECR_REPO}\`"
+            echo "- **Digest**: \`${DIGEST}\`"
+            echo ""
+            echo "Update \`images.${LOCK_IMAGE}\` in the release lock to this digest and"
+            echo "remove its \`pending_images\` entry, in a reviewed commit."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -22,6 +22,7 @@ from src.agentauth.execution import ExecutionStateError
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
+from src.orchestration.provider_quotes import QuoteRefusedError, quote_request, revalidate_quote
 from src.shared.enforced_paths import ENFORCED_PATHS
 from src.shared.logging import get_logger
 
@@ -61,7 +62,7 @@ class AgentModelIdentityMiddleware:
                 request.headers.get(CREDENTIAL_HEADER, ""),
                 request.headers.get(WORKLOAD_HEADER, ""),
             )
-            await runtime.validate_flow(record, grant)
+            attribution = await runtime.validate_flow(record, grant)
             await worker_checkpoint(org_id=caller.tenant_id, invocation_id=caller.invocation_id, store=runtime.store)
             if request.headers.get("X-Agent-RunId", caller.invocation_id) != caller.invocation_id:
                 raise BootstrapRefusedError("model run assertion mismatch")
@@ -72,7 +73,7 @@ class AgentModelIdentityMiddleware:
                 async with get_session_factory()() as session:
                     root = await resolve_root_user_entity_id(session, caller.tenant_id, root)
                     if grant.authority.kind == "gate_decision":
-                        from src.orchestration.flow_meter import estimate_policy_model_cost, meter_target
+                        from src.orchestration.flow_meter import meter_target
                         from src.orchestration.policy_admission import load_in_force_policy
                         from src.orchestration.runtime_policy import authorize_worker_credential
 
@@ -104,10 +105,22 @@ class AgentModelIdentityMiddleware:
                     chunks.append(chunk)
                     if not frame.get("more_body", False):
                         break
+                body = b"".join(chunks)
                 try:
-                    context._policy_estimated_cost = estimate_policy_model_cost(b"".join(chunks), scope["path"])
+                    quote = await quote_request(body, scope["path"])
+                except QuoteRefusedError as exc:
+                    # A refusal is a value, not a cost. There is no estimate, no
+                    # default model price and no client token count to fall back
+                    # to, so nothing is forwarded upstream.
+                    logger.info(
+                        "Bounded provider quote refused",
+                        extra={"reason": exc.refusal.reason, "capability": exc.refusal.capability, "principal": caller.invocation_id},
+                    )
+                    raise BootstrapRefusedError("bounded provider quote unavailable") from None
                 except (ValueError, KeyError, TypeError, AttributeError):
                     raise BootstrapRefusedError("bounded provider quote unavailable") from None
+                context._policy_quote = quote
+                context._policy_estimated_cost = quote.total_usd
                 remaining_frames = iter(frames)
                 upstream_receive = receive
 
@@ -121,12 +134,29 @@ class AgentModelIdentityMiddleware:
                 _, caller, record, grant = await run_in_threadpool(
                     runtime.authenticate, request.headers.get(CREDENTIAL_HEADER, ""), request.headers.get(WORKLOAD_HEADER, "")
                 )
-                await runtime.validate_flow(record, grant)
+                # Reauthentication re-proves the assignment against live SQL, so
+                # this later result supersedes the pre-upload one: it is the state
+                # immediately before spending.
+                attribution = await runtime.validate_flow(record, grant)
                 async with get_session_factory()() as session:
                     decision = await authorize_worker_credential(session, execution=execution or {}, grant=grant, broker_path="model")
                     if not decision.permitted:
                         raise ModelPolicyRefusedError(decision)
-                # Client IDs are trace hints, not spend idempotency keys.
+                # The quote is evidence about specific bytes priced at a specific
+                # published revision. Re-verify that binding here — after upload
+                # and reauthentication, immediately before the reservation — so a
+                # rate generation that rolled over, or any divergence between the
+                # quoted and forwarded bytes, requotes instead of spending.
+                try:
+                    await revalidate_quote(quote, body, scope["path"])
+                except QuoteRefusedError as exc:
+                    logger.info(
+                        "Bounded provider quote no longer binds this request",
+                        extra={"reason": exc.refusal.reason, "capability": exc.refusal.capability, "principal": caller.invocation_id},
+                    )
+                    raise BootstrapRefusedError("bounded provider quote unavailable") from None
+                # Client IDs are trace hints, not spend idempotency keys. Every
+                # separate upstream submission gets its own reservation id.
                 context._policy_request_id = str(uuid4())
                 scope.setdefault("state", {})["request_id"] = context._policy_request_id
             # Authenticated registry org remains __platform__. Only attribution
@@ -141,6 +171,28 @@ class AgentModelIdentityMiddleware:
                 is_human_rooted=grant.authority.kind != "service_policy",
                 flow_id=grant.flow_id if grant.authority.kind == "gate_decision" else None,
             )
+            # Issue #4898: attach the verified graph assignment so the shared
+            # usage writer can persist `usage_logs.graph_address`. Captured HERE —
+            # before the request reaches the provider — so the value metering
+            # later reads is the one that was actually proven for this call, not a
+            # re-resolution of a node that may by then have completed.
+            #
+            # The equality checks are a binding assertion, not a second
+            # authorization: `attribution` was composed inside
+            # `validate_engine_authority` from the same `grant`/`caller` that
+            # authorized this request, so agreement is expected. Requiring it
+            # anyway means any future path that could return another run's or
+            # tenant's assignment yields a NULL address instead of a
+            # cross-attributed charge. A mismatch declines attribution; it never
+            # denies the call, because attribution is reporting and must not be
+            # able to break a model request.
+            if (
+                attribution is not None
+                and attribution.org_id == caller.tenant_id
+                and attribution.run_id == caller.invocation_id
+                and attribution.address
+            ):
+                context._graph_attribution = attribution
         except ModelPolicyRefusedError as exc:
             from src.orchestration.execution_policy import DenyReason
 

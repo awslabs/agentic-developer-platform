@@ -72,10 +72,12 @@ resource "aws_iam_role_policy" "keda_operator_sqs" {
         # KEDA's aws-eks identity provider chain-assumes the workload pod's
         # IRSA role when checking queue depth. Allow this AssumeRole so the
         # scaler can authenticate.
-        Sid      = "AssumeWorkloadRole"
-        Effect   = "Allow"
-        Action   = "sts:AssumeRole"
-        Resource = local.agent_worker_role_arn
+        Sid    = "AssumeWorkloadRole"
+        Effect = "Allow"
+        Action = "sts:AssumeRole"
+        Resource = [
+          local.agent_worker_role_arn,
+        ]
       }
     ]
   })

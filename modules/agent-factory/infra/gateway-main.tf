@@ -144,6 +144,10 @@ module "gateway_apigw" {
   authorizer_lambda_function_name = local.authorizer_function_name
   cloudwatch_kms_key_arn          = aws_kms_key.cloudwatch.arn
   tags                            = { Component = "agent-gateway" }
+
+  # Close the AWS-assigned hostname once ws.<zone> is published. See the variable
+  # for why this is the only control a WEBSOCKET API can carry.
+  disable_execute_api_endpoint = var.disable_execute_api_endpoint
 }
 
 # --- Gateway Agents Namespace ---

@@ -66,6 +66,9 @@ COPY --from=builder --chown=agent:agent /app/package*.json ./
 # Copy personas from the sibling rules/ directory (inside build context).
 # Baked into the image so persona loading has zero runtime dependencies.
 COPY --chown=agent:agent rules/personas/ ./personas/
+# Canonical issue contract is readable even in customer repos without ADP docs.
+COPY --chown=agent:agent rules/agents/issue-authoring.md ./rules/agents/issue-authoring.md
+COPY --chown=agent:agent rules/templates/developer-issue.md ./rules/templates/developer-issue.md
 
 # Copy startup script
 COPY --chown=agent:agent agent/startup.sh ./startup.sh

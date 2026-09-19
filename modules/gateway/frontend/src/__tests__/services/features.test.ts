@@ -76,6 +76,9 @@ describe('features service', () => {
         orchestration_engine: true,
         budget_spend: true,
         agent_control: true,
+        new_ui: true,
+        superplane: true,
+        agent_models: true,
       };
       for (const key of Object.keys(required) as Array<keyof FeatureFlags>) {
         expect(ALL_FEATURES_ENABLED).toHaveProperty(key);
@@ -96,6 +99,10 @@ describe('features service', () => {
 
     it('keeps budget_spend fail-closed too', () => {
       expect(ALL_FEATURES_ENABLED.budget_spend).toBe(false);
+    });
+
+    it('keeps Agent Models fail-closed until PMM-09', () => {
+      expect(ALL_FEATURES_ENABLED.agent_models).toBe(false);
     });
   });
 

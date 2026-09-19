@@ -323,6 +323,301 @@ class TestRule4WaveEvals:
         assert "epic-2" in violations[0].where
 
 
+class TestRule6SameIssueOrdering:
+    """Rule 6: two nodes on one issue must be ordered relative to each other.
+
+    Issue #5335. Reusing an issue is legitimate (deliver, then repair what the
+    evaluation found); reusing it with *no order between the two nodes* is a plan
+    to do one issue twice at once. Transactional work claims remain the
+    cross-plan/concurrency backstop — this rule stops an unschedulable plan being
+    *accepted* in the first place.
+    """
+
+    def _wave(self, first_issue, second_issue, edges):
+        nodes = [
+            ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref=first_issue),
+            ProposedNode(address=address("story-b"), kind="story", title="B", issue_ref=second_issue),
+            ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"),
+        ]
+        return make_proposal(nodes=nodes, edges=edges)
+
+    def _to_eval(self):
+        return [
+            ProposedEdge(from_address=address("story-a"), to_address=address("eval")),
+            ProposedEdge(from_address=address("story-b"), to_address=address("eval")),
+        ]
+
+    def test_unordered_duplicate_issue_is_a_violation(self):
+        """The reproduction from #5335: both stories claim one issue, both point
+        only at the eval, so nothing decides which of them runs first."""
+        violations = validate_proposal(self._wave("5127", "5127", self._to_eval()))
+        assert "unordered_same_issue" in rules(violations)
+
+    def test_the_violation_names_both_unordered_nodes_and_the_issue(self):
+        """An author fixing this needs to know which two nodes to sequence."""
+        violations = [v for v in validate_proposal(self._wave("5127", "5127", self._to_eval())) if v.rule == "unordered_same_issue"]
+        assert len(violations) == 1
+        assert address("story-a") in violations[0].where
+        assert address("story-b") in violations[0].where
+        assert "5127" in violations[0].message
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("5127", "#5127"),
+            ("#5127", "5127"),
+            (" 5127 ", "5127"),
+            ("#5127 ", "5127"),
+            ("##5127", "#5127"),
+        ],
+    )
+    def test_equivalent_issue_spellings_are_one_identity(self, first, second):
+        """`"5127"` and `"#5127"` both occur in real proposals and the runtime
+        claim `lstrip("#")`s them to one number; comparing raw strings would let a
+        spelling difference hide a genuine duplicate."""
+        assert "unordered_same_issue" in rules(validate_proposal(self._wave(first, second, self._to_eval())))
+
+    def test_explicit_ordering_permits_intentional_reuse(self):
+        """The whole point of the rule: sequenced reuse is legal, and this is the
+        developer-then-repair shape that must keep compiling."""
+        edges = [
+            ProposedEdge(from_address=address("story-a"), to_address=address("story-b")),
+            ProposedEdge(from_address=address("story-b"), to_address=address("eval")),
+        ]
+        assert validate_proposal(self._wave("5127", "5127", edges)) == []
+
+    def test_transitive_ordering_is_ordering(self):
+        """`a -> eval -> b` sequences a before b as firmly as a direct edge; an
+        author who expressed the order through an intermediate still expressed
+        it."""
+        edges = [
+            ProposedEdge(from_address=address("story-a"), to_address=address("eval")),
+            ProposedEdge(from_address=address("eval"), to_address=address("story-b")),
+        ]
+        assert validate_proposal(self._wave("5127", "5127", edges)) == []
+
+    def test_reverse_ordering_is_ordering(self):
+        """Order, not direction: b before a is as ordered as a before b."""
+        edges = [
+            ProposedEdge(from_address=address("story-b"), to_address=address("story-a")),
+            ProposedEdge(from_address=address("story-a"), to_address=address("eval")),
+        ]
+        assert validate_proposal(self._wave("5127", "5127", edges)) == []
+
+    def test_independent_issues_stay_parallel(self):
+        """Two stories on different issues are exactly what a wave is for; the
+        rule must not force an ordering on unrelated work."""
+        assert validate_proposal(self._wave("5127", "5128", self._to_eval())) == []
+
+    def test_nodes_without_an_issue_are_not_a_shared_identity(self):
+        """Eval and gate nodes frequently carry no issue; "no issue" is not a
+        claim on one."""
+        assert validate_proposal(self._wave(None, None, self._to_eval())) == []
+
+    def test_gates_on_one_issue_are_exempt(self):
+        """A gate is a human decision the tick presents — it consumes no worker
+        and performs no work on its issue, so two gates cannot be competing
+        deliveries. Mirrors rule 4 exempting gate-only waves."""
+        nodes = [
+            ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref="1"),
+            ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="2"),
+            ProposedNode(address=address("gate-1"), kind="gate", title="G1", issue_ref="7"),
+            ProposedNode(address=address("gate-2"), kind="gate", title="G2", issue_ref="7"),
+        ]
+        edges = [ProposedEdge(from_address=address("story-a"), to_address=address("eval"))]
+        assert validate_proposal(make_proposal(nodes=nodes, edges=edges)) == []
+
+    def test_a_story_and_its_eval_on_one_issue_must_still_be_ordered(self):
+        """An eval dispatches to its issue and consumes a worker just as a story
+        does, so an unordered story+eval pair on one issue is the same
+        collision."""
+        nodes = [
+            ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref="5127"),
+            ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="5127"),
+        ]
+        assert "unordered_same_issue" in rules(validate_proposal(make_proposal(nodes=nodes, edges=[])))
+
+    def test_three_nodes_on_one_issue_report_one_deterministic_actionable_pair(self):
+        """One rank-adjacent witness rejects the issue without quadratic output."""
+        nodes = [
+            ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref="5127"),
+            ProposedNode(address=address("story-b"), kind="story", title="B", issue_ref="5127"),
+            ProposedNode(address=address("story-c"), kind="story", title="C", issue_ref="5127"),
+            ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"),
+        ]
+        # a -> b orders that one pair; c is ordered against neither.
+        edges = [
+            ProposedEdge(from_address=address("story-a"), to_address=address("story-b")),
+            ProposedEdge(from_address=address("story-b"), to_address=address("eval")),
+            ProposedEdge(from_address=address("story-c"), to_address=address("eval")),
+        ]
+        violations = [v for v in validate_proposal(make_proposal(nodes=nodes, edges=edges)) if v.rule == "unordered_same_issue"]
+        assert [v.where for v in violations] == [f"{address('story-b')} | {address('story-c')}"]
+
+    def test_identity_matches_the_runtime_parse_exactly(self):
+        """The rule's identity key is the runtime's own parse, deliberately.
+
+        `int(str(ref).lstrip("#"))` — the parse in `issue_number_for_dispatch`,
+        `policy_admission` and `diagnose` — rejects `" #5127 "`, because the
+        whitespace precedes the `#` that `lstrip` removes. A node spelled that way
+        cannot be routed to an issue at dispatch either, so it is not a competing
+        delivery and must not be reported as one. Validation and the transactional
+        claim agreeing on identity matters more than accepting one more spelling;
+        if that parse is ever widened, this rule follows it.
+        """
+        from src.orchestration.dispatch_pass import issue_number_for_dispatch
+        from src.orchestration.proposal import _work_identity
+
+        for spelling in ("5127", "#5127", " 5127 ", "#5127 ", "##5127", " #5127 ", "not-an-issue", "0", "-3", None):
+            runtime = issue_number_for_dispatch(spelling)
+            expected = str(runtime) if runtime is not None else None
+            assert _work_identity(spelling) == expected, spelling
+
+    def test_a_malformed_issue_ref_is_not_reported_here(self):
+        """An unroutable reference is not a shared work identity, and rule 6 is
+        not the place to report a malformed one."""
+        assert validate_proposal(self._wave("not-an-issue", "not-an-issue", self._to_eval())) == []
+
+    def test_a_dangling_edge_cannot_order_two_nodes(self):
+        """Ordering must be established over edges the engine can actually
+        follow, matching rule 3's resolvable-edge subgraph."""
+        nodes = [
+            ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref="5127"),
+            ProposedNode(address=address("story-b"), kind="story", title="B", issue_ref="5127"),
+            ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"),
+        ]
+        edges = [ProposedEdge(from_address=address("story-a"), to_address=address("ghost"))]
+        found = rules(validate_proposal(make_proposal(nodes=nodes, edges=edges)))
+        assert "dangling_edge" in found
+        assert "unordered_same_issue" in found
+
+    def test_a_cyclic_document_still_terminates(self):
+        """Validation collects every violation, so this rule runs on a document
+        rule 3 already flagged as cyclic and must not hang or recurse."""
+        nodes = [
+            ProposedNode(address=address("story-a"), kind="story", title="A", issue_ref="5127"),
+            ProposedNode(address=address("story-b"), kind="story", title="B", issue_ref="5127"),
+            ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"),
+        ]
+        edges = [
+            ProposedEdge(from_address=address("story-a"), to_address=address("story-b")),
+            ProposedEdge(from_address=address("story-b"), to_address=address("story-a")),
+            ProposedEdge(from_address=address("story-a"), to_address=address("eval")),
+        ]
+        found = rules(validate_proposal(make_proposal(nodes=nodes, edges=edges)))
+        assert "cycle" in found
+        # The cycle orders them in both directions, so ordering is not the fault.
+        assert "unordered_same_issue" not in found
+
+    def test_a_deep_chain_does_not_recurse(self):
+        """Author-supplied depth must raise a violation or nothing — never a
+        RecursionError. Mirrors rule 3's deep-chain guarantee."""
+        nodes = [
+            ProposedNode(
+                address=address(f"n{index}"),
+                kind="story",
+                title=f"N{index}",
+                issue_ref="5127" if index in (0, 1999) else None,
+            )
+            for index in range(2000)
+        ]
+        nodes.append(ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"))
+        edges = [ProposedEdge(from_address=address(f"n{index}"), to_address=address(f"n{index + 1}")) for index in range(1999)]
+        edges.append(ProposedEdge(from_address=address("n1999"), to_address=address("eval")))
+        # The chain orders the two issue-bearing ends, so the plan is valid.
+        assert "unordered_same_issue" not in rules(validate_proposal(make_proposal(nodes=nodes, edges=edges)))
+
+    def test_a_deep_same_issue_chain_uses_a_linear_number_of_searches(self, monkeypatch):
+        """A valid ordered chain must not run one graph search for every pair."""
+        from src.orchestration import proposal as proposal_module
+
+        node_count = 2000
+        nodes = [
+            ProposedNode(
+                address=address(f"n{index:04d}"),
+                kind="story",
+                title=f"N{index}",
+                issue_ref="5127",
+            )
+            for index in range(node_count)
+        ]
+        nodes.append(ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"))
+        edges = [
+            ProposedEdge(
+                from_address=address(f"n{index:04d}"),
+                to_address=address(f"n{index + 1:04d}"),
+            )
+            for index in range(node_count - 1)
+        ]
+        edges.append(ProposedEdge(from_address=address(f"n{node_count - 1:04d}"), to_address=address("eval")))
+
+        original_reaches = proposal_module._reaches
+        searches = 0
+
+        def counted_reaches(adjacency, source, target):
+            nonlocal searches
+            searches += 1
+            return original_reaches(adjacency, source, target)
+
+        monkeypatch.setattr(proposal_module, "_reaches", counted_reaches)
+
+        assert validate_proposal(make_proposal(nodes=nodes, edges=edges)) == []
+        assert searches <= node_count
+
+    def test_a_deep_near_valid_chain_bounds_invalid_diagnostics(self, monkeypatch):
+        """One unordered node must not trigger a graph search for every pair."""
+        from src.orchestration import proposal as proposal_module
+
+        chain_count = 2000
+        nodes = [
+            ProposedNode(
+                address=address(f"n{index:04d}"),
+                kind="story",
+                title=f"N{index}",
+                issue_ref="5127",
+            )
+            for index in range(chain_count)
+        ]
+        nodes.extend(
+            [
+                ProposedNode(address=address("stray"), kind="story", title="Stray", issue_ref="5127"),
+                ProposedNode(address=address("eval"), kind="eval", title="Eval", issue_ref="9999"),
+            ]
+        )
+        edges = [
+            ProposedEdge(
+                from_address=address(f"n{index:04d}"),
+                to_address=address(f"n{index + 1:04d}"),
+            )
+            for index in range(chain_count - 1)
+        ]
+        edges.extend(
+            [
+                ProposedEdge(from_address=address(f"n{chain_count - 1:04d}"), to_address=address("eval")),
+                ProposedEdge(from_address=address("stray"), to_address=address("eval")),
+            ]
+        )
+
+        original_reaches = proposal_module._reaches
+        searches = 0
+
+        def counted_reaches(adjacency, source, target):
+            nonlocal searches
+            searches += 1
+            if searches > chain_count + 1:
+                pytest.fail("same-issue validation exceeded its linear search bound")
+            return original_reaches(adjacency, source, target)
+
+        monkeypatch.setattr(proposal_module, "_reaches", counted_reaches)
+
+        violations = [
+            violation for violation in validate_proposal(make_proposal(nodes=nodes, edges=edges)) if violation.rule == "unordered_same_issue"
+        ]
+        assert len(violations) == 1
+        assert address("stray") in violations[0].where
+        assert searches <= chain_count + 1
+
+
 class TestRule5Declarations:
     """Rule 5: org_id and spec_revision are declared."""
 

@@ -40,8 +40,11 @@ Repeat this delivery cycle:
    concurrency limits. Distinguish submission acceptance from an actual invocation.
    Reconcile an uncertain result before retrying; a fresh message ID is not proof
    that a repeated dispatch is safe.
-3. Monitor substantive progress and drive independent review of the actual PR head
-   against its acceptance criteria. Route findings back for repair and re-review;
+3. Monitor substantive progress through branch/commit links. Do not request draft
+   PRs or reviews of incomplete slices. Once implementation and pre-submit checks
+   are complete, drive independent review of the ready PR head against its
+   acceptance criteria. Existing drafts remain in development until complete.
+   Route findings back for repair and re-review;
    neither a developer summary nor a passing suite replaces missing integration.
 4. Merge only when authorized and repository requirements pass. Observe automatic
    deployments before starting another; verify the target, running revision and

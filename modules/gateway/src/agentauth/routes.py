@@ -11,18 +11,19 @@ import inspect
 import logging
 import os
 from datetime import UTC, datetime
-from functools import lru_cache
+from functools import lru_cache, partial
 
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from src.agentauth.adapter import CREDENTIAL_HEADER, MAX_COMMAND_BODY_BYTES, AgentControlAdapter
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, issue_bound_credential
 from src.agentauth.composition import build_authorization_service, build_control_adapter
-from src.agentauth.dispatch import DispatchRequest, DispatchService
+from src.agentauth.dispatch import FAN_OUT_CAPABILITY, FAN_OUT_CAPABILITY_FIELD, DispatchRequest, DispatchService
 from src.agentauth.execution import ExecutionStateError, evaluate_execution_state
 from src.agentauth.grants import LIVE_CONTROL_ACTIONS, AgentAction
 from src.agentauth.policy import PolicyError
@@ -33,6 +34,7 @@ from src.agentauth.waves import WaveRequest
 from src.agentauth.workload import WORKLOAD_HEADER, KubernetesWorkloadVerifier, WorkloadRefusedError
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.orchestration.work_claims import WorkClaimError
+from src.shared.database import get_db
 
 logger = logging.getLogger("bedrockgateway.agentauth.routes")
 
@@ -93,9 +95,17 @@ class AgentRuntime:
         grant = self.store.live_grant(invocation_id=caller.invocation_id, tenant_id=caller.tenant_id, attempt=caller.attempt, now=now)
         return pod, caller, record, grant
 
-    async def validate_flow(self, record, grant) -> None:
+    async def validate_flow(self, record, grant):
+        """Validate live engine authority, returning the verified graph assignment.
+
+        Issue #4898: returns the `GraphAttribution` for an execution bound to one
+        graph node, or None when there is no single owning node (a coordinator, or
+        a non-engine authority kind). Callers that only care whether the request
+        is authorized can keep ignoring the result — refusal is still an
+        exception.
+        """
         if grant.authority.kind in {"github_event", "service_policy"}:
-            return
+            return None
         if grant.authority.kind != "gate_decision":
             raise BootstrapRefusedError("unsupported authority source")
         from src.agentauth.engine import validate_engine_authority
@@ -104,7 +114,7 @@ class AgentRuntime:
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         try:
             async with get_session_factory()() as session:
-                await validate_engine_authority(session=session, execution=execution or {}, grant=grant, store=self.store)
+                return await validate_engine_authority(session=session, execution=execution or {}, grant=grant, store=self.store)
         except Exception:
             raise BootstrapRefusedError("engine authority unavailable") from None
 
@@ -139,9 +149,41 @@ class AgentRuntime:
         )
         return record, grant
 
-    def dispatch(self, body: DispatchRequest, credential_token: str, workload_token: str, *, context=None) -> dict:
+    def dispatch(self, body: DispatchRequest, credential_token: str, workload_token: str, *, context=None, fan_out_cleared: bool = False) -> dict:
         pod, _, _, _ = context or self.authenticate(credential_token, workload_token)
-        return self.dispatcher.dispatch(body=body, credential_token=credential_token, workload_binding=pod.uid)
+        return self.dispatcher.dispatch(body=body, credential_token=credential_token, workload_binding=pod.uid, fan_out_cleared=fan_out_cleared)
+
+    async def resolve_fan_out(self, body, context) -> bool:
+        """Resolve the #5365 repository fan-out clearance for a root coordinator.
+
+        Only asked when the stored grant already carries the server-written
+        capability, so an ordinary issue-scoped run costs no query. Any failure to
+        resolve returns False, which leaves the caller pinned to its launch issue
+        rather than widened on an unproven fact.
+        """
+        from src.agentauth.coordinator import resolve_repository_fan_out
+        from src.shared.database import get_session_factory
+
+        record, grant = context[2], context[3]
+        raw_grant = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"GRANT#{grant.principal}")
+        if not raw_grant or raw_grant.get(FAN_OUT_CAPABILITY_FIELD) != {"S": FAN_OUT_CAPABILITY}:
+            return False
+        execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
+        if not execution:
+            return False
+        try:
+            async with get_session_factory()() as session:
+                config = os.environ if self.env is None else self.env
+                return await resolve_repository_fan_out(
+                    session=session,
+                    execution=execution,
+                    grant=grant,
+                    target_repo=body.target.repo,
+                    target_issue=body.target.issue,
+                    orchestration_repo=config.get("BG_ORCH_DISPATCH_REPO", ""),
+                )
+        except Exception:
+            return False
 
     @property
     def dispatcher(self):
@@ -157,7 +199,8 @@ class AgentRuntime:
 
     async def dispatch_request(self, body, credential_token, workload_token, *, context):
         if context[3].authority.kind != "gate_decision":
-            return await run_in_threadpool(self.dispatch, body, credential_token, workload_token, context=context)
+            cleared = await self.resolve_fan_out(body, context)
+            return await run_in_threadpool(partial(self.dispatch, body, credential_token, workload_token, context=context, fan_out_cleared=cleared))
         from src.agentauth.graph_dispatch import dispatch_graph
         from src.shared.database import get_session_factory
 
@@ -235,7 +278,12 @@ def get_agent_runtime() -> AgentRuntime:
 
 
 @router.post("/bootstrap")
-async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRuntime = Depends(get_agent_runtime)) -> JSONResponse:
+async def bootstrap(
+    body: BootstrapRequest,
+    request: Request,
+    runtime: AgentRuntime = Depends(get_agent_runtime),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
     try:
         result = await run_in_threadpool(runtime.bootstrap, body, request.headers.get(WORKLOAD_HEADER, ""))
         caller = verify_credential(result["credential"], env=runtime.env)
@@ -249,6 +297,15 @@ async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRunt
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
+        from src.agentauth.model_policy import bootstrap_model_policy_live
+
+        result["model_policy"] = await bootstrap_model_policy_live(
+            db,
+            store=runtime.store,
+            record=record,
+            grant=grant,
+            env=runtime.env,
+        )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except WorkClaimError as exc:
         if exc.code == "work_waiting":

@@ -22,6 +22,7 @@
 
 import { DISPLAY_STATES, toDisplayState, isCurrentPosition } from '@/utils/nodeState';
 import { CostFigureDisplay } from './CostFigureDisplay';
+import { StoryJourney } from './StoryJourney';
 import type { GraphNode } from '@/types/orchestration';
 import { Link } from 'react-router-dom';
 
@@ -38,6 +39,11 @@ export interface NodeChipProps {
    * with no authority and in tests that never mount a provider.
    */
   controls?: React.ReactNode;
+  /**
+   * Delivery-ledger panel for this node (issue #5145), also a slot. Same reason as
+   * `controls`: no query, no permission check, no client here.
+   */
+  execution?: React.ReactNode;
 }
 
 /**
@@ -56,24 +62,10 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
-function storyStage(node: GraphNode): string | null {
-  if (node.kind !== 'story' || node.stalled || !['running', 'awaiting_merge'].includes(node.state)) return null;
-  const activity = node.activity;
-  if (activity && activity.liveness !== 'exited') {
-    const stage = activity.persona === 'reviewer' ? 'Review' : node.state === 'awaiting_merge' ? 'Fixes' : 'Development';
-    if (activity.liveness === 'unverifiable') return `${stage} status unconfirmed`;
-    if (activity.status === 'in_progress') return `${stage} in progress`;
-    if (activity.status === 'webhook_received') return `${stage} queued`;
-    return `${stage} status unconfirmed`;
-  }
-  return node.state === 'awaiting_merge' ? 'Awaiting merge' : null;
-}
-
-export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeChipProps) {
+export function NodeChip({ node, blockedBy = [], dependencies, controls, execution }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
-  const stage = storyStage(node);
   const resultSummary = node.kind === 'story'
     ? node.result_summary?.replace(/^Agent finished\./, 'Development finished.')
     : node.result_summary;
@@ -133,10 +125,10 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeC
 
           {/* The projected state, as text. The fill is a second channel, never
               the only one. */}
-          {style && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
-          {stage && <p className="mt-1 text-sm font-medium text-blue-700 dark:text-blue-300" data-testid={`node-stage-${node.node_ref}`}>{stage}</p>}
+          {style && node.kind !== 'story' && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
+          {node.kind === 'story' && <StoryJourney node={node} execution={execution} />}
           {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
-          {resultSummary && <p className="mt-1 text-sm">{resultSummary}</p>}
+          {resultSummary && !node.binding_hold && <p className="mt-1 text-sm">{resultSummary}</p>}
           <div className="mt-1 flex flex-wrap gap-3 text-xs">
             {node.issue_url && (
               <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View issue and evidence</a>
@@ -144,11 +136,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls }: NodeC
             {node.run_id && (
               <Link to={`/activity?id=${encodeURIComponent(node.run_id)}`} className="text-blue-600 underline">View run</Link>
             )}
-            {stage && node.run_id && node.activity && node.activity.invocation_id !== node.run_id && node.activity.liveness !== 'exited' && (
-              <Link to={`/activity?chain=${encodeURIComponent(node.run_id)}&highlight=${encodeURIComponent(node.activity.invocation_id)}`} className="text-blue-600 underline">
-                {node.activity.persona === 'reviewer' ? 'View review run' : 'View fixes run'}
-              </Link>
-            )}
+
           </div>
 
           {badge && (

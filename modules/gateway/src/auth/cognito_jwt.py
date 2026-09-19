@@ -200,7 +200,10 @@ class CognitoJWTValidator:
             exp=payload["exp"],
             iat=payload.get("iat", 0),
             jti=payload.get("jti", ""),
-            username=payload.get("username", payload["sub"]),
+            # Cognito client-credentials access tokens do not carry a username.
+            # Preserve that absence so downstream auth can distinguish the M2M
+            # token shape instead of fabricating a human-style username from sub.
+            username=payload.get("username", ""),
             cognito_groups=payload.get("cognito:groups", []),
             # Custom attributes - injected by Pre Token Generation Lambda (Issue #119)
             email=payload.get("email"),

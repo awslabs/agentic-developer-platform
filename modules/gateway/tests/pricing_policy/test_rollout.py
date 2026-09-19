@@ -144,6 +144,63 @@ def test_migrate_only_ready_release_pod(cli, args):
     assert all("new" in cmd and "old" not in cmd and "bedrockgateway" in cmd for cmd in executions)
 
 
+@pytest.mark.parametrize("during_migration", [True, False])
+@pytest.mark.parametrize("terminating", [True, False])
+def test_replaced_pod_reselects_release_and_recovers(cli, args, monkeypatch, during_migration, terminating):
+    original = cli.run
+    failed = False
+    migrations = []
+
+    def run(cmd, **kwargs):
+        nonlocal failed
+        if cmd[:3] == ["kubectl", "get", "pod"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(pod("new", terminating=True)) if terminating else "", stderr="")
+        if cmd[:2] == ["kubectl", "exec"]:
+            if "alembic" in cmd:
+                migrations.append(cmd)
+            if not failed and ("alembic" in cmd) == during_migration:
+                failed = True
+                cli.pods = [pod("replacement")]
+                return SimpleNamespace(returncode=137, stdout="", stderr="command terminated with exit code 137")
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(rollout.subprocess, "run", run)
+    evidence = rollout.verify_seed(args, migrate=True)
+    assert failed and [item["pod"] for item in evidence] == ["replacement"]
+    assert len(migrations) == (2 if during_migration else 1)
+
+
+def test_exec_failure_on_live_pod_is_not_retried(cli, args, monkeypatch):
+    original = cli.run
+    executions = []
+
+    def run(cmd, **kwargs):
+        if cmd[:3] == ["kubectl", "get", "pod"]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(pod("new")), stderr="")
+        if cmd[:2] == ["kubectl", "exec"]:
+            executions.append(cmd)
+            return SimpleNamespace(returncode=137, stdout="", stderr="command terminated with exit code 137")
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(rollout.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="exit code 137"):
+        rollout.verify_seed(args, migrate=True)
+    assert len(executions) == 1
+
+
+def test_pod_replacement_retry_is_bounded(cli, args, monkeypatch):
+    calls = []
+
+    def replaced(*parts, **kwargs):
+        calls.append(parts)
+        raise rollout.PodReplaced("replaced again")
+
+    monkeypatch.setattr(rollout, "pod_command", replaced)
+    with pytest.raises(rollout.PodReplaced):
+        rollout.verify_seed(args, migrate=True)
+    assert len(calls) == 3
+
+
 @pytest.mark.parametrize("failure", ["image", "replica", "terminating", "unready"])
 def test_incomplete_rollout_never_migrates(cli, args, failure):
     if failure == "image":

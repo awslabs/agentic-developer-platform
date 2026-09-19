@@ -19,6 +19,7 @@ from src.shared.models.base import Base
 from src.shared.models.bedrock_routing import BedrockAccountMapping, BedrockDestinationRegistry  # noqa: F401
 from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConfig  # noqa: F401
 from src.shared.models.organization import Department, Organization, ServiceAccount, Team, TeamMembership, User  # noqa: F401
+from src.shared.models.persona_model_catalogue import ModelInvocabilityEvidence, ModelProbeCycle, ModelProbeSlot  # noqa: F401
 from src.shared.models.token import Token  # noqa: F401
 from src.shared.models.usage import BedrockPoolAccount, ModelAlias, ModelPricing, RateLimitConfig, UsageLog  # noqa: F401
 

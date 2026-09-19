@@ -5,6 +5,15 @@ on:
     paths:
       - 'modules/gateway/src/**'
       - 'modules/gateway/scripts/pricing-rollout.py'
+      # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
+      # from a generated staged copy of the webhook-ingress source. Registering a
+      # persona at the source must re-run the Lint job's sync_personas.py --check,
+      # or the gateway goes stale unobserved and the new persona is
+      # unconfigurable. Same lockstep pattern as #4029/#4539.
+      - 'modules/gateway/scripts/sync_personas.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/codex-reviewer/package.json'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
       - '.github/workflows/run-gateway-migrations.yml'
@@ -46,6 +55,16 @@ on:
       # gate. A mismatched default is what silently dropped every cross-tenant
       # provenance row, so a resolver-side edit must re-run the gateway suite.
       - 'modules/agent-factory/webhook-ingress/lambda/common/identity_resolver.py'
+      # Keyring lockstep (#4539). tests/internal/
+      # test_engine_command_keyring_lockstep.py imports the webhook-ingress SIGNER and
+      # asserts its parse_keyring agrees with the gateway verifier's on every keyring
+      # state the rotation runbook produces, and that the runbook still names the
+      # reasons the code emits. A signer-side or runbook-side edit that breaks that
+      # agreement is a silent command outage — rotation looks complete, then every
+      # command quarantines on the tick — so both must re-run the gateway suite.
+      - 'modules/agent-factory/webhook-ingress/lambda/common/command_signing.py'
+      - 'modules/agent-factory/webhook-ingress/infra/engine-command-signing.tf'
+      - 'docs/runbooks/engine-command-signing-key-rotation.md'
       - 'platform/scripts/smoke_assertions.py'
       - 'platform/scripts/tests/test_smoke_assertions.py'
       # Loop-proposal validator + its fixtures (#4199). The advisory CLI imports
@@ -67,6 +86,15 @@ on:
     paths:
       - 'modules/gateway/src/**'
       - 'modules/gateway/scripts/pricing-rollout.py'
+      # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
+      # from a generated staged copy of the webhook-ingress source. Registering a
+      # persona at the source must re-run the Lint job's sync_personas.py --check,
+      # or the gateway goes stale unobserved and the new persona is
+      # unconfigurable. Same lockstep pattern as #4029/#4539.
+      - 'modules/gateway/scripts/sync_personas.py'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/codex-reviewer/package.json'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
       - '.github/workflows/run-gateway-migrations.yml'
@@ -111,6 +139,19 @@ jobs:
         run: |
           ruff check src/ tests/ pricing_policy/
           ruff format --check src/ tests/ pricing_policy/
+
+      # Issue #5420 (PMM-03): the gateway serves the persona catalogue from a
+      # generated staged copy (src/admin/persona_models/_personas.py) of the
+      # authoritative webhook-ingress source (lambda/common/personas.py). The
+      # gateway cannot import across module boundaries at runtime, so the copy
+      # is the serving path. Without this gate, registering a persona at the
+      # source leaves the gateway silently stale and the new persona
+      # unconfigurable — AC-01's exact failure. --check regenerates in memory
+      # and exits 1 on any drift; the fix is to run the script without --check.
+      - name: Check staged persona catalogue is current
+        working-directory: modules/gateway
+        run: |
+          python3 scripts/sync_personas.py --check
 
       # Issue #4199: the advisory half of the loop-proposal contract. Runs from
       # the repo root (the script adds modules/gateway to sys.path itself) over

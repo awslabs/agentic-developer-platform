@@ -80,6 +80,99 @@ def test_repeated_setup_preserves_local_commits_and_uncommitted_work(shallow_rep
     assert (clone / "prior-work.md").read_text() == "editing prior checkpoint\n"
 
 
+def test_no_pr_bootstrap_preserves_substantive_work_and_exact_head(shallow_repo):
+    clone, remote, prior_sha = shallow_repo
+    for _ in range(2):
+        entrypoint._reuse_work_branch(BRANCH, allow_cleanup=True, persona="developer", issue=42)
+        assert git(clone, "rev-parse", "HEAD").stdout.strip() == prior_sha
+        assert git(remote, "rev-parse", BRANCH).stdout.strip() == prior_sha
+        assert (clone / "prior-work.md").read_text() == "accepted prior checkpoint\n"
+    assert not git(remote, "for-each-ref", "refs/heads/recovery").stdout
+
+
+def disposable_branch(shallow_repo, *, transcript=False):
+    clone, remote, _ = shallow_repo
+    seed = remote.parent / "seed"
+    git(seed, "checkout", BRANCH)
+    git(seed, "reset", "--hard", "main")
+    if transcript:
+        report = seed / "data/code-review/review-42.md"
+        report.parent.mkdir(parents=True)
+        report.write_text("review evidence\n")
+        git(seed, "add", ".")
+    git(seed, "commit", "--allow-empty", "-m", "WIP: prior run")
+    old_sha = git(seed, "rev-parse", "HEAD").stdout.strip()
+    git(seed, "push", "--force", "origin", BRANCH)
+    return clone, remote, old_sha
+
+
+@pytest.mark.parametrize("transcript", [False, True])
+def test_disposable_cleanup_retains_verified_recovery_ref(shallow_repo, transcript):
+    clone, remote, old_sha = disposable_branch(shallow_repo, transcript=transcript)
+    entrypoint._reuse_work_branch(BRANCH, allow_cleanup=True, persona="developer", issue=42)
+    recovery = f"refs/heads/recovery/agent-issue-42-{old_sha}"
+    assert git(remote, "rev-parse", recovery).stdout.strip() == old_sha
+    assert git(remote, "rev-parse", f"{BRANCH}^").stdout == git(remote, "rev-parse", "main").stdout
+    assert git(remote, "rev-parse", BRANCH).stdout.strip() != old_sha
+    assert git(clone, "rev-parse", "HEAD").stdout == git(remote, "rev-parse", BRANCH).stdout
+
+
+def test_open_pr_keeps_even_disposable_head_without_wip_push(shallow_repo):
+    clone, remote, old_sha = disposable_branch(shallow_repo)
+    entrypoint._reuse_work_branch(BRANCH, allow_cleanup=False, persona="reviewer", issue=42)
+    assert git(remote, "rev-parse", BRANCH).stdout.strip() == old_sha
+    assert git(clone, "rev-parse", "HEAD").stdout.strip() == old_sha
+
+
+def test_reverted_substantive_work_is_not_disposable(shallow_repo):
+    clone, remote, _ = shallow_repo
+    seed = remote.parent / "seed"
+    git(seed, "revert", "--no-edit", "HEAD")
+    old_sha = git(seed, "rev-parse", "HEAD").stdout.strip()
+    git(seed, "push", "origin", BRANCH)
+    assert not git(seed, "diff", "main...HEAD").stdout
+    entrypoint._reuse_work_branch(BRANCH, allow_cleanup=True, persona="developer", issue=42)
+    assert git(remote, "rev-parse", BRANCH).stdout.strip() == old_sha
+    assert git(clone, "rev-parse", "HEAD").stdout.strip() == old_sha
+
+
+@pytest.mark.parametrize("failure", ["history", "backup_push", "backup_verify", "race"])
+def test_cleanup_never_discards_work_when_guards_fail(shallow_repo, monkeypatch, failure):
+    clone, remote, old_sha = disposable_branch(shallow_repo)
+    real_run = entrypoint.run_cmd
+    raced_sha = None
+
+    def run_cmd(args, **kwargs):
+        nonlocal raced_sha
+        if failure == "history" and args[:3] == ["git", "fetch", "--unshallow"]:
+            raise subprocess.CalledProcessError(128, args)
+        if failure == "backup_push" and args[:3] == ["git", "push", "origin"]:
+            raise subprocess.CalledProcessError(128, args)
+        if failure == "backup_verify" and args[:2] == ["git", "ls-remote"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if failure == "race" and args[:2] == ["git", "reset"]:
+            seed = remote.parent / "seed"
+            (seed / "concurrent-code.py").write_text("print('concurrent work')\n")
+            git(seed, "add", ".")
+            git(seed, "commit", "-m", "concurrent work")
+            git(seed, "push", "origin", BRANCH)
+            raced_sha = git(seed, "rev-parse", "HEAD").stdout.strip()
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(entrypoint, "run_cmd", run_cmd)
+    if failure == "history":
+        entrypoint._reuse_work_branch(BRANCH, allow_cleanup=True, persona="developer", issue=42)
+    else:
+        with pytest.raises((subprocess.CalledProcessError, RuntimeError)):
+            entrypoint._reuse_work_branch(BRANCH, allow_cleanup=True, persona="developer", issue=42)
+    assert git(remote, "rev-parse", BRANCH).stdout.strip() == (raced_sha or old_sha)
+    if failure != "race":
+        assert git(clone, "rev-parse", "HEAD").stdout.strip() == old_sha
+    else:
+        recovery = f"refs/heads/recovery/agent-issue-42-{old_sha}"
+        assert git(remote, "rev-parse", recovery).stdout.strip() == old_sha
+
+
 def test_missing_remote_branch_is_not_replaced_with_main(shallow_repo):
     clone, remote, _ = shallow_repo
     main_sha = git(clone, "rev-parse", "HEAD").stdout.strip()
@@ -168,9 +261,13 @@ def bootstrap(monkeypatch, tmp_path, request):
     )
     monkeypatch.setattr(entrypoint, "_gh_token_broker_enabled", lambda: True)
     monkeypatch.setattr(
-        entrypoint, "_broker_installation_token", Mock(return_value=("test-token", "1", "2099-01-01T00:00:00Z"))
+        entrypoint,
+        "_broker_installation_token",
+        Mock(return_value=("test-token", "1", "2099-01-01T00:00:00Z")),
     )
     monkeypatch.setattr(entrypoint, "_is_already_completed", Mock(return_value=False))
+    monkeypatch.setattr(entrypoint, "is_delivery_completed", Mock(return_value=False))
+    monkeypatch.setattr(entrypoint, "record_delivery_completed", Mock())
     monkeypatch.setattr(entrypoint, "_stage_personas_and_skills", Mock())
     monkeypatch.setattr(
         entrypoint, "create_check_run", Mock(return_value={"id": 1, "html_url": ""})
@@ -191,6 +288,10 @@ def bootstrap(monkeypatch, tmp_path, request):
             raise AgentLaunched()
         if args[:2] == ["git", "ls-remote"] and branch_case == "fresh":
             return subprocess.CompletedProcess(args, 2, "", "")
+        if args[:2] == ["git", "ls-remote"] and branch_case == "remote_error":
+            return subprocess.CompletedProcess(args, 128, "", "unavailable")
+        if args[:3] == ["gh", "pr", "list"] and branch_case == "pr_error":
+            return subprocess.CompletedProcess(args, 1, "", "unavailable")
         if args[:3] == ["gh", "pr", "list"] and branch_case == "aidlc":
             return subprocess.CompletedProcess(args, 0, "", "")
         return subprocess.CompletedProcess(args, 0, "123\n", "")
@@ -229,6 +330,7 @@ def test_branch_setup_failure_records_failure_before_launch(bootstrap, monkeypat
     logger.close.assert_called_once()
 
 
+@pytest.mark.parametrize("bootstrap", ["fresh"], indirect=True)
 @pytest.mark.parametrize("failed_command", ["commit", "push"])
 def test_wip_publication_failure_can_still_launch_on_prepared_branch(
     bootstrap, monkeypatch, failed_command
@@ -247,5 +349,27 @@ def test_wip_publication_failure_can_still_launch_on_prepared_branch(
     with pytest.raises(AgentLaunched):
         entrypoint.main()
 
-    checkout.assert_called_once_with(BRANCH)
+    checkout.assert_called_once_with("-b")
     assert [call.args[2] for call in status.call_args_list] == ["in_progress"]
+
+
+@pytest.mark.parametrize("bootstrap", ["remote_error"], indirect=True)
+def test_remote_read_failure_aborts_before_any_branch_write(bootstrap):
+    _, status, commands = bootstrap
+    with pytest.raises(RuntimeError, match="Could not determine"):
+        entrypoint.main()
+    assert status.call_args.args[2] == "failed"
+    assert not any(args[0] == "node" for args in commands)
+    assert not any(args[:2] in (["git", "push"], ["git", "commit"]) for args in commands)
+
+
+@pytest.mark.parametrize("bootstrap", ["open_pr", "pr_error", "aidlc"], indirect=True)
+def test_adopted_heads_launch_without_any_cosmetic_provider_write(bootstrap, monkeypatch):
+    _, _, commands = bootstrap
+    disposable = Mock(side_effect=AssertionError("must not consider cleanup"))
+    monkeypatch.setattr(entrypoint, "_work_branch_is_disposable", disposable)
+    with pytest.raises(AgentLaunched):
+        entrypoint.main()
+    disposable.assert_not_called()
+    assert ["git", "checkout", BRANCH] in commands
+    assert not any(args[:2] in (["git", "push"], ["git", "commit"]) for args in commands)

@@ -805,3 +805,145 @@ class TestAcceptanceCriteria:
         # Must be 404, NOT 403
         assert client.patch(f"/auth/credentials/{cred.id}", json={"label": "x"}).status_code == 404
         assert client.delete(f"/auth/credentials/{cred.id}").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Issue #5264: an org-less token (CLI password sign-in) must still see and be
+# able to delete its own credentials.
+#
+# `POST /auth/credentials/aws/connect` WRITES with resolve_effective_org_id,
+# which falls back to users.org_id when the token has no `custom:org_id` claim
+# (#600). These routes READ with the raw claim. With a CLI sign-in -- which
+# produces no org claim at all -- the two disagreed, so a connection the user had
+# just created was absent from `adp aws list` and 404 on `adp aws disconnect`,
+# while the create path still saw it and refused the duplicate name. Every retry
+# leaked another invisible row, its Secrets Manager secret and its IAM role, with
+# no product path to reclaim any of them.
+# ---------------------------------------------------------------------------
+
+
+ORGLESS_ALICE = TokenContext(
+    user_id="alice-cognito-sub",
+    org_id="",
+    team_id="",
+    department_id="",
+    account_type="human",
+    is_admin=False,
+    expires_at=datetime.now(UTC) + timedelta(hours=1),
+)
+
+
+async def _seed_cognito_sub(db: AsyncSession, user_id: str, sub: str) -> None:
+    """Give a seeded user the Cognito sub an org-less token would carry."""
+    user = await db.get(User, user_id)
+    user.cognito_sub = sub
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_an_org_less_token_lists_its_own_credential(db, sm):
+    """The defect: the row exists and belongs to the caller, but listed empty."""
+    await _seed_cognito_sub(db, "user-alice", "alice-cognito-sub")
+    cred = await _insert_cred(db, user_id="user-alice", service="aws", label="mine")
+
+    client = _make_app(ORGLESS_ALICE, db, sm)
+    response = client.get("/auth/credentials?scope=user")
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == [cred.id]
+
+
+@pytest.mark.asyncio
+async def test_an_org_less_token_can_delete_its_own_credential(db, sm):
+    """Being able to SEE it is not enough -- the user has to be able to reclaim it."""
+    await _seed_cognito_sub(db, "user-alice", "alice-cognito-sub")
+    cred = await _insert_cred(db, user_id="user-alice", service="aws", label="mine")
+
+    client = _make_app(ORGLESS_ALICE, db, sm)
+    assert client.delete(f"/auth/credentials/{cred.id}").status_code == 204
+    assert client.get("/auth/credentials?scope=user").json() == []
+
+
+@pytest.mark.asyncio
+async def test_an_org_less_token_still_cannot_see_another_orgs_credential(db, sm):
+    """The test that must not pass by accident.
+
+    The fix resolves the caller's OWN org; it must never weaken the comparison.
+    A credential in a different org stays invisible and stays 404 on delete, with
+    the same org-less token.
+    """
+    await _seed_cognito_sub(db, "user-alice", "alice-cognito-sub")
+    foreign = await _insert_cred(db, org_id="org-other", user_id="user-carol", service="aws")
+    # An ORG-scoped row in the foreign org: user_id/team_id are NULL, so the
+    # user_id equality check cannot be what hides it.  Only `org_id ==
+    # caller.org_id` excludes this row, which is what makes org isolation
+    # load-bearing here rather than incidentally satisfied.
+    foreign_org_wide = await _insert_cred(
+        db,
+        org_id="org-other",
+        user_id=None,
+        service="aws",
+        label="org-wide",
+    )
+
+    client = _make_app(ORGLESS_ALICE, db, sm)
+    assert client.get("/auth/credentials").json() == []
+    for other in (foreign, foreign_org_wide):
+        assert client.delete(f"/auth/credentials/{other.id}").status_code == 404
+        # And it is genuinely still there -- not deleted by a filter that matched.
+        assert await db.get(UserCredential, other.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_org_less_token_with_no_user_row_still_gets_an_empty_list(db, sm):
+    """A read surface must not start raising 409 where it used to render empty.
+
+    This is why the helper does not call resolve_effective_org_id, which raises
+    for a caller with no org.
+    """
+    stranger = TokenContext(
+        user_id="nobody-cognito-sub",
+        org_id="",
+        team_id="",
+        department_id="",
+        account_type="human",
+        is_admin=False,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    client = _make_app(stranger, db, sm)
+    response = client.get("/auth/credentials")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_a_token_that_claims_an_org_with_no_matching_member_is_not_substituted(
+    db,
+    sm,
+):
+    """A claimed-but-unmatched org must NOT fall back to a sub-only lookup.
+
+    That caller is not a member of the org they asserted, and resolving an
+    identity by sub alone would cross a tenant boundary to say otherwise.
+    """
+    await _seed_cognito_sub(db, "user-alice", "alice-cognito-sub")
+    await _insert_cred(db, user_id="user-alice", service="aws", label="mine")
+
+    liar = TokenContext(
+        user_id="alice-cognito-sub",
+        org_id="org-other",
+        team_id="",
+        department_id="",
+        account_type="human",
+        is_admin=False,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    client = _make_app(liar, db, sm)
+    assert client.get("/auth/credentials").json() == []
+
+
+@pytest.mark.asyncio
+async def test_a_token_that_carries_an_org_claim_is_unaffected(db, sm):
+    """No behaviour change on the common path."""
+    cred = await _insert_cred(db, user_id="user-alice", service="aws", label="mine")
+    client = _make_app(ALICE, db, sm)
+    assert [row["id"] for row in client.get("/auth/credentials?scope=user").json()] == [cred.id]

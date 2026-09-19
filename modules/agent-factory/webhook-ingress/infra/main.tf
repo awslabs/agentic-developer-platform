@@ -98,6 +98,13 @@ data "aws_ssm_parameter" "gateway_apigw_invoke_url" {
   # rather than silently producing an empty value — which is what we want.
 }
 
+# Trusted GitLab API base URL for the agent worker. Webhook project.web_url is
+# attacker-controlled and must never choose a token-bearing request's target.
+data "aws_ssm_parameter" "gitlab_url" {
+  count = var.gitlab_webhook_enabled ? 1 : 0
+  name  = "/adp/${var.environment}/gitlab/url"
+}
+
 # Gateway's customer-managed KMS key (created by gateway-infra at
 # modules/gateway/infra/kms.tf). It encrypts adp-<env>-identity-index and
 # adp-<env>-user-identity-index, which the webhook Lambda reads at every

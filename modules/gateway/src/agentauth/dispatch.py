@@ -22,6 +22,62 @@ AgentPersona = Literal[
     "developer", "reviewer", "operations", "aidlc", "architect", "pm", "product", "codex", "malware-analysis-agent", "pt-superpower"
 ]
 
+# Issue #5365: mirrors the trusted webhook writer
+# (`webhook-ingress/lambda/common/agent_authority.py`). Kept as named constants on
+# both sides so the reader and the writer cannot drift into silently disagreeing
+# about the marker's spelling, which would fail *open* on the writer's side and
+# closed here. A contract test asserts both modules use the same values.
+FAN_OUT_CAPABILITY_FIELD = "dispatch_capability"
+FAN_OUT_CAPABILITY = "root_coordinator_repository_fan_out"
+FAN_OUT_REPOSITORY_FIELD = "dispatch_repository_scope"
+# Personas the platform will record as a coordinator. Not a persona the caller
+# names: this is compared against the persona on the server-written EXEC row.
+COORDINATOR_PERSONAS = frozenset({"operations", "aidlc"})
+
+
+def _root_coordinator_fan_out(*, grant, raw_grant: dict, parent: dict, target_repo: str, graph_cleared: bool) -> bool:
+    """May this caller dispatch to another issue in its own repository? (#5365)
+
+    Every term is read from server-written state: the grant row (written by the
+    HMAC-verified webhook path) and the caller's own execution row (written by the
+    platform when the run was created). Nothing here is request-supplied — the
+    caller contributes only the target it is asking for, which is what the terms
+    are checked *against*.
+
+    The conjunction is deliberately narrow:
+
+    * ``github_event`` authority only. A run rooted in an orchestration approval
+      (``gate_decision``) must not reach this path; it goes through graph dispatch
+      so the approval gate keeps governing flow advancement.
+    * The capability marker must be present on the stored grant. A coordinator
+      persona alone confers nothing.
+    * The repository is matched twice — against the marker the verified event
+      wrote, and against the caller's own execution row — so a grant cannot reach
+      into a repository its launch did not name.
+    * The caller must be a *root* coordinator: no parent principal. A child
+      dispatched by a coordinator is not one, which is what stops the capability
+      from propagating down a chain even if a child grant ever carried the field.
+
+    ``graph_cleared`` is the SQL-resolved fact from
+    :func:`src.agentauth.coordinator.resolve_repository_fan_out`: the target is not
+    a graph-owned node and the coordinator's own launch is not an unapproved flow's
+    intent. It defaults to False at every caller that cannot resolve it, so a
+    synchronous path with no database session gets no fan-out rather than an
+    unchecked one.
+
+    This lifts the single-issue pin and nothing else. Budget, concurrency and
+    depth ceilings are applied by the caller of this helper and are unaffected.
+    """
+    return (
+        graph_cleared
+        and grant.authority.kind == "github_event"
+        and raw_grant.get(FAN_OUT_CAPABILITY_FIELD) == {"S": FAN_OUT_CAPABILITY}
+        and raw_grant.get(FAN_OUT_REPOSITORY_FIELD) == {"S": target_repo}
+        and not parent.get("parent_principal")
+        and parent.get("persona", {}).get("S") in COORDINATOR_PERSONAS
+        and parent.get("repo") == {"S": target_repo}
+    )
+
 
 class DispatchTarget(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -55,11 +111,21 @@ class DispatchService:
         self.queue_url, self.events_table, self.sqs = queue_url, events_table, sqs
         self.now = now or (lambda: datetime.now(UTC))
 
-    def dispatch(self, *, body: DispatchRequest, credential_token: str, workload_binding: str) -> dict:
-        prior, grant, caller = self.prepare(body=body, credential_token=credential_token, workload_binding=workload_binding)
+    def dispatch(self, *, body: DispatchRequest, credential_token: str, workload_binding: str, fan_out_cleared: bool = False) -> dict:
+        prior, grant, caller = self.prepare(
+            body=body, credential_token=credential_token, workload_binding=workload_binding, fan_out_cleared=fan_out_cleared
+        )
         return self._publish(prior, grant, caller)
 
-    def prepare(self, *, body: DispatchRequest, credential_token: str, workload_binding: str, graph: GraphAssignment | None = None):
+    def prepare(
+        self,
+        *,
+        body: DispatchRequest,
+        credential_token: str,
+        workload_binding: str,
+        graph: GraphAssignment | None = None,
+        fan_out_cleared: bool = False,
+    ):
         """Reserve protected intent without publishing before SQL commit."""
         if not self.queue_url.endswith(".fifo") or not self.events_table:
             raise PolicyError(503, "agent dispatch is not configured")
@@ -111,6 +177,9 @@ class DispatchService:
                 body.target.issue != allowed_issue
                 and not (graph and parent.get("coordinator_flow_id") == {"S": grant.flow_id})
                 and not (grant.authority.kind == "service_policy" and raw_grant.get("dispatch_issue_scope") == {"S": "repository"})
+                and not _root_coordinator_fan_out(
+                    grant=grant, raw_grant=raw_grant, parent=parent, target_repo=body.target.repo, graph_cleared=fan_out_cleared
+                )
             )
             or installation <= 0
             or not 0 < depth <= grant.max_chain_depth
@@ -308,6 +377,11 @@ class DispatchService:
             "root_human_id": {"S": grant.authority.human_id},
             "parent_invocation_id": {"S": caller.invocation_id},
             "correlation_id": {"S": grant.flow_id},
+            # Issue #5365: Activity and live acceptance must observe the same
+            # credential-bound depth used for authorization. Protected dispatch
+            # has no caller-selectable ancestry, so both counters start equal.
+            "chain_depth": {"N": str(depth)},
+            "credential_chain_depth": {"N": str(depth)},
         }
         transaction = [self.store._put(item) for item in (command, execution, child_item, lookup, reservation)]
         transaction.extend(

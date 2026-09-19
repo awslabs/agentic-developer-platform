@@ -18,6 +18,7 @@ in test_adp_setup.py. This module exists for the ones that do.
 
 import json
 import os
+import re
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,16 +26,12 @@ from pathlib import Path
 
 import pytest
 
-CLI_FILES = [
-    "adp",
-    "install.sh",
-    "bg-cognito-auth.sh",
-    "bg-gateway-proxy.py",
-    "adp_common.py",
-    "adp-admin.py",
-    "adp-bedrock.py",
-    "adp-github-admin.py",
-]
+# Read the set install.sh actually downloads rather than restating it. A second
+# hardcoded copy silently goes stale: when adp-superplane.py joined the set
+# (#5039) a duplicated list made the mock gateway 404 on it, so these tests
+# failed for a reason that had nothing to do with `adp update`.
+_INSTALL_SH = Path(__file__).parents[2] / "cli/install.sh"
+CLI_FILES = ["install.sh"] + re.search(r'^CLI_FILES="([^"]+)"', _INSTALL_SH.read_text(), re.MULTILINE).group(1).split()
 
 
 class _CliServer:
@@ -112,7 +109,17 @@ def installed(tmp_path: Path, cli_dir: Path, upstream) -> tuple[Path, Path]:
     """An install whose config points at the mock gateway. Returns (bin, home)."""
     bin_dir = tmp_path / "installed-bin"
     bin_dir.mkdir()
-    for name in ("adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py", "adp-bedrock.py", "adp-github-admin.py"):
+    for name in (
+        "adp",
+        "bg-cognito-auth.sh",
+        "bg-gateway-proxy.py",
+        "adp_common.py",
+        "adp-admin.py",
+        "adp-bedrock.py",
+        "adp-aws.py",
+        "adp-github.py",
+        "adp-github-admin.py",
+    ):
         target = bin_dir / name
         target.write_bytes((cli_dir / name).read_bytes())
         target.chmod(0o755)
@@ -147,16 +154,7 @@ class TestUpdate:
 
         assert _run_adp(bin_dir, home, ["update"]).returncode == 0
 
-        for name in (
-            "install.sh",
-            "adp",
-            "bg-cognito-auth.sh",
-            "bg-gateway-proxy.py",
-            "adp_common.py",
-            "adp-admin.py",
-            "adp-bedrock.py",
-            "adp-github-admin.py",
-        ):
+        for name in CLI_FILES:
             assert f"/api/cli/{name}" in upstream.requested, f"{name} was not fetched"
 
     def test_updates_in_place_without_moving_the_prefix(self, installed) -> None:
@@ -165,7 +163,9 @@ class TestUpdate:
 
         assert _run_adp(bin_dir, home, ["update"]).returncode == 0
 
-        for name in ("adp", "bg-cognito-auth.sh", "bg-gateway-proxy.py", "adp_common.py", "adp-admin.py", "adp-bedrock.py", "adp-github-admin.py"):
+        for name in CLI_FILES:
+            if name == "install.sh":
+                continue  # fetched to a temp dir to run, not installed into the prefix
             assert (bin_dir / name).is_file()
         assert not (home / ".adp").exists(), "must not silently install to the default prefix"
 
@@ -241,3 +241,40 @@ class TestUpdateFailure:
 
         assert result.returncode != 0
         assert 'ADP_VERSION="1.0.0"' in (bin_dir / "adp").read_text()
+
+    def test_a_pinned_update_lands_exactly_that_version(self, installed, upstream) -> None:
+        """The matching case must still work.
+
+        A pin that rejected everything would pass every failure test below and be
+        worthless, so the happy path is pinned too: served 2.1.0, asked for 2.1.0,
+        got 2.1.0.
+        """
+        bin_dir, home = installed
+        served = upstream.source_dir / "adp"
+        served.write_text(served.read_text().replace('ADP_VERSION="9.9.9-from-gateway"', 'ADP_VERSION="2.1.0"'))
+
+        result = _run_adp(bin_dir, home, ["update", "--to", "2.1.0"])
+
+        assert result.returncode == 0, result.stderr
+        assert "2.1.0" in _run_adp(bin_dir, home, ["version"]).stdout
+
+    def test_a_non_semver_served_version_cannot_be_pinned(self, installed) -> None:
+        """`--to` accepts only exact semver, so an oddly-versioned build is
+        refused before anything is downloaded rather than installed anyway."""
+        bin_dir, home = installed
+
+        result = _run_adp(bin_dir, home, ["update", "--to", "9.9.9-from-gateway"])
+
+        assert result.returncode == 1
+        assert 'ADP_VERSION="1.0.0"' in (bin_dir / "adp").read_text()
+
+    def test_a_pinned_update_that_disagrees_with_the_gateway_installs_nothing(self, installed) -> None:
+        """The end-to-end version of the pin: a real gateway serving a version
+        the caller did not ask for must leave the working CLI untouched."""
+        bin_dir, home = installed
+
+        result = _run_adp(bin_dir, home, ["update", "--to", "1.2.3"])
+
+        assert result.returncode != 0
+        assert 'ADP_VERSION="1.0.0"' in (bin_dir / "adp").read_text()
+        assert _run_adp(bin_dir, home, ["version"]).returncode == 0, "the CLI must still run"

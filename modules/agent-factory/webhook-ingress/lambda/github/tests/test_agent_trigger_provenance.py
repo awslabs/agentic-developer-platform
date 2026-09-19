@@ -428,27 +428,28 @@ class TestParentInvocation:
         resp = handle_agent_trigger(_make_event(body), None)
         assert resp["statusCode"] == 422
         assert json.loads(resp["body"])["error"] == "unknown_parent_invocation"
+        mock_row.assert_called_once_with("inv-from-someone-elses-chain")
 
     @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._query_event_row")
     @patch("agent_trigger._resolve_chain")
-    def test_parent_is_an_older_row_of_the_chain_accepted(
+    def test_parent_is_an_older_row_keeps_the_conservative_head_depth(
         self, mock_resolve, mock_row, mock_spawn, mock_install
     ):
-        """Regression #1828: cross-issue lineage points at a non-latest ancestor.
+        """#1828 remains supported during the protected-route rollout.
 
-        Requiring "parent == the newest row" would fragment legitimate chains,
-        so any row of the chain is a valid parent.
+        Shared IAM cannot prove the older row is the caller, so the request is
+        permitted without letting that row lower the server-observed charge.
         """
-        mock_resolve.return_value = _chain_record(event_id="inv-newest")
+        mock_resolve.return_value = _chain_record(event_id="inv-newest", chain_depth=2)
         mock_row.return_value = [_chain_record(event_id="inv-ancestor")]
         mock_spawn.return_value = _ok_spawn()
         body = _valid_body(parent_invocation_id="inv-ancestor")
         resp = handle_agent_trigger(_make_event(body), None)
         assert resp["statusCode"] == 202
-        ctx = mock_spawn.call_args[1]["correlation_ctx"]
-        assert ctx["parent_invocation_id"] == "inv-ancestor"
+        assert mock_spawn.call_args.kwargs["correlation_ctx"]["chain_depth"] == 2
+        mock_row.assert_called_once_with("inv-ancestor")
 
     @patch("agent_trigger._query_event_row")
     @patch("agent_trigger._resolve_chain")
@@ -460,25 +461,20 @@ class TestParentInvocation:
         resp = handle_agent_trigger(_make_event(body), None)
         assert resp["statusCode"] == 422
         assert json.loads(resp["body"])["error"] == "unknown_parent_invocation"
+        mock_row.assert_called_once_with("inv-unknown")
 
     @patch("common.installation_resolver.resolve_installation_for_tenant", return_value=1247)
     @patch("common.spawn_persona.spawn_persona")
     @patch("agent_trigger._query_chain")
     @patch("agent_trigger._query_event_row")
     @patch("agent_trigger._resolve_chain")
-    def test_parent_older_than_the_recency_window_accepted(
+    def test_parent_older_than_the_recency_window_uses_the_primary_key_lookup(
         self, mock_resolve, mock_row, mock_chain, mock_spawn, mock_install
     ):
-        """Regression #4245: chain length must not decide lineage validity.
+        """#4245 is preserved by the bounded primary-key execution lookup.
 
-        A long-lived orchestrator dispatches several children; each child writes
-        chain rows, so the orchestrator's own row is pushed arbitrarily far back.
-        The old implementation read only the newest 50 GSI rows and rejected
-        anything older, so a valid dispatch started failing with 422 purely
-        because the chain got busy (observed at 477 rows, caller at 477/477).
-
-        The parent is resolved by primary key, so a chain of ANY length works and
-        no bounded chain scan is consulted at all.
+        Age does not bypass membership verification and does not require a
+        bounded recency scan; conservative head pricing is applied separately.
         """
         mock_resolve.return_value = _chain_record(event_id="inv-newest-of-477")
         mock_row.return_value = [_chain_record(event_id="inv-the-oldest-row")]
@@ -487,8 +483,8 @@ class TestParentInvocation:
         resp = handle_agent_trigger(_make_event(body), None)
         assert resp["statusCode"] == 202
         mock_row.assert_called_once_with("inv-the-oldest-row")
-        # The recency-window scan must not gate the decision any more.
         mock_chain.assert_not_called()
+        mock_spawn.assert_called_once()
 
 
 # =============================================================================

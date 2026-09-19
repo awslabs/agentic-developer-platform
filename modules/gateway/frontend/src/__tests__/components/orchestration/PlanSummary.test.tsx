@@ -17,6 +17,11 @@
  * * **Machine acceptance never reads as gate authority.** The two are different
  *   powers, and conflating them is believing a human approval can be satisfied by a
  *   machine.
+ * * **Coordination never reads as authority over the work it may ask for.** An
+ *   accepted coordinator may request an eligible child; each request is admitted on
+ *   that child's own authorized action. A summary that showed the scope as things the
+ *   coordinator may do would overstate what the owner accepted by exactly the amount
+ *   that matters.
  * * **The spend figure is rendered verbatim.** It is a `Decimal` server-side; a test
  *   that accepted a reformatted number would let float rounding into the one number
  *   an owner authorized.
@@ -208,6 +213,85 @@ describe('the limits', () => {
   });
 });
 
+describe('the accepted coordination scope', () => {
+  it('shows the child personas and actions a coordinator may ask for, and the assigned step count', () => {
+    render(
+      <PlanSummary
+        {...COUNTS}
+        policy={makePolicy({
+          autonomous_actions: ['develop', 'review', 'coordinate'],
+          coordination: { assigned_node_count: 3, allowed_child_personas: ['developer', 'reviewer'], allowed_child_actions: ['develop', 'review'] },
+        })}
+      />
+    );
+
+    const block = screen.getByTestId('policy-coordination');
+    expect(block).toHaveTextContent('3 assigned steps');
+    expect(block).toHaveTextContent('developers, reviewers');
+    expect(block).toHaveTextContent('write code, review');
+  });
+
+  it('renders nothing when the policy accepted no coordinator', () => {
+    // Absence, not a zeroed block: "0 assigned steps, no one" describes an
+    // accepted-but-useless coordinator, which is a different fact from "no
+    // coordinator was accepted" and the more alarming of the two to show an owner
+    // who accepted neither.
+    render(<PlanSummary {...COUNTS} policy={makePolicy()} />);
+
+    expect(screen.queryByTestId('policy-coordination')).toBeNull();
+  });
+
+  it('says coordination cannot approve a gate, merge, deploy or conclude an evaluation', () => {
+    // The misreading this whole section exists to prevent. An owner who believes
+    // "may ask for further work" reaches an approval, a merge, a deploy or an
+    // evaluation conclusion has accepted something materially larger than what the
+    // server will actually admit.
+    render(
+      <PlanSummary
+        {...COUNTS}
+        policy={makePolicy({
+          coordination: { assigned_node_count: 1, allowed_child_personas: ['developer'], allowed_child_actions: ['develop'] },
+        })}
+      />
+    );
+
+    const block = screen.getByTestId('policy-coordination');
+    expect(block).toHaveTextContent('checked again on its own terms');
+    expect(block).toHaveTextContent('cannot approve a gate, merge, deploy or conclude an evaluation');
+  });
+
+  it('describes `coordinate` as asking for work rather than performing it', () => {
+    // `coordinate` in `autonomous_actions` means the coordinator may make requests
+    // unattended — not that the work it requests is unattended. A label reading like
+    // the other verbs would collapse that distinction on the one action that performs
+    // nothing at all.
+    render(<PlanSummary {...COUNTS} policy={makePolicy({ autonomous_actions: ['coordinate'] })} />);
+
+    const autonomous = screen.getByTestId('policy-autonomous');
+    expect(autonomous).toHaveTextContent('ask for further work');
+    expect(autonomous.textContent).not.toMatch(/\bcoordinate\b/);
+  });
+
+  it('still gates an action the policy gated, even when that action is coordination-adjacent', () => {
+    // A coordinator's scope can never name `merge`; the server refuses such a scope at
+    // acceptance and refuses the request again at admission. So an accepted coordinator
+    // alongside a gated merge must read as: asks for development, merge still waits.
+    render(
+      <PlanSummary
+        {...COUNTS}
+        policy={makePolicy({
+          autonomous_actions: ['develop', 'coordinate'],
+          human_decisions: ['merge'],
+          coordination: { assigned_node_count: 2, allowed_child_personas: ['developer'], allowed_child_actions: ['develop'] },
+        })}
+      />
+    );
+
+    expect(screen.getByTestId('policy-human-decisions')).toHaveTextContent('merge');
+    expect(screen.getByTestId('policy-coordination').textContent).not.toMatch(/\bmerge\b(?!,? deploy)/);
+  });
+});
+
 describe('what the summary must not leak', () => {
   it('renders no internal graph address', () => {
     // §7.2: `flow/epic/wave/node` is the internal cost join key and is never shown.
@@ -216,6 +300,24 @@ describe('what the summary must not leak', () => {
     render(<PlanSummary {...COUNTS} policy={makePolicy({ machine_accepted_evaluations: 1 })} />);
 
     expect(screen.getByTestId('plan-summary-policy').textContent).not.toMatch(/\w+\/\w+\/\w+\/\w+/);
+  });
+
+  it('renders no assigned coordinator address, only their count', () => {
+    // The coordination scope is the summary's second address-shaped field, and the
+    // reason it is a count server-side. Asserted separately from the machine-acceptance
+    // case so removing either projection fails a test that names it.
+    render(
+      <PlanSummary
+        {...COUNTS}
+        policy={makePolicy({
+          autonomous_actions: ['develop', 'coordinate'],
+          coordination: { assigned_node_count: 4, allowed_child_personas: ['developer'], allowed_child_actions: ['develop'] },
+        })}
+      />
+    );
+
+    expect(screen.getByTestId('policy-coordination').textContent).not.toMatch(/\w+\/\w+\/\w+\/\w+/);
+    expect(screen.getByTestId('policy-coordination')).toHaveTextContent('4 assigned steps');
   });
 });
 

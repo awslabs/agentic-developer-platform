@@ -28,8 +28,14 @@ from .shape import (
 )
 
 # Phase number -> (module_name, phase_display_name)
+#
+# Phase numbers match the step numbering in platform/scripts/deploy-all.sh, so an operator
+# reading "Step 12/12: Superplane" in a deploy log knows which phase verifies it. Gaps are
+# expected while the intermediate phases are unimplemented; the runner reports an
+# unregistered phase rather than guessing.
 PHASE_REGISTRY: dict[int, tuple[str, str]] = {
     1: ("platform_deploy_mgmt.checks.phase_1", "Bootstrap state backend"),
+    12: ("platform_deploy_mgmt.checks.phase_12", "Superplane domain app"),
 }
 
 

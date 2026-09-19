@@ -32,7 +32,6 @@ class ParsedGitLabEvent:
     author_name: str
     body: str
     mention_target: str  # The persona after @agent- (or "agent" if bare @agent)
-    gitlab_url: str
     reason: str  # Why the event was skipped (empty if actionable)
 
 
@@ -57,14 +56,6 @@ def parse_event(payload: dict[str, Any]) -> ParsedGitLabEvent:
     project = payload.get("project", {})
     project_id = project.get("id", 0)
     project_path = project.get("path_with_namespace", "")
-    # project.web_url is the PROJECT URL (https://host/group/proj); the agent
-    # worker needs the instance BASE URL to build /api/v4 calls — strip the
-    # project path suffix (#3436 follow-up: 422s from /group/proj/api/v4/...).
-    web_url = project.get("web_url", "")
-    if project_path and web_url.endswith("/" + project_path):
-        gitlab_url = web_url[: -(len(project_path) + 1)]
-    else:
-        gitlab_url = web_url
 
     # Only handle note events
     if object_kind != "note":
@@ -79,7 +70,6 @@ def parse_event(payload: dict[str, Any]) -> ParsedGitLabEvent:
             author_name="",
             body="",
             mention_target="",
-            gitlab_url=gitlab_url,
             reason=f"unsupported object_kind: {object_kind}",
         )
 
@@ -99,7 +89,6 @@ def parse_event(payload: dict[str, Any]) -> ParsedGitLabEvent:
             author_name="",
             body="",
             mention_target="",
-            gitlab_url=gitlab_url,
             reason=f"note on {noteable_type}, not Issue",
         )
 
@@ -130,7 +119,6 @@ def parse_event(payload: dict[str, Any]) -> ParsedGitLabEvent:
             author_name=author_name,
             body=note_body,
             mention_target="",
-            gitlab_url=gitlab_url,
             reason="no @agent mention found in note body",
         )
 
@@ -149,6 +137,5 @@ def parse_event(payload: dict[str, Any]) -> ParsedGitLabEvent:
         author_name=author_name,
         body=note_body,
         mention_target=mention_target,
-        gitlab_url=gitlab_url,
         reason="",
     )

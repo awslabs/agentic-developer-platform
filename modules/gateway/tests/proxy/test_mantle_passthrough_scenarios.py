@@ -380,9 +380,11 @@ class TestStreamingIntegrity:
 
         from src.proxy.mantle_service import _MAX_SNIFF_BUFFER_BYTES
 
-        # A gigantic data: line with no trailing newline → never completes.
+        # A gigantic data line crosses the cap before a later record finishes
+        # the response. Missing terminal events are covered by lifecycle tests.
         oversized = b"data: " + b"a" * (_MAX_SNIFF_BUFFER_BYTES + 1024)
         chunks = [oversized[i : i + 65536] for i in range(0, len(oversized), 65536)]
+        chunks.append(b'\n\ndata: {"type":"response.completed","response":{}}\n\n')
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, stream=ChunkedStream(chunks))
@@ -401,6 +403,7 @@ class TestStreamingIntegrity:
             b"data: not-json-at-all\n\n",
             b"event: ping\n\n",
             b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+            b'data: {"type":"response.completed","response":{}}\n\n',
         ]
 
         def handler(request: httpx.Request) -> httpx.Response:

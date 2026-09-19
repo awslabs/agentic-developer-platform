@@ -1,5 +1,9 @@
 # Platform Upgrades
 
+For the build-once integration-test → approved pre-production path, see
+[Release promotion](release-promotion.md).
+
+
 How to update an already-deployed ADP platform to newer code — the operator's
 guide to `--update` mode, the guarantees it makes, and what to do when
 something refuses to apply.
@@ -28,14 +32,115 @@ aws sts get-caller-identity --query Account --output text   # verify!
 ./platform/scripts/deploy-all.sh --update
 ```
 
-That's the whole happy path. The script plans everything first, applies only
-non-destructive changes, builds SHA-tagged images, rolls out the backend with
-mandatory health verification, and runs database migrations. A no-change
-convergence takes ~3–5 minutes; a real update takes ~15–30 minutes (dominated
-by CodeBuild image builds).
+Select an account with `AWS_PROFILE`; `--env` and `--region` select its deployed
+environment and region:
 
-**What stops the run:** a Terraform plan containing resource **destroys**. That
-is deliberate — see §5.
+```bash
+AWS_PROFILE=customer-test ./platform/scripts/deploy-all.sh --update --env dev --region us-east-1
+```
+
+Update mode discovers the platform, gateway, webhook, agent-factory and
+agent-context states in that account. **Agent factory is required for a full
+platform deployment.** A full upgrade includes it even when an older deployment
+omitted its state. Agent-context remains optional and is upgraded only when
+already installed. Explicit scope flags select a partial maintenance operation;
+they do not certify that the entire platform is deployed.
+
+When factory state is missing, preflight requires existing gateway and
+webhook-ingress states and prepares an additive factory installation through
+the same saved-plan gate. It uses the existing broker's single allowed GitHub
+organization as the legacy secret namespace. An empty or multiple-org
+allowlist leaves legacy GitHub integration unconfigured; the factory still
+installs without upfront GitHub setup. `ADP_GITHUB_ORG` can explicitly select
+that namespace when needed. It does not infer a customer's org
+from this repository's remote, register an App, enable ARC, copy the platform
+account's installation ID, or overwrite the gateway's registry seed.
+Existing factory installations keep their recovered configuration.
+The upgrade also retains any runner role owned by factory state. When that
+role is missing, it checks for legacy IAM name collisions and selects a
+dedicated factory role without importing or changing the existing role. This
+check also applies when retrying a partially installed factory.
+
+Completion requires factory Terraform state, a Ready agent-gateway ScaledJob,
+the Ready chat worker and its image-prepull DaemonSet, and the intended release
+images. The factory stage bundles ingest Lambda dependencies and the real
+session-cleanup handler before Terraform applies; it publishes both worker
+images. Python uses the source SHA tag, while chat uses `<SHA>-chat` in the same
+repository so the two builds cannot overwrite each other. Missing state or failed readiness stops the
+upgrade instead of printing a success message. Missing prerequisite states or
+resources created outside Terraform require recovery before installation;
+the upgrade does not force-create or replace those resources.
+
+Scope/skip flags restrict the selected work.
+It retains existing platform-managed EKS admin principals and public access
+CIDRs, adds the operator's CIDR if needed, and waits for the EKS access update
+before using kubectl. Private-only endpoints stay private and require existing
+network reachability.
+
+Existing ECR repositories retain their encryption type and KMS key. ECR cannot
+change these settings in place, so applying the key used by new deployments to
+older repositories would otherwise propose deleting their images and replacing
+the repositories. Newly added repositories use the dedicated managed ECR key.
+
+The run saves state snapshots and account-specific variable overrides in a
+private `adp-upgrade-<account>.*` directory (printed at startup). These files can
+contain sensitive Terraform state: do not commit or publish them. Overrides
+take precedence over shared tfvars for preserved settings; deliberate changes
+to those settings belong in a separate reviewed configuration change.
+
+### Existing GitHub integration
+
+An upgrade does not register a new GitHub App or rotate its credentials. It
+preserves the existing broker allowlist, organization, ARC repository and
+installation ID, custom frontend hostname/certificate, and optional GitLab
+origin. It snapshots current secret **version IDs** without fetching secret
+values, and existing installation-to-tenant mappings. After deployment it checks
+that those versions, mappings, broker settings and integration URLs are still
+present and unchanged. Added installations are allowed. Changing existing
+credential material or deleting an identity table is blocked by the plan gate,
+including when `--confirm-destructive` is supplied.
+
+This check proves configuration preservation, not an issue-to-PR round trip.
+The latter requires a separate authorized GitHub smoke test. An environment
+without an App stays unconfigured. No browser setup is required for an existing
+App installation.
+
+### Ordered upgrades and completion
+
+Legacy webhook-secret KMS ownership moves from webhook state to platform state
+before the first apply. The script imports and verifies destination ownership
+before removing source tracking; the AWS key and alias stay unchanged. It also
+removes obsolete duplicate tracking of the gateway DynamoDB alias after checking
+gateway ownership. Conflicting key IDs stop the migration for recovery. Keys
+retained during recovery stay managed with deletion protection.
+
+On clusters where network-policy enforcement is not yet active, the initial
+platform pass defers activation. Webhook infrastructure installs the collector
+egress policy first; the final platform pass audits DNS and HTTPS allowances
+before activation. Already-active enforcement is retained.
+
+All gateway passes preserve both ALBs. A final reconciliation repairs resources
+that API/ALB controllers removed during earlier passes, followed by a plan that
+must report no remaining changes. Frontend publishing uses the standalone
+publisher, includes both account-connection templates, and runs after optional
+chat endpoints have been provisioned. CDN health and GitHub preservation checks
+must pass before success is reported.
+
+Agent-context still needs its original `modules/agent-context/config.local.env`
+when that module is installed. Preflight requires that file and checks its
+cluster and region before any apply; use `--skip-agent-context` when upgrading
+only the other components. Its application deploy runs with `--skip-terraform`
+so nested scripts cannot bypass the update gate.
+
+The script plans each module before applying it, builds SHA-tagged images,
+rolls out the backend, runs database migrations on the intended release, and
+verifies health. CodeBuild image builds and the pricing-refresh drain window
+also run on repeat upgrades, so allow time for a full deployment even when
+Terraform has little or no drift.
+
+**What stops the run:** failed validation, protected integration changes, or
+unrecognized Terraform deletes/replacements. See §5 for the narrowly defined
+routine deployment replacements that proceed automatically.
 
 ---
 
@@ -66,9 +171,9 @@ message — nothing is touched.
 | Bootstrap (state bucket / lock table) | Creates if missing | **Skipped** — must already exist |
 | Bedrock model agreements | Runs | Skipped (slow, already done) |
 | Terraform applies | `-auto-approve` | **Plan-first with destroy gate** (§5) |
-| Image tag | `:latest` | **Source SHA** (`git rev-parse --short=12 HEAD`) |
-| Backend rollout | Best-effort | **Mandatory** — script fails if rollout fails |
-| Database migrations | Not run | **Runs alembic** pre- and post-rollout (§6) |
+| Image tag | Source SHA | **Source SHA** (`git rev-parse HEAD`) |
+| Backend rollout | Mandatory | **Mandatory** — script fails if rollout fails |
+| Database migrations | Runs on the deployed release | **Runs alembic** on Ready replicas of the intended release (§6) |
 | Admin bootstrap | Seeds first admin | Skipped — admin already exists |
 | GitHub App prompt | Shown at end | Not shown — already configured |
 | Preflight | Full (~27 checks) | Partial (AWS auth + cluster reachability) |
@@ -82,7 +187,10 @@ like a live deployment:
 
 1. **State bucket exists** (`adp-terraform-state-<account-id>`)
 2. **EKS cluster is `ACTIVE`** (`adp-<env>-eks-cluster`)
-3. **`adp-gateway` namespace exists** (evidence of a prior gateway deploy)
+3. **Installed module scope is recovered** from Terraform state; the
+   `adp-gateway` namespace must be reachable when gateway is in scope
+4. **Original agent-context configuration is available** when that module is
+   in scope, and its cluster and region match the target
 
 Also verify yourself, before running:
 
@@ -92,7 +200,7 @@ Also verify yourself, before running:
 - **Clean checkout.** The image tag comes from `git rev-parse HEAD`; a dirty or
   wrong-branch checkout deploys something other than what you think. Deploy
   from `main` or a pinned release tag.
-- **Do not commit tfvars rewrites.** The script sed-substitutes account IDs
+- **Do not commit tfvars rewrites.** The script substitutes account IDs
   into `environments/**/*.tfvars` in your working tree. These are deploy-time
   artifacts — never commit them (they would point everyone's Terraform
   backends at your account).
@@ -140,15 +248,14 @@ admin bootstrap anyway.)
 ### Common invocations
 
 ```bash
-# Full upgrade (everything that is deployed):
+# Full upgrade (installed modules plus the required agent factory):
 ./platform/scripts/deploy-all.sh --update
 
 # Gateway-only upgrade, no frontend rebuild (fastest meaningful update):
 ./platform/scripts/deploy-all.sh --update --gateway-only --skip-frontend
 
-# Convergence check — "is this account at parity with my checkout?"
-# A fully-converged account produces no-op plans, an alembic no-op, and a
-# digest-match fast-path restart. ~3-5 min:
+# Repeat a gateway upgrade to verify convergence (still rebuilds the image
+# and runs the pricing-refresh drain window):
 ./platform/scripts/deploy-all.sh --update --gateway-only --skip-frontend
 
 # After reviewing a refused plan and confirming every destroy is benign:
@@ -159,15 +266,34 @@ admin bootstrap anyway.)
 
 ## 5. The Terraform destroy gate
 
+The gate automatically accepts these routine replacements after checking their
+before/after values:
+
+- An API Gateway deployment revision using create-before-destroy on the same
+  REST API (the API itself is retained).
+- The existing usage-tracker S3 permission when the only supported tightening
+  adds the current account's `source_account`, retaining its function, principal
+  and source bucket.
+- The webhook ScaledJob, warm-pool and image-prepull manifest wrappers when
+  namespace, cluster and region stay unchanged. ScaledJob replacement orphans
+  existing Jobs, and gradual rollout retains running work.
+
+This is an explicit address-and-value policy, not an exemption for every
+`null_resource` or every create-before-destroy change. Stateful replacements and
+unknown operations still stop for review. Credential/identity protection cannot
+be overridden by the destructive flag.
+
 In update mode, every Terraform apply is replaced by a **plan-first gate**
 (`terraform_update_apply`):
 
 1. `terraform plan -detailed-exitcode -no-color` runs and the output is saved.
 2. **No changes** → apply is skipped (fast no-op).
-3. **Changes, zero destroys** → applied automatically. Update mode is
-   *plan-first but non-interactive* — you are not prompted for safe changes.
-4. **Any destroy** → the script **refuses and exits**, printing the destroy
-   lines and hints about known landmines.
+3. **Protected credential or identity changes** → the script refuses, even
+   with `--confirm-destructive`.
+4. **Other changes with no unrecognized deletes/replacements** → applied
+   automatically, including the narrowly defined routine replacements above.
+5. **Other deletes/replacements or removals from state** → the script refuses
+   unless explicitly authorized with `--confirm-destructive`.
 
 ### When the gate refuses
 
@@ -222,17 +348,17 @@ that mode. What changes on a very stale deployment is how risky it becomes:
 
 ### Known gate limitations
 
-- The gate covers the six Terraform applies inside `deploy-all.sh`. The
-  **webhook-ingress stack** is applied by a delegated script with its own
-  `-auto-approve` and is NOT gated (issue #3543, open). Until that closes,
-  cautious operators should run `--skip-webhook-ingress` and converge
-  webhook-ingress manually:
+- The gate covers the Terraform applies inside `deploy-all.sh` and the delegated
+  webhook-ingress upgrade. The standalone equivalent is:
 
   ```bash
-  cd modules/agent-factory/webhook-ingress/infra
-  terraform plan -var-file=... -no-color | grep -c 'will be destroyed'
-  # 0 destroys → terraform apply; any destroys → stop, investigate
+  modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh --update
   ```
+
+  Both inspect the saved plan's JSON actions and gate deletes, replacements
+  in either action order, and removal from state using the policy above.
+  Failed plans or unreadable plan JSON also stop the upgrade. The same saved
+  plan is passed to apply.
 
 - History note: the gate's destroy detection was broken (ANSI color codes
   defeated the grep) from its introduction until #3664 (2026-07-11). Runs
@@ -244,31 +370,25 @@ that mode. What changes on a very stale deployment is how risky it becomes:
 ## 6. What happens to images, rollouts, and migrations
 
 **Images.** Update mode tags images with the source SHA
-(`IMAGE_TAG=$(git rev-parse --short=12 HEAD)`) for `adp-gateway`,
+(`IMAGE_TAG=$(git rev-parse HEAD)`) for `adp-gateway`,
 `adp-agent-gateway`, and `adp-agent-runtime`, and forwards that tag to
 CodeBuild. This guarantees Kubernetes sees a new image reference and actually
 rolls out — the classic `:latest`-push-no-rollout silent failure cannot happen.
-If the digest already matches (no code change), the script takes a
-`rollout restart` fast path instead of rebuilding.
+The script rebuilds images on repeat upgrades and forces a rollout restart
+when the deployment already references the intended tag.
 
 **Rollouts.** `kubectl rollout status` is mandatory — no `|| true`. A failed
-rollout fails the run. After rollout, a health check must pass
-(`/health` returns healthy) before the script continues.
+rollout fails the run. Before the upgrade reports success, the CDN's
+`/api/health` response must contain `{"status":"healthy"}`.
 
-**Migrations.** Alembic runs twice:
-- **Pre-rollout**: brings the DB to the head known to the *currently running*
-  image (usually a no-op).
-- **Post-rollout**: runs `alembic upgrade head` inside the **newest** gateway
-  pod (selected by creation timestamp, `-l app=bedrockgateway`) — this is the
-  step that applies migrations *introduced by the new code*, which the old
-  image did not contain.
+**Migrations and pricing.** Before gateway infrastructure changes, the script
+pauses pricing refresh and lets existing invocations drain. After rollout,
+`pricing-rollout.py migrate` requires Ready replicas of the exact intended
+image, runs `alembic upgrade head`, verifies the revision, and activates the
+pricing snapshot. Its `finalize` step verifies pricing refresh and re-enables
+the schedule. Failure stops the upgrade with refresh still disabled.
 
-> Note: the design doc's §3 originally specified migrations before rollout
-> only; the implementation corrected this to pre+post because a new revision's
-> migration files only exist inside the new image. The post-rollout step is
-> the load-bearing one.
-
-**Frontend.** Rebuilt (`npm ci && npm run build` with the correct
+**Frontend.** Rebuilt (`npm ci --include=dev && npm run build` with the correct
 `VITE_API_URL`), synced to S3, CloudFront invalidated — unless
 `--skip-frontend`.
 
@@ -285,7 +405,7 @@ After the script exits 0:
 # 1. The new image is actually running (tag = your checkout's SHA):
 kubectl get deploy bedrockgateway -n adp-gateway \
   -o jsonpath='{.spec.template.spec.containers[0].image}'
-git rev-parse --short=12 HEAD    # must match the tag above
+git rev-parse HEAD               # must match the tag above
 
 # 2. Pods healthy:
 kubectl get pods -n adp-gateway
@@ -303,10 +423,10 @@ curl -s "https://${CF_DOMAIN}/api/health"    # expect {"status":"healthy"}
 curl -s -o /dev/null -w "%{http_code}\n" "https://${CF_DOMAIN}/"
 ```
 
-**Idempotency check (optional but recommended after a big update):** re-run
-the same `--update` command. Expect no-op plans, alembic no-op, digest-match
-restart, healthy — in ~3–5 minutes. Churn on the second run indicates drift
-worth investigating.
+**Idempotency check (optional after a big update):** re-run the same `--update`
+command. Expect no schema changes, healthy rollouts, and a clean final gateway
+plan. Expired bootstrap Jobs and deployment artifacts can be recreated during
+the run; unexpected stateful changes still require investigation.
 
 **Agent-path smoke (if agents run against this account):** @-mention an agent
 on a trivial test issue and confirm webhook → worker job → PR. Watch the
@@ -377,7 +497,8 @@ issue** (see the #3565 runbook pattern, EPIC #2571) instead of a terminal:
 
 - **The ADP platform account** — CI pipelines own it; never run `--update`
   against it.
-- **Webhook-ingress destroy-gating** — see §5 (issue #3543).
+- **Fresh webhook deploys** — use standalone `--update` or the parent upgrade
+  command to enable the saved-plan gate.
 - **A `--plan-only` preview** — there is no dry-run flag yet; the plan-gate
   output during a run is the preview. Tracked with per-module
   `--confirm-destructive` scoping in issue #3733.

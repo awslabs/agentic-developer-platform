@@ -14,9 +14,16 @@ interface WaveCardProps {
   graph: FlowGraph;
   expanded: boolean;
   onToggle: () => void;
+  /**
+   * Builds the delivery-execution panel for one node (issue #5145). A render prop
+   * rather than the data itself, so this card neither knows the ledger's shape nor
+   * needs it: a caller without execution data omits it and every chip renders
+   * exactly as before.
+   */
+  renderExecution?: (node: GraphNode) => React.ReactNode;
 }
 
-export function WaveCard({ epicRef, wave, graph, expanded, onToggle }: WaveCardProps) {
+export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecution }: WaveCardProps) {
   const counts = countByDisplayState(wave.nodes);
   const stories = wave.nodes.filter((node) => node.kind === 'story');
   const gates = wave.nodes.filter((node) => node.kind === 'gate').length;
@@ -37,6 +44,7 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle }: WaveCardP
       node={node}
       dependencies={nodeDependencies(graph, node)}
       controls={<GateControls node={node} flowId={graph.flow_id} />}
+      execution={renderExecution?.(node)}
     />
   );
 

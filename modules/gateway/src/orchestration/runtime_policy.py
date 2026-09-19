@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, or_, select
 
+from src.agentauth.github_operations import MEDIATED_GITHUB_OPERATION_PATH
 from src.agentauth.grants import DelegatedGrant
 from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
 from src.shared.models.base import utcnow
@@ -34,12 +35,31 @@ class WorkerCredentialDecision(Decision):
     aws_role_arns: tuple[str, ...] = ()
     policy_id: str | None = None
     plan_version: int | None = None
+    # The action resolved from engine-written execution state, and the immutable
+    # provider repository this assignment was admitted against. Broker routes may
+    # use the action as authority; a request body must never choose it. Both are
+    # reported so the mediated operation service can build its assignment from
+    # what THIS function proved rather than re-deriving either from request data.
+    action: Action | None = None
+    provider_repository_id: int | None = None
+    # The accepted policy document itself, so a consumer checks content and
+    # gates against what a human actually accepted instead of rebuilding a
+    # document from these fields and evaluating against its own reconstruction.
+    policy: ExecutionPolicy | None = None
 
 
 def policy_github_permissions(policy: ExecutionPolicy, action: Action) -> dict[str, str] | None:
     """GitHub contents-write also authorizes merge; never disguise that scope."""
     permissions = {"contents": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"}
     if action is Action.EVALUATE:
+        return permissions
+    if action is Action.COORDINATE:
+        # Read-only, deliberately. A coordinator's job is to read progress and
+        # evidence and to request children through the authenticated dispatch
+        # service — a platform-internal call that needs no provider write. Any
+        # write it appeared to need (a comment, a label) is a GitHub *mutation*,
+        # which #5223's separately authorized mediated capability owns; granting
+        # `issues: write` here would pre-empt that authorization decision.
         return permissions
     if action is Action.REVIEW:
         return {**permissions, "pull_requests": "write", "issues": "write"}
@@ -64,7 +84,38 @@ async def flow_started_at(session, *, org_id: str, flow_id: str) -> datetime | N
 
 
 def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
+    """The policy action this protected assignment is performing.
+
+    Resolved from the execution record's **engine-written** fields, never from
+    anything a worker body can choose. `persona` is a request-supplied string on the
+    dispatch body, so it alone cannot decide authority; `wave_coordinator` and
+    `coordinator_flow_id` are written only by `agentauth/dispatch.py` under a
+    `gate_decision` authority and only alongside a committed dispatch receipt, which
+    is why the coordinator test keys on them and treats the persona as a corroborating
+    condition rather than the deciding one (#5224 design point 3).
+
+    **A coordinator resolves to `COORDINATE`, not `EVALUATE`.** A wave coordinator is
+    assigned to its wave's evaluation node, so the persona/kind test below would
+    otherwise classify it as an evaluation — handing a coordinator the machine
+    acceptance authority to *conclude* that evaluation, which is precisely the
+    conflation #5224 forbids. The coordinator branch therefore comes first.
+
+    This is not a live behavior change for existing flows: under an accepted policy a
+    coordinator could not be dispatched at all before this story
+    (`graph_dispatch._authorize_dispatch_policy` refused every `coordinates` request),
+    and a flow with no accepted policy never reaches this function
+    (`authorize_worker_credential` returns early). So no already-running coordinator
+    was relying on the `EVALUATE` reading. A v1/v2 policy now resolves `COORDINATE`
+    and denies with `action_not_permitted`, which is the correct refusal: absence of
+    an accepted coordination scope grants nothing.
+    """
     persona = execution.get("persona", {}).get("S")
+    if execution.get("wave_coordinator") == {"BOOL": True} and execution.get("coordinator_flow_id", {}).get("S"):
+        # Engine-written metadata, corroborated by the coordinator personas the
+        # dispatch path admits. An execution carrying coordinator metadata but a
+        # persona the engine never assigns as a coordinator is a mismatch, and
+        # returning `None` refuses it rather than guessing which field to trust.
+        return Action.COORDINATE if persona in {"operations", "aidlc"} else None
     if node.kind == NodeKind.EVAL.value and persona == "operations":
         return Action.EVALUATE
     if node.kind == NodeKind.STORY.value:
@@ -172,6 +223,19 @@ async def authorize_worker_credential(
         # lifetime would exceed this grant, even when issuance itself is allowed.
         if permissions is not None and not_after > now + timedelta(hours=1, seconds=30):
             scope = CredentialScope.SCOPED
+    elif broker_path == MEDIATED_GITHUB_OPERATION_PATH and repo in policy.repository_ids and repo in grant.repo_scope:
+        # Mediation is scopable where a token is not. The gateway holds the
+        # installation credential and performs the single typed operation itself,
+        # so there is no provider lifetime to reconcile against this grant and no
+        # `contents: write` capability handed to the worker. That is why this
+        # branch does not consult `policy_github_permissions`: its None result
+        # means "no TOKEN can express this policy", which is the reason to
+        # mediate, not a reason to refuse mediation.
+        #
+        # This grants no action the assignment lacks. `authorize_action` below
+        # still gates the assignment's own action, and merge is a separate typed
+        # operation the caller must be separately authorized for.
+        scope = CredentialScope.SCOPED
     elif broker_path == "model" and repo in policy.repository_ids and repo in grant.repo_scope:
         # Model execution remains inside the policy-checking gateway boundary.
         scope = CredentialScope.SCOPED
@@ -264,6 +328,7 @@ async def authorize_worker_credential(
         return WorkerCredentialDecision(
             permitted=True,
             detail=decision.detail,
+            action=action,
             not_after=not_after,
             provider_permissions=True,
             credential_id=credential_id,
@@ -274,5 +339,26 @@ async def authorize_worker_credential(
             plan_version=inputs.plan_version,
         )
     if decision.permitted and broker_path == "/internal/v1/github-installation-token":
-        return WorkerCredentialDecision(permitted=True, detail=decision.detail, permissions=permissions, not_after=not_after)
+        return WorkerCredentialDecision(
+            permitted=True,
+            detail=decision.detail,
+            action=action,
+            permissions=permissions,
+            not_after=not_after,
+        )
+    if decision.permitted and broker_path == MEDIATED_GITHUB_OPERATION_PATH:
+        # `scope` is still UNSCOPABLE unless the branch above matched, so a repo
+        # outside the accepted policy or the grant is already refused by
+        # `authorize_action`. Report the proven action and immutable repository ID
+        # so the operation service never has to re-derive either one.
+        return WorkerCredentialDecision(
+            permitted=True,
+            detail=decision.detail,
+            not_after=not_after,
+            action=action,
+            provider_repository_id=int(repository_id) if repository_id.isdigit() else None,
+            policy=policy,
+            policy_id=policy.policy_id,
+            plan_version=inputs.plan_version,
+        )
     return decision

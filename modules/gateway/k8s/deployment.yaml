@@ -232,6 +232,11 @@ spec:
             # network completion can delay observation; a reload is not required.
             - name: FEATURE_NEW_UI_ENABLED
               value: "__FEATURE_NEW_UI_ENABLED__"
+            # Issue #5422: per-persona Agent Models. This remains off until PMM-09
+            # certifies models and enables runtime enforcement in this environment.
+            # The SSM-backed placeholder is rendered by both deployment paths.
+            - name: FEATURE_AGENT_MODELS_ENABLED
+              value: "__FEATURE_AGENT_MODELS_ENABLED__"
             # - name: FEATURE_KNOWLEDGE_ENABLED
             #   value: "false"
             # - name: FEATURE_INDEXING_ENABLED

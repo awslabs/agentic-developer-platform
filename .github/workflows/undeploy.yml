@@ -13,7 +13,7 @@ on:
         type: boolean
         default: false
       skip_phases:
-        description: 'Comma-separated phases to skip (agent-context,webhook-ingress,agent-factory,gateway,platform).'
+        description: 'Comma-separated phases to skip (superplane,agent-context,webhook-ingress,agent-factory,gateway,platform).'
         required: false
         default: ''
       include_bootstrap:
@@ -179,11 +179,28 @@ jobs:
 
           FAILED=0
 
-          # --- Phase 1: Agent Context ---
+          # --- Phase 1: Superplane domain app ---
+          # First, because destroy order is the reverse of deploy order: a domain app sits
+          # on top of the platform, gateway and agent runtime (Issue #5037).
+          if is_skipped "superplane"; then
+            echo "::notice::Skipping phase: superplane (user request)"
+          else
+            echo "::group::Phase 1/6: Superplane"
+            if phase_superplane; then
+              echo "::notice::Phase superplane: complete"
+            else
+              echo "::error::Phase superplane: FAILED"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          fi
+          [ $FAILED -ne 0 ] && exit 1
+
+          # --- Phase 2: Agent Context ---
           if is_skipped "agent-context"; then
             echo "::notice::Skipping phase: agent-context (user request)"
           else
-            echo "::group::Phase 1/5: Agent Context"
+            echo "::group::Phase 2/6: Agent Context"
             if phase_agent_context; then
               echo "::notice::Phase agent-context: complete"
             else
@@ -194,11 +211,11 @@ jobs:
           fi
           [ $FAILED -ne 0 ] && exit 1
 
-          # --- Phase 2: Webhook Ingress ---
+          # --- Phase 3: Webhook Ingress ---
           if is_skipped "webhook-ingress"; then
             echo "::notice::Skipping phase: webhook-ingress (user request)"
           else
-            echo "::group::Phase 2/5: Webhook Ingress"
+            echo "::group::Phase 3/6: Webhook Ingress"
             if phase_webhook_ingress; then
               echo "::notice::Phase webhook-ingress: complete"
             else
@@ -209,11 +226,11 @@ jobs:
           fi
           [ $FAILED -ne 0 ] && exit 1
 
-          # --- Phase 3: Agent Factory ---
+          # --- Phase 4: Agent Factory ---
           if is_skipped "agent-factory"; then
             echo "::notice::Skipping phase: agent-factory (user request)"
           else
-            echo "::group::Phase 3/5: Agent Factory"
+            echo "::group::Phase 4/6: Agent Factory"
             if phase_agent_factory; then
               echo "::notice::Phase agent-factory: complete"
             else
@@ -224,11 +241,11 @@ jobs:
           fi
           [ $FAILED -ne 0 ] && exit 1
 
-          # --- Phase 4: Gateway ---
+          # --- Phase 5: Gateway ---
           if is_skipped "gateway"; then
             echo "::notice::Skipping phase: gateway (user request)"
           else
-            echo "::group::Phase 4/5: Gateway"
+            echo "::group::Phase 5/6: Gateway"
             if phase_gateway; then
               echo "::notice::Phase gateway: complete"
             else
@@ -239,11 +256,11 @@ jobs:
           fi
           [ $FAILED -ne 0 ] && exit 1
 
-          # --- Phase 5: Platform ---
+          # --- Phase 6: Platform ---
           if is_skipped "platform"; then
             echo "::notice::Skipping phase: platform (user request)"
           else
-            echo "::group::Phase 5/5: Platform"
+            echo "::group::Phase 6/6: Platform"
             if phase_platform; then
               echo "::notice::Phase platform: complete"
             else
@@ -271,11 +288,12 @@ jobs:
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Destroy Order" >> "$GITHUB_STEP_SUMMARY"
-          echo "1. agent-context" >> "$GITHUB_STEP_SUMMARY"
-          echo "2. webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
-          echo "3. agent-factory" >> "$GITHUB_STEP_SUMMARY"
-          echo "4. gateway" >> "$GITHUB_STEP_SUMMARY"
-          echo "5. platform" >> "$GITHUB_STEP_SUMMARY"
+          echo "1. superplane" >> "$GITHUB_STEP_SUMMARY"
+          echo "2. agent-context" >> "$GITHUB_STEP_SUMMARY"
+          echo "3. webhook-ingress" >> "$GITHUB_STEP_SUMMARY"
+          echo "4. agent-factory" >> "$GITHUB_STEP_SUMMARY"
+          echo "5. gateway" >> "$GITHUB_STEP_SUMMARY"
+          echo "6. platform" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Note**: Terraform state backend is NOT destroyed unless \`include_bootstrap\` is enabled." >> "$GITHUB_STEP_SUMMARY"
 

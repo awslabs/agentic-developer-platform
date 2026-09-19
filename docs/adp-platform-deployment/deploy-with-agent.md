@@ -25,6 +25,11 @@ agent-behavior layer on top of it.
   exists at startup, resume from the first non-complete phase. **A committed copy
   from a fresh clone is NOT a record of your deploy** — verify against real AWS
   state, don't trust its statuses.
+- Agent factory is required for a full platform deployment. Webhook workers
+  alone do not establish that the separate factory module is installed.
+  Verify factory state and worker readiness before reporting full completion.
+  Full `--update` runs include a missing factory through the saved-plan gate;
+  explicit scope flags describe partial maintenance only.
 - **Never commit `agent_learning/*.md`** — that directory is gitignored; an
   explicit `git add` bypasses the ignore and has caused drift before.
 

@@ -47,8 +47,8 @@ phases:
           -t "$REGISTRY/$ECR_REPO:latest"
           .
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
-      - docker push "$REGISTRY/$ECR_REPO:latest"
+      - 'if [ "${PUBLISH_LATEST:-true}" = true ]; then docker push "$REGISTRY/$ECR_REPO:latest"; fi'
 
   post_build:
     commands:
-      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"
+      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (latest publication controlled by PUBLISH_LATEST)"

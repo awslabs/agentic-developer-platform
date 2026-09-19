@@ -60,6 +60,11 @@ warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
 run()  { if [ "$DRY_RUN" = true ]; then echo -e "${BLUE}[dry-run]${NC} $*"; else eval "$@"; fi; }
 
+if [ -n "${ADP_RELEASE_DIR:-}" ]; then
+  python3 "$MODULE_ROOT/../../platform/scripts/release/artifacts.py" frontend --directory "$ADP_RELEASE_DIR"
+  exit 0
+fi
+
 command -v aws &>/dev/null || fail "AWS CLI not installed"
 command -v npm &>/dev/null || fail "npm not installed (Node >= 22)"
 [ -d "$FRONTEND_DIR" ] || fail "Frontend dir not found: $FRONTEND_DIR"
@@ -95,17 +100,12 @@ else
   for v in POOL_ID CLIENT_ID DOMAIN; do
     [ -n "${!v}" ] || warn "VITE source $v is empty — login may be misconfigured (check gateway-infra)."
   done
-  # BROKER and WS_URL are separate because empty is legitimate for them (a
-  # gateway-only deploy has no agent-factory, so no agent-ws-url) — but empty
-  # is NOT harmless. Both have hard-coded fallbacks compiled into the bundle
-  # (useAgentChat.ts pins a raw wss://<id>.execute-api... URL), so an empty
-  # parameter ships a build that talks to a hostname nobody is watching:
-  # outside any custom domain, so outside EAA, and dead the moment the default
-  # execute-api endpoints are retired. Warn loudly rather than silently.
+  # These are optional for gateway-only deployments. Missing chat configuration
+  # disables chat; a missing broker still needs an explicit operator warning.
   [ -n "$BROKER" ] || warn "VITE source BROKER is empty — the bundle will use its compiled-in default; GitHub login will point at the wrong host."
-  [ -n "$WS_URL" ] || warn "VITE source WS_URL is empty — the bundle will use its compiled-in execute-api fallback, which bypasses the ws.<zone> custom domain (and therefore EAA)."
+  [ -n "$WS_URL" ] || warn "VITE source WS_URL is empty — agent chat will remain unavailable in this deployment."
   echo "Building frontend with VITE_* from SSM..."
-  run "(cd '${FRONTEND_DIR}' && npm ci && \
+  run "(cd '${FRONTEND_DIR}' && npm ci --include=dev && \
     VITE_API_URL='/api' \
     VITE_COGNITO_REGION='${AWS_REGION}' \
     VITE_COGNITO_USER_POOL_ID='${POOL_ID}' \

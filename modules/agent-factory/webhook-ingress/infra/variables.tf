@@ -38,6 +38,28 @@ variable "sqs_message_retention" {
   default     = 345600 # 4 days
 }
 
+# -----------------------------------------------------------------------------
+# Codex SDK pull-request reviewer in the shared worker
+# -----------------------------------------------------------------------------
+
+variable "codex_reviewer_model" {
+  description = "Gateway model identifier used by the Codex reviewer adapter in the shared worker image."
+  type        = string
+  default     = "openai.gpt-5.6-sol"
+}
+
+variable "codex_reviewer_apply_fixes" {
+  description = "Allow Codex to make bounded mechanical fixes before the controller pushes them to the PR branch."
+  type        = bool
+  default     = true
+}
+
+variable "codex_reviewer_merge_enabled" {
+  description = "Allow the deterministic Codex reviewer controller to merge a current, approved, green PR."
+  type        = bool
+  default     = true
+}
+
 variable "rate_limit_per_window" {
   description = "Max webhook dispatches per 5-min window per tenant. Bump in tfvars to drain a backlog without code change. Default 50 = original behavior."
   type        = number
@@ -262,6 +284,38 @@ variable "agent_image_prepull_enabled" {
   DESC
   type        = bool
   default     = true
+}
+
+# -----------------------------------------------------------------------------
+# Persona/model invocability probe (PMM-03 / #5420)
+# -----------------------------------------------------------------------------
+
+variable "persona_model_probe_enabled" {
+  description = "Enable the scheduled Claude Agent SDK invocability probe. Ships false; PMM-09 may enable it only after the destination account and spend ceiling are approved."
+  type        = bool
+  default     = false
+}
+
+variable "persona_model_probe_schedule" {
+  description = "UTC cron schedule for the server-side invocability-probe tick. The CronJob is suspended while persona_model_probe_enabled is false."
+  type        = string
+  default     = "17 2 * * *"
+
+  validation {
+    condition     = length(trimspace(var.persona_model_probe_schedule)) > 0
+    error_message = "persona_model_probe_schedule must be a non-empty Kubernetes CronJob schedule."
+  }
+}
+
+variable "persona_model_probe_deadline_seconds" {
+  description = "Hard wall-clock deadline for one scheduled probe tick."
+  type        = number
+  default     = 180
+
+  validation {
+    condition     = var.persona_model_probe_deadline_seconds >= 30 && var.persona_model_probe_deadline_seconds <= 600
+    error_message = "persona_model_probe_deadline_seconds must be between 30 and 600 seconds."
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -503,4 +557,18 @@ variable "gateway_namespace" {
   description = "Namespace the Bedrock gateway runs in. Used by the control-listener INGRESS allowlist to select which pods may reach a running agent's control port. Matched via the apiserver-managed `kubernetes.io/metadata.name` label rather than a hand-applied one, so it cannot silently stop matching."
   type        = string
   default     = "adp-gateway"
+}
+
+variable "engine_command_verifier_role_arn" {
+  description = "IAM role ARN of the engine-command VERIFIER — the gateway orchestration tick, which runs in a different deploy unit with its own Terraform state (issue #4539). Passed in rather than referenced because this module cannot see gateway state. Empty (the default) creates no verifier grant at all: an environment that has not wired the verifier gets a signer and no verifier, which fails closed (every command quarantined with no_verification_key) rather than granting access to a role ARN somebody guessed. Must be a role in THIS account; the key policy names it as one of exactly two decrypt principals, so a wrong value here is a real grant to the wrong role."
+  type        = string
+  default     = ""
+
+  validation {
+    # Shape only — Terraform cannot confirm the role exists in another state. A
+    # user ARN or an assumed-role session ARN here would produce a key policy that
+    # either fails to apply or grants something unintended, so reject both.
+    condition     = var.engine_command_verifier_role_arn == "" || can(regex("^arn:aws:iam::[0-9]{12}:role/.+$", var.engine_command_verifier_role_arn))
+    error_message = "engine_command_verifier_role_arn must be empty or a full IAM ROLE arn (arn:aws:iam::<account>:role/<name>) — not a user, not an assumed-role session ARN."
+  }
 }

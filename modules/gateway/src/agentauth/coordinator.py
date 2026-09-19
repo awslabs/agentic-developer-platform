@@ -19,7 +19,7 @@ from src.agentauth.grants import AgentAction, AuthorityReference, TargetRelation
 from src.agentauth.store import AuthorityStoreError
 from src.orchestration.dispatch_pass import _latest_approval_decision_id
 from src.orchestration.genesis import EngineGenesis, resolve_engine_genesis
-from src.orchestration.models import OrchestrationFlow
+from src.orchestration.models import OrchestrationFlow, OrchestrationNode
 from src.orchestration.state import NodeState
 
 
@@ -28,6 +28,69 @@ class CoordinatorAssignment:
     genesis: EngineGenesis
     repo: str
     intent_issue: int
+
+
+async def resolve_repository_fan_out(*, session, execution, grant, target_repo: str, target_issue: int, orchestration_repo: str) -> bool:
+    """May this root coordinator dispatch to `target_issue` in its own repo? (#5365)
+
+    The capability marker on the grant (written only by the HMAC-verified webhook
+    path) says the *coordinator* is allowed repository fan-out. This resolves the
+    remaining question the marker cannot answer: whether this particular target is
+    work the orchestration graph owns.
+
+    Both refusals below protect the approval gate, and both were found by
+    measurement rather than argument. Accepting a dispatch here creates no
+    orchestration receipt and moves no node, so this is not a way to *advance* a
+    flow — but without these two checks it would still be a way to start an agent
+    on graph-governed work without the approval that governs it:
+
+    * **The target must not be a node of any flow.** A node's issue is sequenced
+      by the graph; starting a second agent on it out-of-band is the double
+      dispatch the graph exists to prevent.
+    * **The coordinator's own launch issue must not be any flow's intent.** A
+      flow approval does not mutate an already-issued ``github_event`` grant.
+      Letting that stale grant widen after approval would therefore bypass
+      ``dispatch_graph``. The coordinator must re-enrol so
+      ``resolve_coordinator_assignment`` can bind it to ``gate_decision`` and
+      keep every later dispatch on the graph path.
+
+    Ownership is resolved from SQL, server-written execution state and the
+    platform's configured orchestration repository. The requested target is
+    checked again against the signed repository scope by the dispatch gate.
+    """
+    # Flows store numeric issue references because the orchestration engine is
+    # bound to one configured repository. The same issue number in another
+    # repository is therefore not graph-owned by this engine. Without this
+    # repository check an unrelated `other/repo#42` flow could pin or block
+    # `target/repo#42` merely because the numbers collide.
+    if not orchestration_repo:
+        return False
+    if target_repo != orchestration_repo:
+        return True
+    try:
+        launch_issue = int(execution["issue_number"]["N"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    graph_owned = await session.scalar(
+        select(OrchestrationNode.id)
+        .join(OrchestrationFlow, OrchestrationFlow.id == OrchestrationNode.flow_id)
+        .where(
+            OrchestrationFlow.org_id == grant.tenant_id,
+            OrchestrationNode.issue_ref.in_([str(target_issue), f"#{target_issue}"]),
+        )
+        .limit(1)
+    )
+    if graph_owned:
+        return False
+    flow_owned_launch = await session.scalar(
+        select(OrchestrationFlow.id)
+        .where(
+            OrchestrationFlow.org_id == grant.tenant_id,
+            OrchestrationFlow.intent_ref.in_([str(launch_issue), f"#{launch_issue}"]),
+        )
+        .limit(1)
+    )
+    return not bool(flow_owned_launch)
 
 
 async def resolve_coordinator_assignment(*, session, execution, grant, configured_repo: str) -> CoordinatorAssignment | None:

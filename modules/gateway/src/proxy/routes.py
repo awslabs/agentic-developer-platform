@@ -37,7 +37,7 @@ from src.proxy.bedrock_streaming_response import BedrockStreamingResponse
 from src.proxy.client_tool import normalize_client_tool
 from src.proxy.eventstream_codec import EVENTSTREAM_CONTENT_TYPE, EVENTSTREAM_KEEPALIVE, sse_to_eventstream
 from src.proxy.mantle_service import MantlePassthroughService, MantleUpstreamError
-from src.proxy.model_resolver import ModelResolver
+from src.proxy.model_resolver import ModelResolver, production_model_resolver
 from src.proxy.pricing_capture import PricingCapture
 from src.proxy.schemas import (
     AnthropicMessagesRequest,
@@ -119,9 +119,9 @@ def get_proxy_service() -> ProxyService:
 
 
 def get_model_resolver() -> ModelResolver:
-    """Get the model resolver instance."""
+    """Get the explicit test override or the deployed policy-backed resolver."""
     if _model_resolver is None:
-        return ModelResolver()
+        return production_model_resolver()
     return _model_resolver
 
 
@@ -952,6 +952,7 @@ async def invoke_model_stream_by_path(
             merge_with_keepalive(
                 sse_to_eventstream(wrapped_stream),
                 keepalive=EVENTSTREAM_KEEPALIVE,
+                record_aligned=True,
             ),
             error_handler=handle_proxy_error,
             media_type=EVENTSTREAM_CONTENT_TYPE,

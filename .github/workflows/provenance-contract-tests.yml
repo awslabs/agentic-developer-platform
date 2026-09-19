@@ -159,6 +159,14 @@ jobs:
         working-directory: modules/agent-factory/agent
         run: npx tsc --noEmit
 
+      # The last two suites are #5223's. They belong with the trust-boundary gate
+      # rather than in a new workflow because they assert the same class of
+      # property: what the agent is told about its own authority. The mediated
+      # suite pins that the no-token instructions name calls the helper really
+      # exports (wrong prose wastes a whole run), and the prompt-order suite pins
+      # that the new block stayed in the run-invariant prefix (#4183). Both are in
+      # `src/**`, which already triggers this workflow, but the run list is
+      # explicit here — a bare `npx jest` has a pre-existing red baseline on main.
       - name: Assert memory tools cannot be scoped by the model, and every Bash+bypass prompt wraps untrusted input
         working-directory: modules/agent-factory/agent
         run: |
@@ -166,4 +174,6 @@ jobs:
             src/complex-task-chat/memory/tools.test.ts \
             src/complex-task-chat/memory/null-memory.test.ts \
             src/utils/__tests__/trust-boundary.test.ts \
-            src/utils/__tests__/bash-bypass-wrap-sites.test.ts
+            src/utils/__tests__/bash-bypass-wrap-sites.test.ts \
+            src/mediated-github-config.test.ts \
+            src/agent-worker-prompt-order.test.ts

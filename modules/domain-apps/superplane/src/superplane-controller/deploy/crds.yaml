@@ -1,0 +1,353 @@
+# ============================================================================
+# Superplane CRDs - NodePool and SuperplaneNode
+# ============================================================================
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nodepools.superplane.ai
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.0
+spec:
+  group: superplane.ai
+  names:
+    kind: NodePool
+    listKind: NodePoolList
+    plural: nodepools
+    singular: nodepool
+    shortNames:
+      - np
+      - npool
+  scope: Cluster
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Clouds
+          type: string
+          jsonPath: .spec.clouds[*]
+          description: Allowed clouds
+        - name: GPU Types
+          type: string
+          jsonPath: .spec.gpuTypes[*]
+          description: Allowed GPU types
+        - name: Max Nodes
+          type: integer
+          jsonPath: .spec.maxNodes
+          description: Maximum nodes
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyNodes
+          description: Ready nodes
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+          description: Current phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          description: >-
+            NodePool is cluster-scoped and defines the policy for
+            auto-provisioning GPU nodes.
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: NodePoolSpec defines the desired state of NodePool.
+              type: object
+              required:
+                - clouds
+                - gpuTypes
+                - maxNodes
+              properties:
+                clouds:
+                  description: Clouds is the list of clouds to use, in priority order.
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                gpuTypes:
+                  description: GPUTypes is the list of allowed GPU types.
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                maxNodes:
+                  description: MaxNodes is the maximum number of nodes in this pool.
+                  type: integer
+                  format: int32
+                  minimum: 1
+                maxCostPerHour:
+                  description: MaxCostPerHour is the maximum cost per hour in USD.
+                  type: number
+                  format: double
+                  minimum: 0
+                preferSpot:
+                  description: Whether to prefer spot/preemptible instances.
+                  type: boolean
+                  default: false
+                ttlSecondsAfterEmpty:
+                  description: Duration in seconds after which an empty node is removed.
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  default: 300
+                consolidation:
+                  description: Consolidation settings for the pool.
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    policy:
+                      type: string
+                      enum:
+                        - WhenUnderutilized
+                        - Never
+                      default: WhenUnderutilized
+                template:
+                  description: Template for provisioned nodes.
+                  type: object
+                  properties:
+                    diskSizeGB:
+                      type: integer
+                      format: int32
+                      minimum: 50
+                      default: 256
+                    k8sVersion:
+                      type: string
+                      default: "1.33"
+                    wireguard:
+                      type: boolean
+                      default: true
+                maxConcurrentProvisioning:
+                  description: Maximum nodes that can be provisioning at once.
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  default: 3
+                disruption:
+                  description: Disruption budget settings.
+                  type: object
+                  properties:
+                    maxUnavailable:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                      default: 1
+            status:
+              description: NodePoolStatus defines the observed state of NodePool.
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Active
+                    - Inactive
+                readyNodes:
+                  type: integer
+                  format: int32
+                provisioningNodes:
+                  type: integer
+                  format: int32
+                currentCostPerHour:
+                  type: number
+                  format: double
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                      - message
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: superplanenodes.superplane.ai
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.0
+spec:
+  group: superplane.ai
+  names:
+    kind: SuperplaneNode
+    listKind: SuperplaneNodeList
+    plural: superplanenodes
+    singular: superplanenode
+    shortNames:
+      - spn
+      - spnode
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Pool
+          type: string
+          jsonPath: .spec.nodePoolRef
+          description: NodePool reference
+        - name: Cloud
+          type: string
+          jsonPath: .spec.cloud
+          description: Cloud provider
+        - name: GPU
+          type: string
+          jsonPath: .spec.gpuType
+          description: GPU type
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+          description: Current phase
+        - name: Node
+          type: string
+          jsonPath: .status.k8sNodeName
+          description: K8s node name
+        - name: Cost/Hr
+          type: number
+          jsonPath: .status.hourlyCost
+          description: Hourly cost in USD
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          description: >-
+            SuperplaneNode tracks the lifecycle of each provisioned GPU node.
+          type: object
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: SuperplaneNodeSpec defines the desired state.
+              type: object
+              required:
+                - nodePoolRef
+                - cloud
+                - gpuType
+              properties:
+                nodePoolRef:
+                  description: Name of the NodePool this node belongs to.
+                  type: string
+                  minLength: 1
+                cloud:
+                  description: Cloud provider where this node is provisioned.
+                  type: string
+                  minLength: 1
+                gpuType:
+                  description: Type of GPU on this node.
+                  type: string
+                  minLength: 1
+                gpuCount:
+                  description: Number of GPUs on this node.
+                  type: integer
+                  format: int32
+                  minimum: 1
+                  default: 1
+                region:
+                  description: Cloud region where this node is provisioned.
+                  type: string
+            status:
+              description: SuperplaneNodeStatus defines the observed state.
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Provisioning
+                    - Joining
+                    - Ready
+                    - Degraded
+                    - Retiring
+                    - Draining
+                    - Terminated
+                    - ReleaseFailed
+                    - Failed
+                k8sNodeName:
+                  type: string
+                skypilotCluster:
+                  type: string
+                ssmInstanceId:
+                  type: string
+                publicIP:
+                  type: string
+                tunnelIP:
+                  type: string
+                hourlyCost:
+                  type: number
+                  format: double
+                provisionedAt:
+                  type: string
+                  format: date-time
+                lastPodScheduledAt:
+                  type: string
+                  format: date-time
+                message:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                      - message
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64

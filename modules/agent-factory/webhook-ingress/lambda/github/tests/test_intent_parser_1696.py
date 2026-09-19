@@ -266,7 +266,7 @@ class TestPRBranchFilter:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.trigger == "pr_opened"
 
     def test_agent_branch_with_suffix(self):
@@ -283,7 +283,7 @@ class TestPRBranchFilter:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
 
     def test_human_branch_does_not_trigger(self):
         """PR on feature/foo branch does NOT trigger reviewer."""
@@ -366,7 +366,7 @@ class TestSynchronizeGate:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.trigger == "pr_synchronize"
 
     def test_bot_opened_with_marker_allowed(self):
@@ -383,7 +383,7 @@ class TestSynchronizeGate:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.trigger == "pr_opened"
 
 
@@ -414,7 +414,7 @@ class TestBotPrTriggerDecoupled:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
 
     def test_bot_pr_with_marker_allowed(self):
         """Bot-opened PR with a marker is also allowed (lineage enrichment)."""
@@ -430,7 +430,7 @@ class TestBotPrTriggerDecoupled:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
 
     def test_bot_pr_empty_body_allowed(self):
         """Empty PR body no longer blocks — branch filter is the gate."""
@@ -446,7 +446,7 @@ class TestBotPrTriggerDecoupled:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
 
     def test_bot_pr_non_agent_branch_blocked(self):
         """A bot PR on a non-agent branch is still blocked (branch filter)."""
@@ -511,7 +511,7 @@ class TestDepthAcrossPRHop:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
 
 
 # --- MAX_CHAIN_DEPTH env override ---

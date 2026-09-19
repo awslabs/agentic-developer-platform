@@ -35,6 +35,19 @@ on:
         description: 'AWS deployment region; empty uses deployment configuration.'
         required: false
         default: ''
+      enable_agent_authority:
+        description: 'Issue #5365: enable protected agent authority (per-run credentials + pod admission). Requires agent_authority_worker_image_digests. Empty = leave the committed tfvars value alone.'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - 'true'
+          - 'false'
+      agent_authority_worker_image_digests:
+        description: 'Comma-separated sha256:<64 hex> worker image digests to admit. Mutable tags are refused; each digest is verified against ECR before Terraform trusts it.'
+        required: false
+        default: ''
 
 concurrency:
   group: webhook-ingress-deploy-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -242,11 +255,39 @@ jobs:
           fi
           kubectl version --client
 
+      - name: Resolve agent authority rollout
+        id: authority
+        # Issue #5365. Protected dispatch admits a pod only by image digest, and
+        # Terraform cannot tell a typo'd-but-well-formed digest from a real
+        # image — that failure mode is silent (every agent run fails to
+        # bootstrap) rather than a deploy error. This verifies each requested
+        # digest against ECR first, refuses tags outright, and never enables the
+        # feature unless a run explicitly asks. A push leaves the committed
+        # value untouched.
+        env:
+          ENABLE_AGENT_AUTHORITY: ${{ inputs.enable_agent_authority }}
+          AGENT_AUTHORITY_WORKER_IMAGE_DIGESTS: ${{ inputs.agent_authority_worker_image_digests }}
+        run: |
+          set -euo pipefail
+          VARS=$(bash "${GITHUB_WORKSPACE}/.github/scripts/resolve-agent-authority-rollout.sh")
+          {
+            echo 'vars<<TFVARS_EOF'
+            printf '%s\n' "$VARS"
+            echo 'TFVARS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_VAR_lambda_artifact_bucket: ${{ env.STATE_BUCKET }}
-        run: bash ../scripts/terraform-webhook.sh apply -input=false -auto-approve
+          AUTHORITY_VARS: ${{ steps.authority.outputs.vars }}
+        run: |
+          set -euo pipefail
+          # Unquoted on purpose: AUTHORITY_VARS is newline-separated -var
+          # arguments produced by the guard above, and is empty in the common
+          # case where no rollout was requested.
+          # shellcheck disable=SC2086
+          bash ../scripts/terraform-webhook.sh apply ${AUTHORITY_VARS} -input=false -auto-approve
 
       - name: Summary
         if: always()

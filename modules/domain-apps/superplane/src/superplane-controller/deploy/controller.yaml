@@ -1,0 +1,231 @@
+# ============================================================================
+# Superplane Controller Deployment Manifests
+# ============================================================================
+# Includes: Namespace setup, ServiceAccount, ClusterRole, ClusterRoleBinding,
+#           Service, and Deployment.
+# ============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: superplane-controller
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: superplane-controller
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: superplane
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: superplane-controller
+  labels:
+    app.kubernetes.io/name: superplane-controller
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: superplane
+rules:
+  # Pods: watch for pending GPU pods
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "patch"]
+  # Pod eviction for drain
+  - apiGroups: ["policy"]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  # Nodes: get/list/delete for health monitoring and consolidation
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
+  # Secrets: list for vault sync status check (heartbeat)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list"]
+  # Events: create for recording controller actions
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # ConfigMaps: for leader election
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Leases: for leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Custom resources: full access to NodePools and SuperplaneNodes
+  - apiGroups: ["superplane.ai"]
+    resources: ["nodepools"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["superplane.ai"]
+    resources: ["nodepools/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["superplane.ai"]
+    resources: ["superplanenodes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["superplane.ai"]
+    resources: ["superplanenodes/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: superplane-controller
+  labels:
+    app.kubernetes.io/name: superplane-controller
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: superplane
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: superplane-controller
+subjects:
+  - kind: ServiceAccount
+    name: superplane-controller
+    namespace: kube-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: superplane-controller-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: superplane-controller
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: superplane
+spec:
+  selector:
+    app.kubernetes.io/name: superplane-controller
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: health
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: superplane-controller
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: superplane-controller
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: superplane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: superplane-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: superplane-controller
+        app.kubernetes.io/component: controller
+        app.kubernetes.io/part-of: superplane
+      annotations:
+        kubectl.kubernetes.io/default-container: controller
+    spec:
+      serviceAccountName: superplane-controller
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: controller
+          image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/controller:latest
+          imagePullPolicy: Always
+          args:
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --leader-elect=true
+          env:
+            - name: SKYPILOT_URL
+              value: "http://skypilot-api.kube-system.svc.cluster.local:8000"
+            - name: EKS_CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: superplane-config
+                  key: EKS_CLUSTER_NAME
+                  optional: true
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: superplane-config
+                  key: AWS_REGION
+                  optional: true
+            - name: SSM_ACTIVATION_ID
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-ssm-credentials
+                  key: activation-id
+                  optional: true
+            - name: SSM_ACTIVATION_CODE
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-ssm-credentials
+                  key: activation-code
+                  optional: true
+            - name: ONBOARD_SCRIPT_PATH
+              value: "/etc/superplane/scripts/onboard-node.sh"
+            - name: CONTROL_PLANE_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: superplane-config
+                  key: CONTROL_PLANE_API_URL
+                  optional: true
+            - name: CLUSTER_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: superplane-config
+                  key: CLUSTER_ID
+                  optional: true
+            - name: HEARTBEAT_INTERVAL
+              valueFrom:
+                configMapKeyRef:
+                  name: superplane-config
+                  key: HEARTBEAT_INTERVAL
+                  optional: true
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+          volumeMounts:
+            - name: onboard-scripts
+              mountPath: /etc/superplane/scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: onboard-scripts
+          configMap:
+            name: superplane-onboard-scripts
+            defaultMode: 0755
+        - name: tmp
+          emptyDir: {}
