@@ -78,6 +78,16 @@ DEPT_A = "dept-test"
 EXPIRY = datetime.now(UTC) + timedelta(days=30)
 
 
+@pytest.fixture
+def governed_work_ownership(monkeypatch):
+    """Policy tests reach policy admission with its required claim service enabled."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=12345))
+
+
 @pytest.fixture(autouse=True)
 def policy_budget_initializers(monkeypatch):
     initialized = set()
@@ -386,7 +396,7 @@ class TestNoPolicyPreservesLegacyDispatch:
         node = await _make_node(session, flow)
         assert (await _authorize(session, node)).permitted
 
-    async def test_unpolicied_flow_still_dispatches_through_the_full_pass(self, session: AsyncSession) -> None:
+    async def test_unpolicied_flow_still_dispatches_through_the_full_pass(self, session: AsyncSession, governed_work_ownership) -> None:
         """End-to-end, because a refusal wired into the pass would not show up above.
 
         This is the test that would fail if admission were accidentally made to deny
@@ -398,7 +408,7 @@ class TestNoPolicyPreservesLegacyDispatch:
         assert report.policy_blocked == 0
         assert await _state_of(session, node.id) == NodeState.RUNNING.value
 
-    async def test_a_permitting_policy_dispatches_through_the_full_pass(self, session: AsyncSession) -> None:
+    async def test_a_permitting_policy_dispatches_through_the_full_pass(self, session: AsyncSession, governed_work_ownership) -> None:
         """The other half: enforcement does not break a flow it should admit."""
         _, node = await _fixture(session, policy=_policy())
         report = await run_dispatch_pass(session, _config())
@@ -419,12 +429,12 @@ class TestNoPolicyPreservesLegacyDispatch:
 
 
 class TestRefusalLeavesTheNodeUntouched:
-    async def test_blocked_node_stays_ready(self, session: AsyncSession) -> None:
+    async def test_blocked_node_stays_ready(self, session: AsyncSession, governed_work_ownership) -> None:
         _, node = await _fixture(session, policy=_policy(allowed_actions=[Action.REVIEW]))
         await run_dispatch_pass(session, _config())
         assert await _state_of(session, node.id) == NodeState.READY.value
 
-    async def test_blocked_node_does_not_burn_an_attempt(self, session: AsyncSession) -> None:
+    async def test_blocked_node_does_not_burn_an_attempt(self, session: AsyncSession, governed_work_ownership) -> None:
         """**Why admission runs before `dispatch_node`.**
 
         `dispatch_node` increments `attempts`. Admitting after it would spend an
@@ -437,19 +447,19 @@ class TestRefusalLeavesTheNodeUntouched:
         refreshed = (await session.execute(select(OrchestrationNode.attempts).where(OrchestrationNode.id == node.id))).scalar_one()
         assert refreshed == 0
 
-    async def test_blocked_node_queues_no_envelope(self, session: AsyncSession) -> None:
+    async def test_blocked_node_queues_no_envelope(self, session: AsyncSession, governed_work_ownership) -> None:
         await _fixture(session, policy=_policy(allowed_actions=[Action.REVIEW]))
         report = await run_dispatch_pass(session, _config())
         assert report.pending == []
         assert report.dispatched == 0
 
-    async def test_block_is_counted_and_reasoned(self, session: AsyncSession) -> None:
+    async def test_block_is_counted_and_reasoned(self, session: AsyncSession, governed_work_ownership) -> None:
         await _fixture(session, policy=_policy(allowed_actions=[Action.REVIEW]))
         report = await run_dispatch_pass(session, _config())
         assert report.policy_blocked == 1
         assert report.policy_block_reasons == {DenyReason.ACTION_NOT_PERMITTED.value: 1}
 
-    async def test_block_is_not_an_error_and_not_undispatchable(self, session: AsyncSession) -> None:
+    async def test_block_is_not_an_error_and_not_undispatchable(self, session: AsyncSession, governed_work_ownership) -> None:
         """A correctly-enforced boundary is not a defect.
 
         Folding it into `errors` would make every tick report failure while a policy
@@ -462,7 +472,7 @@ class TestRefusalLeavesTheNodeUntouched:
         assert report.undispatchable == 0
         assert report.success
 
-    async def test_per_org_counter_is_recorded(self, session: AsyncSession) -> None:
+    async def test_per_org_counter_is_recorded(self, session: AsyncSession, governed_work_ownership) -> None:
         await _fixture(session, policy=_policy(allowed_actions=[Action.REVIEW]))
         report = await run_dispatch_pass(session, _config())
         assert report.per_org[ORG_A]["policy_blocked"] == 1
@@ -639,7 +649,7 @@ class TestLimitsAreObservedFromEngineState:
         assert not decision.permitted
         assert decision.reason is DenyReason.POLICY_EXPIRED
 
-    async def test_expired_policy_blocks_through_the_full_pass(self, session: AsyncSession) -> None:
+    async def test_expired_policy_blocks_through_the_full_pass(self, session: AsyncSession, governed_work_ownership) -> None:
         """Expiry must bite in the real pass, not only at the unit boundary."""
         _, node = await _fixture(session, policy=_policy(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
         report = await run_dispatch_pass(session, _config())

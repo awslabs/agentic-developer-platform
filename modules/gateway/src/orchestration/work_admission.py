@@ -249,6 +249,8 @@ async def maintain_worker_claim(
     if row.active_run_id != invocation_id or row.state != ClaimState.HELD.value:
         raise WorkClaimError("claim_not_owned", "This invocation no longer owns the work.")
     if terminal:
+        # Process status is advisory. The locked release primitive preserves a
+        # current continuation without rejecting a valid terminal status report.
         await release_work(
             session,
             org_id=org_id,

@@ -644,6 +644,20 @@ async def release_work(
             reason="already_released",
         )
 
+    # Recheck after taking the claim lock. A handoff can commit while recovery
+    # is reading Kubernetes, and an older observation must not release it.
+    # Superseded generations must not hold a replacement owner's claim.
+    from .handoff import outstanding_continuation
+
+    pending = await outstanding_continuation(session, org_id=org_id, claim_id=claim.id, claim_generation=claim.generation)
+    if pending is not None:
+        return ClaimReceipt(
+            disposition=Disposition.BLOCKED,
+            claim_id=claim.id,
+            generation=claim.generation,
+            reason="continuation_outstanding",
+        )
+
     now = _now()
     claim.state = ClaimState.RELEASED.value
     claim.active_run_id = None

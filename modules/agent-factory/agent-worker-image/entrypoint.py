@@ -38,6 +38,8 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import draft_registration_note
+from lib.handoff_client import HANDOFF_EXPECT_ENV, HANDOFF_REQUIRED_ENV
+from lib.handoff_client import handoff_note as delivery_handoff_note
 from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
 from lib.pr_binding import binding_note as pr_binding_note
 from lib.invocation_completion import (
@@ -1437,6 +1439,23 @@ def main() -> int:
     # trigger, or a legacy dispatch) must keep its existing behaviour exactly.
     if envelope.get("pr_binding_required") is True:
         os.environ[PR_BINDING_REQUIRED_ENV] = "true"
+
+    # Issue #5144: the engine marks a dispatch whose delivery must produce a durable
+    # continuation receipt before this run's exit counts for anything. Same shape and
+    # same reasoning as the marker above: trusted dispatch envelope only, and never
+    # defaulted on, so a webhook trigger or a legacy dispatch keeps its existing
+    # behaviour exactly. The worker does not get to decide that it owes a handoff.
+    if envelope.get("handoff_required") is True:
+        os.environ[HANDOFF_REQUIRED_ENV] = "true"
+        # The fences this dispatch was admitted under. The worker compares the
+        # gateway's receipt against them so an acceptance for *some other* run — a
+        # different cycle, a superseded ownership generation, another tenant's node —
+        # cannot be reported as this run's handoff. Trusted dispatch envelope only,
+        # exactly like the marker above; the worker never authors these, and the
+        # gateway never reads authority back from them.
+        expect = envelope.get("handoff_expect")
+        if isinstance(expect, dict):
+            os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
@@ -3326,12 +3345,17 @@ def _handle_success(
             summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
                 meta, repo, issue
             )
+            # #5144: reported on BOTH terminal-success paths, for the same reason the
+            # binding note is — this is the common path for a persona that pushes its
+            # own work, and wiring the handoff only on the PR-creating path below would
+            # leave exactly the case the issue is about silently unrecorded.
+            handoff = delivery_handoff_note(summary=f"{persona} — {git_outcome}")
             _post_comment(
                 repo,
                 issue,
                 message_id,
                 "completed",
-                _join_notes(summary, draft_note, binding_note),
+                _join_notes(summary, draft_note, binding_note, handoff),
                 check_run_url,
             )
             update_invocation_status(
@@ -3436,12 +3460,17 @@ def _handle_success(
         summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
             _read_result_metadata(), repo, issue
         )
+        # #5144: the second terminal-success path. `handoff_note` never raises — the
+        # branch is pushed and the PR is open by now, so bookkeeping must not destroy
+        # delivered work — but its failure is visible, because an unrecorded handoff
+        # means the engine holds this work as still-due.
+        handoff = delivery_handoff_note(summary=f"{persona} — {git_outcome}")
         _post_comment(
             repo,
             issue,
             message_id,
             "completed",
-            _join_notes(summary, draft_note, binding_note),
+            _join_notes(summary, draft_note, binding_note, handoff),
             check_run_url,
         )
         update_invocation_status(
