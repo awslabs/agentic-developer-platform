@@ -1,5 +1,11 @@
 # Bedrock Gateway CLI Tools
 
+For the user guide and complete command reference, start at
+**[docs/adp-cli/](../../../docs/adp-cli/README.md)**. It covers installation,
+every command group, administrator and user workflows, scripting, and the
+availability of environment switching. The details below also cover the
+underlying compatibility scripts.
+
 CLI tools for authenticating with the Bedrock Gateway and configuring Claude Code
 or Codex.
 
@@ -62,7 +68,7 @@ After `adp update` and `adp login`, one command creates the role, verifies it an
 assigns the organization's routing rule:
 
 ```bash
-adp admin bedrock connect --account 123456789012 --org SOPHOS-IT --profile sophos
+adp admin bedrock connect --account 123456789012 --org example-org --profile aws-admin
 ```
 
 The role name is generated automatically. Add `--team Engineering` to route one
@@ -75,14 +81,14 @@ If an AWS administrator needs to create the role, download the same template and
 parameters used by the UI:
 
 ```bash
-adp admin bedrock connect --account 123456789012 --org SOPHOS-IT --download ./sophos-role
+adp admin bedrock connect --account 123456789012 --org example-org --download ./example-role
 ```
 
 Give `template.yaml`, `parameters.json` and `README.md` to the AWS administrator.
 Keep the directory, including `destination.json`. Once the role is created:
 
 ```bash
-adp admin bedrock connect --resume ./sophos-role
+adp admin bedrock connect --resume ./example-role
 ```
 
 Resume verifies the saved account and role and applies the saved organization,

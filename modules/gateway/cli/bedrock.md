@@ -3,8 +3,8 @@
 An ADP administrator can connect an AWS account and assign its Bedrock route:
 
 ```sh
-adp admin bedrock connect --account 123456789012 --org SOPHOS-IT --profile sophos
-adp admin bedrock list --org SOPHOS-IT
+adp admin bedrock connect --account 123456789012 --org example-org --profile aws-admin
+adp admin bedrock list --org example-org
 adp bedrock status
 ```
 
@@ -22,7 +22,7 @@ The current server authorization policy applies to every operation.
 ## Reuse an existing destination
 
 ```sh
-adp admin bedrock connect --destination DESTINATION_ID --org SOPHOS-IT --team Engineering
+adp admin bedrock connect --destination DESTINATION_ID --org example-org --team Engineering
 adp admin bedrock verify DESTINATION_ID
 adp admin bedrock status --user developer@example.com
 ```
@@ -35,16 +35,16 @@ prove that a previous request reached that account.
 ## Separate AWS administrator
 
 ```sh
-adp admin bedrock connect --account 123456789012 --org SOPHOS-IT --download ./sophos-role
+adp admin bedrock connect --account 123456789012 --org example-org --download ./example-role
 # The AWS administrator applies template.yaml using parameters.json and README.md.
-adp admin bedrock connect --resume ./sophos-role
+adp admin bedrock connect --resume ./example-role
 ```
 
 The first command registers a pending destination and writes a private directory;
 it does not provision or assign. Treat the parameters as sensitive. Resume uses
 the saved gateway, account and scope and verifies the role before assigning.
 Neither command requires AWS credentials locally. Do not add account/scope/profile
-options to `--resume`. `adp admin setup --org SOPHOS-IT` also offers this handoff
+options to `--resume`. `adp admin setup --org example-org` also offers this handoff
 and can resume it on a later run.
 
 ## Automation and recovery
