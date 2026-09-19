@@ -4074,6 +4074,19 @@ class TestWave2PauseChecks:
         assert results["W2-04"].status == _mod.STATUS_FAILED
         assert "attempt" in results["W2-04"].message
 
+    @pytest.mark.parametrize("field", ["session_id", "attempt_id"])
+    @pytest.mark.parametrize("value", [None, "", "   ", 17, []])
+    def test_missing_or_malformed_resume_identity_fails(
+        self, tmp_path: Path, field, value
+    ):
+        results = run_wave2_with_pause(
+            tmp_path,
+            "pause_resume",
+            {f"{field}_before": value, f"{field}_after": value},
+        )
+        assert results["W2-04"].status == _mod.STATUS_FAILED
+        assert field.split("_")[0] in results["W2-04"].message
+
     def test_an_interrupt_call_fails(self, tmp_path: Path):
         results = run_wave2_with_pause(tmp_path, "pause_resume", {"interrupt_called": True})
 

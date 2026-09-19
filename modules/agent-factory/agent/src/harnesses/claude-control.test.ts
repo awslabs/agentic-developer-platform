@@ -39,10 +39,8 @@ const ALL_VERBS: ControlAction[] = ['pause', 'resume', 'steer', 'abort'];
  * The verbs S2's barrier implements, injected where this suite tests the adapter's
  * own behaviour.
  *
- * `IMPLEMENTED_CONTROL_VERBS` stays empty until pause is proven end to end (see
- * `docs/design-notes/3961-control-authorization-intersection.md`), so reading it
- * here would turn every capability assertion below into a restatement of the
- * delivery-stage flag instead of a test of the adapter.
+ * Keep the adapter-specific set explicit so these tests verify the adapter's
+ * behavior independently of the platform capability intersection.
  */
 const PAUSE_AND_RESUME: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume']);
 
@@ -1016,14 +1014,13 @@ describe('pause hook translation', () => {
 });
 
 describe('background work observation', () => {
-  it('answers zero only while nothing has asked to be backgrounded', () => {
+  it('does not infer a shell is quiescent from its invocation flags', () => {
     const observer = new ClaudeBackgroundWorkObserver();
 
     expect(observer.count()).toBe(0);
     observer.noteToolStart('Bash', { command: 'ls' });
-    // Not an assumption: PreToolUse sees every tool call, and a foreground tool has
-    // nothing running behind it once its completion lands.
-    expect(observer.count()).toBe(0);
+    // The shell may have detached a child even without run_in_background.
+    expect(observer.count()).toBeNull();
   });
 
   it.each([
@@ -1075,10 +1072,10 @@ describe('background work observation', () => {
     ['no input at all', null],
     ['a non-object input', 'a string'],
     ['run_in_background explicitly false', { command: 'ls', run_in_background: false }],
-  ])('reads %s as foreground work', (_label, toolInput) => {
+  ])('cannot certify shell descendants from %s', (_label, toolInput) => {
     const observer = new ClaudeBackgroundWorkObserver();
     observer.noteToolStart('Bash', toolInput);
-    expect(observer.count()).toBe(0);
+    expect(observer.count()).toBeNull();
   });
 });
 
@@ -1177,5 +1174,69 @@ describe('pause expiry annotation', () => {
     // two releases because neither one is the thing that announces it.
     expect(events.filter((e) => e.type === 'pause_released')).toHaveLength(1);
     await adapter.dispose();
+  });
+});
+
+
+describe('review regressions: attempt and detached-work ownership', () => {
+  it('stale attempt hooks cannot settle a replacement attempt ticket', async () => {
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+    const shared = createClaudePauseHooks(gate);
+    const factory = (adapter.attemptInputFactory as any)((hooks: unknown) => ({ hooks }));
+    const attach = adapter.onAttemptHandle();
+    const before = factory({ attemptNumber: 1, isResume: false, promptText: 'task' });
+    const oldHooks = before.options?.hooks ?? shared;
+    await attach({ attemptNumber: 1, session: { close() {} } });
+    await before.dispose();
+    const after = factory({ attemptNumber: 2, isResume: true, promptText: 'continue' });
+    const currentHooks = after.options?.hooks ?? shared;
+    await attach({ attemptNumber: 2, session: { close() {} } });
+    const pre = { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_use_id: 'reused-id' } as never;
+    const post = { hook_event_name: 'PostToolUse', tool_use_id: 'reused-id' } as never;
+    await currentHooks.preToolUse(pre);
+    expect(gate.activeToolCount()).toBe(1);
+    try {
+      await oldHooks.postToolUse(post);
+      await oldHooks.onStop({ hook_event_name: 'Stop', background_tasks: [] } as never);
+      expect(gate.activeToolCount()).toBe(1);
+    } finally {
+      await currentHooks.postToolUse(post);
+      await after.dispose();
+      await adapter.dispose();
+    }
+  });
+
+  it('ordinary Bash detachment cannot certify a paused run while a child is writing', async () => {
+    const { spawn } = await import('child_process');
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adp-detachment-'));
+    const file = path.join(dir, 'writes');
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({ backgroundWorkProbe: () => observer.count() });
+    const hooks = createClaudePauseHooks(gate, observer);
+    await hooks.preToolUse({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 'shell', tool_input: { command: 'detached service' } } as never);
+    const child = spawn(process.execPath, ['-e', 'let n=0; setInterval(()=>require("fs").writeFileSync(process.argv[1], String(++n)), 10)', file], { detached: true, stdio: 'ignore' });
+    try {
+      const deadline = Date.now() + 3000;
+      while (!fs.existsSync(file) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(fs.existsSync(file)).toBe(true);
+      await hooks.postToolUse({ hook_event_name: 'PostToolUse', tool_use_id: 'shell' } as never);
+      // The SDK's own background-task list cannot vouch for detached OS children.
+      await hooks.onStop({ hook_event_name: 'Stop', background_tasks: [] } as never);
+      const result = await gate.requestPause();
+      const before = fs.readFileSync(file, 'utf8');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fs.readFileSync(file, 'utf8')).not.toBe(before);
+      expect(result.outcome).toBe('requested');
+      expect(gate.currentPhase()).not.toBe('paused');
+    } finally {
+      gate.cancel();
+      child.kill('SIGKILL');
+      await new Promise((resolve) => child.once('exit', resolve));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

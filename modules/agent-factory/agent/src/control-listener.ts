@@ -182,6 +182,9 @@ export type StartOutcome =
 
 export class ControlListener {
   private server: http.Server | null = null;
+  // Serialize revalidation and executor *start* in journal acceptance order.
+  // Never wait for pause settlement here: resume must be able to cancel it.
+  private deliveryTail: Promise<void> = Promise.resolve();
   private readonly config: ControlListenerConfig;
   private readonly tokenExpiresAt: number;
   private readonly credentials?: ControlCredentials;
@@ -507,7 +510,7 @@ export class ControlListener {
         // journal is the durable record, and the dashboard polls state, so the
         // outcome reaches the operator either way.
         this.writeJson(res, 202, { command: outcome.record, state: this.config.store.snapshot().state });
-        void this.applyAccepted(action, validation.commandId);
+        this.deliveryTail = this.deliveryTail.then(() => this.applyAccepted(action, validation.commandId));
         return;
     }
   }
@@ -575,25 +578,10 @@ export class ControlListener {
   /**
    * Whether this verb must present a gateway envelope — Issue #5028.
    *
-   * Only verbs this build can actually perform. The alternative — demand an
-   * envelope for every verb — reads as stricter and is worse, for two reasons.
-   *
-   * First, it changes the answer for unsupported verbs from 501 to 403. The
-   * platform's contract is that `pause`/`resume`/`steer`/`abort` are unimplemented
-   * and say so; a 403 would tell an operator their authorization was rejected when
-   * in fact the verb does not exist, sending them to debug key distribution over a
-   * feature that was never built.
-   *
-   * Second, an envelope check on a verb that cannot act protects nothing. What
-   * needs the envelope is the transition from "recorded in the journal" to
-   * "applied to a running agent", and no verb reaches that yet.
-   *
-   * The consequence is that this returns false for every verb today, so the
-   * envelope path ships tested but dormant — which is the same shape as the rest
-   * of this story: authorization first, behaviour later. When a verb joins
-   * `SUPPORTED_ACTIONS`, it becomes envelope-gated by that fact alone, with no
-   * second edit to remember here. That coupling is the point; a separate opt-in
-   * list is a list someone forgets to add to.
+   * Every implemented verb requires a signed envelope. Unsupported verbs keep
+   * their 501 contract because there is no effect to authorize. Deriving this
+   * from the capability set ensures a newly implemented verb cannot accidentally
+   * bypass verification through a separate opt-in list.
    */
   private requiresEnvelope(action: ControlAction): boolean {
     return this.config.store.capabilities()[action] === true;

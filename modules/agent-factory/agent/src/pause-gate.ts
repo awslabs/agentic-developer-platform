@@ -175,6 +175,7 @@ export class PauseGate {
   /** Admitted, not yet settled. Parked admissions are deliberately excluded. */
   private readonly inFlight = new Map<number, AdmissionTicket>();
   private readonly parked = new Set<ParkedAdmission>();
+  private readonly outputWaiters = new Set<() => void>();
   private ticketSeq = 0;
 
   /** Resolvers waiting for in-flight work to reach zero. */
@@ -335,6 +336,20 @@ export class PauseGate {
       this.parked.add(entry);
       this.log(`[pause-gate] holding ${toolName} at the admission barrier`);
     });
+  }
+
+  /** Hold task output and terminal teardown without counting them as tools. */
+  async waitForOutput(): Promise<boolean> {
+    while (this.isPauseActive()) {
+      await new Promise<void>((resolve) => this.outputWaiters.add(resolve));
+    }
+    return this.phase !== 'cancelled';
+  }
+
+  private wakeOutput(): void {
+    const waiting = [...this.outputWaiters];
+    this.outputWaiters.clear();
+    for (const resolve of waiting) resolve();
   }
 
   /**
@@ -540,6 +555,7 @@ export class PauseGate {
   cancel(reason = 'run aborted'): void {
     if (this.phase === 'cancelled') return;
     this.phase = 'cancelled';
+    this.wakeOutput();
     this.pauseEpoch += 1;
     this.clearExpiry();
     for (const entry of [...this.parked]) entry.release('deny', reason);
@@ -557,7 +573,8 @@ export class PauseGate {
    * begins looks to an operator like a pause that never happened.
    */
   safeBudget(requestedMs?: number): number | null {
-    const requested = requestedMs !== undefined && requestedMs > 0 ? requestedMs : this.defaultTimeoutMs;
+    const requested = requestedMs === undefined ? this.defaultTimeoutMs : requestedMs;
+    if (!Number.isFinite(requested) || requested <= 0) return null;
     const deadline = this.deadlineAt();
     if (deadline === null) return requested;
     const remaining = deadline - this.now() - this.finalizationMarginMs;
@@ -601,6 +618,7 @@ export class PauseGate {
     const held = [...this.parked];
     for (const entry of held) entry.release('admit');
     this.onEvent({ type: 'pause_released', expired });
+    this.wakeOutput();
     this.log(`[pause-gate] released${expired ? ' (expired)' : ''}, admitting ${held.length} held tool(s)`);
   }
 
@@ -692,6 +710,7 @@ export class PauseGate {
       failure: 'barrier_timeout',
       reason: 'the harness released a held tool before the pause took effect',
     });
+    this.wakeOutput();
   }
 
   private unavailable(failure: PauseGateFailure, reason: string): PauseGateResult {

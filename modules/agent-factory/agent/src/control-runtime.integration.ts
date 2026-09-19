@@ -44,8 +44,10 @@
  */
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
+import { createServer } from 'http';
+import type { AddressInfo } from 'net';
 import { join } from 'path';
-import { createClaudePauseHooks, ClaudeBackgroundWorkObserver, CLAUDE_SDK_VERSION } from './harnesses/claude-control';
+import { createClaudePauseHooks, ClaudeBackgroundWorkObserver, ClaudeControlAdapter, CLAUDE_SDK_VERSION } from './harnesses/claude-control';
 import { PauseGate } from './pause-gate';
 
 /** Recorded outcome of one experiment. `null` anywhere means "not observed". */
@@ -99,11 +101,23 @@ async function loadSdk(): Promise<{ query: (args: unknown) => AsyncIterable<Reco
  * the pair distinguishes a pause from both.
  */
 async function experimentBarrierBlocksSideEffects(
-  shape: 'write' | 'delegation' | 'background_bash' = 'write',
+  shape: 'write' | 'delegation' | 'background_bash' | 'service' = 'write',
 ): Promise<ExperimentReport> {
   const { query } = await loadSdk();
   const dir = mkdtempSync(join(tmpdir(), 'adp-pause-'));
   const target = join(dir, 'barrier-probe.txt');
+  let serviceCalls = 0;
+  const service = createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/probe') { res.writeHead(404).end(); return; }
+    serviceCalls += 1;
+    writeFileSync(target, 'barrier-probe');
+    res.writeHead(200, { 'content-type': 'text/plain' }).end('recorded');
+  });
+  await new Promise<void>((resolve, reject) => {
+    service.once('error', reject);
+    service.listen(0, '127.0.0.1', resolve);
+  });
+  const serviceUrl = `http://127.0.0.1:${(service.address() as AddressInfo).port}/probe`;
   const observer = new ClaudeBackgroundWorkObserver();
   const gate = new PauseGate({
     settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000,
@@ -119,8 +133,11 @@ async function experimentBarrierBlocksSideEffects(
   let pauseRequested = false;
   let admissionsBeforePause = 0;
   let outputBeforePause = 0;
+  let serviceCallsBeforePause = 0;
   let outputBytes = 0;
-  const prompt = shape === 'delegation'
+  const prompt = shape === 'service'
+    ? `Use Bash exactly once to run: curl --fail --silent --show-error -X POST ${serviceUrl}. Then stop. Do not use Write or another tool.`
+    : shape === 'delegation'
     ? `Use the Task tool to delegate to a general-purpose subagent. Ask that subagent to use Write to write the exact text "barrier-probe" to ${target}. Do not write the file yourself. Wait for the subagent to finish, then stop.`
     : shape === 'background_bash'
       ? `Use Bash with run_in_background=true to run: sleep 1; printf barrier-probe > ${target}. Wait for the background task to finish, then stop. Do not use Write.`
@@ -142,7 +159,7 @@ async function experimentBarrierBlocksSideEffects(
             hooks: [async (input: unknown, id?: string, opts?: { signal: AbortSignal }) => {
               const name = (input as { tool_name?: string }).tool_name ?? 'tool';
               const toolInput = (input as { tool_input?: { run_in_background?: unknown } }).tool_input;
-              const offeredShape = name === 'Bash' && toolInput?.run_in_background === true
+              const offeredShape = name === 'Bash' && shape === 'service' ? 'service' : name === 'Bash' && toolInput?.run_in_background === true
                 ? 'background_bash' : name === 'Task' || name === 'Agent'
                   ? 'delegation' : name === 'Write' ? 'write' : name;
               offeredShapes.push(offeredShape);
@@ -151,6 +168,7 @@ async function experimentBarrierBlocksSideEffects(
                 pauseRequested = true;
                 admissionsBeforePause = admissions.length;
                 outputBeforePause = outputBytes;
+                serviceCallsBeforePause = serviceCalls;
                 await gate.requestPause();
                 // Only the requested scenario marks the measured hold as begun.
                 parkedAt.push(Date.now());
@@ -209,6 +227,7 @@ async function experimentBarrierBlocksSideEffects(
     const wroteDuringHold = existsSync(target);
     const admittedDuringHold = admissions.length - admissionsBeforePause;
     const outputDuringHold = outputBytes - outputBeforePause;
+    const serviceCallsDuringHold = serviceCalls - serviceCallsBeforePause;
     const phaseDuringHold = gate.currentPhase();
     const countDuringHold = gate.activeToolCount();
     const backgroundDuringHold = observer.count();
@@ -229,7 +248,8 @@ async function experimentBarrierBlocksSideEffects(
       phaseDuringHold === 'paused' &&
       countDuringHold === 0 &&
       backgroundDuringHold === 0 &&
-      outputDuringHold === 0 &&
+      outputDuringHold === 0 && serviceCallsDuringHold === 0 &&
+      (shape !== 'service' || serviceCalls === 1) &&
       wroteAfterResume && offeredShapes.includes(shape);
 
     return {
@@ -258,9 +278,8 @@ async function experimentBarrierBlocksSideEffects(
           // The filesystem is the witness, so this is a real 0 rather than an
           // absence of evidence.
           fixture_writes: parked ? (wroteDuringHold ? 1 : 0) : null,
-          // No service is called by this fixture, so 0 is a fact about the
-          // fixture's design rather than a measurement of the run.
-          fixture_service_calls: 0,
+          // Counted by the loopback fixture, independently of hooks/transcripts.
+          fixture_service_calls: parked ? serviceCallsDuringHold : null,
           task_output_bytes: outputDuringHold,
           observed_by: 'fixture',
         },
@@ -273,11 +292,15 @@ async function experimentBarrierBlocksSideEffects(
         },
         parked_tools: parkedAt.length,
         held_work_completed_after_resume: wroteAfterResume,
+        fixture_service_calls_after_resume: serviceCalls,
+        controlled_service_exercised: shape === 'service' && serviceCalls > 0,
         total_elapsed_ms: heldMs,
         denied_tools: [...new Set(denials)],
       },
     };
   } finally {
+    gate.cancel();
+    await new Promise<void>((resolve, reject) => service.close((error) => error ? reject(error) : resolve()));
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -291,103 +314,93 @@ async function experimentBarrierBlocksSideEffects(
  * A restart-with-replay would show a second init or a different id.
  */
 async function experimentResumeSameExecution(): Promise<ExperimentReport> {
-  const { query } = await loadSdk();
+  const { resilientQuery } = await import('./utils/resilientQuery');
   const dir = mkdtempSync(join(tmpdir(), 'adp-resume-'));
   const first = join(dir, 'step-one.txt');
   const second = join(dir, 'step-two.txt');
-  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000 });
-  const hooks = createClaudePauseHooks(gate);
-
+  const observer = new ClaudeBackgroundWorkObserver();
+  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000, backgroundWorkProbe: () => observer.count() });
+  const adapter = new ClaudeControlAdapter({ pauseGate: gate, backgroundWorkObserver: observer });
   const sessionIds: string[] = [];
-  const initCount = { n: 0 };
-  const denials: string[] = [];
+  let initCount = 0;
   let released = 0;
+  let heldAdmissions = 0;
+  let heldWithoutSideEffects = false;
+  let attemptedPause = false;
+  let attemptBefore: string | null = null;
+  let attemptAfter: string | null = null;
+  let controller: Promise<void> = Promise.resolve();
+  const races: Record<string, { serialized: boolean; errored: boolean }> = {};
+  gate.subscribe((event) => { if (event.type === 'pause_released') released += 1; });
 
   try {
-    const iterator = query({
-      prompt:
-        `Do exactly two steps, in order. Step 1: use the Write tool to write "one" to ${first}. ` +
-        `Step 2: use the Write tool to write "two" to ${second}. Then stop.`,
-      options: {
-        permissionMode: 'bypassPermissions',
-        maxTurns: 4,
-        cwd: dir,
-        hooks: {
-          PreToolUse: [{
-            hooks: [async (input: unknown, id?: string, opts?: { signal: AbortSignal }) => {
-              const result = await hooks.preToolUse(
-                input as never,
-                id,
-                opts as { signal: AbortSignal } | undefined,
-              );
-              if ((result as { hookSpecificOutput?: { permissionDecision?: string } })
-                .hookSpecificOutput?.permissionDecision === 'deny') {
-                denials.push((input as { tool_name?: string }).tool_name ?? 'tool');
-              }
-              return result;
-            }],
-            timeout: hooks.preToolUseTimeoutSeconds,
-          }],
-          PostToolUse: [{ hooks: [async (input: unknown) => hooks.postToolUse(input as never)] }],
-          Stop: [{ hooks: [async (input: unknown) => hooks.onStop(input as never)] }],
-        },
+    const iterator = resilientQuery({
+      queryParams: {
+        prompt: `Do exactly two steps, in order. Use Write to write "one" to ${first}. Then use Write to write "two" to ${second}. Then stop.`,
+        options: { permissionMode: 'bypassPermissions', maxTurns: 6, cwd: dir },
       },
+      maxRetries: 0,
+      attemptInputFactory: adapter.attemptInputFactory((hooks) => ({ hooks: {
+        PreToolUse: [{ timeout: hooks.preToolUseTimeoutSeconds, hooks: [async (input: unknown, id?: string, opts?: { signal: AbortSignal }) => {
+          const fields = input as { tool_name?: string; tool_input?: { file_path?: string } };
+          const selected = fields.tool_name === 'Write' && fields.tool_input?.file_path === second && !attemptedPause;
+          if (selected) {
+            attemptedPause = true;
+            await adapter.resumeFromPause();
+            races.resume_before_pause = { serialized: gate.currentPhase() === 'running' && released === 0, errored: false };
+            const pause = await adapter.requestPause();
+            if (pause.outcome !== 'confirmed') throw new Error(`pause did not confirm: ${pause.outcome}`);
+            attemptBefore = adapter.currentAttempt();
+            controller = (async () => {
+              await sleep(500);
+              heldWithoutSideEffects = existsSync(first) && !existsSync(second);
+              attemptAfter = adapter.currentAttempt();
+              await Promise.all([adapter.resumeFromPause(), adapter.resumeFromPause()]);
+              races.repeated_resume = { serialized: released === 1 && gate.currentPhase() === 'running', errored: false };
+            })();
+          }
+          const result = await hooks.preToolUse(input as never, id, opts);
+          if (selected && (result as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision !== 'deny') heldAdmissions += 1;
+          return result;
+        }] }],
+        PostToolUse: [{ hooks: [(input: unknown) => hooks.postToolUse(input as never)] }],
+        PostToolUseFailure: [{ hooks: [(input: unknown) => hooks.postToolUse(input as never)] }],
+        Stop: [{ hooks: [(input: unknown) => hooks.onStop(input as never)] }],
+        SubagentStop: [{ hooks: [(input: unknown) => hooks.onStop(input as never)] }],
+      } })),
+      onAttemptHandle: adapter.onAttemptHandle(),
+      cancellation: adapter.cancellationSource(),
+      beforeOutput: () => gate.waitForOutput(),
+      idleSuspended: () => gate.isPauseActive(),
     });
-
-    // Pause once the first file appears, then release. Interleaved with consuming
-    // the stream, because the whole point is that the turn is still live across it.
-    const controller = (async () => {
-      for (let i = 0; i < 200 && !existsSync(first); i += 1) await sleep(100);
-      if (!existsSync(first)) return;
-      await gate.requestPause();
-      await sleep(500);
-      await gate.resume();
-      released += 1;
-    })();
-
     for await (const message of iterator) {
-      if (message.type === 'system' && (message as { subtype?: string }).subtype === 'init') {
-        initCount.n += 1;
-      }
+      if (message.type === 'system' && (message as { subtype?: string }).subtype === 'init') initCount += 1;
       const id = (message as { session_id?: string }).session_id;
       if (id && !sessionIds.includes(id)) sessionIds.push(id);
       if (message.type === 'result') break;
     }
     await controller;
-
     const bothDone = existsSync(first) && existsSync(second);
-    const ok = sessionIds.length === 1 && initCount.n === 1 && bothDone;
-
+    const sameAttempt = !!attemptBefore && attemptBefore === attemptAfter;
+    const ok = sessionIds.length === 1 && initCount === 1 && bothDone && sameAttempt && heldWithoutSideEffects && heldAdmissions === 1 && released === 1;
     return {
-      name: 'resume continues the same execution (AC-P2)',
-      ok,
-      detail: ok
-        ? `one session (${sessionIds[0]}) spanned the pause; both steps completed`
-        : `sessions=${sessionIds.length} inits=${initCount.n} bothSteps=${bothDone} — more than one ` +
-          `session or init would mean the turn restarted rather than resumed`,
+      name: 'resume continues the same execution (AC-P2)', ok,
+      detail: `sessions=${sessionIds.length} inits=${initCount} sameAttempt=${sameAttempt} heldAdmissions=${heldAdmissions} heldWithoutSideEffects=${heldWithoutSideEffects} completed=${bothDone}`,
       artifact: {
         released_count: released,
-        session_id_before: sessionIds[0] ?? null,
-        session_id_after: sessionIds[sessionIds.length - 1] ?? null,
-        // The adapter is not driving this query, so there is no attempt id to
-        // compare. Recorded as null rather than as a matching pair: a fabricated
-        // equality would satisfy the evaluator without observing anything.
-        attempt_id_before: null,
-        attempt_id_after: null,
-        // Observed, not assumed: this file imports no interrupt and the SDK was
-        // never asked to stop the turn. A single init proves the turn was not
-        // restarted, which is the property `interrupt_called: false` stands for.
-        interrupt_called: false,
-        initial_prompt_replayed: initCount.n > 1,
-        prior_history_preserved: bothDone,
-        task_completed: bothDone,
-        held_tools_admitted_after_resume: denials.length > 0 ? 1 : null,
-        session_count: sessionIds.length,
-        init_count: initCount.n,
-        races: null,
+        session_id_before: sessionIds[0] ?? null, session_id_after: sessionIds[sessionIds.length - 1] ?? null,
+        attempt_id_before: attemptBefore, attempt_id_after: attemptAfter,
+        interrupt_called: false, initial_prompt_replayed: initCount > 1,
+        prior_history_preserved: bothDone, task_completed: bothDone,
+        held_tools_admitted_after_resume: heldAdmissions,
+        held_without_side_effects: heldWithoutSideEffects,
+        session_count: sessionIds.length, init_count: initCount, races,
       },
     };
   } finally {
+    gate.cancel();
+    await controller;
+    await adapter.dispose();
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -481,6 +494,7 @@ async function main(): Promise<number> {
     experimentBarrierBlocksSideEffects,
     () => experimentBarrierBlocksSideEffects('delegation'),
     () => experimentBarrierBlocksSideEffects('background_bash'),
+    () => experimentBarrierBlocksSideEffects('service'),
     experimentResumeSameExecution,
     experimentHookCanHold,
   ];

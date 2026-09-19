@@ -586,10 +586,11 @@ describe('pause gate: deadline clamp and safe budget', () => {
     await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'unavailable' });
   });
 
-  it('ignores a nonpositive requested timeout in favour of the default', () => {
+  it.each([0, -5, NaN, Infinity, -Infinity])('rejects explicit unsafe timeout %s', async (timeoutMs) => {
     const { gate } = harness();
-    expect(gate.safeBudget(0)).toBe(DEFAULT_PAUSE_TIMEOUT_MS);
-    expect(gate.safeBudget(-5)).toBe(DEFAULT_PAUSE_TIMEOUT_MS);
+    expect(gate.safeBudget(timeoutMs)).toBeNull();
+    await expect(gate.requestPause({ timeoutMs })).resolves.toMatchObject({ outcome: 'unavailable' });
+    expect(gate.currentPhase()).toBe('running');
   });
 });
 
@@ -903,5 +904,22 @@ describe('pause gate: no pause is released without first resolving', () => {
     await flush();
 
     expect(h.events.map((event) => event.type)).not.toContain('pause_unavailable');
+  });
+});
+
+
+describe('pause gate: task output lifetime', () => {
+  it.each(['resume', 'expiry', 'cancel'])('holds output until %s without counting it as a tool', async (action) => {
+    const { gate, scheduler } = harness({ defaultTimeoutMs: 60_000 });
+    await gate.requestPause();
+    let delivered = false;
+    const output = gate.waitForOutput().then((allowed) => { delivered = true; return allowed; });
+    await flush();
+    expect(delivered).toBe(false);
+    expect(gate.activeToolCount()).toBe(0);
+    if (action === 'resume') await gate.resume();
+    else if (action === 'expiry') scheduler.fireByDuration(60_000);
+    else gate.cancel();
+    expect(await output).toBe(action !== 'cancel');
   });
 });

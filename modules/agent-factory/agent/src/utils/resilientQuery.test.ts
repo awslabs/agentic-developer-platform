@@ -2316,3 +2316,63 @@ describe('prompt cancellation at runtime waits', () => {
     },
   );
 });
+
+
+describe('pause holds task output and terminal teardown', () => {
+  it.each(['assistant', 'result', 'done'])('retains the current attempt while %s waits for resume', async (kind) => {
+    jest.useRealTimers();
+    jest.clearAllMocks();
+    const { PauseGate } = await import('../pause-gate');
+    const { ClaudeControlAdapter } = await import('../harnesses/claude-control');
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+    let emit!: () => void;
+    const outputReady = new Promise<void>((resolve) => { emit = resolve; });
+    const session = Object.assign((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'session-retained' };
+      await outputReady;
+      if (kind !== 'done') yield { type: kind, subtype: 'success' };
+    })(), { close: jest.fn() });
+    mockQuery.mockReturnValue(session as never);
+    const stream = resilientQuery({
+      queryParams: { prompt: 'same task', options: {} },
+      attemptInputFactory: adapter.attemptInputFactory(),
+      onAttemptHandle: adapter.onAttemptHandle(),
+      cancellation: adapter.cancellationSource(),
+      beforeOutput: () => gate.waitForOutput(),
+    } as ResilientQueryOptions & { beforeOutput: () => Promise<boolean> });
+    await stream.next();
+    const attempt = adapter.currentAttempt();
+    expect(attempt).not.toBeNull();
+    expect(await adapter.requestPause()).toMatchObject({ outcome: 'confirmed' });
+    let delivered = false;
+    const next = stream.next().then((value) => { delivered = true; return value; });
+    emit();
+    await new Promise((resolve) => setImmediate(resolve));
+    try {
+      expect(delivered).toBe(false);
+      expect(session.close).not.toHaveBeenCalled();
+      expect(adapter.currentAttempt()).toBe(attempt);
+    } finally {
+      await gate.resume();
+      await next;
+      await stream.return(undefined as never);
+      await adapter.dispose();
+    }
+    expect(session.close).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+it('a cancelled output hold closes the attempt once without retrying', async () => {
+  jest.useRealTimers();
+  jest.clearAllMocks();
+  const { ControlCancelledError } = await import('../control-runtime');
+  const session = Object.assign((async function* () { yield { type: 'assistant' }; })(), { close: jest.fn() });
+  mockQuery.mockReturnValue(session as never);
+  const stream = resilientQuery({ queryParams: { prompt: 'task', options: {} }, beforeOutput: async () => false });
+  await expect(stream.next()).rejects.toBeInstanceOf(ControlCancelledError);
+  expect(session.close).toHaveBeenCalledTimes(1);
+  expect(mockQuery).toHaveBeenCalledTimes(1);
+});

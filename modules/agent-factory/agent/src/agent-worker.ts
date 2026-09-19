@@ -66,7 +66,6 @@ let activeLiveComment: LiveStatusComment | null = null;
 let activeControlRuntime: {
   adapter: ClaudeControlAdapter;
   gate: PauseGate;
-  hooks: ClaudePauseHooks;
 } | null = null;
 
 // Correlation propagation — Phase 2-d (EPIC #779)
@@ -91,9 +90,7 @@ import { ControlStateStore, type ControlAction } from './control-state';
 import { listenerActionsFor } from './control-runtime';
 import {
   ClaudeControlAdapter,
-  createClaudePauseHooks,
   ClaudeBackgroundWorkObserver,
-  type ClaudePauseHooks,
 } from './harnesses/claude-control';
 import { PauseGate } from './pause-gate';
 // Issue #3961: the outcome→journal mapping and the gate/store mirror live in their
@@ -1622,7 +1619,6 @@ Now, complete the assigned task.`;
               agentType: AGENT_TYPE,
               store: buildWorkerSpillStore(),
               log: (msg) => log('INFO', msg),
-              pauseHooks: control?.hooks,
             }),
           }
         },
@@ -1630,9 +1626,17 @@ Now, complete the assigned task.`;
         baseDelayMs: 10_000,
         maxDelayMs: 120_000,
         idleTimeoutMs: 600_000, // 10 min — detect silent upstream stalls (issue #1223)
-        // Issue #3962's transport hooks, now consumed (#3961). All three are
+        // Per-attempt transport hooks and output hold (#3961). These are
         // undefined without a started control listener.
-        attemptInputFactory: control?.adapter.attemptInputFactory(),
+        attemptInputFactory: control?.adapter.attemptInputFactory((pauseHooks) => ({
+          hooks: createWorkerToolHooks({
+            agentType: AGENT_TYPE,
+            store: buildWorkerSpillStore(),
+            log: (msg) => log('INFO', msg),
+            pauseHooks,
+          }),
+        })),
+        beforeOutput: control ? () => control.gate.waitForOutput() : undefined,
         onAttemptHandle: control?.adapter.onAttemptHandle(),
         cancellation: control?.adapter.cancellationSource(),
         // Issue #3961: a paused stream is quiet on purpose. Without this the idle
@@ -2217,10 +2221,10 @@ async function main(): Promise<void> {
     backgroundWorkProbe: () => backgroundWork.count(),
     log: (msg) => log('DEBUG', msg),
   });
-  const pauseHooks = createClaudePauseHooks(pauseGate, backgroundWork);
   const controlAdapter = new ClaudeControlAdapter({
     log: (msg) => log('DEBUG', msg),
     pauseGate,
+    backgroundWorkObserver: backgroundWork,
   });
   try {
     // Started here, after config resolution and before the SDK query, so a
@@ -2277,7 +2281,7 @@ async function main(): Promise<void> {
       // the path every ordinary agent takes. And the capability claim stays
       // truthful in the only direction that matters: pause is advertised where the
       // mechanism is actually in place.
-      activeControlRuntime = { adapter: controlAdapter, gate: pauseGate, hooks: pauseHooks };
+      activeControlRuntime = { adapter: controlAdapter, gate: pauseGate };
       log('INFO', `Control listener started on port ${outcome.port}`);
     } else if (outcome.reason !== 'disabled') {
       // A failure to start is logged at WARN and the run continues: control is an

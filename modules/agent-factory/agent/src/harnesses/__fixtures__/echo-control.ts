@@ -312,7 +312,8 @@ export class EchoControlAdapter implements ControlRuntimeAdapter {
 
   /** Duration this harness will actually hold a pause for, or `null` if none. */
   safeBudget(requestedMs?: number): number | null {
-    const requested = requestedMs !== undefined && requestedMs > 0 ? requestedMs : this.defaultTimeoutMs;
+    const requested = requestedMs === undefined ? this.defaultTimeoutMs : requestedMs;
+    if (!Number.isFinite(requested) || requested <= 0) return null;
     const deadline = this.deadlineAt();
     if (deadline === null) return requested;
     const remaining = deadline - this.now() - this.finalizationMarginMs;

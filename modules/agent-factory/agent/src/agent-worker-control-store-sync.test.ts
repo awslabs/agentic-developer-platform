@@ -48,8 +48,7 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
  * A gate plus a store wired exactly as the worker wires them.
  *
  * `supportedActions` includes pause/resume so the journal accepts the commands
- * these tests submit. That is a statement about this fixture, not about the
- * shipped build — the shipped verb set stays empty, see `control-runtime.ts`.
+ * these tests submit, matching the implemented capability intersection.
  */
 function harness(options: { settleTimeoutMs?: number; defaultTimeoutMs?: number } = {}) {
   const scheduler = new ManualScheduler();
@@ -74,6 +73,7 @@ function harness(options: { settleTimeoutMs?: number; defaultTimeoutMs?: number 
     const commandId = `cmd-${seq}`;
     const outcome = store.submit(action, commandId, `fp-${seq}`);
     if (outcome.kind !== 'accepted') throw new Error(`submit refused: ${outcome.kind}`);
+    if (!store.markDelivered(commandId)) throw new Error('command not delivered');
     await applyControlCommand({
       action,
       commandId,
@@ -106,7 +106,7 @@ describe('store/gate agreement: transitions driven by a command', () => {
     expect(h.statusOf(id)).toBe('applied');
   });
 
-  it('leaves a pause awaiting quiescence pending, and shows pause_requested', async () => {
+  it('leaves a delivered pause awaiting quiescence, and shows pause_requested', async () => {
     const h = harness();
     await h.gate.admit('Bash');
     const pausePromise = h.command('pause');
@@ -115,7 +115,39 @@ describe('store/gate agreement: transitions driven by a command', () => {
     const id = await pausePromise;
 
     expect(h.store.snapshot().state).toBe('pause_requested');
-    expect(h.statusOf(id)).toBe('pending');
+    expect(h.statusOf(id)).toBe('delivered');
+  });
+
+  it('publishes pause_requested while the command still awaits a running tool', async () => {
+    const h = harness();
+    const admission = await h.gate.admit('Write');
+    const command = h.command('pause');
+    await flush();
+    try {
+      expect(h.store.snapshot().state).toBe('pause_requested');
+      expect(h.store.snapshot().commands.filter((command) => command.status === 'delivered')).toHaveLength(1);
+    } finally {
+      h.gate.settle(admission.ticket);
+      await command;
+      await h.gate.resume();
+    }
+  });
+
+  it('keeps a later pause intact when the cancelled pause finishes late', async () => {
+    const h = harness();
+    const work = await h.gate.admit('Write');
+    const first = h.command('pause');
+    await flush();
+    await h.command('resume');
+    const second = h.command('pause');
+    await flush();
+    h.gate.settle(work.ticket);
+    const [firstId, secondId] = await Promise.all([first, second]);
+    expect(h.statusOf(firstId)).toBe('cancelled');
+    expect(h.statusOf(secondId)).toBe('applied');
+    expect(h.gate.currentPhase()).toBe('paused');
+    expect(h.store.snapshot().state).toBe('paused');
+    await h.command('resume');
   });
 
   it('settles a pause cancelled by an operator resume', async () => {
@@ -173,7 +205,7 @@ describe('store/gate agreement: transitions the gate makes on its own', () => {
     await flush();
     h.scheduler.fireByDuration(1_000);
     const pauseId = await pausePromise;
-    expect(h.statusOf(pauseId)).toBe('pending');
+    expect(h.statusOf(pauseId)).toBe('delivered');
 
     const controller = new AbortController();
     const admitting = h.gate.admit('Write', controller.signal);
@@ -258,6 +290,7 @@ describe('store/gate agreement: outcomes that are not a confirmation', () => {
     const h = harness();
     const id = 'cmd-unavailable';
     expect(h.store.submit('pause', id, 'fp-u').kind).toBe('accepted');
+    expect(h.store.markDelivered(id)).toBe(true);
 
     await applyControlCommand({
       action: 'pause',
@@ -289,6 +322,7 @@ describe('store/gate agreement: outcomes that are not a confirmation', () => {
     // Submitted directly: the store's own supported set would refuse it, which is
     // exactly the guard being bypassed to reach the executor's fallback.
     h.store.submit('pause', id, 'fp-s');
+    expect(h.store.markDelivered(id)).toBe(true);
 
     await applyControlCommand({
       action: 'steer' as never,
@@ -317,6 +351,7 @@ describe('store/gate agreement: outcomes that are not a confirmation', () => {
     const h = harness();
     const id = 'cmd-nolog';
     expect(h.store.submit('pause', id, 'fp-n').kind).toBe('accepted');
+    expect(h.store.markDelivered(id)).toBe(true);
 
     await applyControlCommand({
       action: 'pause',

@@ -145,7 +145,9 @@ export interface ResilientQueryOptions {
     isResume: boolean;
     /** The prompt this attempt would otherwise send (task or continuation nudge). */
     promptText: string;
-  }) => { input: AsyncIterable<unknown>; dispose: () => void | Promise<void> };
+  }) => { input: AsyncIterable<unknown>; dispose: () => void | Promise<void>; options?: Record<string, unknown> };
+  /** Hold task output and end-of-stream teardown during an operator pause. */
+  beforeOutput?: () => Promise<boolean>;
   /**
    * Optional callback receiving the live query handle for each attempt
    * (issue #3962).
@@ -293,6 +295,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
     onAttemptHandle,
     cancellation,
     idleSuspended,
+    beforeOutput,
   } = opts;
 
   /** Typed cancellation error, never routed through error-text classification. */
@@ -405,7 +408,13 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
         // what allows a second turn to be delivered into a live attempt. The
         // cast is confined to this Claude-specific helper — the neutral contract
         // never exposes an iterable.
-        effectiveParams = { ...effectiveParams, prompt: attemptInput.input } as typeof queryParams;
+        effectiveParams = {
+          ...effectiveParams,
+          prompt: attemptInput.input,
+          ...(attemptInput.options ? {
+            options: { ...((effectiveParams as { options?: Record<string, unknown> }).options ?? {}), ...attemptInput.options },
+          } : {}),
+        } as typeof queryParams;
       }
 
       // Last check before committing to a query: a cancellation that landed
@@ -468,6 +477,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           }
           // The read resolved, so the next window starts a new one.
           nextMessage = null;
+          if (beforeOutput && !await wait(beforeOutput())) throw cancellationError();
           if (result.done) break;
           // Capture the session id the first time the SDK surfaces it, so a
           // later retry can resume this exact conversation.

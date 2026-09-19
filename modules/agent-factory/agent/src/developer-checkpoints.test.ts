@@ -145,6 +145,7 @@ describe('pause barrier hook registration', () => {
     // Typed to accept its input so the registration test can assert what each stop
     // event actually delivered; a zero-arg mock records no arguments to check.
     onStop: jest.fn(async (_input?: unknown) => ({})),
+    dispose: jest.fn(),
   });
 
   it('registers the barrier with the timeout the adapter asks for', () => {

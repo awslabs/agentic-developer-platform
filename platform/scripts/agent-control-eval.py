@@ -2249,6 +2249,13 @@ class Driver:
                 f"the pause was released {resume.get('released_count')!r} times, expected exactly 1. "
                 "A double release admits held work twice and makes 'resumed' unreliable as a record"
             )
+        for identity in ("session_id", "attempt_id"):
+            for boundary in ("before", "after"):
+                value = resume.get(f"{identity}_{boundary}")
+                if not isinstance(value, str) or not value.strip():
+                    raise AssertionError(
+                        f"{identity} {boundary} resume was not observed as a non-empty identity"
+                    )
         if resume.get("session_id_before") != resume.get("session_id_after"):
             raise AssertionError(
                 f"the session changed across the pause: {resume.get('session_id_before')!r} → "

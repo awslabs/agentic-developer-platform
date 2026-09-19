@@ -543,6 +543,12 @@ describe.each([CLAUDE_CASE, ECHO_CASE])('control runtime contract — $name', (t
     settle();
   });
 
+  it.each([0, -1, NaN, Infinity, -Infinity])('rejects explicit unsafe pause budget %s', async (timeoutMs) => {
+    const adapter = testCase.make();
+    await testCase.startAttempt(adapter);
+    expect((await adapter.requestPause({ timeoutMs })).outcome).toBe('unavailable');
+  });
+
   it('reports pause unavailable when no safe time remains before the deadline', async () => {
     const now = 1_000_000;
     // Deadline inside the finalization margin: any pause would consume the room

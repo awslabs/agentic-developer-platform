@@ -10,6 +10,8 @@
  */
 
 import * as http from 'http';
+import { PauseGate } from './pause-gate';
+import { applyControlCommand, bindGateTransitionsToStore } from './control-command-apply';
 import { AddressInfo } from 'net';
 import { generateKeyPairSync, sign as cryptoSign, createHash, type KeyObject } from 'crypto';
 import { mkdtempSync, writeFileSync, renameSync, rmSync } from 'fs';
@@ -244,6 +246,66 @@ test('HTTP admission retains the exact proof for online delivery and blocks revo
     allowed = true;
     expect(await store.deliverAuthorized(UUID_A, effect)).toBe(false);
   } finally { await listener.stop(); }
+});
+
+test('signed pause and resume preserve acceptance order across delayed revalidation', async () => {
+  let releasePause!: (allowed: boolean) => void;
+  const slowPause = new Promise<boolean>((resolve) => { releasePause = resolve; });
+  const checked: string[] = [];
+  const handedOff: string[] = [];
+  const gate = new PauseGate({ settleTimeoutMs: 2_000 });
+  const work = await gate.admit('Write');
+  const store = new ControlStateStore({
+    generation: GENERATION, supportedActions: new Set(['pause', 'resume']),
+    revalidate: async (proof) => {
+      checked.push(proof.action);
+      return proof.action === 'pause' ? slowPause : true;
+    },
+  });
+  const unbind = bindGateTransitionsToStore({ gate, store });
+  const listener = new ControlListener({
+    bindAddress: '127.0.0.1', port: await freePort(), token: TOKEN,
+    tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    generation: GENERATION, runId: RUN_ID, envelopeKeys: ENVELOPE_KEYS,
+    store, logger: () => {},
+    executor: async (action, commandId) => {
+      handedOff.push(action);
+      await applyControlCommand({ action, commandId, store, adapter: {
+        requestPause: (options) => gate.requestPause(options),
+        resumeFromPause: async () => { await gate.resume(); },
+      } });
+    },
+  });
+  const started = await listener.start(ENABLED_ENV);
+  if (!started.started) throw new Error('listener failed');
+  try {
+    for (const [action, commandId] of [['pause', UUID_A], ['resume', UUID_B]] as const) {
+      const body = JSON.stringify({ command_id: commandId });
+      expect((await request(started.port, 'POST', `/agent/${action}`, {
+        body, envelope: envelopeFor(action, commandId, body),
+      })).status).toBe(202);
+    }
+    // The later proof would complete immediately if allowed to overtake pause.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(checked).toEqual(['pause']);
+    expect(handedOff).toEqual([]);
+    releasePause(true);
+    for (let i = 0; i < 100 && store.lookup(UUID_B).status !== 'applied'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(handedOff).toEqual(['pause', 'resume']);
+    expect(gate.currentPhase()).toBe('running');
+    expect(store.snapshot().state).toBe('running');
+    expect(store.lookup(UUID_A).status).toBe('cancelled');
+    expect(store.lookup(UUID_B).status).toBe('applied');
+    expect(gate.activeToolCount()).toBe(1); // resume did not wait for tool settlement
+  } finally {
+    releasePause(false);
+    gate.settle(work.ticket);
+    gate.cancel();
+    unbind();
+    await listener.stop();
+  }
 });
 
 describe('live credential rotation', () => {

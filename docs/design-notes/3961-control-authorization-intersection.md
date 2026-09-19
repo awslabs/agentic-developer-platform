@@ -1,5 +1,33 @@
 # #3961 — The control-authorization intersection: two callers, one gate
 
+
+## Pause lifecycle corrections — 2026-09-19
+
+Independent review found additional runtime/evaluator defects after the initial
+background-observer repair. The query wrapper now holds task output and terminal
+teardown through the neutral pause gate, keeping the current attempt and listener
+alive until release, expiry or cancellation. Each retry constructs fresh hook
+callbacks bound to its opaque attempt identity. Superseded callbacks cannot settle
+replacement tickets or change their background observations; unobserved work from
+a retired attempt remains uncertain.
+
+A Bash invocation may detach OS children regardless of `run_in_background`.
+After any admitted Bash, this SDK cannot prove descendant quiescence. Its
+`background_tasks` list covers SDK-managed tasks and cannot clear that separate
+uncertainty. The gate therefore reports requested/unavailable rather than paused
+for that run. Shell-free work can still confirm a pause. A future descendant
+observer must supply real process-lifecycle evidence before this restriction can
+be removed; a command-string heuristic or an empty SDK task list is insufficient.
+
+The public store now shows `pause_requested` when admission closes, before waiting
+for running tools. Explicit nonpositive/nonfinite budgets are refused. The Wave-2
+evaluator requires non-empty session and attempt identities, and the standalone
+SDK resume fixture now uses the production adapter and query wrapper to measure
+those identities, held-tool admission, and resume ordering. These corrections do
+not constitute deployed live acceptance or relax Option A.
+
+The listener serializes signed-command revalidation and executor handoff in journal acceptance order. It does not hold that queue while a pause waits for tool settlement, so a later resume can cancel the delivered pause promptly. Gate transitions settle delivered commands only; queued commands have not yet passed delivery authorization. A cancelled pause's late result cannot overwrite a newer pause or the journal's cancellation. The shared echo contract also rejects explicit zero, negative, and nonfinite budgets. The retained SDK fixture includes a loopback HTTP service whose request counter must stay zero during the hold and reach one after resume.
+
 ## Implementation update — #5222, 2026-09-19
 
 The signed envelope now distinguishes `human_session` from `delegated_grant`.

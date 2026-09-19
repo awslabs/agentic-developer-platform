@@ -443,7 +443,7 @@ jobs:
           npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             src/sigv4-proxy.identity.test.ts src/beads-s3-config.test.ts \
             src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
-            src/token-init-guard.test.ts \
+            src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -453,6 +453,8 @@ jobs:
             --collectCoverageFrom='src/control-revalidation.ts' \
             --collectCoverageFrom='src/lib/runIdentity.ts' \
             --collectCoverageFrom='src/control-runtime.ts' \
+            --collectCoverageFrom='src/pause-gate.ts' \
+            --collectCoverageFrom='src/control-command-apply.ts' \
             --collectCoverageFrom='src/harnesses/claude-control.ts' \
             --collectCoverageFrom='src/utils/resilientQuery.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \

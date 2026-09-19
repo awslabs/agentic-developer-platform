@@ -211,7 +211,9 @@ export interface ClaudeSessionHandle {
  * a delegating tool whose child keeps working after the parent returns.
  */
 function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
-  if (toolName === 'Task' || toolName === 'Agent') return true;
+  // A shell can detach arbitrary descendants without run_in_background. Only
+  // a process-level supervisor could establish quiescence after such work.
+  if (toolName === 'Bash' || toolName === 'Task' || toolName === 'Agent') return true;
   if (toolInput === null || typeof toolInput !== 'object') return false;
   const input = toolInput as { run_in_background?: unknown };
   return input.run_in_background === true;
@@ -224,12 +226,13 @@ function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
  * question is when this observer is *entitled* to say zero. Three states, and the
  * ordering between them is the entire content of this class:
  *
- * - No harness-declared background work has been admitted → `0`. This observer
- *   cannot detect shell-level detachment (`nohup`, `setsid`, daemonizing children)
- *   that does not set `run_in_background` or use a delegating `Task`/`Agent`.
- * - Something did, and a `Stop`/`SubagentStop` has reported `background_tasks`
- *   *since* then → that reported count.
- * - Something did, and no report has arrived since → `null`.
+ * - No shell or delegating/background tool has been admitted → `0`.
+ *   Every Bash is potentially detached work; its flags cannot establish that
+ *   descendants stopped. SDK background task reports cannot inventory arbitrary
+ *   OS children, so a run that has executed Bash cannot confirm a pause.
+ * - Delegating/background work (without Bash) was admitted, and a
+ *   `Stop`/`SubagentStop` reports `background_tasks` since then → that count.
+ * - Shell work was admitted, or delegated work has no fresh report → `null`.
  *
  * The third case is the one worth being pedantic about. A backgrounded `Bash`
  * returns to the model immediately while its process keeps writing; a `Task`
@@ -241,14 +244,19 @@ function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
  */
 export class ClaudeBackgroundWorkObserver {
   private readonly counts = new Map<string | null, number | null>();
+  private readonly shellScopes = new Set<string | null>();
 
   /** Note a tool call that may leave work running behind it. */
   noteToolStart(toolName: string, toolInput: unknown, scope: string | null = null): void {
+    if (toolName === 'Bash') this.shellScopes.add(scope);
     if (requestsBackgroundWork(toolName, toolInput)) this.counts.set(scope, null);
   }
 
   /** Record a `Stop`/`SubagentStop` report of in-flight background work. */
   noteBackgroundReport(tasks: unknown, scope: string | null = null): void {
+    // background_tasks inventories SDK-managed tasks, not arbitrary daemonized
+    // descendants of a shell. It cannot clear that separate uncertainty.
+    if (this.shellScopes.has(scope)) return;
     if (Array.isArray(tasks)) {
       this.counts.set(scope, tasks.length);
     } else if (this.counts.has(scope)) {
@@ -296,6 +304,8 @@ export interface ClaudePauseHooks {
   postToolUse(input: HookInput): Promise<Record<string, unknown>>;
   /** `Stop` / `SubagentStop`: observe background work behind finished tools. */
   onStop(input: HookInput): Promise<Record<string, unknown>>;
+  /** Retire this attempt's hooks; late callbacks cannot touch replacement work. */
+  dispose(): void;
 }
 
 /**
@@ -314,6 +324,7 @@ export interface ClaudePauseHooks {
 export function createClaudePauseHooks(
   gate: PauseGate,
   observer: ClaudeBackgroundWorkObserver = new ClaudeBackgroundWorkObserver(),
+  ownership: { isCurrent?: () => boolean; scopePrefix?: string } = {},
 ): ClaudePauseHooks {
   /**
    * tool_use_id → the admission it holds, plus the thread that opened it.
@@ -326,6 +337,8 @@ export function createClaudePauseHooks(
    * `Paused`, which is the one claim this whole mechanism exists to never make.
    */
   const outstanding = new Map<string, { ticket: AdmissionTicket; scope: string | null }>();
+  let disposed = false;
+  const isCurrent = () => !disposed && (ownership.isCurrent?.() ?? true);
 
   const toolFields = (input: HookInput) =>
     input as unknown as { tool_name?: string; tool_input?: unknown; tool_use_id?: string };
@@ -339,8 +352,14 @@ export function createClaudePauseHooks(
    * types it as required. So reading the same optional field on `PreToolUse`, `Stop`
    * and `SubagentStop` scopes all three consistently, with no branch on event name.
    */
-  const scopeOf = (input: HookInput): string | null =>
-    (input as unknown as { agent_id?: string }).agent_id ?? null;
+  const scopeOf = (input: HookInput): string | null => {
+    const scope = (input as unknown as { agent_id?: string }).agent_id ?? null;
+    return ownership.scopePrefix === undefined ? scope : JSON.stringify([ownership.scopePrefix, scope]);
+  };
+
+  const denied = () => ({ hookSpecificOutput: {
+    hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'attempt is no longer current',
+  } });
 
   return {
     // Ceiling plus a margin, converted to the seconds the matcher expects. The
@@ -350,6 +369,7 @@ export function createClaudePauseHooks(
     preToolUseTimeoutSeconds: Math.ceil(gate.maxParkDurationMs() / 1000) + PAUSE_HOOK_TIMEOUT_MARGIN_SECONDS,
 
     async preToolUse(input, toolUseId, options) {
+      if (!isCurrent()) return denied();
       const fields = toolFields(input);
       const toolName = fields.tool_name ?? 'tool';
 
@@ -359,6 +379,10 @@ export function createClaudePauseHooks(
       // why the gate treats an aborted park as a breached barrier rather than as
       // a tool that politely declined to run.
       const result = await gate.admit(toolName, options?.signal);
+      if (!isCurrent()) {
+        gate.settle(result.ticket);
+        return denied();
+      }
       const id = fields.tool_use_id ?? toolUseId;
       if (result.decision === 'admit') {
         observer.noteToolStart(toolName, fields.tool_input, scopeOf(input));
@@ -378,6 +402,7 @@ export function createClaudePauseHooks(
     },
 
     async postToolUse(input) {
+      if (!isCurrent()) return {};
       const fields = toolFields(input);
       const id = fields.tool_use_id;
       if (!id) return {};
@@ -391,6 +416,7 @@ export function createClaudePauseHooks(
     },
 
     async onStop(input) {
+      if (!isCurrent()) return {};
       const stop = input as unknown as { background_tasks?: unknown };
       observer.noteBackgroundReport(stop.background_tasks, scopeOf(input));
       // A background report is a quiescence edge in its own right: a pause held back
@@ -413,6 +439,16 @@ export function createClaudePauseHooks(
       }
       return {};
     },
+    dispose() {
+      disposed = true;
+      for (const entry of outstanding.values()) {
+        // Closing a transport is not proof that its unobserved descendants died.
+        // Retire only its own foreground tickets and retain unknown background.
+        observer.noteToolStart('Bash', {}, entry.scope);
+        gate.settle(entry.ticket);
+      }
+      outstanding.clear();
+    },
   };
 }
 
@@ -431,6 +467,7 @@ export interface ClaudeControlAdapterOptions {
    * `PreToolUse`/`PostToolUse` translation.
    */
   pauseGate?: PauseGate;
+  backgroundWorkObserver?: ClaudeBackgroundWorkObserver;
 }
 
 /**
@@ -542,6 +579,7 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
   private readonly implementedVerbs: ReadonlySet<ControlAction>;
   private readonly log: (msg: string) => void;
   private readonly pauseGate?: PauseGate;
+  private readonly backgroundWorkObserver: ClaudeBackgroundWorkObserver;
   /** The channel for the attempt currently being built, before its handle exists. */
   private pendingChannel: AttemptInputChannel | null = null;
   private activeChannel: AttemptInputChannel | null = null;
@@ -552,6 +590,7 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
     this.implementedVerbs = options.implementedVerbs ?? IMPLEMENTED_CONTROL_VERBS;
     this.log = options.log ?? (() => {});
     this.pauseGate = options.pauseGate;
+    this.backgroundWorkObserver = options.backgroundWorkObserver ?? new ClaudeBackgroundWorkObserver();
     this.registry.cancellationSignal.addEventListener('abort', () => {
       this.activeChannel?.close();
       // Deny anything held at the barrier. An abort that flushed its parked tools
@@ -729,9 +768,10 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
    * Seeds the effective task or continuation prompt exactly once because the
    * iterable replaces queryParams.prompt. Later operator input is never buffered.
    */
-  attemptInputFactory(): (context: { attemptNumber: number; isResume: boolean; promptText: string }) => {
+  attemptInputFactory(buildOptions?: (hooks: ClaudePauseHooks) => Record<string, unknown>): (context: { attemptNumber: number; isResume: boolean; promptText: string }) => {
     input: AsyncIterable<unknown>;
     dispose: () => Promise<void>;
+    options?: Record<string, unknown>;
   } {
     return (context) => {
       this.pendingChannel?.close();
@@ -739,14 +779,20 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
         context.promptText ? toSdkUserMessage({ kind: 'steering', text: context.promptText }) : undefined,
       );
       this.pendingChannel = channel;
+      const hooks = this.pauseGate && buildOptions ? createClaudePauseHooks(this.pauseGate, this.backgroundWorkObserver, {
+        scopePrefix: channel.attemptId,
+        isCurrent: () => !channel.isClosed() && (this.pendingChannel === channel || this.activeChannel === channel),
+      }) : undefined;
       this.log(
         `claude adapter: fresh input channel for attempt ${context.attemptNumber}` +
           `${context.isResume ? ' (true resume)' : ' (initial/fallback)'}`,
       );
       return {
         input: channel.iterable(),
+        ...(hooks ? { options: buildOptions!(hooks) } : {}),
         dispose: async () => {
           channel.close();
+          hooks?.dispose();
           if (this.pendingChannel === channel) this.pendingChannel = null;
           await this.pendingAttach;
           await this.registry.detachCurrent(channel.attemptId);

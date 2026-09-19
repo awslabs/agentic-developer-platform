@@ -39,7 +39,7 @@ import type { PauseGate } from './pause-gate';
  */
 export function bindGateTransitionsToStore(args: {
   gate: Pick<PauseGate, 'subscribe' | 'activeToolCount'>;
-  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'pending' | 'setActiveToolCount'>;
+  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'setActiveToolCount'>;
   log?: (level: string, message: string, context?: Record<string, unknown>) => void;
 }): () => void {
   const { gate, store } = args;
@@ -54,13 +54,16 @@ export function bindGateTransitionsToStore(args: {
 
   /** Settle whichever pause command is still awaiting an outcome, if any. */
   const settlePendingPause = (status: 'applied' | 'rejected', reason: string) => {
-    for (const pending of store.pending()) {
+    for (const pending of store.snapshot().commands.filter((command) => command.status === 'delivered')) {
       if (pending.action === 'pause') store.settle(pending.command_id, status, reason);
     }
   };
 
   return gate.subscribe((event) => {
     switch (event.type) {
+      case 'pause_requested':
+        store.setPhase('pause_requested');
+        return;
       case 'active_work':
         // Report the barrier's own count, and only the barrier's: `0` here is a
         // quiescence claim and the gate is the only thing entitled to make it.
@@ -103,11 +106,23 @@ export async function applyControlCommand(args: {
   action: ControlAction;
   commandId: string;
   adapter: Pick<ClaudeControlAdapter, 'requestPause' | 'resumeFromPause'>;
-  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'pending'>;
+  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup'>;
   log?: (level: string, message: string, context?: Record<string, unknown>) => void;
 }): Promise<void> {
   const { action, commandId, adapter, store } = args;
   const log = args.log ?? (() => {});
+
+  // Capture only commands handed off before this one. A later queued pause is
+  // a new intent and must not be cancelled by an earlier resume's completion.
+  const preceding = store.snapshot().commands;
+  const commandIndex = preceding.findIndex((command) => command.command_id === commandId);
+  const earlierPauses = preceding.slice(0, commandIndex).filter((command) =>
+    command.action === 'pause' && command.status === 'delivered');
+  const isLatestDelivered = () => {
+    const commands = store.snapshot().commands;
+    const index = commands.findIndex((command) => command.command_id === commandId);
+    return index >= 0 && !commands.slice(index + 1).some((command) => command.delivered_at !== null);
+  };
 
   if (action === 'resume') {
     await adapter.resumeFromPause();
@@ -115,12 +130,12 @@ export async function applyControlCommand(args: {
     // `applied`: an operator who paused and changed their mind before the barrier
     // settled did not get a pause, and the journal is the record they will read
     // back. `cancelled` also distinguishes this from a pause the gate refused.
-    for (const pending of store.pending()) {
+    for (const pending of earlierPauses) {
       if (pending.action === 'pause' && pending.command_id !== commandId) {
         store.settle(pending.command_id, 'cancelled', 'resumed before the pause was confirmed');
       }
     }
-    store.setPhase('running');
+    if (isLatestDelivered()) store.setPhase('running');
     store.settle(commandId, 'applied', 'run resumed');
     log('INFO', 'control: run resumed', { command_id: commandId });
     return;
@@ -137,22 +152,25 @@ export async function applyControlCommand(args: {
   }
 
   const result = await adapter.requestPause();
+  // A resume may have cancelled this command while quiescence was pending.
+  // Its late result must not overwrite either that journal outcome or a new pause.
+  if (store.lookup(commandId).status !== 'delivered') return;
   if (result.outcome === 'confirmed') {
-    store.setPhase('paused');
+    if (isLatestDelivered()) store.setPhase('paused');
     store.settle(commandId, 'applied', 'no new tool action can start');
     log('INFO', 'control: pause confirmed', { command_id: commandId });
     return;
   }
   if (result.outcome === 'requested') {
     // Phase only — the command stays pending. See the doc comment above.
-    store.setPhase('pause_requested');
+    if (isLatestDelivered()) store.setPhase('pause_requested');
     log('INFO', 'control: pause requested, awaiting quiescence', { command_id: commandId });
     return;
   }
   // `unavailable`. The phase goes back to `running` because that is the truth:
   // admission was reopened (or never closed), so the run is not paused and must
   // not be displayed as pausing.
-  store.setPhase('running');
+  if (isLatestDelivered()) store.setPhase('running');
   store.settle(commandId, 'rejected', result.reason);
   log('WARN', 'control: pause unavailable', { command_id: commandId, detail: result.reason });
 }
