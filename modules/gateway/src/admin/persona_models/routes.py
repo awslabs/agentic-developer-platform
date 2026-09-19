@@ -23,7 +23,7 @@ from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
-from . import service
+from . import catalogue_routes, service
 from .schemas import (
     AliasResponse,
     ConflictResponse,
@@ -176,6 +176,25 @@ async def set_service_principal_preference(
     )
     principal_source = alias.alias_source if alias else "sa_registration"
 
+    # Resolve the administered service principal's destination, never the
+    # human administrator's user/team destination. There is no service-specific
+    # mapping rung today, so the target is eligible only for its org/platform
+    # rungs and cannot accidentally collide with a users.id value.
+    target_context = current_user.model_copy(
+        update={
+            "user_id": canonical_id,
+            "team_id": "",
+            "department_id": "",
+            "account_type": "service",
+            "canonical_service_principal_id": canonical_id,
+        }
+    )
+    account_id, region = await catalogue_routes.resolve_effective_destination(
+        db,
+        target_context,
+        routing_user_id="",
+    )
+
     try:
         row = await service.set_preference(
             db,
@@ -188,6 +207,9 @@ async def set_service_principal_preference(
             expected_revision=request.expected_revision,
             actor_id=admin_id,
             actor_source="self",
+            validation_account_id=account_id,
+            validation_region=region,
+            validation_principal_status=target.status,
         )
     except service.PreferenceConflictError as exc:
         platform_default = await service.get_platform_default(db)

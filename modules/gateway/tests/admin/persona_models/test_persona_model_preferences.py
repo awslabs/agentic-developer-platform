@@ -98,7 +98,7 @@ import asyncio
 import os
 import re
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -348,7 +348,18 @@ def _set_context(client: AsyncClient, ctx: TokenContext):
 def _patch_validator():
     """Patch the fail-closed validator to accept any non-empty model (for tests that need writes)."""
 
-    async def _accept(db, *, org_id, principal_kind, canonical_principal_id, persona_key, model):
+    async def _accept(
+        db,
+        *,
+        org_id,
+        principal_kind,
+        canonical_principal_id,
+        persona_key,
+        model,
+        account_id=None,
+        region=None,
+        principal_status=None,
+    ):
         return model.strip()
 
     return patch("src.admin.persona_models.service.validate_model_for_persona", side_effect=_accept)
@@ -730,15 +741,42 @@ async def test_ac06_kind_conflict(engine):
 
 @pytest.mark.asyncio
 async def test_ac07_fail_closed_rejects_all_writes(client: AsyncClient):
-    """AC-07: The fail-closed stub refuses every write with probing_disabled.
+    """AC-07: The integrated validator refuses unproven writes.
 
     This is the production code path — no patches.  No row is stored.
     """
-    resp = await client.put("/me/persona-models/developer", json={"model": "us.anthropic.claude-opus-4-6"})
+    resp = await client.put("/me/persona-models/developer", json={"model": "global.anthropic.claude-opus-4-6-v1"})
     assert resp.status_code == 422
     detail = resp.json()["detail"]
     assert detail["reason"] == "probing_disabled"
-    assert "PMM-03" in detail["message"] or "probing" in detail["message"].lower()
+    assert "evidence" in detail["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_pmm03_save_validation_receives_resolved_destination(client: AsyncClient):
+    """The PMM-02 save path must validate against the caller's destination."""
+    destination = AsyncMock(return_value=("111111111111", "eu-west-1"))
+    validator = AsyncMock(return_value="global.anthropic.claude-opus-4-6-v1")
+
+    with (
+        patch(
+            "src.admin.persona_models.catalogue_routes.resolve_effective_destination",
+            destination,
+        ),
+        patch(
+            "src.admin.persona_models.service.validate_model_for_persona",
+            validator,
+        ),
+    ):
+        resp = await client.put(
+            "/me/persona-models/developer",
+            json={"model": "global.anthropic.claude-opus-4-6-v1"},
+        )
+
+    assert resp.status_code == 200
+    assert validator.await_args.kwargs["account_id"] == "111111111111"
+    assert validator.await_args.kwargs["region"] == "eu-west-1"
+    assert validator.await_args.kwargs["principal_status"] is None
 
 
 @pytest.mark.asyncio
@@ -930,12 +968,32 @@ async def test_ac10_admin_in_tenant_succeeds(client: AsyncClient, engine):
     resp = await client.get(f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models")
     assert resp.status_code == 200
 
-    with _patch_validator():
+    destination = AsyncMock(return_value=("222222222222", "us-west-2"))
+    validator = AsyncMock(return_value="us.anthropic.claude-opus-4-6")
+    with (
+        patch(
+            "src.admin.persona_models.catalogue_routes.resolve_effective_destination",
+            destination,
+        ),
+        patch(
+            "src.admin.persona_models.service.validate_model_for_persona",
+            validator,
+        ),
+    ):
         resp = await client.put(
             f"/service-principals/{TEST_SP_CANONICAL_ID}/persona-models/developer",
             json={"model": "us.anthropic.claude-opus-4-6"},
         )
         assert resp.status_code == 200
+
+    routing_context = destination.await_args.args[1]
+    assert routing_context.canonical_service_principal_id == TEST_SP_CANONICAL_ID
+    assert routing_context.account_type == "service"
+    assert routing_context.team_id == ""
+    assert destination.await_args.kwargs["routing_user_id"] == ""
+    assert validator.await_args.kwargs["account_id"] == "222222222222"
+    assert validator.await_args.kwargs["region"] == "us-west-2"
+    assert validator.await_args.kwargs["principal_status"] == "active"
 
     # Audit is distinct from self-changes
     factory = async_sessionmaker(engine, expire_on_commit=False)

@@ -198,6 +198,19 @@ async def set_my_preference(
     before = await service.get_preference(db, org_id=current_user.org_id, principal_kind=kind, principal_id=pid, persona_key=persona_key)
     before_model = before.canonical_model_id if before else None
 
+    # Validation evidence is destination-specific. Resolve it from the same
+    # authenticated principal that owns the preference; service principals do
+    # not inherit a human user-rung mapping, so skip that rung explicitly.
+    # Local import avoids coupling the PMM-02 route module's import lifecycle
+    # to the additive PMM-03 catalogue router.
+    from .catalogue_routes import resolve_effective_destination
+
+    account_id, region = await resolve_effective_destination(
+        db,
+        current_user,
+        routing_user_id="" if kind == "service_account" else None,
+    )
+
     try:
         row = await service.set_preference(
             db,
@@ -210,6 +223,9 @@ async def set_my_preference(
             expected_revision=request.expected_revision,
             actor_id=pid,
             actor_source=source,
+            validation_account_id=account_id,
+            validation_region=region,
+            validation_principal_status="active" if kind == "service_account" else None,
         )
     except service.PreferenceConflictError as exc:
         platform_default = await service.get_platform_default(db)

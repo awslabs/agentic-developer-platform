@@ -857,7 +857,9 @@ class TestRealPostgres:
             cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
             restored = {row[0] for row in cursor.fetchall()}
             cursor.execute("SELECT version_num FROM alembic_version")
-            assert cursor.fetchone()[0] == MIG_056.revision
+            # PMM-03 adds two linear successors in this integration branch, so
+            # an upgrade to ``head`` must advance through 056 and finish at 058.
+            assert cursor.fetchone()[0] == "058_model_probe_admission"
             cursor.execute(f"SELECT COUNT(*) FROM {SETTINGS}")
             assert cursor.fetchone()[0] == 1, "re-upgrade must re-seed exactly one settings row"
 

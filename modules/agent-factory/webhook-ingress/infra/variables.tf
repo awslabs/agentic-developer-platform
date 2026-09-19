@@ -299,6 +299,38 @@ variable "agent_image_prepull_enabled" {
 }
 
 # -----------------------------------------------------------------------------
+# Persona/model invocability probe (PMM-03 / #5420)
+# -----------------------------------------------------------------------------
+
+variable "persona_model_probe_enabled" {
+  description = "Enable the scheduled Claude Agent SDK invocability probe. Ships false; PMM-09 may enable it only after the destination account and spend ceiling are approved."
+  type        = bool
+  default     = false
+}
+
+variable "persona_model_probe_schedule" {
+  description = "UTC cron schedule for the server-side invocability-probe tick. The CronJob is suspended while persona_model_probe_enabled is false."
+  type        = string
+  default     = "17 2 * * *"
+
+  validation {
+    condition     = length(trimspace(var.persona_model_probe_schedule)) > 0
+    error_message = "persona_model_probe_schedule must be a non-empty Kubernetes CronJob schedule."
+  }
+}
+
+variable "persona_model_probe_deadline_seconds" {
+  description = "Hard wall-clock deadline for one scheduled probe tick."
+  type        = number
+  default     = 180
+
+  validation {
+    condition     = var.persona_model_probe_deadline_seconds >= 30 && var.persona_model_probe_deadline_seconds <= 600
+    error_message = "persona_model_probe_deadline_seconds must be between 30 and 600 seconds."
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Knowledge Layer (Issue #3286)
 # -----------------------------------------------------------------------------
 
