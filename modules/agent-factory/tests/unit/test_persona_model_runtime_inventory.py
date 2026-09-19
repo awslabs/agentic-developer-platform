@@ -93,11 +93,23 @@ def test_wired_queue_paths_reach_gateway_authority_and_blocked_paths_stay_visibl
         ROOT / "modules/gateway/src/orchestration/work_admission.py"
     ).read_text()
 
-    # These assertions intentionally keep the incomplete paths visible.
-    # Removing a bypass without wiring its authority is not completion.
-    assert 'envelope.get("channel") == "gitlab"' in publisher
-    for blocked in ("gitlab", "chat", "arc_github_actions"):
-        assert _inventory()["invocation_paths"][blocked]["state"] == "blocked", blocked
+    for path in ("gitlab", "chat", "arc_github_actions"):
+        row = _inventory()["invocation_paths"][path]
+        assert row["state"] == "wired_report_only", path
+        assert (ROOT / row["verified_by"]).is_file(), path
+    assert "register_model_root" in publisher
+
+
+def test_all_nine_arc_workflows_preflight_and_enable_the_per_launch_guard():
+    workflows = [path for path in _inventory()["literal_files"]["persona_execution_legacy"] if path.startswith(".github/workflows/")]
+    assert len(workflows) == 9
+    for path in workflows:
+        text = (ROOT / path).read_text()
+        assert "id-token: write" in text
+        assert "ADP_ARC_MODEL_POLICY_ENABLED" in text
+        assert "ADP_AGENT_CONTROL_ENDPOINT" in text
+        assert text.index("npx ts-node src/arc-model-preflight.ts") < text.rindex("npx ts-node src/")
+
 
 
 def test_the_orchestration_path_attaches_its_snapshot_before_it_publishes():

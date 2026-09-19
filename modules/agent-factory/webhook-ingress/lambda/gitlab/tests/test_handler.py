@@ -129,9 +129,7 @@ class TestTokenValidation:
             "_resolve_webhook_secret",
             return_value=h.PLACEHOLDER_WEBHOOK_SECRET,
         ):
-            assert h._validate_token(
-                {"x-gitlab-token": h.PLACEHOLDER_WEBHOOK_SECRET}
-            ) is False
+            assert h._validate_token({"x-gitlab-token": h.PLACEHOLDER_WEBHOOK_SECRET}) is False
 
 
 class TestEventParsing:
@@ -179,7 +177,10 @@ class TestEventParsing:
 
         h._webhook_secret = None
 
-        payload = {"object_kind": "push", "project": {"id": 1, "path_with_namespace": "a/b", "web_url": ""}}
+        payload = {
+            "object_kind": "push",
+            "project": {"id": 1, "path_with_namespace": "a/b", "web_url": ""},
+        }
         event = _make_event(payload)
 
         with patch.object(h, "_get_sqs_publisher") as publisher:
@@ -372,3 +373,52 @@ class TestMalformedInput:
             result = h.handler(event, None)
 
         assert result["statusCode"] == 200
+
+
+def test_protected_gitlab_binds_project_secret_and_immutable_user_before_publish(monkeypatch):
+    import gitlab.handler as h
+
+    secret = "project-secret-" + "a" * 32
+    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "true")
+    monkeypatch.setattr(
+        h,
+        "_webhook_secret",
+        json.dumps([{"instance": "https://gitlab.example", "project_id": 123, "token": secret}]),
+    )
+    payload = _sample_note_payload()
+    payload["user"]["id"] = 42
+    with patch.object(h, "_get_sqs_publisher") as sqs:
+        sqs.return_value.publish_envelope.return_value = "published"
+        assert h.handler(_make_event(payload, token=secret), None)["statusCode"] == 200
+        args, kwargs = sqs.return_value.publish_envelope.call_args
+        assert args[0]["message_id"]
+        assert kwargs["model_root"] == {
+            "source": "gitlab",
+            "subject": "42",
+            "instance": "https://gitlab.example",
+            "project_id": 123,
+        }
+        sqs.reset_mock()
+        payload["project"]["id"] = 456
+        assert h.handler(_make_event(payload, token=secret), None)["statusCode"] == 403
+        sqs.assert_not_called()
+
+
+def test_protected_gitlab_refuses_shared_legacy_secret_or_missing_immutable_human(monkeypatch):
+    import gitlab.handler as h
+
+    monkeypatch.setenv("ADP_GITLAB_MODEL_POLICY_ENABLED", "true")
+    monkeypatch.setattr(h, "_webhook_secret", GITLAB_SECRET)
+    with patch.object(h, "_get_sqs_publisher") as sqs:
+        assert h.handler(_make_event(_sample_note_payload()), None)["statusCode"] == 401
+        sqs.assert_not_called()
+    secret = "a" * 32
+    monkeypatch.setattr(
+        h,
+        "_webhook_secret",
+        json.dumps([{"instance": "https://gitlab.example", "project_id": 123, "token": secret}]),
+    )
+    with patch.object(h, "_get_sqs_publisher") as sqs:
+        result = h.handler(_make_event(_sample_note_payload(), token=secret), None)
+        assert result["statusCode"] == 403
+        sqs.return_value.publish_envelope.assert_not_called()

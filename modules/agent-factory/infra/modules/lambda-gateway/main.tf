@@ -23,11 +23,13 @@ resource "aws_lambda_function" "ingest" {
 
   environment {
     variables = {
-      INPUT_QUEUE_URL     = var.input_queue_url
-      RESPONSE_QUEUE_URL  = var.response_queue_url
-      SESSIONS_TABLE_NAME = var.sessions_table_name
-      AWS_REGION_NAME     = var.aws_region
-      CLASSIFIER_MODEL    = var.classifier_model
+      ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.model_policy_enabled)
+      ADP_AGENT_CONTROL_ENDPOINT    = var.model_control_endpoint
+      INPUT_QUEUE_URL               = var.input_queue_url
+      RESPONSE_QUEUE_URL            = var.response_queue_url
+      SESSIONS_TABLE_NAME           = var.sessions_table_name
+      AWS_REGION_NAME               = var.aws_region
+      CLASSIFIER_MODEL              = var.classifier_model
       # GH App secret prefix for the github_actions dispatch path (ARC runner
       # path). The ingest Lambda uses the "ops" persona specifically — it has
       # write perms for issues/labels on the target repo. Secrets are stored at
@@ -419,4 +421,22 @@ resource "aws_cloudwatch_log_group" "response" {
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn
   tags              = var.tags
+}
+
+# No queue, authority-table or signing-key access is added. Only the registered
+# ingress can use its body-bound STS proof at this exact admission endpoint.
+resource "aws_iam_role_policy" "ingest_model_root" {
+  count = var.model_policy_enabled ? 1 : 0
+  name  = "model-root-admission"
+  role  = aws_iam_role.ingest.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = ["execute-api:Invoke"], Resource = [var.model_root_admission_arn] }]
+  })
+  lifecycle {
+    precondition {
+      condition     = var.model_root_admission_arn != "" && var.model_control_endpoint != ""
+      error_message = "Register the ingress role and exact gateway endpoint before enabling chat policy."
+    }
+  }
 }

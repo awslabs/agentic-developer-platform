@@ -1638,3 +1638,83 @@ the SDK boundary may substitute it. A subsequent report_only rollback therefore
 restores the original assignment, including on retries in an existing process.
 Posture reads use an independent database connection and never expose pending
 settings edits from the request transaction.
+
+## External root and runtime implementation (2026-09-19)
+
+The executable inventory is `modules/agent-factory/persona-model-runtime-inventory.json`.
+The former GitLab, chat and ARC implementation gaps are wired behind explicit
+rollout switches. These switches are deployment controls, not the runtime
+posture: each enabled SDK launch reads the committed gateway posture afresh.
+Nothing in this PR activates a default, enables probes or changes agent_models.
+
+Chat ingest registers the authenticated human with the gateway before SQS
+publication. Deployment-owned `ADP_MODEL_ROOT_BINDINGS` maps the producer role,
+source, tenant and permitted personas. The response supplies the final canonical
+queue bytes; the worker hashes those exact bytes. Chat admission verifies a
+projected `adp-agent-bootstrap` token, the live pod/container/image and its
+immutable run binding. It then uses the same live selector and signed response
+as the repository worker. Public Ed25519 keys are discovered only at the
+configured HTTPS gateway origin. Each retry repeats admission.
+
+GitLab protected ingress requires a JSON list in its existing webhook secret,
+with a distinct high-entropy `token`, trusted HTTPS `instance` and immutable
+`project_id` for each project. A global shared token cannot establish a
+multi-tenant root. The gateway maps verified instance-qualified numeric GitLab
+user IDs (`https://instance#123`) to canonical humans. Migration 059 adds the
+provider constraint; rollback refuses existing GitLab identities without
+deleting them. Root admission precedes publication and a failed admission
+publishes nothing. The GitLab worker currently acknowledges and creates a
+branch: it has no inference harness to claim as tested. Model policy is frozen
+for that root, but this PR does not turn the spike into a model-executing agent.
+
+All nine ARC workflows include an authority preflight and per-launch SDK guard.
+`ADP_ARC_MODEL_BINDINGS` registers exact repository ID/name, workflow ref,
+optional reusable-workflow ref, runner role, tenant and persona. The runner's
+STS proof binds the full request, including the GitHub OIDC token and nonce.
+GitHub's verified actor ID supplies a human root for direct human events;
+reusable/scheduled events require an active canonical `github_actions` service
+alias. Revocation, unregistered workflows, invalid OIDC and cross-run responses
+refuse. No internal shared key or caller-supplied principal grants authority.
+
+The superseded Python chat consumer uses AnthropicBedrock/boto3, not the Claude
+Agent SDK. Ingest now publishes only to the TypeScript FIFO consumer. The legacy
+consumer preserves its raw model under disabled/report_only, but when opted into
+the chat rollout it checks committed gateway posture before either raw API call
+and refuses enforcing. Drain/retire that standard queue before PMM-09; do not
+record raw API success as harness evidence.
+
+### Source configuration and operator rollout
+
+The older "No new IAM" statement assumed a data-only local resolver and does
+not describe the approved remote authority integration. The implementation
+therefore includes **optional, exact-endpoint producer grants** for chat and
+GitLab, plus gateway pod/job GET access in the chat namespace. No broad grant,
+worker authority-table write or signing-secret access is added. This is source
+preparation only: the webhook infrastructure hold remains in force, and no
+Terraform/IAM apply is part of local PR closure.
+
+Deploy the gateway and migration first. Populate reviewed producer and ARC
+bindings, and the chat image-digest allowlist, through deployment SSM parameters `gateway/model-root-bindings`,
+`gateway/arc-model-bindings` and `gateway/chat-authority-worker-images`. Both
+gateway renderers validate and quote these into the ConfigMap; absent values
+refuse unregistered callers. Review the
+narrow producer/RBAC plan separately. Deploy producers and workers with their
+matching registrations before enabling `ADP_CHAT_MODEL_POLICY_ENABLED` or
+`ADP_GITLAB_MODEL_POLICY_ENABLED`. ARC uses repository variable
+`ADP_ARC_MODEL_POLICY_ENABLED=true` and `ADP_ARC_MODEL_CONTROL_ENDPOINT` ending
+`/internal/v1/agent/arc`. Chat uses `/agent/internal/v1/agent` so its existing
+worker Invoke permission applies; the ingest grant is the exact POST ARN for
+`/agent/internal/v1/agent/roots/admit`. The chat deployment script projects the
+audience token and applies its narrow verifier Role only when opted in.
+
+Before enforcement, verify every enabled path and retire legacy raw consumers;
+a partially opted-in fleet is not enforcement readiness. A code merge and mock
+invocability records are not live proof. PMM-09 still owns approved paid harness
+proof, default activation and the enforcing flip. Roll back runtime posture
+through the existing audited setting, wait the bounded cache window, and verify
+that the original legacy SDK options return unchanged.
+
+The existing pinned chat persona `intent-refinement` is now present in the
+authoritative registry and generated catalogue. The generic skill-assisted
+coding workflow uses the registered `developer` persona; it does not create a
+second model namespace based on its workflow filename.

@@ -9,7 +9,10 @@ on:
       - 'modules/agent-factory/rules/personas/**'
       - 'modules/agent-factory/skills/codex-bridge/**'
       - 'modules/agent-factory/skills/aidlc-emit-issues/**'
-      - 'modules/agent-factory/gateway/app/personas/**'
+      - 'modules/agent-factory/gateway/**'
+      - 'modules/agent-factory/tests/**'
+      - 'platform/scripts/render-model-root-config.py'
+      - 'platform/scripts/tests/test_model_root_config.py'
       # The /model end-to-end test imports the real webhook-ingress handler,
       # intent parser, resolvers and envelope builder, so a change to any of them
       # can break it without touching a path above.
@@ -63,6 +66,7 @@ jobs:
           src/model-policy-feedback.test.ts
           src/agent-worker-model-feedback-wiring.test.ts
           src/model-policy-runtime.test.ts
+          src/complex-task-chat/bedrock-routing.test.ts
 
   python-reporting:
     name: Transcript handoff and shared instructions
@@ -105,3 +109,14 @@ jobs:
         run: >-
           python -m pytest -q
           modules/agent-factory/agent-worker-image/tests/test_model_directive_end_to_end.py
+
+      - name: Verify external root publication and runtime inventory
+        env:
+          PYTHONPATH: modules/agent-factory
+        run: >-
+          python -m pytest -q
+          platform/scripts/tests/test_model_root_config.py
+          modules/agent-factory/tests/unit/test_model_root_client.py
+          modules/agent-factory/tests/unit/test_legacy_model_guard.py
+          modules/agent-factory/tests/unit/test_persona_model_runtime_inventory.py
+          modules/agent-factory/tests/lambda/test_ingest_persona_pinning.py

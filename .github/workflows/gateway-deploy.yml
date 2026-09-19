@@ -370,6 +370,12 @@ jobs:
           AGENT_DISPATCH_QUEUE_URL=$(get_ssm "/adp/${ENVIRONMENT}/webhook-ingress/sqs-queue-url" "")
           BG_ORCH_DISPATCH_REPO=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/orchestration-dispatch-repo" "")
           AGENT_WORKER_IMAGE_DIGESTS=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-worker-images" "disabled")
+          ADP_MODEL_ROOT_BINDINGS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/model-root-bindings" "[]")
+          ADP_MODEL_ROOT_BINDINGS_SED=$(printf '%s' "$ADP_MODEL_ROOT_BINDINGS_RAW" | python3 platform/scripts/render-model-root-config.py bindings)
+          ADP_ARC_MODEL_BINDINGS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/arc-model-bindings" "[]")
+          ADP_ARC_MODEL_BINDINGS_SED=$(printf '%s' "$ADP_ARC_MODEL_BINDINGS_RAW" | python3 platform/scripts/render-model-root-config.py bindings)
+          ADP_CHAT_WORKER_IMAGE_DIGESTS_RAW=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/chat-authority-worker-images" "")
+          ADP_CHAT_WORKER_IMAGE_DIGESTS_SED=$(printf '%s' "$ADP_CHAT_WORKER_IMAGE_DIGESTS_RAW" | python3 platform/scripts/render-model-root-config.py images)
           AGENT_AUTHORITY_KEY_ID=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-authority-key-id" "disabled")
           AGENT_TASK_SOURCE_ROLE_ARN=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-role-arn" "")
           AGENT_TASK_SOURCE_EKS_CLUSTER=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-eks-cluster" "")
@@ -416,6 +422,9 @@ jobs:
               -e "s|__AGENT_DISPATCH_QUEUE_URL__|${AGENT_DISPATCH_QUEUE_URL}|g" \
               -e "s|__BG_ORCH_DISPATCH_REPO__|${BG_ORCH_DISPATCH_REPO}|g" \
               -e "s|__AGENT_WORKER_IMAGE_DIGESTS__|${AGENT_WORKER_IMAGE_DIGESTS}|g" \
+              -e "s|__ADP_MODEL_ROOT_BINDINGS__|${ADP_MODEL_ROOT_BINDINGS_SED}|g" \
+              -e "s|__ADP_ARC_MODEL_BINDINGS__|${ADP_ARC_MODEL_BINDINGS_SED}|g" \
+              -e "s|__ADP_CHAT_WORKER_IMAGE_DIGESTS__|${ADP_CHAT_WORKER_IMAGE_DIGESTS_SED}|g" \
               -e "s|__AGENT_AUTHORITY_KEY_ID__|${AGENT_AUTHORITY_KEY_ID}|g" \
               -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
               -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \

@@ -724,7 +724,7 @@ async def _resolve_principal(
     grant: DelegatedGrant,
     authority: dict,
 ) -> tuple[Literal["human", "service_account"], str]:
-    if grant.authority.kind in {"github_event", "gate_decision"}:
+    if grant.authority.kind in {"github_event", "gate_decision", "chat_event", "gitlab_event", "github_actions_event"}:
         return "human", await resolve_root_user_entity_id(session, tenant_id, grant.authority.human_id)
     if grant.authority.kind != "service_policy":
         raise ModelPolicyError("authority_kind_unsupported")
@@ -889,7 +889,7 @@ def _canonical_owner_locator(
 
 def _trusted_root_locator(grant: DelegatedGrant, authority: dict) -> str:
     """Derive the cache root only from the already-verified authority record."""
-    if grant.authority.kind in {"github_event", "gate_decision"}:
+    if grant.authority.kind in {"github_event", "gate_decision", "chat_event", "gitlab_event", "github_actions_event"}:
         human_id = authority.get("human_id", {}).get("S")
         if not human_id or human_id != grant.authority.human_id:
             raise ModelPolicyError("unverified_provenance")

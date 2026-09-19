@@ -32,7 +32,7 @@ def _get_sqs():
     return _sqs
 
 
-def publish_envelope(envelope: dict) -> str | None:
+def publish_envelope(envelope: dict, *, model_root: dict | None = None) -> str | None:
     """Publish a normalized envelope to the agent submit queue.
 
     Args:
@@ -47,11 +47,28 @@ def publish_envelope(envelope: dict) -> str | None:
         return None
 
     tenant_id = envelope.get("tenant_id", "unknown")
+    registered_body = None
     try:
         envelope = prepare_envelope(envelope)
     except ValueError:
         return None
-    if os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true":
+    if model_root is not None:
+        from common.model_root_client import (
+            RootRegistrationRefusedError,
+            register_model_root,
+        )
+
+        try:
+            registered_body = register_model_root(envelope, **model_root)
+            envelope = json.loads(registered_body)
+            tenant_id = envelope["tenant_id"]
+        except RootRegistrationRefusedError:
+            logger.warning("Model root admission refused; nothing published")
+            return None
+    if (
+        registered_body is None
+        and os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
+    ):
         if envelope.get("channel") == "gitlab":
             # GitLab does not yet have a trusted admission seam or canonical
             # tenant/root identity. In report-only it remains behaviour-neutral,
@@ -75,7 +92,7 @@ def publish_envelope(envelope: dict) -> str | None:
                     envelope.get("message_id"),
                 )
                 return None
-    message_body = json.dumps(envelope, default=str)
+    message_body = registered_body or json.dumps(envelope, default=str)
 
     send_kwargs = {
         "QueueUrl": queue_url,

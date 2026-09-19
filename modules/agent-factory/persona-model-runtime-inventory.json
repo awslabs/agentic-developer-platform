@@ -25,19 +25,26 @@
       "verified_by": "modules/gateway/tests/orchestration/test_tick_dispatch_preparation.py"
     },
     "gitlab": {
-      "state": "blocked",
+      "state": "wired_report_only",
       "entrypoint": "modules/agent-factory/webhook-ingress/lambda/gitlab/handler.py",
-      "blocker": "ingress has no tenant-bound canonical human identity and is explicitly excluded from protected work admission"
+      "authority": "registered project secret + immutable user -> protected root admission -> acknowledgement/branch spike (no model invocation)",
+      "verified_by": "modules/gateway/tests/agentauth/test_external_roots.py",
+      "rollout": "explicit operator opt-in; defaults false; not deployed by this PR",
+      "execution_kind": "acknowledgement_and_branch_only_no_inference"
     },
     "chat": {
-      "state": "blocked",
+      "state": "wired_report_only",
       "entrypoint": "modules/agent-factory/gateway/lambdas/ingest/handler.py",
-      "blocker": "chat registration is not a protected agent-authority execution and cannot issue a snapshot-bound bootstrap decision"
+      "authority": "authenticated ingest -> protected root before SQS -> TokenReview-bound chat decision -> fresh SDK admission",
+      "verified_by": "modules/gateway/tests/agentauth/test_chat_model.py",
+      "rollout": "explicit operator opt-in; defaults false; not deployed by this PR"
     },
     "arc_github_actions": {
-      "state": "blocked",
+      "state": "wired_report_only",
       "entrypoint": ".github/workflows/agent-developer.yml",
-      "blocker": "persona workflows invoke Bedrock directly and have no gateway-authoritative pre-harness decision surface"
+      "authority": "registered IRSA runner + verified GitHub OIDC human/service -> protected root -> signed preflight and every SDK launch",
+      "verified_by": "modules/gateway/tests/agentauth/test_arc_model.py",
+      "rollout": "explicit operator opt-in; defaults false; not deployed by this PR"
     }
   },
   "literal_files": {
@@ -84,5 +91,12 @@
       "modules/agent-factory/webhook-ingress/lambda/common/persona_model_catalogue.json",
       "platform/scripts/bedrock-routing-validate.sh"
     ]
+  },
+  "legacy_python_chat": {
+    "entrypoint": "modules/agent-factory/gateway/app/sqs_consumer.py",
+    "execution_kind": "superseded_raw_anthropic_and_boto3_not_claude_agent_sdk",
+    "authority": "gateway committed-posture preflight before each API call; enforcing refuses unsupported harness",
+    "verified_by": "modules/agent-factory/tests/unit/test_legacy_model_guard.py",
+    "rollout": "same chat flag; ingress no longer publishes to its standard queue"
   }
 }

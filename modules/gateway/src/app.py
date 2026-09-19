@@ -40,6 +40,10 @@ UNIT_MODULES = [
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
     "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
+    "src.agentauth.arc_model",
+    "src.agentauth.model_policy_keys",
+    "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.
+    "src.agentauth.chat_model",  # Verified chat pod, fresh signed SDK decision.
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that

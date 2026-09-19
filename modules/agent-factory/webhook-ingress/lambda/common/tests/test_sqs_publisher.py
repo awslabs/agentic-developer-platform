@@ -199,3 +199,51 @@ class TestPublishEnvelope:
         }
         result = publish_envelope(envelope)
         assert result is None
+
+
+@pytest.mark.parametrize("refused", [False, True])
+def test_gitlab_registered_root_is_published_exactly_once_after_admission(
+    monkeypatch, refused
+):
+    from common import model_root_client, sqs_publisher
+
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
+    monkeypatch.setattr(sqs_publisher, "SUBMIT_QUEUE_URL", _TEST_QUEUE_URL)
+    producer = MagicMock()
+    producer.send_message.return_value = {"MessageId": "registered"}
+    monkeypatch.setattr(sqs_publisher, "_sqs", producer)
+    envelope = {
+        "channel": "gitlab",
+        "message_id": "root-a",
+        "arrived_at": "2026-09-19T00:00:00Z",
+        "source_ref": {"repo": "group/repo", "issue": 7},
+    }
+    final = dict(envelope, tenant_id="canonical-tenant", persona="developer")
+    raw = json.dumps(final, sort_keys=True, separators=(",", ":"))
+
+    def admit(received, **identity):
+        assert received == envelope
+        assert identity["subject"] == "42"
+        producer.send_message.assert_not_called()
+        if refused:
+            raise model_root_client.RootRegistrationRefusedError("refused")
+        return raw
+
+    monkeypatch.setattr(model_root_client, "register_model_root", admit)
+    result = sqs_publisher.publish_envelope(
+        envelope,
+        model_root={
+            "source": "gitlab",
+            "subject": "42",
+            "instance": "https://gitlab.example",
+            "project_id": 7,
+        },
+    )
+    if refused:
+        assert result is None
+        producer.send_message.assert_not_called()
+    else:
+        assert result == "registered"
+        assert producer.send_message.call_count == 1
+        assert producer.send_message.call_args.kwargs["MessageBody"] == raw

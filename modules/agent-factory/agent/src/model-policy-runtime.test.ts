@@ -8,6 +8,7 @@ jest.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: jest.fn() }));
 jest.mock('./lib/runIdentity', () => ({
   workerAwsCredentialProvider: jest.fn(async () => async () => ({ accessKeyId: 'test', secretAccessKey: 'test', sessionToken: 'test' })),
   gatewaySigningRegion: () => 'us-east-1',
+  readIdentityToken: jest.fn(() => 'test-pod'),
   workerIdentityHeaders: () => ({ 'X-Adp-Run-Credential': 'test-run', 'X-Adp-Workload-Token': 'test-pod' }),
 }));
 
@@ -20,8 +21,8 @@ let responsePolicy: any;
 let mutate: ((doc: any) => void) | undefined;
 let nonceOverride: string | undefined;
 
-function signedReply(nonce: string, policy = responsePolicy) {
-  const result = { nonce, invocation_id: 'run-a', tenant_id: 'tenant-a', attempt: 2, model_policy: policy };
+function signedReply(nonce: string, policy = responsePolicy, context?: any) {
+  const result = { nonce, invocation_id: 'run-a', tenant_id: 'tenant-a', attempt: 2, model_policy: policy, ...(context ? { context } : {}) };
   const now = Math.floor(Date.now() / 1000) * 1000;
   const iso = (offset: number) => new Date(now + offset).toISOString().replace('.000Z', 'Z');
   const payload = { v: 'adpe1', alg: 'ed25519', kid: 'test', iss: 'adp-gateway-control', aud: 'adp-agent-model-policy',
@@ -50,7 +51,8 @@ beforeEach(() => {
   responsePolicy = policy('enforcing'); mutate = undefined; nonceOverride = undefined;
   global.fetch = jest.fn(async (_url, init) => {
     const request = JSON.parse(init!.body as string);
-    expect(Object.keys(request).sort()).toEqual(['model_policy_contract', 'nonce']);
+    expect(Object.keys(request).sort()).toEqual(process.env.ADP_MODEL_POLICY_SOURCE === 'chat'
+      ? ['envelope_digest', 'invocation_id', 'model_policy_contract', 'nonce'] : ['model_policy_contract', 'nonce']);
     const doc = signedReply(nonceOverride ?? request.nonce);
     mutate?.(doc);
     return new Response(JSON.stringify(doc));
@@ -132,4 +134,109 @@ it('fails closed against a gateway without the SDK decision endpoint', async () 
   global.fetch = jest.fn(async () => new Response('', { status: 404 }));
   await expect(createPolicyQuery(legacy)).rejects.toBeInstanceOf(ModelPolicyRefused);
   expect(query).not.toHaveBeenCalled();
+});
+
+it('binds a chat SDK launch to its registered envelope and pod proof', async () => {
+  process.env.ADP_AGENT_AUTHORITY_ENABLED = 'false';
+  process.env.ADP_CHAT_MODEL_POLICY_ENABLED = 'true';
+  process.env.ADP_MODEL_POLICY_SOURCE = 'chat';
+  process.env.ADP_AGENT_CONTROL_ENDPOINT += '/chat';
+  process.env.ADP_MODEL_ROOT_ENVELOPE_DIGEST = 'a'.repeat(64);
+  await createPolicyQuery(legacy);
+  const init = (fetch as jest.Mock).mock.calls[0][1];
+  expect(JSON.parse(init.body)).toMatchObject({ invocation_id: 'run-a', envelope_digest: 'a'.repeat(64) });
+  expect(init.headers['X-Adp-Workload-Token']).toBe('test-pod');
+  expect(init.headers['X-Adp-Run-Credential']).toBeUndefined();
+  expect((query as jest.Mock).mock.calls[0][0].options.model).toBe(model);
+});
+
+it('cannot launch chat without the registered envelope digest', async () => {
+  process.env.ADP_AGENT_AUTHORITY_ENABLED = 'false';
+  process.env.ADP_CHAT_MODEL_POLICY_ENABLED = 'true';
+  process.env.ADP_MODEL_POLICY_SOURCE = 'chat';
+  process.env.ADP_AGENT_CONTROL_ENDPOINT += '/chat';
+  delete process.env.ADP_MODEL_ROOT_ENVELOPE_DIGEST;
+  await expect(createPolicyQuery(legacy)).rejects.toBeInstanceOf(ModelPolicyRefused);
+  expect(fetch).not.toHaveBeenCalled();
+  expect(query).not.toHaveBeenCalled();
+});
+
+function setupArc() {
+  process.env.ADP_AGENT_AUTHORITY_ENABLED = 'false';
+  process.env.ADP_ARC_MODEL_POLICY_ENABLED = 'true';
+  process.env.ADP_AGENT_CONTROL_ENDPOINT += '/arc';
+  process.env.AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/runner';
+  process.env.AWS_WEB_IDENTITY_TOKEN_FILE = '/tmp/arc-token';
+  process.env.ACTIONS_ID_TOKEN_REQUEST_URL = 'https://pipelines.actions.githubusercontent.com/oidc?api-version=2.0';
+  process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'github-request-token';
+  process.env.GITHUB_REPOSITORY_ID = '123';
+  process.env.GITHUB_RUN_ID = '456';
+  process.env.GITHUB_RUN_ATTEMPT = '1';
+  process.env.GITHUB_WORKFLOW_REF = 'org/repo/.github/workflows/agent-developer.yml@refs/heads/main';
+  const context = { persona: 'developer', github_actions: { repository_id: '123', run_id: '456', run_attempt: '1', workflow_ref: process.env.GITHUB_WORKFLOW_REF } };
+  global.fetch = jest.fn(async (url, init) => {
+    if (new URL(String(url)).hostname === 'pipelines.actions.githubusercontent.com') {
+      expect(new URL(String(url)).searchParams.get('audience')).toBe('adp-agent-model-policy');
+      expect(init?.headers).toEqual({ Authorization: 'Bearer github-request-token' });
+      return new Response(JSON.stringify({ value: 'github-oidc' }));
+    }
+    const request = JSON.parse(init!.body as string);
+    expect(Object.keys(request).sort()).toEqual(['github_oidc_token', 'model_policy_contract', 'nonce']);
+    const proof = JSON.parse(Buffer.from((init!.headers as any)['X-Adp-Producer-Proof'], 'base64').toString());
+    expect(proof['x-adp-work-invocation']).toBe(createHash('sha256').update(policyBody(request)).digest('hex'));
+    expect(proof.authorization).toContain('x-adp-work-invocation;');
+    expect(proof.authorization).not.toContain('x-amz-content-sha256;');
+    const doc = signedReply(request.nonce, responsePolicy, context);
+    mutate?.(doc);
+    return new Response(JSON.stringify(doc));
+  });
+  return context;
+}
+
+it('binds ARC OIDC and temporary IRSA proof before consuming a signed SDK model', async () => {
+  setupArc();
+  await createPolicyQuery(legacy);
+  expect(query).toHaveBeenCalledTimes(1);
+  expect((query as jest.Mock).mock.calls[0][0].options.model).toBe(model);
+});
+
+it('ARC obtains a new identity and decision for retries and preserves report-only legacy options', async () => {
+  setupArc();
+  responsePolicy = policy('report_only');
+  await createPolicyQuery(legacy);
+  await createPolicyQuery(legacy);
+  expect(fetch).toHaveBeenCalledTimes(4);
+  expect(query).toHaveBeenNthCalledWith(1, legacy);
+  expect(query).toHaveBeenNthCalledWith(2, legacy);
+});
+
+it('refuses signed ARC authority from another workflow even in report-only', async () => {
+  setupArc().github_actions.run_id = '999';
+  responsePolicy = policy('report_only');
+  await expect(createPolicyQuery(legacy)).rejects.toBeInstanceOf(ModelPolicyRefused);
+  expect(query).not.toHaveBeenCalled();
+});
+
+it('does not send a GitHub request credential to an arbitrary host', async () => {
+  setupArc();
+  process.env.ACTIONS_ID_TOKEN_REQUEST_URL = 'https://attacker.example/oidc';
+  await expect(createPolicyQuery(legacy)).rejects.toBeInstanceOf(ModelPolicyRefused);
+  expect(fetch).not.toHaveBeenCalled();
+  expect(query).not.toHaveBeenCalled();
+});
+
+it('discovers only public verification keys at the configured gateway origin for chat', async () => {
+  process.env.ADP_AGENT_AUTHORITY_ENABLED = 'false';
+  process.env.ADP_CHAT_MODEL_POLICY_ENABLED = 'true';
+  process.env.ADP_MODEL_POLICY_SOURCE = 'chat';
+  process.env.ADP_AGENT_CONTROL_ENDPOINT += '/chat';
+  process.env.ADP_MODEL_ROOT_ENVELOPE_DIGEST = 'a'.repeat(64);
+  delete process.env.ADP_CONTROL_ENVELOPE_KEYS;
+  const normalFetch = global.fetch;
+  global.fetch = jest.fn(async (url, init) => String(url).endsWith('/model-policy-keys')
+    ? new Response(JSON.stringify({ keys: { test: keys.publicKey.export({ type: 'spki', format: 'pem' }) } }))
+    : normalFetch(url, init));
+  await createPolicyQuery(legacy);
+  expect((query as jest.Mock).mock.calls[0][0].options.model).toBe(model);
+  expect((fetch as jest.Mock).mock.calls[1][0].href).toBe('https://api123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent/model-policy-keys');
 });

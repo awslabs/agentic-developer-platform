@@ -66,6 +66,10 @@ from src.orchestration.models import (
 from src.orchestration.state import ActorKind, NodeState
 from src.shared.models.base import Base
 from src.shared.models.organization import Organization, User
+from tests.agentauth.conftest import report_only_db as report_only_db_fixture
+from tests.agentauth.conftest import test_engine  # noqa: F401
+
+report_only_db = report_only_db_fixture
 
 ORG_A = "org-alpha"
 ORG_B = "org-beta"
@@ -1455,7 +1459,7 @@ async def test_protected_engine_refuses_changed_committed_identity(session, prot
     assert store.client.scan(TableName="events", Select="COUNT")["Count"] == 0
 
 
-async def test_engine_halt_blocks_bootstrap_refresh_http(session, session_factory, protected_engine, monkeypatch):
+async def test_engine_halt_blocks_bootstrap_refresh_http(session, session_factory, protected_engine, monkeypatch, report_only_db):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -1482,6 +1486,9 @@ async def test_engine_halt_blocks_bootstrap_refresh_http(session, session_factor
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    from src.shared.database import get_db
+
+    app.dependency_overrides[get_db] = report_only_db
     monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
     monkeypatch.setattr("src.shared.database.get_session_factory", lambda: session_factory)
     headers = {"X-Caller-Identity": "shared-worker-role", "X-Adp-Workload-Token": "verified-pod-proof"}

@@ -491,6 +491,39 @@ async def _agent_call(request: Request, runtime: AgentRuntime, method, *args) ->
         raise HTTPException(503, "agent authority unavailable") from None
 
 
+async def resolved_model_response(*, db, runtime, record, grant, nonce: str, client_contract: int, response_context: dict | None = None) -> dict:
+    """Sign the full fresh response after the caller proves its execution binding."""
+    from src.agentauth.envelope import sign_envelope
+    from src.agentauth.model_policy import MODEL_POLICY_AUDIENCE, bootstrap_model_policy_live, canonical_json
+
+    policy = await bootstrap_model_policy_live(db, store=runtime.store, record=record, grant=grant, env=runtime.env)
+    _refuse_unconsumable_model_policy(policy, client_contract=client_contract, invocation_id=record.invocation_id)
+    result = {
+        "nonce": nonce,
+        "invocation_id": record.invocation_id,
+        "tenant_id": record.tenant_id,
+        "attempt": record.current_attempt,
+        "model_policy": policy,
+        "context": response_context or {},
+    }
+    assertion = sign_envelope(
+        tenant_id=record.tenant_id,
+        principal=record.principal,
+        target_run_id=record.invocation_id,
+        target_generation=record.current_attempt,
+        action="model_policy_response",
+        command_id=nonce,
+        request_body=canonical_json(result),
+        grant_id=grant.grant_id,
+        revocation_epoch=grant.revocation_epoch,
+        flow_id=grant.flow_id,
+        authority_reference_id=grant.authority.reference_id,
+        audience=MODEL_POLICY_AUDIENCE,
+        env=runtime.env,
+    )
+    return {"result": result, "assertion": assertion}
+
+
 @router.post("/model-decision")
 async def model_decision(
     body: ModelDecisionRequest,
@@ -505,39 +538,20 @@ async def model_decision(
     is signed and bound to a one-use client challenge so unsigned error metadata
     cannot turn enforcement into permission or replay a prior report-only read.
     """
-    from src.agentauth.envelope import sign_envelope
-    from src.agentauth.model_policy import MODEL_POLICY_AUDIENCE, bootstrap_model_policy_live, canonical_json
 
     async def resolve(_body, _credential, _workload, *, context):
-        _, caller, record, grant = context
+        _, _, record, grant = context
         from src.orchestration.work_admission import worker_checkpoint
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
-        policy = await bootstrap_model_policy_live(db, store=runtime.store, record=record, grant=grant, env=runtime.env)
-        _refuse_unconsumable_model_policy(policy, client_contract=body.model_policy_contract, invocation_id=record.invocation_id)
-        result = {
-            "nonce": body.nonce,
-            "invocation_id": caller.invocation_id,
-            "tenant_id": caller.tenant_id,
-            "attempt": caller.attempt,
-            "model_policy": policy,
-        }
-        assertion = sign_envelope(
-            tenant_id=caller.tenant_id,
-            principal=record.principal,
-            target_run_id=caller.invocation_id,
-            target_generation=caller.attempt,
-            action="model_policy_response",
-            command_id=body.nonce,
-            request_body=canonical_json(result),
-            grant_id=grant.grant_id,
-            revocation_epoch=grant.revocation_epoch,
-            flow_id=grant.flow_id,
-            authority_reference_id=grant.authority.reference_id,
-            audience=MODEL_POLICY_AUDIENCE,
-            env=runtime.env,
+        return await resolved_model_response(
+            db=db,
+            runtime=runtime,
+            record=record,
+            grant=grant,
+            nonce=body.nonce,
+            client_contract=body.model_policy_contract,
         )
-        return {"result": result, "assertion": assertion}
 
     try:
         return await _agent_call(request, runtime, resolve, body)
