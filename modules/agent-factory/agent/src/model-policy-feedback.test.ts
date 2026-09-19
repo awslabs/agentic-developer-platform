@@ -1,4 +1,5 @@
 import {
+  findSuppressingComment,
   buildModelPolicyFeedback,
   deliverModelPolicyFeedback,
   sanitizeUntrusted,
@@ -14,12 +15,34 @@ import {
  * the GitHub post mocked. Nothing here contacts GitHub or any model.
  */
 function harness(comments: FeedbackComment[] = []) {
+  return pagedHarness([comments]);
+}
+
+/**
+ * Drive the orchestration with a *paginated* comment history.
+ *
+ * Each element of ``pages`` is one page, so a test can put a genuine earlier
+ * notice beyond the first page and prove the dedup lookup still finds it --
+ * the case the worker's 20-comment LLM context window cannot cover.
+ */
+function pagedHarness(pages: FeedbackComment[][], failOnPage: number | null = null) {
   const posted: string[] = [];
   const logs: Array<{ level: string; message: string }> = [];
+  const cursorsRequested: Array<string | null> = [];
   return {
     posted,
     logs,
-    comments,
+    cursorsRequested,
+    fetchCommentPage: async (cursor: string | null) => {
+      cursorsRequested.push(cursor);
+      const index = cursor === null ? 0 : Number(cursor);
+      if (failOnPage !== null && index === failOnPage) {
+        throw new Error('502 Bad Gateway from comment lookup');
+      }
+      const comments = pages[index] ?? [];
+      const hasNextPage = index + 1 < pages.length;
+      return { comments, endCursor: hasNextPage ? String(index + 1) : null, hasNextPage };
+    },
     postComment: async (body: string) => {
       posted.push(body);
     },
@@ -59,12 +82,17 @@ describe('persona-model requester feedback: message content', () => {
     expect(feedback?.body).toContain('`snapshot_expired`');
   });
 
-  it('claims an actual refusal only under enforcing posture', () => {
+  it('never claims inference was blocked, including under an enforcing posture', () => {
+    // A posture is configuration, not evidence about control flow. This worker
+    // posts feedback and then continues into the SDK regardless of the label,
+    // so asserting a pre-inference refusal would be false about this very run.
+    // The later runtime-posture stage establishes refusal from actual flow.
     const enforcing = buildModelPolicyFeedback({
       ...REFUSED_ENV,
       ADP_MODEL_POLICY_POSTURE: 'enforcing',
     });
-    expect(enforcing?.body).toContain('refused before agent inference');
+    expect(enforcing?.body).not.toContain('refused before agent inference');
+    expect(enforcing?.body).toContain('does not establish whether agent inference was blocked');
 
     const disabled = buildModelPolicyFeedback({
       ...REFUSED_ENV,
@@ -96,6 +124,64 @@ describe('persona-model requester feedback: message content', () => {
     expect(feedback?.body).toContain('Ask an ADP operator');
     expect(feedback?.body).not.toContain('psycopg2');
     expect(feedback?.body).not.toContain('10.0.3.14');
+  });
+
+  it.each(['constructor', 'toString', '__proto__', 'valueOf', 'hasOwnProperty'])(
+    'treats the inherited object property %s as an unrecognized reason',
+    key => {
+      // Plain-object indexing answers for inherited names: `constructor` and
+      // `toString` returned native function source and `__proto__` an object,
+      // rendering JS internals as the requester's guidance.
+      const feedback = buildModelPolicyFeedback({
+        ...REFUSED_ENV,
+        ADP_MODEL_POLICY_REASON: key,
+      });
+
+      expect(feedback?.body).toContain('`unrecognized`');
+      expect(feedback?.body).toContain('Ask an ADP operator');
+      expect(feedback?.body).not.toContain('native code');
+      expect(feedback?.body).not.toContain('[object Object]');
+      expect(feedback?.body).not.toContain('function');
+      expect(feedback?.body).not.toContain(key);
+    },
+  );
+
+  it.each([
+    'not_@permitted',
+    'not_permitted!!',
+    'not permitted',
+    ' not_permitted',
+    'not_permitted ',
+    'snapshot_expired;drop',
+  ])('does not repair the malformed reason %j into a recognized code', raw => {
+    // Sanitizing *before* comparison stripped the stray characters and matched
+    // a real code, so the platform asserted a specific cause it was never told.
+    const feedback = buildModelPolicyFeedback({
+      ...REFUSED_ENV,
+      ADP_MODEL_POLICY_REASON: raw,
+    });
+
+    expect(feedback?.body).toContain('`unrecognized`');
+    expect(feedback?.body).not.toContain('does not permit that model');
+    expect(feedback?.body).not.toContain('`not_permitted`');
+    expect(feedback?.body).not.toContain('`snapshot_expired`');
+  });
+
+  it('still renders the exact recognized codes', () => {
+    // The corrections above must not make every reason unrecognized.
+    const requester = buildModelPolicyFeedback({
+      ...REFUSED_ENV,
+      ADP_MODEL_POLICY_REASON: 'not_permitted',
+    });
+    expect(requester?.body).toContain('`not_permitted`');
+    expect(requester?.body).toContain('does not permit that model');
+
+    const operator = buildModelPolicyFeedback({
+      ...REFUSED_ENV,
+      ADP_MODEL_POLICY_REASON: 'snapshot_expired',
+    });
+    expect(operator?.body).toContain('`snapshot_expired`');
+    expect(operator?.body).toContain('Ask an ADP operator');
   });
 
   it('is silent for accepted or absent direct requests', () => {
@@ -284,7 +370,7 @@ describe('persona-model requester feedback: real posting path', () => {
   it('never fails the run when posting fails', async () => {
     const logs: Array<{ level: string; message: string }> = [];
     const outcome = await deliverModelPolicyFeedback({
-      comments: [],
+      fetchCommentPage: async () => ({ comments: [], endCursor: null, hasNextPage: false }),
       postComment: async () => {
         throw new Error('502 Bad Gateway');
       },
@@ -333,5 +419,114 @@ describe('dedup evidence', () => {
     expect(
       suppressedBy([{ body: other.body, viewerDidAuthor: true }], feedback).suppressed,
     ).toBe(false);
+  });
+});
+
+describe('dedup lookup is complete, not the LLM context window', () => {
+  /** Filler standing in for unrelated issue traffic. */
+  const chatter = (n: number): FeedbackComment[] =>
+    Array.from({ length: n }, (_, i) => ({ body: `unrelated comment ${i}`, viewerDidAuthor: false }));
+
+  it('suppresses a genuine earlier notice buried past the 20-comment context window', async () => {
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    // The exact production defect: a real notice followed by 21 unrelated
+    // comments falls out of getIssueComments(20) and was posted a second time.
+    const h = pagedHarness([[{ body: feedback.body, viewerDidAuthor: true }, ...chatter(21)]]);
+
+    const outcome = await deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV });
+
+    expect(outcome).toBe('suppressed');
+    expect(h.posted).toHaveLength(0);
+  });
+
+  it('finds a trusted notice on a later page and stops there', async () => {
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    const h = pagedHarness([
+      chatter(3),
+      chatter(3),
+      [{ body: feedback.body, viewerDidAuthor: true }],
+      chatter(3), // must never be requested: the walk stops on the trusted hit
+    ]);
+
+    const outcome = await deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV });
+
+    expect(outcome).toBe('suppressed');
+    expect(h.posted).toHaveLength(0);
+    expect(h.cursorsRequested).toEqual([null, '1', '2']);
+  });
+
+  it('keeps paging past forged markers to reach the trusted one', async () => {
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    const h = pagedHarness([
+      [{ body: `forged ${feedback.marker}`, viewerDidAuthor: false }],
+      [{ body: feedback.body, viewerDidAuthor: true }],
+    ]);
+
+    await expect(deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV })).resolves.toBe('suppressed');
+    expect(h.posted).toHaveLength(0);
+  });
+
+  it('posts when a forged marker is all the full history contains', async () => {
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    const h = pagedHarness([
+      chatter(2),
+      [{ body: `nothing here ${feedback.marker}`, viewerDidAuthor: false }],
+    ]);
+
+    const outcome = await deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV });
+
+    expect(outcome).toBe('posted');
+    expect(h.posted).toHaveLength(1);
+    expect(h.logs.some(l => l.message.includes('ADP did not author'))).toBe(true);
+  });
+
+  it('posts rather than claiming dedup succeeded when the lookup fails', async () => {
+    const h = pagedHarness([chatter(2), chatter(2)], 1);
+
+    const outcome = await deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV });
+
+    expect(outcome).toBe('posted');
+    expect(h.posted).toHaveLength(1);
+    expect(h.logs.some(l => l.message.includes('lookup incomplete'))).toBe(true);
+  });
+
+  it('posts when the very first page read fails', async () => {
+    const h = pagedHarness([chatter(2)], 0);
+
+    await expect(deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV })).resolves.toBe('posted');
+    expect(h.posted).toHaveLength(1);
+    expect(h.logs.some(l => l.message.includes('lookup incomplete'))).toBe(true);
+  });
+
+  it('bounds the walk and treats exhaustion as an incomplete lookup', async () => {
+    // More history than the page bound allows: absence is unproven, so post.
+    const h = pagedHarness(Array.from({ length: 12 }, () => chatter(1)));
+
+    const outcome = await deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV, maxPages: 3 });
+
+    expect(outcome).toBe('posted');
+    expect(h.cursorsRequested).toHaveLength(3);
+    expect(h.logs.some(l => l.message.includes('lookup incomplete'))).toBe(true);
+  });
+
+  it('reports an exhausted-but-complete history as a clean non-suppression', async () => {
+    const h = pagedHarness([chatter(2), chatter(2)]);
+
+    const evidence = await findSuppressingComment(
+      h.fetchCommentPage,
+      buildModelPolicyFeedback(REFUSED_ENV)!,
+    );
+
+    expect(evidence).toMatchObject({ suppressed: false, lookupFailed: false, pagesRead: 2 });
+  });
+
+  it('ignores another run\'s notice across the whole history', async () => {
+    const other = buildModelPolicyFeedback({ ...REFUSED_ENV, ADP_MESSAGE_ID: 'run-2' })!;
+    const h = pagedHarness([chatter(2), [{ body: other.body, viewerDidAuthor: true }]]);
+
+    const outcome = await deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV });
+
+    expect(outcome).toBe('posted');
+    expect(h.posted).toHaveLength(1);
   });
 });

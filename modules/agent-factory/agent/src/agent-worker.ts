@@ -513,6 +513,40 @@ interface IssueComment {
   viewerDidAuthor?: boolean;
 }
 
+/**
+ * One page of issue comments with GitHub's own authorship attestation.
+ *
+ * Separate from `getIssueComments` on purpose. That one slices to the last N for
+ * the agent's prompt context and is the wrong instrument for deciding whether we
+ * already posted a notice: a genuine earlier comment followed by N unrelated
+ * ones falls out of the window, and the dedup check would then post a duplicate.
+ * This walks the full history oldest-first and keeps `viewerDidAuthor` on every
+ * page, which is the only field that distinguishes our own comment from a forged
+ * marker. GraphQL is used because `viewerDidAuthor` is computed server-side
+ * against the installation token; there is no equivalent in the `gh issue view`
+ * projection, and `gh api user` is refused for that token (403).
+ */
+async function fetchIssueCommentPage(
+  cursor: string | null,
+): Promise<{ comments: Array<{ body: string; viewerDidAuthor?: boolean }>; endCursor: string | null; hasNextPage: boolean }> {
+  const after = cursor ? `, after: ${JSON.stringify(cursor)}` : '';
+  const query = `query { repository(owner: ${JSON.stringify(REPO_OWNER)}, name: ${JSON.stringify(REPO_NAME)}) { issueOrPullRequest(number: ${Number(ISSUE_NUMBER)}) { ... on Issue { comments(first: 100${after}) { nodes { body viewerDidAuthor } pageInfo { endCursor hasNextPage } } } ... on PullRequest { comments(first: 100${after}) { nodes { body viewerDidAuthor } pageInfo { endCursor hasNextPage } } } } } }`;
+  // Let a failure propagate: the caller treats an incomplete lookup as "unknown"
+  // and posts, rather than silently claiming there was no earlier notice.
+  const raw = await gh(`api graphql -f query=${JSON.stringify(query)}`);
+  const target = JSON.parse(raw || '{}')?.data?.repository?.issueOrPullRequest ?? {};
+  const page = target.comments ?? {};
+  const nodes = Array.isArray(page.nodes) ? page.nodes : [];
+  return {
+    comments: nodes.map((n: { body?: string; viewerDidAuthor?: boolean }) => ({
+      body: n?.body || '',
+      viewerDidAuthor: typeof n?.viewerDidAuthor === 'boolean' ? n.viewerDidAuthor : undefined,
+    })),
+    endCursor: page.pageInfo?.endCursor ?? null,
+    hasNextPage: page.pageInfo?.hasNextPage === true,
+  };
+}
+
 async function getIssueComments(limit: number = 20): Promise<IssueComment[]> {
   log('INFO', `Fetching up to ${limit} issue comments...`);
   try {
@@ -2172,9 +2206,11 @@ async function main(): Promise<void> {
     // it does not pretend the enforcing flip has happened.
     // Dedup requires GitHub-attested authorship of the earlier marker comment,
     // so a forged marker cannot silence the notice; see
-    // model-policy-feedback.ts.
+    // model-policy-feedback.ts. It uses its own paginated lookup rather than
+    // `existingComments` above: that 20-comment slice is the LLM context window,
+    // and a genuine earlier notice pushed out of it would be posted again.
     await deliverModelPolicyFeedback({
-      comments: existingComments,
+      fetchCommentPage: fetchIssueCommentPage,
       postComment,
       log,
     });

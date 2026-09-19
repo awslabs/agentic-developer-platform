@@ -35,4 +35,16 @@ describe('agent-worker model-policy feedback wiring', () => {
     expect(source).toMatch(/viewerDidAuthor\?: boolean/);
     expect(source).toContain("viewerDidAuthor: typeof c.viewerDidAuthor === 'boolean' ? c.viewerDidAuthor : undefined");
   });
+
+  it('gives dedup its own complete lookup, not the 20-comment LLM context', () => {
+    // The defect this pins: feeding getIssueComments(20) into dedup means a
+    // genuine earlier notice followed by 21 unrelated comments scrolls out of
+    // the window and the requester is warned again on every retry.
+    expect(source).toContain('fetchCommentPage: fetchIssueCommentPage');
+    expect(source).not.toMatch(/deliverModelPolicyFeedback\(\{\s*\n\s*comments:/);
+    // The dedicated lookup must request authorship itself and page the history.
+    expect(source).toMatch(/query \{ repository\(/);
+    expect(source).toContain('body viewerDidAuthor');
+    expect(source).toContain('pageInfo { endCursor hasNextPage }');
+  });
 });
