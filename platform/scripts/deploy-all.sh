@@ -1001,6 +1001,15 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   COGNITO_CLI_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
   BEDROCK_ROUTING_SHADOW_MODE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-shadow-mode" "true")
 
+  # PMM-03 / D3: render the same production org/team allowlist source as the
+  # GitHub deployment path. Invalid JSON or invalid value shapes stop before a
+  # ConfigMap can silently widen admission.
+  MODEL_ALLOWED_MODELS_CONFIG_RAW=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/model-allowed-models-config" "__ADP_SSM_UNAVAILABLE__")
+  MODEL_ALLOWED_MODELS_CONFIG=$(printf '%s' "$MODEL_ALLOWED_MODELS_CONFIG_RAW" | python3 "$ROOT_DIR/platform/scripts/validate-model-allowlist-config.py")
+  MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG//\\/\\\\}
+  MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG_SED//&/\\&}
+  MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG_SED//|/\\|}
+
   # Issue #3960: CIDRs the gateway may dial an in-pod control listener in.
   # This is the SSRF allowlist for the one outbound path that deliberately
   # targets PRIVATE addresses, so it cannot be defaulted to something
@@ -1059,6 +1068,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__COGNITO_CLI_CLIENT_ID__|${COGNITO_CLI_CLIENT_ID}|g" \
       -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
       -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
+      -e "s|__MODEL_ALLOWED_MODELS_CONFIG__|${MODEL_ALLOWED_MODELS_CONFIG_SED}|g" \
       -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
       -e "s|__AGENT_AUTHORITY_ENABLED__|${AGENT_AUTHORITY_ENABLED}|g" \
       -e "s|__ADP_WORK_CLAIMS_ENABLED__|${ADP_WORK_CLAIMS_ENABLED}|g" \
@@ -1088,9 +1098,11 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   FEATURE_ORCHESTRATION_ENGINE_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-orchestration-engine" "false")
   FEATURE_AGENT_CONTROL_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-control" "false")
   FEATURE_NEW_UI_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-new-ui" "false")
+  FEATURE_AGENT_MODELS_ENABLED=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-models" "false")
   sed -e "s|__FEATURE_ORCHESTRATION_ENGINE_ENABLED__|${FEATURE_ORCHESTRATION_ENGINE_ENABLED}|g" \
       -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
       -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
+      -e "s|__FEATURE_AGENT_MODELS_ENABLED__|${FEATURE_AGENT_MODELS_ENABLED}|g" \
       -e "s|REPLACE_WITH_GATEWAY_IMAGE|${GATEWAY_IMAGE}|g" \
       k8s/deployment.yaml | kubectl apply -f - -n adp-gateway
 
@@ -1288,6 +1300,21 @@ if [ "$DEPLOY_WEBHOOK" = true ]; then
   bash "$ROOT_DIR/modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh" \
     --env "$ENVIRONMENT" --region "$AWS_REGION" ${WEBHOOK_UPDATE_ARGS[@]+"${WEBHOOK_UPDATE_ARGS[@]}"}
   ok "Webhook-ingress deployed"
+  # The gateway's first pass precedes the webhook-owned table/key/queue. Finish
+  # its prepared tick policy once Terraform can discover those identifiers.
+  # This is a bootstrap second pass, like the ALB wire step; ongoing full gateway
+  # plans retain ownership of the same policy. Dispatch remains separately gated.
+  # Partial webhook/factory upgrades must not enter an uninitialized or
+  # explicitly excluded gateway module.
+  if [ "$DEPLOY_GATEWAY" = true ]; then
+    refresh_credentials
+    (
+      cd "$ROOT_DIR/modules/gateway/infra"
+      terraform_update_apply "gateway-worker-authority" \
+        "../../../environments/$ENVIRONMENT/modules/gateway.tfvars" \
+        '-target=module.orchestration_tick[0].aws_iam_role_policy.agent_authority'
+    )
+  fi
 elif [ "$SKIP_WEBHOOK_INGRESS" = true ]; then
   step "Step 9/12: Skipping webhook-ingress (--skip-webhook-ingress)"
 else

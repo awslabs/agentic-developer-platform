@@ -44,6 +44,7 @@ from typing import Any
 
 from src.orchestration.dispatch_pass import DispatchPassReport, publish_pending, run_dispatch_pass
 from src.orchestration.engine_commands import EngineCommandReport, flush_engine_commands, run_engine_command_pass
+from src.orchestration.execution_runner import RunnerReport, run_execution_runner
 from src.orchestration.stall import StallConfig, StallReport, detect_stalls
 from src.orchestration.tick import TickReport, run_tick
 from src.orchestration.tracker_projection import TrackerProjectionReport, flush_tracker_projections, run_tracker_projection_pass
@@ -120,6 +121,7 @@ _ENGINE_COMMAND_REPORT_ATTR = "engine_command_report"
 # is also what keeps projection optional at the boundary rather than a hard
 # dependency of the tick — a display concern must never be able to fail the tick.
 _PROJECTION_REPORT_ATTR = "tracker_projection_report"
+_EXECUTION_RUNNER_REPORT_ATTR = "execution_runner_report"
 
 
 def _attached_stall_report(report: TickReport) -> StallReport | None:
@@ -140,6 +142,11 @@ def _attached_engine_command_report(report: TickReport) -> EngineCommandReport |
 def _attached_projection_report(report: TickReport) -> TrackerProjectionReport | None:
     """The tracker-projection pass's report carried on a tick report, if one is attached."""
     return getattr(report, _PROJECTION_REPORT_ATTR, None)
+
+
+def _attached_execution_runner_report(report: TickReport) -> RunnerReport | None:
+    """The durable execution-recovery pass carried on a tick report, if attached."""
+    return getattr(report, _EXECUTION_RUNNER_REPORT_ATTR, None)
 
 
 def _emit_metrics(report: TickReport) -> None:
@@ -166,6 +173,37 @@ def _emit_metrics(report: TickReport) -> None:
             # different from one that had nothing to do.
             {"MetricName": "Truncated", "Value": 1 if report.truncated else 0, "Unit": "Count"},
         ]
+
+        execution_report = _attached_execution_runner_report(report)
+        if execution_report is not None:
+            metric_data.extend(
+                [
+                    {"MetricName": "ExecutionRunnerExamined", "Value": execution_report.examined, "Unit": "Count"},
+                    {"MetricName": "ExecutionEffectsAttempted", "Value": execution_report.effects_attempted, "Unit": "Count"},
+                    {"MetricName": "ExecutionEffectsSucceeded", "Value": execution_report.effects_succeeded, "Unit": "Count"},
+                    {"MetricName": "ExecutionEffectsUncertain", "Value": execution_report.effects_uncertain, "Unit": "Count"},
+                    {"MetricName": "ExecutionRunnerErrors", "Value": execution_report.errors, "Unit": "Count"},
+                    {"MetricName": "ExecutionNotificationsFailed", "Value": execution_report.notifications_failed, "Unit": "Count"},
+                    {"MetricName": "ExecutionNotificationsUnresolved", "Value": execution_report.notifications_unresolved, "Unit": "Count"},
+                    {"MetricName": "ExecutionRunnerCapped", "Value": 1 if execution_report.capped else 0, "Unit": "Count"},
+                ]
+            )
+            for org_id, counts in execution_report.per_org.items():
+                dimensions = [{"Name": "OrgId", "Value": org_id}]
+                for metric_name, key in (
+                    ("ExecutionRunnerExamined", "examined"),
+                    ("ExecutionEffectsAttempted", "effects_attempted"),
+                    ("ExecutionRunnerErrors", "errors"),
+                    ("ExecutionNotificationsFailed", "notifications_failed"),
+                ):
+                    metric_data.append(
+                        {
+                            "MetricName": metric_name,
+                            "Value": counts.get(key, 0),
+                            "Unit": "Count",
+                            "Dimensions": dimensions,
+                        }
+                    )
 
         # Per-org dimensions. Emitted alongside the totals rather than instead of
         # them, so no org's counts are ever read out of another org's view.
@@ -502,6 +540,15 @@ async def _run() -> TickReport:
         # counted, which forces a non-success report.
         await flush_engine_commands(engine_command_report)
 
+        # Recover durable execution-ledger work through this existing scheduled
+        # tick. The runner owns its short transactions so intent is committed
+        # before provider I/O; no second cron or resident coordinator is created.
+        try:
+            execution_runner_report = await run_execution_runner(factory)
+        except Exception:
+            logger.exception("orchestration execution runner: pass failed; earlier tick work is already committed")
+            execution_runner_report = RunnerReport(enabled=True, errors=1)
+
         # Last of the post-commit steps, and deliberately after the durable work and
         # every other flush: projecting progress onto a GitHub issue is a display
         # concern, so it must never precede — or be able to disturb — anything the
@@ -516,6 +563,7 @@ async def _run() -> TickReport:
         setattr(report, _DISPATCH_REPORT_ATTR, dispatch_report)
         setattr(report, _ENGINE_COMMAND_REPORT_ATTR, engine_command_report)
         setattr(report, _PROJECTION_REPORT_ATTR, projection_report)
+        setattr(report, _EXECUTION_RUNNER_REPORT_ATTR, execution_runner_report)
         setattr(report, "result_report", result_report)
         return report
 
@@ -540,6 +588,7 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
     dispatch_report = _attached_dispatch_report(report)
     engine_command_report = _attached_engine_command_report(report)
     projection_report = _attached_projection_report(report)
+    execution_runner_report = _attached_execution_runner_report(report)
 
     summary = {
         # A failed detection, dispatch or engine-command pass makes the whole
@@ -559,6 +608,7 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
         and (dispatch_report is None or dispatch_report.success)
         and (engine_command_report is None or engine_command_report.success)
         and (projection_report is None or projection_report.success)
+        and (execution_runner_report is None or execution_runner_report.success)
         else "error",
         "nodes_examined": report.nodes_examined,
         "transitions_effected": report.transitions_effected,
@@ -643,6 +693,28 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
                 "projection_errors": projection_report.errors,
                 "projections_capped": projection_report.capped,
                 "projections_enabled": projection_report.enabled,
+            }
+        )
+
+    if execution_runner_report is not None:
+        summary.update(
+            {
+                "execution_runner_enabled": execution_runner_report.enabled,
+                "executions_examined": execution_runner_report.examined,
+                "execution_effects_attempted": execution_runner_report.effects_attempted,
+                "execution_effects_succeeded": execution_runner_report.effects_succeeded,
+                "execution_effects_failed": execution_runner_report.effects_failed,
+                "execution_effects_uncertain": execution_runner_report.effects_uncertain,
+                "executions_advanced": execution_runner_report.advanced,
+                "executions_blocked": execution_runner_report.blocked,
+                "execution_conflicts": execution_runner_report.conflicts,
+                "execution_notifications_failed": execution_runner_report.notifications_failed,
+                # Durable undeliverable notices (retries exhausted or an uncertain send
+                # that cannot be re-asked). Visible without failing the tick, because
+                # no new failure occurred and no retry would clear it.
+                "execution_notifications_unresolved": execution_runner_report.notifications_unresolved,
+                "execution_runner_errors": execution_runner_report.errors,
+                "execution_runner_capped": execution_runner_report.capped,
             }
         )
 

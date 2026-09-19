@@ -41,6 +41,18 @@ REGION = re.compile(r"^[a-z]{2}(?:-[a-z]+)+-[0-9]+$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 ROLE_ARN = re.compile(r"^arn:aws[a-z-]*:iam::([0-9]{12}):role/.+$")
 
+# #5413: the name a deployment is registered under by `adp deployment add`. The
+# same character class the CLI's own registry accepts, restated here so an
+# unusable name is refused while the config is still being validated rather than
+# by a failing `adp deployment add` an hour into a live run.
+DEPLOYMENT_NAME = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+
+# How many independent deployments E16/E17 need. Three, because the product
+# requirement is three concurrent terminals and because two cannot distinguish
+# "each command reaches its own deployment" from "commands alternate between the
+# two". It is a floor, not a cap: a binding set with more is still usable.
+REQUIRED_DEPLOYMENTS = 3
+
 # R3: the bindings the destination account and the fixture credentials are reached
 # through. Nothing supplied them before — not the example config, not the workflow
 # overlay — so `_identity("destination")` raised "No destination role is
@@ -52,6 +64,13 @@ ROLE_ARN = re.compile(r"^arn:aws[a-z-]*:iam::([0-9]{12}):role/.+$")
 # is all of them except `harness`. Declared per-suite rather than globally so a
 # harness-only self-check does not demand live fixture plumbing it never uses.
 BINDINGS = ("destination_role_arn", "provisioner_role_arn", "credential_secret_name")
+# Separate from `BINDINGS` because it is a different kind of thing: every name in
+# `BINDINGS` is one identifier for one AWS resource the run assumes into, whereas
+# this is a list of three deployment records (#5413). Keeping it out of `BINDINGS`
+# leaves the places that iterate that tuple expecting a scalar identifier — the
+# summary line, the overlay guard — correct without a special case, while
+# `require_bindings()` still reports both together.
+FIXTURE_BINDINGS = ("deployments",)
 SECRET_KEYS = re.compile(
     r"password|token|secret|access.?key|external.?id|private.?key|cookie|credential",
     re.I,
@@ -103,6 +122,24 @@ DEFAULTS = {
     "cloudtrail_wait_seconds": 900,
     # One model call, including a cold provider start.
     "inference_timeout_seconds": 300,
+    # #5413's per-request output cap, measured in output TOKENS. The issue bounds a
+    # live multi-deployment run at 256 of them per request, and the concurrency case
+    # makes nine calls (three deployments x two arrangements, plus the lifecycle
+    # re-checks), so the bound has to be enforced on the call rather than trusted to
+    # a short prompt. Configurable, but capped below, because raising it is a spend
+    # decision.
+    #
+    # Named `..._length` rather than `..._tokens` because `no_secrets()` refuses any
+    # key matching /token/ anywhere in the tree, and that guard is worth more than
+    # the more natural name: widening the allowlist to admit one integer would admit
+    # every future key that happened to match it too.
+    "max_output_length": 256,
+    # How long to wait before concluding a request did NOT reach a deployment.
+    # Shorter than `usage_wait_seconds` on purpose: proving an absence is the
+    # cheap half of the crossed-request check and it runs six times per
+    # arrangement, but it must still be long enough that a slow-but-correct write
+    # is not read as a clean miss.
+    "absence_wait_seconds": 60,
     # The instance profile the disposable EC2 instance runs under. It must grant
     # only SSM plus the evaluation's own read access; the CLI journeys obtain AWS
     # access through the product's own connect flow, which is the thing under
@@ -196,9 +233,24 @@ def validate(config):
         "max_instances",
         "max_run_minutes",
         "instance_ttl_minutes",
+        "max_output_length",
+        "absence_wait_seconds",
     ):
         value = result[key]
         require(type(value) is int and value > 0, f"{key} must be a positive integer")
+    # #5413's stated live bound. A run that quietly asked for more output per
+    # request than the issue authorised would be spending outside its approval,
+    # and the number is small enough that no legitimate marker reply needs more.
+    require(
+        result["max_output_length"] <= 256,
+        "max_output_length is capped at 256, the per-request output bound the "
+        "multi-deployment live run is authorised for",
+    )
+    require(
+        result["absence_wait_seconds"] <= result["usage_wait_seconds"],
+        "absence_wait_seconds must not exceed usage_wait_seconds: an absence "
+        "proven in longer than a presence takes to appear proves nothing",
+    )
     require(
         result["max_instances"] <= 4,
         "max_instances is capped at 4; this evaluation needs one disposable instance per journey",
@@ -300,6 +352,76 @@ def validate(config):
                 )
     result["github"] = github
 
+    # #5413: the three deployment bindings E16/E17 run against. Absent means those
+    # two cases BLOCK (see `fixture_classes`), which is the honest state until a
+    # coordinator supplies real integration and pre-production URLs.
+    #
+    # Validated for SHAPE whenever present, and the two rules below are the ones
+    # that stop a weaker fixture from passing as three deployments:
+    #
+    # * distinct gateway URLs. Three names pointing at one URL are ALIASES — one
+    #   session and one stable id by design — so registering them would satisfy a
+    #   count while proving nothing about isolation.
+    # * a distinct credential reference per deployment. Independent logins are the
+    #   subject of AC-03/AC-11; one shared identity could not demonstrate that
+    #   logging out of one leaves the others signed in.
+    deployments = result.get("deployments") or []
+    require(
+        isinstance(deployments, list),
+        "deployments must be a list of {name, gateway_url, credential_secret_name} objects",
+    )
+    if deployments:
+        require(
+            len(deployments) == REQUIRED_DEPLOYMENTS,
+            f"deployments needs exactly {REQUIRED_DEPLOYMENTS} entries for the "
+            "multi-deployment cases; fewer cannot prove three concurrent sessions "
+            "stay independent",
+        )
+        names, urls, secrets = [], [], []
+        for index, entry in enumerate(deployments):
+            where = f"deployments[{index}]"
+            require(isinstance(entry, dict), f"{where} must be an object")
+            name = str(entry.get("name") or "")
+            require(
+                DEPLOYMENT_NAME.match(name),
+                f"{where}.name must be a deployment name `adp deployment add` accepts "
+                "(lower-case letters, digits and hyphens, starting with a letter)",
+            )
+            url = str(entry.get("gateway_url") or "").rstrip("/")
+            require(url.startswith("https://"), f"{where}.gateway_url must be HTTPS")
+            require(
+                "@" not in url and "?" not in url and "#" not in url,
+                f"{where}.gateway_url must not carry credentials or a query",
+            )
+            secret = str(entry.get("credential_secret_name") or "")
+            require(
+                secret and not secret.startswith("arn:") and "://" not in secret,
+                f"{where}.credential_secret_name must be a Secrets Manager secret "
+                "NAME, not an ARN, a URL or a credential value",
+            )
+            names.append(name)
+            urls.append(url)
+            secrets.append(secret)
+            entry["gateway_url"] = url
+        require(
+            len(set(names)) == len(names),
+            "Each deployment binding needs its own name; `adp deployment add` treats "
+            "a repeated name as the same record",
+        )
+        require(
+            len(set(urls)) == len(urls),
+            "Each deployment binding needs its own gateway URL. Two names for one URL "
+            "are aliases — one session and one stable id — so they cannot demonstrate "
+            "that three deployments stay isolated",
+        )
+        require(
+            len(set(secrets)) == len(secrets),
+            "Each deployment binding needs its own credential reference. A shared "
+            "identity cannot show that logging out of one deployment leaves the "
+            "others signed in",
+        )
+    result["deployments"] = deployments
+
     return result
 
 
@@ -318,6 +440,14 @@ def require_bindings(config, suites):
         required.extend(destination_keys)
     if any(case.id not in ("E01", "E15") for case in selected):
         required.append("credential_secret_name")
+    # #5413: the same treatment as the destination roles. An operator who asked
+    # for `multi-deployment` by name is told immediately that the three bindings
+    # are absent; a `full` dispatch blocks E16/E17 further down and still grades
+    # everything else, because a report of what DID run is more useful than no
+    # report at all.
+    fixture_keys = FIXTURE_BINDINGS
+    if any(cases.THREE_DEPLOYMENTS in case.requires for case in selected):
+        required.extend(fixture_keys)
 
     # `full` is the only selection that can grant acceptance, and it must always
     # produce a graded report: absent destination roles block E04-E08 (and, via
@@ -331,15 +461,17 @@ def require_bindings(config, suites):
     # report of nothing but blocks.
     enforced = required
     if cases.is_full(suites):
-        enforced = [key for key in required if key not in destination_keys]
+        exempt = set(destination_keys) | set(fixture_keys)
+        enforced = [key for key in required if key not in exempt]
 
     missing = [key for key in enforced if not config.get(key)]
     require(
         not missing,
         "Config is missing the bindings this suite needs: "
         + ", ".join(missing)
-        + ". Supply the destination role ARN, the provisioner role ARN and the "
-        "fixture secret NAME (never a credential value) via the "
+        + ". Supply the destination role ARN, the provisioner role ARN, the "
+        "fixture secret NAME and (for the multi-deployment cases) the three "
+        "deployment bindings — never a credential value — via the "
         "CLI_UPLIFT_EVAL_* environment variables. The login checkpoint needs "
         "only the credential reference, not destination roles.",
     )
@@ -376,6 +508,16 @@ OVERLAY = {
     "CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN": "provisioner_role_arn",
     "CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME": "credential_secret_name",
 }
+
+# #5413. The three deployment bindings, as a JSON array, because they are a list
+# of objects and every other overlay entry is a single scalar. Kept out of
+# `OVERLAY` rather than bolted onto it so the scalar path stays a plain string
+# assignment and cannot start silently parsing JSON out of an account number.
+#
+# A repository VARIABLE, never a secret: each entry carries a name, an HTTPS URL
+# and a Secrets Manager secret NAME. `validate()`/`no_secrets()` refuse a
+# credential in it, so a pasted password fails the offline guards.
+DEPLOYMENTS_VARIABLE = "CLI_UPLIFT_EVAL_DEPLOYMENTS"
 
 
 def from_environment(env, *, base=None):
@@ -450,6 +592,23 @@ def from_environment(env, *, base=None):
             document[parent][child] = value
         else:
             document[key] = value
+    raw_deployments = str(env.get(DEPLOYMENTS_VARIABLE) or "").strip()
+    if raw_deployments:
+        try:
+            parsed = json.loads(raw_deployments)
+        except ValueError as exc:
+            raise ConfigError(
+                f"{DEPLOYMENTS_VARIABLE} is not valid JSON: {exc}. It must be an "
+                "array of {name, gateway_url, credential_secret_name} objects"
+            ) from None
+        require(
+            isinstance(parsed, list),
+            f"{DEPLOYMENTS_VARIABLE} must be a JSON array of deployment bindings",
+        )
+        # Guarded before it is merged, like the bindings file, so a credential
+        # pasted into the variable fails here rather than inside the run config.
+        no_secrets(parsed, DEPLOYMENTS_VARIABLE)
+        document["deployments"] = parsed
     return validate(document)
 
 
@@ -481,4 +640,9 @@ def fixture_classes(config):
         available.add(cases.GITHUB_REPO)
     if config.get("hosted_tasks_queue_url") and config.get("websocket_url"):
         available.add(cases.HOSTED)
+    # #5413. `validate()` has already refused a binding set that is too small, or
+    # that reuses a URL or a credential reference, so reaching the required count
+    # here means three genuinely distinct deployments were configured.
+    if len(config.get("deployments") or []) >= REQUIRED_DEPLOYMENTS:
+        available.add(cases.THREE_DEPLOYMENTS)
     return available

@@ -1142,14 +1142,16 @@ class TestResearchTenantIsolation:
 
 
 class TestBuildContextHygiene:
-    """The staged auth package must never become a second source of truth."""
+    """Staged sibling packages must not become second sources of truth — and must
+    actually cover every sibling package `app/` imports at runtime."""
 
     def test_vendored_auth_package_is_not_committed(self):
         """Staged into the build context at build time; git-ignored always.
 
         If this directory were committed it would be an editable second copy of
         the policy, and the two would drift silently — which is the failure the
-        single-definition design exists to prevent.
+        single-definition design exists to prevent. Covers the whole of `vendor/`,
+        so it applies to every package the staging script adds, not only the first.
         """
         import subprocess
         from pathlib import Path
@@ -1166,6 +1168,84 @@ class TestBuildContextHygiene:
             "vendor/ is build scratch and must not be tracked; "
             f"tracked files: {tracked.stdout!r}"
         )
+
+    def test_every_sibling_package_app_imports_is_staged_and_guarded(self):
+        """Issue #5053 (U7b): the staging list is derived, not remembered.
+
+        `superplane_contracts` was the second instance of one bug: a package `app/`
+        imports at module scope, absent from `pyproject.toml`, living outside the
+        pinned Docker context, and supplied in the test lane only because CI
+        pip-installs it from its path. The image raised ModuleNotFoundError at
+        `app/main.py:11`; nothing caught it because nothing compared what `app/`
+        imports against what the build stages.
+
+        This is that comparison. It scans the shipped source for top-level
+        `superplane_*` imports and requires each one to be staged by the script AND
+        checked by the Dockerfile, so the next sibling package fails here rather
+        than in a container.
+        """
+        import re
+        from pathlib import Path
+
+        component = Path(__file__).resolve().parent.parent
+        app_dir = component / "app"
+
+        # Top-level `superplane_*` packages imported anywhere under app/. Matched on
+        # import statements only, so a mention in prose does not count.
+        imported: set[str] = set()
+        pattern = re.compile(
+            r"^\s*(?:from|import)\s+(superplane_[a-z0-9_]+)", re.MULTILINE
+        )
+        for source in app_dir.rglob("*.py"):
+            for match in pattern.finditer(source.read_text()):
+                imported.add(match.group(1).split(".")[0])
+
+        # Sanity check on the scanner itself: if this set is empty the assertions
+        # below would pass vacuously, which is the failure mode of every
+        # scan-the-source test.
+        assert imported, "found no superplane_* imports under app/ — scanner is broken"
+        assert "superplane_contracts" in imported
+        assert "superplane_auth" in imported
+
+        staging_script = (component / "scripts" / "stage-domain-auth.sh").read_text()
+        dockerfile = (component / "Dockerfile").read_text()
+
+        # Parse the script's `packages=(...)` table rather than searching the file
+        # for the package name. Searching the whole file passes on a script whose
+        # table is empty but whose header comments still discuss the package — which
+        # is not a hypothetical: this file's header names `superplane_contracts`
+        # three times, so deleting its table entry left an earlier version of this
+        # test green. The staging behaviour lives in the table; assert on the table.
+        table = re.search(r"^packages=\((.*?)^\)", staging_script, re.MULTILINE | re.S)
+        assert table, (
+            "could not find the `packages=(...)` table in stage-domain-auth.sh; "
+            "this test asserts on that table and cannot verify anything without it"
+        )
+        staged_packages = set(re.findall(r'"[^":]+:([^":]+):', table.group(1)))
+        assert staged_packages, "the staging table parsed as empty"
+
+        for package in sorted(imported):
+            distribution = package.replace("_", "-")
+            assert package in staged_packages, (
+                f"app/ imports {package} but scripts/stage-domain-auth.sh does not "
+                f"stage it (table stages: {sorted(staged_packages)}); the image "
+                "will fail at import"
+            )
+            assert f"vendor/{distribution}" in dockerfile, (
+                f"app/ imports {package} but the Dockerfile does not COPY "
+                f"vendor/{distribution} into the build context"
+            )
+            # Note on scope, established by mutation: deleting only the COPY line
+            # leaves this assertion failing but is ALSO caught by the build itself —
+            # the `test -f` guard below the COPYs fails first, with the named cause.
+            # Deleting only the guard is the dangerous half, because a missing
+            # package then reaches runtime. Hence the next assertion.
+            # A COPY without a check produces an image that crash-loops on import
+            # instead of a build that fails with a named cause.
+            assert f"{distribution}/{package}/" in dockerfile, (
+                f"the Dockerfile copies vendor/{distribution} but does not verify "
+                f"the {package} package inside it is present"
+            )
 
 
 class TestOrganizationScopedAuthorization:

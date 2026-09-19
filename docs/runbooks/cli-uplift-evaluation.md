@@ -122,7 +122,72 @@ gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
 ```
 
 Suites: `login`, `install`, `admin`, `personal-aws`, `routing`, `inference`,
-`github`, `parity`, `harness`, `full`.
+`github`, `parity`, `harness`, `multi-deployment`, `full`.
+
+**E16/E17 model execution is currently disabled**, even with reachable gateways.
+The `multi_deployment_model_limits` requirement blocks both cases until hard
+Codex output limits (at most 256 tokens per request) and the aggregate 48-request
+ceiling are implemented before inference. The remote entry point also refuses
+execution; there is no configuration override. A short prompt or a check of
+receipts after inference cannot enforce these limits. AC-10/AC-11 remain open.
+The zero-model-request session checkpoint below remains available.
+
+`multi-deployment` (E16/E17, #5413) is the one suite whose fixture cannot be
+created from this workflow: it needs **three separately reachable ADP
+deployments**, each with its own sign-in fixture, supplied as a JSON array in the
+`CLI_UPLIFT_EVAL_DEPLOYMENTS` repository variable:
+
+```json
+[{"name": "development",  "gateway_url": "https://…/api", "credential_secret_name": "adp/…/dev-fixture"},
+ {"name": "integration",  "gateway_url": "https://…/api", "credential_secret_name": "adp/…/int-fixture"},
+ {"name": "preprod",      "gateway_url": "https://…/api", "credential_secret_name": "adp/…/preprod-fixture"}]
+```
+
+Each entry names a Secrets Manager secret; never a password. Two rules are
+enforced before a run starts, because breaking either produces a green result
+that proves nothing:
+
+- **Distinct gateway URLs.** `adp deployment add` treats a second name for an
+  already-registered URL as an *alias* — one canonical URL, one stable id, one
+  session — so three names over fewer URLs would satisfy a count while sharing
+  the very session whose independence is under test.
+- **A distinct `credential_secret_name` per deployment**, as required by the
+  fixture format. Each secret supplies credentials valid for its gateway;
+  matching user IDs across different deployments are allowed.
+
+E16 sends a unique `X-Request-ID` from each tool and matches the usage API's
+`request_id` field. Each test identity needs access to its own usage logs. A tool
+version that does not forward the correlation header fails receipt validation.
+E17 requires shell-tool access in the temporary fixture directory: each model
+runs a local barrier command, then continues in the same process after the harness
+switches the default, refreshes one deployment, and logs out another. The logged-out
+Codex session must report an authentication error, and the other two must finish.
+Cleanup failure makes the case fail.
+
+With the variable unset, E16/E17 report `blocked` naming `three_deployments`, and
+`full_acceptance` stays false. Supplying gateways clears that fixture requirement;
+the separate model-limit requirement above still blocks execution.
+
+Before inference, the same EC2 payload can run a session-only checkpoint:
+
+```bash
+python3 /home/ec2-user/adp-eval/remote/dispatcher.py \
+  multi_deployment_sessions /path/to/multi-deployment-payload.json
+```
+
+Run as `ec2-user`, with the installed Claude and Codex binaries on `PATH`.
+The payload needs the same instance/account, region, endpoint, CLI path and
+three deployment/credential references as E16/E17. It signs in to the real
+gateways in one temporary home, launches both tools with `--version`, verifies
+three separate proxy identities, switches the default, refreshes one session,
+and logs out another. The remaining tokens must still authenticate at their
+own gateways. It stops the proxies and deletes its temporary home.
+
+Its report contains `checkpoint_only: true` and `model_requests: 0`. It is not
+an E16/E17 acceptance case and cannot establish model routing or spend. Native
+platform-admin sessions may legitimately have an empty organization ID; usage
+queries must preserve that value and the gateway-reported user ID. Provision
+approved routing fixtures separately before attempting the model scenarios.
 
 ### Watch it
 

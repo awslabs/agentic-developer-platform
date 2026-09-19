@@ -320,6 +320,10 @@ def resume_details(api, args):
     if any((args.account_id, args.org, args.team, args.user, args.name, args.aws_profile, args.output_dir, args.destination)):
         raise CliError("--resume uses the account and routing scope saved in the download directory. No other setup options are needed.")
     metadata = common.read_private_json(Path(args.resume) / "destination.json")
+    # Whose setup this is, checked before any ADP or AWS call (Issue #5413): a
+    # routing rule assigned from another deployment's handoff would point a whole
+    # organization's Bedrock traffic at an account nobody chose here.
+    common.check_handoff_deployment(metadata, "Bedrock setup")
     if metadata["gateway_url"] != api.base:
         raise CliError("This setup belongs to a different ADP gateway. Sign in to that gateway before resuming.")
     destination = destination_by_id(api, metadata["destination_id"])
@@ -422,6 +426,8 @@ def run(args, api):
         setup, files = setup_package(api, destination)
         metadata = {
             "gateway_url": api.base,
+            # Which deployment this handoff belongs to (Issue #5413).
+            **common.deployment_stamp(),
             "destination_id": destination["id"],
             "account_id": setup["account_id"],
             "role_arn": setup["role_arn"],

@@ -78,7 +78,8 @@ class PlanPolicyTests(unittest.TestCase):
 
     def test_known_worker_manifests_can_change_in_same_cluster(self):
         old = {"namespace": "adp-agents", "cluster_name": "existing", "cluster_region": "us-east-1", "manifest_sha": "old"}
-        r = change("null_resource.keda_scaledjob", "null_resource", {"triggers": old}, {"triggers": dict(old, manifest_sha="new")})
+        r = change("null_resource.keda_scaledjob", "null_resource", {"triggers": old},
+                   {"triggers": dict(old, manifest_sha="new")}, ("create", "delete"))
         self.assertTrue(self.evaluate(r, "webhook-ingress")["routine"])
         for key in ("namespace", "cluster_name", "cluster_region"):
             bad = copy.deepcopy(r)
@@ -86,6 +87,59 @@ class PlanPolicyTests(unittest.TestCase):
             self.assertTrue(self.evaluate(bad, "webhook-ingress")["blocked"])
         r["address"] = "null_resource.unreviewed"
         self.assertTrue(self.evaluate(r, "webhook-ingress")["blocked"])
+
+    def test_scaledjob_delete_first_and_unknown_target_remain_blocked(self):
+        old = {"namespace": "adp-agents", "cluster_name": "existing", "cluster_region": "us-east-1", "manifest_sha": "old"}
+        r = change("null_resource.keda_scaledjob", "null_resource", {"triggers": old},
+                   {"triggers": dict(old, manifest_sha="new")})
+        self.assertTrue(self.evaluate(r, "webhook-ingress")["blocked"])
+        r["change"]["actions"] = ["create", "delete"]
+        for key in old:
+            bad = copy.deepcopy(r)
+            del bad["change"]["after"]["triggers"][key]
+            with self.subTest(key=key):
+                self.assertTrue(self.evaluate(bad, "webhook-ingress")["blocked"])
+
+    def gitlab_migration(self):
+        arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:adp/dev/gitlab-webhook-secret-aB1234"
+        secret = {"arn": arn, "name": "adp/dev/gitlab-webhook-secret"}
+        return {"resource_changes": [
+            change("aws_secretsmanager_secret_version.gitlab_webhook_secret[0]",
+                   "aws_secretsmanager_secret_version", {"arn": arn, "secret_id": arn, "secret_string": "unchanged"}, None, ("forget",)),
+            change("aws_secretsmanager_secret.gitlab_webhook_secret[0]", "aws_secretsmanager_secret",
+                   secret, dict(secret), ("no-op",))]}
+
+    def test_gitlab_version_forget_preserves_managed_secret(self):
+        plan = self.gitlab_migration()
+        self.assertEqual(policy.evaluate(plan, "webhook-ingress", "123456789012"),
+                         {"routine": [plan["resource_changes"][0]["address"]], "blocked": [], "protected": []})
+
+    def test_gitlab_exception_never_accepts_other_credential_changes(self):
+        mutations = {
+            "delete version": lambda p: p["resource_changes"][0]["change"].update(actions=["delete"]),
+            "replace version": lambda p: p["resource_changes"][0]["change"].update(actions=["delete", "create"]),
+            "change value": lambda p: p["resource_changes"][0]["change"].update(actions=["update"], after={"secret_string": "replacement"}),
+            "foreign secret id": lambda p: p["resource_changes"][0]["change"]["before"].update(secret_id="foreign"),
+            "wrong version arn": lambda p: p["resource_changes"][0]["change"]["before"].update(arn="foreign"),
+            "different credential": lambda p: p["resource_changes"][0].update(address="aws_secretsmanager_secret_version.github[0]"),
+            "secret absent": lambda p: p["resource_changes"].pop(),
+            "secret deleted": lambda p: p["resource_changes"][1]["change"].update(actions=["delete"], after=None),
+            "secret forgotten": lambda p: p["resource_changes"][1]["change"].update(actions=["forget"], after=None),
+            "secret updated": lambda p: p["resource_changes"][1]["change"].update(actions=["update"]),
+            "secret replaced": lambda p: p["resource_changes"][1]["change"].update(actions=["create", "delete"]),
+            "secret renamed": lambda p: p["resource_changes"][1]["change"]["after"].update(name="different"),
+            "secret ambiguous": lambda p: p["resource_changes"].append(copy.deepcopy(p["resource_changes"][1])),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                plan = self.gitlab_migration()
+                mutate(plan)
+                self.assertIn(plan["resource_changes"][0]["address"],
+                              policy.evaluate(plan, "webhook-ingress", "123456789012")["protected"])
+        for module, account in [("gateway", "123456789012"), ("webhook-ingress", "999999999999"),
+                                ("webhook-ingress", ""), ("webhook-ingress", ".*")]:
+            with self.subTest(module=module, account=account):
+                self.assertTrue(policy.evaluate(self.gitlab_migration(), module, account)["protected"])
 
     def test_empty_and_null_lambda_qualifiers_are_equivalent(self):
         before = {"function_name": "existing", "action": "lambda:InvokeFunction", "principal": "s3.amazonaws.com",

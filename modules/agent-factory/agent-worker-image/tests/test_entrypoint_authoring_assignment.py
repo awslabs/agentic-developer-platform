@@ -166,7 +166,7 @@ WEBHOOK_ENVELOPE = {
 def _subprocess_side_effect(*args, **kwargs):
     cmd = args[0] if args else kwargs.get("args", [])
     if cmd and cmd[0:2] == ["git", "ls-remote"]:
-        return MagicMock(returncode=1, stdout="", stderr="")
+        return MagicMock(returncode=2, stdout="", stderr="")
     return MagicMock(returncode=0, stdout="", stderr="")
 
 

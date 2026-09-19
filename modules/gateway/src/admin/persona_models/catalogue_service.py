@@ -221,10 +221,11 @@ def is_probe_enabled() -> bool:
 def _model_matches_patterns(canonical_model_id: str, patterns: list[str] | None) -> bool:
     """Check if a model ID matches any fnmatch pattern in the list.
 
-    When patterns is None or empty, inherits the persona-selection baseline
-    (D3: no explicit allowlist inherits a versioned platform baseline).
+    Only ``None`` inherits the persona-selection baseline (D3: no explicit
+    allowlist inherits a versioned platform baseline).  An explicit empty list
+    is a configured deny-all policy and must never widen back to the baseline.
     """
-    effective = patterns if patterns else list(PERSONA_ALLOWED_PATTERNS)
+    effective = patterns if patterns is not None else list(PERSONA_ALLOWED_PATTERNS)
     return any(fnmatch.fnmatch(canonical_model_id, p) for p in effective)
 
 

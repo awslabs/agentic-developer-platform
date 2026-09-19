@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { TaskPayload } from './sqs-client';
+import { proxyPort } from '../lib/proxyPort';
 
 /** One message per pod: set up routing before constructing any model client. */
 export async function withChatBedrockRouting<T>(task: TaskPayload, run: () => Promise<T>): Promise<T> {
@@ -12,7 +13,7 @@ export async function withChatBedrockRouting<T>(task: TaskPayload, run: () => Pr
   if (!task.message_id || !task.tenant_id || !process.env.SIGV4_PROXY_TARGET) {
     throw new Error('Cannot start Bedrock routing without a registered run, tenant, and gateway target.');
   }
-  const port = process.env.SIGV4_PROXY_PORT || '9090';
+  const port = proxyPort();
   const endpoint = `http://127.0.0.1:${port}`;
   const proxyEnv = { ...process.env, SIGV4_PROXY_PORT: port, TENANT_ID: task.tenant_id, ADP_MESSAGE_ID: task.message_id };
   // The gateway authenticates the pod. User AWS credentials belong to tools,

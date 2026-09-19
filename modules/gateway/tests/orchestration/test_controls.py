@@ -809,20 +809,11 @@ class TestRO3fDeclaredSeam:
         assert "not implemented" in response.json()["detail"].lower()
         service.authorize_command.assert_called_once()
 
-    def test_no_verb_is_advertised_as_supported(self):
-        """The single source of truth behind every 501 above.
-
-        If a later story adds a verb to this set without implementing the
-        transport, these routes stop answering 501 and start reporting outcomes
-        they cannot deliver — so the seam is pinned at the constant, not only at
-        the status code.
-        """
+    def test_only_implemented_verbs_are_advertised_as_supported(self):
+        """Pause/resume have signed transport; steer/abort remain unavailable."""
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert SUPPORTED_ACTIONS == frozenset(), (
-            "A control verb was marked supported. Issue #3960 ships the authenticated path with every verb unsupported; "
-            "implementing one requires the transport and the state contract in the same change."
-        )
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})
 
     @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
     def test_all_four_verbs_are_routed(self, app_with_router, action):
@@ -858,3 +849,550 @@ class TestDecisionsReadApi:
         assert len(human_approvals) >= 1
         assert human_approvals[0]["actor_id"] == USER_ID
         assert human_approvals[0]["actor_role"] == ACTOR_ROLE
+
+
+class TestLegacyLaneAdoptionThroughResume:
+    """Resume is the production caller of `handoff.adopt_legacy_lane` (#5144).
+
+    The reviewer's fourth blocker was that `adopt_legacy_lane` and
+    `outstanding_block` were exported but unreachable: nothing in production called
+    either, so the guards they carry protected nothing and the "legacy adoption"
+    requirement was satisfied on paper only. These tests are written against the
+    **route**, not the helper, because that is the whole claim — a test that called
+    `adopt_legacy_lane` directly would pass just as well with the integration
+    deleted, which is exactly the state the blocker described.
+
+    Why resume is the site: a story whose worker exited without committing a
+    continuation receipt is left in `awaiting_merge` by #5144's hold, and
+    `_RESUMABLE_STATES` already routes that state here. It is also the only moment
+    a *human* is present to attest that a prior owner's effects and credentials
+    were reconciled — evidence no scheduled pass can produce, and which must never
+    be defaulted true.
+
+    Everything is asserted against durable claim state as well as the response,
+    because "it answered 409" is compatible with a half-finished transfer.
+    """
+
+    @staticmethod
+    def _resolver(app, rows: dict[str, dict] | None = None, *, fault: bool = False):
+        """Install the liveness stub the route's dependency resolves to.
+
+        Overriding the dependency rather than patching boto3 is what
+        `get_run_binding_resolver` exists for. The stub is shared with
+        `test_handoff_adoption.py` deliberately: the verdicts being driven here are
+        the prior owner's, and two divergent fakes would let the two suites
+        disagree about what `unverifiable` means.
+        """
+        from src.orchestration.controls import get_run_binding_resolver
+        from tests.orchestration.test_handoff_adoption import FakeLivenessResolver
+
+        resolver = FakeLivenessResolver(rows, fault=fault)
+        app.dependency_overrides[get_run_binding_resolver] = lambda: resolver
+        return resolver
+
+    @staticmethod
+    async def _held_story(session, *, run_id: str, issue: int = 5144):
+        """A story held in `awaiting_merge` whose lane a legacy owner still holds.
+
+        Built through the real claim primitives (`claim_work` + `bind_run`) rather
+        than by inserting a row, so the lane the route finds is shaped exactly like
+        one a pre-engine direct dispatch actually left behind. An accepted plan and
+        a `PLAN_ACCEPTED` decision are seeded because adoption is policy-bound: the
+        route resolves both server-side and refuses without them.
+        """
+        from decimal import Decimal
+
+        from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits, stamp_policy
+        from src.orchestration.models import OrchestrationAcceptedPlan
+        from src.orchestration.work_claims import ClaimBinding, ClaimOwner, OwnerKind, bind_run, claim_work
+
+        flow = await seed_flow(session, slug=f"legacy-{issue}")
+        policy = stamp_policy(
+            ExecutionPolicy(
+                org_id=ORG_A,
+                repository_ids=["acme/work"],
+                allowed_actions=[Action.DEVELOP],
+                expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+                limits=PolicyLimits(max_wall_clock_seconds=86400, max_spend_usd=Decimal("100"), max_attempts_per_node=10, max_concurrent_actions=5),
+            ),
+            principal_id=USER_ID,
+            org_id=ORG_A,
+        )
+        session.add(
+            OrchestrationAcceptedPlan(
+                org_id=ORG_A,
+                flow_id=flow.id,
+                version=3,
+                plan_document={"execution_policy": policy.model_dump(mode="json")},
+                plan_hash=f"plan-{issue}",
+            )
+        )
+        node = await seed_node(
+            session,
+            flow,
+            node_ref=f"story-{issue}",
+            kind=NodeKind.STORY.value,
+            state=NodeState.AWAITING_MERGE.value,
+        )
+        node.issue_ref = f"#{issue}"
+        await OrchestrationRepository(session).append_decision(
+            org_id=ORG_A,
+            flow_id=flow.id,
+            kind=DecisionKind.PLAN_ACCEPTED.value,
+            actor_id=USER_ID,
+            actor_role=ACTOR_ROLE,
+            actor_kind=ActorKind.HUMAN.value,
+        )
+        receipt = await claim_work(
+            session,
+            binding=ClaimBinding(org_id=ORG_A, provider_repository_id=987_654_321, issue_number=issue),
+            owner=ClaimOwner(OwnerKind.DIRECT_DISPATCH, "resident-coordinator"),
+            event_id=f"legacy-event-{issue}",
+        )
+        await bind_run(session, org_id=ORG_A, claim_id=receipt.claim_id, generation=receipt.generation, run_id=run_id)
+        await session.flush()
+        return flow, node, receipt
+
+    @staticmethod
+    def _blocks(rows):
+        """The #5144 typed blocks among a flow's decisions, parsed.
+
+        Asserted through the structured `rejection_reason` rather than prose,
+        because the block code is what routes an operator to a runbook — and
+        because it must stay the same shape `dispatch_pass._record_admission_refusal`
+        writes, so one query finds refusals from both sides.
+        """
+        import json
+
+        parsed = []
+        for row in rows:
+            if row.kind != DecisionKind.TRANSITION_REJECTED.value or not row.rejection_reason:
+                continue
+            try:
+                payload = json.loads(row.rejection_reason)
+            except ValueError:
+                continue
+            if payload.get("issue") == "5144":
+                parsed.append((row, payload))
+        return parsed
+
+    @pytest.fixture(autouse=True)
+    def _adoption_on(self, monkeypatch):
+        """Both flags on, so a refusal below is a real guard rather than a flag.
+
+        Their defaults are asserted separately (`test_handoff.py` for adoption, and
+        `test_adoption_stays_disabled_by_default` here for the route), because with
+        the flags left off every test in this class would pass for the wrong
+        reason — the route would return early and never reach the transfer at all.
+        """
+        from src.orchestration.handoff import ADOPTION_ENABLED_ENV
+
+        monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+        monkeypatch.setenv(ADOPTION_ENABLED_ENV, "true")
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "acme/work")
+        monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=42))
+        monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=987_654_321))
+
+    @pytest.mark.asyncio
+    async def test_same_tenant_issue_in_another_repository_is_not_adopted(self, session, app_with_router):
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from src.orchestration.work_claims import ClaimBinding, ClaimOwner, OwnerKind, bind_run, claim_work
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        other = await claim_work(
+            session,
+            binding=ClaimBinding(org_id=ORG_A, provider_repository_id=111, issue_number=5144),
+            owner=ClaimOwner(OwnerKind.DIRECT_DISPATCH, "other-repository"),
+            event_id="other-event",
+        )
+        await bind_run(session, org_id=ORG_A, claim_id=other.claim_id, generation=other.generation, run_id="other-run")
+        _, node, own = await self._held_story(session, run_id="own-run")
+        self._resolver(app_with_router, {"own-run": _exited_row(), "other-run": _exited_row()})
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+        assert response.status_code == 200, response.text
+        row = await session.get(OrchestrationWorkClaim, other.claim_id)
+        assert (row.state, row.generation, row.active_run_id) == (ClaimState.HELD.value, other.generation, "other-run")
+        assert (await session.get(OrchestrationWorkClaim, own.claim_id)).generation == own.generation + 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["missing_repo", "missing_installation", "credentials_unavailable", "provider_unavailable"])
+    async def test_missing_repository_identity_blocks_adoption(self, session, app_with_router, monkeypatch, failure):
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+
+        _, node, own = await self._held_story(session, run_id="own-run")
+        from unittest.mock import AsyncMock
+
+        from httpx import ConnectError
+
+        if failure == "missing_repo":
+            monkeypatch.delenv("BG_ORCH_DISPATCH_REPO")
+        elif failure == "missing_installation":
+            monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=None))
+        else:
+            error = ValueError("credentials unavailable") if failure == "credentials_unavailable" else ConnectError("provider unavailable")
+            monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(side_effect=error))
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+        assert response.status_code == 409, response.text
+        assert (await session.get(OrchestrationWorkClaim, own.claim_id)).state == ClaimState.HELD.value
+        assert self._blocks(await decisions_for(session, node.flow_id))[-1][1]["block_code"] == "authority_unverifiable"
+
+    @pytest.mark.asyncio
+    async def test_an_exited_reconciled_legacy_lane_is_adopted_once(self, session, app_with_router):
+        """The issue's validation bullet, first half: adopt an exited lane, once.
+
+        `force_handover` leaves the claim RELEASED at the next generation with no
+        active run, so the adopter reclaims through ordinary admission instead of
+        being spliced into a held row. Asserting the generation advanced *and* the
+        run was cleared is what distinguishes a real transfer from a route that
+        merely returned 200.
+        """
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from src.orchestration.work_claims import ReleaseReason
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        run = "legacy-run-1"
+        _, node, receipt = await self._held_story(session, run_id=run)
+        self._resolver(app_with_router, {run: _exited_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 200, response.text
+        assert await state_of(session, node.id) == NodeState.READY.value
+        claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
+        assert claim.state == ClaimState.RELEASED.value
+        assert claim.generation == receipt.generation + 1
+        assert claim.active_run_id is None
+        assert claim.release_reason == ReleaseReason.HANDOVER.value
+
+    @pytest.mark.asyncio
+    async def test_a_second_resume_does_not_transfer_the_lane_again(self, session, app_with_router):
+        """ "Once" is the load-bearing word. A repeat must not advance again.
+
+        Without this, a double-click would walk the generation forward on every
+        press, and each advance permanently invalidates tokens issued under the
+        previous one — so an idempotence bug here is a way to break a *working*
+        owner, not just to waste a write.
+        """
+        from src.orchestration.models import OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        run = "legacy-run-1"
+        _, node, receipt = await self._held_story(session, run_id=run)
+        self._resolver(app_with_router, {run: _exited_row()})
+        client = client_for(app_with_router)
+        assert client.post(resume_route(node.id), json={"reconciled": True}).status_code == 200
+        generation_after_adoption = (await session.get(OrchestrationWorkClaim, receipt.claim_id)).generation
+
+        # The node is `ready` now, so this resume is refused by the narrowing guard
+        # — and the point is that the lane is untouched on the way to that refusal.
+        second = client.post(resume_route(node.id), json={"reconciled": True})
+
+        assert second.status_code == 409
+        claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
+        assert claim.generation == generation_after_adoption
+
+    @pytest.mark.asyncio
+    async def test_a_live_prior_owner_blocks_the_transfer_and_the_resume(self, session, app_with_router):
+        """The issue's validation bullet, second half — and the reason F4 matters.
+
+        A live owner must block, and the story must *not* be reported resumed. If
+        the resume proceeded anyway, the engine would begin work on a story a
+        running legacy worker still owns: two writers on one branch, which is the
+        double-effect #5144 exists to prevent, reintroduced by its own recovery
+        path.
+        """
+        from src.orchestration.execution_state import BlockCode
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _live_row
+
+        run = "legacy-run-1"
+        flow, node, receipt = await self._held_story(session, run_id=run)
+        self._resolver(app_with_router, {run: _live_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 409
+        # Nothing promoted: the hold stands.
+        assert await state_of(session, node.id) == NodeState.AWAITING_MERGE.value
+        claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
+        assert (claim.state, claim.generation, claim.active_run_id) == (ClaimState.HELD.value, receipt.generation, run)
+        blocks = self._blocks(await decisions_for(session, flow.id))
+        assert len(blocks) == 1
+        assert blocks[0][1]["block_code"] == BlockCode.OWNERSHIP_LOST.value
+        assert blocks[0][1]["owner"]
+        assert blocks[0][1]["required_input"]
+        # The node went nowhere, so a recorded destination would read as a resume
+        # that happened and was undone.
+        assert blocks[0][0].to_state is None
+        assert blocks[0][0].actor_kind == ActorKind.HUMAN.value
+
+    @pytest.mark.asyncio
+    async def test_an_unverifiable_prior_owner_blocks_the_transfer(self, session, app_with_router):
+        """Loss of contact is not evidence of an exit.
+
+        The case a weaker implementation gets wrong, because a partitioned-but-
+        working worker and an exited one look identical from here. It must refuse
+        exactly as `live` does, and this is the test that fails if the route ever
+        treats a missing or stale signal as permission.
+        """
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _unverifiable_row
+
+        run = "legacy-run-1"
+        flow, node, receipt = await self._held_story(session, run_id=run)
+        self._resolver(app_with_router, {run: _unverifiable_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 409
+        assert await state_of(session, node.id) == NodeState.AWAITING_MERGE.value
+        assert (await session.get(OrchestrationWorkClaim, receipt.claim_id)).state == ClaimState.HELD.value
+        assert len(self._blocks(await decisions_for(session, flow.id))) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unattested_resume_refuses_rather_than_assuming_reconciliation(self, session, app_with_router):
+        """`reconciled` defaults to False, and the default must refuse.
+
+        A database fence cannot revoke a GitHub installation token already issued,
+        so the attestation is the only evidence that exists. If it defaulted true —
+        or if the route passed `True` regardless — every resume would silently carry
+        the authority that makes a transfer legal, and `force_handover`'s guards 3
+        and 4 would be unreachable. The lane is exited here, so the *only* thing
+        refusing is the missing attestation.
+        """
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        run = "legacy-run-1"
+        _, node, receipt = await self._held_story(session, run_id=run)
+        self._resolver(app_with_router, {run: _exited_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={})
+
+        assert response.status_code == 409
+        assert await state_of(session, node.id) == NodeState.AWAITING_MERGE.value
+        assert (await session.get(OrchestrationWorkClaim, receipt.claim_id)).state == ClaimState.HELD.value
+
+    @pytest.mark.asyncio
+    async def test_adoption_stays_disabled_by_default(self, session, app_with_router, monkeypatch):
+        """Staged deployment: the flag is off until both revisions are verified.
+
+        With adoption disabled the route must neither transfer the lane nor block
+        on it — the legacy lane is simply not this engine's business yet, and a
+        resume of an ordinary held story has to keep working. A flag that blocked
+        instead of standing aside would make every legacy story unresumable the
+        moment this code shipped.
+        """
+        from src.orchestration.handoff import ADOPTION_ENABLED_ENV
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        monkeypatch.setenv(ADOPTION_ENABLED_ENV, "false")
+        run = "legacy-run-1"
+        _, node, receipt = await self._held_story(session, run_id=run)
+        self._resolver(app_with_router, {run: _exited_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 200, response.text
+        assert await state_of(session, node.id) == NodeState.READY.value
+        claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
+        assert (claim.state, claim.generation) == (ClaimState.HELD.value, receipt.generation)
+
+    @pytest.mark.asyncio
+    async def test_an_engine_owned_lane_is_never_taken_by_this_control(self, session, app_with_router):
+        """Adoption is for *legacy* lanes. An engine lane must be left alone.
+
+        The `DIRECT_DISPATCH` filter is what keeps this control from becoming a way
+        to seize a live engine lane — an `ENGINE_FLOW` claim is already the
+        engine's, and taking it away would release a claim a running attempt's
+        receipt is attributed to, which is the very stranding F1 refuses.
+        """
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from src.orchestration.work_claims import ClaimBinding, ClaimOwner, OwnerKind, bind_run, claim_work
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        run = "engine-run-1"
+        flow, node, _ = await self._held_story(session, run_id="legacy-run-1", issue=5150)
+        engine_claim = await claim_work(
+            session,
+            binding=ClaimBinding(org_id=ORG_A, provider_repository_id=987_654_321, issue_number=5151),
+            owner=ClaimOwner(OwnerKind.ENGINE_FLOW, flow.id),
+            event_id="engine-event",
+        )
+        await bind_run(session, org_id=ORG_A, claim_id=engine_claim.claim_id, generation=engine_claim.generation, run_id=run)
+        node.issue_ref = "#5151"
+        await session.flush()
+        self._resolver(app_with_router, {run: _exited_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 200, response.text
+        claim = await session.get(OrchestrationWorkClaim, engine_claim.claim_id)
+        assert (claim.state, claim.generation, claim.active_run_id) == (ClaimState.HELD.value, engine_claim.generation, run)
+
+    @pytest.mark.asyncio
+    async def test_another_tenants_legacy_lane_is_not_adopted(self, session, app_with_router):
+        """Tenant isolation on the lane lookup, not just on the node.
+
+        The claim is found by `(org_id, issue)` from the story, never from the
+        request — but a missing `org_id` filter would let a resume in one tenant
+        transfer an identically-numbered issue's lane in another. The two orgs here
+        share an issue number precisely so that omission fails.
+        """
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from src.orchestration.work_claims import ClaimBinding, ClaimOwner, OwnerKind, bind_run, claim_work
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        foreign_run = "foreign-run-1"
+        foreign = await claim_work(
+            session,
+            binding=ClaimBinding(org_id=ORG_B, provider_repository_id=987_654_321, issue_number=5144),
+            owner=ClaimOwner(OwnerKind.DIRECT_DISPATCH, "resident-coordinator"),
+            event_id="foreign-event",
+        )
+        await bind_run(session, org_id=ORG_B, claim_id=foreign.claim_id, generation=foreign.generation, run_id=foreign_run)
+        _, node, own = await self._held_story(session, run_id="legacy-run-1")
+        self._resolver(app_with_router, {"legacy-run-1": _exited_row(), foreign_run: _exited_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 200, response.text
+        # This tenant's lane transferred; the other tenant's is untouched.
+        assert (await session.get(OrchestrationWorkClaim, own.claim_id)).generation == own.generation + 1
+        foreign_row = await session.get(OrchestrationWorkClaim, foreign.claim_id)
+        assert (foreign_row.state, foreign_row.generation) == (ClaimState.HELD.value, foreign.generation)
+
+    @pytest.mark.asyncio
+    async def test_a_story_with_no_legacy_lane_resumes_normally(self, session, app_with_router):
+        """The ordinary case must stay ordinary, or this becomes a global stall.
+
+        Most stories have no legacy claim at all. Without this test the lane lookup
+        could be over-broad — or could refuse on absence — and every routine resume
+        in the platform would start answering 409 with nothing in the suite to say
+        so.
+        """
+        flow = await seed_flow(session)
+        node = await seed_node(session, flow, kind=NodeKind.STORY.value, state=NodeState.FAILED.value)
+        self._resolver(app_with_router, {})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 200, response.text
+        assert await state_of(session, node.id) == NodeState.READY.value
+        assert self._blocks(await decisions_for(session, flow.id)) == []
+
+    @pytest.mark.asyncio
+    async def test_a_faulting_liveness_lookup_blocks_rather_than_assuming_an_exit(self, session, app_with_router):
+        """An unreadable liveness record is exactly when assuming an exit is unsafe.
+
+        Refuse, do not degrade. The typed block routes to a provider-availability
+        runbook rather than an ownership one, because the condition an operator has
+        to clear is the lookup, not the claim.
+        """
+        from src.orchestration.execution_state import BlockCode
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+
+        flow, node, receipt = await self._held_story(session, run_id="legacy-run-1")
+        self._resolver(app_with_router, fault=True)
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 409
+        assert (await session.get(OrchestrationWorkClaim, receipt.claim_id)).state == ClaimState.HELD.value
+        blocks = self._blocks(await decisions_for(session, flow.id))
+        assert blocks[0][1]["block_code"] == BlockCode.PROVIDER_UNAVAILABLE.value
+
+    @pytest.mark.asyncio
+    async def test_adoption_requires_an_accepted_policy(self, session, app_with_router):
+        """Policy-bound only: a lane with no accepted plan cannot be adopted.
+
+        Adopting under no policy would place work under engine ownership that no
+        human ever admitted, and the plan version is resolved *server-side* from
+        the flow so a caller cannot supply one. A flow with no accepted plan
+        resolves to version 0, which `adopt_legacy_lane` refuses.
+        """
+        from src.orchestration.models import ClaimState, OrchestrationAcceptedPlan, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        run = "legacy-run-1"
+        flow, node, receipt = await self._held_story(session, run_id=run)
+        await session.execute(
+            update(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id).values(superseded_at=datetime.now(UTC))
+        )
+        await session.flush()
+        self._resolver(app_with_router, {run: _exited_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 409
+        assert await state_of(session, node.id) == NodeState.AWAITING_MERGE.value
+        assert (await session.get(OrchestrationWorkClaim, receipt.claim_id)).state == ClaimState.HELD.value
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_policy_refuses_instead_of_falling_back(self, session, app_with_router):
+        """F3's rule, applied here: refusal is not absence.
+
+        A stored policy that cannot be validated must block adoption, not fall
+        through to a legacy-style transfer. That fallback is how policy-bound work
+        loses its restrictions, and it is the same defect the dispatch path was
+        repaired for.
+        """
+        from src.orchestration.execution_state import BlockCode
+        from src.orchestration.models import ClaimState, OrchestrationAcceptedPlan, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        run = "legacy-run-1"
+        flow, node, receipt = await self._held_story(session, run_id=run)
+        await session.execute(
+            update(OrchestrationAcceptedPlan)
+            .where(OrchestrationAcceptedPlan.flow_id == flow.id)
+            .values(plan_document={"execution_policy": {"not": "a policy"}})
+        )
+        await session.flush()
+        self._resolver(app_with_router, {run: _exited_row()})
+
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 409
+        assert await state_of(session, node.id) == NodeState.AWAITING_MERGE.value
+        assert (await session.get(OrchestrationWorkClaim, receipt.claim_id)).state == ClaimState.HELD.value
+        blocks = self._blocks(await decisions_for(session, flow.id))
+        assert blocks[0][1]["block_code"] == BlockCode.AUTHORITY_UNVERIFIABLE.value
+
+    @pytest.mark.asyncio
+    async def test_adoption_needs_the_permission_like_every_other_write_here(self, session, app_with_router):
+        """No softer door. Adoption runs behind the same `PLAN_APPROVE` gate.
+
+        The check happens before the node is even resolved, so an unauthorized
+        caller cannot reach the lane lookup — let alone transfer a lane.
+        """
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        run = "legacy-run-1"
+        _, node, receipt = await self._held_story(session, run_id=run)
+        self._resolver(app_with_router, {run: _exited_row()})
+
+        response = client_for(app_with_router, permitted=False).post(resume_route(node.id), json={"reconciled": True})
+
+        assert response.status_code == 403
+        assert await state_of(session, node.id) == NodeState.AWAITING_MERGE.value
+        assert (await session.get(OrchestrationWorkClaim, receipt.claim_id)).state == ClaimState.HELD.value
+
+    @pytest.mark.asyncio
+    async def test_accepted_plan_without_execution_policy_cannot_adopt(self, session, app_with_router):
+        from src.orchestration.models import ClaimState, OrchestrationAcceptedPlan, OrchestrationWorkClaim
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        flow, node, receipt = await self._held_story(session, run_id="legacy-run")
+        await session.execute(update(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id).values(plan_document={}))
+        await session.flush()
+        self._resolver(app_with_router, {"legacy-run": _exited_row()})
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+        assert response.status_code == 409, response.text
+        claim = await session.get(OrchestrationWorkClaim, receipt.claim_id)
+        assert (claim.state, claim.generation, claim.active_run_id) == (ClaimState.HELD.value, receipt.generation, "legacy-run")
+        assert self._blocks(await decisions_for(session, flow.id))[-1][1]["block_code"] == "authority_unverifiable"

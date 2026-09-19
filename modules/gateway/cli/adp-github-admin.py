@@ -199,7 +199,12 @@ def owner_choice(args, interactive):
 
 def handoff(api, result, owner):
     """Stage the one browser step GitHub requires, then leave the run resumable."""
-    page = common.private_directory(Path.home() / ".adp/state") / HANDOFF_FILE
+    # The selected deployment's state dir, not a hardcoded one (Issue #5413). This
+    # page carries a state nonce minted by ONE gateway; writing it to a shared path
+    # would let a second deployment's handoff overwrite it, and the user would
+    # complete the browser step against a nonce the gateway they are talking to
+    # never issued.
+    page = common.private_directory(common.state_dir()) / HANDOFF_FILE
     # The page carries a single-use state nonce, so it is created 0600 rather
     # than written first and tightened afterwards.
     descriptor = os.open(page, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)

@@ -11,7 +11,8 @@
  * Depends on: #1590 (canonical URL), #1591 (identity header), #1602 (native MCP).
  */
 
-import { getDoorAuthHeaders } from './lib/doorAuth';
+import { getDoorAuthHeaders, getDoorBaseUrl } from './lib/doorAuth';
+import { isProtectedKnowledgeRun } from './lib/knowledgeBridge';
 
 /**
  * Feature flag: register Knowledge Layer MCP tools.
@@ -37,10 +38,12 @@ const DOOR_MCP_URL =
  * Code verbs (search/understand/impact/browse) ACL on X-GitHub-Login/X-GitHub-Teams.
  * Personal verbs (remember/experience) ACL on X-Owner-Sub/X-Tenant-Id.
  *
- * Headers are set from TRUSTED env vars injected by entrypoint.py (from SQS
- * envelope metadata) — never from agent/LLM input.
+ * Protected runs return no static headers; the gateway derives identity per
+ * request. Legacy runs still use dispatch environment metadata, which is not an
+ * isolation boundary against code executing inside the worker.
  */
 export function buildKnowledgeLayerHeaders(): Record<string, string> {
+  if (isProtectedKnowledgeRun()) return {};
   const headers: Record<string, string> = {};
 
   // Shared secret authenticating this caller to the Door (#4073 finding #8).
@@ -82,7 +85,7 @@ export function getKnowledgeLayerMcpConfig(): {
 } {
   return {
     type: 'http' as const,
-    url: DOOR_MCP_URL,
+    url: `${getDoorBaseUrl(DOOR_MCP_URL.replace(/\/mcp\/$/, ''))}/mcp/`,
     headers: buildKnowledgeLayerHeaders(),
   };
 }

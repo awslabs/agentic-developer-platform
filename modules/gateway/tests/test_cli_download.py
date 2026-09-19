@@ -93,6 +93,10 @@ class TestCliScriptDownload:
             HELPER_SCRIPT,
             PROXY_SCRIPT,
             "adp_common.py",
+            # Issue #5413: `adp` resolves the selected deployment through this at
+            # entry, so an install without it has no working verbs. Names, URLs
+            # and paths only — no secret to expose on an unauthenticated route.
+            "adp_deployments.py",
             "adp-admin.py",
             "adp-bedrock.py",
             "adp-aws.py",

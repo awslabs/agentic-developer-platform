@@ -725,6 +725,16 @@ async def prepare_action(
     _adopt_generation(row, identity)
 
     existing = await _action_for_key(session, row, intent.operation_key)
+    if existing is not None and existing.kind != intent.kind:
+        # Same key, different operation: the key no longer identifies one effect, so
+        # honouring it would let this caller adopt a receipt that belongs to different
+        # work. That is indistinguishable from "already done" to the caller, so refuse
+        # instead of guessing which effect the row stands for. Reaching this means a
+        # key derivation lost injectivity; fail closed and name it.
+        conflict = f"operation key {intent.operation_key} is already held by a {existing.kind} action; refusing to reuse it for {intent.kind}"
+        logger.warning("execution store: refusing action on execution %s — %s", row.id, conflict)
+        return _conflict(row, conflict)
+
     if existing is not None:
         # The duplicate path, and the whole point of the operation key. Returning the
         # original record — not a fresh one, and not an error — is what lets a

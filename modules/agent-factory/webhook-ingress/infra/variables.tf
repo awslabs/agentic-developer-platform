@@ -230,7 +230,7 @@ variable "require_signed_provenance" {
 variable "eks_cluster_name" {
   description = "EKS cluster name for deploying the agent ScaledJob. The OIDC provider, issuer, and KEDA operator role are discovered from the cluster — no remote-state reads needed."
   type        = string
-  default     = "adp-dev-eks-cluster"
+  default     = null
 }
 
 # keda_operator_role_name removed — KEDA operator role is now owned by this
@@ -508,6 +508,9 @@ variable "agent_control_enabled" {
   default     = false
 }
 
+# #5222: pause/resume require this protected path and configured signing keys.
+# Keep activation explicit; distributing control keys must not bypass the
+# worker isolation/readiness gates in #5195/#5210.
 variable "agent_authority_enabled" {
   description = "Enable protected dispatch and mandatory pre-repository pod bootstrap. Keep off until the delegated-authority acceptance and writer migration are complete."
   type        = bool

@@ -122,6 +122,15 @@ class BootstrapStore:
         }
         if grant.flow_id:
             execution["flow_id"] = {"S": grant.flow_id}
+        # A one-run override is protected execution metadata for this invocation
+        # only.  It is deliberately outside the root policy snapshot and is not
+        # copied by child dispatch, so descendants resolve their own personas.
+        direct_requested = envelope.get("model_requested")
+        if isinstance(direct_requested, str) and direct_requested:
+            execution["direct_model_requested"] = {"S": direct_requested}
+        direct_override = envelope.get("model_resolved")
+        if isinstance(direct_override, str) and direct_override:
+            execution["direct_model_override"] = {"S": direct_override}
         parent = envelope.get("correlation", {}).get("parent_principal")
         if parent:
             execution["parent_principal"] = {"S": parent}

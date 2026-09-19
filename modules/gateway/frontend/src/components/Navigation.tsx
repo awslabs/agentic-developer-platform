@@ -146,6 +146,12 @@ export function Navigation() {
     navItems.push({ to: '/settings/credentials', label: 'Credentials', icon: '🔑' });
   }
 
+  // Per-persona model preferences are personal by default; the page itself
+  // offers server-authorized managed-service scopes when any exist (#5422).
+  if (features.agent_models) {
+    navItems.push({ to: '/settings/agent-models', label: 'Agent Models', icon: '🧠' });
+  }
+
   // System Health (demoted proxy dashboard) for platform admins (Issue #3634)
   if (features.system_dashboard && isPlatformAdmin()) {
     navItems.push({ to: '/admin/system', label: 'System Health', icon: '🖥️' });

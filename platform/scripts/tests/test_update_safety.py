@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,6 +12,37 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 
 
 class UpdateGateTests(unittest.TestCase):
+    def test_real_terraform_retains_context_after_overlays_but_accepts_release_override(self):
+        for module, context in (("webhook-ingress", "webhook-ingress"), ("gateway-worker-authority", "gateway")):
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "main.tf").write_text('variable "integration" {}\nvariable "agent_image" {}\n')
+                (root / "base.tfvars").write_text('integration="base"\nagent_image="base"\n')
+                (root / "overlay.tfvars").write_text('integration="overlay"\nagent_image="overlay"\n')
+                (root / f"{context}.tfvars.json").write_text(json.dumps({"integration": "retained", "agent_image": "old"}))
+                (root / "integration-before.json").write_text(json.dumps({"account": "123456789012"}))
+                prefix = '''set -euo pipefail
+ok() { :; }
+fail() { echo "$*" >&2; exit 1; }
+terraform() {
+  [ "$1" = plan ] || return 97
+  shift
+  local inputs=()
+  for input in "$@"; do
+    case "$input" in -var=*|-var-file=*) inputs+=("$input");; esac
+  done
+  echo 'jsonencode({integration=var.integration,image=var.agent_image})' | "$REAL_TERRAFORM" console -no-color "${inputs[@]}"
+}
+source "$1"
+terraform_update_apply "$MODULE" base.tfvars -var-file=overlay.tfvars -var=agent_image=release
+'''
+                env = dict(os.environ, REAL_TERRAFORM=shutil.which("terraform"), MODULE=module,
+                           UPGRADE_RUN_DIR=directory, ACCOUNT_ID="123456789012")
+                result = subprocess.run(["bash", "-c", prefix, "test", str(SCRIPTS / "terraform-update.sh")],
+                                        cwd=root, env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(json.loads(result.stdout)), {"integration": "retained", "image": "release"})
+
     def run_gate(self, actions=None, plan_exit=2, show_exit=0, invalid=False, confirm=False, resource=None, check_only=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

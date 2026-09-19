@@ -145,11 +145,22 @@ async def admit_pending(store, invocation_id: str, *, session=None, allow_defer:
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={":repo": {"N": str(repository_id)}, ":pending": {"S": "pending"}},
         )
-    if issue == 0 and grant.authority.kind == AUTHORITY_SERVICE_POLICY:
-        # Resolve the repository for future issue-bearing child dispatches even
-        # though the scheduled coordinator itself owns no assigned issue.
-        return {"enforced": True, "disposition": "no_issue"}
 
+    async def with_model_policy(active_session, receipt: dict) -> dict:
+        # PMM-06 is deliberately behaviour-neutral until PMM-09 flips the
+        # posture. Snapshot failures are returned as evidence and never turn a
+        # work-claim success into a producer refusal in report-only mode.
+        from src.agentauth.model_policy import ensure_snapshot_report_only
+
+        result = dict(receipt)
+        result["model_policy_snapshot"] = await ensure_snapshot_report_only(
+            active_session,
+            store=store,
+            invocation_id=invocation_id,
+        )
+        return result
+
+    no_issue = issue == 0 and grant.authority.kind == AUTHORITY_SERVICE_POLICY
     # Recognized-authority handling (#4529). The owner line below used to read
     # `ENGINE_FLOW if kind == "gate_decision" else DIRECT_DISPATCH`, so every kind
     # this function had never considered silently claimed work as a direct dispatch.
@@ -197,11 +208,15 @@ async def admit_pending(store, invocation_id: str, *, session=None, allow_defer:
             return {"disposition": "waiting_for_owner", "invocation_id": invocation_id}
 
     if session is not None:
-        return await reserve(session)
+        receipt = {"enforced": True, "disposition": "no_issue"} if no_issue else await reserve(session)
+        return await with_model_policy(session, receipt)
     from src.shared.database import get_session_factory
 
     async with get_session_factory()() as owned_session:
-        receipt = await reserve(owned_session)
+        # Resolve the repository for future issue-bearing child dispatches even
+        # though the scheduled coordinator itself owns no assigned issue.
+        receipt = {"enforced": True, "disposition": "no_issue"} if no_issue else await reserve(owned_session)
+        receipt = await with_model_policy(owned_session, receipt)
         await owned_session.commit()
         return receipt
 
@@ -259,6 +274,8 @@ async def maintain_worker_claim(
     if row.active_run_id != invocation_id or row.state != ClaimState.HELD.value:
         raise WorkClaimError("claim_not_owned", "This invocation no longer owns the work.")
     if terminal:
+        # Process status is advisory. The locked release primitive preserves a
+        # current continuation without rejecting a valid terminal status report.
         await release_work(
             session,
             org_id=org_id,

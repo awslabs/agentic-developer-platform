@@ -96,6 +96,35 @@ class TestPersonaParity:
         with pytest.raises(ValueError, match="keys must exactly match VALID_PERSONAS"):
             sync_module._generate_output(unclassified)
 
+    def test_sync_rejects_a_persona_category_it_cannot_emit(self):
+        """A new persona category fails the generator instead of silently dropping it.
+
+        Regression for the failure this PR inherited: AUTOMATIC_PERSONAS was added to
+        personas.py while the generator still derived VALID_PERSONAS from labels and
+        mentions only.  The generator printed a warning, exited 0, and wrote a staged
+        copy missing a persona -- surfacing later as an unexplained red parity test.
+        The drift must be reported where it is introduced.
+        """
+        script = _repo_root() / "modules" / "gateway" / "scripts" / "sync_personas.py"
+        spec = importlib.util.spec_from_file_location("sync_personas_drift_test", script)
+        sync_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sync_module)
+
+        # A persona reachable only through a category the generator does not emit.
+        undeclared_category = SimpleNamespace(
+            LABEL_TO_PERSONA={"developer": "developer"},
+            MENTION_TO_PERSONA={"@agent-developer": "developer"},
+            AUTOMATIC_PERSONAS=set(),
+            VALID_PERSONAS={"developer", "persona-from-a-future-category"},
+            PERSONA_COMPATIBILITY_CLASS={
+                "developer": "claude-agent-sdk",
+                "persona-from-a-future-category": "claude-agent-sdk",
+            },
+        )
+
+        with pytest.raises(ValueError, match="union of LABEL_TO_PERSONA"):
+            sync_module._generate_output(undeclared_category)
+
     def test_gateway_ci_watches_both_harness_package_pins(self):
         """A harness-only version bump must run generated-copy parity checks."""
         workflow = (_repo_root() / ".github" / "workflows" / "gateway-ci.yml").read_text()

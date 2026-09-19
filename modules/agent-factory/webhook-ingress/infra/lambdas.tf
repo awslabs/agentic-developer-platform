@@ -98,6 +98,8 @@ resource "aws_lambda_function" "github_webhook" {
       EVENTS_TABLE                  = aws_dynamodb_table.webhook_events.name
       AGENT_AUTHORITY_TABLE         = aws_dynamodb_table.agent_authority.name
       AGENT_AUTHORITY_ENABLED       = tostring(var.agent_authority_enabled)
+      ADP_WORK_CLAIMS_ENABLED       = tostring(var.agent_authority_enabled)
+      ADP_AGENT_CONTROL_ENDPOINT    = "${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent"
       RATE_LIMITS_TABLE             = aws_dynamodb_table.rate_limits.name
       RATE_LIMIT_PER_WINDOW         = tostring(var.rate_limit_per_window)
       RATE_LIMIT_PER_HOUR           = tostring(var.rate_limit_per_hour)
@@ -165,7 +167,7 @@ resource "aws_lambda_function" "github_webhook" {
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.lambda]
+  depends_on = [aws_cloudwatch_log_group.lambda, terraform_data.worker_gateway_rollout]
 }
 
 resource "aws_cloudwatch_log_group" "lambda" {

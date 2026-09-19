@@ -39,7 +39,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+from src.orchestration.models import ClaimState, OrchestrationExecution, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
 from src.orchestration.work_claims import (
     ClaimBinding,
     ClaimOwner,
@@ -105,6 +105,10 @@ async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed
     engine = create_async_engine(to_async_url(pg_url), echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(OrchestrationWorkClaim.__table__.create)
+        # Release reads the ledger to preserve any committed continuation.
+        await conn.run_sync(OrchestrationFlow.__table__.create)
+        await conn.run_sync(OrchestrationNode.__table__.create)
+        await conn.run_sync(OrchestrationExecution.__table__.create)
     yield engine
     await engine.dispose()
 

@@ -52,6 +52,7 @@ export const ALLOWED_ALGORITHMS = new Set(['ed25519']);
 /** Must match `src/agentauth/envelope.py` on the gateway side. */
 export const ENVELOPE_ISSUER = 'adp-gateway-control';
 export const ENVELOPE_AUDIENCE = 'adp-agent-control-listener';
+export const MODEL_POLICY_AUDIENCE = 'adp-agent-model-policy';
 
 /**
  * Maximum validity this worker will accept, in seconds. An envelope claiming
@@ -75,8 +76,6 @@ const REQUIRED_CLAIMS = [
   'action',
   'command_id',
   'body_digest',
-  'grant_id',
-  'revocation_epoch',
   'iat',
   'nbf',
   'exp',
@@ -115,13 +114,12 @@ const STRING_CLAIMS = [
   'action',
   'command_id',
   'body_digest',
-  'grant_id',
   'iat',
   'nbf',
   'exp',
 ] as const;
 
-const INT_CLAIMS = ['target_generation', 'revocation_epoch'] as const;
+const INT_CLAIMS = ['target_generation'] as const;
 
 /** ISO-8601 UTC seconds, the one format both sides emit. */
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -135,14 +133,16 @@ export interface ControlEnvelope {
   action: string;
   commandId: string;
   bodyDigest: string;
-  grantId: string;
-  revocationEpoch: number;
+  grantId?: string;
+  revocationEpoch?: number;
+  authorityKind?: 'delegated_grant' | 'human_session';
   keyId: string;
   issuedAt: number;
   notBefore: number;
   expiresAt: number;
   flowId?: string;
   authorityReferenceId?: string;
+  chainId?: string;
 }
 
 /**
@@ -164,6 +164,7 @@ export type EnvelopeFailure =
   | 'action_mismatch'
   | 'command_mismatch'
   | 'body_mismatch'
+  | 'chain_mismatch'
   | 'expired'
   | 'not_yet_valid'
   | 'validity_too_long';
@@ -180,6 +181,10 @@ export interface ExpectedBinding {
   commandId: string;
   /** The raw body bytes as received off the socket — not a re-serialized object. */
   body: Buffer;
+  /** Defaults to the control-listener audience for backward compatibility. */
+  audience?: string;
+  /** Required for a chain-bound model decision; absent for control commands. */
+  chainId?: string;
   /** Injectable for tests; milliseconds since epoch. */
   nowMs?: number;
 }
@@ -311,11 +316,28 @@ export function verifyEnvelope(
     if (!isPlainInteger(payload[claim])) return { ok: false, reason: 'malformed' };
   }
 
+  // Legacy envelopes without a kind are delegated, and still require an epoch.
+  const authorityKind = payload.authority_kind === undefined ? 'delegated_grant' : payload.authority_kind;
+  if (authorityKind === 'human_session') {
+    if (['grant_id', 'revocation_epoch', 'authority_reference_id'].some((claim) => claim in payload)) {
+      return { ok: false, reason: 'malformed' };
+    }
+  } else if (authorityKind === 'delegated_grant') {
+    if (typeof payload.grant_id !== 'string' || !payload.grant_id ||
+        !isPlainInteger(payload.revocation_epoch) || payload.revocation_epoch < 1) {
+      return { ok: false, reason: 'malformed' };
+    }
+  } else {
+    return { ok: false, reason: 'malformed' };
+  }
+
   if (!ALLOWED_ALGORITHMS.has(payload.alg as string)) {
     return { ok: false, reason: 'unsupported_algorithm' };
   }
   if (payload.iss !== ENVELOPE_ISSUER) return { ok: false, reason: 'untrusted_issuer' };
-  if (payload.aud !== ENVELOPE_AUDIENCE) return { ok: false, reason: 'audience_mismatch' };
+  if (payload.aud !== (expected.audience ?? ENVELOPE_AUDIENCE)) {
+    return { ok: false, reason: 'audience_mismatch' };
+  }
 
   const keyId = payload.kid as string;
   const key = keys.get(keyId);
@@ -346,9 +368,8 @@ export function verifyEnvelope(
   if (payload.body_digest !== bodyDigest(expected.body)) {
     return { ok: false, reason: 'body_mismatch' };
   }
-
-  if ((payload.revocation_epoch as number) < 1) {
-    return { ok: false, reason: 'malformed' };
+  if (expected.chainId !== undefined && payload.chain_id !== expected.chainId) {
+    return { ok: false, reason: 'chain_mismatch' };
   }
 
   const issuedAt = parseTimestamp(payload.iat);
@@ -375,8 +396,9 @@ export function verifyEnvelope(
       action: payload.action as string,
       commandId: payload.command_id as string,
       bodyDigest: payload.body_digest as string,
-      grantId: payload.grant_id as string,
-      revocationEpoch: payload.revocation_epoch as number,
+      grantId: payload.grant_id as string | undefined,
+      revocationEpoch: payload.revocation_epoch as number | undefined,
+      authorityKind,
       keyId,
       issuedAt,
       notBefore,
@@ -386,6 +408,7 @@ export function verifyEnvelope(
         typeof payload.authority_reference_id === 'string'
           ? payload.authority_reference_id
           : undefined,
+      chainId: typeof payload.chain_id === 'string' ? payload.chain_id : undefined,
     },
   };
 }

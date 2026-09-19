@@ -46,6 +46,20 @@ def summary(resolved):
         ),
         "GitHub fixtures: "
         + (", ".join(github) if github else "none — the GitHub cases will BLOCK"),
+        # #5413. Names them rather than counting them, because "3 deployments" was
+        # printable while all three pointed at the same gateway; the names are what
+        # let an operator see at a glance that this is dev/integration/preprod and
+        # not one URL under three labels. The URLs themselves are not printed: they
+        # are not secret, but a log line is not where a reviewer should be reading
+        # them from, and the written run config has them.
+        "Deployment bindings: "
+        + (
+            ", ".join(
+                str(entry.get("name") or "?") for entry in resolved["deployments"]
+            )
+            if resolved.get("deployments")
+            else "none — the multi-deployment cases (E16/E17) will BLOCK"
+        ),
         "Durable state: "
         + (
             f"enabled ({resolved['state_bucket']})"

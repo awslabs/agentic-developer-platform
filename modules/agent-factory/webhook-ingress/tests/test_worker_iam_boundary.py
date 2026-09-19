@@ -2,6 +2,7 @@
 
 Fixture ARNs replace provider outputs. This is not a live IAM acceptance test.
 """
+
 import json
 import shutil
 import subprocess
@@ -15,18 +16,31 @@ import pytest
 def statements():
     if shutil.which("terraform") is None:
         pytest.skip("Terraform is needed to render policy expressions")
-    result = subprocess.check_output([sys.executable, str(Path(__file__).with_name("render_worker_boundary.py"))], text=True)
+    result = subprocess.check_output(
+        [sys.executable, str(Path(__file__).with_name("render_worker_boundary.py"))], text=True
+    )
     return json.loads(result)["Statement"]
 
 
 def test_worker_cannot_read_secrets_or_escalate_even_with_extra_identity_grants(statements):
     by_id = {statement["Sid"]: statement for statement in statements}
     assert by_id["DenyAllSecrets"] == {
-        "Sid": "DenyAllSecrets", "Effect": "Deny", "Action": ["secretsmanager:*"], "Resource": "*",
+        "Sid": "DenyAllSecrets",
+        "Effect": "Deny",
+        "Action": ["secretsmanager:*"],
+        "Resource": "*",
     }
-    permitted_actions = {action for s in statements if s["Effect"] == "Allow" for action in s["Action"]}
-    assert not any(a.startswith(("iam:", "secretsmanager:", "eks:", "cognito-idp:", "bedrock:")) for a in permitted_actions)
-    assert not (permitted_actions & {"sts:AssumeRole", "sts:AssumeRoleWithWebIdentity", "sts:GetFederationToken"})
+    permitted_actions = {
+        action for s in statements if s["Effect"] == "Allow" for action in s["Action"]
+    }
+    assert not any(
+        a.startswith(("iam:", "secretsmanager:", "eks:", "cognito-idp:", "bedrock:"))
+        for a in permitted_actions
+    )
+    assert not (
+        permitted_actions
+        & {"sts:AssumeRole", "sts:AssumeRoleWithWebIdentity", "sts:GetFederationToken"}
+    )
     assert by_id["DenyUnlistedActions"]["Effect"] == "Deny"
     assert set(by_id["DenyUnlistedActions"]["NotAction"]) == permitted_actions
 
@@ -41,9 +55,9 @@ def test_operational_resources_do_not_wildcard_other_environments_or_accounts(st
             if resource == "*":
                 assert statement["Sid"] in {"Identity", "ProvenanceMetrics"}
             else:
-                assert ':*:' not in resource
-                assert 'adp-*' not in resource
-                assert '/adp/*/' not in resource
+                assert ":*:" not in resource
+                assert "adp-*" not in resource
+                assert "/adp/*/" not in resource
     metrics = next(s for s in allows if s["Sid"] == "ProvenanceMetrics")
     assert metrics["Condition"] == {"StringEquals": {"cloudwatch:namespace": "ADP/Provenance"}}
 
@@ -51,13 +65,20 @@ def test_operational_resources_do_not_wildcard_other_environments_or_accounts(st
 def test_all_credential_delivery_routes_are_allowed_without_admin_routes(statements):
     gateway = next(s for s in statements if s["Sid"] == "AuthenticatedGateway")
     for method, route in [
-        ("POST", "github-installation-token"), ("POST", "credential-assume-role"),
-        ("POST", "credential-raw-read"), ("POST", "worker-task-credentials"),
-        ("POST", "proxy-request"), ("POST", "credential-materialize"), ("GET", "user-credentials"),
+        ("POST", "github-installation-token"),
+        ("POST", "credential-assume-role"),
+        ("POST", "credential-raw-read"),
+        ("POST", "worker-task-credentials"),
+        ("POST", "proxy-request"),
+        ("POST", "credential-materialize"),
+        ("GET", "user-credentials"),
     ]:
         assert any(r.endswith(f"/{method}/internal/v1/{route}") for r in gateway["Resource"])
     assert not any("/admin" in resource for resource in gateway["Resource"])
-    assert next(s for s in statements if s["Sid"] == "DenyOtherGatewayRoutes")["NotResource"] == gateway["Resource"]
+    assert (
+        next(s for s in statements if s["Sid"] == "DenyOtherGatewayRoutes")["NotResource"]
+        == gateway["Resource"]
+    )
 
 
 def test_key_and_authority_data_denials_cover_resource_policy_grants(statements):
@@ -67,3 +88,20 @@ def test_key_and_authority_data_denials_cover_resource_policy_grants(statements)
     assert by_id["DenyDirectKMS"]["Condition"] == {
         "StringNotEquals": {"kms:ViaService": "dynamodb.us-east-1.amazonaws.com"},
     }
+
+
+def test_task_and_artifact_access_is_explicitly_denied_even_on_own_resources(statements):
+    by_id = {s["Sid"]: s for s in statements}
+    for sid, service in [("DenyDirectArtifacts", "s3"), ("DenyDirectQueues", "sqs")]:
+        assert by_id[sid] == {
+            "Sid": sid,
+            "Effect": "Deny",
+            "Action": [f"{service}:*"],
+            "Resource": "*",
+        }
+    assert not any(
+        action.startswith(("s3:", "sqs:"))
+        for s in statements
+        if s["Effect"] == "Allow"
+        for action in s["Action"]
+    )

@@ -2,20 +2,39 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import os
 import stat
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
-
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from adp_trigger import client as trigger_client
 from lib.run_identity import (
+    ModelPolicyReport,
+    ModelPolicyVerificationError,
     RunIdentityError,
     RunIdentitySession,
     bootstrap_run_identity,
+    parse_model_policy_report,
     read_workload_token,
 )
+
+
+POLICY_PRIVATE_KEY = Ed25519PrivateKey.generate()
+POLICY_PUBLIC_PEM = (
+    POLICY_PRIVATE_KEY.public_key()
+    .public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    .decode("ascii")
+)
+POLICY_KEYS = {"policy-key": POLICY_PRIVATE_KEY.public_key()}
 
 
 @pytest.mark.parametrize("source", ["envelope", "configuration"])
@@ -36,10 +55,15 @@ def identity(tmp_path, monkeypatch):
     proof = tmp_path / "pod-token"
     proof.write_text("pod-token-one")
     monkeypatch.setenv("ADP_WORKLOAD_TOKEN_FILE", str(proof))
+    monkeypatch.setenv(
+        "ADP_CONTROL_ENVELOPE_KEYS",
+        json.dumps({"policy-key": POLICY_PUBLIC_PEM}),
+    )
     envelope = {
         "message_id": "run-a",
         "tenant_id": "tenant",
         "persona": "developer",
+        "correlation": {"correlation_id": "chain-a"},
         "source_ref": {"repo": "org/repo"},
     }
     session = RunIdentitySession(envelope=envelope, directory=tmp_path)
@@ -57,6 +81,246 @@ def reply(token="adpr1.first.signature", **changes):
     }
 
 
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def policy_reply(*, now=None, envelope_changes=None, **decision_changes):
+    issued = (now or datetime.now(timezone.utc)).replace(microsecond=0)
+    decision = {
+        "schema_version": 1,
+        "tenant_id": "tenant",
+        "invocation_id": "run-a",
+        "correlation_id": "chain-a",
+        "persona": "developer",
+        "compatibility_class": "claude-agent-sdk",
+        "harness_contract_revision": "0.3.220",
+        "runtime_posture": "report_only",
+        "posture_revision": 7,
+        "requested_model_id": "sonnet46",
+        "resolved_model_id": "global.anthropic.claude-sonnet-4-6",
+        "resolution_source": "explicit-direct",
+        "snapshot_digest": "a" * 64,
+        "policy_revision": "policy-7",
+        "catalogue_revision": "catalogue-4",
+        "snapshot_allowlist_policy_revision": "allowlist-snapshot-3",
+        "live_allowlist_policy_revision": "allowlist-live-4",
+        "allowlist_policy_drift": True,
+        **decision_changes,
+    }
+    body = json.dumps(decision, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    envelope = {
+        "v": "adpe1",
+        "iss": "adp-gateway-control",
+        "aud": "adp-agent-model-policy",
+        "alg": "ed25519",
+        "kid": "policy-key",
+        "tenant_id": "tenant",
+        "principal": "run-a#1",
+        "target_run_id": "run-a",
+        "target_generation": 1,
+        "action": "resolve_model",
+        "command_id": decision["snapshot_digest"],
+        "body_digest": hashlib.sha256(body).hexdigest(),
+        "grant_id": "grant-a",
+        "revocation_epoch": 1,
+        "chain_id": "chain-a",
+        "iat": issued.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "nbf": issued.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "exp": (issued + timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    envelope.update(envelope_changes or {})
+    encoded = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+    signature = POLICY_PRIVATE_KEY.sign(b"adpe1." + encoded)
+    return {
+        "posture": "report_only",
+        "status": "proposed",
+        "decision": decision,
+        "assertion": f"adpe1.{_b64(encoded)}.{_b64(signature)}",
+    }
+
+
+def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
+    report = parse_model_policy_report(
+        policy_reply(),
+        invocation_id="run-a",
+        tenant_id="tenant",
+        correlation_id="chain-a",
+        public_keys=POLICY_KEYS,
+    )
+
+    assert report == ModelPolicyReport(
+        status="proposed",
+        requested_model_id="sonnet46",
+        resolved_model_id="global.anthropic.claude-sonnet-4-6",
+        resolution_source="explicit-direct",
+        snapshot_digest="a" * 64,
+        policy_revision="policy-7",
+        catalogue_revision="catalogue-4",
+        snapshot_allowlist_policy_revision="allowlist-snapshot-3",
+        live_allowlist_policy_revision="allowlist-live-4",
+        allowlist_policy_drift=True,
+        posture_revision=7,
+        assertion_key_id="policy-key",
+    )
+    evidence = report.environment("global.anthropic.claude-opus-5")
+    assert evidence["ADP_MODEL_POLICY_PROPOSED_MODEL"] == "global.anthropic.claude-sonnet-4-6"
+    assert evidence["ADP_MODEL_POLICY_LEGACY_MODEL"] == "global.anthropic.claude-opus-5"
+    assert evidence["ADP_MODEL_POLICY_MATCH"] == "false"
+    assert evidence["ADP_MODEL_POLICY_SNAPSHOT_ALLOWLIST_REVISION"] == "allowlist-snapshot-3"
+    assert evidence["ADP_MODEL_POLICY_LIVE_ALLOWLIST_REVISION"] == "allowlist-live-4"
+    assert evidence["ADP_MODEL_POLICY_ALLOWLIST_DRIFT"] == "true"
+    assert "ANTHROPIC_MODEL" not in evidence
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        policy_reply(invocation_id="another-run"),
+        policy_reply(runtime_posture="enforcing"),
+        policy_reply(resolution_source="invented"),
+        policy_reply(snapshot_digest="not-a-digest"),
+        policy_reply(resolved_model_id="bad\nlog"),
+    ],
+)
+def test_invalid_policy_report_never_becomes_worker_environment(policy):
+    with pytest.raises((ValueError, ModelPolicyVerificationError)):
+        parse_model_policy_report(
+            policy,
+            invocation_id="run-a",
+            tenant_id="tenant",
+            correlation_id="chain-a",
+            public_keys=POLICY_KEYS,
+        )
+
+
+def test_unavailable_report_exposes_bounded_reason_only():
+    report = parse_model_policy_report(
+        {"posture": "report_only", "status": "unavailable", "reason": "snapshot_expired"},
+        invocation_id="run-a",
+    )
+    assert report.environment("legacy") == {
+        "ADP_MODEL_POLICY_POSTURE": "report_only",
+        "ADP_MODEL_POLICY_STATUS": "unavailable",
+        "ADP_MODEL_POLICY_REASON": "snapshot_expired",
+    }
+
+
+def test_unavailable_report_preserves_allowlist_drift_evidence():
+    report = parse_model_policy_report(
+        {
+            "posture": "report_only",
+            "status": "unavailable",
+            "reason": "not_permitted",
+            "evidence": {
+                "snapshot_allowlist_policy_revision": "allowlist-snapshot-3",
+                "live_allowlist_policy_revision": "allowlist-live-4",
+                "allowlist_policy_drift": True,
+            },
+        },
+        invocation_id="run-a",
+    )
+    assert report.environment("legacy") == {
+        "ADP_MODEL_POLICY_POSTURE": "report_only",
+        "ADP_MODEL_POLICY_STATUS": "unavailable",
+        "ADP_MODEL_POLICY_REASON": "not_permitted",
+        "ADP_MODEL_POLICY_SNAPSHOT_ALLOWLIST_REVISION": "allowlist-snapshot-3",
+        "ADP_MODEL_POLICY_LIVE_ALLOWLIST_REVISION": "allowlist-live-4",
+        "ADP_MODEL_POLICY_ALLOWLIST_DRIFT": "true",
+    }
+
+
+@pytest.mark.parametrize(
+    ("reply_value", "reason"),
+    [
+        (
+            lambda now: policy_reply(now=now, envelope_changes={"alg": "none"}),
+            "decision_algorithm_unsupported",
+        ),
+        (
+            lambda now: policy_reply(now=now, envelope_changes={"tenant_id": "tenant-b"}),
+            "decision_cross_tenant",
+        ),
+        (
+            lambda now: policy_reply(now=now, envelope_changes={"chain_id": "chain-b"}),
+            "decision_chain_mismatch",
+        ),
+        (
+            lambda now: policy_reply(now=now, envelope_changes={"command_id": "b" * 64}),
+            "decision_snapshot_mismatch",
+        ),
+        (
+            lambda now: policy_reply(
+                now=now - timedelta(minutes=1),
+            ),
+            "decision_expired",
+        ),
+    ],
+)
+def test_signed_decision_refuses_adversarial_bindings(reply_value, reason):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    with pytest.raises(ModelPolicyVerificationError, match=reason):
+        parse_model_policy_report(
+            reply_value(now),
+            invocation_id="run-a",
+            tenant_id="tenant",
+            correlation_id="chain-a",
+            public_keys=POLICY_KEYS,
+            now=now,
+        )
+
+
+def test_signed_assertion_covers_the_exact_decision_bytes():
+    response = policy_reply()
+    response["decision"]["resolved_model_id"] = "global.anthropic.claude-opus-5"
+    with pytest.raises(ModelPolicyVerificationError, match="decision_altered"):
+        parse_model_policy_report(
+            response,
+            invocation_id="run-a",
+            tenant_id="tenant",
+            correlation_id="chain-a",
+            public_keys=POLICY_KEYS,
+        )
+
+
+def test_unsupported_policy_revision_is_reported_and_never_blocks_legacy_identity(
+    identity,
+    monkeypatch,
+):
+    session, _ = identity
+    unsupported = policy_reply(schema_version=2)
+    monkeypatch.setattr(
+        session,
+        "_request",
+        lambda: reply(model_policy=unsupported),
+    )
+
+    session.refresh()
+
+    assert session.credential_path.read_text().strip() == "adpr1.first.signature"
+    assert session.model_policy_report == ModelPolicyReport(
+        status="unavailable",
+        reason="snapshot_unsupported_revision",
+    )
+
+
+@pytest.mark.parametrize("deadline", [None, "bad", "2026-09-19T15:00:00Z"])
+def test_start_projects_verified_absolute_deadline_without_extending_it_on_refresh(
+    identity, monkeypatch, deadline
+):
+    session, _ = identity
+    monkeypatch.delenv("ADP_POD_DEADLINE_AT", raising=False)
+    monkeypatch.setattr(session, "_request", lambda: reply(pod_deadline_at=deadline))
+    monkeypatch.setattr("threading.Thread.start", lambda _: None)
+    session.start()
+    expected = deadline if deadline == "2026-09-19T15:00:00Z" else "1970-01-01T00:00:00Z"
+    assert os.environ["ADP_POD_DEADLINE_AT"] == expected
+    monkeypatch.setattr(session, "_request", lambda: reply(pod_deadline_at="2099-01-01T00:00:00Z"))
+    session.refresh()
+    assert session.pod_deadline_at == expected
+    assert os.environ["ADP_POD_DEADLINE_AT"] == expected
+
+
 def test_refresh_atomically_replaces_live_cli_file(identity, monkeypatch):
     session, _ = identity
     monkeypatch.setattr(session, "_request", lambda: reply())
@@ -71,6 +335,51 @@ def test_refresh_atomically_replaces_live_cli_file(identity, monkeypatch):
     old.close()
     assert stat.S_IMODE(session.credential_path.stat().st_mode) == 0o600
     assert not list(session.credential_path.parent.glob("credential-*"))
+
+
+def test_refresh_retains_first_report_only_proposal_as_immutable_comparison(identity, monkeypatch):
+    session, _ = identity
+    monkeypatch.setattr(session, "_request", lambda: reply(model_policy=policy_reply()))
+    session.refresh()
+    assert session.model_policy_report is not None
+    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+
+    changed = policy_reply(resolved_model_id="global.anthropic.claude-opus-5")
+    monkeypatch.setattr(session, "_request", lambda: reply(model_policy=changed))
+    session.refresh()
+    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_refresh_can_observe_policy_after_old_gateway_response(identity, monkeypatch):
+    session, _ = identity
+    replies = iter([reply(), reply(model_policy=policy_reply())])
+    monkeypatch.setattr(session, "_request", lambda: next(replies))
+
+    session.refresh()
+    assert session.model_policy_report is None
+    session.refresh()
+    assert session.model_policy_report is not None
+    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_refresh_retries_transient_unverifiable_report_before_pinning(identity, monkeypatch):
+    session, _ = identity
+    invalid = policy_reply()
+    invalid["assertion"] = "adpe1.invalid.signature"
+    replies = iter(
+        [
+            reply(model_policy=invalid),
+            reply(model_policy=policy_reply()),
+        ]
+    )
+    monkeypatch.setattr(session, "_request", lambda: next(replies))
+
+    session.refresh()
+    assert session.model_policy_report is not None
+    assert session.model_policy_report.status == "unavailable"
+    session.refresh()
+    assert session.model_policy_report is not None
+    assert session.model_policy_report.status == "proposed"
 
 
 @pytest.mark.parametrize(
@@ -118,15 +427,31 @@ def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypa
     credentials.token = None
     sdk_session = MagicMock()
     sdk_session.get_credentials.return_value.get_frozen_credentials.return_value = credentials
-    for key in ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "ADP_WORKER_IRSA_ROLE_ARN", "ADP_WORKER_IRSA_TOKEN_FILE"):
+    for key in (
+        "AWS_ROLE_ARN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "ADP_WORKER_IRSA_ROLE_ARN",
+        "ADP_WORKER_IRSA_TOKEN_FILE",
+    ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("ADP_WORKER_IRSA_ROLE_ARN" if preserved else "AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/authority-worker")
+    monkeypatch.setenv(
+        "ADP_WORKER_IRSA_ROLE_ARN" if preserved else "AWS_ROLE_ARN",
+        "arn:aws:iam::123456789012:role/authority-worker",
+    )
     irsa_token = session._directory / "irsa-token"
     irsa_token.write_text("worker-web-identity")
-    monkeypatch.setenv("ADP_WORKER_IRSA_TOKEN_FILE" if preserved else "AWS_WEB_IDENTITY_TOKEN_FILE", str(irsa_token))
+    monkeypatch.setenv(
+        "ADP_WORKER_IRSA_TOKEN_FILE" if preserved else "AWS_WEB_IDENTITY_TOKEN_FILE",
+        str(irsa_token),
+    )
     monkeypatch.setenv("AWS_REGION", "us-west-2")
     sdk_session.create_client.return_value.assume_role_with_web_identity.return_value = {
-        "Credentials": {"AccessKeyId": "test-access", "SecretAccessKey": "test-secret", "SessionToken": "test-session", "Expiration": datetime.now(timezone.utc) + timedelta(hours=1)}
+        "Credentials": {
+            "AccessKeyId": "test-access",
+            "SecretAccessKey": "test-secret",
+            "SessionToken": "test-session",
+            "Expiration": datetime.now(timezone.utc) + timedelta(hours=1),
+        }
     }
     monkeypatch.setattr("lib.run_identity.botocore.session.get_session", lambda: sdk_session)
     response = MagicMock()
@@ -139,7 +464,12 @@ def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypa
     monkeypatch.setattr("lib.run_identity.requests.Session", lambda: http)
     assert session._request()["invocation_id"] == "run-a"
     sdk_session.get_credentials.assert_not_called()
-    assert sdk_session.create_client.return_value.assume_role_with_web_identity.call_args.kwargs["WebIdentityToken"] == "worker-web-identity"
+    assert (
+        sdk_session.create_client.return_value.assume_role_with_web_identity.call_args.kwargs[
+            "WebIdentityToken"
+        ]
+        == "worker-web-identity"
+    )
     args, kwargs = http.post.call_args
     assert args[0].endswith("/internal/v1/agent/bootstrap")
     assert kwargs["headers"]["X-Adp-Workload-Token"] == "pod-token-one"

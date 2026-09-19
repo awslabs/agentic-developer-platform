@@ -66,22 +66,25 @@ def _self_review_refusal(status: int, body: str) -> bool:
 def _github_token() -> str:
     """Return the review token.
 
-    Prefers ADP_REVIEW_TOKEN (minted for the reviewer identity by ``mint``) and
-    falls back to the run's ordinary token. The fallback is what makes the
-    pending-approval path reachable rather than a hard failure.
+    Preserve an explicit reviewer token; otherwise prefer the run's rotating
+    token file, just like the gh wrapper. A long review can outlive GH_TOKEN
+    inherited at process startup. Read the file again for every submission.
     """
-    for var in ("ADP_REVIEW_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
-        value = os.environ.get(var, "").strip()
-        if value:
-            return value
+    explicit = os.environ.get("ADP_REVIEW_TOKEN", "").strip()
+    if explicit:
+        return explicit
     token_file = os.environ.get("ADP_TOKEN_FILE", "/tmp/.adp-gh-token")
     try:
         with open(token_file, encoding="ascii") as handle:
             token = handle.read().strip()
         if token:
             return token
-    except OSError:
+    except (OSError, UnicodeError):
         pass
+    for var in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(var, "").strip()
+        if value:
+            return value
     raise ReviewError("No GitHub token available (set ADP_REVIEW_TOKEN or GH_TOKEN, or provide ADP_TOKEN_FILE)")
 
 
@@ -124,8 +127,8 @@ def mint_review_token(*, repo: str) -> tuple[str | None, str]:
     Returns ``(token_or_None, granted_identity)``. ``granted_identity`` is what the
     gateway actually used — "review" only if a distinct reviewer App is configured,
     "default" when it fell back. A caller must branch on the identity, not on
-    whether a token came back: the fallback token works fine for commenting and
-    cannot carry a verdict.
+    whether a token came back. A default identity may still review a PR authored
+    by somebody else; only GitHub's submission result establishes a verdict.
 
     Returns ``(None, "default")`` when the gateway is unreachable or the mint is
     refused. That is deliberately not fatal — the run still has its ordinary token

@@ -16,7 +16,7 @@ case "${GITHUB_EVENT_NAME:?}" in
     if grep -qE '^modules/agent-factory/webhook-ingress/(lambda|common|scripts)/|^modules/agent-factory/webhook-ingress/requirements\.txt$' <<< "$changed"; then
       code=true
     fi
-    if grep -qE '^modules/agent-factory/webhook-ingress/infra/' <<< "$changed"; then
+    if grep -qE '^modules/agent-factory/webhook-ingress/infra/|^environments/dev/modules/webhook-ingress\.tfvars(\.json)?$' <<< "$changed"; then
       infra=true
     fi
     ;;

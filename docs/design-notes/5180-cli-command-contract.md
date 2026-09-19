@@ -26,6 +26,7 @@ existing shortcut is added.
 | `adp codex [args…]`, `adp codex setup` | — | shipped, **must not change** |
 | `adp claude [args…]`, `adp claude setup` | — | shipped, unchanged |
 | `adp daemon install\|uninstall`, `adp update [--rollback]`, `version`, `help` | #5185 | shipped, unchanged |
+| `adp deployment add\|list\|use\|remove`, global `--deployment <name>` | #5413 | **new** — named deployments ([design note](5413-cli-multiple-deployments.md)) |
 | `adp admin login` | #5185 | **new** — native Cognito bootstrap (§4) |
 | `adp admin setup` | #5185 | **new** — resumable guided setup (§5) |
 | `adp admin bedrock connect\|list\|verify\|status` | #5181 | canonical administrative surface |
@@ -60,6 +61,7 @@ All CLI files install side by side in one directory (`~/.adp/bin` by default), a
   bg-cognito-auth.sh   # auth core: login/token/refresh/serve (#5185)
   bg-gateway-proxy.py  # Codex loopback proxy
   adp_common.py        # shared helper module — import this (#5185)
+  adp_deployments.py   # deployment selection + per-deployment paths (#5413)
   adp-admin.py         # admin login + guided setup (#5185)
   adp-bedrock.py       # #5181
   adp-aws.py           # #5182
@@ -113,7 +115,10 @@ import adp_common as common  # noqa: E402
 ```python
 gateway_url() -> str
 ```
-Returns the base URL from `~/.bedrock-gateway/config.json` key `gateway_url`,
+Returns the base URL from the selected deployment's `config.json` key
+`gateway_url` — `~/.bedrock-gateway/config.json` on a machine with no named
+deployment, or `~/.adp/deployments/<id>/config.json` with one (#5413, §2 of the
+[design note](5413-cli-multiple-deployments.md)),
 canonically ending in `/api`. Raises `CliError` with the reinstall line if absent.
 It is **never guessed** from the environment — a wrong origin silently points the
 CLI at somebody else's deployment. The URL must be HTTPS, or HTTP on loopback
@@ -199,12 +204,16 @@ credential prompt.
 ### 3.6 Private resumable state
 
 ```python
-state_path(name) -> Path      # ~/.adp/state/<name>.json
+state_path(name) -> Path      # <selected deployment's state dir>/<name>.json
 read_state(name) -> dict
 write_state(name, obj) -> None
 ```
 
-`~/.adp/state/` is created `0700`, files written `0600` via write-then-rename so a
+The state directory is `~/.adp/state/` on a machine with no named deployment and
+`~/.adp/deployments/<id>/state/` with one (#5413): area state is per deployment,
+because a resumable setup half-finished against integration must not be picked up
+as progress against pre-production. It is created `0700`, files written `0600` via
+write-then-rename so a
 reader never sees a half-written file. Each provider owns exactly one state file
 and does not read another's. State holds progress and identifiers so a retry
 resumes; it must not hold credentials.
@@ -378,6 +387,7 @@ traceback.
 |---|---|
 | `adp` dispatcher + help, `install.sh`, `bg-cognito-auth.sh`, `adp_common.py`, `adp-admin.py` | #5185 |
 | `src/auth/cli_login.py`, `src/cli_download/routes.py`, deploy filters, shared fixtures, login-page discovery | #5185 |
+| `adp_deployments.py` + deployment selection in `adp`/`bg-cognito-auth.sh`/`adp_common.py` | #5413 |
 | `adp-bedrock.py` + Bedrock routing backend | #5181 |
 | `adp-aws.py` + `src/auth/aws_connect_routes.py` | #5182 |
 | GitHub admin helper + app register/manual/status handlers | #5183 |

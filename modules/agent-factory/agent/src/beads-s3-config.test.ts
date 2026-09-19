@@ -112,12 +112,12 @@ describe('no hardcoded us-west-2 or foreign bucket remains on this path', () => 
 });
 
 
-test('beads sync restores platform identity while a customer deployment is active', async () => {
+test('legacy beads sync restores platform identity while a customer deployment is active', async () => {
   const childProcess = require('child_process');
   const command = jest.spyOn(childProcess, 'execSync').mockReturnValue('pushed');
   const saved = { ...process.env };
   try {
-    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
+    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'false';
     process.env.ADP_WORKER_IRSA_ROLE_ARN = 'platform-worker';
     process.env.ADP_WORKER_IRSA_TOKEN_FILE = '/projected/worker';
     process.env.ADP_WORKER_AWS_REGION = 'us-east-1';
@@ -136,4 +136,24 @@ test('beads sync restores platform identity while a customer deployment is activ
     command.mockRestore();
     process.env = saved;
   }
+});
+
+
+test('protected runs select GitHub tracking and cannot initialize or sync shared Beads state', async () => {
+  const childProcess = require('child_process');
+  const command = jest.spyOn(childProcess, 'execSync').mockReturnValue('pushed');
+  const saved = { ...process.env };
+  try {
+    process.env.ADP_AGENT_AUTHORITY_ENABLED = 'true';
+    const beads = require('./beads');
+    beads.configureBeads({ enabled: true, s3Bucket: 'shared-beads' });
+    expect(beads.isBeadsEnabled()).toBe(false);
+    await expect(beads.initializeBeads('/workspace')).rejects.toThrow('use GitHub task tracking');
+    await expect(beads.syncPush('/workspace')).rejects.toThrow('use GitHub task tracking');
+    await expect(beads.syncPull('/workspace')).rejects.toThrow('use GitHub task tracking');
+    expect(await beads.startWork(1, 'developer', '/workspace')).toBeNull();
+    expect(await beads.completeWork('task', 'done', '/workspace')).toBeNull();
+    await beads.reportFailure('task', 'failed', '/workspace');
+    expect(command).not.toHaveBeenCalled();
+  } finally { command.mockRestore(); process.env = saved; }
 });

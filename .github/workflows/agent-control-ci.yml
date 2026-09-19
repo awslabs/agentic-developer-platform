@@ -66,11 +66,18 @@ on:
       - '.github/workflows/gateway-deploy.yml'
       # In-pod control listener (TypeScript)
       - 'modules/agent-factory/agent/src/control-listener.ts'
+      - 'modules/agent-factory/agent/src/control-deadline*'
       - 'modules/agent-factory/agent/src/control-credentials.ts'
       - 'modules/agent-factory/agent/src/control-keyring.ts'
       - 'modules/agent-factory/agent/src/control-state.ts'
       - 'modules/agent-factory/agent/src/control-authorization.ts'
       - 'modules/agent-factory/agent/src/lib/runIdentity*'
+      - 'modules/agent-factory/agent/src/lib/artifactGateway*'
+      - 'modules/agent-factory/agent/src/lib/gitArchiveGateway*'
+      - 'modules/agent-factory/agent/src/lib/proxyPort*'
+      - 'modules/agent-factory/agent/src/lib/knowledgeBridge*'
+      - 'modules/agent-factory/agent/src/services/S3Fallback.ts'
+      - 'modules/agent-factory/agent/src/utils/ghPost.ts'
       - 'modules/agent-factory/agent/src/beads*'
       - 'modules/agent-factory/agent/src/sigv4-proxy*'
       - 'modules/agent-factory/agent/src/lib/githubTokenBroker*'
@@ -149,6 +156,10 @@ on:
       - 'modules/gateway/tests/internal/test_github_installation_token_route.py'
       - 'modules/agent-factory/agent-worker-image/lib/run_identity.py'
       - 'modules/agent-factory/agent-worker-image/lib/control_renewal.py'
+      - 'modules/agent-factory/agent-worker-image/lib/task_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_task_gateway_client.py'
+      - 'modules/agent-factory/agent-worker-image/lib/run_service_client.py'
+      - 'modules/agent-factory/agent-worker-image/tests/test_run_service_client.py'
       - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_control_renewal.py'
@@ -264,7 +275,10 @@ jobs:
             test_adapter.py test_envelope.py test_envelope_vectors.py \
             test_execution.py test_grants.py test_policy.py \
             test_run_credential.py test_store.py test_store_lifecycle.py \
-            test_store_reservations.py test_wave_dispatch.py test_revalidation.py; do
+            test_store_reservations.py test_wave_dispatch.py test_revalidation.py test_human_control.py \
+            test_run_services.py test_artifact_service.py \
+            test_task_delivery.py test_task_routes.py \
+            test_knowledge_service.py test_knowledge_service_postgres.py; do
             test -f "tests/agentauth/$suite" || exit 1
           done
           pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py -v --tb=short --timeout=120
@@ -284,15 +298,16 @@ jobs:
         # nothing at all. Verified locally: the dotted form reports 100% line and
         # branch on both modules; the path form reports 0.00%.
         run: |
-          pytest tests/activity/test_control_proxy.py \
+          pytest tests/activity/test_control_proxy.py tests/agentauth/test_human_control.py \
             --cov=src.activity.control_service \
             --cov=src.activity.control_schemas \
+            --cov=src.agentauth.human_control \
             --cov-branch \
             --cov-report=term-missing \
             --cov-fail-under=85 \
             --timeout=120
 
-      - name: Assert no control verb is advertised as supported
+      - name: Assert only implemented control verbs are advertised
         working-directory: modules/gateway
         # The story's central invariant, asserted outside the test suite too. A
         # verb added to SUPPORTED_ACTIONS without its transport would make every
@@ -303,7 +318,7 @@ jobs:
         # empty". S2/S4/S6 each deliver one verb, and against the old form their
         # only way forward was to delete the guard — which is how a gate that
         # cannot express "three of four" dies. It now compares against an explicit
-        # expected set (still empty at this stage: all four verbs unsupported) and
+        # expected set (pause/resume at this stage) and
         # additionally pins the verb universe, so adding a fifth verb without
         # updating this list fails here rather than passing unexamined.
         env:
@@ -328,12 +343,9 @@ jobs:
           # without a deliberate edit to this gate.
           ALL_VERBS = {"pause", "resume", "steer", "abort"}
 
-          # Verbs with a proven runtime boundary as of this stage. S3 delivers the
-          # adapter contract and the Claude transport, NOT a verb: pause without
-          # proven tool quiescence would let the dashboard claim "Paused" while a
-          # Bash call is still writing to the repository. S2/S4/S6 each add their
-          # verb to this set in the same change that proves it.
-          EXPECTED_SUPPORTED: set[str] = set()
+          # Pause/resume: #3961 admission barrier plus #5222 signed human path.
+          # Keep both language gates, gateway and worker in lockstep.
+          EXPECTED_SUPPORTED: set[str] = {"pause", "resume"}
 
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
           # a truthiness check, so a refactor that drops the constant could report
@@ -443,9 +455,12 @@ jobs:
         # withhold — could merge green.
         run: |
           npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
+            src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
             src/sigv4-proxy.identity.test.ts src/beads-s3-config.test.ts \
             src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
-            src/token-init-guard.test.ts \
+            src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
+            src/pause-attempt-fencing.test.ts \
+            src/pause-output-race.test.ts src/control-deadline.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
@@ -455,6 +470,8 @@ jobs:
             --collectCoverageFrom='src/control-revalidation.ts' \
             --collectCoverageFrom='src/lib/runIdentity.ts' \
             --collectCoverageFrom='src/control-runtime.ts' \
+            --collectCoverageFrom='src/pause-gate.ts' \
+            --collectCoverageFrom='src/control-command-apply.ts' \
             --collectCoverageFrom='src/harnesses/claude-control.ts' \
             --collectCoverageFrom='src/utils/resilientQuery.ts' \
             --coverageThreshold='{"global":{"lines":85,"branches":85}}' \
@@ -496,8 +513,9 @@ jobs:
           } from './src/control-runtime';
 
           const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
-          // Verbs with a proven runtime boundary at this stage. Empty in S3.
-          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>();
+          // #3961 pause barrier plus the #5222 signed human command path.
+          // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume']);
 
           const fail = (msg: string): never => {
             console.error(msg);
@@ -727,7 +745,7 @@ jobs:
         working-directory: modules/agent-factory/agent-worker-image
         run: |
           pytest tests/test_adp_trigger.py tests/test_adp_trigger_control.py tests/test_run_identity.py tests/test_gateway_credential_client.py \
-            tests/test_control_renewal.py tests/test_task_credentials.py tests/test_transport_identity.py \
+            tests/test_control_renewal.py tests/test_task_credentials.py tests/test_task_gateway_client.py tests/test_run_service_client.py tests/test_transport_identity.py \
             tests/test_adp_cred.py tests/test_adp_cred_assume.py \
             tests/test_adp_review.py tests/test_reviewer_no_artifact_pr.py \
             tests/test_entrypoint.py::TestBedrockViaGateway tests/test_entrypoint.py::TestBedrockViaFlag \

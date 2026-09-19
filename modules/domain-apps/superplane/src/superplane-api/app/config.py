@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://superplane:superplane@localhost:5432/superplane"
     )
+    # Explicit domain schema for asyncpg (PGOPTIONS is a libpq setting, ignored
+    # by this driver). Empty preserves the existing database-owned search_path.
+    superplane_db_schema: str = ""
+    # Trusted identity that may advance controller liveness; no reporter-name trust.
+    controller_observation_submitter_id: str = ""
 
     # AWS
     aws_region: str = "us-east-1"
@@ -67,7 +72,10 @@ class Settings(BaseSettings):
     # Observation contract v1 receiver (issue #5056, U15).
     #
     # A JSON array of submitter entries, each with `submitter_id`, `credential`,
-    # `signing_key` and `workspaces`. Empty by default and therefore
+    # `signing_key` and `workspaces` (immutable workspace UUIDs, never names).
+    # Optional `lease_scopes: ["budget_monitor/global"]` authorizes the existing
+    # global budget lease explicitly; normal cluster leases use workspace grants.
+    # Empty by default and therefore
     # fail-closed: with no entries configured, no credential resolves and every
     # submission is refused. An empty grant authorizing everything is how a
     # misconfigured deployment becomes a tenant-boundary failure, so the default

@@ -35,6 +35,8 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -1573,3 +1575,415 @@ async def test_missing_repository_identity_refuses_before_dispatch(session, monk
     assert not report.pending
     assert node.state == "ready"
     assert node.attempts == 0
+
+
+@pytest.fixture
+async def policy_bound_dispatch(monkeypatch):
+    """The supporting services a policy-bound dispatch needs, and nothing more.
+
+    A flow's spend allowance is only meaningful with a real atomic reservation
+    backend, so an absent one denies with `budget_unavailable` — correctly, and
+    unrelated to #5144. These are the same two fixtures `test_policy_admission.py`
+    uses, reused rather than re-invented so a change in how budgets initialise cannot
+    leave a stale copy here.
+    """
+    import fakeredis.aioredis
+
+    from src.budget.reservations import ReservationStore
+    from src.orchestration import flow_budget
+
+    initialized: set[tuple[str, str]] = set()
+
+    async def claim(*, org_id, flow_id, allow_create):
+        key = (org_id, flow_id)
+        if key in initialized:
+            return False
+        if not allow_create:
+            raise RuntimeError("existing work requires reconciliation")
+        initialized.add(key)
+        return True
+
+    monkeypatch.setattr("src.orchestration.flow_meter._claim_initialization", claim)
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(flow_budget, "_reservations", ReservationStore(redis_url=None, ttl_seconds=120, client=client))
+    yield
+    await client.aclose()
+
+
+async def _accept_execution_policy(session: AsyncSession, flow: OrchestrationFlow, *, version: int = 1) -> None:
+    """Persist an accepted plan carrying a real stamped execution policy (#5144).
+
+    Uses the production `stamp_policy` rather than hand-writing the document, so these
+    tests cannot pin a shape acceptance would never produce. Opting in is what makes a
+    dispatch policy-bound, and only a policy-bound dispatch admits an execution — so
+    without this the handoff marker is correctly absent.
+    """
+    from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits, stamp_policy
+    from src.orchestration.models import OrchestrationAcceptedPlan
+
+    policy = ExecutionPolicy(
+        org_id=flow.org_id,
+        repository_ids=[REPO],
+        allowed_actions=[Action.DEVELOP, Action.REPAIR, Action.MERGE, Action.EVALUATE],
+        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        limits=PolicyLimits(
+            max_wall_clock_seconds=86_400,
+            max_spend_usd=Decimal("100"),
+            max_attempts_per_node=10,
+            max_concurrent_actions=5,
+        ),
+    )
+    # A policy-bound dispatch checks the approver's CURRENT role, so the membership row
+    # has to exist or admission denies with `role_revoked` — correctly. `_make_approval`
+    # creates only the `users` row, which is enough for an unpolicied flow.
+    from src.shared.models.onboarding import TenantMembership
+
+    if not await session.scalar(select(TenantMembership).where(TenantMembership.user_id == APPROVER)):
+        session.add(TenantMembership(user_id=APPROVER, tenant_id=flow.org_id, role="org_admin"))
+
+    stamped = stamp_policy(policy, principal_id=APPROVER, org_id=flow.org_id)
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=flow.org_id,
+            flow_id=flow.id,
+            version=version,
+            plan_document={"flow_slug": flow.slug, "execution_policy": stamped.model_dump(mode="json")},
+            plan_hash=f"hash-v{version}",
+        )
+    )
+    await session.flush()
+
+
+async def _seed_conflicting_execution(session: AsyncSession, flow: OrchestrationFlow, node: OrchestrationNode, *, plan_version: int) -> str:
+    """Make this node's next dispatch hit a real `create_execution` CONFLICT (#5144 F3).
+
+    Reaching the refusal through production code rather than a monkeypatch, because
+    the defect was a *branch* in `_admit_execution` and a patched loader would let that
+    branch be asserted without ever proving the real one can reach it.
+
+    How it works: a *released* claim row is seeded first, so the claim id this dispatch
+    will be readmitted under is known here (`claim_work` reuses the row and advances
+    its generation — it never inserts a replacement, see `_binding_conflict`). An
+    execution for `(org, node, cycle)` is then written carrying that exact claim id and
+    generation, but a DIFFERENT `accepted_plan_version`. The dispatch is admitted under
+    the in-force plan, finds this row, and `_binding_conflict` answers
+    `accepted_plan_version_mismatch` — the arm that makes `create_execution` return
+    CONFLICT.
+
+    Production reaches this state when the accepted plan is amended between an
+    execution being admitted and the node being dispatched again. What matters for F3
+    is that the flow is *unambiguously policy-bound* throughout: this is precisely the
+    shape the old boolean flattened into "no policy applies" and published unmarked.
+
+    Returns the seeded execution's id so a caller can assert it was left untouched.
+    """
+    from src.orchestration.execution_state import ExecutionPhase, ExecutionStatus
+    from src.orchestration.models import ClaimState, OrchestrationExecution, OrchestrationWorkClaim
+    from src.orchestration.work_claims import OwnerKind
+
+    claim = OrchestrationWorkClaim(
+        org_id=flow.org_id,
+        # The id `work_claims_enabled` makes `resolve_repository_id` return, so the
+        # dispatch's admission binds to THIS row instead of inserting its own.
+        provider_repository_id=12345,
+        issue_number=int(str(node.issue_ref).lstrip("#")),
+        owner_kind=OwnerKind.ENGINE_FLOW.value,
+        owner_ref=flow.id,
+        # Released, so the dispatch is legitimately admitted rather than refused for
+        # ownership — the refusal under test must be the execution admission's, not a
+        # work-claim conflict wearing its clothes.
+        state=ClaimState.RELEASED.value,
+        generation=1,
+        release_reason="completed",
+    )
+    session.add(claim)
+    await session.flush()
+
+    execution = OrchestrationExecution(
+        org_id=flow.org_id,
+        flow_id=flow.id,
+        node_id=node.id,
+        # `dispatch_node` increments `attempts` before the admission runs, so the
+        # cycle this dispatch will ask for is one past what the node carries now.
+        cycle=node.attempts + 1,
+        phase=ExecutionPhase.ADMITTED.value,
+        status=ExecutionStatus.RUNNABLE.value,
+        revision=1,
+        accepted_plan_version=plan_version,
+        claim_id=claim.id,
+        # Ordered reuse of a released claim advances the generation by one, so this is
+        # the generation the dispatch will hold. Equal rather than older on purpose: an
+        # older stored generation would be adopted, and a newer one would refuse as
+        # `claim_generation_superseded` — neither is the plan-version arm under test.
+        claim_generation=claim.generation + 1,
+        next_check_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    session.add(execution)
+    await session.flush()
+    return execution.id
+
+
+async def _decisions_of_kind(session: AsyncSession, kind: DecisionKind) -> list[OrchestrationDecision]:
+    """Every recorded decision of one kind, in insertion order."""
+    return list((await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == kind.value))).all())
+
+
+async def test_opted_in_story_is_marked_as_owing_a_handoff_and_has_a_real_execution(session, work_claims_enabled, policy_bound_dispatch):
+    """#5144: the marker rides the envelope AND the decision — and names a real execution.
+
+    The second half is the point. An earlier revision of this test seeded only a ready
+    story plus a work claim and asserted the marker, which passed while the receipt the
+    marker demands had no producer at all: `create_execution` had no production call
+    site, so the endpoint could never issue one and `results` would have held the story
+    forever. So this asserts the execution row exists, under the claim generation the
+    dispatch was admitted with — that is what makes the promise keepable.
+    """
+    from src.orchestration.models import OrchestrationExecution, OrchestrationWorkClaim
+
+    flow, node, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow, version=7)
+
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    assert report.pending[0].envelope["handoff_required"] is True
+    dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
+    assert json.loads(dispatch.reason)["handoff_required"] is True
+
+    # The producer the marker promises. Without this row the marker is a permanent hold.
+    execution = (await session.scalars(select(OrchestrationExecution).where(OrchestrationExecution.node_id == node.id))).one()
+    claim = (await session.scalars(select(OrchestrationWorkClaim))).one()
+    assert execution.cycle == node.attempts
+    assert execution.accepted_plan_version == 7
+    # Bound to the generation this dispatch admitted, not merely to some claim.
+    assert (execution.claim_id, execution.claim_generation) == (claim.id, claim.generation)
+
+    # #5144 item 1: the fences the worker validates the receipt against. Without them
+    # the worker can confirm the gateway said "yes" but not that the "yes" was about
+    # its own dispatch, which is the readback's entire purpose.
+    from src.orchestration.policy_admission import load_in_force_policy
+
+    policy = (await load_in_force_policy(session, org_id=flow.org_id, flow_id=flow.id)).policy
+    assert report.pending[0].envelope["handoff_expect"] == {
+        "contract_version": 1,
+        "execution_id": execution.id,
+        "policy_id": policy.policy_id,
+        "policy_hash": policy.policy_hash,
+        "org_id": flow.org_id,
+        "flow_id": flow.id,
+        "node_id": node.id,
+        "cycle": execution.cycle,
+        "accepted_plan_version": 7,
+        "claim_id": claim.id,
+        "claim_generation": claim.generation,
+    }
+
+
+async def test_published_fences_match_the_committed_execution_exactly(session, work_claims_enabled, policy_bound_dispatch):
+    """The envelope's fences and the stored execution are the same facts.
+
+    Asserted as a whole-row comparison rather than field by field: the worker refuses
+    on any disagreement, so a single drifting field here would refuse every legitimate
+    handoff in production — a total delivery outage rather than a subtle bug. This is
+    the test that catches it in CI instead.
+    """
+    from src.orchestration.models import OrchestrationExecution
+
+    flow, node, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow, version=7)
+
+    report = await run_dispatch_pass(session, _config())
+    execution = (await session.scalars(select(OrchestrationExecution))).one()
+    expect = report.pending[0].envelope["handoff_expect"]
+
+    assert {k: expect[k] for k in ("org_id", "flow_id", "node_id", "cycle", "accepted_plan_version", "claim_id", "claim_generation")} == {
+        "org_id": execution.org_id,
+        "flow_id": execution.flow_id,
+        "node_id": execution.node_id,
+        "cycle": execution.cycle,
+        "accepted_plan_version": execution.accepted_plan_version,
+        "claim_id": execution.claim_id,
+        "claim_generation": execution.claim_generation,
+    }
+
+
+# ---------------------------------------------------------------------------
+# #5144 F3: a refusal is not "no policy". Only genuine absence keeps legacy.
+# ---------------------------------------------------------------------------
+
+
+async def test_an_unreadable_policy_refuses_the_dispatch_instead_of_publishing_it_unmarked(session, work_claims_enabled, policy_bound_dispatch):
+    """The F3 defect, reproduced and closed.
+
+    `_admit_execution` used to answer `False` for BOTH "this flow has no policy" and
+    "a policy applies and could not be verified". The caller published the second case
+    as an *unmarked* dispatch — so a policy-bound story went out able to complete with
+    no continuation receipt at all, which is precisely the hole #5144 exists to shut.
+
+    A refusal must therefore publish nothing, leave the node `ready` for a later pass,
+    and record why. Asserted on all three, because publishing nothing while silently
+    losing the reason would just move the invisibility.
+    """
+    from src.orchestration.models import OrchestrationExecution
+
+    flow, node, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow, version=7)
+    # The real refusal, reached by the real code path and no monkeypatch: an execution
+    # row already exists for this (org, node, cycle) recorded under a DIFFERENT
+    # accepted plan version, so `create_execution` answers CONFLICT —
+    # `accepted_plan_version_mismatch`. The flow is unambiguously policy-bound here,
+    # which is exactly the shape the old bool flattened into "no policy" before
+    # publishing the story unmarked. Production reaches this when a plan is amended
+    # between the execution being admitted and a re-dispatch.
+    seeded_id = await _seed_conflicting_execution(session, flow, node, plan_version=6)
+
+    report = await run_dispatch_pass(session, _config())
+
+    # Nothing published, and it is reported as a refusal rather than as an idle pass.
+    assert report.pending == []
+    assert report.dispatched == 0
+    assert report.admission_refused == 1
+    # NOT counted as an error: a boundary refusing is the system working. Were this an
+    # error every tick would report failure for as long as a policy stayed unreadable.
+    assert report.errors == 0
+    assert report.success is True
+
+    # The node is still ready, so a later pass retries once the policy is readable.
+    await session.refresh(node)
+    assert node.state == NodeState.READY.value
+    # No SECOND execution, and the conflicting one is untouched. The seeded row is the
+    # *cause* of the refusal, so it is expected to survive — what must not happen is a
+    # rival identity for the same cycle, or this dispatch overwriting the authority it
+    # was just refused against. A bare "no executions exist" assertion would have been
+    # unsatisfiable here and would have hidden both.
+    executions = list((await session.scalars(select(OrchestrationExecution))).all())
+    assert [e.id for e in executions] == [seeded_id]
+    assert (executions[0].accepted_plan_version, executions[0].revision) == (6, 1)
+    # No dispatch decision either: the attempt was never burned.
+    assert await _decisions_of_kind(session, DecisionKind.NODE_DISPATCHED) == []
+
+    # And the refusal is durable, typed, and names who resolves it.
+    (rejected,) = await _decisions_of_kind(session, DecisionKind.TRANSITION_REJECTED)
+    assert rejected.node_id == node.id
+    # The node went nowhere; a recorded destination would read as an undone dispatch.
+    assert rejected.to_state is None
+    detail = json.loads(rejected.rejection_reason)
+    assert detail["block_code"] == "authority_unverifiable"
+    assert detail["owner"] == "platform-operator"
+    assert detail["required_input"]
+
+
+async def test_a_refusal_releases_the_work_claim_it_reserved(session, work_claims_enabled, policy_bound_dispatch):
+    """An abandoned dispatch must not strand ownership of the issue.
+
+    The refusal unwinds a savepoint that already admitted a claim. If that ownership
+    survived, the story would be permanently unclaimable by the retry this refusal
+    exists to allow — a refusal that deadlocks the work is worse than the defect.
+    """
+    from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+
+    flow, node, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow, version=7)
+    await _seed_conflicting_execution(session, flow, node, plan_version=6)
+
+    report = await run_dispatch_pass(session, _config())
+
+    assert report.admission_refused == 1
+    claim = (await session.scalars(select(OrchestrationWorkClaim))).one()
+    # Rolled fully back to the released row the fixture seeded — not merely "not held".
+    # The generation is asserted too: `claim_work` advances it on readmission, so a
+    # surviving generation 2 would mean the reservation's write escaped the savepoint
+    # even though its state did not, and the next retry would be fenced out of its own
+    # execution by an authority nothing ever used.
+    assert (claim.state, claim.generation, claim.active_run_id) == (ClaimState.RELEASED.value, 1, None)
+
+
+async def test_a_refusal_leaves_no_dispatch_record_for_results_to_hold_a_story_on(session, work_claims_enabled, policy_bound_dispatch):
+    """The other half of F3: a refusal must not be a *marked* dispatch either.
+
+    Publishing with the marker and no admissible execution would hold the story forever
+    waiting for a receipt nothing can issue — the opposite failure to the one above, and
+    the reason the refusal abandons the dispatch rather than merely stamping it.
+
+    Asserted through `handoff.handoff_required`, the production predicate `results`
+    calls, rather than by inspecting the envelope: the marker `results` acts on lives on
+    the `NODE_DISPATCHED` decision, and it is that reader — not the queue message — that
+    decides whether a missing receipt holds the node.
+    """
+    from src.orchestration.handoff import handoff_required
+
+    flow, node, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow, version=7)
+    await _seed_conflicting_execution(session, flow, node, plan_version=6)
+
+    report = await run_dispatch_pass(session, _config())
+
+    assert (report.pending, report.admission_refused) == ([], 1)
+    # No dispatch record at all, so there is nothing for `results` to read a marker off.
+    assert await _decisions_of_kind(session, DecisionKind.NODE_DISPATCHED) == []
+    # And the predicate itself refuses to hold a story on the refusal row that *does*
+    # exist — a `TRANSITION_REJECTED` decision is evidence of a refusal, never of a
+    # promised continuation.
+    (rejected,) = await _decisions_of_kind(session, DecisionKind.TRANSITION_REJECTED)
+    assert handoff_required(json.loads(rejected.rejection_reason)) is False
+
+
+async def test_policy_absent_story_owes_no_handoff_and_admits_no_execution(session, work_claims_enabled, policy_bound_dispatch):
+    """A flow with no accepted policy keeps legacy semantics exactly (#5128).
+
+    A held work claim says who owns the issue; it does not make the flow policy-bound.
+    Marking such a dispatch would hold it forever for evidence nothing can produce, so
+    the marker must stay absent and no execution may be created.
+    """
+    from src.orchestration.models import OrchestrationExecution
+
+    await _ready_story(session)
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    envelope = report.pending[0].envelope
+    # Still bound by #5301's PR contract; just not by this one.
+    assert envelope["pr_binding_required"] is True
+    assert "handoff_required" not in envelope
+    dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
+    assert json.loads(dispatch.reason)["handoff_required"] is False
+    assert (await session.scalars(select(OrchestrationExecution))).all() == []
+
+
+async def test_non_story_nodes_owe_no_handoff(session, work_claims_enabled):
+    """An evaluation's completion boundary is the human gate, not a worker handoff.
+
+    Left unpolicied deliberately so this pins the node-kind rule and nothing else: an
+    accepted policy denies a machine-accepted evaluation for its own unrelated reason,
+    which would make this test pass without ever exercising the kind check.
+    """
+    await _make_org(session)
+    flow = await _make_flow(session)
+    await _make_approval(session, flow)
+    await _make_node(session, flow, node_ref="eval-1", kind=NodeKind.EVAL.value)
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1
+    assert "handoff_required" not in report.pending[0].envelope
+
+
+@pytest.mark.parametrize("unreadable_policy", [False, True])
+async def test_governed_dispatch_refuses_when_claims_are_disabled(session, monkeypatch, policy_bound_dispatch, unreadable_policy):
+    flow, node, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow)
+    if unreadable_policy:
+        from src.orchestration.models import OrchestrationAcceptedPlan
+
+        plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))
+        plan.plan_document = {"execution_policy": {"schema_version": "unreadable"}}
+        await session.flush()
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 0 and not report.pending
+    assert await _state_of(session, node.id) == NodeState.READY.value
+    refusal = (
+        await session.scalars(
+            select(OrchestrationDecision).where(
+                OrchestrationDecision.node_id == node.id,
+                OrchestrationDecision.kind == DecisionKind.TRANSITION_REJECTED.value,
+            )
+        )
+    ).one()
+    assert json.loads(refusal.rejection_reason)["block_code"] == "authority_unverifiable"

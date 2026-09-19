@@ -53,6 +53,8 @@ from lib.engine_registration import (
     amendment_registration_note,
     draft_registration_note,
 )
+from lib.handoff_client import HANDOFF_EXPECT_ENV, HANDOFF_REQUIRED_ENV
+from lib.handoff_client import handoff_note as delivery_handoff_note
 from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
 from lib.pr_binding import binding_note as pr_binding_note
 from lib.invocation_completion import (
@@ -177,7 +179,9 @@ ADP_GH_TOKEN_BROKER_ENV = "ADP_GH_TOKEN_BROKER_ENABLED"
 def _gh_token_broker_enabled(environ: dict | None = None) -> bool:
     """Return True when the GitHub-token gatekeeper is enabled (issue #4272)."""
     env = environ if environ is not None else os.environ
-    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(ADP_GH_TOKEN_BROKER_ENV, "").lower() in ("1", "true", "yes")
+    return env.get("ADP_AGENT_AUTHORITY_ENABLED") == "true" or env.get(
+        ADP_GH_TOKEN_BROKER_ENV, ""
+    ).lower() in ("1", "true", "yes")
 
 
 # --- Issue #5223: mediated GitHub operations -----------------------------------
@@ -410,9 +414,11 @@ def _resolve_execution_token(
     Raises:
         RuntimeError: If PAT resolution or validation fails (no App fallback).
     """
-    pat_execution_enabled = environ.get(
-        "ADP_PAT_EXECUTION_ENABLED", ""
-    ).lower() in ("1", "true", "yes")
+    pat_execution_enabled = environ.get("ADP_PAT_EXECUTION_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     token_source = envelope.get("token_source")
 
     # Not enabled or not PAT → App path
@@ -456,8 +462,7 @@ def _resolve_execution_token(
             bootstrap_log.step_error(2, "pat_resolve", exc)
             bootstrap_log.close()
         raise RuntimeError(
-            "PAT mode requested (token_source=pat) but credential "
-            f"resolution failed: {exc}"
+            f"PAT mode requested (token_source=pat) but credential resolution failed: {exc}"
         ) from exc
 
     if bootstrap_log:
@@ -505,13 +510,9 @@ def _resolve_execution_token(
         raise err from exc
 
     if bootstrap_log:
-        bootstrap_log.step_success(
-            3, "pat_validate", github_login=github_login
-        )
+        bootstrap_log.step_success(3, "pat_validate", github_login=github_login)
 
-    return PatResolutionResult(
-        token_mode="pat", token=pat_token, github_login=github_login
-    )
+    return PatResolutionResult(token_mode="pat", token=pat_token, github_login=github_login)
 
 
 def parse_envelope(raw: str) -> dict:
@@ -543,6 +544,11 @@ def _receive_one_message(queue_url: str, region: str):
     receive semantics; for single-message-at-a-time processing the defaults
     are fine.
     """
+    if authority_enabled():
+        from lib.task_gateway_client import own_task
+
+        body = own_task()
+        return body, "run-bound-task" if body is not None else None
     sqs = boto3.client("sqs", region_name=region)
     resp = sqs.receive_message(
         QueueUrl=queue_url,
@@ -560,6 +566,11 @@ def _receive_one_message(queue_url: str, region: str):
 
 def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
     """Ack-by-delete so the message doesn't come back after visibility timeout."""
+    if authority_enabled():
+        from lib.task_gateway_client import acknowledge_task
+
+        acknowledge_task()
+        return
     boto3.client("sqs", region_name=region).delete_message(
         QueueUrl=queue_url,
         ReceiptHandle=receipt_handle,
@@ -627,17 +638,25 @@ class VisibilityHeartbeat:
         """Heartbeat loop: sleep for interval, then extend visibility."""
         # Create a per-thread SQS client (boto3 clients are not thread-safe).
         try:
-            sqs = boto3.client("sqs", region_name=self._region)
+            if authority_enabled():
+                from lib.task_gateway_client import heartbeat_task
+
+                extend = heartbeat_task
+            else:
+                sqs = boto3.client("sqs", region_name=self._region)
+
+                def extend():
+                    return sqs.change_message_visibility(
+                        QueueUrl=self._queue_url,
+                        ReceiptHandle=self._receipt_handle,
+                        VisibilityTimeout=HEARTBEAT_EXTEND,
+                    )
         except Exception as exc:
             logger.warning("Heartbeat: failed to create SQS client: %s", exc)
             return
         while not self._stop_event.wait(timeout=HEARTBEAT_INTERVAL):
             try:
-                sqs.change_message_visibility(
-                    QueueUrl=self._queue_url,
-                    ReceiptHandle=self._receipt_handle,
-                    VisibilityTimeout=HEARTBEAT_EXTEND,
-                )
+                extend()
                 self._extensions += 1
                 self._consecutive_failures = 0
                 logger.debug("Heartbeat extended visibility (extensions=%d)", self._extensions)
@@ -806,6 +825,7 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     labeled fallback; never describe that potentially clipped record as full.
     Each read is best-effort so one missing artifact cannot hide the other.
     """
+
     def read(name: str) -> str:
         try:
             with open(os.path.join(directory, name), "r", encoding="utf-8") as fh:
@@ -820,10 +840,14 @@ def _read_run_reports(directory: str = "/tmp") -> tuple[str, str]:
     transcript_text = read("adp-run-transcript.md")
     if not transcript_text.strip():
         transcript_text = (
-            "_Archive source: GitHub display fallback. The independent explanation "
-            "transcript was unavailable; this record may be truncated or incomplete._\n\n"
-            + github_text
-        ) if github_text else ""
+            (
+                "_Archive source: GitHub display fallback. The independent explanation "
+                "transcript was unavailable; this record may be truncated or incomplete._\n\n"
+                + github_text
+            )
+            if github_text
+            else ""
+        )
     return github_text, transcript_text
 
 
@@ -840,6 +864,16 @@ def _upload_transcript_to_s3(
     un-applied accounts) or if final_text is empty. Failures are logged but
     NEVER affect pod exit code — same contract as check-run finalize.
     """
+    from lib.status_gateway_client import authority_enabled, upload_transcript
+
+    if authority_enabled():
+        if not final_text:
+            return None
+        try:
+            return upload_transcript(final_text)
+        except Exception:
+            logger.warning("Own-run transcript upload unavailable (non-fatal; maximum 8 MiB)")
+            return None
     bucket = os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
     if not bucket or not final_text:
         return None
@@ -867,7 +901,12 @@ def _upload_transcript_to_s3(
             Body=final_text.encode("utf-8"),
             ContentType="text/markdown",
         )
-        logger.info("Transcript uploaded to s3://%s/%s (%d bytes)", bucket, key, len(final_text.encode("utf-8")))
+        logger.info(
+            "Transcript uploaded to s3://%s/%s (%d bytes)",
+            bucket,
+            key,
+            len(final_text.encode("utf-8")),
+        )
         return key
     except Exception as exc:
         logger.warning("Failed to upload transcript to S3 (non-fatal): %s", exc)
@@ -1274,9 +1313,105 @@ def _export_authoring_assignment(envelope: dict) -> None:
     )
 
 
+def _work_branch_is_disposable(branch: str) -> bool:
+    """Prove that cleanup would discard only empty commits or review transcripts.
+
+    Inspect every unmerged commit, not just the final diff: code subsequently
+    reverted is still committed work. Incomplete history and read failures must
+    preserve the branch. This deliberately does not use the PR-suppression
+    helper below, whose shallow, net-diff test is insufficient for deletion.
+    """
+    try:
+        if run_cmd(["git", "status", "--porcelain"], cwd=WORK_DIR).stdout.strip():
+            return False
+        head = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        remote = run_cmd(
+            ["git", "rev-parse", f"refs/remotes/origin/{branch}"], cwd=WORK_DIR
+        ).stdout.strip()
+        if head != remote:
+            return False  # Never reset an unpublished local checkpoint.
+        fetch = ["git", "fetch"]
+        if (
+            run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=WORK_DIR).stdout.strip()
+            == "true"
+        ):
+            fetch.append("--unshallow")
+        run_cmd([*fetch, "origin", "refs/heads/main:refs/remotes/origin/main"], cwd=WORK_DIR)
+        if (
+            run_cmd(["git", "rev-parse", "--is-shallow-repository"], cwd=WORK_DIR).stdout.strip()
+            != "false"
+        ):
+            return False
+        revision_range = f"origin/main..{head}"
+        # Merges can carry conflict resolutions not represented by log's default
+        # per-commit diff. Preserve them rather than guessing about disposability.
+        if run_cmd(
+            ["git", "rev-list", "--min-parents=2", revision_range], cwd=WORK_DIR
+        ).stdout.strip():
+            return False
+        changed = run_cmd(
+            ["git", "log", "--format=", "--name-only", "-z", revision_range], cwd=WORK_DIR
+        ).stdout
+        files = [path for path in changed.split("\0") if path]
+        return all(path.startswith("data/code-review/") for path in files)
+    except (subprocess.CalledProcessError, OSError):
+        logger.warning("Could not prove branch %s disposable; preserving it", branch)
+        return False
+
+
+def _reuse_work_branch(branch: str, *, allow_cleanup: bool, persona: str, issue: int) -> None:
+    """Adopt the existing head, or replace disposable work behind a recovery ref.
+
+    A leased replacement avoids the delete/recreate gap and rejects any writer
+    racing bootstrap. No empty WIP commit is added to an adopted head (#5381).
+    """
+    _checkout_existing_work_branch(branch)
+    if not allow_cleanup or not _work_branch_is_disposable(branch):
+        logger.info("Preserving existing work branch %s without a WIP push", branch)
+        return
+    old_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+    recovery_ref = f"refs/heads/recovery/{branch.replace('/', '-')}-{old_sha}"
+    run_cmd(["git", "push", "origin", f"{old_sha}:{recovery_ref}"], cwd=WORK_DIR)
+    saved = (
+        run_cmd(["git", "ls-remote", "--exit-code", "--refs", "origin", recovery_ref], cwd=WORK_DIR)
+        .stdout.strip()
+        .split()
+    )
+    if saved != [old_sha, recovery_ref]:
+        raise RuntimeError(f"Recovery ref for {branch} did not verify; refusing cleanup")
+    run_cmd(["git", "reset", "--hard", "origin/main"], cwd=WORK_DIR)
+    run_cmd(
+        ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
+        cwd=WORK_DIR,
+    )
+    run_cmd(
+        [
+            "git",
+            "push",
+            f"--force-with-lease=refs/heads/{branch}:{old_sha}",
+            "origin",
+            f"HEAD:refs/heads/{branch}",
+        ],
+        cwd=WORK_DIR,
+    )
+    logger.info("Reset disposable branch %s; prior work retained at %s", branch, recovery_ref)
+
+
 def main() -> int:
+    if authority_enabled():
+        # Lease starts at task assignment, before clone/bootstrap/model startup.
+        # Always stop it on early refusal as well as normal harness termination.
+        heartbeat = VisibilityHeartbeat("", os.environ.get("AWS_REGION", "us-east-1"), "")
+        try:
+            return _main(task_heartbeat=heartbeat)
+        finally:
+            heartbeat.stop()
+    return _main()
+
+
+def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     queue_url = os.environ.get("QUEUE_URL")
-    if not queue_url:
+    if not queue_url and task_heartbeat is None:
         logger.error("QUEUE_URL env var is not set")
         return 1
     region = os.environ.get("AWS_REGION", "us-east-1")
@@ -1287,6 +1422,9 @@ def main() -> int:
         # receive. Exit clean (not an error — KEDA will handle scaling).
         logger.info("No message available after long-poll; exiting cleanly")
         return 0
+
+    if task_heartbeat is not None:
+        task_heartbeat.start()
 
     # --- Bootstrap Logger: initialized after first parse to get correlation_id ---
     # We do a lightweight pre-parse to extract correlation_id before the full
@@ -1391,8 +1529,7 @@ def main() -> int:
     # could overwrite an older worker's completed status. Protected dispatch
     # already binds/retires attempts and must not fall back to direct table I/O.
     use_completion_receipt = (
-        persona in PERSONAS_EXTENDING_BRANCH
-        or (is_codex_review and not is_codex_pr_review)
+        persona in PERSONAS_EXTENDING_BRANCH or (is_codex_review and not is_codex_pr_review)
     ) and not authority_enabled()
     if use_completion_receipt:
         try:
@@ -1409,7 +1546,9 @@ def main() -> int:
             try:
                 _delete_message(queue_url, region, receipt_handle)
             except Exception:
-                logger.warning("Could not acknowledge completed AIDLC delivery; leaving it for retry")
+                logger.warning(
+                    "Could not acknowledge completed AIDLC delivery; leaving it for retry"
+                )
                 return AGENT_EXIT_RETRYABLE
             return 0
 
@@ -1417,7 +1556,7 @@ def main() -> int:
     # hooks, SDK tools or repository-selected dependencies can execute (#5028).
     from lib.run_identity import bootstrap_run_identity
 
-    bootstrap_run_identity(envelope)
+    run_identity = bootstrap_run_identity(envelope)
 
     # Read correlation context from SQS envelope.
     # ENVELOPE CONTRACT: handler.py publishes correlation fields NESTED under
@@ -1476,6 +1615,24 @@ def main() -> int:
         _fail_bootstrap_status(message_id, arrived_at, str(exc))
         bootstrap_log.close()
         return 1
+
+
+    # Issue #5144: the engine marks a dispatch whose delivery must produce a durable
+    # continuation receipt before this run's exit counts for anything. Same shape and
+    # same reasoning as the marker above: trusted dispatch envelope only, and never
+    # defaulted on, so a webhook trigger or a legacy dispatch keeps its existing
+    # behaviour exactly. The worker does not get to decide that it owes a handoff.
+    if envelope.get("handoff_required") is True:
+        os.environ[HANDOFF_REQUIRED_ENV] = "true"
+        # The fences this dispatch was admitted under. The worker compares the
+        # gateway's receipt against them so an acceptance for *some other* run — a
+        # different cycle, a superseded ownership generation, another tenant's node —
+        # cannot be reported as this run's handoff. Trusted dispatch envelope only,
+        # exactly like the marker above; the worker never authors these, and the
+        # gateway never reads authority back from them.
+        expect = envelope.get("handoff_expect")
+        if isinstance(expect, dict):
+            os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
@@ -1758,6 +1915,12 @@ def main() -> int:
         "CLAUDE_CODE_USE_BEDROCK": "1",
         "ANTHROPIC_MODEL": effective_model,
     }
+    # PMM-07 report-only evidence.  This deliberately does not feed
+    # ``effective_model``: PMM-09 owns the enforcing flip after every runtime
+    # path and live admission gate is proven.  Older gateways/workers simply
+    # omit these comparison fields during the mixed-version rollout.
+    if run_identity is not None and run_identity.model_policy_report is not None:
+        env_vars.update(run_identity.model_policy_report.environment(effective_model))
 
     # Issue #5223: in mediated mode there is no token, so exporting these would
     # publish empty strings as if they were credentials. Removed rather than left
@@ -1789,7 +1952,14 @@ def main() -> int:
     # side adopts the env GITHUB_TOKEN as-is.
     elif _token_mode == "pat":
         env_vars["ADP_TOKEN_MODE"] = "pat"
-        for key in ("GH_APP_ID", "GH_APP_PRIVATE_KEY", "GH_APP_KEY", "GH_APP_INSTALLATION_ID", "GH_APP_TOKEN", "GH_APP_TOKEN_EXPIRES_AT"):
+        for key in (
+            "GH_APP_ID",
+            "GH_APP_PRIVATE_KEY",
+            "GH_APP_KEY",
+            "GH_APP_INSTALLATION_ID",
+            "GH_APP_TOKEN",
+            "GH_APP_TOKEN_EXPIRES_AT",
+        ):
             os.environ.pop(key, None)
         # Write PAT to the askpass token file so git-askpass-helper reads it.
         # TokenManager won't overwrite since it has no app credentials.
@@ -1994,28 +2164,10 @@ def main() -> int:
         else ("default-branch" if is_codex_review else f"agent/issue-{issue}")
     )
     bootstrap_log.step_start(7, "wip_branch", branch=branch_name)
-    # Create or reset the agent branch + WIP commit BEFORE exec so that:
-    #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
-    #   2. Users see a "WIP" commit immediately on the branch.
-    #   3. Real agent commits stack cleanly on top.
-    #
-    # Branch convention `agent/issue-NNN` is fixed (A4 auto-merge, reviewer
-    # workflows, operators all rely on it). When this issue has been worked
-    # before — typically architect-then-developer in sequence — the remote
-    # branch already exists. Two cases:
-    #
-    #   (a) Stale branch, no open PR:  prior architect/developer run created
-    #       a WIP commit but no PR shipped. Force-reset to current main so
-    #       this run starts clean. Otherwise the agent's `git fetch`+`merge`
-    #       pulls in everything that landed on main since the prior run,
-    #       inflating the eventual PR diff with already-merged work.
-    #
-    #   (b) Branch with an open PR:  operator may be iterating, or an
-    #       earlier architect run shipped a PR (rare). Don't force-reset —
-    #       extend the existing branch so the PR's review state is preserved.
-    #
-    # SQS FIFO MessageGroupId=tenant#repo#issue serializes runs on the same
-    # issue, so concurrent-run race conditions don't apply here.
+    # Attach checks to the work branch. Existing substantive work and open PR
+    # heads are adopted without a cosmetic commit. Only proven empty/transcript
+    # branches may be reset, after saving and verifying their recovery ref.
+    # The reset uses an exact lease: FIFO does not fence other GitHub writers.
     wip_sha: str = ""
     work_branch_ready = False
     if is_codex_review:
@@ -2037,12 +2189,10 @@ def main() -> int:
                 )
             bootstrap_step = "review_branch"
         else:
-            branch_name = run_cmd(
-                ["git", "branch", "--show-current"], cwd=WORK_DIR
-            ).stdout.strip() or "HEAD"
-            actual_review_sha = run_cmd(
-                ["git", "rev-parse", "HEAD"], cwd=WORK_DIR
-            ).stdout.strip()
+            branch_name = (
+                run_cmd(["git", "branch", "--show-current"], cwd=WORK_DIR).stdout.strip() or "HEAD"
+            )
+            actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
             bootstrap_step = "issue_review_base"
         work_branch_ready = True
         wip_sha = actual_review_sha
@@ -2085,6 +2235,8 @@ def main() -> int:
                 text=True,
                 check=False,
             )
+            if remote_check.returncode not in (0, 2):
+                raise RuntimeError(f"Could not determine whether work branch {branch_name} exists")
             remote_branch_exists = remote_check.returncode == 0
 
             if remote_branch_exists:
@@ -2113,53 +2265,37 @@ def main() -> int:
                 )
                 has_open_pr = bool(open_pr_check.stdout.strip())
 
-                if has_open_pr:
-                    # (b) Extend the existing branch — preserve the PR's review state.
-                    logger.info(
-                        "Branch %s exists with open PR; extending instead of resetting",
-                        branch_name,
-                    )
-                    _checkout_existing_work_branch(branch_name)
-                elif persona in PERSONAS_EXTENDING_BRANCH:
-                    # (a-aidlc) AIDLC stages commit artifacts sequentially on one
-                    # branch without opening a PR until the end. Never delete the
-                    # remote branch — fetch + extend so prior stage commits survive.
-                    # Issue #3430.
-                    logger.info(
-                        "Branch %s exists with no open PR; persona=%s is in "
-                        "PERSONAS_EXTENDING_BRANCH — extending instead of resetting",
-                        branch_name,
-                        persona,
-                    )
-                    _checkout_existing_work_branch(branch_name)
-                else:
-                    # (a) Stale branch, no PR — delete it and start fresh from main.
-                    logger.info(
-                        "Branch %s exists with no open PR; resetting from main",
-                        branch_name,
-                    )
-                    subprocess.run(
-                        ["git", "push", "--delete", "origin", branch_name],
-                        cwd=WORK_DIR,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                    )
-                    run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
+                _reuse_work_branch(
+                    branch_name,
+                    allow_cleanup=(
+                        open_pr_check.returncode == 0
+                        and not has_open_pr
+                        and persona not in PERSONAS_EXTENDING_BRANCH
+                    ),
+                    persona=persona,
+                    issue=issue,
+                )
             else:
                 # First run on this issue — clean creation
                 run_cmd(["git", "checkout", "-b", branch_name], cwd=WORK_DIR)
 
             work_branch_ready = True
-            run_cmd(
-                ["git", "commit", "--allow-empty", "-m", f"WIP: agent/{persona} starting #{issue}"],
-                cwd=WORK_DIR,
-            )
-            run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
+            if not remote_branch_exists:
+                run_cmd(
+                    [
+                        "git",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        f"WIP: agent/{persona} starting #{issue}",
+                    ],
+                    cwd=WORK_DIR,
+                )
+                run_cmd(["git", "push", "-u", "origin", branch_name], cwd=WORK_DIR)
             sha_result = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR)
             wip_sha = sha_result.stdout.strip()
             bootstrap_log.step_success(7, "wip_branch", sha=wip_sha[:7])
-            logger.info("WIP branch %s created; sha=%s", branch_name, wip_sha[:7])
+            logger.info("Work branch %s ready; sha=%s", branch_name, wip_sha[:7])
         except Exception as exc:
             bootstrap_log.step_error(7, "wip_branch", exc)
             # Never launch the model on main after a failed branch checkout. A WIP
@@ -2360,7 +2496,9 @@ def main() -> int:
         raise RuntimeError(RETIRED_BEDROCK_VIA[bedrock_via])
 
     if bedrock_via != "gateway":
-        raise RuntimeError("ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported.")
+        raise RuntimeError(
+            "ADP_BEDROCK_VIA must be gateway to enforce the user routing rule; direct/platform bypass modes are no longer supported."
+        )
 
     # Start sigv4-proxy subprocess for gateway mode.
     # The proxy must sign with platform IRSA (which has execute-api:Invoke on
@@ -2384,11 +2522,16 @@ def main() -> int:
             _withhold_write_token(proxy_env)
         proxy_process = _start_sigv4_proxy(proxy_env, tenant_id)
         if proxy_process is None:
-            raise RuntimeError("Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing.")
+            raise RuntimeError(
+                "Bedrock gateway proxy failed to start; stopping the agent to preserve the user's AWS account routing."
+            )
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = "http://127.0.0.1:9090"
+            agent_env["SIGV4_PROXY_PORT"] = proxy_env.get("SIGV4_PROXY_PORT") or "9090"
+            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = (
+                f"http://127.0.0.1:{agent_env['SIGV4_PROXY_PORT']}"
+            )
             if agent_env.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
                 # Only this loopback hop is unsigned. The proxy authenticates
                 # upstream with protected IRSA and the current run/pod proof.
@@ -2442,7 +2585,9 @@ def main() -> int:
     # Issue #3385 (C5): include token_mode provenance on the DDB row.
     _keda_job_name = os.environ.get("JOB_NAME", os.environ.get("HOSTNAME", ""))
     update_invocation_status(
-        message_id, arrived_at, "in_progress",
+        message_id,
+        arrived_at,
+        "in_progress",
         run_id=_keda_job_name,
         token_mode=_token_mode,
     )
@@ -2462,8 +2607,9 @@ def main() -> int:
     # Start SQS visibility heartbeat — keeps the message in-flight for the
     # duration of the agent run without requiring a 6h base visibility timeout.
     # A dead worker's heartbeat stops → message frees in ~5min for retry.
-    heartbeat = VisibilityHeartbeat(queue_url, region, receipt_handle)
-    heartbeat.start()
+    heartbeat = task_heartbeat or VisibilityHeartbeat(queue_url, region, receipt_handle)
+    if task_heartbeat is None:
+        heartbeat.start()
 
     command = worker_command(persona)
     logger.info(
@@ -2902,11 +3048,10 @@ def _setup_agent_control(
     the flag is off, nothing is minted, nothing is written and no port is
     advertised — the row is byte-identical to a run without this feature (FR-1.1).
 
-    **The token's lifetime is bounded by the pod's, not by a fixed window.** The
-    expiry is derived from ``ADP_POD_DEADLINE_SECONDS`` — the same
-    ``activeDeadlineSeconds`` Kubernetes enforces on this pod — so a token cannot
-    outlive the process it authenticates; a leaked token from a finished run is
-    already expired even if terminal cleanup never ran.
+    A verified absolute Kubernetes deadline bounds the token when available.
+    The configured TTL alone is only a duration cap; registration occurs after
+    bootstrap and cannot establish when the Job started. Without lifecycle
+    evidence the read channel remains usable, while pause remains unavailable.
 
     **The generation is assigned by the invocation row, not read from config.**
     ``register_control_endpoint`` returns it from an atomic increment, so a retry
@@ -2939,11 +3084,21 @@ def _setup_agent_control(
         token = secrets.token_urlsafe(32)
         port = _control_port()
 
-        # Bound by the pod deadline so the credential cannot outlive the listener
-        # that honours it.
+        # Bootstrap receives the absolute Kubernetes lifetime from the gateway.
+        # A TTL minted after clone does not establish when a Job began. Missing
+        # lifecycle evidence leaves reads available but disables worker pause.
+        expiry = time.time() + _control_token_ttl_seconds()
+        try:
+            deadline = datetime.fromisoformat(
+                agent_env.get("ADP_POD_DEADLINE_AT", "").replace("Z", "+00:00")
+            )
+            if deadline.tzinfo is not None and deadline.timestamp() > time.time():
+                expiry = min(expiry, deadline.timestamp())
+        except (ValueError, TypeError):
+            pass
         expires_at = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(time.time() + _control_token_ttl_seconds()),
+            time.gmtime(expiry),
         )
 
         # The generation comes back from the write. It is not computed here: see
@@ -3014,7 +3169,10 @@ def _setup_agent_control(
 
             global _control_renewal_session
             _control_renewal_session = ControlRenewal(
-                run_id=message_id, generation=generation, token=token, expires_at=expires_at,
+                run_id=message_id,
+                generation=generation,
+                token=token,
+                expires_at=expires_at,
             )
             _control_renewal_session.start()
             agent_env["ADP_CONTROL_CREDENTIAL_FILE"] = str(_control_renewal_session.path)
@@ -3032,19 +3190,11 @@ def _setup_agent_control(
 
 
 def _control_token_ttl_seconds() -> int:
-    """Token TTL, bounded by the deadline Kubernetes actually enforces.
+    """Configured duration cap, not evidence of an absolute workload deadline.
 
-    Reads ``ADP_POD_DEADLINE_SECONDS``, which the ScaledJob renders from the same
-    ``var.agent_pod_deadline_seconds`` it passes to ``activeDeadlineSeconds``. The
-    two therefore cannot drift: whatever wall-clock limit the pod is killed at is
-    the limit the credential expires at.
-
-    Falls back to ``MAX_CONTROL_TOKEN_TTL_SECONDS`` when unset or unparseable, and
-    never exceeds it. The cap is not redundant with the deadline: an operator can
-    raise ``agent_pod_deadline_seconds``, and an unbounded TTL would silently turn
-    a leaked token into a near-permanent one. A too-short TTL only costs the
-    ability to control a long run's tail; a too-long one is a live credential for
-    a pod that no longer exists.
+    The verified Kubernetes deadline is applied separately during registration
+    and by the worker pause gate. Never add this duration to registration time
+    and treat that result as the Job's lifetime.
     """
     raw = os.environ.get("ADP_POD_DEADLINE_SECONDS", "").strip()
     if raw.isdigit() and int(raw) > 0:
@@ -3291,7 +3441,7 @@ def _outcome_report_link(meta: dict | None, repo: str, issue: int) -> str:
     """Reference the worker's single outcome report without trusting arbitrary URLs."""
     url = (meta or {}).get("outcome_comment_url")
     prefix = f"https://github.com/{repo}/issues/{issue}#issuecomment-"
-    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix):].isdigit():
+    if isinstance(url, str) and url.startswith(prefix) and url[len(prefix) :].isdigit():
         return f"\n\n[Outcome, remaining work and next action]({url})."
     return ""
 
@@ -3393,25 +3543,35 @@ def _handle_success(
             # PR gets bound to its story. Registering only on the entrypoint-creates-PR
             # path below would miss the common case entirely — the same gap #1723 had
             # with the correlation marker.
-            binding_note = pr_binding_note(repo=repo, pr_number=self_pr, reviewer_artifact=persona == "reviewer")
+            binding_note = pr_binding_note(
+                repo=repo, pr_number=self_pr, reviewer_artifact=persona == "reviewer"
+            )
             if self_pr:
                 git_outcome = f"PR #{self_pr} is open: https://github.com/{repo}/pull/{self_pr}."
             else:
                 git_outcome = "No local changes remain to push; task completion is not verified by this check."
-            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(meta, repo, issue)
+            summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
+                meta, repo, issue
+            )
+            # #5144: reported on BOTH terminal-success paths, for the same reason the
+            # binding note is — this is the common path for a persona that pushes its
+            # own work, and wiring the handoff only on the PR-creating path below would
+            # leave exactly the case the issue is about silently unrecorded.
+            handoff = delivery_handoff_note(summary=f"{persona} — {git_outcome}")
             _post_comment(
                 repo,
                 issue,
                 message_id,
                 "completed",
-                _join_notes(summary, draft_note, amendment_note, binding_note),
+                _join_notes(summary, draft_note, amendment_note, binding_note, handoff),
                 check_run_url,
             )
             update_invocation_status(
                 message_id,
                 arrived_at,
                 "complete",
-                summary=f"{persona} — run ended; " + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
+                summary=f"{persona} — run ended; "
+                + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
             return 0
 
@@ -3497,27 +3657,39 @@ def _handle_success(
         # review transcripts and opens no PR, so there is nothing to bind; otherwise the
         # PR is either the agent's own or the one just created on `branch`.
         binding_pr = "" if transcript_only else (existing_pr_number or _find_open_pr(repo, branch))
-        binding_note = pr_binding_note(repo=repo, pr_number=binding_pr, reviewer_artifact=persona == "reviewer")
+        binding_note = pr_binding_note(
+            repo=repo, pr_number=binding_pr, reviewer_artifact=persona == "reviewer"
+        )
         if transcript_only:
-            git_outcome = f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+            git_outcome = (
+                f"Review transcripts were pushed to `{branch}`; no PR was created for them."
+            )
         elif existing_pr_number:
             git_outcome = f"PR #{existing_pr_number} is open: https://github.com/{repo}/pull/{existing_pr_number}."
         else:
             git_outcome = f"PR opened on branch `{branch}`; merge and deployment are not verified by this check."
-        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(_read_result_metadata(), repo, issue)
+        summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
+            _read_result_metadata(), repo, issue
+        )
+        # #5144: the second terminal-success path. `handoff_note` never raises — the
+        # branch is pushed and the PR is open by now, so bookkeeping must not destroy
+        # delivered work — but its failure is visible, because an unrecorded handoff
+        # means the engine holds this work as still-due.
+        handoff = delivery_handoff_note(summary=f"{persona} — {git_outcome}")
         _post_comment(
             repo,
             issue,
             message_id,
             "completed",
-            _join_notes(summary, draft_note, amendment_note, binding_note),
+            _join_notes(summary, draft_note, amendment_note, binding_note, handoff),
             check_run_url,
         )
         update_invocation_status(
             message_id,
             arrived_at,
             "complete",
-            summary=f"{persona} — run ended; " + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
+            summary=f"{persona} — run ended; "
+            + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )
     except subprocess.CalledProcessError as exc:
         logger.error("Post-agent git/PR step failed: %s", exc.stderr or exc)
