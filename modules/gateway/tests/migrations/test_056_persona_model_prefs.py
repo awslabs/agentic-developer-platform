@@ -130,6 +130,41 @@ def _load_migration(filename: str):
 MIG_056 = _load_migration(MIGRATION_FILE)
 
 
+def _current_single_head() -> str:
+    """The one revision nothing else builds on, read from the migration files.
+
+    Lets the re-upgrade assertion below check "we landed on head" without naming a
+    revision that every future migration would change. Parsed with `ast` rather than a
+    regex over the sources: a regex that silently fails to match a file drops it from
+    the graph, which turns its child into a spurious extra head and makes this helper
+    report a fork that does not exist.
+
+    Asserts singularity rather than picking one of several, because two heads means
+    `alembic upgrade head` is ambiguous and a caller taking "the first" would hide
+    exactly the break this is positioned to notice.
+    """
+    revisions: dict[str, object] = {}
+    for path in MIGRATIONS_DIR.glob("*.py"):
+        if path.name == "__init__.py":
+            continue
+        for node in ast.parse(path.read_text(), filename=str(path)).body:
+            if not isinstance(node, ast.AnnAssign | ast.Assign):
+                continue
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            names = {t.id for t in targets if isinstance(t, ast.Name)} & {"revision", "down_revision"}
+            if not names or not isinstance(node.value, ast.Constant | ast.Tuple):
+                continue
+            for name in names:
+                revisions.setdefault(path.name, {})  # type: ignore[arg-type]
+                revisions[path.name][name] = ast.literal_eval(node.value)  # type: ignore[index]
+
+    chain = {v["revision"]: v.get("down_revision") for v in revisions.values() if "revision" in v}  # type: ignore[index,union-attr]
+    parents = {p for down in chain.values() if down is not None for p in ((down,) if isinstance(down, str) else down)}
+    heads = sorted(rev for rev in chain if rev not in parents)
+    assert len(heads) == 1, f"expected exactly one migration head, got {heads}"
+    return heads[0]
+
+
 def _run_migration(sync_conn, fn):
     """Run a migration's upgrade()/downgrade() with alembic's `op` proxy bound.
 
@@ -857,9 +892,13 @@ class TestRealPostgres:
             cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
             restored = {row[0] for row in cursor.fetchall()}
             cursor.execute("SELECT version_num FROM alembic_version")
-            # PMM-03 adds two linear successors in this integration branch, so
-            # an upgrade to ``head`` must advance through 056 and finish at 058.
-            assert cursor.fetchone()[0] == "058_model_probe_admission"
+            # An upgrade to ``head`` must advance through 056 and finish at whatever
+            # the chain's single head currently is. Computed rather than named: this
+            # assertion is about the re-upgrade landing on head, not about which
+            # revision happens to be head today, and a pinned name makes every future
+            # migration fail here — which teaches people to edit this line instead of
+            # reading it. (It was pinned to 058 and #4529's 059 duly broke it.)
+            assert cursor.fetchone()[0] == _current_single_head()
             cursor.execute(f"SELECT COUNT(*) FROM {SETTINGS}")
             assert cursor.fetchone()[0] == 1, "re-upgrade must re-seed exactly one settings row"
 

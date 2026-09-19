@@ -798,9 +798,10 @@ class TestPostgresRendering:
     """
 
     def _render_postgres_ddl(self) -> str:
+        from sqlalchemy.dialects import postgresql
+
         from alembic.migration import MigrationContext
         from alembic.operations import Operations
-        from sqlalchemy.dialects import postgresql
 
         chunks: list[str] = []
 
