@@ -30,6 +30,7 @@ The properties pinned here, and why each matters:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,7 +39,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionStateError
@@ -187,6 +188,88 @@ async def _row(handoff) -> OrchestrationExecution:
     rows = await _rows(handoff)
     assert len(rows) == 1
     return rows[0]
+
+
+@pytest.mark.parametrize("new_cycle", [False, True])
+async def test_attempt_change_after_dispatch_resolution_cannot_commit(handoff, monkeypatch, new_cycle):
+    from src.orchestration import pr_bindings
+    from src.orchestration.handoff import current_identity
+
+    original = pr_bindings.resolve_registration_target
+
+    async def changed_after_resolve(session, **kwargs):
+        target = await original(session, **kwargs)
+        async with handoff.sessions() as competing:
+            await competing.execute(update(OrchestrationNode).where(OrchestrationNode.id == target.node_id).values(attempts=2))
+            if new_cycle:
+                identity = await current_identity(competing, org_id=target.org_id, node_id=target.node_id)
+                await create_execution(competing, identity=replace(identity, cycle=2), flow_id=target.flow_id)
+            await competing.commit()
+        return target
+
+    monkeypatch.setattr(pr_bindings, "resolve_registration_target", changed_after_resolve)
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+    assert response.status_code == 404, response.text
+    assert all(row.handoff_receipt_ref is None for row in await _rows(handoff))
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("boundary", ["identity_for_attempt", "commit_handoff"])
+@pytest.mark.parametrize("failure", ["revoked", "expired", "flow_revoked", "snapshot_changed"])
+async def test_authority_change_during_sql_refuses_commit_and_readback(handoff, monkeypatch, replay, boundary, failure):
+    from copy import deepcopy
+
+    from src.orchestration import handoff as handoff_module
+
+    if replay:
+        first = await handoff.client.post(URL, headers=HEADERS, json={})
+        assert first.status_code == 201
+    before = await _row(handoff)
+    original = getattr(handoff_module, boundary)
+
+    async def change_after_wait(*args, **kwargs):
+        value = await original(*args, **kwargs)
+        if failure == "revoked":
+            handoff.runtime.authenticate.side_effect = ExecutionStateError("revoked during SQL")
+        elif failure == "expired":
+            handoff.runtime.authenticate.side_effect = CredentialError("expired during SQL")
+        elif failure == "flow_revoked":
+            handoff.runtime.validate_flow.side_effect = BootstrapRefusedError("flow revoked during SQL")
+        else:
+            context = deepcopy(handoff.runtime.authenticate.return_value)
+            context[3].authority.reference_id = "replacement-authority"
+            handoff.runtime.authenticate.return_value = context
+        return value
+
+    monkeypatch.setattr(handoff_module, boundary, change_after_wait)
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+    assert response.status_code == 404, response.text
+    after = await _row(handoff)
+    assert (after.handoff_receipt_ref, after.next_check_at, after.status) == (before.handoff_receipt_ref, before.next_check_at, before.status)
+
+
+@pytest.mark.parametrize("replay", [False, True])
+async def test_credential_expiring_during_final_flow_validation_is_refused(handoff, monkeypatch, replay):
+    from src.orchestration import handoff as handoff_module
+
+    if replay:
+        assert (await handoff.client.post(URL, headers=HEADERS, json={})).status_code == 201
+    before = await _row(handoff)
+    original = handoff_module.commit_handoff
+
+    async def expire_in_final_flow_read(*args, **kwargs):
+        result = await original(*args, **kwargs)
+
+        async def expire(*args):
+            handoff.runtime.authenticate.side_effect = CredentialError("expired during final flow read")
+
+        handoff.runtime.validate_flow.side_effect = expire
+        return result
+
+    monkeypatch.setattr(handoff_module, "commit_handoff", expire_in_final_flow_read)
+    response = await handoff.client.post(URL, headers=HEADERS, json={})
+    assert response.status_code == 404, response.text
+    assert (await _row(handoff)).handoff_receipt_ref == before.handoff_receipt_ref
 
 
 # ---------------------------------------------------------------------------

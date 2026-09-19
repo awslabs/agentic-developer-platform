@@ -198,9 +198,16 @@ class RegistrationRuntime:
         than by widening ``validate_live``'s return, so the existing callers' contract
         is unchanged.
         """
-        context = await run_in_threadpool(self.runtime.authenticate, self.credential(request), request.headers.get(WORKLOAD_HEADER, ""))
+        credential = self.credential(request)
+        workload = request.headers.get(WORKLOAD_HEADER, "")
+        context = await run_in_threadpool(self.runtime.authenticate, credential, workload)
         await self.runtime.validate_flow(context[2], context[3])
-        return context
+        # Flow validation can await SQL or protected-store work. Its result is
+        # valid only for the same still-live authority and presenting workload.
+        current = await run_in_threadpool(self.runtime.authenticate, credential, workload)
+        if context != current:
+            raise RegistrationRefusedError("authority changed during flow validation")
+        return current
 
     def status(self, request: Request, body: StatusRequest, *, pod=None) -> dict:
         self.service.record_status(
@@ -373,7 +380,8 @@ async def commit_handoff_route(
     from src.shared.database import get_session_factory
 
     try:
-        _, caller, record, grant = await runtime.validate_live_context(request)
+        initial = await runtime.validate_live_context(request)
+        _, caller, record, grant = initial
     except RegistrationRefusedError:
         raise HTTPException(404, "not found") from None
     except (WorkloadRefusedError, BootstrapRefusedError, CredentialError, ExecutionStateError):
@@ -417,6 +425,13 @@ async def commit_handoff_route(
                 now=datetime.now(UTC),
                 progress_note=(body.summary or None),
             )
+            # Both the node lock and the receipt write/readback may wait. Refresh
+            # the authority before committing or exposing an idempotent receipt;
+            # refusal exits this session without making its provisional writes
+            # durable. A different valid grant is not the original authorization.
+            current = await runtime.validate_live_context(request)
+            if current != initial:
+                raise HTTPException(404, "not found")
             if result.accepted:
                 await session.commit()
             else:
@@ -424,6 +439,10 @@ async def commit_handoff_route(
                 await session.rollback()
     except HTTPException:
         raise
+    except (RegistrationRefusedError, WorkloadRefusedError, BootstrapRefusedError, CredentialError, ExecutionStateError):
+        raise HTTPException(404, "not found") from None
+    except AuthorityStoreError:
+        raise HTTPException(503, "agent authority unavailable") from None
     except BindingError:
         # A run that is not an engine dispatch is indistinguishable from one that does
         # not exist, so this joins the authorization 404s.

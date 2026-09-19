@@ -52,8 +52,8 @@ exit can no longer express lane completion.
 
 ## Idempotency, and what the receipt is keyed by
 
-The receipt reference is derived from the **work and its authority fences** — never
-from the attempt number, a timestamp or a fresh UUID. So a repeated report or a
+The receipt reference is derived from the **execution, cycle and authority fences**,
+not a timestamp or a fresh UUID. So a repeated report or a
 lost response converges on the identical receipt instead of minting a second one or
 advancing a counter. This follows ``execution_runner.OperationIdentity``'s rule for
 the same reason it does: a key derived per attempt turns every retry into a second
@@ -64,16 +64,19 @@ handover advances the generation, and the new owner's handoff is genuinely
 different work-ownership — so it earns its own receipt, while a repeat by the same
 owner at the same generation gets the same string back.
 
-## Readback proves the receipt belongs to the current attempt
+## Attempt, generation and live authority are separate fences
 
-:func:`commit_handoff` returns the stored receipt read from the row it just wrote,
-and the authority fences are compared **at the point of use** inside the store's
-locked write rather than once on the way in. That ordering is the whole point: this
-effort has repeatedly produced fences that read a value before slow work and
-trusted it after. ``advance_execution`` takes the row lock, calls
-``_binding_conflict`` and ``_adopt_generation`` under it, and refuses a superseded
-generation there — so a receipt from a stale attempt is refused rather than
-accepted, and this module reports that refusal instead of a success.
+The route resolves the caller's original dispatch through
+``resolve_registration_target``. :func:`identity_for_attempt` binds that exact
+cycle and rechecks the node's attempt under its row lock. A retry can advance the
+attempt without advancing the claim generation, so the generation fence alone
+does not prove attempt ownership.
+
+:func:`commit_handoff` returns the stored receipt. ``advance_execution`` compares
+plan/claim bindings and generation under its locked write. After the awaited SQL
+work, the route refreshes flow and credential authority, compares it with the
+original snapshot, and refuses before committing or returning a replayed receipt
+if it changed. These checks do not turn the receipt into delivery completion.
 
 A receipt whose stored value disagrees with the one this attempt would mint is
 reported as :data:`HandoffOutcome.SUPERSEDED`, not silently overwritten.
@@ -214,8 +217,8 @@ class AdoptionRefusedError(RuntimeError):
 def handoff_receipt_ref(identity: ExecutionIdentity, execution_id: str) -> str:
     """The receipt reference this work and this ownership generation mint.
 
-    Derived from the work plus every authority fence, and **never** from the
-    attempt count, wall clock or a random value — that is what makes a repeated
+    Derived from the execution, cycle and authority fences, not the
+    wall clock or a random value — that is what makes a repeated
     report return the same string instead of a second receipt.
 
     Raises:
