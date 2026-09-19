@@ -207,3 +207,9 @@ async def test_arc_service_uses_registered_canonical_principal_and_refuses_revoc
     alias.revoked_by = "human"
     await db_session.commit()
     assert (await decide(arc_context, event_name="schedule")).status_code == 403
+
+
+async def test_arc_cannot_bind_a_native_codex_persona_to_the_claude_harness(arc_context, monkeypatch):
+    binding = dict(arc_context[1]["binding"], persona="agent-codex-reviewer")
+    monkeypatch.setenv("ADP_ARC_MODEL_BINDINGS", json.dumps([binding]))
+    assert (await decide(arc_context)).status_code == 403

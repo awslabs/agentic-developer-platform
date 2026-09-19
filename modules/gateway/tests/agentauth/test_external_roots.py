@@ -188,3 +188,14 @@ async def test_external_root_freezes_persona_mapping_before_publication(root_cli
     snapshot = parse_snapshot(execution["model_policy_snapshot"]["S"], execution["model_policy_snapshot_digest"]["S"])
     assert snapshot.principal_id == "human"
     assert resolve_decision(snapshot, invocation_id="root-a", persona="developer").resolved_model_id == SONNET
+
+
+async def test_chat_cannot_bind_a_native_codex_persona_to_the_claude_harness(root_client, store, monkeypatch):
+    monkeypatch.setenv(
+        "ADP_MODEL_ROOT_BINDINGS",
+        json.dumps([{"source": "chat", "producer_role": ROLE, "tenant_id": "tenant", "personas": ["agent-codex-reviewer"]}]),
+    )
+    document = body()
+    document["envelope"]["persona"] = "agent-codex-reviewer"
+    assert (await post(root_client, document)).status_code == 403
+    assert store._read("INVOCATION#root-a", "DISPATCH") is None

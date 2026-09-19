@@ -170,7 +170,9 @@ async def admit_root(
         raise HTTPException(403, "model root refused")
     binding = candidates[0]
     try:
-        registered_compatibility_class(persona)
+        compatibility = registered_compatibility_class(persona)
+        if body.source == "chat" and compatibility != "claude-agent-sdk":
+            raise ModelPolicyError("persona_incompatible")
         human_id = await canonical_human(session, binding, body.subject)
         invocation = envelope["message_id"]
         if not isinstance(invocation, str) or not 1 <= len(invocation) <= 128:

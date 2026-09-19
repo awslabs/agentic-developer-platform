@@ -37,7 +37,7 @@ function signedReply(nonce: string, policy = responsePolicy, context?: any) {
 
 function policy(posture: string) {
   return { posture, posture_verified: true, status: 'proposed', decision: { schema_version: 1,
-    invocation_id: 'run-a', tenant_id: 'tenant-a', persona: 'developer', runtime_posture: posture,
+    invocation_id: 'run-a', tenant_id: 'tenant-a', persona: 'developer', runtime_posture: posture, compatibility_class: 'claude-agent-sdk', harness_contract_revision: '0.3.220',
     resolved_model_id: model } };
 }
 
@@ -239,4 +239,10 @@ it('discovers only public verification keys at the configured gateway origin for
   await createPolicyQuery(legacy);
   expect((query as jest.Mock).mock.calls[0][0].options.model).toBe(model);
   expect((fetch as jest.Mock).mock.calls[1][0].href).toBe('https://api123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent/model-policy-keys');
+});
+
+it.each([{ compatibility_class: 'codex-sdk' }, { harness_contract_revision: 'unsupported' }])('refuses a signed enforcing choice for a different actual harness: %j', async change => {
+  responsePolicy.decision = { ...responsePolicy.decision, ...change };
+  await expect(createPolicyQuery(legacy)).rejects.toBeInstanceOf(ModelPolicyRefused);
+  expect(query).not.toHaveBeenCalled();
 });

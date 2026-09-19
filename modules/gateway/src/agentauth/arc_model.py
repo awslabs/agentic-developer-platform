@@ -157,7 +157,11 @@ async def arc_model_decision(body: ArcModelRequest, request: Request, db: AsyncS
     if len(matches) != 1:
         raise HTTPException(403, "ARC workflow not registered")
     binding = matches[0]
-    registered_compatibility_class(binding.persona)
+    try:
+        if registered_compatibility_class(binding.persona) != "claude-agent-sdk":
+            raise ModelPolicyError("persona_incompatible")
+    except ModelPolicyError:
+        raise HTTPException(403, "ARC harness incompatible") from None
     # Reusable workflows are service-triggered even when the caller's original
     # event was human. An App/worker actor never stands in for that principal.
     human = claims["event_name"] in {"issues", "issue_comment", "workflow_dispatch"} and not claims.get("job_workflow_ref")

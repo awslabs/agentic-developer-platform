@@ -1,4 +1,5 @@
 /** Fresh gateway authority at the actual Claude SDK launch boundary. */
+import { CLAUDE_SDK_VERSION } from './harnesses/claude-control';
 import { arcIdentity } from './arc-model-identity';
 import { randomBytes } from 'node:crypto';
 import { SignatureV4 } from '@smithy/signature-v4';
@@ -137,7 +138,8 @@ async function prepareAuthorizedQuery(params: QueryParams, signal: AbortSignal):
     }
     const decision = object(policy.decision);
     if (policy.posture !== 'enforcing' || policy.status !== 'proposed' || decision.schema_version !== 1 ||
-        decision.runtime_posture !== 'enforcing' || decision.invocation_id !== runId ||
+        decision.runtime_posture !== 'enforcing' || decision.compatibility_class !== 'claude-agent-sdk' ||
+        decision.harness_contract_revision !== CLAUDE_SDK_VERSION || decision.invocation_id !== runId ||
         decision.tenant_id !== tenant || typeof decision.resolved_model_id !== 'string' || !decision.resolved_model_id ||
         (process.env.AGENT_TYPE && decision.persona !== process.env.AGENT_TYPE)) throw new ModelPolicyRefused();
     const model = decision.resolved_model_id;
