@@ -1,3 +1,4 @@
+import { controlDeadlineAt } from './control-deadline';
 import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
  * Generic Agent Worker
@@ -1998,29 +1999,6 @@ async function uploadGitChangesToS3(): Promise<void> {
 }
 
 /**
- * The instant a pause must be over by — Issue #3961.
- *
- * The control credential's own expiry, not a separately-computed pod deadline.
- * The entrypoint derives that expiry from `ADP_POD_DEADLINE_SECONDS` — the very
- * variable rendered into `activeDeadlineSeconds` — so it already tracks the
- * wall-clock limit Kubernetes enforces, and reading it here means the two cannot
- * drift apart through a second calculation. It is also the tighter and more
- * honest bound: past that instant nobody can send a resume, so a pause held
- * beyond it could only ever end by expiry.
- *
- * `null` when unset or unparseable, which the gate reads as "unbounded" and
- * therefore allows the default 30-minute pause. That is the right failure
- * direction: the alternative — treating an absent deadline as zero remaining —
- * would refuse every pause on any run whose entrypoint did not export it.
- */
-function controlDeadlineAt(): number | null {
-  const raw = (process.env.ADP_CONTROL_TOKEN_EXPIRES_AT || '').trim();
-  if (!raw) return null;
-  const parsed = Date.parse(raw);
-  return Number.isNaN(parsed) ? null : parsed;
-}
-
-/**
  * Apply an accepted control command to the running agent — Issue #3961.
  *
  * The missing half of the control channel until now: S1 built the journal and
@@ -2241,6 +2219,7 @@ async function main(): Promise<void> {
       // yields them and the listener answers 202 instead of 501. `steer`/`abort`
       // stay out on both sides.
       supportedActions: listenerActionsFor(controlAdapter),
+      capabilityProvider: () => controlAdapter.capabilities(),
       revalidate: revalidateQueuedCommand,
     });
     // Issue #3961: mirror every gate-initiated transition — the admitted-tool

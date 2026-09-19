@@ -265,7 +265,10 @@ class AgentRuntime:
             from_thread.run(admit_deferred_bootstrap, self.store, body.invocation_id, body.envelope_digest)
         now = datetime.now(UTC)
         record = self.store.bind(invocation_id=body.invocation_id, digest=body.envelope_digest, pod=pod, now=now)
-        return issue_bound_credential(record, now=now, env=self.env)
+        result = issue_bound_credential(record, now=now, env=self.env)
+        if pod.deadline_at is not None:
+            result["pod_deadline_at"] = pod.deadline_at
+        return result
 
 
 @lru_cache(maxsize=1)
@@ -293,6 +296,7 @@ async def bootstrap(
 ) -> JSONResponse:
     try:
         result = await run_in_threadpool(runtime.bootstrap, body, request.headers.get(WORKLOAD_HEADER, ""))
+        pod_deadline_at = result.get("pod_deadline_at")
         caller = verify_credential(result["credential"], env=runtime.env)
         record = await run_in_threadpool(runtime.store.authority.load_execution, invocation_id=caller.invocation_id, tenant_id=caller.tenant_id)
         grant = await run_in_threadpool(
@@ -304,6 +308,8 @@ async def bootstrap(
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
+        if pod_deadline_at is not None:
+            result["pod_deadline_at"] = pod_deadline_at
         from src.agentauth.model_policy import bootstrap_model_policy_live
 
         result["model_policy"] = await bootstrap_model_policy_live(

@@ -300,6 +300,20 @@ async def test_missing_authority_configuration_never_advertises_pause(missing):
     assert state.reason == "live control authorization is unavailable"
 
 
+async def test_gateway_preserves_worker_runtime_capability_refusal():
+    service = make_service(
+        items=[row()],
+        env=ENV,
+        pod_body={
+            "state": "running",
+            "capabilities": {"pause": False, "resume": False},
+            "commands": [],
+        },
+    )
+    state = await service.get_state(RUN_ID, user_id=CANONICAL_USER_ID, tenant_id=TENANT_ID)
+    assert not state.capabilities.pause and not state.capabilities.resume
+
+
 async def test_human_proof_expiring_during_membership_read_is_refused(human_queued, monkeypatch):
     from src.agentauth.human_control import require_live_human_membership
 

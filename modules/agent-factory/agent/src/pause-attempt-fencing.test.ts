@@ -162,6 +162,18 @@ it('a repeated pending pause keeps the original gate and journal despite a nonpo
   }
 });
 
+it('neutral attempt invalidation refuses parked admissions without issuing tickets', async () => {
+  const gate = new PauseGate();
+  await gate.requestPause();
+  const parked = gate.admit('Write');
+  expect(gate.heldCount()).toBe(1);
+  gate.invalidateAttempt();
+  expect(await parked).toMatchObject({ decision: 'deny' });
+  expect(gate.activeToolCount()).toBe(0);
+  expect(gate.heldCount()).toBe(0);
+  gate.cancel();
+});
+
 it('attempt disposal denies its parked tool and late hooks cannot alter a replacement pause', async () => {
   const gate = new PauseGate();
   const adapter = new ClaudeControlAdapter({ pauseGate: gate });

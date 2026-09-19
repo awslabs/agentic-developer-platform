@@ -126,6 +126,8 @@ export interface ControlStateOptions {
   generation: number;
   /** Verbs this build can actually perform. Empty in S1 — every capability false. */
   supportedActions?: ReadonlySet<ControlAction>;
+  /** Current runtime availability, intersected with the fixed implementation set. */
+  capabilityProvider?: () => Record<ControlAction, boolean>;
   maxPending?: number;
   maxTerminal?: number;
   terminalRetentionMs?: number;
@@ -144,6 +146,7 @@ export interface ControlStateOptions {
 export class ControlStateStore {
   private readonly generation: number;
   private readonly supported: ReadonlySet<ControlAction>;
+  private readonly capabilityProvider?: ControlStateOptions['capabilityProvider'];
   private readonly maxPending: number;
   private readonly maxTerminal: number;
   private readonly terminalRetentionMs: number;
@@ -159,6 +162,7 @@ export class ControlStateStore {
   constructor(options: ControlStateOptions) {
     this.generation = options.generation;
     this.supported = options.supportedActions ?? new Set<ControlAction>();
+    this.capabilityProvider = options.capabilityProvider;
     this.maxPending = options.maxPending ?? DEFAULT_MAX_PENDING;
     this.maxTerminal = options.maxTerminal ?? DEFAULT_MAX_TERMINAL;
     this.terminalRetentionMs = options.terminalRetentionMs ?? DEFAULT_TERMINAL_RETENTION_MS;
@@ -175,17 +179,16 @@ export class ControlStateStore {
   /**
    * Capabilities as served in state.
    *
-   * Built from `supported` rather than from the phase, so a capability cannot
-   * read true for a verb with no implementation behind it. S1 reports all four
-   * false, and the dashboard therefore renders no control at all.
+   * Intersects the fixed implementation allowlist with live adapter availability.
+   * This projection never changes which verbs require signed authorization.
    */
   capabilities(): Record<ControlAction, boolean> {
-    return {
-      pause: this.isSupported('pause'),
-      resume: this.isSupported('resume'),
-      steer: this.isSupported('steer'),
-      abort: this.isSupported('abort'),
-    };
+    let available: Partial<Record<ControlAction, boolean>> | undefined;
+    try { available = this.capabilityProvider?.(); }
+    catch { available = {}; }
+    const enabled = (action: ControlAction) => this.isSupported(action) &&
+      (this.capabilityProvider === undefined || available?.[action] === true);
+    return { pause: enabled('pause'), resume: enabled('resume'), steer: enabled('steer'), abort: enabled('abort') };
   }
 
   /**
@@ -208,7 +211,7 @@ export class ControlStateStore {
 
     const existing = this.journal.get(commandId);
     if (existing) {
-      if (existing.fingerprint !== fingerprint) {
+      if (existing.record.action !== action || existing.fingerprint !== fingerprint) {
         // Same key, different intent. Refusing is the only safe answer: applying
         // the new payload would silently discard the recorded outcome of the
         // first, and applying the old one would ignore what the caller asked for.

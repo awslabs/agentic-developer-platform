@@ -61,6 +61,11 @@ interface ExperimentReport {
 }
 
 const SETTLE_MS = 2_000;
+const observedModels = new Set<string>();
+function observeModel(message: Record<string, unknown>): void {
+  if (message.type === 'system' && message.subtype === 'init' && typeof message.model === 'string') observedModels.add(message.model);
+}
+
 
 /** Milliseconds. Real time, because the SDK subprocess does not accept a fake clock. */
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -198,6 +203,7 @@ async function experimentBarrierBlocksSideEffects(
     // barrier holds. Awaiting the query first would measure a finished run.
     const drain = (async () => {
       for await (const message of iterator) {
+      observeModel(message);
         // Count tool results, not the model's request to use a parked tool.
         if (message.type === 'user') {
           const content = (message.message as { content?: unknown } | undefined)?.content;
@@ -374,6 +380,7 @@ async function experimentResumeSameExecution(): Promise<ExperimentReport> {
       idleSuspended: () => gate.isPauseActive(),
     });
     for await (const message of iterator) {
+      observeModel(message);
       if (message.type === 'system' && (message as { subtype?: string }).subtype === 'init') initCount += 1;
       const id = (message as { session_id?: string }).session_id;
       if (id && !sessionIds.includes(id)) sessionIds.push(id);
@@ -456,7 +463,7 @@ async function experimentHookCanHold(): Promise<ExperimentReport> {
         },
       },
     });
-    for await (const message of iterator) if (message.type === 'result') break;
+    for await (const message of iterator) { observeModel(message); if (message.type === 'result') break; }
 
     const held = heldFor ?? 0;
     // Tolerance below the target: the measurement is wall-clock across a
@@ -550,7 +557,7 @@ async function experimentProductionSpill(): Promise<ExperimentReport> {
         }] }] },
       },
     });
-    for await (const message of iterator) if (message.type === 'result') break;
+    for await (const message of iterator) { observeModel(message); if (message.type === 'result') break; }
     await controller;
     const durableMatch = locator !== null && persistedPayload !== null && readFileSync(locator, 'utf8') === persistedPayload;
     const locatorReceivedByModel = locator !== null && existsSync(target) && readFileSync(target, 'utf8').trim() === locator;
@@ -601,7 +608,7 @@ async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
         }] }] },
       },
     });
-    for await (const message of iterator) if (message.type === 'result') break;
+    for await (const message of iterator) { observeModel(message); if (message.type === 'result') break; }
     await controller;
     const failure = events.find((event) => event.type === 'pause_unavailable' && event.failure === 'barrier_timeout');
     const phase = gate.currentPhase();
@@ -618,6 +625,55 @@ async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
   } finally { gate.cancel(); await controller; rmSync(dir, { recursive: true, force: true }); }
 }
 
+/** Pause after the real SDK has admitted a live MCP call, then observe settlement. */
+async function experimentAlreadyRunningTool(): Promise<ExperimentReport> {
+  const sdk = await import('@anthropic-ai/claude-agent-sdk');
+  const dir = mkdtempSync(join(tmpdir(), 'adp-running-tool-'));
+  const gate = new PauseGate({ settleTimeoutMs: 5000, defaultTimeoutMs: 15_000 });
+  const hooks = createWorkerToolHooks({ agentType: 'developer', pauseHooks: createClaudePauseHooks(gate), store: new TmpSpillStore(dir) });
+  let calls = 0;
+  let inFlightAtRequest: number | null = null;
+  let phaseWhileExecuting: string | null = null;
+  let inFlightWhileExecuting: number | null = null;
+  let pause: ReturnType<PauseGate['requestPause']> | undefined;
+  let pauseResult: Awaited<ReturnType<PauseGate['requestPause']>> | undefined;
+  let pausedAfterSettlement = false;
+  let settledCount: number | null = null;
+  let controller: Promise<void> = Promise.resolve();
+  const service = sdk.createSdkMcpServer({ name: 'pause-fixture', version: '1.0.0', tools: [
+    sdk.tool('held_operation', 'Perform the requested bounded test operation once.', {}, async () => {
+      calls++;
+      inFlightAtRequest = gate.activeToolCount();
+      pause = gate.requestPause();
+      await sleep(400);
+      phaseWhileExecuting = gate.currentPhase();
+      inFlightWhileExecuting = gate.activeToolCount();
+      controller = (async () => {
+        pauseResult = await pause!;
+        pausedAfterSettlement = gate.currentPhase() === 'paused';
+        settledCount = gate.activeToolCount();
+        await gate.resume();
+      })();
+      return { content: [{ type: 'text', text: 'Operation completed.' }] };
+    }),
+  ] });
+  try {
+    for await (const message of sdk.query({
+      prompt: 'Call mcp__pause-fixture__held_operation exactly once and then stop. Do not use Bash or any other tool.',
+      options: { cwd: dir, permissionMode: 'bypassPermissions', maxTurns: 5,
+        mcpServers: { 'pause-fixture': service }, allowedTools: ['mcp__pause-fixture__held_operation'], hooks: hooks as never },
+    })) { observeModel(message as unknown as Record<string, unknown>); if (message.type === 'result') break; }
+    await controller;
+    const ok = calls === 1 && inFlightAtRequest === 1 && phaseWhileExecuting === 'pause_requested'
+      && inFlightWhileExecuting === 1 && pauseResult?.outcome === 'confirmed' && pausedAfterSettlement && settledCount === 0;
+    return { name: 'real SDK pause waits for an already-admitted tool to settle', ok,
+      detail: `calls=${calls} admitted=${inFlightAtRequest} during=${phaseWhileExecuting}/${inFlightWhileExecuting} outcome=${pauseResult?.outcome} settled=${settledCount}`,
+      artifact: { production_hook_factory: 'createWorkerToolHooks', tool: 'mcp__pause-fixture__held_operation', calls,
+        active_at_pause_request: inFlightAtRequest, phase_during_tool: phaseWhileExecuting, active_during_tool: inFlightWhileExecuting,
+        pause_outcome_after_tool: pauseResult?.outcome ?? null, paused_after_settlement: pausedAfterSettlement, active_after_settlement: settledCount } };
+  } finally { gate.cancel(); await controller; rmSync(dir, { recursive: true, force: true }); }
+}
+
 async function main(): Promise<number> {
   const jsonFlag = process.argv.indexOf('--json');
   const jsonPath = jsonFlag >= 0 ? process.argv[jsonFlag + 1] : null;
@@ -631,6 +687,7 @@ async function main(): Promise<number> {
     experimentHookCanHold,
     experimentProductionSpill,
     experimentSdkHookTimeout,
+    experimentAlreadyRunningTool,
   ];
 
   const reports: ExperimentReport[] = [];
@@ -649,7 +706,7 @@ async function main(): Promise<number> {
   }
 
   if (jsonPath) {
-    writeFileSync(jsonPath, `${JSON.stringify({ sdk_version: CLAUDE_SDK_VERSION, reports }, null, 2)}\n`);
+    writeFileSync(jsonPath, `${JSON.stringify({ sdk_version: CLAUDE_SDK_VERSION, observed_models: [...observedModels], reports }, null, 2)}\n`);
     console.log(`wrote ${jsonPath}`);
   }
 

@@ -467,6 +467,7 @@ class RunIdentitySession:
         self._write_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._attempt: int | None = None
+        self.pod_deadline_at: str | None = None
         self._model_policy_reported = False
         self.model_policy_report: ModelPolicyReport | None = None
 
@@ -585,6 +586,15 @@ class RunIdentitySession:
             finally:
                 Path(temporary).unlink(missing_ok=True)
             self._attempt = attempt
+            # Lifecycle time comes from the gateway's verified Kubernetes Job,
+            # never from a TTL starting after clone/registration. Pin the first
+            # response so credential renewal cannot extend a running pause.
+            if self.pod_deadline_at is None:
+                try:
+                    deadline = _parse_timestamp(result.get("pod_deadline_at"))
+                    self.pod_deadline_at = deadline.strftime("%Y-%m-%dT%H:%M:%SZ")
+                except (ValueError, TypeError, ModelPolicyVerificationError):
+                    self.pod_deadline_at = "1970-01-01T00:00:00Z"
 
     def start(self) -> None:
         deadline = time.monotonic() + 1800
@@ -597,6 +607,7 @@ class RunIdentitySession:
                     raise RunIdentityError("work ownership startup deadline exceeded") from None
                 logger.info("Authorized child is waiting for its parent to release work ownership")
         os.environ[CREDENTIAL_FILE_ENV] = str(self.credential_path)
+        os.environ["ADP_POD_DEADLINE_AT"] = self.pod_deadline_at or "1970-01-01T00:00:00Z"
         self._thread = threading.Thread(
             target=self._renew, name="adp-run-identity-refresh", daemon=True
         )

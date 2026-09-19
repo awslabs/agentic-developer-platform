@@ -651,14 +651,16 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
     };
   }
 
-  /** Effective capabilities: the three-way intersection. All false in S3. */
+  /** Effective capabilities reflect live attempt and barrier availability. */
   capabilities(): Record<ControlAction, boolean> {
     return intersectCapabilities({
       implemented: this.implementedVerbs,
       adapter: this.adapterCapabilities(),
       // Availability requires a live attempt: with no attempt attached there is
       // nothing a verb could act on, so nothing may be advertised.
-      available: this.registry.currentAttemptId() === null ? new Set<ControlAction>() : undefined,
+      available: this.registry.currentAttemptId() === null || this.pauseGate?.barrierBreached()
+        || this.pauseGate?.currentPhase() === 'cancelled' || this.pauseGate?.safeBudget() === null
+        ? new Set<ControlAction>() : undefined,
     });
   }
 

@@ -12,6 +12,7 @@ import { newAttemptId } from './control-runtime';
 
 import * as http from 'http';
 import { PauseGate } from './pause-gate';
+import { ClaudeControlAdapter } from './harnesses/claude-control';
 import { applyControlCommand, bindRuntimeTransitionsToStore } from './control-command-apply';
 import { AddressInfo } from 'net';
 import { generateKeyPairSync, sign as cryptoSign, createHash, type KeyObject } from 'crypto';
@@ -925,7 +926,7 @@ describe('command journal over HTTP', () => {
 
   beforeEach(async () => {
     ({ listener, port } = await startListener(
-      makeStore({ supported: new Set<ControlAction>(['pause', 'steer', 'abort']) }),
+      makeStore({ supported: new Set<ControlAction>(['pause', 'resume', 'steer', 'abort']) }),
     ));
   });
   afterEach(async () => {
@@ -945,6 +946,17 @@ describe('command journal over HTTP', () => {
     // 200, not 202 — a retried abort stays one abort.
     expect(second.status).toBe(200);
     expect(second.body.command.accepted_at).toBe(first.body.command.accepted_at);
+  });
+
+  it('conflicts when the same command id is reused for another action with identical content', async () => {
+    const body = JSON.stringify({ command_id: UUID_A });
+    const pause = await request(port, 'POST', '/agent/pause', { body, envelope: envelopeFor('pause', UUID_A, body) });
+    const resume = await request(port, 'POST', '/agent/resume', { body, envelope: envelopeFor('resume', UUID_A, body) });
+    expect(pause.status).toBe(202);
+    expect(resume.status).toBe(409);
+    expect(resume.body).toEqual({ error: 'command_id_conflict' });
+    const status = await request(port, 'POST', '/agent/pause', { body, envelope: envelopeFor('pause', UUID_A, body) });
+    expect(status.body.command.action).toBe('pause');
   });
 
   it('conflicts on the same id with different content', async () => {
@@ -1737,6 +1749,47 @@ describe('socket-level failure', () => {
 
     await expect(listener.stop()).resolves.toBeUndefined();
   });
+});
+
+test.each(['detach', 'cancel', 'breach', 'deadline'] as const)('state projects live adapter availability through %s without weakening signed admission', async ending => {
+  let deadline = Date.now() + 3600_000;
+  const gate = new PauseGate({ deadlineAt: () => deadline });
+  const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+  const store = new ControlStateStore({ generation: GENERATION, supportedActions: new Set(['pause', 'resume']),
+    capabilityProvider: () => adapter.capabilities() });
+  const { listener, port } = await startListener(store);
+  let attempt: ReturnType<ReturnType<ClaudeControlAdapter['attemptInputFactory']>> | undefined;
+  try {
+    const state = async () => (await request(port, 'GET', '/agent/state')).body.capabilities;
+    expect((await state()).pause).toBe(false);
+    const body = JSON.stringify({ command_id: UUID_A });
+    expect((await request(port, 'POST', '/agent/pause', { body })).status).toBe(403);
+    attempt = adapter.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: 'task' });
+    await adapter.onAttemptHandle()({ attemptNumber: 1, session: { close() {} } });
+    expect(await state()).toEqual({ pause: true, resume: true, steer: false, abort: false });
+    if (ending === 'detach') await attempt.dispose();
+    else if (ending === 'cancel') adapter.cancel('cancelled');
+    else if (ending === 'deadline') deadline = Date.now();
+    else {
+      await gate.requestPause();
+      const controller = new AbortController();
+      controller.abort();
+      await gate.admit('Read', controller.signal);
+      expect(gate.barrierBreached()).toBe(true);
+    }
+    expect(await state()).toEqual({ pause: false, resume: false, steer: false, abort: false });
+    expect((await request(port, 'POST', '/agent/pause', { body })).status).toBe(403);
+  } finally { await attempt?.dispose(); await adapter.dispose(); await listener.stop(); gate.cancel(); }
+});
+
+test('a failed availability provider hides capabilities but cannot widen implemented verbs', () => {
+  const store = new ControlStateStore({ generation: GENERATION, supportedActions: new Set(['pause']),
+    capabilityProvider: () => { throw new Error('unavailable'); } });
+  expect(Object.values(store.capabilities())).toEqual([false, false, false, false]);
+  expect(store.isSupported('pause')).toBe(true);
+  const overclaim = new ControlStateStore({ generation: GENERATION, supportedActions: new Set(['pause']),
+    capabilityProvider: () => ({ pause: true, resume: true, steer: true, abort: true }) });
+  expect(overclaim.capabilities()).toEqual({ pause: true, resume: false, steer: false, abort: false });
 });
 
 test.each([60_000, 1])('bounds delivered pauses through the signed listener and reserves resume (settle wait %i)', async settleTimeoutMs => {

@@ -186,7 +186,15 @@ class TestSetupAgentControl:
     def test_authority_mode_starts_rotation_and_closes_it_before_clearing(self, tmp_path):
         agent_env = {}
         with (
-            patch.dict(os.environ, {"FEATURE_AGENT_CONTROL_ENABLED": "true", "ADP_AGENT_AUTHORITY_ENABLED": "true", "POD_IP": "10.0.1.5", "ADP_CONTROL_ENVELOPE_KEYS_FILE": "/var/run/adp-control-keys/keys.json"}),
+            patch.dict(
+                os.environ,
+                {
+                    "FEATURE_AGENT_CONTROL_ENABLED": "true",
+                    "ADP_AGENT_AUTHORITY_ENABLED": "true",
+                    "POD_IP": "10.0.1.5",
+                    "ADP_CONTROL_ENVELOPE_KEYS_FILE": "/var/run/adp-control-keys/keys.json",
+                },
+            ),
             patch.object(entrypoint, "register_control_endpoint", return_value=7),
             patch.object(entrypoint, "clear_control_endpoint") as clear,
             patch("lib.control_renewal.ControlRenewal") as renewal,
@@ -194,10 +202,14 @@ class TestSetupAgentControl:
             renewal.return_value.path = tmp_path / "lease.json"
             assert entrypoint._setup_agent_control(agent_env, *RUN_KEY)
             assert agent_env["ADP_CONTROL_CREDENTIAL_FILE"] == str(tmp_path / "lease.json")
-            assert agent_env["ADP_CONTROL_ENVELOPE_KEYS_FILE"] == "/var/run/adp-control-keys/keys.json"
+            assert (
+                agent_env["ADP_CONTROL_ENVELOPE_KEYS_FILE"] == "/var/run/adp-control-keys/keys.json"
+            )
             renewal.return_value.start.assert_called_once()
+
             def cleared(*args):
                 renewal.return_value.close.assert_called_once()
+
             clear.side_effect = cleared
             entrypoint._teardown_agent_control(*RUN_KEY, True)
             clear.assert_called_once()
@@ -449,6 +461,22 @@ class TestSetupAgentControl:
                     assert entrypoint._setup_agent_control(agent_env, *RUN_KEY) is False
 
         assert "boom" in caplog.text
+
+    def test_delayed_registration_keeps_verified_absolute_job_deadline(self, monkeypatch):
+        started = 1_790_000_000
+        monkeypatch.setattr(entrypoint.time, "time", lambda: started + 2400)
+        monkeypatch.setenv("FEATURE_AGENT_CONTROL_ENABLED", "true")
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
+        monkeypatch.setenv("POD_IP", "10.0.1.5")
+        monkeypatch.setenv("ADP_POD_DEADLINE_SECONDS", "3600")
+        register = MagicMock(return_value=1)
+        monkeypatch.setattr(entrypoint, "register_control_endpoint", register)
+        monkeypatch.setattr(entrypoint, "_install_control_teardown_guard", lambda *_: None)
+        deadline = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started + 3600))
+        child = {"ADP_POD_DEADLINE_AT": deadline}
+        assert entrypoint._setup_agent_control(child, *RUN_KEY)
+        assert child["ADP_CONTROL_TOKEN_EXPIRES_AT"] == deadline
+        assert register.call_args.kwargs["token_expires_at"] == deadline
 
     @pytest.mark.parametrize("deadline", [60, 900, 21600])
     def test_expiry_is_bounded_by_the_pod_deadline(self, ddb, deadline):

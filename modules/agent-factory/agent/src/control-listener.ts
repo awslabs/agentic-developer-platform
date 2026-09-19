@@ -596,7 +596,7 @@ export class ControlListener {
    * bypass verification through a separate opt-in list.
    */
   private requiresEnvelope(action: ControlAction): boolean {
-    return this.config.store.capabilities()[action] === true;
+    return this.config.store.isSupported(action);
   }
 
   /**

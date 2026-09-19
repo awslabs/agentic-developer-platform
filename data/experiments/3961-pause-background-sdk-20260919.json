@@ -1,5 +1,8 @@
 {
   "sdk_version": "0.3.220",
+  "observed_models": [
+    "us.anthropic.claude-opus-4-6-v1"
+  ],
   "reports": [
     {
       "name": "barrier blocks write side effects (AC-P1/P2/P3)",
@@ -36,7 +39,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 9079,
+        "total_elapsed_ms": 10953,
         "denied_tools": []
       }
     },
@@ -79,7 +82,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 19563,
+        "total_elapsed_ms": 22685,
         "denied_tools": []
       }
     },
@@ -118,7 +121,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 8976,
+        "total_elapsed_ms": 10258,
         "denied_tools": []
       }
     },
@@ -157,7 +160,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 1,
         "controlled_service_exercised": true,
-        "total_elapsed_ms": 8154,
+        "total_elapsed_ms": 10153,
         "denied_tools": []
       }
     },
@@ -167,8 +170,8 @@
       "detail": "sessions=1 inits=1 sameAttempt=true heldAdmissions=1 heldWithoutSideEffects=true completed=true",
       "artifact": {
         "released_count": 1,
-        "session_id_before": "ebc08ae5-1688-4571-b595-2eb91c9da8e5",
-        "session_id_after": "ebc08ae5-1688-4571-b595-2eb91c9da8e5",
+        "session_id_before": "c08fbe9f-90c6-4af8-8fc0-8917bdbabf31",
+        "session_id_after": "c08fbe9f-90c6-4af8-8fc0-8917bdbabf31",
         "attempt_id_before": "attempt-1",
         "attempt_id_after": "attempt-1",
         "interrupt_called": false,
@@ -194,10 +197,10 @@
     {
       "name": "a PreToolUse hook may hold a tool for seconds (AC-P1/AC-P6)",
       "ok": true,
-      "detail": "the hook held a real tool call for 6002ms without being abandoned; the declared bound is honoured, so a pause can outlive a tool",
+      "detail": "the hook held a real tool call for 6001ms without being abandoned; the declared bound is honoured, so a pause can outlive a tool",
       "artifact": {
         "exercised": true,
-        "held_ms": 6002,
+        "held_ms": 6001,
         "signal_aborted": false,
         "hook_reached": true,
         "hook_timeout_seconds": 1860,
@@ -218,8 +221,8 @@
         "checkpoint_clock_setup": "constructor aged 16 minutes; live callbacks use real clock",
         "spill_readback_matches_tool_response": true,
         "model_returned_exact_locator": true,
-        "model_returned_text": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-zXBBvF/.adp-spill/Read-toolu_bdrk_01DucZ6kUALGymhPNJ6DuXLS.txt",
-        "expected_locator": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-zXBBvF/.adp-spill/Read-toolu_bdrk_01DucZ6kUALGymhPNJ6DuXLS.txt",
+        "model_returned_text": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-YmaorH/.adp-spill/Read-toolu_bdrk_01GHzyShvwERpUSXmp5BMVjp.txt",
+        "expected_locator": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-YmaorH/.adp-spill/Read-toolu_bdrk_01GHzyShvwERpUSXmp5BMVjp.txt",
         "settled_before_pause": true,
         "phase_during_hold": "paused",
         "no_write_during_hold": true,
@@ -229,13 +232,13 @@
     {
       "name": "real SDK hook timeout reports unavailable",
       "ok": true,
-      "detail": "reached=true aborted=true elapsed=1002 safetyRelease=false unavailable=true phase=running retry=unavailable",
+      "detail": "reached=true aborted=true elapsed=999 safetyRelease=false unavailable=true phase=running retry=unavailable",
       "artifact": {
         "production_hook_factory": "createWorkerToolHooks",
         "fault": "CLI matcher timeout shortened to one second",
         "matcher_timeout_seconds": 1,
         "production_matcher_timeout_seconds": 180,
-        "callback_elapsed_ms": 1002,
+        "callback_elapsed_ms": 999,
         "sdk_signal_aborted": true,
         "safety_release_used": false,
         "unavailable_event_observed": true,
@@ -261,6 +264,22 @@
           }
         ]
       }
+    },
+    {
+      "name": "real SDK pause waits for an already-admitted tool to settle",
+      "ok": true,
+      "detail": "calls=1 admitted=1 during=pause_requested/1 outcome=confirmed settled=0",
+      "artifact": {
+        "production_hook_factory": "createWorkerToolHooks",
+        "tool": "mcp__pause-fixture__held_operation",
+        "calls": 1,
+        "active_at_pause_request": 1,
+        "phase_during_tool": "pause_requested",
+        "active_during_tool": 1,
+        "pause_outcome_after_tool": "confirmed",
+        "paused_after_settlement": true,
+        "active_after_settlement": 0
+      }
     }
   ],
   "execution_context": {
@@ -269,24 +288,86 @@
     "aws_profile": "embark1",
     "region": "us-east-1",
     "model": "us.anthropic.claude-opus-4-6-v1",
-    "scope": "Standalone real-SDK fixture; not deployed gateway control or wave-2 acceptance. Eight measured scenarios use the production worker hook builder. The one-second matcher timeout is an explicit fault injection; the production budget remains unchanged. The checkpoint constructor timestamp alone is aged 16 minutes; all live callbacks and waits use real time. Fixture servers closed and directories removed in finally cleanup. Queue capacity is separately exercised by signed loopback-listener regressions; this SDK fixture does not claim to load-test the listener."
+    "scope": "Standalone real-SDK fixture; not deployed gateway control or autonomous qualification. Nine measured scenarios use production worker hook composition, including pause requested while a real MCP tool is already executing and confirmation only after PostToolUse settlement. One-second matcher timeout is explicit fault injection; production timeout settings remain unchanged. Checkpoint constructor alone is aged 16 minutes; live callbacks use real time. Fixture servers/directories cleaned in finally. Signed HTTP listener, Kubernetes bootstrap and IAM boundaries are tested separately; this fixture does not exercise a deployed gateway or Kubernetes Job.",
+    "routing_verification": "Isolated CLAUDE_CONFIG_DIR; AWS_PROFILE=embark1 identity verified as account 879318057152 immediately before execution; every observed SDK init model matched the requested model."
   },
   "source_files_sha256": {
-    "modules/agent-factory/agent/src/harnesses/claude-control.ts": "d4c7722eeecfd374757866af9bb74ac606feeb84622717f69a73bfc6844ab559",
+    "modules/agent-factory/agent/src/harnesses/claude-control.ts": "c3973a60b6854a68b11759af77b6b06149f60bc26a71f0b30966321724193358",
     "modules/agent-factory/agent/src/pause-gate.ts": "2b12cbbe98096bb47c98ff78765d61390550b3828ac4906635681acb020ffdb7",
-    "modules/agent-factory/agent/src/control-runtime.integration.ts": "07fc4f7a08b23abed2a98eb53656cbdbaae6a4348c807fb8f21ac30afe498a7a",
+    "modules/agent-factory/agent/src/control-runtime.integration.ts": "619aa8f92faf92f1dedd47d98d4b03c583a0b39af373d65ce123eced6f85078b",
     "modules/agent-factory/agent/src/utils/resilientQuery.ts": "e98a88383cc029d72e0836cd7b4001151a6b7ce0099b409e83e0720825220ede",
     "modules/agent-factory/agent/src/developer-checkpoints.ts": "b0612d9d9048fb633d20331d077f8998719ad1fd6d836aa93419fbb7de4651ec",
     "modules/agent-factory/agent/src/utils/spill/index.ts": "4ecf8798cd358393c7acc34d133f8672a84047e144f80c22070f366383940fe4",
     "modules/agent-factory/agent/src/utils/spill/store.ts": "d2619b09b66496a0534e88272bd259a28276dda4905b89fe4b06a5f75cade0e5",
     "modules/agent-factory/agent/src/control-runtime.ts": "03408582eda90af5aae118e00fdeaa426af97ef9d172b75edd74c505334189d5",
     "modules/agent-factory/agent/src/control-command-apply.ts": "2673f26984b3a8daad967037902a1efb78a80f443530def21adde4c8d9eee999",
-    "modules/agent-factory/agent/src/control-state.ts": "8233c89b38aa7d74bfdc62a792b93f85f2aa261ee107a66f367c1d131b7fc362",
-    "modules/agent-factory/agent/src/control-listener.ts": "75f17c5931d08d9b18cf705267d68c0e3cbb48abdefa4fb23ca1f24ad40d8adb"
+    "modules/agent-factory/agent/src/control-state.ts": "7bd6714340f7f50a944fd38669b0b51c57a202febdbf17fae02bd6e7468c12c1",
+    "modules/agent-factory/agent/src/control-listener.ts": "2169fd3843e4b2ba3cd68d9cd200a4821f5c6678a5bb4422bcad8d76057264e8",
+    "modules/agent-factory/agent/src/control-deadline.ts": "0b87a0c0a83571977e6c7b219267ff9b529998a4b35033eb56209c949bba9d4f",
+    "modules/agent-factory/agent/src/agent-worker.ts": "86598b1587f6b5cbcf349dd0accf974ba99c54fd552eac8ebde949ac37674a5d",
+    "modules/agent-factory/agent-worker-image/entrypoint.py": "eafa8c5e3d002193f5283f8857100bb97f252ff8d4d22389358dbe50e804e6b3",
+    "modules/agent-factory/agent-worker-image/lib/run_identity.py": "8cab8399660b69987c67907e8a346d950a70eb87c8e14f7f407e8cf30587897a",
+    "modules/gateway/src/agentauth/workload.py": "dd461962c966092f23a30941ee26384a36a0505a73aaafb9330e17da373888c7",
+    "modules/gateway/src/agentauth/routes.py": "a2624e7decf9ee4093daf9f18e2d66faeb729035560b39d0b8b305b2ed0b7efe",
+    "modules/agent-factory/webhook-ingress/infra/agent-authority-bootstrap.tf": "4f3b177846546cf479c015fb9d98ad727027979e8052c75c600b86624832fb6e"
+  },
+  "source_evidence_scope": {
+    "sdk_fixture_and_composition": [
+      "modules/agent-factory/agent/src/harnesses/claude-control.ts",
+      "modules/agent-factory/agent/src/pause-gate.ts",
+      "modules/agent-factory/agent/src/control-runtime.integration.ts",
+      "modules/agent-factory/agent/src/utils/resilientQuery.ts",
+      "modules/agent-factory/agent/src/developer-checkpoints.ts",
+      "modules/agent-factory/agent/src/utils/spill/index.ts",
+      "modules/agent-factory/agent/src/utils/spill/store.ts"
+    ],
+    "unit_integration_or_static_evidence_only": [
+      "modules/agent-factory/agent/src/control-runtime.ts",
+      "modules/agent-factory/agent/src/control-command-apply.ts",
+      "modules/agent-factory/agent/src/control-state.ts",
+      "modules/agent-factory/agent/src/control-listener.ts",
+      "modules/agent-factory/agent/src/control-deadline.ts",
+      "modules/agent-factory/agent/src/agent-worker.ts",
+      "modules/agent-factory/agent-worker-image/entrypoint.py",
+      "modules/agent-factory/agent-worker-image/lib/run_identity.py",
+      "modules/gateway/src/agentauth/workload.py",
+      "modules/gateway/src/agentauth/routes.py",
+      "modules/agent-factory/webhook-ingress/infra/agent-authority-bootstrap.tf"
+    ]
   },
   "pre_repair_observation": {
     "production_spill_fixture": "The callback returned a locator but the real model wrote NO_LOCATOR. The native SDK rejected the string replacement against the Read output schema and retained the original output.",
     "repair": "Preserve native Read and Bash output object shapes; replace their text fields and retain metadata. Unknown or binary shapes pass through.",
     "final_observation": "The model returned the exact generated locator, local readback matched the original tool response, and the checkpoint context and pause settlement survived the same callback."
+  },
+  "review_repair_validation": {
+    "worker_required_gate": {
+      "tests_passed": 723,
+      "suites": 16,
+      "lines_percent": 97.58,
+      "branches_percent": 91.09,
+      "threshold_percent": 85
+    },
+    "gateway_agentauth_and_control_proxy": {
+      "tests_passed": 1267,
+      "skipped": 0,
+      "postgresql": "isolated real PostgreSQL graph cases enabled"
+    },
+    "worker_python_affected": {
+      "tests_passed": 245,
+      "skipped": 0
+    },
+    "worker_iam_and_deployment_safety": {
+      "tests_passed": 104
+    },
+    "mutation_failures": {
+      "state_projection": 4,
+      "breach_capability": 1,
+      "signed_admission": 4,
+      "neutral_invalidation": 1,
+      "absolute_deadline": 4
+    },
+    "signed_cross_action_before_repair": "Same ID/body pause then resume returned 200; repaired route returns 409.",
+    "scope": "Local source verification, no Terraform apply, authority activation, live acceptance or qualification."
   }
 }

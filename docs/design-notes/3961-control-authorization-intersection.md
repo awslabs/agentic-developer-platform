@@ -3,6 +3,24 @@
 
 ## Pause lifecycle corrections — 2026-09-19
 
+Pause uses an absolute workload deadline returned by the authenticated bootstrap
+service. The gateway reads the verified pod's controller Job by name and UID in
+the worker namespace, then conservatively bounds lifetime from its creation time
+plus `activeDeadlineSeconds`, intersecting any tighter pod limit. This includes
+image startup, clone time and previous pod attempts. The worker pins that value
+before repository bootstrap and cannot extend it by renewing a credential. A
+missing, denied or malformed lifecycle read leaves pause unavailable. The
+existing namespace-scoped gateway reader therefore also needs `get` on `batch`
+Jobs; workers receive no Kubernetes API permission. This source change does not
+apply that permission or release the #5195/#5210 rollout hold.
+
+State capabilities intersect the implementation allowlist with the adapter's
+current attempt, barrier health and remaining deadline. Detached, cancelled and
+breached attempts report unavailable. Signed command admission uses the fixed
+implementation allowlist so a temporarily unavailable adapter cannot bypass
+authorization. Reusing one command ID for a different action is a 409 conflict,
+even when the request bodies are identical.
+
 Independent review found additional runtime/evaluator defects after the initial
 background-observer repair. The query wrapper now holds task output and terminal
 teardown through the neutral pause gate, keeping the current attempt and listener
