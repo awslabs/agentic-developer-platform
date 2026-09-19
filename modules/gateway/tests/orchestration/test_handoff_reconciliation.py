@@ -24,17 +24,24 @@ the marker off the run's own dispatch record is what lets both behaviours coexis
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+
+from sqlalchemy import select
 
 from src.orchestration.execution_state import ExecutionIdentity, OutcomeKind
 from src.orchestration.execution_store import create_execution
 from src.orchestration.handoff import commit_handoff, handoff_required, missing_receipt_hold
 from src.orchestration.models import (
+    ActorKind,
     ClaimState,
+    DecisionKind,
+    NodeState,
     OrchestrationAcceptedPlan,
+    OrchestrationDecision,
     OrchestrationWorkClaim,
 )
-from src.orchestration.results import _story_evidence
+from src.orchestration.results import _story_evidence, observe_results
 from src.orchestration.work_claims import OwnerKind
 from tests.orchestration import test_story_reconciliation as fixtures
 from tests.orchestration.test_story_reconciliation import (
@@ -96,6 +103,85 @@ async def _ledger(session, node, *, generation: int = 1) -> ExecutionIdentity:
 def _marked(dispatch: dict) -> dict:
     """The same dispatch record, stamped as owing a handoff receipt."""
     return {**dispatch, "handoff_required": True}
+
+
+async def _marked_story(session):
+    """A story whose PERSISTED dispatch record is marked, for the `observe_results` path.
+
+    `_marked` only decorates a dict, which is enough for `_story_evidence` (it is
+    handed the record directly). `observe_results` re-reads the dispatch from its
+    `NODE_DISPATCHED` decision, so the marker has to be durable there or the whole
+    handoff contract is invisible to the sweep.
+
+    Appended as a NEW decision rather than by rewriting the seeded one:
+    `orchestration_decisions` is append-only and enforces it at the flush boundary.
+    `observe_results` reads the newest `NODE_DISPATCHED` row, so this is also what a
+    real re-dispatch of the same attempt would look like.
+    """
+    node, dispatch = await _story(session, binding_marker=True)
+    marked = _marked(dispatch)
+    session.add(
+        OrchestrationDecision(
+            org_id=node.org_id,
+            flow_id=node.flow_id,
+            node_id=node.id,
+            kind=DecisionKind.NODE_DISPATCHED.value,
+            actor_id="engine",
+            actor_role="service",
+            actor_kind=ActorKind.SERVICE.value,
+            reason=json.dumps(marked),
+        )
+    )
+    await session.flush()
+    return node, marked
+
+
+def _patch_results_installation(monkeypatch) -> None:
+    """`results` resolves the installation itself, and the autouse fixture misses it.
+
+    `test_story_reconciliation._installation` patches `pr_bindings` only, which is
+    enough for tests that call `_story_evidence` directly. The `observe_results` path
+    resolves it in `results`, so without this the sweep raises "GitHub installation is
+    unresolved" and the test would pass for the wrong reason.
+    """
+
+    async def _resolve(_session, *, org_id):
+        return INSTALLATION
+
+    monkeypatch.setattr("src.orchestration.results.resolve_installation_id", _resolve)
+
+
+class _RunStore:
+    """A worker run that reported a clean `complete` exit — the story's whole premise."""
+
+    def __init__(self, node) -> None:
+        self.node_id, self.org_id, self.attempt = node.id, node.org_id, node.attempts
+
+    def get(self, *_args):
+        return {"tenant_id": self.org_id, "engine_node_id": self.node_id, "engine_attempt": self.attempt, "status": "complete"}
+
+
+async def _observations(session, node) -> list[dict]:
+    """The structured `RESULT_OBSERVED` payloads, oldest first.
+
+    `RESULT_CHECKED` is deliberately excluded: it is the sweep's own cursor row and
+    carries plain prose, not JSON.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(OrchestrationDecision)
+                .where(
+                    OrchestrationDecision.node_id == node.id,
+                    OrchestrationDecision.kind == DecisionKind.RESULT_OBSERVED.value,
+                )
+                .order_by(OrchestrationDecision.created_at, OrchestrationDecision.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [json.loads(row.reason or "{}") for row in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -385,3 +471,83 @@ async def test_a_marked_dispatch_that_was_never_going_to_pass_holds_for_its_own_
 
     assert url is None
     assert hold != missing_receipt_hold()
+
+
+# ---------------------------------------------------------------------------
+# Commit-time revalidation: the snapshot is not the authority (#5144 F2)
+# ---------------------------------------------------------------------------
+#
+# Reviewer blocker F2 is that `_story_evidence` reads the receipt with NO locks held,
+# and `observe_results` then takes the node lock and writes `PASSED` without asking
+# again. A handover committed in that gap leaves the pass resting on a receipt
+# `receipt_for` can no longer attribute — the #5144 defect restored through a race.
+#
+# The race itself needs two genuinely concurrent transactions and is therefore in
+# `test_handoff_postgres.py`; SQLite serializes writers and `FOR UPDATE` is a no-op
+# there, so nothing in THIS file is evidence about the interleaving. What these tests
+# hold is the other half, which is just as easy to get wrong: that the revalidation is
+# reached on the passing path, agrees with itself when nothing changed, and is skipped
+# for an unmarked dispatch. A guard that always disagreed would pass every race test
+# and hold every story in production.
+
+
+async def test_a_marked_story_passes_through_the_commit_time_revalidation(session, monkeypatch):
+    """The `observe_results` path completes when the receipt's authority is stable.
+
+    This is the test that makes the revalidation a gate rather than a wall. It is also
+    the only SQLite test that reaches the new locked read at all — mutating the guard
+    to always refuse fails exactly here.
+    """
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _marked_story(session)
+    await _bind(session, node, dispatch)
+    identity = await _ledger(session, node)
+    committed = await commit_handoff(session, identity=identity, now=datetime.now(UTC))
+    assert committed.accepted is True
+
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+
+    assert report.advanced == 1
+    assert node.state == NodeState.PASSED.value
+    observed = await _observations(session, node)
+    # The decision names the receipt it relied on, and it is the one that survived
+    # revalidation rather than the one read before the lock.
+    assert observed[-1]["handoff_receipt_ref"] == committed.receipt_ref
+
+
+async def test_a_marked_story_with_no_receipt_never_reaches_a_pass(session, monkeypatch):
+    """The sweep holds, so the revalidation is not the only thing standing between a
+    clean worker exit and completion.
+
+    `_story_evidence`'s own check already refuses this, and that is the point: the
+    commit-time revalidation is a second fence for a narrower window, not a
+    replacement. If it were the only one, every run whose receipt was absent from the
+    start would pass the first check and rely entirely on a locked re-read.
+    """
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _marked_story(session)
+    await _bind(session, node, dispatch)
+    await _ledger(session, node)
+
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+
+    assert report.advanced == 0
+    assert node.state == NodeState.AWAITING_MERGE.value
+    assert report.reasons[node.id] == missing_receipt_hold()
+
+
+async def test_an_unmarked_dispatch_pays_no_revalidation_read(session, monkeypatch):
+    """The legacy path must not take the new lock, or this deploy is a new stall risk.
+
+    Asserted by removing the ledger entirely: a run that was never told to produce a
+    receipt has no execution row to revalidate against, so if the unmarked path
+    consulted one it would hold here instead of passing.
+    """
+    _patch_results_installation(monkeypatch)
+    node, dispatch = await _story(session, binding_marker=True)
+    await _bind(session, node, dispatch)
+
+    report = await observe_results(session, run_store=_RunStore(node), evidence=StubSource(evidence=_green()))
+
+    assert report.advanced == 1
+    assert node.state == NodeState.PASSED.value

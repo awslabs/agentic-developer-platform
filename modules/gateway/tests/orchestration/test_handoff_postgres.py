@@ -43,7 +43,7 @@ from src.orchestration.execution_state import (
     OutcomeKind,
 )
 from src.orchestration.execution_store import create_execution
-from src.orchestration.handoff import HandoffOutcome, commit_handoff
+from src.orchestration.handoff import HandoffOutcome, commit_handoff, receipt_for
 from src.orchestration.models import (
     ClaimState,
     OrchestrationAcceptedPlan,
@@ -258,3 +258,133 @@ async def test_a_repeat_long_after_the_first_still_returns_the_same_receipt(pg_s
 
     assert repeat.outcome is HandoffOutcome.ALREADY_COMMITTED
     assert repeat.receipt_ref == first.receipt_ref
+
+
+# ---------------------------------------------------------------------------
+# F2: the receipt's authority is revalidated at commit time, under real locks
+# ---------------------------------------------------------------------------
+#
+# `test_handoff_reconciliation.py` proves the revalidation is reached and agrees with
+# itself, and deliberately proves nothing about the race — SQLite serializes writers
+# and `FOR UPDATE` is a no-op there. The blocker is specifically about a window:
+#
+#   `_story_evidence` reads the receipt with NO locks (alongside the provider call)
+#   → a handover commits and advances the claim generation
+#   → `observe_results` takes the node lock and writes PASSED
+#
+# Written on the pre-handover snapshot, that PASSED rests on a receipt `receipt_for`
+# can no longer attribute to any attempt: the node reads as complete while its
+# continuation is unaccounted for. That is the #5144 defect reached through a race
+# instead of through a clean exit, which is why a lock-order-correct re-read has to
+# happen inside the same transaction as the write.
+
+
+async def _handover(pg_session_factory, identity: ExecutionIdentity) -> None:
+    """Commit an ownership handover, as a concurrent recovery or `/handoff` would.
+
+    Its own committed transaction, so the sweep genuinely observes it rather than
+    seeing an uncommitted sibling's state.
+    """
+    async with pg_session_factory() as session:
+        claim = await session.get(OrchestrationWorkClaim, identity.claim_id)
+        claim.generation += 1
+        await session.commit()
+
+
+async def _receipt_under_lock(pg_session_factory, identity: ExecutionIdentity) -> str | None:
+    """The commit-time revalidation, in its own transaction and holding its locks."""
+    async with pg_session_factory() as session:
+        answer = await receipt_for(session, identity=identity, lock=True)
+        await session.commit()
+        return answer
+
+
+async def test_a_handover_committed_before_the_locked_reread_is_observed(pg_session_factory, seeded):
+    """The blocker's exact failure: the lock-free snapshot is stale and the re-read says so.
+
+    The unlocked read is taken first — standing in for `_story_evidence`, which runs it
+    alongside the provider call. The handover then commits in the window. The locked
+    re-read is what `observe_results` now performs before writing PASSED, and it must
+    return `None`: the receipt still sits on the row, but it can no longer be
+    attributed to this attempt.
+
+    Asserted as "the two reads disagree", which is the only thing that makes the
+    revalidation worth doing. If they always agreed it would be dead code.
+    """
+    async with pg_session_factory() as session:
+        snapshot = await receipt_for(session, identity=seeded)
+    assert snapshot is None, "no receipt has been committed yet"
+
+    assert (await _report(pg_session_factory, seeded)).accepted is True
+    async with pg_session_factory() as session:
+        before = await receipt_for(session, identity=seeded)
+    assert before is not None, "the receipt is attributable before the handover"
+
+    await _handover(pg_session_factory, seeded)
+
+    assert await _receipt_under_lock(pg_session_factory, seeded) is None
+    # The row was not repaired or cleared — the receipt is still there, and that is the
+    # point. Presence was never the question; attribution is.
+    assert (await _row(pg_session_factory, seeded)).handoff_receipt_ref == before
+
+
+async def test_the_lock_makes_a_concurrent_handover_wait_for_the_verdict(pg_session_factory, seeded):
+    """`lock=True` is load-bearing: a handover cannot commit while the verdict is open.
+
+    This is the claim `lock=True` actually buys, and the one the other tests here do
+    NOT make. They use short separate transactions, so dropping the lock leaves them
+    green — a re-read that merely happens *later* is still only a snapshot. What makes
+    the revalidation sound is that it holds its answer until the transaction that acts
+    on it commits, so nothing can invalidate the verdict in between.
+
+    Driven by ordering rather than by sleeping on a clock: the reader takes the lock,
+    signals, and waits to be told to commit; the handover runs in that window and
+    records when it finished. If the claim row were not locked, the handover would
+    commit *before* the reader — which is precisely the window F2 is about, and is what
+    makes this test fail with `lock=False`.
+
+    `asyncio.wait_for` on the reader's gate so a regression that never acquires the
+    lock fails as an assertion rather than hanging the suite.
+    """
+    assert (await _report(pg_session_factory, seeded)).accepted is True
+    locked = asyncio.Event()
+    order: list[str] = []
+
+    async def reader() -> str | None:
+        async with pg_session_factory() as session:
+            answer = await receipt_for(session, identity=seeded, lock=True)
+            locked.set()
+            # Long enough that a handover free to proceed certainly would have.
+            await asyncio.sleep(0.5)
+            order.append("verdict-committed")
+            await session.commit()
+            return answer
+
+    async def handover() -> None:
+        await asyncio.wait_for(locked.wait(), timeout=10)
+        await _handover(pg_session_factory, seeded)
+        order.append("handover-committed")
+
+    answer, _ = await asyncio.gather(reader(), handover())
+
+    # The verdict was reached on the pre-handover authority AND could not be
+    # invalidated before the reader was done with it.
+    assert answer is not None
+    assert order == ["verdict-committed", "handover-committed"]
+    # The handover did land — so the test proves serialization, not that it was blocked
+    # forever.
+    assert await _receipt_under_lock(pg_session_factory, seeded) is None
+
+
+async def test_the_locked_reread_still_confirms_an_undisturbed_receipt(pg_session_factory, seeded):
+    """The positive case under real locks, so the guard is a gate and not a wall.
+
+    Without this, a revalidation that deadlocked, timed out, or simply always returned
+    `None` would satisfy every test above while holding every story in production.
+    """
+    result = await _report(pg_session_factory, seeded)
+    assert result.accepted is True
+
+    assert await _receipt_under_lock(pg_session_factory, seeded) == result.receipt_ref
+    # Repeatable: the locked read is not a one-shot that consumes what it verified.
+    assert await _receipt_under_lock(pg_session_factory, seeded) == result.receipt_ref

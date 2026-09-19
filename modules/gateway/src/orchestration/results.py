@@ -343,19 +343,25 @@ async def _story_evidence(
     return None, hold_explanation(refusal) if refusal else _LEGACY_WAIT
 
 
-async def _delivery_receipt(session: AsyncSession, *, node: OrchestrationNode) -> str | None:
+async def _delivery_receipt(session: AsyncSession, *, node: OrchestrationNode, lock: bool = False) -> str | None:
     """This node's durable continuation receipt, or ``None`` when there is none.
 
     A read only. The absence of a receipt leaves the node held by the caller — nothing
     is created, advanced or repaired here, because inventing an execution row to hang a
     receipt on would manufacture the very evidence being checked for.
+
+    ``lock=True`` for the commit-time revalidation (#5144 F2): the receipt's authority
+    is re-derived under the execution store's lock order rather than trusted from the
+    earlier lock-free snapshot. Both the identity and the receipt are resolved again,
+    because a handover advances the claim generation on the *identity*, and re-checking
+    only the stored string would compare a fresh receipt against stale fences.
     """
     identity = await current_identity(session, org_id=node.org_id, node_id=node.id)
     if identity is None:
         # Marked as requiring a receipt but carrying no execution row. Fail closed: the
         # caller holds, rather than passing work whose continuation cannot be verified.
         return None
-    return await receipt_for(session, identity=identity)
+    return await receipt_for(session, identity=identity, lock=lock)
 
 
 async def observe_results(session: AsyncSession, *, run_store: Any | None = None, evidence: Any | None = None) -> ResultReport:
@@ -536,6 +542,32 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             or (target == NodeState.PASSED and not binding_scope_matches(current, node))
                         )
                     ) or (snapshot is None and current is not None)
+                    # #5144 F2: the receipt read in `_story_evidence` was taken without
+                    # locks, alongside the provider call. Between that snapshot and this
+                    # write a handover can advance the claim generation, and the receipt
+                    # this attempt was about to pass on becomes unattributable — so the
+                    # authority backing a PASSED transition is revalidated here, under
+                    # the node lock, rather than trusted from the earlier read.
+                    #
+                    # Only on the passing path. A hold needs no receipt authority, and
+                    # re-reading for it would add a locked query to the common case that
+                    # changes no outcome.
+                    #
+                    # Locked, and after the node lock, deliberately: `receipt_for` takes
+                    # the store's flow → claim → accepted-plan → execution order, which
+                    # is the same order the worker write path takes behind the same node
+                    # lock, so the result sweep and a concurrent commit serialize instead
+                    # of deadlocking.
+                    if target == NodeState.PASSED and handoff_required(dispatch):
+                        revalidated = await _delivery_receipt(session, node=locked, lock=True)
+                        if revalidated != observation.get("handoff_receipt_ref"):
+                            # Fail closed, and held rather than failed: the work is
+                            # genuinely still outstanding, and the next sweep re-reads
+                            # whatever superseded this.
+                            target = NodeState.AWAITING_MERGE
+                            detail = missing_receipt_hold("the continuation receipt's authority changed during verification")
+                            observation.pop("merge_receipt", None)
+                            observation.pop("handoff_receipt_ref", None)
                     if changed:
                         target = NodeState.AWAITING_MERGE
                         detail = "The implementation binding changed during verification; its current head and scope will be verified again."

@@ -747,18 +747,32 @@ async def outstanding_continuation(session: AsyncSession, *, org_id: str, claim_
     return None
 
 
-async def receipt_for(session: AsyncSession, *, identity: ExecutionIdentity) -> str | None:
+async def receipt_for(session: AsyncSession, *, identity: ExecutionIdentity, lock: bool = False) -> str | None:
     """The durable handoff receipt for this work, or ``None`` if there is none.
 
     A read, never a write: the caller uses it to decide whether delivery may be
     treated as finished, and the absence of a receipt must leave work due rather than
     cause anything to be created here.
 
+    ``lock=True`` for a caller about to *act* on the answer in the same transaction —
+    reviewer blocker F2. The unlocked read is a snapshot, and between taking it and
+    writing a terminal state a concurrent handover can advance the claim generation,
+    which makes the receipt the caller is about to pass on unattributable. Locking
+    delegates to :func:`execution_store.load_execution`, so the fences are re-derived
+    under the store's own lock order (flow → claim → accepted plan → execution) rather
+    than a second ordering invented here; a caller that already holds the node lock is
+    therefore taking locks in the same sequence as the worker write path
+    (:func:`identity_for_attempt` with ``lock=True`` → :func:`commit_handoff`), and the
+    two cannot deadlock against each other.
+
+    The default stays unlocked because the read model (#5145) and diagnostics must not
+    block on live work.
+
     Returns ``None`` for an execution whose authority fences no longer match, because
     a receipt that cannot be attributed to the current attempt is not evidence about
     it. Fail closed: unverifiable means absent.
     """
-    current = await load_execution(session, identity=identity)
+    current = await load_execution(session, identity=identity, for_update=lock)
     if current is None or current.kind is OutcomeKind.CONFLICT:
         return None
     record = current.record
