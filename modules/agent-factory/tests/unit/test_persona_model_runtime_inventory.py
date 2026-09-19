@@ -82,11 +82,35 @@ def test_wired_queue_paths_reach_gateway_authority_and_blocked_paths_stay_visibl
     # which is where live admission runs against the stored snapshot.
     assert "bootstrap_model_policy_live" in bootstrap
 
+    # Only work admission attaches a snapshot, so a path that never reaches it
+    # cannot be reported as wired no matter how much of it exists in source.
+    assert "ensure_snapshot_report_only" in (
+        ROOT / "modules/gateway/src/orchestration/work_admission.py"
+    ).read_text()
+
     # These assertions intentionally keep the incomplete paths visible.
     # Removing a bypass without wiring its authority is not completion.
     assert 'envelope.get("channel") == "gitlab"' in publisher
-    assert _inventory()["invocation_paths"]["chat"]["state"] == "blocked"
-    assert _inventory()["invocation_paths"]["arc_github_actions"]["state"] == "blocked"
+    for blocked in ("orchestration", "chat", "arc_github_actions"):
+        assert _inventory()["invocation_paths"][blocked]["state"] == "blocked", blocked
+
+
+def test_the_orchestration_blocker_stays_backed_by_a_reproducing_test():
+    """A "blocked" claim must cite evidence, not an assumption.
+
+    The engine path looks wired in source -- it has an authority writer and a
+    protected execution record -- so the reason it is not is specific and easy
+    to lose. The named test reproduces the actual refusals; if it disappears,
+    the inventory claim has become unverifiable and this fails.
+    """
+    orchestration = _inventory()["invocation_paths"]["orchestration"]
+    evidence = ROOT / orchestration["verified_by"]
+
+    assert evidence.is_file(), orchestration["verified_by"]
+    body = evidence.read_text()
+    # The three refusals that together constitute the blocker.
+    for reason in ("dispatch_unresolved", "snapshot_missing", "dispatch_not_pending"):
+        assert reason in body, reason
 
 
 def test_gateway_selector_contains_no_model_literal_or_network_client():
