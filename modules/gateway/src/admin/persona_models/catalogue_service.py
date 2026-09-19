@@ -28,6 +28,7 @@ from src.admin.persona_models.catalogue import (
     PERSONA_ALLOWED_PATTERNS,
     PLATFORM_MODEL_CATALOGUE,
     CatalogueModel,
+    aliases_for_model,
     catalogue_lookup,
     persona_compatibility_class,
     persona_is_configurable,
@@ -458,6 +459,7 @@ def _model_row(
     """Compose a model catalogue row from a catalogue entry and gate results."""
     return ModelCatalogueRow(
         canonical_model_id=model.canonical_model_id,
+        aliases=list(aliases_for_model(model.canonical_model_id)),
         model_family=model.model_family,
         canonical_version=model.canonical_version,
         selectable=selectable,

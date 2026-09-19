@@ -231,6 +231,11 @@ PERSONA_MODEL_ALIASES: dict[str, str] = {
 }
 
 
+def aliases_for_model(canonical_model_id: str) -> tuple[str, ...]:
+    """Return every approved, pinned friendly alias for a catalogue model."""
+    return tuple(sorted(alias for alias, target in PERSONA_MODEL_ALIASES.items() if target == canonical_model_id))
+
+
 def resolve_alias(alias: str) -> str | None:
     """Resolve a friendly alias to a canonical model ID, or None if unknown.
 
