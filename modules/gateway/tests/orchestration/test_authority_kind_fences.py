@@ -58,6 +58,7 @@ fixing this would be worse than the original defect.
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -614,43 +615,148 @@ class TestWorkAdmissionFence:
 # ---------------------------------------------------------------------------------
 
 
+def _comparison_constants(node):
+    """Yield the string constants a comparison operand can actually be tested against.
+
+    Not just `ast.Constant`. The three spellings below are all live comparisons, and the
+    first version of this guard only saw the first one:
+
+        kind == "gate_decision"                      # a bare Constant operand
+        kind in {"github_event", "service_policy"}   # Constants inside a Set
+        kind in _LOOKUP                              # a Name — invisible here, and fine,
+                                                     # because a module-level container
+                                                     # built from the constants is the
+                                                     # pattern this guard wants
+
+    Missing the container form is how five sites in `agentauth/routes.py` sat
+    unconverted while this test passed: `in {...}` and `not in {...}` are exactly how a
+    surface enumerates the subset it accepts, so they are the *most* likely place for a
+    bare string to appear, not the least.
+
+    Dict keys are included because `KIND_MAP[kind]`-style dispatch tables carry the same
+    risk as a comparison — a table keyed on a bare string silently stops matching when
+    the vocabulary is renamed, and the miss is a `KeyError` at runtime rather than a
+    test failure here.
+    """
+    import ast
+
+    if isinstance(node, ast.Constant):
+        yield node
+    elif isinstance(node, ast.Set | ast.List | ast.Tuple):
+        for element in node.elts:
+            yield from _comparison_constants(element)
+    elif isinstance(node, ast.Dict):
+        for key in node.keys:
+            if key is not None:
+                yield from _comparison_constants(key)
+
+
+def _bare_kind_comparisons(source: str, *, label: str):
+    """Every authority-kind string this source compares against, as `(label, line, kind)`.
+
+    An AST walk, not a regex, and that is load-bearing rather than stylistic. These
+    modules quote the old `!= "gate_decision"` pattern verbatim in the comments and
+    docstrings that explain *why* it was wrong — including the module docstring of
+    `grants.py` itself. A textual scan cannot tell prose from a live comparison, so it
+    would either report findings that do not exist or be relaxed with enough exclusions
+    to report nothing at all.
+    """
+    import ast
+
+    findings = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Compare):
+            continue
+        for operand in (node.left, *node.comparators):
+            for constant in _comparison_constants(operand):
+                if isinstance(constant.value, str) and constant.value in RECOGNIZED_AUTHORITY_KINDS:
+                    findings.append((label, constant.lineno, constant.value))
+    return findings
+
+
 class TestNoBareStringComparisons:
     """The regression that would quietly undo all of this.
 
-    Each fence is correct today. What makes it *stay* correct is that the four modules
-    reference the shared constants rather than re-spelling `"gate_decision"` inline — a
-    future edit that adds a bare-string branch is how a fence gets re-opened without
-    anyone noticing, because a string literal is invisible to the vocabulary test at
-    the top of this file.
+    Each fence is correct today. What makes it *stay* correct is that every surface
+    references the shared constants rather than re-spelling `"gate_decision"` inline — a
+    bare-string branch is how a fence gets re-opened without anyone noticing, because a
+    string literal is invisible to the vocabulary test at the top of this file.
+
+    The guard is **self-deriving**: it walks the whole `src` package rather than a list
+    of module names maintained by hand. That list was the bug. It named the four modules
+    #4529 converted, so it was permanently, structurally blind to the fifth — and there
+    was one: `agentauth/routes.py` compared bare strings at five sites, including the
+    `validate_flow` enumeration that decides whether an authoring grant may re-prove
+    itself at all. A guard that has to be extended to cover a new file does not cover
+    new files, which is the only thing a regression guard is for.
     """
 
-    @pytest.mark.parametrize(
-        "module_path",
-        [
-            "src.orchestration.runtime_policy",
-            "src.agentauth.dispatch",
-            "src.agentauth.model_identity",
-            "src.orchestration.work_admission",
-        ],
-    )
-    def test_converted_surfaces_compare_against_the_shared_constants(self, module_path):
-        import ast
-        import importlib
-        import inspect
+    def test_no_module_in_src_compares_an_authority_kind_as_a_bare_string(self):
+        """Fail-closed over the entire package, with no allowlist.
 
-        module = importlib.import_module(module_path)
-        tree = ast.parse(inspect.getsource(module))
+        Deliberately no exclusions. If a module ever has a legitimate reason to compare
+        a literal — deserialising a persisted record against a frozen historical
+        vocabulary, say — the right answer is a named constant for that vocabulary, not
+        an entry here, because an allowlist is how this guard decays back into the
+        hand-maintained list it replaced.
+        """
+        import src
 
-        # An AST walk, not a regex. These modules legitimately quote the old
-        # `"gate_decision"` pattern in their explanatory comments and docstrings, and a
-        # textual scan cannot tell that from a live comparison — it would either report
-        # findings that do not exist or be relaxed until it reported nothing.
-        offenders = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Compare):
-                continue
-            for operand in (node.left, *node.comparators):
-                if isinstance(operand, ast.Constant) and operand.value in RECOGNIZED_AUTHORITY_KINDS:
-                    offenders.append((module_path, operand.lineno, operand.value))
+        root = Path(src.__file__).parent
+        scanned, offenders = 0, []
+        for path in sorted(root.rglob("*.py")):
+            scanned += 1
+            offenders.extend(_bare_kind_comparisons(path.read_text(), label=str(path.relative_to(root.parent))))
 
+        # A walk that resolved to the wrong root, or to nothing, would report zero
+        # offenders and pass — the same false green as the hand-maintained list, arrived
+        # at differently. The floor is far below the real count and only has to rule out
+        # "scanned almost nothing"; it is not a module census to keep updated.
+        assert scanned > 100, f"the package walk found only {scanned} modules; it is not scanning src/"
+        assert any(path.name == "grants.py" for path in root.rglob("*.py")), "the walk does not reach the module defining the vocabulary"
         assert offenders == [], f"authority kind compared as a bare string literal: {offenders}"
+
+    def test_the_guard_itself_sees_a_bare_string_in_every_comparison_form(self):
+        """The guard is not vacuously green.
+
+        A whole-package scan that finds nothing is indistinguishable from a scan that
+        *cannot* find anything, and the previous version of this guard really was blind
+        to one of these forms while reporting success. So each spelling is presented
+        deliberately and must be reported, with the line numbers proving it is the
+        literal being found and not the surrounding code.
+        """
+        source = (
+            "def f(kind, other):\n"
+            '    if kind == "gate_decision":\n'
+            "        return 1\n"
+            '    if kind in {"github_event", "service_policy"}:\n'
+            "        return 2\n"
+            '    if kind not in ("replan_request",):\n'
+            "        return 3\n"
+            '    if other in {"gate_decision": 1}:\n'
+            "        return 4\n"
+            "    return 0\n"
+        )
+        assert _bare_kind_comparisons(source, label="probe") == [
+            ("probe", 2, "gate_decision"),
+            ("probe", 4, "github_event"),
+            ("probe", 4, "service_policy"),
+            ("probe", 6, "replan_request"),
+            ("probe", 8, "gate_decision"),
+        ]
+
+    def test_the_guard_does_not_report_prose_or_the_constants_themselves(self):
+        """And it is not trivially red either.
+
+        The two shapes that must NOT be findings: an authority kind quoted in a
+        docstring or comment (which is how `grants.py` explains the defect, and how this
+        very file does), and the constant definitions themselves. A guard that flagged
+        either would be turned off within a week.
+        """
+        source = (
+            '"""Explains that `kind != "gate_decision"` used to fail open."""\n'
+            'AUTHORITY_GATE_DECISION = "gate_decision"  # and "github_event" in a comment\n'
+            "def f(kind):\n"
+            "    return kind == AUTHORITY_GATE_DECISION\n"
+        )
+        assert _bare_kind_comparisons(source, label="probe") == []

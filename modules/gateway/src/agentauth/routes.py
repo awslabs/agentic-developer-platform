@@ -24,7 +24,14 @@ from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, issue
 from src.agentauth.composition import build_authorization_service, build_control_adapter
 from src.agentauth.dispatch import FAN_OUT_CAPABILITY, FAN_OUT_CAPABILITY_FIELD, DispatchRequest, DispatchService
 from src.agentauth.execution import ExecutionStateError, evaluate_execution_state
-from src.agentauth.grants import LIVE_CONTROL_ACTIONS, AgentAction
+from src.agentauth.grants import (
+    AUTHORITY_GATE_DECISION,
+    AUTHORITY_GITHUB_EVENT,
+    AUTHORITY_REPLAN_REQUEST,
+    AUTHORITY_SERVICE_POLICY,
+    LIVE_CONTROL_ACTIONS,
+    AgentAction,
+)
 from src.agentauth.policy import PolicyError
 from src.agentauth.revalidation import RevalidationRequest, revalidate_command
 from src.agentauth.run_credential import CredentialError, verify_credential
@@ -102,9 +109,9 @@ class AgentRuntime:
         is authorized can keep ignoring the result — refusal is still an
         exception.
         """
-        if grant.authority.kind in {"github_event", "service_policy"}:
+        if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY}:
             return None
-        if grant.authority.kind not in {"gate_decision", "replan_request"}:
+        if grant.authority.kind not in {AUTHORITY_GATE_DECISION, AUTHORITY_REPLAN_REQUEST}:
             raise BootstrapRefusedError("unsupported authority source")
         from src.agentauth.engine import validate_authoring_authority, validate_engine_authority
         from src.shared.database import get_session_factory
@@ -112,7 +119,7 @@ class AgentRuntime:
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         try:
             async with get_session_factory()() as session:
-                if grant.authority.kind == "replan_request":
+                if grant.authority.kind == AUTHORITY_REPLAN_REQUEST:
                     # Issue #4529. Re-proves the amendment-authoring assignment against
                     # live state — tenant, flow, run binding and base revision — and
                     # returns no graph attribution, because an authoring run owns no
@@ -129,7 +136,7 @@ class AgentRuntime:
 
         config = os.environ if self.env is None else self.env
         repo = config.get("BG_ORCH_DISPATCH_REPO", "")
-        if grant.authority.kind != "github_event" or not repo:
+        if grant.authority.kind != AUTHORITY_GITHUB_EVENT or not repo:
             return record, grant
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         if not execution or execution.get("persona", {}).get("S") not in {"operations", "aidlc"}:
@@ -203,7 +210,7 @@ class AgentRuntime:
         return self._dispatcher
 
     async def dispatch_request(self, body, credential_token, workload_token, *, context):
-        if context[3].authority.kind != "gate_decision":
+        if context[3].authority.kind != AUTHORITY_GATE_DECISION:
             cleared = await self.resolve_fan_out(body, context)
             return await run_in_threadpool(partial(self.dispatch, body, credential_token, workload_token, context=context, fan_out_cleared=cleared))
         from src.agentauth.graph_dispatch import dispatch_graph

@@ -82,6 +82,7 @@ from starlette.responses import JSONResponse
 from src.agentauth.adapter import CREDENTIAL_HEADER
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionStateError
+from src.agentauth.grants import AUTHORITY_GATE_DECISION
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_transport
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
@@ -179,7 +180,7 @@ async def bind_pull_request(
             repository_id < 1
             or installation_id < 1
             or persona not in {"developer", "reviewer"}
-            or grant.authority.kind != "gate_decision"
+            or grant.authority.kind != AUTHORITY_GATE_DECISION
             or not record.repo
             or execution["repo"]["S"] != record.repo
             or record.repo not in grant.repo_scope
