@@ -11,8 +11,14 @@ bug in this file and fix it here.
 
 The audience is two halves that must agree without sharing code: this contract plus
 its vault client (U7, here) and the upstream routes and service logic (U7b) with the
-schema that persists them (U13b). Neither is written yet, which is why the rules
-below are stated exactly rather than left to whoever implements the server.
+schema that persists them (U13b). The rules below are stated exactly rather than left
+to whoever implements the server, because the two halves share no code.
+
+**The server half now exists.** U7b (#5053) serves these rules over HTTP; see
+[`SERVING-THE-CONNECTION-CONTRACT.md`](SERVING-THE-CONNECTION-CONTRACT.md) for the
+route surface and for the places where serving a rule required a decision this file
+does not make. That document is subordinate to this one: where the two disagree, this
+file and `superplane_contracts`' tests are normative.
 
 ---
 
@@ -234,9 +240,10 @@ justification silently. `resolve_exact()` is the single seam to replace.
 rotation and disablement rules, the inbound refusal and outbound redaction, the thin
 vault HTTP client, the tests.
 
-**Out:** the domain API's routes and service logic (**U7b**, authored only); the
-schema that persists connections and bindings (**U13b**, authored only); any change
-to the gateway's vault (`modules/gateway/src/auth/`); provider-side revocation.
+**Out:** the domain API's routes and service logic (**U7b** — out of *this unit*, and
+now implemented; see `SERVING-THE-CONNECTION-CONTRACT.md`); the schema that persists
+connections and bindings (**U13b**, authored only); any change to the gateway's vault
+(`modules/gateway/src/auth/`); provider-side revocation.
 
 **Not closed by this unit:** R7 acceptances **6 and 7** (the audited migration run).
 Those need a named account and environment, authorized vault and KMS access, and a

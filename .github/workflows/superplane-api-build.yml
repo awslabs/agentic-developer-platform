@@ -42,6 +42,8 @@ on:
     branches: [main]
     paths:
       - 'modules/domain-apps/superplane/src/superplane-api/**'
+      - 'modules/domain-apps/superplane/auth/**'
+      - 'modules/domain-apps/superplane/contracts/**'
       - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       - 'modules/domain-apps/superplane/releases/resolve_lock.py'
       - 'modules/domain-apps/superplane/releases/build-image.sh'
