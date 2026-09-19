@@ -52,6 +52,11 @@ jobs:
           src/agent-worker-prompt-order.test.ts
       - name: Verify memory reads and writes from shallow clones
         run: npm test -- --runInBand --runTestsByPath src/memory.test.ts
+      - name: Verify requester-facing model-policy feedback is safe, truthful and authenticated
+        run: >-
+          npm test -- --runInBand --runTestsByPath
+          src/model-policy-feedback.test.ts
+          src/agent-worker-model-feedback-wiring.test.ts
 
   python-reporting:
     name: Transcript handoff and shared instructions
