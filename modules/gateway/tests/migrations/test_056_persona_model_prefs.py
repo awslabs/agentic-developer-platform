@@ -93,6 +93,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from alembic.script import ScriptDirectory
 from src.shared.models.persona_models import (
     ALIAS_SOURCES,
     PRINCIPAL_SOURCES,
@@ -857,9 +858,11 @@ class TestRealPostgres:
             cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
             restored = {row[0] for row in cursor.fetchall()}
             cursor.execute("SELECT version_num FROM alembic_version")
-            # PMM-03 adds two linear successors in this integration branch, so
-            # an upgrade to ``head`` must advance through 056 and finish at 058.
-            assert cursor.fetchone()[0] == "058_model_probe_admission"
+            # Keep exercising every later linear successor. Hard-coding PMM-03's
+            # then-current head made this predecessor test fail whenever a
+            # legitimate migration was appended.
+            expected_head = ScriptDirectory(str(MIGRATIONS_DIR.parent)).get_current_head()
+            assert cursor.fetchone()[0] == expected_head
             cursor.execute(f"SELECT COUNT(*) FROM {SETTINGS}")
             assert cursor.fetchone()[0] == 1, "re-upgrade must re-seed exactly one settings row"
 

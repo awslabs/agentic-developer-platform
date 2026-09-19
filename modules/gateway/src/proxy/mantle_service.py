@@ -873,6 +873,7 @@ class MantlePassthroughService:
                     # dependency; None persists as NULL = "not captured".
                     client_tool=_current_client_tool.get(),
                     bedrock_account_id=routing_decision.target.account_id if routing_decision and routing_decision.target else None,
+                    pricing_decision=decision,
                 )
         except Exception as exc:  # noqa: BLE001 - metering must not break the proxy
             logger.warning("Failed to write mantle usage_logs row", extra={"error": str(exc), "model": model})

@@ -171,6 +171,16 @@ class AgentModelIdentityMiddleware:
                 is_human_rooted=grant.authority.kind != "service_policy",
                 flow_id=grant.flow_id if grant.authority.kind == "gate_decision" else None,
             )
+            # Issue #5426: attach only the protected PMM-06 snapshot projection.
+            # This is report-only evidence and therefore degrades to None; it can
+            # neither deny the provider call nor be supplied by the worker.
+            from src.agentauth.model_policy import protected_usage_attribution
+
+            context._persona_usage_attribution = await run_in_threadpool(
+                protected_usage_attribution,
+                store=runtime.store,
+                record=record,
+            )
             # Issue #4898: attach the verified graph assignment so the shared
             # usage writer can persist `usage_logs.graph_address`. Captured HERE —
             # before the request reaches the provider — so the value metering

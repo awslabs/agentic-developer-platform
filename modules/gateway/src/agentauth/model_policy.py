@@ -43,6 +43,7 @@ from src.shared.models.persona_models import (
     ServicePrincipal,
     ServicePrincipalAlias,
 )
+from src.usage.persona_attribution import PersonaUsageAttribution
 
 logger = logging.getLogger("bedrockgateway.agentauth.model_policy")
 
@@ -557,3 +558,70 @@ def bootstrap_model_policy(*, store, record, grant: DelegatedGrant, env: dict[st
         return {"posture": "report_only", "status": "unavailable", "reason": exc.reason}
     except (EnvelopeError, AuthorityStoreError):
         return {"posture": "report_only", "status": "unavailable", "reason": "decision_unavailable"}
+
+
+def protected_usage_attribution(*, store, record) -> PersonaUsageAttribution | None:
+    """Project immutable snapshot facts into the usage writer, or return NULL.
+
+    This enrichment is deliberately fail-soft.  Attribution must never turn a
+    successfully metered provider call into a missing usage row, and report-only
+    rollout must not deny existing traffic.  The raw item is read from the same
+    worker-unwritable authority table used by bootstrap; request data is not an
+    input.  Snapshot parsing supplies the tenant/digest integrity checks.
+
+    PMM-07 owns resolution and live admission.  This function therefore records
+    only facts frozen by PMM-06 and does not infer requested/resolved model or
+    resolution source from report-only policy.
+    """
+    try:
+        raw_execution = (
+            store._read(
+                f"TENANT#{record.tenant_id}",
+                f"EXEC#{record.invocation_id}",
+            )
+            or {}
+        )
+        raw = raw_execution.get("model_policy_snapshot", {}).get("S")
+        digest = raw_execution.get("model_policy_snapshot_digest", {}).get("S")
+        snapshot = parse_snapshot(raw, digest, tenant_id=record.tenant_id)
+        persona = raw_execution.get("persona", {}).get("S", "")
+        contract = snapshot.persona_contracts.get(persona)
+        if not isinstance(contract, dict):
+            return None
+        compatibility_class = contract.get("compatibility_class")
+        harness_revision = contract.get("harness_contract_revision")
+        if not all(
+            isinstance(value, str) and value
+            for value in (
+                persona,
+                compatibility_class,
+                harness_revision,
+                snapshot.correlation_id,
+                snapshot.root_invocation_id,
+                snapshot.principal_id,
+                snapshot.policy_revision,
+                snapshot.catalogue_revision,
+                digest,
+            )
+        ):
+            return None
+        return PersonaUsageAttribution(
+            tenant_id=snapshot.tenant_id,
+            invocation_id=record.invocation_id,
+            root_invocation_id=snapshot.root_invocation_id,
+            chain_id=snapshot.correlation_id,
+            persona_key=persona,
+            compatibility_class=compatibility_class,
+            harness_contract_revision=harness_revision,
+            principal_kind=snapshot.principal_kind,
+            principal_id=snapshot.principal_id,
+            snapshot_digest=digest,
+            policy_revision=snapshot.policy_revision,
+            catalogue_revision=snapshot.catalogue_revision,
+        )
+    # Reporting enrichment is not an admission gate. DynamoDB/network failures,
+    # test doubles with an older shape, and future deserializer errors all mean
+    # NULL attribution; none may turn a provider request into a 503 or cause the
+    # usage writer to be skipped.
+    except Exception:  # noqa: BLE001
+        return None

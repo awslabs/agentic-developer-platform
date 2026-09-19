@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,9 @@ from src.usage.schemas import (
     UsageTimelineEntry,
     UsageTimelineResponse,
 )
+
+if TYPE_CHECKING:
+    from pricing_policy import PricingDecision
 
 
 class UsageService(IUsageService):
@@ -55,6 +58,7 @@ class UsageService(IUsageService):
         cache_read_input_tokens: int | None = None,
         cache_creation_input_tokens: int | None = None,
         client_tool: str | None = None,
+        pricing_decision: "PricingDecision | None" = None,
     ) -> None:
         """
         Log a Bedrock API request.
@@ -82,6 +86,9 @@ class UsageService(IUsageService):
                 not back-fillable, so None is the honest value for an
                 unrecognised client and must stay distinguishable from a real
                 tool name.
+            pricing_decision: The one internally-computed pricing decision used
+                for this request's settlement. It is persisted, never re-read;
+                None means the pricing revision was not captured.
         """
         log_entry = UsageLog(
             # Issue #4132: usage_logs is an ATTRIBUTION surface — a hosted run
@@ -107,10 +114,100 @@ class UsageService(IUsageService):
             # Issue #4898: the graph node this call is attributable to. Resolved
             # from the request's own verified context — see `_graph_address_for`.
             graph_address=self._graph_address_for(context, agent_run_id),
+            **self._persona_evidence_for(context, agent_run_id),
+            **self._pricing_revision_for(pricing_decision),
         )
 
         self.db.add(log_entry)
         await self.db.commit()
+
+    @staticmethod
+    def _persona_evidence_for(context: TokenContext, agent_run_id: str | None) -> dict[str, str | None]:
+        """Return protected PMM evidence, or an all-NULL atomic projection.
+
+        The cross-checks make it impossible to persist a snapshot beside a row
+        for another tenant or run.  The helper cannot raise: both proxy callers
+        intentionally swallow logging failures, so an enrichment exception
+        would silently drop metered spend.
+        """
+        names = {
+            "persona_key": None,
+            "compatibility_class": None,
+            "harness_contract_revision": None,
+            "root_invocation_id": None,
+            "chain_id": None,
+            "preference_owner_kind": None,
+            "preference_owner_id": None,
+            "model_policy_snapshot_digest": None,
+            "model_policy_revision": None,
+            "model_catalogue_revision": None,
+        }
+        attribution = getattr(context, "_persona_usage_attribution", None)
+        try:
+            from src.usage.persona_attribution import PersonaUsageAttribution
+
+            if not isinstance(attribution, PersonaUsageAttribution):
+                return names
+            if attribution.tenant_id != context.attributed_org_id:
+                return names
+            if agent_run_id and attribution.invocation_id != agent_run_id:
+                return names
+            return {
+                "persona_key": attribution.persona_key,
+                "compatibility_class": attribution.compatibility_class,
+                "harness_contract_revision": attribution.harness_contract_revision,
+                "root_invocation_id": attribution.root_invocation_id,
+                "chain_id": attribution.chain_id,
+                "preference_owner_kind": attribution.principal_kind,
+                "preference_owner_id": attribution.principal_id,
+                "model_policy_snapshot_digest": attribution.snapshot_digest,
+                "model_policy_revision": attribution.policy_revision,
+                "model_catalogue_revision": attribution.catalogue_revision,
+            }
+        except (AttributeError, TypeError, ValueError):
+            return names
+
+    @staticmethod
+    def _pricing_revision_for(decision: "PricingDecision | None") -> dict[str, str | int | None]:
+        """Project one internally-computed pricing identity atomically.
+
+        Database and bundled decisions have deliberately different shapes.  A
+        malformed or incomplete object writes all NULLs rather than mixing a
+        generation from one decision with a snapshot from another, or implying
+        that the active pricing revision applied when none was captured.
+        """
+        empty: dict[str, str | int | None] = {
+            "pricing_source_kind": None,
+            "pricing_generation_id": None,
+            "pricing_pointer_revision": None,
+            "pricing_snapshot_version": None,
+            "pricing_policy_version": None,
+        }
+        try:
+            source = decision.source_kind
+            generation = decision.generation_id
+            pointer = decision.pointer_revision
+            snapshot = decision.snapshot_version
+            policy = decision.policy_version
+            if type(policy) is not int or policy < 1 or not isinstance(snapshot, str) or not snapshot:
+                return empty
+            if source == "database":
+                if type(generation) is not int or generation < 1 or type(pointer) is not int or pointer < 1:
+                    return empty
+            elif source == "bundled_snapshot":
+                if generation is not None or pointer is not None:
+                    return empty
+            else:
+                return empty
+            return {
+                "pricing_source_kind": source,
+                "pricing_generation_id": generation,
+                "pricing_pointer_revision": pointer,
+                "pricing_snapshot_version": snapshot,
+                "pricing_policy_version": policy,
+            }
+        except (AttributeError, TypeError, ValueError):
+            return empty
 
     @staticmethod
     def _graph_address_for(context: TokenContext, agent_run_id: str | None) -> str | None:

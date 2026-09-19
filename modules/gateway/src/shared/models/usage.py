@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Integer, Numeric, String
+from sqlalchemy import BigInteger, DateTime, Index, Integer, Numeric, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
@@ -48,6 +48,45 @@ class UsageLog(Base, TenantMixin):
     # those rows read as a real tool and corrupt any future per-tool breakdown.
     # Never holds a raw User-Agent; only a normalised member of that closed set.
     client_tool: Mapped[str | None] = mapped_column(String(32), index=True)
+    # Issue #5426: trusted PMM-06 persona-policy evidence.  Every field is
+    # nullable with NO default and is never backfilled. NULL means "not
+    # captured", never a fabricated persona, chain, owner or current revision.
+    persona_key: Mapped[str | None] = mapped_column(String(64))
+    compatibility_class: Mapped[str | None] = mapped_column(String(64))
+    harness_contract_revision: Mapped[str | None] = mapped_column(String(64))
+    root_invocation_id: Mapped[str | None] = mapped_column(String(255))
+    chain_id: Mapped[str | None] = mapped_column(String(255))
+    preference_owner_kind: Mapped[str | None] = mapped_column(String(32))
+    preference_owner_id: Mapped[str | None] = mapped_column(String(255))
+    model_policy_snapshot_digest: Mapped[str | None] = mapped_column(String(64))
+    model_policy_revision: Mapped[str | None] = mapped_column(String(64))
+    model_catalogue_revision: Mapped[str | None] = mapped_column(String(64))
+    # The complete pricing-decision identity. A partial tuple is never written:
+    # NULL across all five means the decision was not captured, not "current".
+    pricing_source_kind: Mapped[str | None] = mapped_column(String(32))
+    pricing_generation_id: Mapped[int | None] = mapped_column(BigInteger)
+    pricing_pointer_revision: Mapped[int | None] = mapped_column(BigInteger)
+    pricing_snapshot_version: Mapped[str | None] = mapped_column(String(255))
+    pricing_policy_version: Mapped[int | None] = mapped_column(Integer)
+
+    __table_args__ = (
+        Index(
+            "ix_usage_persona_owner",
+            "org_id",
+            "preference_owner_kind",
+            "preference_owner_id",
+            "persona_key",
+            postgresql_where=text("persona_key IS NOT NULL AND preference_owner_id IS NOT NULL"),
+            sqlite_where=text("persona_key IS NOT NULL AND preference_owner_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_usage_chain_id",
+            "org_id",
+            "chain_id",
+            postgresql_where=text("chain_id IS NOT NULL"),
+            sqlite_where=text("chain_id IS NOT NULL"),
+        ),
+    )
 
 
 class RateLimitConfig(Base, TenantMixin):

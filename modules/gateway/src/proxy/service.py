@@ -551,6 +551,7 @@ class ProxyService(IProxyService):
 
         actual_cost = None
         pricing_failed = False
+        pricing_decision = None
         if pricing_capture is not None and pricing_capture.is_claude:
             request_id = pricing_capture.request_id
             try:
@@ -562,6 +563,7 @@ class ProxyService(IProxyService):
                     api_format="anthropic",
                 )
                 pricing_capture.decision = priced.to_dict()
+                pricing_decision = priced
                 actual_cost = cost_usd = priced.ledger_cost
                 input_tokens = priced.usage["uncached_input_tokens"]
                 output_tokens = priced.usage["output_tokens"]
@@ -645,6 +647,7 @@ class ProxyService(IProxyService):
                         client_tool=client_tool,
                         # Issue #4743 (shadow) / #4744 (enforced): see the resolution above.
                         bedrock_account_id=bedrock_account_id,
+                        pricing_decision=pricing_decision,
                     )
             except Exception as exc:
                 logger.warning(
