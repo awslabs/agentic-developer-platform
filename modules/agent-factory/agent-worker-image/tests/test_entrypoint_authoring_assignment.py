@@ -642,3 +642,42 @@ class TestTheBriefReachesTheRun:
         assert_reached_the_export_block(envelope)
         assert os.environ.get(FLOW_ID_ENV) == FLOW_ID
         assert AMENDMENT_BASE_VERSION_ENV not in os.environ
+
+
+class TestTheBriefSurvivesIntoTheAgentProcess:
+    """The last link: exporting the brief into `os.environ` only matters if that is the
+    environment the agent process actually gets.
+
+    The chain is `_export_authoring_assignment` (line ~1463) → `agent_env =
+    os.environ.copy()` (line ~2320) → `subprocess.run(command, env=agent_env)`, and on
+    the Node side `workerAwsEnvironment()` spreads `process.env` and deletes only named
+    AWS keys. So today the brief arrives, and the instructions committed for this issue
+    are correct to tell an author to read these variables.
+
+    Nothing pinned that, though, and two plausible future changes break it silently:
+    turning `agent_env` into an allow-list, or widening a scrub to a prefix. Either
+    leaves every other test in this file green — the export still happens, the variables
+    are still in `os.environ` — while the author that reads them gets nothing. The
+    failure is the original defect restored: a brief with a producer, a consumer, and no
+    delivery.
+    """
+
+    def test_the_mediated_scrub_does_not_take_the_brief_with_it(self):
+        """Mediation strips merge-capable credentials from the agent env, and an AIDLC
+        author can be in that cohort. The scrub is named-credential only by design, so
+        the brief must pass through it untouched — asserted here so a future widening to
+        something prefix-based (`ADP_*`) fails rather than quietly unbriefing the author.
+        """
+        agent_env = {name: f"value-{name}" for name in ALL_ASSIGNMENT_ENV}
+        agent_env.update({"GITHUB_TOKEN": "t", "GH_TOKEN": "t", "GIT_ASKPASS": "helper"})
+
+        with patch.object(entrypoint, "_remove_token_file"):
+            entrypoint._withhold_write_token(agent_env)
+
+        # Positive control: if the scrub became a no-op this test would pass for the
+        # wrong reason, so assert it did the job it exists to do.
+        assert "GITHUB_TOKEN" not in agent_env, "the scrub under test did nothing"
+        assert "GIT_ASKPASS" not in agent_env
+
+        for name in ALL_ASSIGNMENT_ENV:
+            assert agent_env.get(name) == f"value-{name}", f"the mediated scrub removed {name} from the author's brief"
