@@ -1337,7 +1337,7 @@ class OrchestrationPendingAmendment(Base, TenantMixin):
     the rest become `SUPERSEDED` because their recorded base no longer describes
     reality.
 
-    **Idempotency.** `(org_id, flow_id, proposal_hash)` is unique, so a fail-soft
+    **Idempotency.** `(org_id, flow_id, request_id, proposal_hash)` is unique, so a fail-soft
     author retrying its registration converges on its own row instead of filing a
     second draft of the same document. `proposal_hash` is the canonical
     `compile.plan_hash` of `proposal_document`, so the identity is the content rather
@@ -1346,10 +1346,10 @@ class OrchestrationPendingAmendment(Base, TenantMixin):
 
     __tablename__ = "orchestration_pending_amendments"
     __table_args__ = (
-        # Idempotent registration: the same document registered twice on one flow is
+        # Idempotent registration: the same document registered twice for one request is
         # one draft. Enforced in the database because two concurrent registrations
         # can both pass an application-level existence read.
-        Index("uq_orchestration_pending_amendments_proposal", "org_id", "flow_id", "proposal_hash", unique=True),
+        Index("uq_orchestration_pending_amendments_proposal", "org_id", "flow_id", "request_id", "proposal_hash", unique=True),
         # The acceptance path's read: this flow's drafts by status. Tenant-leading, and
         # this is the only flow-keyed index on the table — a plain `index=True` on
         # `flow_id` would add a second, narrower duplicate of this one's prefix.

@@ -71,6 +71,9 @@ planning. The outline:
    or unreadable, report the missing input and stop. Do not reconstruct the accepted
    plan from a repository proposal, a hash, or issue prose, or request approval authority
    to read it. Keep the snapshot unchanged and write the replacement to the output path.
+   The authorable copy preserves policy permissions and limits but omits server-only
+   `policy_id`, `policy_hash` and `principal_id`; human acceptance stamps those again.
+   Do not restore old policy identifiers from another source.
    That version is what the human was looking at when they asked. Amend it, not a
    newer read — the engine compares the base at acceptance and refuses a conflict.
 2. **Apply what the human asked**, treating `ADP_AMENDMENT_REQUEST_TEXT` as a

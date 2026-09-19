@@ -365,13 +365,13 @@ class TestDraftUniqueness:
         await engine.dispose()
 
     async def test_proposal_index_exists_and_is_unique(self, engine):
-        """`(org_id, flow_id, proposal_hash)`, unique."""
+        """`(org_id, flow_id, request_id, proposal_hash)`, unique."""
         async with engine.connect() as conn:
             indexes = await conn.run_sync(lambda c: sa_inspect(c).get_indexes(DRAFTS))
 
         unique = {i["name"]: tuple(i["column_names"]) for i in indexes if i["unique"]}
         assert DRAFT_INDEX in unique, f"proposal uniqueness index missing; got {sorted(unique)}"
-        assert unique[DRAFT_INDEX] == ("org_id", "flow_id", "proposal_hash")
+        assert unique[DRAFT_INDEX] == ("org_id", "flow_id", "request_id", "proposal_hash")
 
     async def test_a_retried_registration_cannot_file_a_second_draft(self, engine):
         """The fail-soft author's retry converges instead of forking.
@@ -401,7 +401,7 @@ class TestDraftUniqueness:
 
         assert "proposal_hash" in index["column_names"]
         assert "author_run_id" not in index["column_names"]
-        assert "request_id" not in index["column_names"]
+        assert "request_id" in index["column_names"]
 
     async def test_the_index_does_not_include_state(self, engine):
         """A superseded draft keeps occupying its content hash.

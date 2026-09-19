@@ -18,8 +18,8 @@ anything is written:
 All three refusals are asserted to write nothing and, where they could leak, to be
 indistinguishable from each other.
 
-The response half matters as much as the authz half. `status` is pinned to the literal
-`pending_human_accept` on every path, because a worker reporting a replan as *done* when
+The response half matters as much as the authz half. Fresh drafts report
+`pending_human_accept`, because a worker reporting a replan as *done* when
 a proposal is merely waiting is the failure mode that loses the amendment: a human who
 reads "amended" stops looking. And `accept_command` is asserted to carry the draft id and
 to be parseable by the real parser, because the human types this string back.
@@ -500,7 +500,29 @@ class TestInertness:
 
 
 class TestResponseContract:
-    async def test_the_status_is_always_pending_human_accept(self, session, app_with_router):
+    @pytest.mark.parametrize("state", ["accepted", "superseded", "rejected"])
+    async def test_terminal_replay_reports_state_without_accept_command(self, session, app_with_router, state):
+        flow_id = await accepted_flow(session)
+        request = await open_request(session, flow_id)
+        client = client_for(app_with_router, permitted=True)
+        arguments = {
+            "params": {"request_id": request.id},
+            "headers": {"X-Agent-RunId": AUTHOR_RUN},
+            "json": amended_proposal().model_dump(mode="json"),
+        }
+        first = client.post(route_for(flow_id), **arguments)
+        assert first.status_code == 201, first.text
+        await session.execute(
+            sa.update(OrchestrationPendingAmendment).where(OrchestrationPendingAmendment.id == first.json()["draft_id"]).values(state=state)
+        )
+        await session.commit()
+        replay = client.post(route_for(flow_id), **arguments)
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["draft_id"] == first.json()["draft_id"]
+        assert replay.json()["status"] == state
+        assert replay.json()["accept_command"] == ""
+
+    async def test_pending_registration_and_replay_report_pending_human_accept(self, session, app_with_router):
         """The literal, on a fresh registration AND on a retry.
 
         This is the "not a misleading successful replan" requirement expressed where

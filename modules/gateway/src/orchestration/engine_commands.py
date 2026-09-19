@@ -143,10 +143,12 @@ that is broken.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field, replace
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -188,7 +190,7 @@ from .command_attribution import (
 )
 from .compile import ProposalRejectedError
 from .dispatch_pass import resolve_installation_id
-from .models import AmendmentRequestState, DecisionKind, NodeKind, OrchestrationFlow, OrchestrationNode
+from .models import AmendmentRequestState, DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 
 # Issue #4529's store. The command pass is one of its two callers and holds no
 # amendment logic of its own: `accept_amendment` owns tenant/flow scope, the pending
@@ -928,6 +930,7 @@ async def _apply_command(
     access: AccessControl,
     source: tuple[str, int, int] | None = None,
     publishes: list[Any] | None = None,
+    command_id: str | None = None,
 ) -> tuple[bool, str]:
     """Apply one authorized command. Returns `(applied, message_for_the_commenter)`.
 
@@ -942,6 +945,7 @@ async def _apply_command(
             `replan`, to address the authoring run it queues. None means an assignment
             cannot be built, which is reported as retryable rather than failing the
             command — see `_queue_authoring`.
+        command_id: Verified provider delivery ID; stable across webhook redelivery.
         publishes: Accumulator the caller flushes **after** its commit. `replan`
             appends at most one `PendingAuthoring` to it. Nothing is sent from inside
             this function: publishing before the commit would manufacture an authoring
@@ -1097,16 +1101,39 @@ async def _apply_command(
     # land in THIS transaction, before anything is published, so a crash between them
     # is impossible — see `authoring_dispatch`'s module docstring on why the ordering
     # is the design rather than an implementation detail.
-    repo = OrchestrationRepository(session)
-    decision = await repo.append_decision(
-        org_id=org_id,
-        flow_id=flow_id,
-        kind=DecisionKind.REPLAN_REQUESTED.value,
-        actor_id=context.user_id,
-        actor_role=actor_role,
-        actor_kind=ActorKind.HUMAN.value,
-        reason=command.text or "no detail given",
+    if not command_id:
+        return False, "replan requires a verified delivery identity."
+    # The signed provider delivery survives concurrent ticks and webhook retries.
+    # Serialize its SQL decision/request on the flow, before any external publish.
+    locked_flow = await session.scalar(
+        select(OrchestrationFlow.id).where(OrchestrationFlow.org_id == org_id, OrchestrationFlow.id == flow_id).with_for_update()
     )
+    if locked_flow is None:
+        return False, _UNIFORM_REFUSAL
+    decision_id = str(uuid5(NAMESPACE_URL, json.dumps(["adp:replan", org_id, command_id], separators=(",", ":"))))
+    decision = await session.scalar(
+        select(OrchestrationDecision).where(OrchestrationDecision.org_id == org_id, OrchestrationDecision.id == decision_id)
+    )
+    if decision is not None:
+        if (
+            decision.flow_id != flow_id
+            or decision.actor_id != context.user_id
+            or decision.reason != (command.text or "no detail given")
+            or decision.kind != DecisionKind.REPLAN_REQUESTED.value
+            or decision.actor_kind != ActorKind.HUMAN.value
+        ):
+            return False, _UNIFORM_REFUSAL
+    else:
+        decision = await OrchestrationRepository(session).append_decision(
+            org_id=org_id,
+            flow_id=flow_id,
+            decision_id=decision_id,
+            kind=DecisionKind.REPLAN_REQUESTED.value,
+            actor_id=context.user_id,
+            actor_role=actor_role,
+            actor_kind=ActorKind.HUMAN.value,
+            reason=command.text or "no detail given",
+        )
 
     request = await record_replan_request(
         session,
@@ -1124,7 +1151,7 @@ async def _apply_command(
         request=request,
         source=source,
     )
-    if assignment is not None:
+    if assignment is not None and not any(item.request_id == assignment.request_id for item in publishes):
         publishes.append(assignment)
 
     if assignment is None and request.state == AmendmentRequestState.DISPATCHED.value:
@@ -1328,6 +1355,7 @@ async def _handle_row(
         # dispatches, not wherever a comment happened to be written.
         source=((os.environ.get(REPO_ENV) or "").strip(), issue_number, installation_id),
         publishes=report.pending_authoring,
+        command_id=verified.delivery_id,
     )
 
     report.record(org_id, "commands_applied" if applied else "commands_refused")

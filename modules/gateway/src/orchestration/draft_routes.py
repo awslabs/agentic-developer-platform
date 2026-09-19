@@ -420,10 +420,8 @@ class GateDiffResponse(BaseModel):
 class AmendmentDraftRegisteredResponse(BaseModel):
     """The outcome of registering an authored amendment. Nothing is accepted yet.
 
-    `status` is the literal `"pending_human_accept"` and is not optional or
-    conditional. The failure this exists to prevent is a worker reporting a replan as
-    *done* when what actually happened is that a proposal is waiting — a human who
-    reads "amended" stops looking, and the amendment never lands.
+    Fresh drafts report `pending_human_accept`. Replays report the stored state,
+    so an accepted or superseded draft never appears to be awaiting a new decision.
 
     `accept_command` is composed server-side for the same reason as
     `DraftRegisteredResponse.accept_command`: the worker puts this string in a GitHub
@@ -596,9 +594,8 @@ async def register_amendment(
             changes_gating=draft.gate_diff.changes_gating,
         ),
         already_registered=draft.already_registered,
-        # Unconditional. There is no branch of this route that reports anything else.
-        status=PENDING_HUMAN_ACCEPT,
-        accept_command=ACCEPT_AMENDMENT_COMMAND.format(draft_id=draft.draft_id),
+        status=PENDING_HUMAN_ACCEPT if draft.state == "pending" else draft.state,
+        accept_command=ACCEPT_AMENDMENT_COMMAND.format(draft_id=draft.draft_id) if draft.state == "pending" else "",
         flow_url=_flow_url(draft.flow_id),
     )
 

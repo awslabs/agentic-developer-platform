@@ -59,6 +59,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 from sqlalchemy import select, update
@@ -199,6 +200,7 @@ def replan_row(
             sender_github_id=GITHUB_ID,
             sender_type="User",
             event_id=event_id,
+            delivery_id=str(uuid5(NAMESPACE_URL, event_id)),
         )
     )
 

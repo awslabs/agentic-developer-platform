@@ -35,6 +35,7 @@ request helpers, so a request row here is the shape the store really writes.
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, func, select
@@ -218,6 +219,7 @@ async def replan(
     text: str = "gate the deploy wave",
     source=...,
     user_id: str = ASKER,
+    command_id: str | None = None,
 ):
     """Drive the replan branch exactly as `_handle_row` drives it, then commit.
 
@@ -235,6 +237,7 @@ async def replan(
         access=access_control(),
         source=(REPO, ISSUE, INSTALLATION) if source is ... else source,
         publishes=report.pending_authoring,
+        command_id=command_id or str(uuid4()),
     )
     await session.commit()
     return applied, message
@@ -403,22 +406,24 @@ class TestOneHumanAskOneAuthor:
     async def test_a_duplicated_delivery_queues_one_assignment(self, session, monkeypatch):
         """Two deliveries of the same comment reconcile onto one authoring job.
 
-        Driven through the branch twice with the same decision — which is what a
-        re-delivered webhook produces — rather than by calling the store directly, so
+        Driven through the command branch twice with the same verified delivery ID,
+        rather than supplying a decision ID or calling the store directly, so
         the reconciliation is proved where a duplicate actually arrives.
         """
         flow_id = await flow_with_asker(session)
         report = EngineCommandReport()
-        await replan(session, report, flow_id=flow_id)
+        await replan(session, report, flow_id=flow_id, command_id="same-signed-delivery")
         first = report.pending_authoring[0]
 
-        # Same human, same text, a second delivery. A fresh decision row is appended
-        # (the log is append-only and this IS a second delivery), so the second pass
-        # records its own request — what must not happen is the FIRST request growing a
-        # second author, or the first assignment being re-pointed.
-        await replan(session, report, flow_id=flow_id)
+        await replan(session, report, flow_id=flow_id, command_id="same-signed-delivery")
 
         rows = {row.id: row for row in await requests(session)}
+        assert len(rows) == 1
+        assert len(report.pending_authoring) == 1
+        decisions = list(
+            (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.REPLAN_REQUESTED.value))).all()
+        )
+        assert len(decisions) == 1
         assert rows[first.request_id].author_run_id == first.author_run_id
         # Every accumulated assignment names a distinct request and its own derived run.
         assert len({a.request_id for a in report.pending_authoring}) == len(report.pending_authoring)

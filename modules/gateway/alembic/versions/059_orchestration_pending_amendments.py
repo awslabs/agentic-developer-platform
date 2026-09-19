@@ -118,14 +118,15 @@ def upgrade() -> None:
         sa.Column("decided_at", sa.DateTime(timezone=True), nullable=True),
     )
 
-    # Idempotent registration: the same document registered twice on one flow is one
-    # draft. In the database because a fail-soft author's retry and its original can
+    # Idempotent registration: the same document registered twice for one request
+    # is one draft. A later request may legitimately propose the same document.
+    # Enforce this in the database: a fail-soft author's retry and its original can
     # both pass an application-level existence read, and two drafts of one document
     # would give a human two things to accept that mean the same thing.
     op.create_index(
         "uq_orchestration_pending_amendments_proposal",
         "orchestration_pending_amendments",
-        ["org_id", "flow_id", "proposal_hash"],
+        ["org_id", "flow_id", "request_id", "proposal_hash"],
         unique=True,
     )
     op.create_index("ix_orchestration_pending_amendments_org_id", "orchestration_pending_amendments", ["org_id"])

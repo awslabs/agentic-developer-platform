@@ -743,6 +743,34 @@ class TestRegisterAmendmentDraft:
         assert draft.gate_diff.changes_gating is True
 
 
+@pytest.mark.parametrize("terminal", ["accepted", "superseded"])
+async def test_identical_proposal_is_scoped_to_its_commissioning_request(session, terminal):
+    flow_id = await accepted_flow(session)
+    first_request = await open_request(session, flow_id)
+    proposal = amended_proposal()
+    old = await register_amendment_draft(session, org_id=ORG_A, request=first_request, author_run_id=AUTHOR_RUN, proposal=proposal)
+    winner = old
+    if terminal == "superseded":
+        winner = await register_amendment_draft(
+            session, org_id=ORG_A, request=first_request, author_run_id=AUTHOR_RUN, proposal=amended_proposal(extra_gate=False)
+        )
+    await accept_amendment(session, draft_id=winner.draft_id, actor=amender(), flow_id=flow_id)
+    await session.commit()
+
+    replay = await register_amendment_draft(session, org_id=ORG_A, request=first_request, author_run_id=AUTHOR_RUN, proposal=proposal)
+    assert replay.draft_id == old.draft_id
+    assert replay.already_registered and replay.state == terminal
+
+    later_request = await open_request(session, flow_id, decision_id="later-replan", run_id="later-author")
+    later = await register_amendment_draft(session, org_id=ORG_A, request=later_request, author_run_id="later-author", proposal=proposal)
+    await session.commit()
+    assert later.draft_id != old.draft_id
+    assert later.request_id == later_request.id
+    assert later.base_plan_version == 2
+    assert later.state == "pending" and not later.already_registered
+    assert later.proposal_hash == old.proposal_hash
+
+
 class TestGateDiff:
     def test_reports_added_removed_and_unchanged_gates(self):
         base = {

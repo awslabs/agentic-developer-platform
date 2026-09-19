@@ -355,7 +355,13 @@ def register_loop_proposal(*, work_dir: Path, issue: int, timeout: int = _TIMEOU
         len(document.get("edges") or []),
         document.get("intent_ref"),
     )
-    return _post_document(f"{endpoint_base}{_DRAFT_PATH}", document, run_id=run_id, endpoint_base=endpoint_base, timeout=timeout)
+    return _post_document(
+        f"{endpoint_base}{_DRAFT_PATH}",
+        document,
+        run_id=run_id,
+        endpoint_base=endpoint_base,
+        timeout=timeout,
+    )
 
 
 def _run_context() -> tuple[str, str, str]:
@@ -495,8 +501,7 @@ def _success_note(result: dict[str, Any]) -> str:
     lines = [
         "### Delivery loop registered with the orchestration engine",
         "",
-        f"**Flow**: {flow_ref} (v{result.get('plan_version')}) — "
-        f"{result.get('nodes_created')} nodes, {result.get('edges_created')} edges",
+        f"**Flow**: {flow_ref} (v{result.get('plan_version')}) — {result.get('nodes_created')} nodes, {result.get('edges_created')} edges",
         "**State**: `draft` — the plan is visible in the graph UI and executes nothing.",
         f"**Acceptance gate**: `{result.get('acceptance_gate_address')}`",
         "",
@@ -601,20 +606,16 @@ def _amendment_success_note(result: dict[str, Any]) -> str:
         state_line = f"**State**: `{status}` — reported by the engine. Nothing in this run applied it."
 
     lines = [
-        "### Plan amendment proposed for your approval",
+        "### Plan amendment proposed for your approval" if status == _PENDING_HUMAN_ACCEPT else "### Plan amendment registration",
         "",
         f"**Flow**: {flow_ref}",
         f"**Draft**: `{draft_id}`",
         f"**Authored against**: plan v{result.get('base_plan_version')}",
         state_line,
         _gate_diff_line(result.get("gate_diff")),
-        "",
-        "Reply with the following to apply it:",
-        "",
-        "```",
-        accept_command,
-        "```",
     ]
+    if status == _PENDING_HUMAN_ACCEPT:
+        lines.extend(["", "Reply with the following to apply it:", "", "```", accept_command, "```"])
     if result.get("already_registered"):
         lines.extend(["", "_This amendment was already on file; the existing draft is unchanged._"])
     return "\n".join(lines)

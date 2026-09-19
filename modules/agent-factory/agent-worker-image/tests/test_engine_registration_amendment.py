@@ -131,7 +131,11 @@ def valid_document(*, org_id: str = "", intent_ref: str | None = None) -> dict:
         "spec_revision": "issue-4529-r1",
         "nodes": [
             {"address": "loop/epic-1/wave-1/story", "kind": "story", "title": "A story"},
-            {"address": "loop/epic-1/wave-3/gate-deploy", "kind": "gate", "title": "Approve deploy"},
+            {
+                "address": "loop/epic-1/wave-3/gate-deploy",
+                "kind": "gate",
+                "title": "Approve deploy",
+            },
         ],
         "edges": [],
     }
@@ -235,7 +239,10 @@ class TestTheRequestIsAddressedToTheAssignment:
 
         with (
             patch("lib.engine_registration._sigv4_sign_request", side_effect=_capture),
-            patch("lib.engine_registration.urlopen", return_value=http_response(json.dumps(GATEWAY_OK))),
+            patch(
+                "lib.engine_registration.urlopen",
+                return_value=http_response(json.dumps(GATEWAY_OK)),
+            ),
         ):
             register_amendment_proposal(work_dir=tmp_path, flow_id=FLOW_ID, request_id=REQUEST_ID)
 
@@ -388,7 +395,10 @@ class TestFailSoft:
 
     def test_an_unparseable_response_is_a_warning(self, tmp_path):
         write_amendment(tmp_path, valid_document())
-        with patch("lib.engine_registration.urlopen", return_value=http_response("<html>gateway timeout</html>")):
+        with patch(
+            "lib.engine_registration.urlopen",
+            return_value=http_response("<html>gateway timeout</html>"),
+        ):
             note = amendment_registration_note(work_dir=tmp_path)
         assert "not filed" in note
 
@@ -494,6 +504,14 @@ class TestTheNoteNeverOverstates:
         failure reply on every registration."""
         note = self._note(tmp_path, GATEWAY_OK)
         assert "```\n@agent-engine accept amendment amd-0001\n```" in note
+
+    @pytest.mark.parametrize("status", ["accepted", "superseded", "rejected"])
+    def test_terminal_replay_does_not_ask_for_another_acceptance(self, tmp_path, status):
+        note = self._note(tmp_path, {**GATEWAY_OK, "status": status, "accept_command": ""})
+        assert f"`{status}`" in note
+        assert "Reply with" not in note
+        assert "@agent-engine accept" not in note
+        assert "proposed for your approval" not in note
 
     def test_the_fallback_command_names_the_draft(self, tmp_path):
         """A bare `@agent-engine accept` would answer the flow's ACCEPTANCE GATE, which

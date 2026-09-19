@@ -247,6 +247,7 @@ class PendingAmendmentDraft:
     proposal_hash: str
     gate_diff: GateDiff
     already_registered: bool
+    state: str = PendingAmendmentState.PENDING.value
 
 
 @dataclass(frozen=True)
@@ -587,7 +588,7 @@ async def register_amendment_draft(
     That is #4556's target-ambiguity protection carried onto this path: the assignment
     named the flow, so the author cannot re-aim its output at another one.
 
-    Idempotent on `(org_id, flow_id, proposal_hash)`: a fail-soft author's retry converges
+    Idempotent on `(org_id, flow_id, request_id, proposal_hash)`: a fail-soft author's retry converges
     on its own row. The concurrent case is handled through the unique index for the same
     reason as in `record_replan_request`.
 
@@ -630,6 +631,7 @@ async def register_amendment_draft(
             select(OrchestrationPendingAmendment).where(
                 OrchestrationPendingAmendment.org_id == org_id,
                 OrchestrationPendingAmendment.flow_id == request.flow_id,
+                OrchestrationPendingAmendment.request_id == request.id,
                 OrchestrationPendingAmendment.proposal_hash == document_hash,
             )
         )
@@ -643,6 +645,7 @@ async def register_amendment_draft(
             proposal_hash=existing.proposal_hash,
             gate_diff=diff,
             already_registered=True,
+            state=existing.state,
         )
 
     # The base is the request's, not a fresh read of what is in force. The author was
@@ -673,6 +676,7 @@ async def register_amendment_draft(
                 select(OrchestrationPendingAmendment).where(
                     OrchestrationPendingAmendment.org_id == org_id,
                     OrchestrationPendingAmendment.flow_id == request.flow_id,
+                    OrchestrationPendingAmendment.request_id == request.id,
                     OrchestrationPendingAmendment.proposal_hash == document_hash,
                 )
             )
@@ -687,6 +691,7 @@ async def register_amendment_draft(
             proposal_hash=found.proposal_hash,
             gate_diff=diff,
             already_registered=True,
+            state=found.state,
         )
 
     logger.info(

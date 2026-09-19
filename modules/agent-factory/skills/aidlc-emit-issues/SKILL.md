@@ -701,6 +701,9 @@ is absent or unreadable, stop and report the missing input. Do not reconstruct t
 document from the repository's original proposal, a hash, or issue prose, and do not
 request approval authority to read it. Keep the snapshot unchanged; write the full
 replacement to the separate output path. This is the version the human was looking at when they asked.
+The authorable copy retains policy permissions and limits but omits server-only
+`policy_id`, `policy_hash` and `principal_id`. Do not restore those fields; the
+acceptance service derives them from the accepting human.
 The engine records the base and compares it at acceptance, so an amendment authored
 against a newer read is refused as a conflict rather than silently applied.
 
