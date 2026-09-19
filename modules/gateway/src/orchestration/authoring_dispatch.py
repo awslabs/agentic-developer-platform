@@ -50,6 +50,13 @@ So a duplicate delivery, a lost publish ack, and a tick that crashes between com
 and publish all converge on one authoring assignment rather than two authors racing
 to answer one human.
 
+Which is why `DISPATCHED` — not "a run is bound" — is what stops a re-publish. A
+request can carry a bound run and still never have reached the queue, and those two
+situations are indistinguishable from here; treating a bound run as "already handled"
+would strand the assignment `QUEUED` forever while every retry told the human an
+author had been assigned. Re-publishing is safe precisely because of the three
+mechanisms above.
+
 --------------------------------------------------------------------------------
 What the author receives, and what it does not
 --------------------------------------------------------------------------------
@@ -82,6 +89,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.base import utcnow
 
+from .models import AmendmentRequestState
 from .pending_amendments import AmendmentRequest, assign_author_run, mark_request_dispatched
 
 logger = logging.getLogger("bedrockgateway.orchestration.authoring_dispatch")
@@ -266,10 +274,20 @@ async def build_authoring_assignment(
     Call inside the same transaction that recorded the request, so the run binding and
     the request row land together or not at all.
 
-    Returns None when the request already has an author bound — a duplicated delivery,
-    or a re-pass after a publish whose ack was lost. None means "no new assignment to
-    publish", which the caller reports as the same success it reported the first time:
-    the human asked once and one author is answering.
+    Returns None only when the request has already been **published** (`DISPATCHED`):
+    one author is already answering, so nothing is owed and the caller reports the same
+    success it reported the first time.
+
+    A request that is still `QUEUED` yields an assignment even if a run is already
+    bound, because `QUEUED` means the envelope did not provably reach the queue — a
+    duplicated delivery and a lost publish ack look identical from here, and both are
+    answered by re-publishing. That reconciles to *one* authoring job rather than two,
+    because the run id is derived and the deduplication id is derived: SQS collapses the
+    duplicate, and even past the dedup window the pod binding in
+    `bootstrap.bind` admits only one pod per invocation. Returning None here instead
+    would strand the assignment — the row would stay `QUEUED` forever while every
+    retry told the human an author had been assigned, which is precisely the
+    misleadingly-successful replan this must not produce.
 
     Args:
         session: Caller-owned. Not committed here.
@@ -278,31 +296,42 @@ async def build_authoring_assignment(
         issue: The issue the request arrived on, for the run's `source_ref`.
         installation_id: The tenant's resolved GitHub installation.
     """
-    if request.author_run_id:
-        # Already assigned. Not an error and not a second job: the caller's reply is
+    if request.state == AmendmentRequestState.DISPATCHED.value:
+        # Published already. Not an error and not a second job: the caller's reply is
         # unchanged, because one author is already answering this human.
         logger.info(
-            "authoring assignment already bound request=%s run=%s org=%s",
+            "authoring assignment already published request=%s run=%s org=%s",
             request.id,
             request.author_run_id,
             org_id,
         )
         return None
 
-    run_id = authoring_run_id(request.id)
-
-    # Written BEFORE anything is published — see the module docstring. Conditional on
-    # the column still being NULL inside `assign_author_run`, so two concurrent passes
-    # cannot both bind.
-    await assign_author_run(session, org_id=org_id, request_id=request.id, author_run_id=run_id)
+    # The stored id wins when one is already bound: it is what `resolve_authoring_request`
+    # checks, so a re-publish has to address the run the server already commissioned.
+    # Equal to the derived value in every reachable case — `assign_author_run` only ever
+    # writes this function's derivation — but reading it rather than recomputing means a
+    # re-publish can never disagree with the binding.
+    run_id = request.author_run_id or authoring_run_id(request.id)
 
     from src.shared.identity.resolver import resolve_root_user_entity_id, resolve_user_entity_id
 
     # Both namespaces, resolved from the requesting human within this tenant, exactly
     # as `dispatch_pass` does: the worker/vault and root ledger use `users.id`, and
     # personal context uses the Cognito sub.
+    #
+    # Resolved BEFORE the run binding, deliberately. Either resolver raises on a human
+    # this tenant cannot resolve, and a binding written first would leave the request
+    # with an author id and no published envelope: `QUEUED` forever, with every later
+    # pass reporting a success nobody is working on. Resolved first, a failure leaves
+    # `author_run_id` NULL and the assignment genuinely retryable.
     user_id = await resolve_root_user_entity_id(session, org_id, request.requested_by)
     cognito_sub = await resolve_user_entity_id(session, org_id, user_id)
+
+    # Written BEFORE anything is published — see the module docstring. Conditional on
+    # the column still being NULL inside `assign_author_run`, so two concurrent passes
+    # cannot both bind and a re-publish cannot re-point an existing assignment.
+    await assign_author_run(session, org_id=org_id, request_id=request.id, author_run_id=run_id)
 
     envelope = _build_envelope(
         org_id=org_id,

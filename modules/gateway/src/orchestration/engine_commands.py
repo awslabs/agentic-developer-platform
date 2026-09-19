@@ -188,7 +188,7 @@ from .command_attribution import (
 )
 from .compile import ProposalRejectedError
 from .dispatch_pass import resolve_installation_id
-from .models import DecisionKind, NodeKind, OrchestrationFlow, OrchestrationNode
+from .models import AmendmentRequestState, DecisionKind, NodeKind, OrchestrationFlow, OrchestrationNode
 
 # Issue #4529's store. The command pass is one of its two callers and holds no
 # amendment logic of its own: `accept_amendment` owns tenant/flow scope, the pending
@@ -1112,10 +1112,10 @@ async def _apply_command(
     if assignment is not None:
         publishes.append(assignment)
 
-    if request.author_run_id and assignment is None:
-        # An author was already bound to this request by an earlier pass — a
-        # duplicated delivery, or a re-pass after a publish whose ack was lost. One
-        # human ask, one author: the reply is what it was the first time, because
+    if assignment is None and request.state == AmendmentRequestState.DISPATCHED.value:
+        # This request's envelope was already published by an earlier pass — a
+        # duplicated delivery, or a re-pass after an ack the platform did not record.
+        # One human ask, one author: the reply is what it was the first time, because
         # from the human's point of view nothing new has happened and nothing is
         # owed twice.
         return True, _REPLAN_QUEUED_REPLY
