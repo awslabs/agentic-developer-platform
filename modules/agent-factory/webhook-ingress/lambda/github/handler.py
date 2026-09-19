@@ -1769,17 +1769,35 @@ def handler(event: dict, context) -> dict:
     # Issue #2279: Resolve /model directive if present on intent.
     # Validate the alias inline (no gateway HTTP call). If invalid, we still
     # run the agent with the default model (lenient path — worker posts warning).
+    #
+    # PMM-07 keeps two answers apart here, and the distinction is load-bearing:
+    #
+    # * ``model_resolved`` is the LEGACY assignment — what the worker actually
+    #   executes. While the posture is ``report_only`` it must stay byte-for-byte
+    #   what it was before PMM-07, so the strict catalogue cannot change, or
+    #   fail, a live run.
+    # * ``model_canonical`` is the strict published answer, carried separately
+    #   into protected authority as the *proposed* override. When it refuses, the
+    #   gateway resolver records ``direct_override_unresolved`` — a refusal, not
+    #   permission to fall through to a mapping or default.
+    #
+    # Collapsing them regressed live behaviour: a strict refusal read downstream
+    # as "no directive", and the worker substituted its own default, silently
+    # changing the model the user asked for.
     model_requested = intent.model  # raw alias or None
     model_resolved = None
+    model_canonical = None
     if model_requested:
-        from common.model_validate import resolve_and_validate
+        from common.model_validate import resolve_canonical_override, resolve_legacy_assignment
 
-        model_resolved = resolve_and_validate(model_requested)
+        model_resolved = resolve_legacy_assignment(model_requested)
+        model_canonical = resolve_canonical_override(model_requested)
         if model_resolved:
             logger.info(
-                "handler: /model directive resolved %r -> %r",
+                "handler: /model directive resolved %r -> %r (proposed=%r)",
                 model_requested,
                 model_resolved,
+                model_canonical,
             )
         else:
             logger.info(
@@ -1849,6 +1867,7 @@ def handler(event: dict, context) -> dict:
         intent_label=intent.label,
         model_requested=model_requested,
         model_resolved=model_resolved,
+        model_canonical=model_canonical,
         aws_label=aws_label,
         token_source=token_source,
         **({"trusted_human_event": trusted_human_event} if trusted_human_event is not None else {}),

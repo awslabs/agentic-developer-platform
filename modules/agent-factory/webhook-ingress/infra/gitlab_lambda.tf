@@ -35,9 +35,11 @@ resource "aws_lambda_function" "gitlab_webhook" {
 
   environment {
     variables = {
-      ENVIRONMENT               = var.environment
-      SUBMIT_QUEUE_URL          = aws_sqs_queue.agent_submit.url
-      GITLAB_WEBHOOK_SECRET_ARN = aws_secretsmanager_secret.gitlab_webhook_secret[0].arn
+      ADP_GITLAB_MODEL_POLICY_ENABLED = tostring(var.gitlab_model_policy_enabled)
+      ADP_AGENT_CONTROL_ENDPOINT      = "${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent"
+      ENVIRONMENT                     = var.environment
+      SUBMIT_QUEUE_URL                = aws_sqs_queue.agent_submit.url
+      GITLAB_WEBHOOK_SECRET_ARN       = aws_secretsmanager_secret.gitlab_webhook_secret[0].arn
     }
   }
 

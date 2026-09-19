@@ -23,7 +23,7 @@ class TestPersonaCatalogueEndpoint:
             assert resp.status_code == 200
             body = resp.json()
             assert "personas" in body
-            assert len(body["personas"]) == 13
+            assert len(body["personas"]) == 14
 
     @pytest.mark.asyncio
     async def test_persona_row_shape(self, session):

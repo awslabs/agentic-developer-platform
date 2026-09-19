@@ -112,7 +112,7 @@ class TestProviderParity:
         first Postgres INSERT. The fix when it fails is a NEW migration (042-style),
         never an edit to this tuple or to 009.
         """
-        assert set(MIG_041.SUPPORTED_PROVIDERS) == set(SUPPORTED_PROVIDERS), (
+        assert set(_load_migration("059_gitlab_identity_provider.py").SUPPORTED_PROVIDERS) == set(SUPPORTED_PROVIDERS), (
             "The provider enum and the latest CHECK-constraint migration disagree. "
             "Adding a provider requires a NEW migration re-stating the constraint — "
             "the enum alone leaves Postgres rejecting every INSERT of the new value."
@@ -160,7 +160,7 @@ class TestConstraintReplacement:
         """Including `directory`, and each quoted as a SQL literal."""
         added = _emitted_sql(MIG_041.upgrade)[1]
 
-        for provider in SUPPORTED_PROVIDERS:
+        for provider in MIG_041.SUPPORTED_PROVIDERS:
             assert f"'{provider}'" in added, f"{provider} missing from the CHECK"
 
     def test_downgrade_restores_the_pre_041_provider_set(self):

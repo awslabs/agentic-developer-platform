@@ -474,3 +474,30 @@ class TestValidatorUnit:
         )
         message = WebChatAdapter().parse_event(event)
         assert message.platform_data["requested_persona"] == ""
+
+@pytest.mark.parametrize('refuse', [False, True])
+def test_ingest_registers_final_root_before_sqs_and_refuses_failed_authority(mocked_aws_services, monkeypatch, refuse):
+    handler = _import_handler(mock_bedrock=MagicMock())
+    import model_root_client
+    monkeypatch.setenv('ADP_CHAT_MODEL_POLICY_ENABLED', 'true')
+    registered = []
+    def admit(envelope, **identity):
+        assert _drain_queue(mocked_aws_services['sqs']) == []
+        assert identity == {'source': 'chat', 'subject': envelope['user_id']}
+        assert envelope['tenant_id']
+        if refuse:
+            raise model_root_client.RootRegistrationRefusedError('refused')
+        envelope = dict(envelope, persona=envelope['agent_type'], correlation={'root_human_id': 'canonical-human'})
+        body = json.dumps(envelope, sort_keys=True, separators=(',', ':'))
+        registered.append(body)
+        return body
+    monkeypatch.setattr(model_root_client, 'register_model_root', admit)
+    result = _send(handler, persona='intent-refinement')
+    if refuse:
+        assert result['statusCode'] == 503
+        assert _drain_queue(mocked_aws_services['sqs']) == []
+    else:
+        assert result['statusCode'] == 200
+        tasks = mocked_aws_services['sqs'].receive_message(QueueUrl=TASKS_QUEUE).get('Messages', [])
+        assert len(tasks) == 1
+        assert tasks[0]['Body'] == registered[0]

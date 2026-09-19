@@ -38,8 +38,8 @@ class WorkAdmissionRequest(BaseModel):
     invocation_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9:_-]+$")
 
 
-async def verify_producer(proof: str, invocation_id: str) -> None:
-    allowed = set(filter(None, os.environ.get("ADP_WORK_CLAIM_PRODUCER_ROLES", "").split(",")))
+async def verify_producer(proof: str, invocation_id: str, *, allowed_roles: set[str] | None = None) -> str:
+    allowed = allowed_roles if allowed_roles is not None else set(filter(None, os.environ.get("ADP_WORK_CLAIM_PRODUCER_ROLES", "").split(",")))
     try:
         if not allowed or not proof or len(proof) > 12000:
             raise ValueError()
@@ -60,8 +60,10 @@ async def verify_producer(proof: str, invocation_id: str) -> None:
             raise ValueError()
         root = ET.fromstring(response.content)
         arn = root.findtext("{*}GetCallerIdentityResult/{*}Arn", default="")
-        if parse_assumed_role_arn(arn) not in allowed:
+        role = parse_assumed_role_arn(arn)
+        if role not in allowed:
             raise ValueError()
+        return role
     except (ValueError, KeyError, IndexError, TypeError, httpx.HTTPError, ET.ParseError):
         raise HTTPException(403, "forbidden") from None
 

@@ -16,6 +16,8 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:-adp-gateway-agents}"
 ENVIRONMENT="${ENVIRONMENT:?ENVIRONMENT is required (e.g. dev)}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
+ADP_CHAT_MODEL_POLICY_ENABLED="${ADP_CHAT_MODEL_POLICY_ENABLED:-false}"
+[[ "$ADP_CHAT_MODEL_POLICY_ENABLED" == true || "$ADP_CHAT_MODEL_POLICY_ENABLED" == false ]] || exit 1
 AGENT_IMAGE="${AGENT_IMAGE:?AGENT_IMAGE is required (full ECR URI with tag)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -78,7 +80,13 @@ echo "  SIGV4_PROXY_TARGET=${SIGV4_PROXY_TARGET}"
 
 kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
+if [[ "$ADP_CHAT_MODEL_POLICY_ENABLED" == true ]]; then
+  kubectl apply -f "${SCRIPT_DIR}/chat-model-rbac.yaml"
+fi
+
 sed \
+  -e "s|REPLACE_WITH_MODEL_CONTROL_ENDPOINT|${APIGW_INVOKE_URL}/agent/internal/v1/agent|g" \
+  -e "s|REPLACE_WITH_CHAT_MODEL_POLICY_ENABLED|${ADP_CHAT_MODEL_POLICY_ENABLED}|g" \
   -e "s|REPLACE_WITH_AWS_REGION|${AWS_REGION}|g" \
   -e "s|REPLACE_WITH_CHAT_TASKS_FIFO_URL|${CHAT_TASKS_FIFO_URL}|g" \
   -e "s|REPLACE_WITH_CONTEXT_TABLE|${CONTEXT_TABLE}|g" \

@@ -48,6 +48,8 @@ class KubernetesWorkloadVerifier:
         image_digests: frozenset[str],
         namespace: str = "adp-agents",
         service_account: str = "agent-scaledjob-sa",
+        container_name: str = "agent-worker",
+        authority_flag: str = "ADP_AGENT_AUTHORITY_ENABLED",
         gateway_token_path: Path = _SA_DIRECTORY / "token",
     ) -> None:
         if not image_digests or any(not _DIGEST.fullmatch(d) for d in image_digests):
@@ -58,10 +60,14 @@ class KubernetesWorkloadVerifier:
         self._digests = image_digests
         self._namespace = namespace
         self._service_account = service_account
+        if not _NAME.fullmatch(container_name) or authority_flag not in {"ADP_AGENT_AUTHORITY_ENABLED", "ADP_CHAT_MODEL_POLICY_ENABLED"}:
+            raise WorkloadRefusedError("invalid workload configuration")
+        self._container_name = container_name
+        self._authority_flag = authority_flag
         self._gateway_token_path = gateway_token_path
 
     @classmethod
-    def in_cluster(cls) -> KubernetesWorkloadVerifier:
+    def in_cluster(cls, *, chat: bool = False) -> KubernetesWorkloadVerifier:
         # Fixed service DNS and the mounted cluster CA; neither comes from a
         # request. Do not inherit HTTP proxy settings for this credential path.
         context = ssl.create_default_context(cafile=str(_SA_DIRECTORY / "ca.crt"))
@@ -73,9 +79,17 @@ class KubernetesWorkloadVerifier:
                 follow_redirects=False,
                 trust_env=False,
             ),
-            image_digests=frozenset(filter(None, os.environ.get("AGENT_WORKER_IMAGE_DIGESTS", "").split(","))),
-            namespace=os.environ.get("AGENT_WORKER_NAMESPACE", "adp-agents"),
-            service_account=os.environ.get("AGENT_WORKER_SERVICE_ACCOUNT", "agent-authority-worker-sa"),
+            image_digests=frozenset(
+                filter(None, os.environ.get("ADP_CHAT_WORKER_IMAGE_DIGESTS" if chat else "AGENT_WORKER_IMAGE_DIGESTS", "").split(","))
+            ),
+            namespace=os.environ.get("ADP_CHAT_WORKER_NAMESPACE", "adp-gateway-agents")
+            if chat
+            else os.environ.get("AGENT_WORKER_NAMESPACE", "adp-agents"),
+            service_account=os.environ.get("ADP_CHAT_WORKER_SERVICE_ACCOUNT", "adp-agent")
+            if chat
+            else os.environ.get("AGENT_WORKER_SERVICE_ACCOUNT", "agent-authority-worker-sa"),
+            container_name="chat-agent" if chat else "agent-worker",
+            authority_flag="ADP_CHAT_MODEL_POLICY_ENABLED" if chat else "ADP_AGENT_AUTHORITY_ENABLED",
         )
 
     def verify(self, token: str) -> VerifiedPod:
@@ -119,9 +133,9 @@ class KubernetesWorkloadVerifier:
             response.raise_for_status()
             pod = response.json()
             metadata, spec, pod_status = pod["metadata"], pod["spec"], pod["status"]
-            containers = [c for c in pod_status.get("containerStatuses", []) if c.get("name") == "agent-worker"]
-            worker_specs = [c for c in spec.get("containers", []) if c.get("name") == "agent-worker"]
-            enabled = [e for e in worker_specs[0].get("env", []) if e.get("name") == "ADP_AGENT_AUTHORITY_ENABLED"] if len(worker_specs) == 1 else []
+            containers = [c for c in pod_status.get("containerStatuses", []) if c.get("name") == self._container_name]
+            worker_specs = [c for c in spec.get("containers", []) if c.get("name") == self._container_name]
+            enabled = [e for e in worker_specs[0].get("env", []) if e.get("name") == self._authority_flag] if len(worker_specs) == 1 else []
             if (
                 metadata.get("uid") != uid
                 or metadata.get("name") != name
@@ -133,7 +147,7 @@ class KubernetesWorkloadVerifier:
                 or len(worker_specs) != 1
                 or worker_specs[0].get("command")
                 or worker_specs[0].get("args")
-                or enabled != [{"name": "ADP_AGENT_AUTHORITY_ENABLED", "value": "true"}]
+                or enabled != [{"name": self._authority_flag, "value": "true"}]
                 or "running" not in containers[0].get("state", {})
                 or containers[0].get("imageID", "").rsplit("@", 1)[-1] not in self._digests
                 or not pod_status.get("podIP")

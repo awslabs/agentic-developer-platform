@@ -26,7 +26,7 @@ hold.
 Must stay in agreement with `OrchestrationAmendmentRequest` and
 `OrchestrationPendingAmendment` in `src/orchestration/models.py` — both are
 hand-written, so drift is the live risk: the migration is what runs in dev, the models
-are what the tests use. `tests/migrations/test_059_orchestration_pending_amendments.py`
+are what the tests use. `tests/migrations/test_060_orchestration_pending_amendments.py`
 asserts that parity.
 
 `JSON_DOC` is spelled here identically to `models.py` and to
@@ -48,8 +48,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "059_orch_pending_amend"
-down_revision = "058_model_probe_admission"
+revision = "060_orch_pending_amend"
+down_revision = "059_gitlab_identity_provider"
 branch_labels = None
 depends_on = None
 

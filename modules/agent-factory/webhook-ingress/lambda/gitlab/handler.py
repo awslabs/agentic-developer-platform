@@ -107,6 +107,43 @@ def _validate_token(headers: dict[str, str]) -> bool:
     return hmac.compare_digest(token, secret)
 
 
+def _registered_project(headers: dict) -> dict | None:
+    """A secret is scoped to one immutable project on one trusted instance.
+
+    Protected mode stores a JSON list in the existing webhook secret. Reusing
+    the global token across projects cannot authenticate their tenant roots.
+    """
+    try:
+        rows = json.loads(_resolve_webhook_secret())
+        token = headers.get("x-gitlab-token", "")
+        if not token or not isinstance(rows, list) or len(rows) > 100:
+            return None
+        matches = []
+        tokens = []
+        for row in rows:
+            secret = row["token"]
+            if (
+                not isinstance(secret, str)
+                or len(secret) < 32
+                or secret == PLACEHOLDER_WEBHOOK_SECRET
+            ):
+                return None
+            if secret in tokens:
+                return None
+            tokens.append(secret)
+            if hmac.compare_digest(token, secret):
+                if (
+                    not isinstance(row["project_id"], int)
+                    or row["project_id"] < 1
+                    or not row["instance"].startswith("https://")
+                ):
+                    return None
+                matches.append(row)
+        return matches[0] if len(matches) == 1 else None
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 def _build_sqs_message(parsed_event) -> dict[str, Any]:
     """Build the SQS message envelope compatible with the agent-worker consumer.
 
@@ -186,9 +223,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     headers = {k.lower(): v for k, v in headers.items()}
 
     # Validate token
-    if not _validate_token(headers):
+    protected = os.environ.get("ADP_GITLAB_MODEL_POLICY_ENABLED", "false").lower() == "true"
+    registration = _registered_project(headers) if protected else None
+    if (protected and registration is None) or (not protected and not _validate_token(headers)):
         logger.warning("GitLab webhook token validation failed")
         return _response(401, {"error": "Invalid or missing token"})
+
+    registration = registration or {}
 
     # Parse body
     body = event.get("body", "")
@@ -202,6 +243,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError) as e:
         logger.error("Failed to parse request body: %s", e)
         return _response(400, {"error": "Invalid JSON body"})
+
+    if not isinstance(payload, dict):
+        return _response(400, {"error": "Invalid webhook body"})
+    if protected and payload.get("project", {}).get("id") != registration["project_id"]:
+        return _response(403, {"error": "Webhook project does not match registration"})
 
     # Parse the event
     from event_parser import parse_event
@@ -218,15 +264,42 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # If not actionable, acknowledge but don't queue
     if not parsed.is_actionable:
-        return _response(200, {
-            "status": "ignored",
-            "reason": parsed.reason,
-        })
+        return _response(
+            200,
+            {
+                "status": "ignored",
+                "reason": parsed.reason,
+            },
+        )
 
     # Build and publish SQS message
     envelope = _build_sqs_message(parsed)
     sqs_publisher = _get_sqs_publisher()
-    message_id = sqs_publisher.publish_envelope(envelope)
+    if protected:
+        user_id = payload.get("user", {}).get("id")
+        if type(user_id) is not int or user_id < 1 or payload.get("user", {}).get("bot") is True:
+            return _response(403, {"error": "Canonical human identity required"})
+        from common.personas import MENTION_TO_PERSONA
+
+        requested = envelope["persona"]
+        envelope["persona"] = (
+            "developer"
+            if requested == "agent"
+            else MENTION_TO_PERSONA.get(f"@agent-{requested}", requested)
+        )
+        envelope["intent"]["persona"] = envelope["persona"]
+        envelope["message_id"] = envelope["correlation"]["correlation_id"]
+        message_id = sqs_publisher.publish_envelope(
+            envelope,
+            model_root={
+                "source": "gitlab",
+                "subject": str(user_id),
+                "instance": registration["instance"],
+                "project_id": registration["project_id"],
+            },
+        )
+    else:
+        message_id = sqs_publisher.publish_envelope(envelope)
 
     if message_id:
         logger.info(
@@ -236,10 +309,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             parsed.note_id or 0,
             message_id,
         )
-        return _response(200, {
-            "status": "accepted",
-            "message_id": message_id,
-        })
+        return _response(
+            200,
+            {
+                "status": "accepted",
+                "message_id": message_id,
+            },
+        )
     else:
         logger.error(
             "Failed to queue GitLab event: project=%s issue=%d",

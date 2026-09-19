@@ -20,7 +20,7 @@ BASE = "/internal/v1/agent/task"
 
 
 @pytest.fixture
-def task_http(store, kubernetes, monkeypatch):  # noqa: F811 - shared fixtures
+def task_http(store, kubernetes, monkeypatch, report_only_db):  # noqa: F811 - shared fixtures
     sqs = boto3.client("sqs", region_name="us-east-1")
     queue = sqs.create_queue(QueueName="tasks")["QueueUrl"]
     envelope, _ = provision(store)
@@ -33,6 +33,9 @@ def task_http(store, kubernetes, monkeypatch):  # noqa: F811 - shared fixtures
     app.include_router(bootstrap_router)
     app.dependency_overrides[get_agent_runtime] = lambda: runtime
     app.dependency_overrides[task_delivery] = lambda: delivery
+    from src.shared.database import get_db
+
+    app.dependency_overrides[get_db] = report_only_db
     monkeypatch.setattr("src.agentauth.routes.verify_internal_or_irsa", AsyncMock())
     return TestClient(app), runtime, delivery, envelope, kubernetes
 

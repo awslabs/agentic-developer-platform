@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from adp_trigger import client as trigger_client
 from lib.run_identity import (
+    MODEL_POLICY_CONTRACT_VERSION,
     ModelPolicyReport,
     ModelPolicyVerificationError,
     RunIdentityError,
@@ -85,7 +86,14 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def policy_reply(*, now=None, envelope_changes=None, **decision_changes):
+def policy_reply(*, now=None, envelope_changes=None, reply_changes=None, **decision_changes):
+    """Build a signed gateway reply.
+
+    ``reply_changes`` patches the outer envelope (``posture``,
+    ``posture_verified``, ``status``) independently of the signed decision, so a
+    test can construct a reply whose two halves disagree — which must be refused
+    rather than resolved in either direction.
+    """
     issued = (now or datetime.now(timezone.utc)).replace(microsecond=0)
     decision = {
         "schema_version": 1,
@@ -132,12 +140,17 @@ def policy_reply(*, now=None, envelope_changes=None, **decision_changes):
     envelope.update(envelope_changes or {})
     encoded = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
     signature = POLICY_PRIVATE_KEY.sign(b"adpe1." + encoded)
-    return {
-        "posture": "report_only",
+    reply = {
+        # Mirrors the gateway: the outer posture and the signed decision's
+        # ``runtime_posture`` are produced together and must agree.
+        "posture": decision["runtime_posture"],
+        "posture_verified": True,
         "status": "proposed",
         "decision": decision,
         "assertion": f"adpe1.{_b64(encoded)}.{_b64(signature)}",
     }
+    reply.update(reply_changes or {})
+    return reply
 
 
 def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
@@ -151,6 +164,8 @@ def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
 
     assert report == ModelPolicyReport(
         status="proposed",
+        posture="report_only",
+        posture_verified=True,
         requested_model_id="sonnet46",
         resolved_model_id="global.anthropic.claude-sonnet-4-6",
         resolution_source="explicit-direct",
@@ -171,13 +186,35 @@ def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
     assert evidence["ADP_MODEL_POLICY_LIVE_ALLOWLIST_REVISION"] == "allowlist-live-4"
     assert evidence["ADP_MODEL_POLICY_ALLOWLIST_DRIFT"] == "true"
     assert "ANTHROPIC_MODEL" not in evidence
+    # Report-only: evidence only. The proposal differs from the legacy model and
+    # the legacy model is still what runs.
+    assert evidence["ADP_MODEL_POLICY_ENFORCED"] == "false"
+    assert report.enforced is False
+    assert report.enforcement_failure is None
+    assert report.effective_model("global.anthropic.claude-opus-5") == (
+        "global.anthropic.claude-opus-5"
+    )
 
 
 @pytest.mark.parametrize(
     "policy",
     [
         policy_reply(invocation_id="another-run"),
-        policy_reply(runtime_posture="enforcing"),
+        # The signed decision and the outer envelope disagree about the posture.
+        # Produced together by the gateway, so disagreement means the response was
+        # assembled from mismatched parts; neither half may be believed, and in
+        # particular the permissive half must not be the one that wins.
+        # Both directions of the mismatch, because only one of them is the
+        # dangerous one and a single-direction check would miss it: a signed
+        # enforcing decision under a permissive envelope must not be downgraded,
+        # and a permissive decision must not be promoted by an enforcing envelope.
+        policy_reply(runtime_posture="enforcing", reply_changes={"posture": "report_only"}),
+        policy_reply(reply_changes={"posture": "enforcing"}),
+        # An unrecognised posture is refused, never coerced to the permissive one.
+        policy_reply(reply_changes={"posture": "quarantined"}),
+        policy_reply(reply_changes={"posture": "REPORT_ONLY"}),
+        # "Verified" with no posture at all is self-contradictory.
+        policy_reply(reply_changes={"posture": None}),
         policy_reply(resolution_source="invented"),
         policy_reply(snapshot_digest="not-a-digest"),
         policy_reply(resolved_model_id="bad\nlog"),
@@ -201,9 +238,15 @@ def test_unavailable_report_exposes_bounded_reason_only():
     )
     assert report.environment("legacy") == {
         "ADP_MODEL_POLICY_POSTURE": "report_only",
+        "ADP_MODEL_POLICY_POSTURE_VERIFIED": "false",
+        "ADP_MODEL_POLICY_ENFORCED": "false",
         "ADP_MODEL_POLICY_STATUS": "unavailable",
         "ADP_MODEL_POLICY_REASON": "snapshot_expired",
     }
+    # Report-only with no proposal is not a failure: the legacy assignment is the
+    # correct outcome, so nothing is blocked and nothing may claim it was.
+    assert report.enforcement_failure is None
+    assert report.effective_model("legacy") == "legacy"
 
 
 def test_unavailable_report_preserves_allowlist_drift_evidence():
@@ -222,6 +265,8 @@ def test_unavailable_report_preserves_allowlist_drift_evidence():
     )
     assert report.environment("legacy") == {
         "ADP_MODEL_POLICY_POSTURE": "report_only",
+        "ADP_MODEL_POLICY_POSTURE_VERIFIED": "false",
+        "ADP_MODEL_POLICY_ENFORCED": "false",
         "ADP_MODEL_POLICY_STATUS": "unavailable",
         "ADP_MODEL_POLICY_REASON": "not_permitted",
         "ADP_MODEL_POLICY_SNAPSHOT_ALLOWLIST_REVISION": "allowlist-snapshot-3",
@@ -298,10 +343,19 @@ def test_unsupported_policy_revision_is_reported_and_never_blocks_legacy_identit
     session.refresh()
 
     assert session.credential_path.read_text().strip() == "adpr1.first.signature"
+    # The posture is salvaged from the unverifiable response even though
+    # verification failed, and that is safe in exactly one direction: it can only
+    # cause a refusal. ``status`` is unavailable so no model can be substituted,
+    # while dropping it would make a malformed *enforcing* decision look
+    # non-enforcing and hand the run back to its legacy model.
     assert session.model_policy_report == ModelPolicyReport(
         status="unavailable",
+        posture="report_only",
+        posture_verified=False,
         reason="snapshot_unsupported_revision",
     )
+    # Report-only, so this is not a failure and the run proceeds unchanged.
+    assert session.model_policy_report.enforcement_failure is None
 
 
 @pytest.mark.parametrize("deadline", [None, "bad", "2026-09-19T15:00:00Z"])
@@ -337,7 +391,7 @@ def test_refresh_atomically_replaces_live_cli_file(identity, monkeypatch):
     assert not list(session.credential_path.parent.glob("credential-*"))
 
 
-def test_refresh_retains_first_report_only_proposal_as_immutable_comparison(identity, monkeypatch):
+def test_refresh_reads_each_new_gateway_decision(identity, monkeypatch):
     session, _ = identity
     monkeypatch.setattr(session, "_request", lambda: reply(model_policy=policy_reply()))
     session.refresh()
@@ -347,7 +401,7 @@ def test_refresh_retains_first_report_only_proposal_as_immutable_comparison(iden
     changed = policy_reply(resolved_model_id="global.anthropic.claude-opus-5")
     monkeypatch.setattr(session, "_request", lambda: reply(model_policy=changed))
     session.refresh()
-    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
+    assert session.model_policy_report.resolved_model_id == "global.anthropic.claude-opus-5"
 
 
 def test_refresh_can_observe_policy_after_old_gateway_response(identity, monkeypatch):
@@ -477,10 +531,16 @@ def test_request_signs_workload_proof_and_binds_full_envelope(identity, monkeypa
     assert "/us-east-1/execute-api/aws4_request" in kwargs["headers"]["Authorization"]
     assert kwargs["allow_redirects"] is False
     assert http.trust_env is False
+    # The contract claim is declared on every bootstrap so the gateway can tell
+    # this worker apart from one that would ignore an enforcing decision. It is a
+    # capability assertion only: no principal, persona, policy or posture is sent,
+    # because nothing the worker says may mint authority.
     assert json.loads(kwargs["data"]) == {
         "invocation_id": "run-a",
         "envelope_digest": session._digest,
     }
+    assert kwargs["headers"]["X-Adp-Model-Policy-Contract"] == str(MODEL_POLICY_CONTRACT_VERSION)
+    assert "x-adp-model-policy-contract" in kwargs["headers"]["Authorization"]
 
 
 def test_start_refuses_before_launching_background_thread(identity, monkeypatch):
@@ -549,3 +609,205 @@ def test_pending_child_startup_has_bounded_wait(identity, monkeypatch):
     with pytest.raises(RunIdentityError, match="startup deadline exceeded"):
         session.start()
     assert not session.credential_path.exists()
+
+
+# ── PMM-07 enforcing consumption ─────────────────────────────────────────────
+#
+# ``enforcing`` is supported in source so the path can be proven end to end. No
+# configured environment is set to it; PMM-09 owns that audited flip. Every test
+# below constructs the posture locally and invokes no model.
+
+
+def _enforcing(**changes):
+    """A verified enforcing reply whose two halves agree."""
+    return policy_reply(runtime_posture="enforcing", **changes)
+
+
+def test_enforcing_decision_selects_the_gateway_model_not_the_legacy_one():
+    report = parse_model_policy_report(
+        _enforcing(),
+        invocation_id="run-a",
+        tenant_id="tenant",
+        correlation_id="chain-a",
+        public_keys=POLICY_KEYS,
+    )
+
+    assert (report.posture, report.posture_verified, report.enforced) == ("enforcing", True, True)
+    assert report.enforcement_failure is None
+    # The whole point: under enforcement the legacy assignment is replaced.
+    assert report.effective_model("global.anthropic.claude-opus-5") == (
+        "global.anthropic.claude-sonnet-4-6"
+    )
+    evidence = report.environment("global.anthropic.claude-opus-5")
+    assert evidence["ADP_MODEL_POLICY_POSTURE"] == "enforcing"
+    assert evidence["ADP_MODEL_POLICY_ENFORCED"] == "true"
+    # The variables still only describe what happened; they are not the input.
+    assert "ANTHROPIC_MODEL" not in evidence
+
+
+@pytest.mark.parametrize("posture", ["disabled", "report_only"])
+def test_non_enforcing_postures_preserve_the_legacy_assignment_exactly(posture):
+    """The behaviour every deployed environment is in today must not change."""
+    report = parse_model_policy_report(
+        policy_reply(runtime_posture=posture),
+        invocation_id="run-a",
+        tenant_id="tenant",
+        correlation_id="chain-a",
+        public_keys=POLICY_KEYS,
+    )
+
+    assert report.posture == posture
+    assert report.enforced is False
+    assert report.enforcement_failure is None
+    assert report.effective_model("legacy-model") == "legacy-model"
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_reason"),
+    [
+        (
+            {
+                "posture": "enforcing",
+                "posture_verified": True,
+                "status": "unavailable",
+                "reason": "evidence_stale",
+            },
+            "evidence_stale",
+        ),
+        (
+            {
+                "posture": "enforcing",
+                "posture_verified": False,
+                "status": "unavailable",
+                "reason": "evidence_stale",
+            },
+            # An unverified posture outranks the specific reason: the platform does
+            # not know what it is enforcing, which is the broader failure.
+            "posture_unverified",
+        ),
+    ],
+    ids=["stale-evidence", "unverified-posture"],
+)
+def test_enforcing_without_a_usable_decision_is_a_refusal_not_legacy_execution(
+    policy, expected_reason
+):
+    """An enforcing failure must never become report-only behaviour.
+
+    This is the central anti-bypass property. Exception handling and default
+    substitution are precisely how an enforcing failure silently turns permissive,
+    so the failure has to be reported as a refusal that the caller cannot satisfy
+    by falling back.
+    """
+    report = parse_model_policy_report(policy, invocation_id="run-a")
+
+    assert report.enforced is False, "nothing may be enforced from an unusable decision"
+    assert report.enforcement_failure == expected_reason
+    # ``effective_model`` alone would silently preserve legacy behaviour, which is
+    # exactly why the caller must consult ``enforcement_failure`` first.
+    assert report.effective_model("legacy-model") == "legacy-model"
+
+
+def test_a_malformed_enforcing_decision_refuses_rather_than_falling_back():
+    """The unverifiable-response path, which is where the bypass would hide.
+
+    A tampered enforcing decision fails verification. The report must still say
+    "enforcing", because a report that forgot the posture would look
+    non-enforcing and the run would quietly proceed on its legacy model.
+    """
+    tampered = _enforcing()
+    tampered["decision"] = dict(
+        tampered["decision"], resolved_model_id="global.anthropic.claude-opus-5"
+    )
+
+    with pytest.raises(ModelPolicyVerificationError):
+        parse_model_policy_report(
+            tampered,
+            invocation_id="run-a",
+            tenant_id="tenant",
+            correlation_id="chain-a",
+            public_keys=POLICY_KEYS,
+        )
+
+
+def test_refresh_reports_enforcing_verification_failure_without_pinning_it(identity, monkeypatch):
+    """A refused enforcing decision is re-evaluated, not latched for the run.
+
+    Pinning it would keep the run refusing after an operator rolled the posture
+    back to report_only, which turns a safety gate into an outage that outlives
+    the condition that caused it.
+    """
+    session, _ = identity
+    tampered = _enforcing()
+    tampered["decision"] = dict(
+        tampered["decision"], resolved_model_id="global.anthropic.claude-opus-5"
+    )
+    monkeypatch.setattr(session, "_request", lambda: reply(model_policy=tampered))
+
+    session.refresh()
+
+    # The posture is *not* salvaged from a response whose signature failed: the
+    # outer value is unsigned, so believing it would let anyone able to alter the
+    # response also choose the posture it is judged under. It refuses on the
+    # unverifiability itself instead, which covers the enforcing case without
+    # trusting the field that claimed it.
+    assert session.model_policy_report.posture is None
+    assert session.model_policy_report.posture_verified is False
+    assert session.model_policy_report.verification_failed is True
+    assert session.model_policy_report.enforcement_failure == "decision_altered"
+    # Not pinned: a later refresh must be able to observe a rollback or recovery.
+    assert session._model_policy_seen is True
+
+    # The operator rolls the posture back; the same session recovers on refresh.
+    monkeypatch.setattr(session, "_request", lambda: reply(model_policy=policy_reply()))
+    session.refresh()
+    assert session.model_policy_report.posture == "report_only"
+    assert session.model_policy_report.enforcement_failure is None
+    assert session.model_policy_report.enforced is False
+
+
+def test_a_worker_cannot_declare_its_own_posture_or_model(identity, monkeypatch):
+    """Nothing the worker sends may mint authority.
+
+    The request carries only the pod-bound proof, the invocation, the envelope
+    digest and a capability claim. A posture or model in the request body would be
+    a worker-supplied policy input, which must never exist.
+    """
+    session, _ = identity
+    captured = {}
+
+    def fake_request():
+        captured.update(
+            {
+                "invocation_id": session._invocation_id,
+                "envelope_digest": session._digest,
+                "model_policy_contract": MODEL_POLICY_CONTRACT_VERSION,
+            }
+        )
+        return reply(model_policy=policy_reply())
+
+    monkeypatch.setattr(session, "_request", fake_request)
+    session.refresh()
+
+    assert set(captured) == {"invocation_id", "envelope_digest", "model_policy_contract"}
+    assert "posture" not in captured and "model" not in captured
+    # And the declared contract is a bare capability integer, not a grant.
+    assert captured["model_policy_contract"] == MODEL_POLICY_CONTRACT_VERSION
+
+
+def test_each_refresh_observes_a_new_posture_and_missing_response_refuses(identity, monkeypatch):
+    session, _ = identity
+    policies = iter(
+        [
+            reply(model_policy=policy_reply()),
+            reply(model_policy=_enforcing()),
+            reply(model_policy=policy_reply()),
+            reply(),
+        ]
+    )
+    monkeypatch.setattr(session, "_request", lambda: next(policies))
+    for posture in ("report_only", "enforcing", "report_only"):
+        session.refresh()
+        assert session.model_policy_report.posture == posture
+        assert session.model_policy_report.enforced == (posture == "enforcing")
+    session.refresh()
+    assert session.model_policy_report.enforcement_failure == "decision_missing"

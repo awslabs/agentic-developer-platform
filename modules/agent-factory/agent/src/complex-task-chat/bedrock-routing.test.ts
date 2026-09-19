@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { withChatBedrockRouting } from './bedrock-routing';
@@ -71,4 +72,22 @@ test('run failure cleans up routing state', async () => {
   await expect(withChatBedrockRouting(task, async () => { throw new Error('task failed'); })).rejects.toThrow('task failed');
   expect(proxy.kill).toHaveBeenCalled();
   expect(process.env.ANTHROPIC_BEDROCK_BASE_URL).toBeUndefined();
+});
+
+test('registers the exact chat envelope and preserves platform identity at the SDK callback', async () => {
+  process.env.ADP_CHAT_MODEL_POLICY_ENABLED = 'true';
+  process.env.ADP_AGENT_CONTROL_ENDPOINT = 'https://api123.execute-api.us-east-1.amazonaws.com/dev/internal/v1/agent';
+  process.env.AWS_WEB_IDENTITY_TOKEN_FILE = '/platform/token';
+  const canonical = '{"message_id":"registered-run","score":1.0}';
+  await withChatBedrockRouting({ ...task, agent_type: 'developer' }, async () => {
+    expect(process.env.ADP_MODEL_ROOT_ENVELOPE_DIGEST).toBe(createHash('sha256').update(canonical).digest('hex'));
+    expect(process.env.ADP_MESSAGE_ID).toBe(task.message_id);
+    expect(process.env.ADP_MODEL_POLICY_SOURCE).toBe('chat');
+    expect(process.env.AGENT_TYPE).toBe('developer');
+    expect(process.env.ADP_WORKER_IRSA_ROLE_ARN).toBe('pod-role');
+    expect(process.env.ADP_WORKER_IRSA_TOKEN_FILE).toBe('/platform/token');
+    expect(process.env.ADP_AGENT_CONTROL_ENDPOINT).toMatch(/agent\/chat$/);
+  }, canonical);
+  expect(process.env.ADP_MODEL_ROOT_ENVELOPE_DIGEST).toBeUndefined();
+  expect(process.env.ADP_AGENT_CONTROL_ENDPOINT).toMatch(/agent$/);
 });

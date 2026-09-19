@@ -40,6 +40,10 @@ UNIT_MODULES = [
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
     "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
+    "src.agentauth.arc_model",
+    "src.agentauth.model_policy_keys",
+    "src.agentauth.external_roots",  # Registered ingress creates protected roots before publication.
+    "src.agentauth.chat_model",  # Verified chat pod, fresh signed SDK decision.
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
@@ -133,6 +137,14 @@ UNIT_MODULES = [
     # checks ORG_UPDATE as its first statement.
     "src.admin.persona_models.self_routes",
     "src.admin.persona_models.routes",
+    # Issue #5425 (PMM-07): the versioned runtime-posture mutation and its audited
+    # operational rollback. A THIRD module because its gate is strictly stronger
+    # than either router above: the policy-settings row carries no TenantMixin, so
+    # the posture applies across every tenant and a tenant admin holding
+    # ORG_UPDATE must not be able to flip enforcement platform-wide. Every route
+    # here is platform-admin-only, asserted against its own source by
+    # tests/admin/persona_models/test_posture_authz.py.
+    "src.admin.persona_models.posture_routes",
     # Issue #5420 (PMM-03): read-only persona/model catalogue on the same
     # /me/persona-models namespace. Kept in a separate module so catalogue
     # policy/evidence logic does not broaden either PMM-02 write surface.
