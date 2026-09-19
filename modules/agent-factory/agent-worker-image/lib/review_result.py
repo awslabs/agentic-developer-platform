@@ -293,6 +293,65 @@ def _require_fences(expect: dict) -> tuple[dict[str, str], dict[str, int]]:
     return strings, integers
 
 
+#: Operator-facing prose for each machine-readable ``refusal_reason`` `adp_review`
+#: reports. Spelled here rather than imported from `adp_review.client` for the reason
+#: the contract constants above give — but unlike those, a drift here is caught by the
+#: producer suite, which asserts this mapping covers every constant that module
+#: declares. The three causes are genuinely different actions for an operator, which
+#: is why one shared sentence for all of them was a defect and not a simplification.
+_REFUSAL_DETAILS: dict[str, str] = {
+    "self_review": (
+        "the provider refused to record the verdict because the author and the reviewer "
+        "are the same identity; the analysis was published as a comment, which sets no "
+        "review decision. A distinct reviewer identity is required"
+    ),
+    "state_downgraded": (
+        "the provider accepted the submission but recorded a state carrying no verdict, "
+        "so the analysis is present as a comment and no review decision was set. This is "
+        "not an identity problem — the submission itself did not take"
+    ),
+    "unreadable_response": (
+        "the provider answered successfully with a response this run could not read, so "
+        "whether a verdict was recorded is unknown; it is reported as not recorded"
+    ),
+}
+
+#: Used when the provider reported a refusal without saying why — for example a result
+#: produced by an `adp_review` predating `refusal_reason`. Naming the absence is the
+#: point: inventing the most familiar cause is what this whole change removes.
+_REFUSAL_UNSTATED = (
+    "the provider did not record the verdict and reported no reason, so the analysis is "
+    "present as a comment and no review decision was set; the cause is unknown"
+)
+
+
+def _refusal_detail(reason: object) -> str:
+    """Prose for the provider's actual refusal cause, or an honest 'unknown'."""
+    if isinstance(reason, str):
+        known = _REFUSAL_DETAILS.get(reason.strip())
+        if known:
+            return known
+        if reason.strip():
+            # A cause this producer does not recognise is reported verbatim and
+            # bounded, rather than being flattened into a cause it is not.
+            return (
+                "the provider did not record the verdict; it reported reason "
+                f"{reason.strip()[:120]!r}, which this run does not recognise"
+            )
+    return _REFUSAL_UNSTATED
+
+
+def _provider_commit(value: object) -> str | None:
+    """The provider's returned commit id, or ``None`` if it did not return a usable one.
+
+    Shape-checked here so a provider echoing something that is not a commit sha cannot
+    satisfy the published-head comparison by accident.
+    """
+    if isinstance(value, str) and _SHA_PATTERN.match(value.strip()):
+        return value.strip()
+    return None
+
+
 def publication_from_adp_review(
     result: dict | None, *, reviewed_head_sha: str
 ) -> dict[str, object]:
@@ -307,6 +366,20 @@ def publication_from_adp_review(
 
     ``None`` means no publication was attempted — recorded as ``not-attempted`` with
     that stated, never as an absence a reader could take for success.
+
+    Two values are taken from what the provider *returned*, never from what was asked
+    for, because both were previously asserted rather than observed:
+
+    * ``published_head_sha`` is the provider's own ``commit_id``. It used to be set to
+      ``reviewed_head_sha``, which made the contract's "the published commit must be
+      the reviewed commit" check compare a value with itself — it could not fail, so
+      it evidenced nothing. Now a provider that recorded the verdict against a
+      different commit, or that returned no commit at all, does not reach
+      ``published``.
+    * the refusal ``detail`` is derived from ``refusal_reason``. ``pending_approval``
+      alone is not proof of a same-identity refusal, and stating that cause for a
+      downgraded state or an unreadable response would send an operator to configure
+      a reviewer App that would not have changed the outcome.
     """
     if result is None:
         return {
@@ -320,15 +393,38 @@ def publication_from_adp_review(
     recorded = result.get("verdict_recorded") is True
     raw_reference = result.get("url") or result.get("review_id")
     reference = str(raw_reference)[:500] if raw_reference else None
+    provider_commit = _provider_commit(result.get("commit_id"))
 
     if recorded and outcome in _PUBLISHED_OUTCOMES:
+        if provider_commit is None:
+            # The verdict may well exist, but nothing here establishes which revision
+            # it is attached to, and that binding is the artifact's entire purpose.
+            # Unknown is reported as not-published, in the fail-closed direction.
+            return {
+                "outcome": "failed",
+                "published_head_sha": None,
+                "reference": reference,
+                "detail": (
+                    "the provider reported a recorded verdict but returned no commit id, "
+                    "so the revision it is attached to cannot be established"
+                ),
+            }
+        if provider_commit != reviewed_head_sha:
+            # The wrong-revision failure, caught at the boundary that can see it.
+            return {
+                "outcome": "failed",
+                "published_head_sha": None,
+                "reference": reference,
+                "detail": (
+                    f"the provider recorded the verdict against commit {provider_commit} "
+                    f"but this run reviewed {reviewed_head_sha}, so the verdict is not "
+                    "evidence about the revision that was read"
+                ),
+            }
         return {
             "outcome": "published",
-            # The commit the verdict is recorded against. `adp_review submit` is
-            # called with `--commit` pinned to the reviewed head, and the contract
-            # refuses these two differing: a verdict on a commit the reviewer did not
-            # read is not evidence about it.
-            "published_head_sha": reviewed_head_sha,
+            # The provider's value, having matched the commit actually inspected.
+            "published_head_sha": provider_commit,
             "reference": reference,
             "detail": None,
         }
@@ -338,11 +434,7 @@ def publication_from_adp_review(
             "outcome": "refused",
             "published_head_sha": None,
             "reference": reference,
-            "detail": (
-                "the provider refused to record the verdict because no distinct reviewer "
-                "identity is configured; the analysis was published as a comment, which "
-                "sets no review decision"
-            ),
+            "detail": _refusal_detail(result.get("refusal_reason")),
         }
 
     return {

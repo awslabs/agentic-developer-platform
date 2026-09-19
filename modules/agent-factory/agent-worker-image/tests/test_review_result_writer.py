@@ -28,6 +28,7 @@ Everything else in this file is about the properties a validator cannot check:
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
@@ -717,17 +718,56 @@ class TestFindings:
 
 
 class TestPublicationFromAdpReview:
-    def test_a_recorded_verdict_is_published_against_the_reviewed_head(self):
+    def test_a_recorded_verdict_is_published_against_the_provider_s_own_commit(self):
+        """`published_head_sha` comes from the provider, and must match what was read.
+
+        It used to be set to `reviewed_head_sha` unconditionally, which made the
+        contract's "published commit must equal reviewed commit" validator compare a
+        value with itself. A check that cannot fail is not evidence, and the binding it
+        was supposed to establish — that the verdict is attached to the revision this
+        run actually inspected — was never checked at all.
+        """
         block = publication_from_adp_review(
             {
                 "outcome": "submitted",
                 "verdict_recorded": True,
+                "commit_id": HEAD,
                 "url": "https://github.com/aws-e/adp/pull/5290#pullrequestreview-1",
             },
             reviewed_head_sha=HEAD,
         )
         assert block["outcome"] == "published"
         assert block["published_head_sha"] == HEAD
+
+    def test_a_verdict_recorded_against_another_commit_is_not_published(self):
+        """The wrong-revision failure this issue exists to detect, now detectable."""
+        block = publication_from_adp_review(
+            {"outcome": "submitted", "verdict_recorded": True, "commit_id": OTHER_HEAD},
+            reviewed_head_sha=HEAD,
+        )
+        assert block["outcome"] == "failed"
+        assert block["published_head_sha"] is None
+        assert OTHER_HEAD in block["detail"] and HEAD in block["detail"], (
+            "an operator must be able to see which two commits disagreed"
+        )
+
+    def test_a_recorded_verdict_with_no_commit_id_is_not_published(self):
+        """Unknown revision is reported as not-published, never assumed to be the head."""
+        block = publication_from_adp_review(
+            {"outcome": "submitted", "verdict_recorded": True}, reviewed_head_sha=HEAD
+        )
+        assert block["outcome"] == "failed"
+        assert block["published_head_sha"] is None
+        assert "no commit id" in block["detail"]
+
+    def test_a_commit_id_that_is_not_a_sha_cannot_satisfy_the_binding(self):
+        """A provider echoing a branch name or a number must not pass the comparison."""
+        for value in ["main", "HEAD", 12345, "", None, HEAD.upper(), HEAD[:39], True]:
+            block = publication_from_adp_review(
+                {"outcome": "submitted", "verdict_recorded": True, "commit_id": value},
+                reviewed_head_sha=HEAD,
+            )
+            assert block["outcome"] != "published", value
 
     def test_no_attempt_is_reported_not_left_absent(self):
         """'We never tried' must be representable, which is what the observed runs lacked."""
@@ -738,12 +778,82 @@ class TestPublicationFromAdpReview:
 
     def test_a_shared_identity_refusal_keeps_its_reason(self):
         block = publication_from_adp_review(
-            {"outcome": "pending_approval", "verdict_recorded": False, "review_id": "IC_1"},
+            {
+                "outcome": "pending_approval",
+                "verdict_recorded": False,
+                "review_id": "IC_1",
+                "refusal_reason": "self_review",
+            },
             reviewed_head_sha=HEAD,
         )
         assert block["outcome"] == "refused"
-        assert "no distinct reviewer identity" in block["detail"]
+        assert "same identity" in block["detail"]
         assert block["published_head_sha"] is None
+
+    def test_each_refusal_cause_gets_its_own_reason(self):
+        """Three different causes produce `pending_approval`, and they are not the same
+        problem. Reporting a downgraded state or an unreadable response as "no distinct
+        reviewer identity is configured" sends an operator to configure a reviewer App
+        that would not have changed the outcome — a confident, checkable falsehood in
+        the one field whose only job is to say what happened.
+        """
+        details = {}
+        for reason in ["self_review", "state_downgraded", "unreadable_response"]:
+            block = publication_from_adp_review(
+                {"outcome": "pending_approval", "verdict_recorded": False, "refusal_reason": reason},
+                reviewed_head_sha=HEAD,
+            )
+            assert block["outcome"] == "refused"
+            details[reason] = block["detail"]
+        assert len(set(details.values())) == 3, f"causes share prose: {details}"
+        assert "identity" in details["self_review"]
+        assert "not an identity problem" in details["state_downgraded"]
+        assert "unknown" in details["unreadable_response"]
+
+    def test_a_refusal_with_no_stated_cause_says_so(self):
+        """Silence is reported as unknown, not filled in with the most familiar cause."""
+        block = publication_from_adp_review(
+            {"outcome": "pending_approval", "verdict_recorded": False},
+            reviewed_head_sha=HEAD,
+        )
+        assert block["outcome"] == "refused"
+        assert "unknown" in block["detail"]
+        assert "identity" not in block["detail"], (
+            "an unstated cause must not be reported as the identity refusal"
+        )
+
+    def test_an_unrecognised_cause_is_reported_verbatim_and_bounded(self):
+        block = publication_from_adp_review(
+            {
+                "outcome": "pending_approval",
+                "verdict_recorded": False,
+                "refusal_reason": "x" * 5000,
+            },
+            reviewed_head_sha=HEAD,
+        )
+        assert block["outcome"] == "refused"
+        assert "does not recognise" in block["detail"]
+        assert len(block["detail"]) < 400
+
+    def test_every_client_refusal_constant_has_prose(self):
+        """The producer's prose table must cover every cause `adp_review` can report.
+
+        Two hand-maintained copies of one vocabulary is how they drift, and a drift here
+        is silent: an unmapped cause still produces a `refused` block, just one that
+        says "does not recognise" instead of explaining itself.
+        """
+        from lib.review_result import _REFUSAL_DETAILS
+
+        client = importlib.import_module("adp_review.client")
+        declared = {
+            value
+            for name, value in vars(client).items()
+            if name.startswith("REFUSAL_") and isinstance(value, str)
+        }
+        assert declared, "the client declares no refusal causes; this guard would be vacuous"
+        assert declared <= set(_REFUSAL_DETAILS), (
+            f"causes the producer cannot explain: {sorted(declared - set(_REFUSAL_DETAILS))}"
+        )
 
     def test_pending_human_approval_alone_is_a_refusal(self):
         block = publication_from_adp_review(
@@ -1523,6 +1633,9 @@ class TestTheComposedEntryPoint:
             "submission": {
                 "outcome": "submitted",
                 "verdict_recorded": True,
+                # What `adp_review submit` returns: the commit GitHub reported the
+                # review against, not the one the run asked for.
+                "commit_id": HEAD,
                 "url": "https://github.example/pr/5290#pullrequestreview-1",
                 "identity": "aws-e-adp-agent-dev[bot]",
             },

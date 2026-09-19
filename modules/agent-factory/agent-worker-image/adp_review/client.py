@@ -36,6 +36,23 @@ _DOWNGRADED_REASON = (
     "state a `{event}` verdict requires, so the verdict was not recorded"
 )
 
+# Machine-readable causes for a `pending_approval` outcome, reported as
+# `refusal_reason`. They exist because `pending_approval` alone is NOT proof of a
+# same-identity refusal: three different things produce it, and a downstream reader
+# that assumed the 422 cause would state a confident falsehood about two of them.
+# Consumers must branch on this field, never on `outcome` alone.
+REFUSAL_SELF_REVIEW = "self_review"
+"""HTTP 422: GitHub refused the verdict because author and reviewer are the same
+identity. The only cause that a distinct reviewer App would fix."""
+
+REFUSAL_STATE_DOWNGRADED = "state_downgraded"
+"""GitHub accepted the call and recorded a state carrying no verdict. Nothing about
+the reviewer's identity is established by this — the submission simply did not take."""
+
+REFUSAL_UNREADABLE_RESPONSE = "unreadable_response"
+"""GitHub answered 2xx with a body this client could not parse, so the recorded state
+is unknown. Unknown counts as not-recorded; it is never reported as a known cause."""
+
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
@@ -188,8 +205,19 @@ def submit_review(
 
     Returns a result dict with ``outcome`` one of:
       ``submitted``        — the formal review carries a verdict
-      ``pending_approval`` — GitHub refused the self-review; the verdict was
-                             published as a comment and a human approval is pending
+      ``pending_approval`` — the verdict was not recorded; it was published as prose
+                             and a human approval is pending
+
+    On every ``pending_approval`` the dict also carries ``refusal_reason``, one of
+    :data:`REFUSAL_SELF_REVIEW`, :data:`REFUSAL_STATE_DOWNGRADED` or
+    :data:`REFUSAL_UNREADABLE_RESPONSE`. ``pending_approval`` on its own does **not**
+    mean a same-identity refusal — a downgraded state and an unparseable response
+    produce it too, and reporting either as "no distinct reviewer identity is
+    configured" tells an operator to fix something that is not broken.
+
+    ``commit_id`` is the commit GitHub reported the review against, read from the
+    response. It is never defaulted to the requested commit: a receipt that repeats
+    the request cannot evidence which revision was actually reviewed.
 
     Raises:
         ReviewError: if the verdict could not be published at all. A refused
@@ -209,6 +237,7 @@ def submit_review(
     status, raw = _api("POST", f"/repos/{repo}/pulls/{pr_number}/reviews", payload, token)
 
     if 200 <= status < 300:
+        readable = True
         try:
             review = json.loads(raw)
         except json.JSONDecodeError:
@@ -217,8 +246,21 @@ def submit_review(
             # the #5346 failure exactly; so an unverifiable state counts as NOT
             # recorded and takes the pending-approval path below.
             review = {}
+            readable = False
+        if not isinstance(review, dict):
+            # A JSON array or scalar parses fine and carries no state. Same rule: an
+            # answer this client cannot read is an unknown outcome, not a good one.
+            review = {}
+            readable = False
         state = review.get("state")
         expected_state = VERDICT_STATES.get(event)
+        # The commit GitHub says the review is attached to. Read from the response and
+        # never defaulted to the requested `commit_id`: echoing the request would make
+        # the receipt agree with itself by construction, which is precisely the
+        # same-revision claim this issue exists to make checkable.
+        recorded_commit = review.get("commit_id")
+        if not isinstance(recorded_commit, str) or not recorded_commit.strip():
+            recorded_commit = None
 
         if expected_state is not None and state != expected_state:
             # GitHub ACCEPTED the call but did not record the verdict: a request for
@@ -266,8 +308,14 @@ def submit_review(
                 "published_as": "comment_review",
                 "review_id": review.get("id"),
                 "state": state,
+                "commit_id": recorded_commit,
                 "url": review.get("html_url"),
                 "notice_url": notice_url,
+                # Which of the three `pending_approval` causes this actually was. The
+                # 422 cause is NOT claimed here: the call was accepted.
+                "refusal_reason": (
+                    REFUSAL_STATE_DOWNGRADED if readable else REFUSAL_UNREADABLE_RESPONSE
+                ),
                 "verdict_recorded": False,
                 "pending_human_approval": True,
             }
@@ -277,6 +325,10 @@ def submit_review(
             "event": event,
             "review_id": review.get("id"),
             "state": state,
+            # The commit GitHub recorded the verdict against, as GitHub reported it.
+            # A consumer compares this with the head the reviewer inspected; that
+            # comparison is only meaningful because this value is not the request's.
+            "commit_id": recorded_commit,
             "url": review.get("html_url"),
             # True only when GitHub reported the state that carries the verdict.
             "verdict_recorded": expected_state is not None,
@@ -357,7 +409,13 @@ def _publish_pending_approval(*, repo: str, pr_number: int, event: str, body: st
             "published_as": "comment_review",
             "review_id": review.get("id"),
             "state": review.get("state"),
+            # A COMMENT review carries no verdict, so its commit is not a verdict
+            # receipt. Reported for traceability; `verdict_recorded` still decides.
+            "commit_id": review.get("commit_id") if isinstance(review.get("commit_id"), str) else None,
             "url": review.get("html_url"),
+            # This path is reached only from the 422 branch, so the cause IS the
+            # same-identity refusal — the one case where saying so is true.
+            "refusal_reason": REFUSAL_SELF_REVIEW,
             # The single most important field in this module: the verdict exists as
             # prose but was NOT recorded, so no caller may treat it as approval.
             "verdict_recorded": False,
@@ -375,6 +433,7 @@ def _publish_pending_approval(*, repo: str, pr_number: int, event: str, body: st
             "event": event,
             "published_as": "issue_comment",
             "url": comment.get("html_url"),
+            "refusal_reason": REFUSAL_SELF_REVIEW,
             "verdict_recorded": False,
             "pending_human_approval": True,
         }
