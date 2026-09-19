@@ -10,6 +10,11 @@ on:
       - 'modules/agent-factory/skills/codex-bridge/**'
       - 'modules/agent-factory/skills/aidlc-emit-issues/**'
       - 'modules/agent-factory/gateway/app/personas/**'
+      # The /model end-to-end test imports the real webhook-ingress handler,
+      # intent parser, resolvers and envelope builder, so a change to any of them
+      # can break it without touching a path above.
+      - 'modules/agent-factory/webhook-ingress/lambda/github/**'
+      - 'modules/agent-factory/webhook-ingress/lambda/common/**'
       - '.github/workflows/agent-reporting-tests.yml'
 
 permissions:
@@ -89,3 +94,13 @@ jobs:
           modules/agent-factory/agent-worker-image/tests/test_invocation_completion.py
           modules/agent-factory/agent-worker-image/tests/test_entrypoint.py
           modules/agent-factory/agent-worker-image/tests/test_retryable_exit_no_ack.py
+      # PMM-07: drives a signed webhook delivery through the real github handler,
+      # intent parser, resolvers and envelope builder into the real worker
+      # entrypoint, and asserts the model the Node agent would actually start
+      # with. It was written to pin a silent substitution and had no CI gate at
+      # all, so nothing stopped that defect from returning. Its only dependency
+      # beyond this job's installs is boto3, already present above.
+      - name: Verify a /model directive reaches the agent process unchanged
+        run: >-
+          python -m pytest -q
+          modules/agent-factory/agent-worker-image/tests/test_model_directive_end_to_end.py

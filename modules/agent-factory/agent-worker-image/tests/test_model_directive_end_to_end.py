@@ -1,12 +1,22 @@
 """PMM-07: a /model directive must reach the agent process unchanged.
 
 This is a *handler-to-worker* regression test, not a unit test of either side.
-It runs the real webhook-ingress resolution and envelope builder, hands the
-resulting envelope to the real worker ``entrypoint.main()``, and asserts on the
-``ANTHROPIC_MODEL`` in the environment the worker actually hands to the Node
-agent subprocess. Nothing is re-implemented in the test: both halves are
-imported from their shipping modules, so a change to either one that reopens the
-silent-substitution gap fails here.
+It posts an HMAC-signed ``issue_comment`` delivery to the real
+``github.handler``, lets the real intent parser find the ``/model`` line, the
+real ``spawn_persona`` apply its guards and the real ``_build_envelope``
+construct the message, intercepts that message at the SQS publisher, hands it to
+the real worker ``entrypoint.main()``, and asserts on the ``ANTHROPIC_MODEL`` in
+the environment the worker hands to the Node agent subprocess.
+
+Nothing on that path is re-implemented or stubbed. An earlier version of this
+file built the envelope by calling ``resolve_legacy_assignment`` and
+``resolve_canonical_override`` itself and passing the results to
+``_build_envelope`` -- which reproduced the two lines of handler code the
+regression was *in*. It would have kept passing if the handler stopped calling
+the resolvers, called them in the wrong order, or assigned either answer to the
+wrong envelope field, because the test was making those calls rather than
+observing them. Driving the signed delivery instead means the handler has to get
+it right for this file to be green.
 
 Why this exists (the defect it pins):
     PMM-07 added a strict, catalogue-backed resolution at the edge. Because the
@@ -22,14 +32,19 @@ Why this exists (the defect it pins):
     and the strict *proposed* one -- and only the proposed one is allowed to
     refuse. These tests assert the executed half.
 
-Containment: every external effect is mocked (SQS receive/delete, GitHub check
-runs, token minting, Vault, git/gh subprocesses, the Node agent invocation
-itself). No model is ever invoked, no queue message is received or deleted for
-real, and no credential is minted.
+Containment: every external effect is mocked (identity resolution, rate-limit
+and correlation storage, the invocation-event and provenance writes, the SQS
+publish, then on the worker side SQS receive/delete, GitHub check runs, token
+minting, Vault, git/gh subprocesses and the Node agent invocation itself). The
+signature is real because it is cheap and local -- an HMAC over the body with a
+test-only secret. No model is ever invoked, no queue message is sent, received
+or deleted for real, and no credential is minted.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -43,16 +58,22 @@ REPO_ROOT = WORKER_ROOT.parents[2]
 WEBHOOK_LAMBDA = REPO_ROOT / "modules/agent-factory/webhook-ingress/lambda"
 
 sys.path.insert(0, str(WORKER_ROOT))
-# The real webhook-ingress code, imported rather than copied. These two modules
-# are the actual producers of the envelope the worker consumes; a test-local
-# envelope literal would keep passing after the producer regressed.
+# The real webhook-ingress code, imported rather than copied. `github/` is on the
+# path as well as `lambda/` because the handler imports its sibling modules
+# (`intent_parser`) by bare name, exactly as it does inside the Lambda bundle.
 sys.path.insert(0, str(WEBHOOK_LAMBDA))
+sys.path.insert(0, str(WEBHOOK_LAMBDA / "github"))
 
-from common.model_validate import (  # noqa: E402
-    resolve_canonical_override,
-    resolve_legacy_assignment,
-)
-from common.spawn_persona import _build_envelope  # noqa: E402
+# A test-only HMAC key. Not a credential: it authenticates nothing outside this
+# process, and the handler reads it from the env only because WEBHOOK_SECRET_ARN
+# is blank (its documented local-dev fallback).
+WEBHOOK_SECRET = "pmm07-local-test-secret"
+os.environ.setdefault("WEBHOOK_SECRET", WEBHOOK_SECRET)
+os.environ.setdefault("WEBHOOK_SECRET_ARN", "")
+os.environ.setdefault("SUBMIT_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789012/adp-test-submit.fifo")
+os.environ.setdefault("IDENTITY_INDEX_TABLE", "adp-test-identity-index")
+os.environ.setdefault("RATE_LIMITS_TABLE", "adp-test-rate-limits")
+os.environ.setdefault("AWS_REGION", "us-east-1")
 
 # The pod-level default, i.e. what the worker would run with no directive at
 # all. Deliberately different from every model requested below so a
@@ -60,48 +81,124 @@ from common.spawn_persona import _build_envelope  # noqa: E402
 POD_DEFAULT_MODEL = "global.anthropic.claude-opus-5"
 
 SENDER = {"id": 12345678, "login": "jane-dev", "type": "User"}
-PAYLOAD = {
-    "issue": {"number": 42},
-    "repository": {"id": 55501, "full_name": "acme-corp/flagship-app"},
-}
-CORRELATION_CTX = {
-    "correlation_id": "corr-pmm07-1",
-    "root_human_id": "cognito-sub-jane-123",
-    "is_human_rooted": True,
-    "parent_invocation_id": None,
-    "chain_depth": 0,
-}
+REPO = "acme-corp/flagship-app"
+ISSUE_NUMBER = 42
+INSTALLATION_ID = 99887766
+
+
+def _signed_delivery(comment_body: str) -> dict:
+    """An ``issue_comment`` delivery signed the way GitHub signs one.
+
+    The signature is computed over the exact bytes in ``body``, so the handler's
+    real ``verify_github_signature`` accepts it. Verification is deliberately NOT
+    mocked: the resolution under test happens after that gate, and a test that
+    stubbed it could pass on a delivery the production handler would reject.
+    """
+    body = json.dumps(
+        {
+            "action": "created",
+            "issue": {
+                "number": ISSUE_NUMBER,
+                "title": "Story: persona model mapping",
+                "html_url": f"https://github.com/{REPO}/issues/{ISSUE_NUMBER}",
+            },
+            "comment": {"body": comment_body},
+            "repository": {"id": 55501, "full_name": REPO, "owner": {"login": "acme-corp"}},
+            "installation": {"id": INSTALLATION_ID},
+            "sender": SENDER,
+        }
+    )
+    signature = hmac.new(WEBHOOK_SECRET.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
+    return {
+        "headers": {
+            "x-github-event": "issue_comment",
+            "content-type": "application/json",
+            "x-hub-signature-256": f"sha256={signature}",
+        },
+        "body": body,
+        "isBase64Encoded": False,
+    }
 
 
 def _webhook_envelope(requested: str | None) -> dict:
-    """Build an envelope the way the real handler does for a /model directive.
+    """Return the envelope the **real handler** publishes for this directive.
 
-    Mirrors github/handler.py step 12: the legacy assignment is what executes,
-    the canonical override is the separate *proposed* answer. Keeping both calls
-    here (rather than passing literals) is what makes this a handler-side test.
+    Drives one signed delivery through `github.handler` and captures what
+    `spawn_persona` hands to the SQS publisher. The handler, the intent parser,
+    the resolvers, the guards and the envelope builder are all the shipping code;
+    only storage, identity and the queue are doubled.
+
+    The `/model` line is on its own line because that is the only form the
+    directive regex accepts (`^/model \\s+(\\S+)$`, MULTILINE) -- a detail worth
+    exercising here rather than assuming, since a test that passed the alias
+    straight to the builder never had to produce a parseable comment at all.
     """
-    model_resolved = None
-    model_canonical = None
+    from common.identity_resolver import ResolvedIdentity
+
+    comment = "@agent-developer please implement this"
     if requested:
-        model_resolved = resolve_legacy_assignment(requested)
-        model_canonical = resolve_canonical_override(requested)
-    return _build_envelope(
-        persona="developer",
+        comment = f"{comment}\n/model {requested}"
+
+    resolved = ResolvedIdentity(
         tenant_id="acme-corp",
-        cognito_sub="cognito-sub-jane-123",
-        actor_user_id="cognito-sub-jane-123",
-        actor_org_id="org-acme",
-        sender=SENDER,
-        installation_id=99887766,
-        repo="acme-corp/flagship-app",
-        payload=PAYLOAD,
-        correlation_ctx=CORRELATION_CTX,
-        intent_trigger="mentioned",
-        intent_label=None,
-        model_requested=requested,
-        model_resolved=model_resolved,
-        model_canonical=model_canonical,
+        org_id="org-acme",
+        user_id="cognito-sub-jane-123",
+        user_provisioning_mode="strict",
+        user_kind="human",
     )
+    rate_decision = MagicMock()
+    rate_decision.allowed = True
+    rate_decision.retry_after_seconds = 0
+
+    correlation_store = MagicMock()
+    correlation_store.channel_key.side_effect = lambda provider, repo, kind, number: f"{provider}:repo={repo},{kind}={number}"
+    correlation_store.read_pointer.return_value = {
+        "correlation_id": "corr-pmm07-1",
+        "triggering_invocation_id": None,
+        "last_triggered_persona": None,
+        "recent_triggered_personas": set(),
+        "recent_trigger_count": 0,
+    }
+
+    published: dict[str, dict] = {}
+
+    def _capture(envelope: dict) -> str:
+        published["envelope"] = envelope
+        return "sqs-message-pmm07"
+
+    import handler as github_handler
+
+    with (
+        patch("handler._get_events_log") as events_log,
+        patch("handler._get_rate_limiter") as rate_limiter,
+        patch("handler._get_identity_resolver") as identity_resolver,
+        patch("handler._get_metrics") as metrics,
+        patch("handler._get_correlation_store", return_value=correlation_store),
+        patch("handler._resolve_chain_record", return_value=None),
+        # Durable side effects of a successful spawn. Mocked because they write to
+        # DynamoDB; the envelope itself is built before any of them.
+        patch("common.spawn_persona._write_pointer_and_provenance"),
+        patch("common.spawn_persona._capture_invocation_event"),
+        patch("common.spawn_persona._get_max_credential_chain_depth", return_value=3),
+        # The one seam that stands in for the queue. Patched at its definition so
+        # `spawn_persona`'s deferred import of it is intercepted too.
+        patch("common.sqs_publisher.publish_envelope", side_effect=_capture),
+    ):
+        events_log.return_value.log_event = MagicMock()
+        rate_limiter.return_value.check_and_increment.return_value = rate_decision
+        identity_resolver.return_value.resolve.return_value = (resolved, "ok")
+        identity_resolver.return_value.last_tenant_item = None
+        metrics.return_value.record_rejected = MagicMock()
+        metrics.return_value.flush = MagicMock()
+
+        response = github_handler.handler(_signed_delivery(comment), None)
+
+    # 202 means the delivery was authenticated, parsed, guarded and published. A
+    # 200 `no_op` here would mean the mention or the directive never parsed, and
+    # every downstream assertion would be vacuous.
+    assert response["statusCode"] == 202, response
+    assert "envelope" in published, "the handler accepted the delivery but published nothing"
+    return published["envelope"]
 
 
 def _subprocess_side_effect(*args, **kwargs):
