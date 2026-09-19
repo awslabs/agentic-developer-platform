@@ -7,7 +7,7 @@
     {
       "name": "barrier blocks write side effects (AC-P1/P2/P3)",
       "ok": true,
-      "detail": "a real write call was parked at the barrier for 5000ms with no file created, then completed after resume \u2014 held, not dropped",
+      "detail": "a real write call was parked at the barrier for 5000ms with no file created, then completed after resume; phase=paused, priorToolSearch=false",
       "artifact": {
         "adapter_id": "claude",
         "sdk_version": "0.3.220",
@@ -19,6 +19,8 @@
         "observed_tool_names": [
           "Write"
         ],
+        "tool_search_admitted_before_pause": false,
+        "expected_hold_phase": "paused",
         "requested": {
           "admission_closed": true
         },
@@ -39,14 +41,14 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 10953,
+        "total_elapsed_ms": 10768,
         "denied_tools": []
       }
     },
     {
       "name": "barrier blocks delegation side effects (AC-P1/P2/P3)",
       "ok": true,
-      "detail": "a real delegation call was parked at the barrier for 5000ms with no file created, then completed after resume \u2014 held, not dropped",
+      "detail": "a real delegation call was parked at the barrier for 5000ms with no file created, then completed after resume; phase=pause_requested, priorToolSearch=true",
       "artifact": {
         "adapter_id": "claude",
         "sdk_version": "0.3.220",
@@ -62,6 +64,8 @@
           "Agent",
           "Write"
         ],
+        "tool_search_admitted_before_pause": true,
+        "expected_hold_phase": "pause_requested",
         "requested": {
           "admission_closed": true
         },
@@ -74,22 +78,22 @@
           "observed_by": "fixture"
         },
         "confirmed": {
-          "state": "paused",
+          "state": "pause_requested",
           "active_tool_count": 0,
-          "background_work_count": 0
+          "background_work_count": null
         },
         "parked_tools": 1,
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 22685,
+        "total_elapsed_ms": 19841,
         "denied_tools": []
       }
     },
     {
       "name": "barrier blocks background_bash side effects (AC-P1/P2/P3)",
       "ok": true,
-      "detail": "a real background_bash call was parked at the barrier for 5000ms with no file created, then completed after resume \u2014 held, not dropped",
+      "detail": "a real background_bash call was parked at the barrier for 5000ms with no file created, then completed after resume; phase=paused, priorToolSearch=false",
       "artifact": {
         "adapter_id": "claude",
         "sdk_version": "0.3.220",
@@ -101,6 +105,8 @@
         "observed_tool_names": [
           "Bash"
         ],
+        "tool_search_admitted_before_pause": false,
+        "expected_hold_phase": "paused",
         "requested": {
           "admission_closed": true
         },
@@ -121,14 +127,14 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 10258,
+        "total_elapsed_ms": 11167,
         "denied_tools": []
       }
     },
     {
       "name": "barrier blocks service side effects (AC-P1/P2/P3)",
       "ok": true,
-      "detail": "a real service call was parked at the barrier for 5000ms with no file created, then completed after resume \u2014 held, not dropped",
+      "detail": "a real service call was parked at the barrier for 5000ms with no file created, then completed after resume; phase=paused, priorToolSearch=false",
       "artifact": {
         "adapter_id": "claude",
         "sdk_version": "0.3.220",
@@ -140,6 +146,8 @@
         "observed_tool_names": [
           "Bash"
         ],
+        "tool_search_admitted_before_pause": false,
+        "expected_hold_phase": "paused",
         "requested": {
           "admission_closed": true
         },
@@ -170,8 +178,8 @@
       "detail": "sessions=1 inits=1 sameAttempt=true heldAdmissions=1 heldWithoutSideEffects=true completed=true",
       "artifact": {
         "released_count": 1,
-        "session_id_before": "c08fbe9f-90c6-4af8-8fc0-8917bdbabf31",
-        "session_id_after": "c08fbe9f-90c6-4af8-8fc0-8917bdbabf31",
+        "session_id_before": "d93141d3-58c0-40a6-89ff-197ad45e25a1",
+        "session_id_after": "d93141d3-58c0-40a6-89ff-197ad45e25a1",
         "attempt_id_before": "attempt-1",
         "attempt_id_after": "attempt-1",
         "interrupt_called": false,
@@ -197,10 +205,10 @@
     {
       "name": "a PreToolUse hook may hold a tool for seconds (AC-P1/AC-P6)",
       "ok": true,
-      "detail": "the hook held a real tool call for 6001ms without being abandoned; the declared bound is honoured, so a pause can outlive a tool",
+      "detail": "the hook held a real tool call for 6000ms without being abandoned; the declared bound is honoured, so a pause can outlive a tool",
       "artifact": {
         "exercised": true,
-        "held_ms": 6001,
+        "held_ms": 6000,
         "signal_aborted": false,
         "hook_reached": true,
         "hook_timeout_seconds": 1860,
@@ -221,8 +229,8 @@
         "checkpoint_clock_setup": "constructor aged 16 minutes; live callbacks use real clock",
         "spill_readback_matches_tool_response": true,
         "model_returned_exact_locator": true,
-        "model_returned_text": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-YmaorH/.adp-spill/Read-toolu_bdrk_01GHzyShvwERpUSXmp5BMVjp.txt",
-        "expected_locator": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-YmaorH/.adp-spill/Read-toolu_bdrk_01GHzyShvwERpUSXmp5BMVjp.txt",
+        "model_returned_text": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-akN8r2/.adp-spill/Read-toolu_bdrk_01WqhLB6nkTsso11Xdyu6QKS.txt",
+        "expected_locator": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-akN8r2/.adp-spill/Read-toolu_bdrk_01WqhLB6nkTsso11Xdyu6QKS.txt",
         "settled_before_pause": true,
         "phase_during_hold": "paused",
         "no_write_during_hold": true,
@@ -232,13 +240,13 @@
     {
       "name": "real SDK hook timeout reports unavailable",
       "ok": true,
-      "detail": "reached=true aborted=true elapsed=999 safetyRelease=false unavailable=true phase=running retry=unavailable",
+      "detail": "reached=true aborted=true elapsed=1000 safetyRelease=false unavailable=true phase=running retry=unavailable",
       "artifact": {
         "production_hook_factory": "createWorkerToolHooks",
         "fault": "CLI matcher timeout shortened to one second",
         "matcher_timeout_seconds": 1,
         "production_matcher_timeout_seconds": 180,
-        "callback_elapsed_ms": 999,
+        "callback_elapsed_ms": 1000,
         "sdk_signal_aborted": true,
         "safety_release_used": false,
         "unavailable_event_observed": true,
@@ -266,9 +274,9 @@
       }
     },
     {
-      "name": "real SDK pause waits for an already-admitted tool to settle",
+      "name": "real SDK active MCP call settles without certifying external quiescence",
       "ok": true,
-      "detail": "calls=1 admitted=1 during=pause_requested/1 outcome=confirmed settled=0",
+      "detail": "calls=1 admitted=1 during=pause_requested/1 outcome=requested settled=0",
       "artifact": {
         "production_hook_factory": "createWorkerToolHooks",
         "tool": "mcp__pause-fixture__held_operation",
@@ -276,9 +284,28 @@
         "active_at_pause_request": 1,
         "phase_during_tool": "pause_requested",
         "active_during_tool": 1,
-        "pause_outcome_after_tool": "confirmed",
-        "paused_after_settlement": true,
-        "active_after_settlement": 0
+        "pause_outcome_after_tool": "requested",
+        "paused_after_settlement": false,
+        "active_after_settlement": 0,
+        "background_work_count": null,
+        "external_quiescence_observed": false
+      }
+    },
+    {
+      "name": "real SDK returned MCP tool cannot certify pause over detached work",
+      "ok": true,
+      "detail": "calls=1 activeAfterReturn=0 writes=1->8 outcome=requested phase=pause_requested",
+      "artifact": {
+        "production_hook_factory": "createWorkerToolHooks",
+        "tool": "mcp__pause-fixture__launch_background_operation",
+        "calls": 1,
+        "active_after_tool_return": 0,
+        "writes_before_pause": "1",
+        "writes_after_pause": "8",
+        "pause_outcome": "requested",
+        "phase_while_detached_work_continues": "pause_requested",
+        "background_work_count": null,
+        "external_quiescence_observed": false
       }
     }
   ],
@@ -288,13 +315,13 @@
     "aws_profile": "embark1",
     "region": "us-east-1",
     "model": "us.anthropic.claude-opus-4-6-v1",
-    "scope": "Standalone real-SDK fixture; not deployed gateway control or autonomous qualification. Nine measured scenarios use production worker hook composition, including pause requested while a real MCP tool is already executing and confirmation only after PostToolUse settlement. One-second matcher timeout is explicit fault injection; production timeout settings remain unchanged. Checkpoint constructor alone is aged 16 minutes; live callbacks use real time. Fixture servers/directories cleaned in finally. Signed HTTP listener, Kubernetes bootstrap and IAM boundaries are tested separately; this fixture does not exercise a deployed gateway or Kubernetes Job.",
+    "scope": "Standalone real-SDK fixture; not deployed gateway control or autonomous qualification. Ten measured scenarios connect the production background observer and worker hook composition. The delegation barrier reports requested/unconfirmed when the SDK first admits opaque ToolSearch. Both MCP scenarios require requested/unconfirmed: one while a call executes and after it settles, the other after an MCP response while a real detached child keeps writing. Confirmed pause is tested only when prior observed tools permit quiescence. One-second matcher timeout is explicit fault injection; production settings remain unchanged. Checkpoint constructor alone is aged 16 minutes; live callbacks use real time. Fixture servers, detached child and directories are cleaned in finally. Signed HTTP listener, Kubernetes bootstrap and IAM boundaries are tested separately; this fixture does not exercise a deployed gateway or Kubernetes Job.",
     "routing_verification": "Isolated CLAUDE_CONFIG_DIR; AWS_PROFILE=embark1 identity verified as account 879318057152 immediately before execution; every observed SDK init model matched the requested model."
   },
   "source_files_sha256": {
-    "modules/agent-factory/agent/src/harnesses/claude-control.ts": "c3973a60b6854a68b11759af77b6b06149f60bc26a71f0b30966321724193358",
+    "modules/agent-factory/agent/src/harnesses/claude-control.ts": "785f5fe7cbcb0cb10fade46ea3e2bf45bd3c40b59acce2b1b7cea0bf1e4721d8",
     "modules/agent-factory/agent/src/pause-gate.ts": "2b12cbbe98096bb47c98ff78765d61390550b3828ac4906635681acb020ffdb7",
-    "modules/agent-factory/agent/src/control-runtime.integration.ts": "619aa8f92faf92f1dedd47d98d4b03c583a0b39af373d65ce123eced6f85078b",
+    "modules/agent-factory/agent/src/control-runtime.integration.ts": "988cb0bd784608dfb0ac6c489ab1d596d7a10ec6e683b0acdd90466bc00297db",
     "modules/agent-factory/agent/src/utils/resilientQuery.ts": "e98a88383cc029d72e0836cd7b4001151a6b7ce0099b409e83e0720825220ede",
     "modules/agent-factory/agent/src/developer-checkpoints.ts": "b0612d9d9048fb633d20331d077f8998719ad1fd6d836aa93419fbb7de4651ec",
     "modules/agent-factory/agent/src/utils/spill/index.ts": "4ecf8798cd358393c7acc34d133f8672a84047e144f80c22070f366383940fe4",
@@ -342,10 +369,10 @@
   },
   "review_repair_validation": {
     "worker_required_gate": {
-      "tests_passed": 723,
+      "tests_passed": 727,
       "suites": 16,
       "lines_percent": 97.58,
-      "branches_percent": 91.09,
+      "branches_percent": 91.11,
       "threshold_percent": 85
     },
     "gateway_agentauth_and_control_proxy": {
@@ -375,5 +402,23 @@
       "partial_branches": [],
       "threshold_percent": 85
     }
+  },
+  "opaque_tool_repair": {
+    "review_finding": "https://github.com/aws-e/adp/pull/5205#issuecomment-5742870820",
+    "before_repair": "Against aa19d3502c76126497002380f0df84bd8a495fa2, a real detached child kept writing after MCP/unknown-tool PostToolUse settled active calls to zero and Stop reported an empty task list. Both variants incorrectly confirmed pause; the Bash control refused confirmation.",
+    "repair": "Only pinned Read/Write/Edit/MultiEdit/Glob/Grep/NotebookEdit/TodoWrite effects are completion-bounded. SDK-managed Task/Agent require fresh task reports. Bash, direct MCP and unknown tools permanently leave their scope unobservable; same-scope and sibling SDK task reports cannot clear that uncertainty.",
+    "regressions": "85 adapter tests and 727 required worker tests pass. Detached-child probes cover Bash, direct MCP and an unknown tool; empty local/sibling reports cannot clear external uncertainty.",
+    "superseded_ninth_fixture": "The former nine-scenario artifact omitted backgroundWorkProbe wiring in the ninth MCP fixture. Its confirmed-after-settlement result did not establish production MCP quiescence. All composition fixtures now connect the same observer to both gate and hooks, and opaque MCP settlement must remain requested/unconfirmed.",
+    "first_ten_scenario_attempt": {
+      "passed": 9,
+      "failed": 1,
+      "failure": "Delegation first admitted ToolSearch. Production correctly stayed pause_requested, but the fixture still required paused. The fixture now explicitly expects requested with unknown background count when ToolSearch preceded the held delegation. The production allowlist was not widened. Both MCP scenarios passed this first attempt."
+    },
+    "final_attempt": {
+      "passed": 10,
+      "failed": 0,
+      "typecheck": "passed"
+    },
+    "qualification": "Supervisor repair and manual fixture execution are interventions. No deployment or autonomous qualification is established."
   }
 }

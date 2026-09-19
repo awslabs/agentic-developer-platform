@@ -29,13 +29,15 @@ callbacks bound to its opaque attempt identity. Superseded callbacks cannot sett
 replacement tickets or change their background observations; unobserved work from
 a retired attempt remains uncertain.
 
-A Bash invocation may detach OS children regardless of `run_in_background`.
-After any admitted Bash, this SDK cannot prove descendant quiescence. Its
-`background_tasks` list covers SDK-managed tasks and cannot clear that separate
-uncertainty. The gate therefore reports requested/unavailable rather than paused
-for that run. Shell-free work can still confirm a pause. A future descendant
-observer must supply real process-lifecycle evidence before this restriction can
-be removed; a command-string heuristic or an empty SDK task list is insufficient.
+Bash, direct MCP calls and unknown tools may start operations that outlive their
+responses, regardless of `run_in_background`. The SDK's `background_tasks` list
+cannot inventory these external effects, so even an empty report leaves their
+scope unobservable. The gate reports requested/unavailable for that run. Only
+the pinned local file/notebook/todo tools are treated as completion-bounded;
+SDK-managed Task/Agent delegation still requires its own fresh task report.
+Enabling confirmed pause after opaque work requires a trusted supervisor's real
+quiescence evidence. A returned response, input flag or empty SDK task list is
+insufficient.
 
 The public store now shows `pause_requested` when admission closes, before waiting
 for running tools. Explicit nonpositive/nonfinite budgets are refused. The Wave-2

@@ -203,17 +203,20 @@ export interface ClaudeSessionHandle {
   close(): void;
 }
 
-/**
- * Tool inputs that ask Claude to leave work running behind the tool call.
- *
- * Read from `tool_input`, which the SDK types as `unknown`. Only two shapes
- * matter and both are checked defensively: a shell told to background itself, and
- * a delegating tool whose child keeps working after the parent returns.
- */
+// Only these pinned SDK tools have local effects whose completion is represented
+// by the tool result. Unknown tools fail closed: an MCP response can acknowledge
+// a remote job without completing it, even when run_in_background is false.
+const COMPLETION_BOUNDED_TOOLS = new Set([
+  'Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'NotebookEdit', 'TodoWrite',
+]);
+
+function isOpaqueTool(toolName: string): boolean {
+  return toolName !== 'Task' && toolName !== 'Agent' && !COMPLETION_BOUNDED_TOOLS.has(toolName);
+}
+
+/** Admission may leave SDK-managed or unobservable external work behind. */
 function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
-  // A shell can detach arbitrary descendants without run_in_background. Only
-  // a process-level supervisor could establish quiescence after such work.
-  if (toolName === 'Bash' || toolName === 'Task' || toolName === 'Agent') return true;
+  if (isOpaqueTool(toolName) || toolName === 'Task' || toolName === 'Agent') return true;
   if (toolInput === null || typeof toolInput !== 'object') return false;
   const input = toolInput as { run_in_background?: unknown };
   return input.run_in_background === true;
@@ -226,13 +229,12 @@ function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
  * question is when this observer is *entitled* to say zero. Three states, and the
  * ordering between them is the entire content of this class:
  *
- * - No shell or delegating/background tool has been admitted → `0`.
- *   Every Bash is potentially detached work; its flags cannot establish that
- *   descendants stopped. SDK background task reports cannot inventory arbitrary
- *   OS children, so a run that has executed Bash cannot confirm a pause.
- * - Delegating/background work (without Bash) was admitted, and a
+ * - Only completion-bounded tools have been admitted → `0`.
+ *   Shells, direct MCP calls and unknown tools may start work outside the SDK's
+ *   inventory. Returning a response cannot establish that their effects stopped.
+ * - SDK-managed delegating/background work was admitted, and a
  *   `Stop`/`SubagentStop` reports `background_tasks` since then → that count.
- * - Shell work was admitted, or delegated work has no fresh report → `null`.
+ * - Opaque work was admitted, or delegated work has no fresh report → `null`.
  *
  * The third case is the one worth being pedantic about. A backgrounded `Bash`
  * returns to the model immediately while its process keeps writing; a `Task`
@@ -244,19 +246,20 @@ function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
  */
 export class ClaudeBackgroundWorkObserver {
   private readonly counts = new Map<string | null, number | null>();
-  private readonly shellScopes = new Set<string | null>();
+  private readonly unobservableScopes = new Set<string | null>();
 
   /** Note a tool call that may leave work running behind it. */
   noteToolStart(toolName: string, toolInput: unknown, scope: string | null = null): void {
-    if (toolName === 'Bash') this.shellScopes.add(scope);
+    if (isOpaqueTool(toolName)) this.unobservableScopes.add(scope);
     if (requestsBackgroundWork(toolName, toolInput)) this.counts.set(scope, null);
   }
 
   /** Record a `Stop`/`SubagentStop` report of in-flight background work. */
   noteBackgroundReport(tasks: unknown, scope: string | null = null): void {
-    // background_tasks inventories SDK-managed tasks, not arbitrary daemonized
-    // descendants of a shell. It cannot clear that separate uncertainty.
-    if (this.shellScopes.has(scope)) return;
+    // SDK task reports cannot inventory shell descendants or external MCP jobs.
+    // Neither this scope's empty report nor a sibling's all-clear can clear that
+    // uncertainty; it needs a trusted external supervisor that we do not have.
+    if (this.unobservableScopes.has(scope)) return;
     if (Array.isArray(tasks)) {
       this.counts.set(scope, tasks.length);
     } else if (this.counts.has(scope)) {

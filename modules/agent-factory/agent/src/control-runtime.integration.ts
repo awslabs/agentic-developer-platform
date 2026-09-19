@@ -143,6 +143,7 @@ async function experimentBarrierBlocksSideEffects(
   let outputBeforePause = 0;
   let serviceCallsBeforePause = 0;
   let outputBytes = 0;
+  let discoveryBeforePause = false;
   const prompt = shape === 'service'
     ? `Use Bash exactly once to run: curl --fail --silent --show-error -X POST ${serviceUrl}. Then stop. Do not use Write or another tool.`
     : shape === 'delegation'
@@ -178,6 +179,7 @@ async function experimentBarrierBlocksSideEffects(
                 admissionsBeforePause = admissions.length;
                 outputBeforePause = outputBytes;
                 serviceCallsBeforePause = serviceCalls;
+                discoveryBeforePause = admissions.includes('ToolSearch');
                 await gate.requestPause();
                 // Only the requested scenario marks the measured hold as begun.
                 parkedAt.push(Date.now());
@@ -247,13 +249,19 @@ async function experimentBarrierBlocksSideEffects(
     for (let i = 0; i < 200 && !existsSync(target); i += 1) await sleep(100);
     const wroteAfterResume = existsSync(target);
 
+    // ToolSearch is intentionally outside the production completion-bounded
+    // allowlist. If the real SDK discovers Agent first, admission still closes
+    // but external quiescence is unknown. Assert that refusal explicitly instead
+    // of weakening production observation to satisfy the old fixture.
+    const expectedPhase = discoveryBeforePause ? 'pause_requested' : 'paused';
+    const expectedBackground = discoveryBeforePause ? null : 0;
     const ok =
       parked &&
       !wroteDuringHold &&
       admittedDuringHold === 0 &&
-      phaseDuringHold === 'paused' &&
+      phaseDuringHold === expectedPhase &&
       countDuringHold === 0 &&
-      backgroundDuringHold === 0 &&
+      backgroundDuringHold === expectedBackground &&
       outputDuringHold === 0 && serviceCallsDuringHold === 0 &&
       (shape !== 'service' || serviceCalls === 1) &&
       wroteAfterResume && offeredShapes.includes(shape);
@@ -263,11 +271,11 @@ async function experimentBarrierBlocksSideEffects(
       ok,
       detail: ok
         ? `a real ${shape} call was parked at the barrier for ${HOLD_MS}ms with no file created, ` +
-          `then completed after resume — held, not dropped`
+          `then completed after resume; phase=${phaseDuringHold}, priorToolSearch=${discoveryBeforePause}`
         : `parked=${parked} wroteDuringHold=${wroteDuringHold} admittedDuringHold=` +
           `${admittedDuringHold} phase=${phaseDuringHold} count=${countDuringHold} ` +
           `wroteAfterResume=${wroteAfterResume} — a pause must produce no side effect while it ` +
-          `holds, must report paused with nothing in flight, and must not discard the work it held`,
+          `holds, must report ${expectedPhase} with background=${expectedBackground}, and must not discard the work it held`,
       artifact: {
         adapter_id: 'claude',
         sdk_version: CLAUDE_SDK_VERSION,
@@ -275,6 +283,8 @@ async function experimentBarrierBlocksSideEffects(
         requested_tool_shape: shape,
         observed_tool_shapes: [...new Set(offeredShapes)],
         observed_tool_names: [...new Set(offeredTools)],
+        tool_search_admitted_before_pause: discoveryBeforePause,
+        expected_hold_phase: expectedPhase,
         // Recorded from the observation, not asserted: `admission_closed` is true
         // only because a real tool call reached the barrier and stopped there.
         requested: { admission_closed: parked && admittedDuringHold === 0 },
@@ -431,8 +441,9 @@ async function experimentHookCanHold(): Promise<ExperimentReport> {
   let heldFor: number | null = null;
   let aborted: boolean | null = null;
   let admitted = false;
-  const gate = new PauseGate();
-  const pauseHooks = createClaudePauseHooks(gate);
+  const observer = new ClaudeBackgroundWorkObserver();
+  const gate = new PauseGate({ backgroundWorkProbe: () => observer.count() });
+  const pauseHooks = createClaudePauseHooks(gate, observer);
   const composed = createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(dir), pauseHooks });
   let controller: Promise<void> = Promise.resolve();
 
@@ -503,8 +514,9 @@ async function experimentProductionSpill(): Promise<ExperimentReport> {
   const target = join(dir, 'after-read.txt');
   const payload = Array.from({ length: 600 }, (_, i) => `line ${i}: ${'payload '.repeat(12)}`).join('\n');
   writeFileSync(source, payload);
-  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000 });
-  const pauseHooks = createClaudePauseHooks(gate);
+  const observer = new ClaudeBackgroundWorkObserver();
+  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000, backgroundWorkProbe: () => observer.count() });
+  const pauseHooks = createClaudePauseHooks(gate, observer);
   const store = new TmpSpillStore(dir);
   let locator: string | null = null;
   let persistedPayload: string | null = null;
@@ -579,8 +591,9 @@ async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
   const dir = mkdtempSync(join(tmpdir(), 'adp-sdk-timeout-'));
   const target = join(dir, 'timeout.txt');
   const events: Array<{ type: string; failure?: string }> = [];
-  const gate = new PauseGate({ defaultTimeoutMs: 120_000, onEvent: (event) => events.push(event) });
-  const pauseHooks = createClaudePauseHooks(gate);
+  const observer = new ClaudeBackgroundWorkObserver();
+  const gate = new PauseGate({ defaultTimeoutMs: 120_000, backgroundWorkProbe: () => observer.count(), onEvent: (event) => events.push(event) });
+  const pauseHooks = createClaudePauseHooks(gate, observer);
   const composed = createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(dir), pauseHooks });
   let reached = false;
   let signalAborted: boolean | null = null;
@@ -629,8 +642,9 @@ async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
 async function experimentAlreadyRunningTool(): Promise<ExperimentReport> {
   const sdk = await import('@anthropic-ai/claude-agent-sdk');
   const dir = mkdtempSync(join(tmpdir(), 'adp-running-tool-'));
-  const gate = new PauseGate({ settleTimeoutMs: 5000, defaultTimeoutMs: 15_000 });
-  const hooks = createWorkerToolHooks({ agentType: 'developer', pauseHooks: createClaudePauseHooks(gate), store: new TmpSpillStore(dir) });
+  const observer = new ClaudeBackgroundWorkObserver();
+  const gate = new PauseGate({ settleTimeoutMs: 1000, defaultTimeoutMs: 15_000, backgroundWorkProbe: () => observer.count() });
+  const hooks = createWorkerToolHooks({ agentType: 'developer', pauseHooks: createClaudePauseHooks(gate, observer), store: new TmpSpillStore(dir) });
   let calls = 0;
   let inFlightAtRequest: number | null = null;
   let phaseWhileExecuting: string | null = null;
@@ -665,13 +679,81 @@ async function experimentAlreadyRunningTool(): Promise<ExperimentReport> {
     })) { observeModel(message as unknown as Record<string, unknown>); if (message.type === 'result') break; }
     await controller;
     const ok = calls === 1 && inFlightAtRequest === 1 && phaseWhileExecuting === 'pause_requested'
-      && inFlightWhileExecuting === 1 && pauseResult?.outcome === 'confirmed' && pausedAfterSettlement && settledCount === 0;
-    return { name: 'real SDK pause waits for an already-admitted tool to settle', ok,
+      && inFlightWhileExecuting === 1 && pauseResult?.outcome === 'requested' && !pausedAfterSettlement && settledCount === 0 && observer.count() === null;
+    return { name: 'real SDK active MCP call settles without certifying external quiescence', ok,
       detail: `calls=${calls} admitted=${inFlightAtRequest} during=${phaseWhileExecuting}/${inFlightWhileExecuting} outcome=${pauseResult?.outcome} settled=${settledCount}`,
       artifact: { production_hook_factory: 'createWorkerToolHooks', tool: 'mcp__pause-fixture__held_operation', calls,
         active_at_pause_request: inFlightAtRequest, phase_during_tool: phaseWhileExecuting, active_during_tool: inFlightWhileExecuting,
-        pause_outcome_after_tool: pauseResult?.outcome ?? null, paused_after_settlement: pausedAfterSettlement, active_after_settlement: settledCount } };
+        pause_outcome_after_tool: pauseResult?.outcome ?? null, paused_after_settlement: pausedAfterSettlement, active_after_settlement: settledCount, background_work_count: observer.count(),
+        external_quiescence_observed: false } };
   } finally { gate.cancel(); await controller; rmSync(dir, { recursive: true, force: true }); }
+}
+
+/** A real MCP callback returns while its detached operation keeps writing. */
+async function experimentReturnedOpaqueTool(): Promise<ExperimentReport> {
+  const sdk = await import('@anthropic-ai/claude-agent-sdk');
+  const { spawn } = await import('child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'adp-opaque-tool-'));
+  const target = join(dir, 'ongoing-writes');
+  const observer = new ClaudeBackgroundWorkObserver();
+  const gate = new PauseGate({ settleTimeoutMs: 250, defaultTimeoutMs: 15_000, backgroundWorkProbe: () => observer.count() });
+  const hooks = createWorkerToolHooks({ agentType: 'developer', pauseHooks: createClaudePauseHooks(gate, observer), store: new TmpSpillStore(dir) });
+  const toolName = 'mcp__pause-fixture__launch_background_operation';
+  let child: import('child_process').ChildProcess | undefined;
+  let calls = 0;
+  let activeAfterReturn: number | null = null;
+  let writesBefore: string | null = null;
+  let writesAfter: string | null = null;
+  let outcome: string | null = null;
+  let phaseWhileWriting: string | null = null;
+  const post = hooks.PostToolUse[0].hooks[0];
+  hooks.PostToolUse[0].hooks[0] = async (input, id, options) => {
+    const result = await post(input, id, options);
+    if ((input as { tool_name?: string }).tool_name === toolName) {
+      activeAfterReturn = gate.activeToolCount();
+      writesBefore = readFileSync(target, 'utf8');
+      outcome = (await gate.requestPause()).outcome;
+      await sleep(150);
+      writesAfter = readFileSync(target, 'utf8');
+      phaseWhileWriting = gate.currentPhase();
+      await gate.resume();
+    }
+    return result;
+  };
+  const service = sdk.createSdkMcpServer({ name: 'pause-fixture', version: '1.0.0', tools: [
+    sdk.tool('launch_background_operation', 'Start the requested asynchronous test operation once.', {}, async () => {
+      if (++calls !== 1) throw new Error('fixture operation must be launched once');
+      child = spawn(process.execPath, ['-e', 'const fs=require("fs"), p=process.argv[1]; let n=0; setInterval(()=>{fs.writeFileSync(p+".tmp", String(++n));fs.renameSync(p+".tmp",p)}, 20)', target], { detached: true, stdio: 'ignore' });
+      const deadline = Date.now() + 3000;
+      while (!existsSync(target) && Date.now() < deadline) await sleep(20);
+      if (!existsSync(target)) throw new Error('detached fixture did not start writing');
+      return { content: [{ type: 'text', text: 'Operation started; it continues asynchronously after this response.' }] };
+    }),
+  ] });
+  try {
+    for await (const message of sdk.query({
+      prompt: `Call ${toolName} exactly once and then stop. Do not call Bash or any other tool.`,
+      options: { cwd: dir, permissionMode: 'bypassPermissions', maxTurns: 5,
+        mcpServers: { 'pause-fixture': service }, allowedTools: [toolName], hooks: hooks as never },
+    })) { observeModel(message as unknown as Record<string, unknown>); if (message.type === 'result') break; }
+    const ok = calls === 1 && activeAfterReturn === 0 && writesBefore !== null && writesAfter !== null
+      && Number(writesAfter) > Number(writesBefore) && outcome === 'requested' && phaseWhileWriting === 'pause_requested'
+      && observer.count() === null;
+    return { name: 'real SDK returned MCP tool cannot certify pause over detached work', ok,
+      detail: `calls=${calls} activeAfterReturn=${activeAfterReturn} writes=${writesBefore}->${writesAfter} outcome=${outcome} phase=${phaseWhileWriting}`,
+      artifact: { production_hook_factory: 'createWorkerToolHooks', tool: toolName, calls,
+        active_after_tool_return: activeAfterReturn, writes_before_pause: writesBefore, writes_after_pause: writesAfter,
+        pause_outcome: outcome, phase_while_detached_work_continues: phaseWhileWriting,
+        background_work_count: observer.count(), external_quiescence_observed: false } };
+  } finally {
+    gate.cancel();
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>((resolve) => child!.once('exit', () => resolve()));
+      child.kill('SIGKILL');
+      await exited;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function main(): Promise<number> {
@@ -688,6 +770,7 @@ async function main(): Promise<number> {
     experimentProductionSpill,
     experimentSdkHookTimeout,
     experimentAlreadyRunningTool,
+    experimentReturnedOpaqueTool,
   ];
 
   const reports: ExperimentReport[] = [];

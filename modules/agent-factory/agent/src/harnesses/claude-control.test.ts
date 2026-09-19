@@ -1014,6 +1014,17 @@ describe('pause hook translation', () => {
 });
 
 describe('background work observation', () => {
+  it.each(['mcp__external__start_job', 'UnknownTool'])(
+    'cannot clear %s with local or sibling SDK task reports', (toolName) => {
+      const observer = new ClaudeBackgroundWorkObserver();
+      observer.noteToolStart(toolName, { run_in_background: false }, 'external');
+      observer.noteBackgroundReport([], 'external');
+      observer.noteToolStart('Task', {}, 'managed');
+      observer.noteBackgroundReport([], 'managed');
+      expect(observer.count()).toBeNull();
+    },
+  );
+
   it('does not infer a shell is quiescent from its invocation flags', () => {
     const observer = new ClaudeBackgroundWorkObserver();
 
@@ -1207,7 +1218,8 @@ describe('review regressions: attempt and detached-work ownership', () => {
     }
   });
 
-  it('ordinary Bash detachment cannot certify a paused run while a child is writing', async () => {
+  it.each(['Bash', 'mcp__external__start_job', 'UnrecognisedExternalTool'])(
+    '%s cannot certify a paused run after returning while detached work continues', async (toolName) => {
     const { spawn } = await import('child_process');
     const fs = await import('fs');
     const os = await import('os');
@@ -1217,14 +1229,16 @@ describe('review regressions: attempt and detached-work ownership', () => {
     const observer = new ClaudeBackgroundWorkObserver();
     const gate = new PauseGate({ backgroundWorkProbe: () => observer.count() });
     const hooks = createClaudePauseHooks(gate, observer);
-    await hooks.preToolUse({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 'shell', tool_input: { command: 'detached service' } } as never);
+    await hooks.preToolUse({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_use_id: 'opaque', tool_input: { command: 'detached service', run_in_background: false } } as never);
     const child = spawn(process.execPath, ['-e', 'let n=0; setInterval(()=>require("fs").writeFileSync(process.argv[1], String(++n)), 10)', file], { detached: true, stdio: 'ignore' });
     try {
       const deadline = Date.now() + 3000;
       while (!fs.existsSync(file) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       expect(fs.existsSync(file)).toBe(true);
-      await hooks.postToolUse({ hook_event_name: 'PostToolUse', tool_use_id: 'shell' } as never);
-      // The SDK's own background-task list cannot vouch for detached OS children.
+      await hooks.postToolUse({ hook_event_name: 'PostToolUse', tool_use_id: 'opaque' } as never);
+      expect(gate.activeToolCount()).toBe(0);
+      // A returned MCP response and the SDK's empty task list cannot certify an
+      // external service or detached process has stopped producing effects.
       await hooks.onStop({ hook_event_name: 'Stop', background_tasks: [] } as never);
       const result = await gate.requestPause();
       const before = fs.readFileSync(file, 'utf8');
