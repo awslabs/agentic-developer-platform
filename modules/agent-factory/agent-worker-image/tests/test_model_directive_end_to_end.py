@@ -49,6 +49,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -79,6 +80,11 @@ os.environ.setdefault("AWS_REGION", "us-east-1")
 # all. Deliberately different from every model requested below so a
 # substitution cannot hide behind a coincidental match.
 POD_DEFAULT_MODEL = "global.anthropic.claude-opus-5"
+
+# What a verified gateway decision resolves to in the enforcing tests below.
+# Distinct from both the pod default and every requested model, so "the decision
+# was consumed" cannot be satisfied by any other code path producing a match.
+GATEWAY_MODEL = "us.anthropic.claude-sonnet-4-7-v1"
 
 SENDER = {"id": 12345678, "login": "jane-dev", "type": "User"}
 REPO = "acme-corp/flagship-app"
@@ -209,6 +215,15 @@ def _subprocess_side_effect(*args, **kwargs):
     return MagicMock(returncode=0, stdout="", stderr="")
 
 
+def _commands(subprocess_run) -> list[list[str]]:
+    """Every argv this mock was asked to run, in order.
+
+    The command is positional in every `subprocess.run` call the worker makes,
+    including the agent launch itself (`subprocess.run(command, **run_options)`).
+    """
+    return [call.args[0] for call in subprocess_run.call_args_list if call.args]
+
+
 @pytest.fixture(autouse=True)
 def hermetic_process_env():
     """Restore ``os.environ`` exactly, because the worker mutates it in place.
@@ -256,11 +271,25 @@ def contained_worker(monkeypatch):
     monkeypatch.setenv("ADP_MODEL_POLICY_POSTURE", "report_only")
 
 
-def _run_worker(envelope, monkeypatch, tmp_path, *, pod_model=POD_DEFAULT_MODEL):
+def _run_worker(
+    envelope,
+    monkeypatch,
+    tmp_path,
+    *,
+    pod_model=POD_DEFAULT_MODEL,
+    policy_report=None,
+    expect_exit=0,
+):
     """Run the real ``entrypoint.main()`` and return the agent subprocess env.
 
     Returns the ``env`` mapping passed to the final ``subprocess.run`` -- the
     environment the Node agent would genuinely have started with.
+
+    ``policy_report`` attaches a verified gateway decision to the run identity, so
+    the enforcing path can be exercised through the real entrypoint. When
+    ``expect_exit`` is non-zero the worker is expected to refuse before launching,
+    and ``None`` is returned instead of an environment -- the assertion that the
+    agent never started is the point of those cases.
     """
     import entrypoint
     from entrypoint import main
@@ -271,7 +300,8 @@ def _run_worker(envelope, monkeypatch, tmp_path, *, pod_model=POD_DEFAULT_MODEL)
         monkeypatch.setenv("ANTHROPIC_MODEL", pod_model)
 
     monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)
-    monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", lambda *_: None)
+    identity = None if policy_report is None else SimpleNamespace(model_policy_report=policy_report)
+    monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", lambda *_: identity)
 
     work_dir = tmp_path / "repo"
     work_dir.mkdir(parents=True)
@@ -302,6 +332,24 @@ def _run_worker(envelope, monkeypatch, tmp_path, *, pod_model=POD_DEFAULT_MODEL)
 
         exit_code = main()
 
+        if expect_exit != 0:
+            # The refusal path: the worker must stop before the harness starts.
+            # Asserting on ``subprocess.run`` is what proves no agent was ever
+            # launched -- checking only the exit code would pass even if the
+            # model had already been invoked.
+            #
+            # Not `call_args is None`: this same mock also serves the `gh pr list`
+            # idempotency probe and the `git ls-remote` branch check, which run
+            # legitimately *before* step 4 where the policy is consumed. Asserting
+            # zero calls therefore failed for the wrong reason, and "loosen it to
+            # any call" would have asserted nothing at all. The property that
+            # actually matters is narrower and exact: no invocation of the agent
+            # harness itself, which `worker_command` always starts with `node`.
+            assert exit_code == expect_exit
+            launches = [cmd for cmd in _commands(subprocess_run) if cmd[:1] == ["node"]]
+            assert launches == [], f"worker launched the agent despite refusing: {launches}"
+            return None
+
         # A clean run: the envelope was processed and acked, not dropped by the
         # poison guard. `_delete_message` is mocked, so no real queue mutation
         # happens -- but asserting the ack is what proves the worker actually
@@ -309,9 +357,14 @@ def _run_worker(envelope, monkeypatch, tmp_path, *, pod_model=POD_DEFAULT_MODEL)
         # that would coincidentally still hold the pod default.
         assert exit_code == 0
         assert delete.call_count == 1
-        call = subprocess_run.call_args
-        agent_env = call.kwargs.get("env") or call[1].get("env")
-        assert agent_env is not None, "worker did not launch the agent subprocess"
+        # Select the agent launch explicitly rather than trusting the last call:
+        # the same mock serves the pre-launch `gh`/`git` probes, so "the most
+        # recent call" is only incidentally the harness and would start reading
+        # some other command's environment the moment ordering changed.
+        launches = [call for call in subprocess_run.call_args_list if call.args and call.args[0][:1] == ["node"]]
+        assert len(launches) == 1, f"expected exactly one agent launch, got {len(launches)}"
+        agent_env = launches[0].kwargs.get("env")
+        assert agent_env is not None, "worker launched the agent with no explicit environment"
         return agent_env
 
 
@@ -443,3 +496,148 @@ class TestProposedResolutionNeverMovesExecution:
         envelope["model_canonical"] = "global.anthropic.claude-sonnet-4-6"
         agent_env = _run_worker(envelope, monkeypatch, tmp_path)
         assert agent_env["ANTHROPIC_MODEL"] == "us.anthropic.claude-opus-4-6-v1"
+
+
+class TestEnforcingPostureIsConsumedByTheActualEntrypoint:
+    """PMM-07: the real entrypoint, not a ConfigLoader stand-in.
+
+    ``enforcing`` is supported in source so the path is provable end to end. No
+    configured environment is set to it -- the autouse fixture above keeps the
+    actual posture at ``report_only`` -- and each test here constructs the posture
+    locally. Every inference and network effect is mocked; no model is invoked.
+    """
+
+    @staticmethod
+    def _report(**changes):
+        from lib.run_identity import ModelPolicyReport
+
+        return ModelPolicyReport(
+            **{
+                "status": "proposed",
+                "posture": "enforcing",
+                "posture_verified": True,
+                "resolved_model_id": GATEWAY_MODEL,
+                "resolution_source": "principal-mapping",
+                "snapshot_digest": "b" * 64,
+                "policy_revision": "policy-7",
+                "catalogue_revision": "catalogue-4",
+                "allowlist_policy_drift": False,
+                "posture_revision": 7,
+                "assertion_key_id": "policy-key",
+                **changes,
+            }
+        )
+
+    def test_a_verified_enforcing_decision_becomes_the_executed_model(
+        self, monkeypatch, tmp_path
+    ):
+        """The decision reaches ``ANTHROPIC_MODEL`` in the real agent environment.
+
+        Constructed so the gateway's model differs from both the directive and the
+        pod default: if the decision were ignored, this would run the directive's
+        Opus and the assertion would fail.
+        """
+        envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
+        agent_env = _run_worker(
+            envelope, monkeypatch, tmp_path, policy_report=self._report()
+        )
+
+        assert agent_env["ANTHROPIC_MODEL"] == GATEWAY_MODEL
+        assert agent_env["ANTHROPIC_MODEL"] != POD_DEFAULT_MODEL
+        assert agent_env["ANTHROPIC_MODEL"] != "us.anthropic.claude-opus-4-6-v1"
+        assert agent_env["ADP_MODEL_POLICY_POSTURE"] == "enforcing"
+        assert agent_env["ADP_MODEL_POLICY_ENFORCED"] == "true"
+        # The requested model is still preserved separately for PMM-08 attribution.
+        assert agent_env["ADP_MODEL_REQUESTED"] == "us.anthropic.claude-opus-4-6-v1"
+
+    @pytest.mark.parametrize("posture", ["disabled", "report_only"])
+    def test_non_enforcing_postures_leave_the_legacy_model_untouched(
+        self, monkeypatch, tmp_path, posture
+    ):
+        """The actual configured behaviour: the decision is recorded, not applied.
+
+        Same gateway decision as the enforcing test, differing only in posture, so
+        this isolates the posture as the single thing that changes execution.
+        """
+        envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
+        agent_env = _run_worker(
+            envelope, monkeypatch, tmp_path, policy_report=self._report(posture=posture)
+        )
+
+        assert agent_env["ANTHROPIC_MODEL"] == "us.anthropic.claude-opus-4-6-v1"
+        assert agent_env["ANTHROPIC_MODEL"] != GATEWAY_MODEL
+        assert agent_env["ADP_MODEL_POLICY_POSTURE"] == posture
+        assert agent_env["ADP_MODEL_POLICY_ENFORCED"] == "false"
+        # The proposal is still recorded as comparison evidence for PMM-08.
+        assert agent_env["ADP_MODEL_POLICY_PROPOSED_MODEL"] == GATEWAY_MODEL
+
+    @pytest.mark.parametrize(
+        "report_changes",
+        [
+            {"status": "unavailable", "reason": "evidence_stale", "resolved_model_id": None},
+            {"posture_verified": False},
+            {"resolved_model_id": None},
+        ],
+        ids=["unavailable-decision", "unverified-posture", "no-resolved-model"],
+    )
+    def test_an_unsatisfiable_enforcing_posture_never_launches_the_agent(
+        self, monkeypatch, tmp_path, report_changes
+    ):
+        """The anti-bypass property, proven against the real launch path.
+
+        Each case is an enforcing posture the gateway could not satisfy. The run
+        must stop *before* the harness starts -- it must not fall back to the
+        legacy assignment, which is what exception handling or a default
+        substitution would silently do. ``_run_worker`` asserts the agent
+        subprocess was never invoked.
+        """
+        envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
+
+        assert (
+            _run_worker(
+                envelope,
+                monkeypatch,
+                tmp_path,
+                policy_report=self._report(**report_changes),
+                expect_exit=1,
+            )
+            is None
+        )
+
+    def test_editable_environment_variables_cannot_force_enforcement(
+        self, monkeypatch, tmp_path
+    ):
+        """Posture comes from the verified decision, never from the environment.
+
+        ``ADP_MODEL_POLICY_*`` are telemetry this worker writes. Anything in the
+        pod can set them, so honouring them as input would let a compromised or
+        misconfigured pod both force and defeat enforcement. Here the environment
+        screams ``enforcing`` while the verified report says ``report_only``: the
+        report must win, and the legacy model must run.
+        """
+        monkeypatch.setenv("ADP_MODEL_POLICY_POSTURE", "enforcing")
+        monkeypatch.setenv("ADP_MODEL_POLICY_ENFORCED", "true")
+        monkeypatch.setenv("ADP_MODEL_POLICY_PROPOSED_MODEL", GATEWAY_MODEL)
+        envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
+
+        agent_env = _run_worker(
+            envelope,
+            monkeypatch,
+            tmp_path,
+            policy_report=self._report(posture="report_only"),
+        )
+
+        assert agent_env["ANTHROPIC_MODEL"] == "us.anthropic.claude-opus-4-6-v1"
+        # The telemetry is overwritten with the truth, not inherited from the pod.
+        assert agent_env["ADP_MODEL_POLICY_POSTURE"] == "report_only"
+        assert agent_env["ADP_MODEL_POLICY_ENFORCED"] == "false"
+
+    def test_no_gateway_report_at_all_preserves_the_legacy_model(
+        self, monkeypatch, tmp_path
+    ):
+        """Mixed-version: an older gateway sends no policy, and nothing changes."""
+        envelope = _webhook_envelope("us.anthropic.claude-opus-4-6-v1")
+        agent_env = _run_worker(envelope, monkeypatch, tmp_path)
+
+        assert agent_env["ANTHROPIC_MODEL"] == "us.anthropic.claude-opus-4-6-v1"
+        assert "ADP_MODEL_POLICY_ENFORCED" not in agent_env

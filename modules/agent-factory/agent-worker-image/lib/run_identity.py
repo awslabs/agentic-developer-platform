@@ -40,6 +40,24 @@ MODEL_POLICY_KEYS_FILE_ENV = "ADP_CONTROL_ENVELOPE_KEYS_FILE"
 MODEL_POLICY_AUDIENCE = "adp-agent-model-policy"
 MODEL_POLICY_ACTION = "resolve_model"
 MODEL_POLICY_SCHEMA_VERSION = 1
+#: What this worker promises to *honour*, declared to the gateway on bootstrap.
+#:
+#: Distinct from ``MODEL_POLICY_SCHEMA_VERSION``, which versions the decision
+#: payload's shape.  This asserts a capability: "if you hand me an enforcing
+#: decision, I will execute on it or fail, and I will not quietly launch on my
+#: legacy assignment instead".  The gateway withholds run authority from a client
+#: that does not declare it while enforcing, because version skew would otherwise
+#: bypass enforcement invisibly.
+#:
+#: It is a capability assertion only and confers no authority whatsoever: the
+#: gateway decides the posture and the model, and declaring a higher number here
+#: cannot obtain a decision, relax a gate, or alter what is signed.
+MODEL_POLICY_CONTRACT_VERSION = 1
+#: The closed posture vocabulary this worker understands.  ``enforcing`` is
+#: supported *in source* here so the runtime can be proven end-to-end; every
+#: actually configured environment remains ``report_only``, and the flip itself
+#: is PMM-09's separate, audited operational change.
+MODEL_POLICY_POSTURES = frozenset({"disabled", "report_only", "enforcing"})
 ENVELOPE_VERSION = "adpe1"
 ENVELOPE_ISSUER = "adp-gateway-control"
 MAX_ENVELOPE_TTL_SECONDS = 30
@@ -88,14 +106,26 @@ class ModelPolicyVerificationError(ValueError):
 
 @dataclass(frozen=True)
 class ModelPolicyReport:
-    """Sanitized, non-authoritative report-only evidence from bootstrap.
+    """Sanitized evidence from bootstrap, and — under ``enforcing`` — an input.
 
-    The proposed model is intentionally not an execution input.  PMM-06 verifies
-    and consumes the gateway-signed decision as comparison evidence; PMM-09 owns
-    the separate enforcing flip that may make it an execution input.
+    Under ``disabled`` and ``report_only`` the proposed model is deliberately
+    *not* an execution input: the legacy assignment still runs and this is pure
+    comparison evidence.  Under ``enforcing`` the verified decision is what the
+    harness must launch on, and a run that cannot honour it must fail rather than
+    fall back.  Which of those applies is decided by the gateway and read from
+    :attr:`posture` — never inferred from this worker's own configuration, which
+    an operator could edit.
+
+    ``enforcing`` is supported in source so the path is provable end to end.  No
+    configured environment is set to it; PMM-09 owns that operational flip.
     """
 
     status: Literal["proposed", "unavailable"]
+    #: The live posture the gateway verified for this hop.  ``None`` only when the
+    #: gateway could not establish one, which is never treated as permissive.
+    posture: Literal["disabled", "report_only", "enforcing"] | None = None
+    #: Whether the gateway proved the posture against committed platform state.
+    posture_verified: bool = False
     reason: str | None = None
     requested_model_id: str | None = None
     resolved_model_id: str | None = None
@@ -109,10 +139,83 @@ class ModelPolicyReport:
     posture_revision: int | None = None
     assertion_key_id: str | None = None
 
+    @property
+    def enforced(self) -> bool:
+        """True only for a verified enforcing posture with a usable decision.
+
+        Every condition is required, and none may be relaxed:
+
+        * the posture must be ``enforcing`` — not merely "not report_only";
+        * it must be *verified*, so an unknown posture never enforces and never
+          silently becomes permissive either (the gateway withholds authority for
+          that case, and this is the second, independent check);
+        * there must be a signed proposal with a resolved model to execute on.
+
+        The caller uses this to decide whether to *substitute* the model.  It is
+        not the place that decides whether to *refuse*: an enforcing posture whose
+        decision is unusable must stop the run, which is
+        :meth:`enforcement_failure`, because returning False here would silently
+        hand the run back to its legacy assignment.
+        """
+        return (
+            self.posture == "enforcing"
+            and self.posture_verified
+            and self.status == "proposed"
+            and bool(self.resolved_model_id)
+        )
+
+    @property
+    def enforcement_failure(self) -> str | None:
+        """The refusal reason when enforcing is active but unusable, else None.
+
+        The asymmetry is the point.  Under ``enforcing`` an unavailable or
+        unverified decision cannot be downgraded to report-only behaviour by
+        exception handling or default substitution: that is exactly the bypass
+        PMM-07 has to make impossible.  Under ``disabled``/``report_only`` the
+        same unavailable decision is not a failure at all, because the legacy
+        assignment is the correct outcome there.
+        """
+        if self.posture != "enforcing":
+            return None
+        if not self.posture_verified:
+            return "posture_unverified"
+        if self.status != "proposed":
+            return self.reason or "decision_unavailable"
+        if not self.resolved_model_id:
+            return "decision_malformed"
+        return None
+
+    def effective_model(self, legacy_model: str) -> str:
+        """The model this run must actually use.
+
+        Returns the gateway's resolved model only under a verified enforcing
+        proposal; otherwise the unchanged legacy assignment.  Callers must consult
+        :attr:`enforcement_failure` first — this method deliberately cannot
+        express "refuse", so using it alone under a broken enforcing posture would
+        preserve legacy behaviour and defeat enforcement.
+        """
+        if self.enforced:
+            assert self.resolved_model_id is not None  # narrowed by ``enforced``
+            return self.resolved_model_id
+        return legacy_model
+
     def environment(self, legacy_model: str) -> dict[str, str]:
-        """Return comparison telemetry without changing ``ANTHROPIC_MODEL``."""
+        """Return policy telemetry for this run.
+
+        Under ``disabled``/``report_only`` this is comparison evidence only and
+        ``ANTHROPIC_MODEL`` is untouched.  Under a verified enforcing proposal the
+        caller substitutes the model; the variables here still describe what
+        happened rather than driving it, and no consumer may treat them as
+        authority — they are ordinary environment variables that anything in the
+        pod could have written.
+        """
         values = {
-            "ADP_MODEL_POLICY_POSTURE": "report_only",
+            # Reported, never assumed.  Hard-coding ``report_only`` here made the
+            # telemetry lie under any other posture, and lying in the permissive
+            # direction is the worst available default.
+            "ADP_MODEL_POLICY_POSTURE": self.posture or "unknown",
+            "ADP_MODEL_POLICY_POSTURE_VERIFIED": str(self.posture_verified).lower(),
+            "ADP_MODEL_POLICY_ENFORCED": str(self.enforced).lower(),
             "ADP_MODEL_POLICY_STATUS": self.status,
         }
         if self.snapshot_allowlist_policy_revision is not None:
@@ -330,8 +433,31 @@ def parse_model_policy_report(
     public_keys: dict[str, Ed25519PublicKey] | None = None,
     now: datetime | None = None,
 ) -> ModelPolicyReport:
-    """Verify and reduce a bootstrap policy response to report-only telemetry."""
-    if not isinstance(value, dict) or value.get("posture") != "report_only":
+    """Verify a bootstrap policy response and reduce it to a usable report.
+
+    Accepts all three postures.  ``report_only`` and ``disabled`` yield evidence
+    the caller ignores for execution; ``enforcing`` yields a decision the caller
+    must execute on or refuse.  An unrecognised posture is rejected outright
+    rather than coerced to the permissive value.
+
+    A verified posture with no consumable decision is still returned (with
+    ``status="unavailable"``), because the *caller's* correct behaviour depends on
+    the posture it failed under: legacy assignment under report_only, refusal
+    under enforcing.  Discarding the posture here would force that decision to be
+    guessed from local configuration.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("invalid model-policy response")
+    posture = value.get("posture")
+    verified = value.get("posture_verified")
+    if posture is not None and posture not in MODEL_POLICY_POSTURES:
+        raise ValueError("invalid model-policy response")
+    if type(verified) is not bool:
+        # Absent or non-boolean: an older gateway that cannot prove the posture.
+        # Treated as unverified, never as verified-permissive.
+        verified = False
+    if posture is None and verified:
+        # "Verified" with no posture is self-contradictory; trust neither half.
         raise ValueError("invalid model-policy response")
     status = value.get("status")
     if status == "unavailable":
@@ -353,6 +479,8 @@ def parse_model_policy_report(
                 raise ValueError("invalid model-policy evidence")
         return ModelPolicyReport(
             status="unavailable",
+            posture=posture,
+            posture_verified=verified,
             reason=_safe_policy_text(value.get("reason")),
             snapshot_allowlist_policy_revision=snapshot_allowlist_revision,
             live_allowlist_policy_revision=live_allowlist_revision,
@@ -377,7 +505,10 @@ def parse_model_policy_report(
     decision_chain = _safe_policy_text(decision.get("correlation_id"))
     if (
         decision.get("invocation_id") != invocation_id
-        or decision.get("runtime_posture") != "report_only"
+        # The signed decision's own posture must match the envelope's. They are
+        # produced together by the gateway, so disagreement means the response was
+        # assembled from mismatched parts and neither half can be trusted.
+        or decision.get("runtime_posture") != posture
         or source not in _RESOLUTION_SOURCES
         or len(digest) != 64
         or any(char not in "0123456789abcdef" for char in digest)
@@ -407,6 +538,8 @@ def parse_model_policy_report(
         raise ModelPolicyVerificationError("snapshot_unsupported_revision")
     return ModelPolicyReport(
         status="proposed",
+        posture=posture,
+        posture_verified=verified,
         requested_model_id=requested,
         resolved_model_id=resolved,
         resolution_source=source,
@@ -418,6 +551,37 @@ def parse_model_policy_report(
         allowlist_policy_drift=allowlist_drift,
         posture_revision=posture_revision,
         assertion_key_id=key_id,
+    )
+
+
+def _unconsumable_report(policy: object, *, reason: str) -> ModelPolicyReport:
+    """Build the report for a response that failed verification.
+
+    The posture is salvaged from the raw response even though verification
+    failed, and that asymmetry is deliberate and safe:
+
+    * it can only cause a **refusal**, never an execution.  ``status`` is
+      ``unavailable``, so :attr:`ModelPolicyReport.enforced` is False and no model
+      can be substituted from an unverified response;
+    * dropping it would be unsafe in the other direction.  A malformed decision
+      under a claimed ``enforcing`` posture would look like "not enforcing", and
+      the run would quietly continue on its legacy model — the precise bypass
+      this work exists to close.
+
+    So an unverifiable claim of ``enforcing`` stops the run, and an unverifiable
+    claim of ``report_only`` cannot grant anything it did not already have. Any
+    unrecognised value is dropped rather than guessed at, which also lands on
+    refusal only if the gateway separately proved a posture.
+    """
+    posture = policy.get("posture") if isinstance(policy, dict) else None
+    if posture not in MODEL_POLICY_POSTURES:
+        posture = None
+    return ModelPolicyReport(
+        status="unavailable",
+        posture=posture,
+        # Never verified here by construction: verification is what just failed.
+        posture_verified=False,
+        reason=reason,
     )
 
 
@@ -478,7 +642,15 @@ class RunIdentitySession:
         if credentials is None:
             raise RunIdentityError("worker transport identity unavailable")
         data = json.dumps(
-            {"invocation_id": self._invocation_id, "envelope_digest": self._digest}
+            {
+                "invocation_id": self._invocation_id,
+                "envelope_digest": self._digest,
+                # Declares only that this worker will honour an enforcing decision
+                # rather than launching on its legacy assignment. It carries no
+                # authority: it cannot select a model, relax a gate or influence
+                # what the gateway signs. An older gateway ignores the field.
+                "model_policy_contract": MODEL_POLICY_CONTRACT_VERSION,
+            }
         ).encode()
         signed = botocore.awsrequest.AWSRequest(
             method="POST",
@@ -549,28 +721,52 @@ class RunIdentitySession:
                         public_keys=load_model_policy_verification_keys(),
                     )
                 except ModelPolicyVerificationError as exc:
-                    self.model_policy_report = ModelPolicyReport(
-                        status="unavailable",
-                        reason=exc.reason,
-                    )
+                    self.model_policy_report = _unconsumable_report(policy, reason=exc.reason)
                 except ValueError:
-                    self.model_policy_report = ModelPolicyReport(
-                        status="unavailable",
-                        reason="decision_malformed",
+                    self.model_policy_report = _unconsumable_report(
+                        policy, reason="decision_malformed"
                     )
-                if self.model_policy_report.status == "proposed":
-                    logger.info("Model-policy decision received and ignored by report-only worker")
+                # The message must describe what actually happened. A report-only
+                # warning that implies the run was blocked before inference is a
+                # false statement about enforcement, and an operator reading it
+                # would conclude the gate works when nothing was gated.
+                report = self.model_policy_report
+                failure = report.enforcement_failure
+                if failure is not None:
+                    logger.error(
+                        "Enforcing model policy cannot be satisfied; run must not proceed "
+                        "on its legacy model (reason=%s)",
+                        failure,
+                    )
+                elif report.enforced:
+                    logger.info(
+                        "Enforcing model policy: launching on the gateway-decided model"
+                    )
+                elif report.status == "proposed":
+                    logger.info(
+                        "Model-policy decision received and recorded; posture=%s leaves the "
+                        "existing model assignment in effect (nothing was blocked)",
+                        report.posture or "unknown",
+                    )
                 else:
                     logger.warning(
-                        "Model-policy decision unavailable in report-only mode (reason=%s)",
-                        self.model_policy_report.reason,
+                        "Model-policy decision unavailable (posture=%s, reason=%s); the "
+                        "existing model assignment stays in effect and no inference was "
+                        "blocked",
+                        report.posture or "unknown",
+                        report.reason,
                     )
                 # A transient missing key/snapshot may recover on the next
                 # refresh. Pin only an authenticated proposal, or the explicit
                 # mixed-version compatibility outcome, for this worker run.
-                self._model_policy_reported = (
-                    self.model_policy_report.status == "proposed"
-                    or self.model_policy_report.reason == "snapshot_unsupported_revision"
+                #
+                # An enforcing failure is never pinned: it must be re-evaluated on
+                # every refresh so an operator's rollback to report_only, or a
+                # recovered decision, is picked up instead of the run staying
+                # latched to a stale refusal.
+                self._model_policy_reported = failure is None and (
+                    report.status == "proposed"
+                    or report.reason == "snapshot_unsupported_revision"
                 )
         with self._write_lock:
             if self._stop.is_set():
