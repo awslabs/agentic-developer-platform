@@ -114,18 +114,61 @@ repo for the first match. And before "fixing" formatting across a file, check wh
 tool is actually enforced on that path and whether the existing code complies — if
 neither, a reformat is churn wearing the costume of hygiene.
 
-## 6. Two bogus green runs from wrong interpreter and wrong path
+## 6. A green suite is not evidence a security fix is held in place
+
+The most valuable finding of the session, and it came from running the *full* suite
+rather than the affected subset.
+
+Five failures appeared that pass on clean `origin/main`, reproducing deterministically in
+isolation. Bisect: `c6064c50` closed four fail-open authority surfaces; two test fixtures
+had been passing `"human_event"` as a grant's authority kind — a string that is **not in
+`RECOGNIZED_AUTHORITY_KINDS` and is minted nowhere in `src/`**. Those fixtures were green
+*because of* the fail-open. The fix was right; the tests were wrong.
+
+Then the part worth remembering. I restored the fail-open by mutation and ran everything
+plausibly related: the dedicated authoring-refusal suite (33 passed), model-identity and
+github-operation suites (94 passed), the vault/assume-role route tests (39 passed).
+**Nothing in the repository failed.** A real fix — one surface fronting installation-token
+minting — had landed with no test holding it.
+
+Two lessons:
+
+- A happy-path test passes under both the secure and the fail-open version, so a suite
+  full of them provides *zero* protection for a deny rule. Guarding a fence needs a test
+  of the **refusal**, and also one of what must still be **permitted** — otherwise "deny
+  everything but the engine kind" looks like a pure tightening while breaking real
+  callers.
+- When a commit's justification is "this used to fail open", the natural next question is
+  "what fails if it fails open again?" If the answer is *nothing*, the fix is one refactor
+  from being undone silently.
+
+**Generalizable:** run the full suite, not the affected subset — the subset cannot show
+you a fixture that was only ever green because of the bug you fixed. And after landing a
+fix, mutate it back and confirm something goes red.
+
+## 7. Two bogus green runs from wrong interpreter and wrong path
 
 A gateway test run reported **exit code 0** while printing `No module named pytest`; a
 second reported exit 0 with `no tests ran` because the file lives under
 `tests/orchestration/`, not `tests/`. Both would have been recorded as passes by anything
 reading only the exit status.
 
-**Generalizable:** for any test invocation, read the *summary line*, not the exit code. A
-run that collected zero tests is not a pass, and `python` is not necessarily the
-interpreter that has your dev dependencies.
+A third, worse one: a mutation probe printed `RESTORED byte-identical` and `GIT CLEAN`
+after a `cp -f` that had **silently failed** (relative path, wrong cwd), leaving the
+mutant in a tracked source file. Both messages were produced by checks that ran against
+stale state. I caught it only by grepping for the mutant marker.
 
-## 7. Pre-existing defect found, scoped out, and recorded rather than fixed
+**Generalizable:** for any test invocation, read the *summary line*, not the exit code — a
+run that collected zero tests is not a pass, and `python` is not necessarily the
+interpreter holding your dev dependencies. For any restore, assert the mutant is **absent**
+and the original text is **present**; "I copied the backup over it" is a claim about a
+command's success, not about the file.
+
+A related trap in the same family: `cd X && cmd` inside a `$(...)`/subshell does not
+persist, so a later command in the same script can run from a different directory than the
+one you think you are in. Prefer absolute paths in probe scripts.
+
+## 8. Pre-existing defect found, scoped out, and recorded rather than fixed
 
 `main()` crashes with `AttributeError` on any truthy non-dict `payload`, at
 `(envelope.get("payload") or {}).get("provider")` — three sites, present on `origin/main`
