@@ -309,6 +309,30 @@ test('signed pause and resume preserve acceptance order across delayed revalidat
 });
 
 describe('live credential rotation', () => {
+  it.each(['missing', 'empty', 'unreadable', 'no-run-id'])('withholds controls for %s verification state', async (condition) => {
+    const directory = mkdtempSync(join(tmpdir(), 'adp-control-readiness-'));
+    const path = join(directory, 'keys.json');
+    if (condition !== 'missing') writeFileSync(path, condition === 'empty' ? '{}' : JSON.stringify({
+      [KEY_ID]: GATEWAY_KEYS.publicKey.export({ format: 'pem', type: 'spki' }),
+    }));
+    const store = makeStore({ supported: new Set<ControlAction>(['pause', 'resume']) });
+    const { listener, port } = await startListener(store, ENABLED_ENV, isoSecond(Date.now() + 3600_000), {
+      runId: condition === 'no-run-id' ? '' : RUN_ID,
+      envelopeKeys: ENVELOPE_KEYS,
+      // A directory is reliably unreadable as a key file, including under root.
+      envelopeKeysFile: condition === 'unreadable' ? directory : path,
+    });
+    try {
+      const state = (await request(port, 'GET', '/agent/state')).body;
+      expect(state.capabilities.pause).toBe(false);
+      expect(state.capabilities.resume).toBe(false);
+      expect(state.verification_key_ids).toEqual([]);
+    } finally {
+      await listener.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('reloads staged and retired public keys while preserving recorded command outcomes', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'adp-control-keys-'));
     const path = join(directory, 'keys.json');
@@ -333,13 +357,18 @@ describe('live credential rotation', () => {
       write({ [KEY_ID]: oldPem, next: nextPem });
       const ping = await request(port, 'GET', '/agent/ping');
       expect(ping.body.verification_key_ids).toEqual([KEY_ID, 'next'].sort());
+      const staged = (await request(port, 'GET', '/agent/state')).body;
+      expect(staged.verification_key_ids).toEqual([KEY_ID, 'next'].sort());
+      expect(staged.capabilities.pause).toBe(true);
       expect((await request(port, 'POST', '/agent/pause', { body, envelope: nextProof })).status).toBe(200);
       write({ next: nextPem });
+      expect((await request(port, 'GET', '/agent/state')).body.verification_key_ids).toEqual(['next']);
       expect((await request(port, 'POST', '/agent/pause', { body, envelope: oldProof })).status).toBe(403);
       expect((await request(port, 'POST', '/agent/pause', { body, envelope: nextProof })).status).toBe(200);
       rmSync(path);
       expect((await request(port, 'POST', '/agent/pause', { body, envelope: oldProof })).status).toBe(403);
       expect((await request(port, 'GET', '/agent/ping')).body.verification_key_ids).toEqual([]);
+      expect((await request(port, 'GET', '/agent/state')).body.capabilities.pause).toBe(false);
     } finally {
       await listener.stop();
       rmSync(directory, { recursive: true, force: true });
@@ -698,7 +727,7 @@ describe('read routes', () => {
 
     expect(reply.status).toBe(200);
     expect(Object.keys(reply.body).sort()).toEqual(
-      ['active_tool_count', 'capabilities', 'commands', 'generation', 'state', 'updated_at'].sort(),
+      ['active_tool_count', 'capabilities', 'commands', 'generation', 'state', 'updated_at', 'verification_key_ids'].sort(),
     );
     expect(reply.body.state).toBe('running');
     expect(reply.body.commands).toEqual([]);

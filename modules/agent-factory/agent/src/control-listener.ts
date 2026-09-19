@@ -329,7 +329,19 @@ export class ControlListener {
     if (method === 'GET' && path === '/agent/state') {
       // A state read touches no SDK object and starts no assistant turn — it is
       // served entirely from recorded state (revival-design §2).
-      this.writeJson(res, 200, this.config.store.snapshot());
+      const state = this.config.store.snapshot();
+      const keyIds = this.verificationKeyIds();
+      const ready = keyIds.length > 0;
+      this.writeJson(res, 200, {
+        ...state,
+        verification_key_ids: keyIds,
+        capabilities: {
+          pause: ready && state.capabilities.pause,
+          resume: ready && state.capabilities.resume,
+          steer: ready && state.capabilities.steer,
+          abort: ready && state.capabilities.abort,
+        },
+      });
       return;
     }
     if (path === RESERVED_EVENTS_PATH) {
@@ -625,6 +637,15 @@ export class ControlListener {
 
   private verificationKeys(): Map<string, KeyObject> {
     return this.config.envelopeKeysFile ? readControlKeyring(this.config.envelopeKeysFile) : (this.config.envelopeKeys ?? new Map());
+  }
+
+  private verificationKeyIds(): string[] {
+    if (!this.config.runId?.trim()) return [];
+    const ids = [...this.verificationKeys().keys()];
+    // Report only bounded public identifiers. The gateway intersects these
+    // with its current signer; a retired projection cannot advertise support.
+    if (ids.length > 8 || ids.some((id) => !/^[A-Za-z0-9._-]{1,128}$/.test(id))) return [];
+    return ids.sort();
   }
 
   /**

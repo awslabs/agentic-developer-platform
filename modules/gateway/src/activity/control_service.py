@@ -837,11 +837,20 @@ class ControlService:
         raw_caps = payload.get("capabilities")
         raw_caps = raw_caps if isinstance(raw_caps, dict) else {}
         authorization_ready = self.authorization_ready()
+        key_ids = payload.get("verification_key_ids")
+        config = os.environ if self._env is None else self._env
+        verification_ready = (
+            isinstance(key_ids, list)
+            and 0 < len(key_ids) <= 8
+            and all(isinstance(kid, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", kid) for kid in key_ids)
+            and config.get("AGENT_CONTROL_ENVELOPE_KEY_ID") in key_ids
+        )
+        controls_ready = authorization_ready and verification_ready
         capabilities = ControlCapabilities(
-            pause=authorization_ready and bool(raw_caps.get("pause")) and "pause" in SUPPORTED_ACTIONS,
-            resume=authorization_ready and bool(raw_caps.get("resume")) and "resume" in SUPPORTED_ACTIONS,
-            steer=authorization_ready and bool(raw_caps.get("steer")) and "steer" in SUPPORTED_ACTIONS,
-            abort=authorization_ready and bool(raw_caps.get("abort")) and "abort" in SUPPORTED_ACTIONS,
+            pause=controls_ready and bool(raw_caps.get("pause")) and "pause" in SUPPORTED_ACTIONS,
+            resume=controls_ready and bool(raw_caps.get("resume")) and "resume" in SUPPORTED_ACTIONS,
+            steer=controls_ready and bool(raw_caps.get("steer")) and "steer" in SUPPORTED_ACTIONS,
+            abort=controls_ready and bool(raw_caps.get("abort")) and "abort" in SUPPORTED_ACTIONS,
         )
 
         state = payload.get("state")
@@ -882,7 +891,13 @@ class ControlService:
             run_id=run_id,
             generation=target.generation,
             available=True,
-            reason=None if authorization_ready else "live control authorization is unavailable",
+            reason=(
+                "live control authorization is unavailable"
+                if not authorization_ready
+                else "worker control verification is unavailable"
+                if not verification_ready
+                else None
+            ),
             capabilities=capabilities,
             state=resolved_state,
             active_tool_count=active_tool_count,

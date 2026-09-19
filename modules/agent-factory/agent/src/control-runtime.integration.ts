@@ -49,6 +49,8 @@ import type { AddressInfo } from 'net';
 import { join } from 'path';
 import { createClaudePauseHooks, ClaudeBackgroundWorkObserver, ClaudeControlAdapter, CLAUDE_SDK_VERSION } from './harnesses/claude-control';
 import { PauseGate } from './pause-gate';
+import { createWorkerToolHooks } from './developer-checkpoints';
+import { TmpSpillStore, serializeToolResponse } from './utils/spill';
 
 /** Recorded outcome of one experiment. `null` anywhere means "not observed". */
 interface ExperimentReport {
@@ -124,6 +126,7 @@ async function experimentBarrierBlocksSideEffects(
     backgroundWorkProbe: () => observer.count(),
   });
   const hooks = createClaudePauseHooks(gate, observer);
+  const composed = createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(dir), pauseHooks: hooks });
 
   const denials: string[] = [];
   const admissions: string[] = [];
@@ -155,6 +158,7 @@ async function experimentBarrierBlocksSideEffects(
         maxTurns: 8,
         cwd: dir,
         hooks: {
+          ...composed,
           PreToolUse: [{
             hooks: [async (input: unknown, id?: string, opts?: { signal: AbortSignal }) => {
               const name = (input as { tool_name?: string }).tool_name ?? 'tool';
@@ -173,7 +177,7 @@ async function experimentBarrierBlocksSideEffects(
                 // Only the requested scenario marks the measured hold as begun.
                 parkedAt.push(Date.now());
               }
-              const result = await hooks.preToolUse(
+              const result = await composed.PreToolUse![0].hooks[0](
                 input as never,
                 id,
                 opts as { signal: AbortSignal } | undefined,
@@ -186,10 +190,6 @@ async function experimentBarrierBlocksSideEffects(
             }],
             timeout: hooks.preToolUseTimeoutSeconds,
           }],
-          PostToolUse: [{ hooks: [async (input: unknown) => hooks.postToolUse(input as never)] }],
-          PostToolUseFailure: [{ hooks: [async (input: unknown) => hooks.postToolUse(input as never)] }],
-          Stop: [{ hooks: [async (input: unknown) => hooks.onStop(input as never)] }],
-          SubagentStop: [{ hooks: [async (input: unknown) => hooks.onStop(input as never)] }],
         },
       },
     });
@@ -340,7 +340,10 @@ async function experimentResumeSameExecution(): Promise<ExperimentReport> {
         options: { permissionMode: 'bypassPermissions', maxTurns: 6, cwd: dir },
       },
       maxRetries: 0,
-      attemptInputFactory: adapter.attemptInputFactory((hooks) => ({ hooks: {
+      attemptInputFactory: adapter.attemptInputFactory((hooks) => {
+        const composed = createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(dir), pauseHooks: hooks });
+        return { hooks: {
+        ...composed,
         PreToolUse: [{ timeout: hooks.preToolUseTimeoutSeconds, hooks: [async (input: unknown, id?: string, opts?: { signal: AbortSignal }) => {
           const fields = input as { tool_name?: string; tool_input?: { file_path?: string } };
           const selected = fields.tool_name === 'Write' && fields.tool_input?.file_path === second && !attemptedPause;
@@ -359,15 +362,12 @@ async function experimentResumeSameExecution(): Promise<ExperimentReport> {
               races.repeated_resume = { serialized: released === 1 && gate.currentPhase() === 'running', errored: false };
             })();
           }
-          const result = await hooks.preToolUse(input as never, id, opts);
+          const result = await composed.PreToolUse![0].hooks[0](input as never, id, opts);
           if (selected && (result as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision !== 'deny') heldAdmissions += 1;
           return result;
         }] }],
-        PostToolUse: [{ hooks: [(input: unknown) => hooks.postToolUse(input as never)] }],
-        PostToolUseFailure: [{ hooks: [(input: unknown) => hooks.postToolUse(input as never)] }],
-        Stop: [{ hooks: [(input: unknown) => hooks.onStop(input as never)] }],
-        SubagentStop: [{ hooks: [(input: unknown) => hooks.onStop(input as never)] }],
-      } })),
+      } };
+      }),
       onAttemptHandle: adapter.onAttemptHandle(),
       cancellation: adapter.cancellationSource(),
       beforeOutput: () => gate.waitForOutput(),
@@ -424,6 +424,10 @@ async function experimentHookCanHold(): Promise<ExperimentReport> {
   let heldFor: number | null = null;
   let aborted: boolean | null = null;
   let admitted = false;
+  const gate = new PauseGate();
+  const pauseHooks = createClaudePauseHooks(gate);
+  const composed = createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(dir), pauseHooks });
+  let controller: Promise<void> = Promise.resolve();
 
   try {
     const iterator = query({
@@ -433,25 +437,21 @@ async function experimentHookCanHold(): Promise<ExperimentReport> {
         maxTurns: 2,
         cwd: dir,
         hooks: {
+          ...composed,
           PreToolUse: [{
             hooks: [async (_input: unknown, _id?: string, opts?: { signal: AbortSignal }) => {
+              await gate.requestPause();
               const started = Date.now();
-              // Park exactly as the barrier does, and watch the abandonment
-              // signal — the only channel through which a CLI-side hook timeout
-              // reaches JS.
-              await new Promise<void>((resolve) => {
-                const timer = setTimeout(resolve, HOLD_MS);
-                opts?.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); },
-                  { once: true });
-              });
+              controller = (async () => { await sleep(HOLD_MS); await gate.resume(); })();
+              const result = await composed.PreToolUse![0].hooks[0](_input as never, _id, opts);
               heldFor = Date.now() - started;
               aborted = opts?.signal?.aborted ?? null;
-              admitted = true;
-              return {};
+              admitted = (result as { hookSpecificOutput?: { permissionDecision?: string } }).hookSpecificOutput?.permissionDecision !== 'deny';
+              return result;
             }],
             // 30-minute default plus the adapter's margin, i.e. the bound the
             // shipped code asks for rather than one chosen to make this pass.
-            timeout: createClaudePauseHooks(new PauseGate()).preToolUseTimeoutSeconds,
+            timeout: pauseHooks.preToolUseTimeoutSeconds,
           }],
         },
       },
@@ -477,13 +477,145 @@ async function experimentHookCanHold(): Promise<ExperimentReport> {
         held_ms: heldFor,
         signal_aborted: aborted,
         hook_reached: admitted,
-        hook_timeout_seconds: createClaudePauseHooks(new PauseGate()).preToolUseTimeoutSeconds,
+        hook_timeout_seconds: pauseHooks.preToolUseTimeoutSeconds,
         pause_budget_seconds: 30 * 60,
       },
     };
   } finally {
+    gate.cancel();
+    await controller;
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** Exercise the exact production spill/reminder/pause merge with real Read output. */
+async function experimentProductionSpill(): Promise<ExperimentReport> {
+  const { query } = await loadSdk();
+  const dir = mkdtempSync(join(tmpdir(), 'adp-composed-spill-'));
+  const source = join(dir, 'large.txt');
+  const target = join(dir, 'after-read.txt');
+  const payload = Array.from({ length: 600 }, (_, i) => `line ${i}: ${'payload '.repeat(12)}`).join('\n');
+  writeFileSync(source, payload);
+  const gate = new PauseGate({ settleTimeoutMs: SETTLE_MS, defaultTimeoutMs: 120_000 });
+  const pauseHooks = createClaudePauseHooks(gate);
+  const store = new TmpSpillStore(dir);
+  let locator: string | null = null;
+  let persistedPayload: string | null = null;
+  let responseBytes: number | null = null;
+  let mergedLocator = false;
+  let reminderPreserved = false;
+  let settled = false;
+  let heldWithoutWrite = false;
+  let phaseDuringHold: string | null = null;
+  let controller: Promise<void> = Promise.resolve();
+  // Age only the reminder's construction timestamp. All SDK waits, callbacks,
+  // pause deadlines and elapsed measurements below run on the real clock.
+  const realNow = Date.now;
+  let composed: ReturnType<typeof createWorkerToolHooks>;
+  try {
+    Date.now = () => realNow() - 16 * 60 * 1000;
+    composed = createWorkerToolHooks({
+      agentType: 'developer', pauseHooks, thresholdBytes: 20_000,
+      store: { spill: async (key, body) => {
+        locator = await store.spill(key, body);
+        persistedPayload = body;
+        return locator;
+      } },
+    });
+  } finally { Date.now = realNow; }
+  const post = composed.PostToolUse[0].hooks[0];
+  try {
+    const iterator = query({
+      prompt: `Use Read to read all 600 lines of ${source}. If the Read result contains a Locator path, use Write to write exactly that path to ${target}; otherwise write NO_LOCATOR there. Do not look for spill files or use Bash. Then stop.`,
+      options: {
+        cwd: dir, permissionMode: 'bypassPermissions', maxTurns: 5,
+        hooks: { ...composed, PostToolUse: [{ hooks: [async (input: unknown, id: string | undefined, options: { signal: AbortSignal }) => {
+          const result = await post(input as never, id, options);
+          const fields = input as { tool_name?: string; tool_response?: unknown };
+          if (fields.tool_name === 'Read' && locator && persistedPayload) {
+            responseBytes = Buffer.byteLength(serializeToolResponse(fields.tool_response) ?? '');
+            const output = (result as { hookSpecificOutput?: { updatedToolOutput?: unknown; additionalContext?: unknown } }).hookSpecificOutput;
+            mergedLocator = JSON.stringify(output?.updatedToolOutput ?? null).includes(locator);
+            reminderPreserved = typeof output?.additionalContext === 'string' && output.additionalContext.includes('checkpoint');
+            settled = gate.activeToolCount() === 0;
+            await gate.requestPause();
+            controller = (async () => {
+              await sleep(2_000);
+              phaseDuringHold = gate.currentPhase();
+              heldWithoutWrite = !existsSync(target);
+              await gate.resume();
+            })();
+          }
+          return result;
+        }] }] },
+      },
+    });
+    for await (const message of iterator) if (message.type === 'result') break;
+    await controller;
+    const durableMatch = locator !== null && persistedPayload !== null && readFileSync(locator, 'utf8') === persistedPayload;
+    const locatorReceivedByModel = locator !== null && existsSync(target) && readFileSync(target, 'utf8').trim() === locator;
+    const ok = locatorReceivedByModel && (responseBytes ?? 0) > 20_000 && mergedLocator && reminderPreserved && durableMatch && settled && heldWithoutWrite && phaseDuringHold === 'paused' && existsSync(target);
+    return { name: 'production spill/checkpoint/pause composition', ok,
+      detail: `bytes=${responseBytes} locator=${mergedLocator} modelReceivedLocator=${locatorReceivedByModel} reminder=${reminderPreserved} durable=${durableMatch} settled=${settled} held=${heldWithoutWrite} phase=${phaseDuringHold}`,
+      artifact: { production_hook_factory: 'createWorkerToolHooks', real_tool: 'Read', response_bytes: responseBytes,
+        spill_threshold_bytes: 20_000, updated_tool_output_contains_locator: mergedLocator,
+        checkpoint_context_preserved: reminderPreserved, checkpoint_clock_setup: 'constructor aged 16 minutes; live callbacks use real clock',
+        spill_readback_matches_tool_response: durableMatch, model_returned_exact_locator: locatorReceivedByModel, model_returned_text: existsSync(target) ? readFileSync(target, 'utf8') : null, expected_locator: locator, settled_before_pause: settled, phase_during_hold: phaseDuringHold,
+        no_write_during_hold: heldWithoutWrite, write_completed_after_resume: existsSync(target) },
+    };
+  } finally { gate.cancel(); await controller; rmSync(dir, { recursive: true, force: true }); }
+}
+
+/** Force the real CLI matcher timeout, never synthesize an AbortSignal. */
+async function experimentSdkHookTimeout(): Promise<ExperimentReport> {
+  const { query } = await loadSdk();
+  const dir = mkdtempSync(join(tmpdir(), 'adp-sdk-timeout-'));
+  const target = join(dir, 'timeout.txt');
+  const events: Array<{ type: string; failure?: string }> = [];
+  const gate = new PauseGate({ defaultTimeoutMs: 120_000, onEvent: (event) => events.push(event) });
+  const pauseHooks = createClaudePauseHooks(gate);
+  const composed = createWorkerToolHooks({ agentType: 'developer', store: new TmpSpillStore(dir), pauseHooks });
+  let reached = false;
+  let signalAborted: boolean | null = null;
+  let callbackElapsedMs: number | null = null;
+  let safetyRelease = false;
+  let controller: Promise<void> = Promise.resolve();
+  const timeoutSeconds = 1;
+  const pre = composed.PreToolUse![0].hooks[0];
+  try {
+    const iterator = query({
+      prompt: `Use Write exactly once to write "timeout probe" to ${target}. If it fails, stop without retrying. Then stop.`,
+      options: {
+        cwd: dir, permissionMode: 'bypassPermissions', maxTurns: 2,
+        hooks: { ...composed, PreToolUse: [{ timeout: timeoutSeconds, hooks: [async (input: unknown, id?: string, options?: { signal: AbortSignal }) => {
+          reached = true;
+          await gate.requestPause();
+          const start = Date.now();
+          // A missing SDK timeout observation fails after a bounded real wait.
+          // This cleanup never counts as a timeout or abort observation.
+          controller = (async () => { await sleep(8_000); if (callbackElapsedMs === null) { safetyRelease = true; await gate.resume(); } })();
+          const result = await pre(input as never, id, options);
+          callbackElapsedMs = Date.now() - start;
+          signalAborted = options?.signal.aborted ?? null;
+          return result;
+        }] }] },
+      },
+    });
+    for await (const message of iterator) if (message.type === 'result') break;
+    await controller;
+    const failure = events.find((event) => event.type === 'pause_unavailable' && event.failure === 'barrier_timeout');
+    const phase = gate.currentPhase();
+    const retry = await gate.requestPause();
+    const ok = reached && signalAborted === true && !safetyRelease && !!failure && phase !== 'paused' && retry.outcome === 'unavailable';
+    return { name: 'real SDK hook timeout reports unavailable', ok,
+      detail: `reached=${reached} aborted=${signalAborted} elapsed=${callbackElapsedMs} safetyRelease=${safetyRelease} unavailable=${!!failure} phase=${phase} retry=${retry.outcome}`,
+      artifact: { production_hook_factory: 'createWorkerToolHooks', fault: 'CLI matcher timeout shortened to one second',
+        matcher_timeout_seconds: timeoutSeconds, production_matcher_timeout_seconds: pauseHooks.preToolUseTimeoutSeconds,
+        callback_elapsed_ms: callbackElapsedMs, sdk_signal_aborted: signalAborted, safety_release_used: safetyRelease,
+        unavailable_event_observed: !!failure, phase_after_timeout: phase, repeated_pause_outcome: retry.outcome,
+        fixture_write_after_timeout: existsSync(target), events },
+    };
+  } finally { gate.cancel(); await controller; rmSync(dir, { recursive: true, force: true }); }
 }
 
 async function main(): Promise<number> {
@@ -497,6 +629,8 @@ async function main(): Promise<number> {
     () => experimentBarrierBlocksSideEffects('service'),
     experimentResumeSameExecution,
     experimentHookCanHold,
+    experimentProductionSpill,
+    experimentSdkHookTimeout,
   ];
 
   const reports: ExperimentReport[] = [];
@@ -534,5 +668,5 @@ if (require.main === module) {
   );
 }
 
-export { experimentBarrierBlocksSideEffects, experimentResumeSameExecution, experimentHookCanHold };
+export { experimentBarrierBlocksSideEffects, experimentResumeSameExecution, experimentHookCanHold, experimentProductionSpill, experimentSdkHookTimeout };
 export type { ExperimentReport };

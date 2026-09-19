@@ -351,6 +351,7 @@ class TestSupportedVerbBoundary:
             pod_body={
                 "state": "running",
                 "capabilities": {"pause": True, "resume": True, "steer": True, "abort": True},
+                "verification_key_ids": [ENV[SIGNING_KEY_ID_ENV]],
                 "commands": [],
             },
         )
@@ -361,6 +362,33 @@ class TestSupportedVerbBoundary:
         assert state.capabilities.resume is True
         assert state.capabilities.steer is False
         assert state.capabilities.abort is False
+
+    @pytest.mark.parametrize("key_ids", [None, [], ["retired-key"], "test-control-key", [1], ["test-control-key"] * 9])
+    def test_unverifiable_worker_never_advertises_controls(self, key_ids):
+        service = make_service(
+            items=[row()],
+            pod_body={
+                "state": "running",
+                "capabilities": {"pause": True, "resume": True},
+                "verification_key_ids": key_ids,
+                "commands": [],
+            },
+        )
+        state = _run(service.get_state(RUN_ID, user_id=CANONICAL_USER_ID, tenant_id=TENANT_ID))
+        assert not state.capabilities.pause and not state.capabilities.resume
+        assert state.reason == "worker control verification is unavailable"
+
+    def test_worker_key_rotation_changes_capabilities_without_restart(self):
+        def state(keys):
+            service = make_service(
+                items=[row()],
+                pod_body={"state": "running", "capabilities": {"pause": True, "resume": True}, "verification_key_ids": keys},
+            )
+            return _run(service.get_state(RUN_ID, user_id=CANONICAL_USER_ID, tenant_id=TENANT_ID))
+
+        assert state(["test-control-key", "next"]).capabilities.pause
+        assert not state(["next"]).capabilities.pause
+        assert state(["test-control-key"]).capabilities.resume
 
 
 # ===========================================================================
@@ -1320,6 +1348,7 @@ class TestTheGateWhenAVerbIsEnabled:
             pod_body={
                 "state": "running",
                 "capabilities": {"pause": True, "abort": True},
+                "verification_key_ids": [ENV[SIGNING_KEY_ID_ENV]],
                 "commands": [],
             },
         )
