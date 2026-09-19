@@ -42,11 +42,11 @@
     },
     "full_acceptance": {
       "type": "boolean",
-      "description": "True only for a full-suite run with all fifteen cases passed and cleanup complete. A partial suite can never set this, however many cases pass."
+      "description": "True only for a full-suite run with EVERY case passed and cleanup complete. A partial suite can never set this, however many cases pass, and neither can a run where any case is blocked or not_run — which is what keeps acceptance false while #5413's E16/E17 have no live three-deployment fixture."
     },
     "suites": {
       "type": "array",
-      "items": { "enum": ["full", "login", "install", "admin", "personal-aws", "routing", "inference", "github", "parity", "harness"] },
+      "items": { "enum": ["full", "login", "install", "admin", "personal-aws", "routing", "inference", "github", "parity", "harness", "multi-deployment"] },
       "minItems": 1
     },
     "partial": {
@@ -72,7 +72,7 @@
         "additionalProperties": false,
         "required": ["id", "owner", "suite", "summary", "status", "detail"],
         "properties": {
-          "id": { "type": "string", "pattern": "^(E(0[1-9]|1[0-5])|C01)$" },
+          "id": { "type": "string", "pattern": "^(E(0[1-9]|1[0-7])|C01)$" },
           "owner": { "type": "string", "description": "The story this case proves, e.g. #5185." },
           "suite": { "type": "string" },
           "summary": { "type": "string", "description": "The expected result, so a reader need not open the code." },

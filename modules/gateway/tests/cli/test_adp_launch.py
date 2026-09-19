@@ -139,8 +139,9 @@ def launch(adp_bin: Path, adp_home: Path, stub_tools: Path, proxy_port: int, tmp
     invocation_log = tmp_path / "invocations.log"
     record = Invocations(invocation_log)
 
-    def _run(args: list[str], extra_env: dict[str, str] | None = None, timeout: int = 45) -> subprocess.CompletedProcess:
+    def _run(args: list[str], extra_env: dict[str, str] | None = None, timeout: int = 45, shell: str = "bash") -> subprocess.CompletedProcess:
         env = os.environ.copy()
+        env.pop("ADP_GATEWAY_DUMMY", None)
         env.update(
             {
                 "HOME": str(adp_home),
@@ -152,7 +153,7 @@ def launch(adp_bin: Path, adp_home: Path, stub_tools: Path, proxy_port: int, tmp
         if extra_env:
             env.update(extra_env)
         result = subprocess.run(
-            ["bash", str(adp_bin / "adp"), *args],
+            [shell, str(adp_bin / "adp"), *args],
             capture_output=True,
             text=True,
             env=env,
@@ -212,6 +213,17 @@ def _seed_dead_session(home: Path) -> None:
 
 class TestCodexStartsProxy:
     """The whole point: one command, one terminal, proxy handled for you."""
+
+    @pytest.mark.parametrize("tool", ["codex", "claude"])
+    def test_launch_without_arguments_works_on_system_bash(self, launch, adp_home, tool) -> None:
+        # macOS /bin/bash is 3.2, whose nounset rejects empty array expansions.
+        # Recording tools keep this a launcher test, with no live model calls.
+        _seed_valid_session(adp_home)
+
+        result = launch([tool], shell="/bin/bash")
+
+        assert result.returncode == 0, result.stderr
+        assert launch.record.launched(tool)
 
     def test_starts_proxy_then_execs_codex_with_passthrough_args(self, launch, adp_home: Path) -> None:
         _seed_valid_session(adp_home)
@@ -306,6 +318,7 @@ class TestCodexReusesProxy:
         _seed_valid_session(adp_home)
         invocation_log = tmp_path / "concurrent.log"
         env = os.environ.copy()
+        env.pop("ADP_GATEWAY_DUMMY", None)
         env.update(
             {
                 "HOME": str(adp_home),
@@ -387,7 +400,7 @@ class TestCodexReusesProxy:
 
         assert result.returncode != 0
         assert "already running" in result.stderr
-        assert "kill" in result.stderr, "must tell the user how to resolve it"
+        assert "Stop the original proxy session" in result.stderr, "must tell the user how to resolve it"
         assert elapsed < 8, f"should fail fast, not wait out the readiness timeout ({elapsed:.1f}s)"
         assert launch.record.tools == ["codex"], "codex must not launch against a proxy-less port"
 
@@ -477,7 +490,9 @@ class TestClaudeLauncher:
 
         assert result.returncode == 0, result.stderr
         assert launch.record.tools == ["claude"]
-        assert launch.record.argv == ["--resume -p fix the build"]
+        assert len(launch.record.argv) == 1
+        assert launch.record.argv[0].endswith(" --resume -p fix the build")
+        assert launch.record.argv[0].startswith("--settings ")
 
     def test_never_starts_the_proxy(self, launch, adp_home: Path) -> None:
         _seed_valid_session(adp_home)
@@ -541,7 +556,11 @@ class TestVerbRouting:
         launch([verb, "--", "setup"])
 
         assert launch.record.tools == [verb]
-        assert launch.record.argv == ["setup"]
+        if verb == "claude":
+            assert len(launch.record.argv) == 1
+            assert launch.record.argv[0].endswith(" setup")
+        else:
+            assert launch.record.argv == ["setup"]
 
     def test_usage_documents_the_launchers_and_the_asymmetry(self, launch) -> None:
         """The Claude/Codex difference is documented, not hidden (issue's own words)."""

@@ -41,11 +41,13 @@ helper keeps its zero-install property.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import http.client
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -54,6 +56,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BIND_HOST = "127.0.0.1"
 
 DEFAULT_PORT = 9191
+
+# Port 0 asks the OS for any free port (Issue #5413). Three deployments running
+# at once cannot all own 9191, and picking candidate ports ourselves would be a
+# race: another process can take the port between our check and our bind. The OS
+# assigns and reserves in one step, so the port a caller reads back from the
+# published identity is a port that is already bound.
+ANY_PORT = 0
+
+# The local, unauthenticated identity route. A launcher that finds something
+# listening needs to know WHICH deployment's proxy it is before sending a
+# request, because reusing another deployment's proxy would send this
+# deployment's traffic to the other one's gateway. Answered from loopback only
+# (like every other route here) and deliberately secret-free: an id, a name and
+# the upstream URL the user chose — never a token, and never a header or body
+# from a relayed request.
+IDENTITY_PATH = "/_adp/proxy"
 
 # Generous: an SSE completion can stream for many minutes.
 UPSTREAM_TIMEOUT_SECONDS = 600
@@ -157,8 +175,16 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
     upstream_host: str
     upstream_port: int | None
     upstream_base_path: str
+    # Which deployment this proxy serves, for IDENTITY_PATH. Empty on a legacy
+    # single-deployment run, where there is nothing to disambiguate.
+    deployment_id: str = ""
+    deployment_name: str = ""
+    gateway_url: str = ""
 
     def do_GET(self) -> None:
+        if self.path.split("?", 1)[0] == IDENTITY_PATH:
+            self._send_identity()
+            return
         self._proxy()
 
     def do_POST(self) -> None:
@@ -344,6 +370,31 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
             self.wfile.write(chunk)
             self.wfile.flush()
 
+    def _send_identity(self) -> None:
+        """Answer "which deployment is this?" without touching the gateway.
+
+        Handled entirely locally: it obtains no token, opens no upstream
+        connection and makes no network call, so a launcher can ask it cheaply
+        before deciding to reuse this proxy. The body carries only what the user
+        already typed — a deployment id, its name and its gateway URL.
+        """
+        payload = json.dumps(
+            {
+                "proxy": "adp-gateway-proxy",
+                "deployment_id": self.deployment_id,
+                "deployment": self.deployment_name,
+                "gateway_url": self.gateway_url,
+            }
+        ).encode("utf-8")
+        self.log_message("GET %s -> 200", IDENTITY_PATH)
+        self.send_response_only(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _send_error_body(self, status: int, code: str, message: str) -> None:
         payload = json.dumps({"error": code, "message": message}).encode("utf-8")
         self.send_response_only(status)
@@ -355,7 +406,39 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def serve(gateway_url: str, port: int, helper_path: str, pidfile: str | None) -> int:
+def write_identity(path: str, payload: dict[str, object]) -> None:
+    """Publish where this proxy is listening and whose it is — 0600, atomically.
+
+    Written ONLY after a successful bind, and replaced atomically (Issue #5413).
+    Both matter for the same reason: this file is how a launcher decides to reuse
+    a proxy instead of starting one. A file written before the bind would
+    advertise a port that may never open, and a non-atomic write would let a
+    concurrent reader see a half-written record and parse a truncated port.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=".adp-proxy-", dir=directory)
+    try:
+        with os.fdopen(handle, "w") as output:
+            json.dump(payload, output, indent=2, sort_keys=True)
+            output.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+
+
+def serve(
+    gateway_url: str,
+    port: int,
+    helper_path: str,
+    pidfile: str | None,
+    identity_file: str | None = None,
+    deployment_id: str = "",
+    deployment_name: str = "",
+) -> int:
     parsed = urllib.parse.urlsplit(gateway_url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         sys.stderr.write(f"[proxy] gateway_url is not a usable http(s) URL: {gateway_url}\n")
@@ -370,6 +453,9 @@ def serve(gateway_url: str, port: int, helper_path: str, pidfile: str | None) ->
             "upstream_host": parsed.hostname,
             "upstream_port": parsed.port,
             "upstream_base_path": parsed.path.rstrip("/"),
+            "deployment_id": deployment_id,
+            "deployment_name": deployment_name,
+            "gateway_url": gateway_url,
         },
     )
 
@@ -380,16 +466,33 @@ def serve(gateway_url: str, port: int, helper_path: str, pidfile: str | None) ->
         sys.stderr.write(f"[proxy] listening on {bound_host}:{bound_port} -> {gateway_url}\n")
         sys.stderr.write(f"[proxy] point Codex at http://127.0.0.1:{bound_port}/openai/v1 — Ctrl-C to stop\n")
         sys.stderr.flush()
+        if identity_file:
+            from adp_deployments import _process_start
+
+            # The bind succeeded, so the port below is real and reachable.
+            write_identity(
+                identity_file,
+                {
+                    "pid": os.getpid(),
+                    "process_start": _process_start(os.getpid()),
+                    "proxy": "adp-gateway-proxy",
+                    "port": bound_port,
+                    "deployment_id": deployment_id,
+                    "deployment": deployment_name,
+                    "gateway_url": gateway_url,
+                },
+            )
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
             sys.stderr.write("[proxy] stopped\n")
         finally:
-            if pidfile:
-                try:
-                    os.unlink(pidfile)
-                except OSError:
-                    pass
+            # Both files advertise a proxy that no longer exists once this
+            # returns, so neither may outlive it on a clean shutdown.
+            for stale in (pidfile, identity_file):
+                if stale:
+                    with contextlib.suppress(OSError):
+                        os.unlink(stale)
     return 0
 
 
@@ -400,12 +503,32 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--gateway-url", required=True, help="Upstream gateway base URL (from ~/.bedrock-gateway/config.json)")
     parser.add_argument("--auth-helper", required=True, help="Path to bg-cognito-auth.sh; its `token` subcommand is the only refresh implementation")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Loopback port to listen on (default: {DEFAULT_PORT})")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"Loopback port to listen on (default: {DEFAULT_PORT}; {ANY_PORT} lets the OS assign a free one)",
+    )
     parser.add_argument("--pidfile", default=None, help="Pidfile to remove on clean shutdown")
+    parser.add_argument(
+        "--identity-file",
+        default=None,
+        help="Where to publish the bound port and deployment identity, after a successful bind (Issue #5413)",
+    )
+    parser.add_argument("--deployment-id", default="", help="Stable id of the deployment this proxy serves (Issue #5413)")
+    parser.add_argument("--deployment", default="", help="Name of the deployment this proxy serves (Issue #5413)")
     args = parser.parse_args(argv)
 
     try:
-        return serve(args.gateway_url, args.port, args.auth_helper, args.pidfile)
+        return serve(
+            args.gateway_url,
+            args.port,
+            args.auth_helper,
+            args.pidfile,
+            args.identity_file,
+            args.deployment_id,
+            args.deployment,
+        )
     except OSError as exc:
         sys.stderr.write(f"[proxy] could not bind {BIND_HOST}:{args.port}: {exc}\n")
         return 1

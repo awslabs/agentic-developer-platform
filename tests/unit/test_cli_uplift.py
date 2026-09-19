@@ -42,6 +42,365 @@ from tests.e2e.cli_uplift import (
 FULL = ("full",)
 
 
+@pytest.mark.parametrize("org_id", ["", "fixture-org"])
+def test_multi_deployment_accepts_native_admin_usage_attribution(
+    tmp_path, monkeypatch, org_id
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    session = {"verified": True, "user_id": "cognito-sub", "org_id": org_id}
+    monkeypatch.setattr(common, "fixture_secret", lambda *a: "fixture")
+    monkeypatch.setattr(module, "_access_token", lambda *a: "test-token")
+    monkeypatch.setattr(common, "api", lambda *a, **k: (200, session))
+
+    class Cli:
+        def json(self, *args, **kwargs):
+            return {"status": "verified"}
+
+    result = module._login(
+        {},
+        Cli(),
+        {},
+        {
+            "name": "dev",
+            "gateway_url": "https://dev.example.test",
+            "credential_secret_name": "fixture",
+        },
+        {},
+    )
+    assert result["org_id"] == org_id
+    assert result["user_id"] == "cognito-sub"
+
+
+@pytest.mark.parametrize(
+    "session",
+    [
+        {"verified": True, "user_id": "cognito-sub"},
+        {"verified": True, "user_id": "", "org_id": ""},
+    ],
+)
+def test_multi_deployment_refuses_incomplete_usage_attribution(
+    tmp_path, monkeypatch, session
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    monkeypatch.setattr(common, "fixture_secret", lambda *a: "fixture")
+    monkeypatch.setattr(module, "_access_token", lambda *a: "test-token")
+    monkeypatch.setattr(common, "api", lambda *a, **k: (200, session))
+
+    class Cli:
+        def json(self, *args, **kwargs):
+            return {"status": "verified"}
+
+    with pytest.raises(common.RemoteError, match="incomplete usage attribution"):
+        module._login(
+            {},
+            Cli(),
+            {},
+            {
+                "name": "dev",
+                "gateway_url": "https://dev.example.test",
+                "credential_secret_name": "fixture",
+            },
+            {},
+        )
+
+
+def test_multi_deployment_thread_exception_cannot_pass(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+
+    def broken(*args, **kwargs):
+        raise ValueError("unexpected tool failure")
+
+    monkeypatch.setattr(module, "_run_tool", broken)
+    with pytest.raises(common.RemoteError, match="unexpected tool failure"):
+        module._pass(
+            {"evaluation_id": "test"},
+            {},
+            dict.fromkeys(("dev", "int", "preprod")),
+            {},
+            {"transcript": []},
+            label="overlap",
+        )
+
+
+def test_multi_deployment_requires_actual_time_overlap(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+
+    def sequential(config, env, session, tool, marker, transcript):
+        start = session["start"]
+        return {
+            "deployment": session["name"],
+            "started": start,
+            "finished": start + 1,
+            "exit_code": 0,
+            "returned_marker": True,
+        }
+
+    monkeypatch.setattr(module, "_run_tool", sequential)
+    sessions = {
+        name: {"name": name, "start": index * 10}
+        for index, name in enumerate(("dev", "int", "preprod"))
+    }
+    with pytest.raises(common.RemoteError, match="did not overlap"):
+        module._pass(
+            {"evaluation_id": "test"},
+            {},
+            sessions,
+            {},
+            {"transcript": []},
+            label="overlap",
+        )
+
+
+def test_multi_deployment_matches_usage_request_id_not_prompt_text(
+    tmp_path, monkeypatch
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    row = {
+        "request_id": "receipt-123",
+        "timestamp": "2026-09-18T12:00:00Z",
+        "user_id": "fixture",
+        "status_code": 200,
+    }
+    monkeypatch.setattr(
+        common, "api", lambda *a, **k: (200, {"items": [row], "has_more": False})
+    )
+    monkeypatch.setattr(common, "wait_for", lambda check, **k: check())
+    session = {
+        "gateway_url": "https://dev.example.test/api",
+        "org_id": "org",
+        "user_id": "fixture",
+    }
+    assert (
+        module._usage_marker(
+            {}, session, "test-token", "receipt-123", after="2026-09-18", expect=True
+        )
+        == row
+    )
+    assert (
+        module._usage_marker(
+            {}, session, "test-token", "fixture", after="2026-09-18", expect=True
+        )
+        is None
+    )
+
+
+def test_multi_deployment_refuses_truncated_absence_evidence(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    monkeypatch.setattr(
+        common, "api", lambda *a, **k: (200, {"items": [], "has_more": True})
+    )
+    monkeypatch.setattr(common, "wait_for", lambda check, **k: check())
+    with pytest.raises(common.RemoteError, match="absence cannot be established"):
+        module._usage_marker(
+            {},
+            {
+                "gateway_url": "https://dev.example.test",
+                "org_id": "org",
+                "user_id": "user",
+            },
+            "fixture",
+            "receipt",
+            after="2026-09-18",
+            expect=True,
+        )
+
+
+def test_multi_deployment_tools_send_usage_correlation_header(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return 0, "marker", ""
+
+    monkeypatch.setattr(common, "bounded", run)
+    config = {"cli_path": "/fixture/adp", "claude_model": "fixture-model"}
+    for tool in ("claude", "codex"):
+        result = module._run_tool(config, {}, {"name": "dev"}, tool, "marker", [])
+        argv, kwargs = calls[-1]
+        if tool == "claude":
+            assert (
+                kwargs["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+                == "X-Request-ID: " + result["request_id"]
+            )
+        else:
+            assert any(
+                result["request_id"] in arg and "http_headers" in arg for arg in argv
+            )
+
+
+def test_multi_deployment_checks_proxies_after_both_arrangements(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    labels = []
+
+    def run(*args, label):
+        labels.append(label)
+        return {"receipts": []}
+
+    monkeypatch.setattr(module, "_pass", run)
+    monkeypatch.setattr(
+        module,
+        "_proxy_identities",
+        lambda *a: {"dev": {"port": 1111, "attributed_correctly": True}},
+    )
+    with pytest.raises(common.RemoteError, match="every deployment"):
+        module._overlap(
+            {},
+            {},
+            tmp_path,
+            {},
+            {},
+            dict.fromkeys(("dev", "int", "preprod")),
+            {"checks": []},
+        )
+    assert labels == ["overlap", "reverse"]
+
+
+def test_multi_deployment_cleanup_failure_is_fatal(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+
+    class Cli:
+        def run(self, argv, **kwargs):
+            return 0, {"deployments": [{"name": "dev"}]} if argv == [
+                "deployment",
+                "list",
+            ] else {}
+
+    monkeypatch.setattr(common, "stop_proxy_runtime", lambda *a: False)
+    evidence = {}
+    with pytest.raises(common.RemoteError, match="stop every deployment proxy"):
+        module._teardown(Cli(), tmp_path, {"dev": "id-dev", "int": "id-int"}, evidence)
+    assert evidence["teardown"]["proxies_stopped"] == {"dev": False, "int": False}
+
+
+def test_multi_deployment_lifecycle_continues_same_tool_sessions(tmp_path, monkeypatch):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    state = {"changed": False}
+
+    def run(config, env, session, tool, marker, transcript):
+        workspace = pathlib.Path(config["session_cwd"])
+        name = session["name"]
+        (workspace / f"{name}.ready").touch()
+        deadline = time.monotonic() + 5
+        while (
+            not (workspace / f"{name}.release").exists() and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert state["changed"], "tool continued before lifecycle changes"
+        return {
+            "tool": tool,
+            "exit_code": 1 if name == "dev" else 0,
+            "returned_marker": name != "dev",
+            "authentication_failed": name == "dev",
+        }
+
+    def change(config, cli, sessions, evidence):
+        assert all(
+            (tmp_path / "lifecycle" / f"{name}.ready").exists() for name in sessions
+        )
+        state["changed"] = True
+        evidence["detail"] = {}
+
+    monkeypatch.setattr(module, "_run_tool", run)
+    monkeypatch.setattr(module, "_lifecycle_changes", change)
+    monkeypatch.setattr(module, "_access_token", lambda cli, name: name + "-credential")
+
+    def receipts(config, sessions, tokens, runs, *, after):
+        assert len(runs) == 2 and all(run["returned_marker"] for run in runs)
+        assert state["changed"] and after
+        return [{"request_id": "continued-request"}]
+
+    monkeypatch.setattr(module, "_receipts", receipts)
+    evidence = {"transcript": [], "checks": []}
+    module._lifecycle(
+        {"evaluation_id": "test", "inference_timeout_seconds": 5},
+        None,
+        {},
+        tmp_path,
+        {name: {"name": name} for name in ("dev", "int", "preprod")},
+        evidence,
+    )
+    assert (
+        "existing_model_sessions_continue_after_lifecycle_changes" in evidence["checks"]
+    )
+    assert evidence["detail"]["continued_usage"] == [
+        {"request_id": "continued-request"}
+    ]
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_multi_deployment_execute_preserves_both_test_and_teardown_failures(
+    tmp_path, monkeypatch, primary_failure
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+    # Exercise cleanup independently of the unfinished live-limit capability.
+    monkeypatch.setattr(module, "_require_model_limits", lambda: None)
+    document = dict.fromkeys(module.REQUIRED, "fixture")
+    document.update(
+        mode="overlap",
+        deployments=[
+            {
+                "name": name,
+                "gateway_url": f"https://{name}.example.test",
+                "credential_secret_name": name,
+            }
+            for name in ("dev", "int", "preprod")
+        ],
+    )
+    monkeypatch.setattr(module, "_home", lambda *a: (tmp_path, {}))
+    monkeypatch.setattr(
+        module,
+        "_register",
+        lambda cli, entries, evidence, ids: ids.update(
+            {entry["name"]: entry["name"] for entry in entries}
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_login",
+        lambda c, cli, env, entry, e: {
+            "user_id": "same-id-on-independent-gateways",
+            "org_id": "org",
+        },
+    )
+    monkeypatch.setattr(module, "_access_token", lambda cli, name: name + "-credential")
+    monkeypatch.setattr(module, "_setup_tools", lambda *a: None)
+
+    def overlap(*args):
+        if primary_failure:
+            raise common.RemoteError("original inference failure")
+
+    monkeypatch.setattr(module, "_overlap", overlap)
+
+    def fail_cleanup(*args):
+        raise common.RemoteError("cleanup failed")
+
+    monkeypatch.setattr(module, "_teardown", fail_cleanup)
+    evidence = {"checks": [], "transcript": []}
+    expected_error = (
+        "original inference failure" if primary_failure else "cleanup failed"
+    )
+    with pytest.raises(common.RemoteError, match=expected_error):
+        module.execute(document, evidence)
+    assert evidence["success"] is False
+    assert evidence["teardown_error"] == "cleanup failed"
+
+
+@pytest.mark.parametrize("mode", ["overlap", "lifecycle"])
+def test_multi_deployment_direct_execution_blocks_before_setup_or_inference(
+    tmp_path, monkeypatch, mode
+):
+    module, common = shipped_script(tmp_path, "multi_deployment")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("disabled model journey reached setup or inference")
+
+    for name in ("_home", "_register", "_login", "_setup_tools", "_run_tool"):
+        monkeypatch.setattr(module, name, unexpected)
+    with pytest.raises(common.RemoteError, match="256.*48-request"):
+        module.execute({"mode": mode}, {})
+
+
 def config_fixture(**overrides):
     """A minimal valid config using the approved dev test targets."""
     base = {
@@ -71,10 +430,36 @@ def config_fixture(**overrides):
 # --------------------------------------------------------------------------
 
 
-def test_all_fifteen_cases_present_with_owners():
-    assert [case.id for case in cases.CASES] == [f"E{n:02d}" for n in range(1, 16)]
+def test_every_case_present_with_owners():
+    """#5199's fifteen, plus #5413's two.
+
+    Derived from the registry's own numbering rather than a hardcoded range, so
+    adding a case to a later story does not have to edit an arithmetic expression
+    whose only job was to spell out "consecutive". What the assertion still
+    enforces is the property that mattered: the ids are E01..En with no gap and no
+    duplicate, so a case cannot be added under an id another already uses.
+    """
+    identifiers = [case.id for case in cases.CASES]
+    assert identifiers == [f"E{n:02d}" for n in range(1, len(identifiers) + 1)]
     assert all(case.owner for case in cases.CASES)
     assert all(case.suite in cases.SUITES for case in cases.CASES)
+
+
+def test_the_multi_deployment_cases_are_owned_by_5413_and_need_three_deployments():
+    """#5413's two cases sit INSIDE the matrix, which is what keeps `full` honest.
+
+    Placed here rather than beside the matrix as C01 is, because BLOCKED is not
+    PASSED: with no three-deployment fixture configured these two block, and a
+    blocked case keeps full acceptance false until the live evidence is actually
+    collected. A checkpoint outside the matrix would have let the epic go green
+    with the concurrency requirement never exercised.
+    """
+    multi = [case for case in cases.CASES if case.suite == "multi-deployment"]
+
+    assert [case.id for case in multi] == ["E16", "E17"]
+    assert {case.owner for case in multi} == {"#5413"}
+    assert all(cases.THREE_DEPLOYMENTS in case.requires for case in multi)
+    assert all(cases.EC2 in case.requires for case in multi)
 
 
 def test_every_case_belongs_to_a_reachable_named_suite():
@@ -88,7 +473,14 @@ def test_every_case_belongs_to_a_reachable_named_suite():
 
 def test_new_matrix_starts_every_case_not_run():
     matrix = cases.new_matrix(FULL)
-    assert len(matrix) == 15
+    # Every registered case, counted from the registry rather than restated as a
+    # literal: a `full` matrix that silently omitted a case is the failure worth
+    # catching, and a hardcoded number only catches it until someone updates the
+    # number instead of the code.
+    assert len(matrix) == len(cases.CASES)
+    # `CASES`, not `BY_ID`: the latter also carries C01, the login checkpoint that
+    # is deliberately NOT a matrix row.
+    assert set(matrix) == {case.id for case in cases.CASES}
     assert {entry["status"] for entry in matrix.values()} == {cases.NOT_RUN}
 
 
@@ -195,11 +587,19 @@ def test_block_missing_fixtures_only_blocks_dependent_cases():
     matrix = cases.new_matrix(FULL)
     available = {cases.EC2, cases.PLATFORM, cases.DESTINATION, cases.COGNITO}
     blocked = cases.block_missing_fixtures(matrix, available)
-    # GitHub and hosted cases block; install/admin/routing do not.
-    assert set(blocked) == {"E07", "E09", "E10", "E11", "E12"}
+    # GitHub, hosted and multi-deployment cases block; install/admin/routing do not.
+    assert set(blocked) == {"E07", "E09", "E10", "E11", "E12", "E16", "E17"}
     assert matrix["E01"]["status"] == cases.NOT_RUN
     assert matrix["E10"]["status"] == cases.BLOCKED
     assert blocked["E11"] == ["github_app", "github_repo"]
+    # #5413: three real deployments are a fixture like any other, so their absence
+    # blocks E16/E17 by the same mechanism rather than by a special case — and says
+    # which fixture is missing, so an operator knows what to go and create.
+    assert blocked["E16"] == [
+        cases.MULTI_DEPLOYMENT_MODEL_LIMITS,
+        cases.THREE_DEPLOYMENTS,
+    ]
+    assert matrix["E17"]["status"] == cases.BLOCKED
 
 
 def test_block_missing_fixtures_does_not_overwrite_a_result():
@@ -212,7 +612,7 @@ def test_block_missing_fixtures_does_not_overwrite_a_result():
 def test_tally_always_reports_every_status_key():
     counts = cases.tally(cases.new_matrix(FULL))
     assert set(counts) == set(cases.STATUSES)
-    assert counts[cases.NOT_RUN] == 15
+    assert counts[cases.NOT_RUN] == len(cases.CASES)
 
 
 # --------------------------------------------------------------------------
@@ -364,6 +764,335 @@ def test_github_fixtures_present_enables_github_cases():
     assert {cases.GITHUB_APP, cases.GITHUB_REPO} <= available
 
 
+# --------------------------------------------------------------------------
+# #5413: the three-deployment fixture
+# --------------------------------------------------------------------------
+#
+# These guards all protect one property: a binding set that COULD NOT prove
+# isolation whatever it observed must be refused while the config is being
+# validated, not discovered an hour into a live run. Each rule below corresponds
+# to a way three bindings can look like three deployments and not be.
+
+
+def deployment_bindings(**overrides):
+    """Three well-formed bindings: distinct names, URLs and credential references."""
+    bindings = [
+        {
+            "name": name,
+            "gateway_url": f"https://{name}.example-adp.invalid/api",
+            "credential_secret_name": f"adp/cli-uplift-eval/{name}",
+        }
+        for name in ("development", "integration", "preprod")
+    ]
+    for index, changes in (overrides.get("entries") or {}).items():
+        bindings[index].update(changes)
+    return bindings
+
+
+def test_three_well_formed_deployment_bindings_make_the_fixture_available():
+    result = config.validate(config_fixture(deployments=deployment_bindings()))
+    assert [entry["name"] for entry in result["deployments"]] == [
+        "development",
+        "integration",
+        "preprod",
+    ]
+    assert cases.THREE_DEPLOYMENTS in config.fixture_classes(result)
+
+
+def test_two_deployments_cannot_stand_in_for_three():
+    """Two cannot separate "each reached its own" from "they alternated".
+
+    With two deployments and two sessions, a CLI that mixed them up produces the
+    same observation as one that did not on half the orderings. Three is the
+    smallest set where a crossed request has a wrong destination that is not just
+    "the other one".
+    """
+    with pytest.raises(config.ConfigError, match="exactly 3"):
+        config.validate(config_fixture(deployments=deployment_bindings()[:2]))
+
+
+def test_two_names_for_one_gateway_url_are_refused_as_aliases():
+    """This is the defect this guard exists for, and it looks like a valid fixture.
+
+    `adp deployment add` treats a second name for an already-registered URL as an
+    ALIAS: one canonical URL, one stable id, one session. Three names over two
+    URLs would therefore register, list as three, and satisfy any count — while
+    two of them shared the session whose independence is the whole subject of the
+    case. Nothing observed later in the run could distinguish that from a pass.
+    """
+    shared = deployment_bindings()
+    shared[2]["gateway_url"] = shared[0]["gateway_url"]
+    with pytest.raises(config.ConfigError, match="aliases"):
+        config.validate(config_fixture(deployments=shared))
+    # A trailing slash is the same URL, so normalisation must happen before the
+    # comparison rather than letting punctuation defeat it.
+    slashed = deployment_bindings()
+    slashed[1]["gateway_url"] = slashed[0]["gateway_url"] + "/"
+    with pytest.raises(config.ConfigError, match="aliases"):
+        config.validate(config_fixture(deployments=slashed))
+
+
+def test_a_shared_credential_reference_is_refused():
+    """AC-03/AC-11 are about three INDEPENDENT logins.
+
+    One identity signed in three times could not show that logging out of one
+    deployment leaves the other two signed in — the logout would either take all
+    three or none, and either outcome would be reported as the product's
+    behaviour.
+    """
+    shared = deployment_bindings()
+    shared[1]["credential_secret_name"] = shared[0]["credential_secret_name"]
+    with pytest.raises(config.ConfigError, match="credential reference"):
+        config.validate(config_fixture(deployments=shared))
+
+
+def test_a_deployment_binding_carries_a_reference_never_a_credential():
+    """The fixture password lives in Secrets Manager; this file holds its NAME."""
+    for bad in ("arn:aws:secretsmanager:us-east-1:879318057152:secret:x", "https://x"):
+        entries = deployment_bindings()
+        entries[0]["credential_secret_name"] = bad
+        with pytest.raises(config.ConfigError, match="secret NAME"):
+            config.validate(config_fixture(deployments=entries))
+    # And a credential-shaped KEY anywhere inside a binding is refused outright,
+    # by the same structural guard that protects the rest of the tree.
+    entries = deployment_bindings()
+    entries[0]["password"] = "hunter2"
+    with pytest.raises(config.ConfigError, match="looks like a secret"):
+        config.validate(config_fixture(deployments=entries))
+
+
+@pytest.mark.parametrize("bad", ["Development", "1st", "has space", "", "a" * 33])
+def test_a_name_the_cli_would_reject_is_refused_before_the_run(bad):
+    """Refused here, not by a failing `adp deployment add` an hour in."""
+    entries = deployment_bindings()
+    entries[0]["name"] = bad
+    with pytest.raises(config.ConfigError, match="deployment name"):
+        config.validate(config_fixture(deployments=entries))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://development.example-adp.invalid/api",
+        "https://user:pw@development.example-adp.invalid/api",
+        "https://development.example-adp.invalid/api?token=x",
+    ],
+)
+def test_a_gateway_url_must_be_plain_https_with_no_credentials(url):
+    entries = deployment_bindings()
+    entries[0]["gateway_url"] = url
+    with pytest.raises(config.ConfigError):
+        config.validate(config_fixture(deployments=entries))
+
+
+def test_absent_deployment_bindings_are_absent_not_approximated():
+    """No bindings is a legitimate state: E16/E17 block and the rest runs."""
+    result = config.validate(config_fixture())
+    assert result["deployments"] == []
+    assert cases.THREE_DEPLOYMENTS not in config.fixture_classes(result)
+
+
+def test_the_deployments_overlay_is_parsed_from_its_own_variable():
+    """A JSON array needs its own variable; the scalar overlay cannot carry one.
+
+    `OVERLAY` maps one environment variable to one scalar config key, so routing
+    a JSON array through it would have written the literal string as a value and
+    failed validation with "deployments must be a list" — pointing at the config
+    rather than at the variable that was malformed.
+    """
+    resolved = config.from_environment(
+        {config.DEPLOYMENTS_VARIABLE: json.dumps(deployment_bindings())}
+    )
+    assert [entry["name"] for entry in resolved["deployments"]] == [
+        "development",
+        "integration",
+        "preprod",
+    ]
+    assert cases.THREE_DEPLOYMENTS in config.fixture_classes(resolved)
+
+
+def test_a_malformed_deployments_variable_says_so_rather_than_blaming_the_config():
+    with pytest.raises(config.ConfigError, match="not valid JSON"):
+        config.from_environment(
+            {config.DEPLOYMENTS_VARIABLE: "development,integration"}
+        )
+    with pytest.raises(config.ConfigError, match="JSON array"):
+        config.from_environment(
+            {config.DEPLOYMENTS_VARIABLE: '{"name": "development"}'}
+        )
+
+
+def test_a_credential_pasted_into_the_deployments_variable_is_refused():
+    """Guarded before the merge, so it never reaches the written run config."""
+    leaked = deployment_bindings()
+    leaked[0]["password"] = "hunter2"
+    with pytest.raises(config.ConfigError) as raised:
+        config.from_environment({config.DEPLOYMENTS_VARIABLE: json.dumps(leaked)})
+    assert "hunter2" not in str(raised.value)
+
+
+def test_an_empty_deployments_variable_leaves_the_fixture_absent():
+    resolved = config.from_environment({config.DEPLOYMENTS_VARIABLE: "   "})
+    assert resolved["deployments"] == []
+
+
+def test_the_multi_deployment_suite_refuses_rather_than_reporting_only_blocks():
+    """An operator who asked for E16/E17 by name wants to be told, not handed blocks.
+
+    The mirror of the destination-suite rule: `full` must always produce a graded
+    report, so absent deployment bindings block two cases and the rest still runs.
+    A dispatch of exactly `multi-deployment` has nothing left to grade, so the
+    useful answer is a refusal naming the binding to create.
+    """
+    cfg = config.validate(config_fixture())
+    with pytest.raises(config.ConfigError, match="deployments"):
+        config.require_bindings(cfg, ("multi-deployment",))
+    # With the fixture bound it starts, and still requires the login credential.
+    bound = config.validate(config_fixture(deployments=deployment_bindings()))
+    assert "deployments" in config.require_bindings(bound, ("multi-deployment",))
+
+
+def test_the_per_request_output_bound_cannot_be_raised_past_what_was_authorised():
+    """#5413's live run is authorised for 256 output tokens per request."""
+    assert config.validate(config_fixture())["max_output_length"] == 256
+    with pytest.raises(config.ConfigError, match="capped at 256"):
+        config.validate(config_fixture(max_output_length=4096))
+
+
+def test_an_absence_window_longer_than_the_presence_window_is_refused():
+    """An absence proven in longer than a presence takes to appear proves nothing.
+
+    The crossed-request check reads "the marker appeared at its own deployment"
+    and "it did not appear at the other two". If the second wait were the longer
+    of the two, a request that HAD crossed but was written slowly would be read as
+    a clean miss — a false green on the one property E16 exists to test.
+    """
+    with pytest.raises(config.ConfigError, match="absence_wait_seconds"):
+        config.validate(
+            config_fixture(absence_wait_seconds=300, usage_wait_seconds=180)
+        )
+
+
+def test_deployment_bindings_are_proven_reachable_before_the_fixture_counts():
+    """Configured is not reachable, and an unreachable URL must BLOCK not abort.
+
+    A URL that does not serve the CLI's own discovery document cannot be logged
+    in to, so a journey against it would fail inside `adp login` and be recorded
+    as a product defect. Checking it read-only in preflight turns that into a
+    blocked case naming the binding at fault.
+    """
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    discovery = {
+        "user_pool_id": "us-east-1_JEhv9xSGG",
+        "client_id": "c",
+        "cli_client_id": "cli",
+        "region": "us-east-1",
+    }
+    record = {}
+    assert preflight.check_deployment_bindings(cfg, record, fetch=lambda url: discovery)
+    assert len(record["deployments"]["reachable"]) == 3
+    assert not record["deployments"]["problems"]
+
+    # One unreachable deployment is enough to block, and the record says which.
+    def one_down(url):
+        if url.startswith("https://integration."):
+            raise preflight.PreflightError(f"{url} is unreachable: URLError")
+        return discovery
+
+    record = {}
+    assert not preflight.check_deployment_bindings(cfg, record, fetch=one_down)
+    assert "integration" in record["deployments"]["problems"]
+    assert [entry["name"] for entry in record["deployments"]["reachable"]] == [
+        "development",
+        "preprod",
+    ]
+
+
+def test_a_url_that_answers_but_is_not_an_adp_gateway_blocks_too():
+    """HTTP 200 from something else is the failure a bare reachability check misses."""
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    record = {}
+    assert not preflight.check_deployment_bindings(
+        cfg, record, fetch=lambda url: {"status": "healthy"}
+    )
+    assert len(record["deployments"]["problems"]) == 3
+    assert all(
+        "Cognito" in reason for reason in record["deployments"]["problems"].values()
+    )
+
+
+def test_deployments_sharing_an_identity_provider_are_still_a_valid_fixture():
+    """Three gateways MAY share a Cognito pool; what must differ is the gateway.
+
+    Requiring distinct pools would refuse the most likely real binding set — one
+    organisation's three environments — for no gain, since `validate()` has
+    already refused a reused URL and the isolation under test is the CLI's, not
+    the identity provider's.
+    """
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    record = {}
+    shared = {
+        "user_pool_id": "us-east-1_JEhv9xSGG",
+        "client_id": "c",
+        "cli_client_id": "cli",
+        "region": "us-east-1",
+    }
+    assert preflight.check_deployment_bindings(cfg, record, fetch=lambda url: shared)
+    # Recorded and reported, so a reviewer can see it, but not required to differ.
+    assert record["deployments"]["distinct_pools"] == 1
+
+
+def test_an_unproven_deployment_fixture_is_treated_as_absent():
+    """`None` means "not proven", which must never read as available."""
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    assert cases.THREE_DEPLOYMENTS not in preflight.evaluate_fixtures(cfg)
+    assert cases.THREE_DEPLOYMENTS not in preflight.evaluate_fixtures(
+        cfg, deployments_available=False
+    )
+    assert cases.THREE_DEPLOYMENTS in preflight.evaluate_fixtures(
+        cfg, deployments_available=True
+    )
+
+
+def test_a_probe_passed_where_its_result_belongs_is_refused_not_believed():
+    """The one direction this must never fail in, closed by construction.
+
+    `live.py` supplies these checks as callables and `stages.py` calls them, so
+    handing over the callable itself is a plausible slip — and it would not fail
+    loudly. Every function object is truthy, so the fixture would be marked
+    AVAILABLE on the strength of never having been checked, and E16/E17 would run
+    against bindings nobody had proven reachable. Found by writing the
+    False/True guard above with `lambda:` out of habit and watching False pass.
+    """
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    with pytest.raises(preflight.PreflightError, match="rather than its result"):
+        preflight.evaluate_fixtures(cfg, deployments_available=lambda: False)
+    with pytest.raises(preflight.PreflightError, match="github_available"):
+        preflight.evaluate_fixtures(cfg, github_available=lambda: True)
+
+
+def test_the_missing_fixture_report_says_what_to_create():
+    """ "Blocked" without "on what" makes an operator read the harness source."""
+    cfg = config.validate(config_fixture())
+    absent = preflight.missing_fixture_report(cfg, preflight.evaluate_fixtures(cfg))
+    entry = absent[cases.THREE_DEPLOYMENTS]
+    assert "deployments" in entry["needs"]
+    assert "E16" in entry["blocks"] and "E17" in entry["blocks"]
+
+
+def test_reachable_deployments_do_not_enable_unbounded_model_execution():
+    cfg = config.validate(config_fixture(deployments=deployment_bindings()))
+    available = preflight.evaluate_fixtures(cfg, deployments_available=True)
+    assert cases.THREE_DEPLOYMENTS in available
+    matrix = cases.new_matrix(("multi-deployment",))
+    cases.block_missing_fixtures(matrix, available)
+    assert {row["status"] for row in matrix.values()} == {cases.BLOCKED}
+    report = preflight.missing_fixture_report(cfg, available)
+    missing = report[cases.MULTI_DEPLOYMENT_MODEL_LIMITS]
+    assert missing["blocks"] == ["E16", "E17"]
+    assert "256" in missing["needs"] and "48-request" in missing["needs"]
+
+
 def test_harness_pin_is_an_immutable_full_sha():
     """A branch or tag here would break the 'reviewed immutable revision' rule."""
     assert config.REVISION.match(config.HARNESS_COMMIT)
@@ -442,7 +1171,7 @@ def test_report_is_serializable_and_carries_revisions_and_correlation():
     assert document["expected_revision"] == "91ae8043125c990a349b9acf68b1c604cfdbf18e"
     assert document["evaluation_id"] == "eval-001"
     assert document["attempt_id"] == "eval-001-a2"
-    assert document["counts"][cases.PASSED] == 15
+    assert document["counts"][cases.PASSED] == len(cases.CASES)
     assert document["correlation"]["adp_org"] == "adp-e2e-x"
 
 
@@ -490,7 +1219,7 @@ def test_junit_marks_blocked_and_not_run_distinctly_and_fails_the_suite():
     cases.record(matrix, "E11", cases.FAILED, {"why": "wrong repo returned"})
     matrix["E12"]["status"] = cases.NOT_RUN
     xml = report.junit(matrix, "eval-001")
-    assert 'tests="15"' in xml
+    assert f'tests="{len(cases.CASES)}"' in xml
     assert 'failures="1"' in xml
     # Blocked and not-run are skipped-with-reason, never silent passes.
     assert xml.count("<skipped") == 2
@@ -3165,8 +3894,13 @@ def test_full_still_runs_and_grades_when_only_the_destination_roles_are_absent()
     cfg = config.validate(
         config_fixture(destination_role_arn="", provisioner_role_arn="")
     )
-    # Does not raise, and does not silently drop the secret requirement.
-    assert config.require_bindings(cfg, FULL) == config.BINDINGS
+    # Does not raise, and does not silently drop the secret requirement. #5413's
+    # three deployment records are reported as needed here for the same reason the
+    # destination roles are: a `full` run wants them, and saying so is not the same
+    # as refusing to start without them.
+    assert (
+        config.require_bindings(cfg, FULL) == config.BINDINGS + config.FIXTURE_BINDINGS
+    )
 
     # The destination class is withheld, so exactly its cases block...
     available = preflight.evaluate_fixtures(cfg)
@@ -4271,6 +5005,60 @@ def test_stop_proxy_kills_a_real_listener_recorded_in_the_pidfile(tmp_path):
     try:
         (home / ".bedrock-gateway" / "proxy.pid").write_text(f"{child.pid}\n")
         assert shared.process_alive(child.pid) is True
+        assert shared.stop_proxy(home) is True
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_stop_proxy_runtime_reaches_a_named_deployments_own_runtime_directory(tmp_path):
+    """#5413: three deployments mean three proxies, none at the legacy path.
+
+    A named deployment keeps its runtime files in
+    `~/.adp/deployments/<id>/runtime`, so the HOME-based `stop_proxy` would look
+    in `~/.bedrock-gateway`, find no pidfile, and return False — reported as "the
+    proxy could not be stopped" while three real listeners stayed up holding their
+    ports against the next attempt on the same instance.
+
+    Both entry points must run the same signal-and-confirm logic, which is why
+    this is a split and not a second implementation: `stop_proxy` is now a wrapper
+    that supplies the legacy directory.
+    """
+    import subprocess
+    import sys
+
+    _script, shared = shipped_update_rollback(tmp_path)
+    runtime = tmp_path / "home" / ".adp" / "deployments" / "dep-abc123" / "runtime"
+    runtime.mkdir(parents=True)
+    # No pidfile is still "nothing was stopped", at either path.
+    assert shared.stop_proxy_runtime(runtime) is False
+
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time\nwhile True: time.sleep(1)"]
+    )
+    try:
+        (runtime / "proxy.pid").write_text(f"{child.pid}\n")
+        assert shared.process_alive(child.pid) is True
+        assert shared.stop_proxy_runtime(runtime) is True
+        assert shared.process_alive(child.pid) is False
+    finally:
+        child.kill()
+        child.wait()
+
+
+def test_stop_proxy_still_serves_the_legacy_layout_through_the_new_helper(tmp_path):
+    """E08 and E14 call `stop_proxy(home)` and must keep working unchanged."""
+    import subprocess
+    import sys
+
+    _script, shared = shipped_update_rollback(tmp_path)
+    home = tmp_path / "legacy-home"
+    (home / ".bedrock-gateway").mkdir(parents=True)
+    child = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time\nwhile True: time.sleep(1)"]
+    )
+    try:
+        (home / ".bedrock-gateway" / "proxy.pid").write_text(f"{child.pid}\n")
         assert shared.stop_proxy(home) is True
     finally:
         child.kill()
@@ -6795,7 +7583,10 @@ def test_the_overlay_supplies_the_bindings_the_recovery_sweep_needs():
             "CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME": "adp/cli-uplift-eval/fixture",
         }
     )
-    assert config.require_bindings(resolved, FULL) == config.BINDINGS
+    assert (
+        config.require_bindings(resolved, FULL)
+        == config.BINDINGS + config.FIXTURE_BINDINGS
+    )
     assert resolved["state_bucket"] == STATE_BUCKET
 
 
@@ -7013,6 +7804,59 @@ def test_workflow_configures_durable_state_so_a_run_is_recoverable_by_id():
     assert "CLI_UPLIFT_EVAL_STATE_BUCKET" in printed
 
 
+def test_both_jobs_carry_the_deployment_bindings_variable():
+    """#5413. The recovery job rebuilds this run's config on its own runner.
+
+    If only `evaluate` declared it, a recovery sweep would rebuild a config with
+    no deployment bindings — validating fine, since absent is legal — and then
+    decline to clean up resources it could not see it had created. That is the R5
+    defect class the identical-env-block rule exists to prevent, so the new
+    variable has to be in both blocks or in neither.
+    """
+    document, _ = workflow()
+    for name in ("evaluate", "recover"):
+        env = json.dumps(document["jobs"][name]["env"])
+        assert "CLI_UPLIFT_EVAL_DEPLOYMENTS" in env, f"{name} cannot see the bindings"
+    # Its own variable, not a scalar overlay entry: the value is a JSON array, and
+    # the scalar path would store the literal string and fail validation pointing
+    # at the config rather than at the malformed variable.
+    assert config.DEPLOYMENTS_VARIABLE == "CLI_UPLIFT_EVAL_DEPLOYMENTS"
+    assert config.DEPLOYMENTS_VARIABLE not in config.OVERLAY
+
+
+def test_the_operator_is_told_which_deployments_will_run_not_how_many():
+    """ "3 deployments" was printable while all three named one gateway.
+
+    The names are what let an operator see at a glance that this is
+    dev/integration/preprod and not one URL under three labels — and that a run
+    about to grade E16/E17 is bound to the fixture they think it is.
+    """
+    bound = " ".join(
+        build_run_config.summary(
+            config.validate(config_fixture(deployments=deployment_bindings()))
+        )
+    )
+    assert "development" in bound and "integration" in bound and "preprod" in bound
+    # Absent says which cases that costs, so BLOCKED is never a surprise.
+    absent = " ".join(build_run_config.summary(config.validate(config_fixture())))
+    assert "E16/E17" in absent and "BLOCK" in absent
+
+
+def test_the_multi_deployment_suite_is_documented_on_the_dispatch_input():
+    """An operator choosing a suite must be told what it needs to run.
+
+    `multi-deployment` is the only suite whose fixture cannot be created from the
+    workflow — it needs three real gateways — so the input description is where
+    that has to be said, not in a file they would have to go and find.
+    """
+    _document, triggers = workflow()
+    description = triggers["workflow_dispatch"]["inputs"]["suites"]["description"]
+    assert "multi-deployment" in description
+    assert "CLI_UPLIFT_EVAL_DEPLOYMENTS" in description
+    # And it is a real suite, so choosing it is not a silent no-op.
+    assert "multi-deployment" in cases.SUITES
+
+
 def test_workflow_restores_durable_state_when_given_an_evaluation_id():
     """An ID names a run from another runner; its state dir is not here.
 
@@ -7106,6 +7950,10 @@ def test_example_config_leaves_unestablished_fixtures_absent():
     # cases block alongside them rather than attempting a destination account
     # they hold no session for.
     assert cases.DESTINATION not in available
+    # #5413: likewise the three named deployments. The example file is checked in
+    # and describes no real environment, so it cannot name three reachable
+    # gateways; E16/E17 therefore block here exactly as the GitHub cases do.
+    assert cases.THREE_DEPLOYMENTS not in available
     matrix = cases.new_matrix(FULL)
     blocked = cases.block_missing_fixtures(matrix, available)
     assert set(blocked) == {
@@ -7118,6 +7966,8 @@ def test_example_config_leaves_unestablished_fixtures_absent():
         "E10",
         "E11",
         "E12",
+        "E16",
+        "E17",
     }
     # The rest of the matrix stays runnable: one absent fixture class must not
     # take down the cases that do not depend on it.
@@ -7144,10 +7994,26 @@ def runbook():
 
 
 def test_runbook_names_only_real_suites():
+    """Every suite the runbook OFFERS must exist, or an operator dispatches a typo.
+
+    Scoped to the offer itself — the `Suites:` list up to the paragraph break —
+    rather than everything between two headings. The wider span swept up any
+    backticked lower-case word in the surrounding prose, so explaining what a
+    suite needs (`blocked`, `three_deployments`, `credential_secret_name`) failed
+    a test about suite NAMES. The property worth keeping is that the list offers
+    nothing `cases.SUITES` does not have; forbidding prose around it was never
+    part of that, and would push the explanation somewhere less useful.
+    """
     doc = runbook()
-    section = doc[doc.index("Suites:") : doc.index("### Watch it")]
-    for name in set(re.findall(r"`([a-z-]+)`", section)):
+    start = doc.index("Suites:")
+    section = doc[start : doc.index("\n\n", start)]
+    offered = set(re.findall(r"`([a-z-]+)`", section))
+    for name in offered:
         assert name in cases.SUITES, f"runbook offers unknown suite {name!r}"
+    # ...and offers all of them, so a suite cannot be added without being
+    # documented. This is the half the old span could not assert, because prose
+    # names could not be told apart from offers.
+    assert offered == set(cases.SUITES)
 
 
 def test_runbook_names_only_real_faults():

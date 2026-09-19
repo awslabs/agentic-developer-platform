@@ -41,13 +41,18 @@ set -euo pipefail
 readonly ADP_VERSION="1.0.0"
 
 # Same store the core helper uses — this wrapper adds no new secret location.
+# These four are re-pointed at the SELECTED deployment by resolve_deployment()
+# (Issue #5413) before any verb runs. They keep these values on a machine that
+# has never registered a named deployment, which is what makes the named support
+# additive rather than a migration.
 CONFIG_DIR="${HOME}/.bedrock-gateway"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-models.py"
+DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-models.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -62,6 +67,13 @@ PROXY_LOG_FILE="${ADP_LOG_DIR}/proxy.log"
 # "a proxy on some other port" — the core refuses to run two, so the second is a
 # distinct, actionable failure rather than a start timeout.
 PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
+
+# What the proxy publishes after it binds: its port and which deployment it
+# serves (Issue #5413). This is the only trustworthy answer to "is a proxy for MY
+# deployment already running, and where?" — a bare TCP probe cannot tell this
+# deployment's proxy from another's, and attaching to another's would send this
+# deployment's traffic, with this deployment's token, to the wrong gateway.
+PROXY_IDENTITY_FILE="${CONFIG_DIR}/proxy.json"
 
 # Guards the proxy spawn so two concurrent `adp codex` calls cannot both start
 # one. Deliberately NOT the core's refresh.lock: the proxy we spawn calls
@@ -128,7 +140,142 @@ adp_dir() {
 
 core_script() { echo "$(adp_dir)/${CORE_SCRIPT_NAME}"; }
 proxy_script() { echo "$(adp_dir)/${PROXY_SCRIPT_NAME}"; }
+deployments_script() { echo "$(adp_dir)/${DEPLOYMENTS_SCRIPT_NAME}"; }
 adp_path() { echo "$(adp_dir)/$(basename "${BASH_SOURCE[0]}")"; }
+
+# --- deployment selection (Issue #5413) -------------------------------------
+
+# Run the shared resolver. It owns the precedence rule and the storage layout;
+# this script never re-derives either, because a second implementation would
+# drift and drift here means a token sent to the wrong gateway.
+deployments() {
+    local path
+    path="$(deployments_script)"
+    if [ ! -f "${path}" ]; then
+        print_error "Deployment helper not found at ${path}."
+        print_warning "Reinstall with: curl -fsSL <gateway>/api/cli/install.sh | sh -s -- --gateway-url <gateway>"
+        exit 1
+    fi
+    python3 "${path}" "$@"
+}
+
+# Resolve ONCE, at entry, and pin the result for this process and every child.
+#
+# Pinning is the point. Without it, this script would read the selection, the
+# core helper would read it again, and the proxy would read it a third time —
+# and a concurrent `adp deployment use` in another terminal could change the
+# answer in between, combining one deployment's endpoint with another's token.
+# After this runs, every path variable below and every child process is fixed to
+# one deployment for the life of the command.
+#
+# A machine with no registered deployment and no existing store resolves to
+# nothing at all, and that is NOT an error here: `adp login --gateway-url URL`,
+# `adp deployment add` and `adp help` must all work on a fresh install. The
+# verbs that genuinely need a target fail on their own, with their own message.
+# An INVALID or UNKNOWN explicit selection, by contrast, fails immediately —
+# never silently falling back to a different deployment.
+resolve_deployment() {
+    local requested="${1:-}"
+    local exports status=0
+
+    # No --ensure: resolving is a read. The write sites below already create what
+    # they need (mkdir -p before each write), and creating a deployment's
+    # directories merely because someone ran `adp version` would litter a home
+    # directory — and made `update` look like it had installed to a new prefix.
+    # stderr is NOT captured into `exports`: only stdout is eval'd. Merging the two
+    # meant any stderr line on a SUCCESSFUL resolve (a python deprecation warning,
+    # a wrapper's banner) was concatenated with the exports and fed to `eval`,
+    # which then failed with "WARNING:: command not found" — a status the check
+    # below cannot catch, because the resolve itself exited 0. Diagnostics go
+    # straight to the terminal instead.
+    local diagnostics
+    diagnostics="$(mktemp)"
+    exports="$(deployments resolve ${requested:+--deployment "${requested}"} --format env --validate-config --lease-pid "$$" 2>"${diagnostics}")" || status=$?
+
+    if [ "${status}" -ne 0 ]; then
+        # A BROKEN registry is fatal whatever the selection route. The registry is
+        # what maps every name to a URL, so when it cannot be read there is no
+        # evidence about where the saved default points — and continuing on the
+        # legacy paths would run the command against the legacy gateway while the
+        # user believes their saved default is in force. That is the silent
+        # wrong-target substitution this module exists to refuse, so only a
+        # genuinely ABSENT selection is allowed to fall through.
+        printf '%s\n' "$(cat "${diagnostics}")" >&2
+        rm -f "${diagnostics}"
+        # ADP_HOME mirrors adp_deployments.adp_home(), so the two halves agree
+        # about which file they are asking about.
+        if [ -n "${requested}" ] || [ -n "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}" ] \
+           || [ -f "${ADP_HOME:-${HOME}/.adp}/deployments.json" ]; then
+            exit "${status}"
+        fi
+        # No registry and no selection anywhere: a machine that has never
+        # registered a deployment stays on the legacy single-deployment paths.
+        return 0
+    fi
+    rm -f "${diagnostics}"
+
+    eval "${exports}"
+
+    # ADP_LOG_DIR and the runtime dir arrive from the eval above.
+    CONFIG_DIR="${BG_CONFIG_DIR}"
+    CONFIG_FILE="${CONFIG_DIR}/config.json"
+    TOKEN_FILE="${CONFIG_DIR}/tokens.json"
+    PROXY_LOG_FILE="${ADP_LOG_DIR}/proxy.log"
+    PROXY_PID_FILE="${ADP_RUNTIME_DIR}/proxy.pid"
+    PROXY_IDENTITY_FILE="${ADP_RUNTIME_DIR}/proxy.json"
+    PROXY_SPAWN_LOCK_DIR="${ADP_RUNTIME_DIR}/proxy-spawn.lock"
+    if [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
+        LAUNCH_AGENT_LABEL="com.adp.gateway-proxy.${ADP_DEPLOYMENT_ID}"
+        LAUNCH_AGENT_FILE="${HOME}/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist"
+    fi
+
+    # Children (the core helper, the python helpers, the proxy) inherit the pin.
+    export ADP_DEPLOYMENT_ID ADP_DEPLOYMENT_NAME ADP_DEPLOYMENT_SOURCE ADP_DEPLOYMENT_URL
+    export BG_CONFIG_DIR ADP_STATE_DIR ADP_RUNTIME_DIR ADP_LOG_DIR BG_AWS_PROFILE
+}
+
+# The selected deployment's name, for messages — empty unless naming it tells the
+# user something they need.
+#
+# A machine that has never registered a named deployment resolves with source
+# `legacy`. Reporting "Deployment: default" there would introduce a concept the
+# user has never met and cannot act on, so it stays silent and the output is
+# byte-for-byte what it was before this change. Once real deployments exist,
+# naming the selected one is the whole point.
+selected_deployment() {
+    [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ] && return 0
+    printf '%s' "${ADP_DEPLOYMENT_NAME:-}"
+}
+
+cmd_deployment() {
+    # `--json` before the verb is forwarded, not treated as a verb. The resolver
+    # accepts it in either position, and rejecting it here would make
+    # `adp deployment --json list` fail in the front door while the identical
+    # `adp deployment list --json` succeeded — a difference with no reason a user
+    # could infer.
+    # A plain string, not an array: under `set -u` an empty array expansion is an
+    # error on bash 3.2, which is still what macOS ships as /bin/bash. `--json`
+    # takes no value and contains no whitespace, so there is nothing for word
+    # splitting to damage here.
+    local passthrough=""
+    while [ "${1:-}" = "--json" ]; do
+        passthrough="--json"
+        shift
+    done
+
+    local subcommand="${1:-}"
+    case "${subcommand}" in
+        add|list|use|remove) shift; deployments "${subcommand}" ${passthrough} "$@" ;;
+        "")
+            print_error "Missing subcommand: 'adp deployment add|list|use|remove'."
+            exit 1
+            ;;
+        *)
+            print_error "Unknown 'adp deployment' subcommand: ${subcommand}"
+            exit 1
+            ;;
+    esac
+}
 
 # Delegate to the core helper. Every auth verb goes through here, so the flag
 # surface the core defines stays the single source of truth.
@@ -231,6 +378,67 @@ proxy_listening() {
     (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null
 }
 
+# The port this deployment's proxy published after binding, or empty.
+#
+# Empty covers every "no usable proxy" case uniformly — no file, a truncated
+# file, a record for another deployment, a dead pid — because they all mean the
+# same thing to the caller: start one. Liveness is established by signalling the
+# pid rather than by the file's existence, so a stale record from a killed
+# session is treated as absent instead of wedging every later launch.
+published_proxy_port() {
+    [ -f "${PROXY_IDENTITY_FILE}" ] || return 0
+
+    local port pid owner
+    port="$(jq -r '.port // empty' "${PROXY_IDENTITY_FILE}" 2>/dev/null || true)"
+    pid="$(jq -r '.pid // empty' "${PROXY_IDENTITY_FILE}" 2>/dev/null || true)"
+    owner="$(jq -r '.deployment_id // ""' "${PROXY_IDENTITY_FILE}" 2>/dev/null || true)"
+
+    [[ "${port}" =~ ^[0-9]+$ ]] || return 0
+    [ "${port}" -ge 1 ] && [ "${port}" -le 65535 ] || return 0
+    [[ "${pid}" =~ ^[0-9]+$ ]] || return 0
+
+    # A record naming a DIFFERENT deployment is never reused, even though it sits
+    # in this deployment's runtime dir — that is the crossed-context bug itself.
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ -n "${owner}" ] && [ "${owner}" != "${ADP_DEPLOYMENT_ID}" ]; then
+        return 0
+    fi
+
+    kill -0 "${pid}" 2>/dev/null || return 0
+    printf '%s' "${port}"
+}
+
+# Confirm the thing listening on this port is THIS deployment's proxy.
+#
+# `proxy_listening` only proves that SOMETHING accepted a TCP connection. With
+# three deployments on one machine — or any unrelated local service on the port —
+# that is not enough: handing a token to whatever answered is the wrong-gateway
+# failure this change exists to prevent. So the proxy's own identity route is
+# asked, and its answer must name this deployment.
+#
+# A proxy that answers with an empty id is a legacy single-deployment proxy, and
+# is accepted only when we are legacy too. Anything that does not answer the
+# route at all is not our proxy and is not reused.
+proxy_identity_matches() {
+    local port="$1"
+    local body owner
+    body="$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/_adp/proxy" 2>/dev/null)" || return 1
+    [ "$(printf '%s' "${body}" | jq -r '.proxy // empty' 2>/dev/null)" = "adp-gateway-proxy" ] || return 1
+    owner="$(printf '%s' "${body}" | jq -r '.deployment_id // ""' 2>/dev/null || true)"
+    [ "${owner}" = "${ADP_DEPLOYMENT_ID:-}" ] && return 0
+
+    # An EMPTY id is a proxy started without a pin — either a pre-#5413 CLI or a
+    # plain `adp serve`/launchd agent — and the legacy deployment is exactly who
+    # it belongs to. The legacy resolver reports id `default`, so a literal
+    # comparison rejected a correct, already-running legacy proxy: `adp codex`
+    # would then refuse to reuse it, try to start a second one on the same fixed
+    # port, and fail. Accepted for the legacy deployment only; a NAMED deployment
+    # still never reuses an unidentified proxy.
+    if [ -z "${owner}" ] && { [ -z "${ADP_DEPLOYMENT_ID:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; }; then
+        return 0
+    fi
+    return 1
+}
+
 # Age in seconds of the spawn lock, or empty if absent. Portable across macOS
 # (stat -f %m) and Linux (stat -c %Y) — mirrors _lock_age_seconds in the core.
 _spawn_lock_age_seconds() {
@@ -257,7 +465,10 @@ _release_proxy_spawn_lock() {
 # stale-reclaim shape as the core's refresh lock (#4837): a lock abandoned by a
 # crashed process must not wedge every later launch.
 _acquire_proxy_spawn_lock() {
-    mkdir -p "${CONFIG_DIR}" 2>/dev/null || true
+    # The lock's parent, which for a named deployment is its runtime dir rather
+    # than its config dir (Issue #5413) — mkdir of the lock itself fails if the
+    # parent does not exist yet, and a first launch is exactly that case.
+    mkdir -p "$(dirname "${PROXY_SPAWN_LOCK_DIR}")" 2>/dev/null || true
     local waited=0
     while :; do
         if mkdir "${PROXY_SPAWN_LOCK_DIR}" 2>/dev/null; then
@@ -279,14 +490,20 @@ _acquire_proxy_spawn_lock() {
     done
 }
 
-# Block until the port accepts connections, or give up. Polls in 0.2s steps so a
-# warm start costs a fraction of a second rather than a full second.
+# Block until a proxy for this deployment is usable, echoing its port, or give up.
+# Polls in 0.2s steps so a warm start costs a fraction of a second rather than a
+# full second.
+#
+# Waits for the IDENTITY, not merely for a socket (Issue #5413): with an
+# OS-assigned port we do not know the port until the proxy publishes it, and
+# "some socket is open" was never proof that the socket was ours.
 _wait_for_proxy() {
-    local port="$1"
     local waited_tenths=0
     local limit_tenths=$((PROXY_READY_TIMEOUT_SECONDS * 10))
+    local found
     while [ "${waited_tenths}" -lt "${limit_tenths}" ]; do
-        if proxy_listening "${port}"; then
+        if found="$(_discover_proxy)" && [ -n "${found}" ]; then
+            printf '%s' "${found}"
             return 0
         fi
         sleep 0.2
@@ -295,18 +512,26 @@ _wait_for_proxy() {
     return 1
 }
 
-# Make sure a proxy is listening on CODEX_PROXY_PORT, starting one if not.
+# Make sure a proxy for THIS deployment is listening, starting one if not, and
+# leave its port in ADP_ACTIVE_PROXY_PORT for the launcher to pin the tool to.
 #
-# Idempotent by health-check-first: an already-running proxy (yours, or the
-# launchd agent from `adp daemon install`) is reused, never duplicated. The
-# re-check under the lock is what makes two concurrent `adp codex` calls start
-# exactly one proxy — the loser of the mkdir race observes the winner's proxy
-# instead of racing it to the bind.
+# Idempotent by discover-and-verify-first: an already-running proxy for this
+# deployment (yours, or the launchd agent from `adp daemon install`) is reused,
+# never duplicated. The re-check under the lock is what makes two concurrent
+# `adp codex` calls start exactly one proxy — the loser of the mkdir race
+# observes the winner's proxy instead of racing it to the bind.
+#
+# Reuse requires identity, not just a listening socket (Issue #5413). A named
+# deployment's proxy is found through the port it PUBLISHED, and confirmed to be
+# ours before any credential is sent through it.
 ensure_proxy() {
-    local port="${CODEX_PROXY_PORT}"
+    local named=""
+    [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ] && named="yes"
 
-    if proxy_listening "${port}"; then
-        print_info "Using the auth proxy already running on 127.0.0.1:${port}."
+    local found
+    if found="$(_discover_proxy)" && [ -n "${found}" ]; then
+        ADP_ACTIVE_PROXY_PORT="${found}"
+        print_info "Using the auth proxy already running on 127.0.0.1:${found}."
         return 0
     fi
 
@@ -316,43 +541,64 @@ ensure_proxy() {
         exit 1
     fi
 
-    if proxy_listening "${port}"; then
+    if found="$(_discover_proxy)" && [ -n "${found}" ]; then
         _release_proxy_spawn_lock
-        print_info "Using the auth proxy already running on 127.0.0.1:${port}."
+        ADP_ACTIVE_PROXY_PORT="${found}"
+        print_info "Using the auth proxy already running on 127.0.0.1:${found}."
         return 0
     fi
 
-    # Nothing on our port, but the core keeps ONE pidfile regardless of port and
-    # refuses to start a second proxy. Without this check that refusal surfaces
-    # as a 10s "did not come up" timeout with the real reason buried in the log —
-    # so name it now, with the fix.
-    if [ -f "${PROXY_PID_FILE}" ]; then
+    # A verified process may still be running on a different selected port, or
+    # may be temporarily unresponsive. Report that before waiting for another
+    # startup; an unrelated process with a recycled PID is never ownership.
+    if [ -f "${PROXY_IDENTITY_FILE}" ]; then
         local existing_pid
-        existing_pid=$(cat "${PROXY_PID_FILE}" 2>/dev/null || true)
-        if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
+        existing_pid=$(deployments proxy-owner "${ADP_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${ADP_DEPLOYMENT_URL:-}")
+        if [ -n "${existing_pid}" ]; then
             _release_proxy_spawn_lock
-            print_error "An auth proxy is already running (pid ${existing_pid}), but not on port ${port}."
-            print_warning "Stop it with 'kill ${existing_pid}', or re-run 'adp codex setup' to use its port."
+            print_error "An auth proxy is already running (pid ${existing_pid}), but is not reachable on the selected port."
+            print_warning "Stop the original proxy session, or re-run 'adp codex setup' to use its port."
             exit 1
         fi
     fi
 
     mkdir -p "${ADP_LOG_DIR}" 2>/dev/null || true
 
-    print_info "Starting the auth proxy on 127.0.0.1:${port} (log: ${PROXY_LOG_FILE})..."
+    # A named deployment asks the OS for a free port (--port 0): three of them
+    # cannot share 9191. The legacy single-deployment path keeps the fixed port
+    # every existing config.toml and doc already names.
+    local requested_port="${CODEX_PROXY_PORT}"
+    local where="127.0.0.1:${CODEX_PROXY_PORT}"
+    if [ -n "${named}" ]; then
+        requested_port="${ADP_PROXY_PORT:-0}"
+        if [ -f "${ADP_RUNTIME_DIR}/setup-port.json" ]; then
+            requested_port="$(jq -er '.port' "${ADP_RUNTIME_DIR}/setup-port.json")"
+            if [ -n "${ADP_PROXY_PORT:-}" ] && [ "${ADP_PROXY_PORT}" != "${requested_port}" ]; then
+                _release_proxy_spawn_lock
+                print_error "ADP_PROXY_PORT conflicts with this deployment's saved setup port."
+                exit 1
+            fi
+        fi
+        where="127.0.0.1:${requested_port}"
+    fi
+
+    # The core verifies process ownership before clearing stale metadata. Keep
+    # that evidence intact until its check, including during concurrent startup.
+
+    print_info "Starting the auth proxy on ${where} (log: ${PROXY_LOG_FILE})..."
     # setsid where available so the proxy survives this terminal; nohup covers
     # the rest. stdin from /dev/null and both streams appended to the log, so a
     # detached proxy can neither read from nor scribble on the user's terminal.
     if command -v setsid >/dev/null 2>&1; then
-        setsid nohup bash "$(core_script)" serve --port "${port}" \
+        setsid nohup bash "$(core_script)" serve --port "${requested_port}" \
             </dev/null >>"${PROXY_LOG_FILE}" 2>&1 &
     else
-        nohup bash "$(core_script)" serve --port "${port}" \
+        nohup bash "$(core_script)" serve --port "${requested_port}" \
             </dev/null >>"${PROXY_LOG_FILE}" 2>&1 &
     fi
     disown 2>/dev/null || true
 
-    if ! _wait_for_proxy "${port}"; then
+    if ! found="$(_wait_for_proxy)" || [ -z "${found}" ]; then
         _release_proxy_spawn_lock
         print_error "The auth proxy did not come up within ${PROXY_READY_TIMEOUT_SECONDS}s."
         print_warning "See ${PROXY_LOG_FILE}, or run 'adp serve' in the foreground to watch it start."
@@ -363,7 +609,41 @@ ensure_proxy() {
     # moment we spawned would health-check a socket that is not open yet and
     # spawn a second.
     _release_proxy_spawn_lock
-    print_success "Auth proxy ready on 127.0.0.1:${port}."
+    ADP_ACTIVE_PROXY_PORT="${found}"
+    print_success "Auth proxy ready on 127.0.0.1:${found}."
+}
+
+# Find a usable proxy for this deployment and echo its port, or echo nothing.
+#
+# Two ways in, for the two kinds of deployment:
+#   * a named deployment binds an OS-assigned port, so the only way to find it is
+#     the identity file it published after binding;
+#   * the legacy deployment has always used the fixed port, and a proxy started by
+#     an older CLI publishes no identity file at all — so the fixed port is probed
+#     too, and accepted when its identity route agrees it is legacy.
+# Either way the identity is confirmed before the port is returned.
+#
+# An EXPLICIT ADP_PROXY_PORT narrows this to that one port. A user (or the test
+# suite) who names a port has made a request, and quietly satisfying it with a
+# proxy on some other port is the same class of substitution this change refuses
+# for --deployment: it must be honoured or fail, never silently swapped.
+_discover_proxy() {
+    local port
+    port="$(published_proxy_port)"
+    if [ -n "${port}" ] && [ -n "${ADP_PROXY_PORT:-}" ] && [ "${port}" != "${ADP_PROXY_PORT}" ]; then
+        port=""
+    fi
+    if [ -n "${port}" ] && proxy_listening "${port}" && proxy_identity_matches "${port}"; then
+        printf '%s' "${port}"
+        return 0
+    fi
+    if [ -z "${ADP_DEPLOYMENT_ID:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; then
+        if proxy_listening "${CODEX_PROXY_PORT}" && proxy_identity_matches "${CODEX_PROXY_PORT}"; then
+            printf '%s' "${CODEX_PROXY_PORT}"
+            return 0
+        fi
+    fi
+    return 0
 }
 
 require_tool() {
@@ -380,6 +660,8 @@ require_tool() {
 # placeholder env var Codex insists on, hand over.
 cmd_codex_launch() {
     require_tool codex
+    # Decode quoted TOML key segments before comparing managed transport paths.
+    deployments check-codex-args -- "$@" || exit $?
     require_live_session "Codex"
     ensure_proxy
 
@@ -389,9 +671,19 @@ cmd_codex_launch() {
     # and setting it here is what removes it from the user's command line.
     export ADP_GATEWAY_DUMMY="${ADP_GATEWAY_DUMMY:-unused}"
 
+    local pinned=()
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
+        pinned=(-c "model_provider=\"${CODEX_PROVIDER}\""
+            -c "model_providers.${CODEX_PROVIDER}.base_url=\"http://127.0.0.1:${ADP_ACTIVE_PROXY_PORT}/openai/v1\""
+            -c "model_providers.${CODEX_PROVIDER}.name=\"${CODEX_PROVIDER}\""
+            -c "model_providers.${CODEX_PROVIDER}.wire_api=\"responses\""
+            -c "model_providers.${CODEX_PROVIDER}.env_key=\"ADP_GATEWAY_DUMMY\"")
+    fi
+
     # exec, so Codex owns the terminal: job control, Ctrl-C and its exit status
     # all reach the user directly instead of through a bash wrapper.
-    exec codex "$@"
+    # Bash 3.2 (macOS) treats an empty array as unset under nounset.
+    exec codex ${pinned[@]+"${pinned[@]}"} "$@"
 }
 
 # --- claude (launch) --------------------------------------------------------
@@ -400,8 +692,51 @@ cmd_codex_launch() {
 # working. This verb exists for symmetry and for the fail-fast login hint.
 cmd_claude_launch() {
     require_tool claude
+
+    local key value expected
+    for key in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_BEDROCK_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_SKIP_BEDROCK_AUTH CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do
+        value="${!key:-}"
+        [ -n "${value}" ] || continue
+        expected=""
+        case "${key}" in
+            ANTHROPIC_BEDROCK_BASE_URL) expected="${ADP_DEPLOYMENT_URL:-}" ;;
+            CLAUDE_CODE_USE_BEDROCK|CLAUDE_CODE_SKIP_BEDROCK_AUTH) expected="1" ;;
+            CLAUDE_CODE_USE_VERTEX|CLAUDE_CODE_USE_FOUNDRY) expected="0" ;;
+        esac
+        if [ "${value}" != "${expected}" ]; then
+            print_error "${key} is an inherited transport override. Unset it before using adp claude."
+            exit 1
+        fi
+    done
+
+    local settings='{}' rest=() supplied
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --settings|--settings=*)
+                if [ "$1" = "--settings" ]; then
+                    [ $# -ge 2 ] || { print_error "--settings needs a value."; exit 1; }
+                    supplied="$2"; shift 2
+                else supplied="${1#--settings=}"; shift; fi
+                if [ -f "${supplied}" ]; then supplied="$(cat "${supplied}")"; fi
+                settings="$(printf '%s' "${supplied}" | jq -e 'select(type == "object")')" || {
+                    print_error "Claude --settings must be a JSON object or a settings file."; exit 1;
+                }
+                if printf '%s' "${settings}" | jq -e 'has("apiKeyHelper") or ((.env // {}) | keys | any(. == "ANTHROPIC_BEDROCK_BASE_URL" or . == "ANTHROPIC_BASE_URL" or . == "ANTHROPIC_AUTH_TOKEN" or . == "ANTHROPIC_API_KEY" or . == "CLAUDE_CODE_OAUTH_TOKEN" or . == "CLAUDE_CODE_USE_VERTEX" or . == "CLAUDE_CODE_USE_FOUNDRY" or . == "CLAUDE_CODE_USE_BEDROCK" or . == "CLAUDE_CODE_SKIP_BEDROCK_AUTH"))' >/dev/null; then
+                    print_error "The supplied Claude settings replace the selected ADP transport."; exit 1
+                fi ;;
+            *) rest+=("$1"); shift ;;
+        esac
+    done
     require_live_session "Claude Code"
-    exec claude "$@"
+    if [ -n "${ADP_DEPLOYMENT_URL:-}" ]; then
+        settings="$(printf '%s' "${settings}" | jq -c --arg helper "$(pinned_token_helper)" --arg url "${ADP_DEPLOYMENT_URL}" \
+            '.apiKeyHelper = $helper | .env = ((.env // {}) + {ANTHROPIC_BEDROCK_BASE_URL: $url, CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1"})')"
+        export ANTHROPIC_BEDROCK_BASE_URL="${ADP_DEPLOYMENT_URL}"
+        export CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
+        unset CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+        exec claude --settings "${settings}" ${rest[@]+"${rest[@]}"}
+    fi
+    exec claude ${rest[@]+"${rest[@]}"}
 }
 
 # --- login ------------------------------------------------------------------
@@ -432,22 +767,114 @@ cmd_login() {
     if [ -z "${gateway_url}" ]; then
         gateway_url="$(stored_gateway_url)"
     fi
+    # Fall back to the URL the SELECTED deployment is registered under, exactly as
+    # `adp update` does. `adp deployment add prod --url ...` records the binding and
+    # makes no request, so a registered deployment has no config.json until its
+    # first sign-in — and without this, that very first
+    # `adp --deployment prod login` failed with "No gateway URL known" and told the
+    # user to type a URL the registry had held all along. Hand-typing it is what
+    # made the next check necessary.
+    if [ -z "${gateway_url}" ]; then
+        gateway_url="${ADP_DEPLOYMENT_URL:-}"
+    fi
     if [ -z "${gateway_url}" ]; then
         print_error "No gateway URL known. Pass --gateway-url <url>, or reinstall with:"
         print_warning "  curl -fsSL <gateway>/api/cli/install.sh | sh -s -- --gateway-url <gateway>"
         exit 1
     fi
 
+    gateway_url="$(require_url_matches_selected_deployment "${gateway_url}" "Signing in")"
+
     core login --web --gateway-url "${gateway_url}" "${args[@]}"
+}
+
+# A named deployment's URL is its IDENTITY, so establishing a session against a
+# DIFFERENT gateway under its name is refused rather than obeyed. The session is
+# written to the selected deployment's store, but the destination for every later
+# request is read from the registry — so binding a session from gateway B under a
+# name registered for gateway A (a typo, a stale paste, a runbook line copied from
+# another environment) leaves that store holding B's token while all its traffic
+# goes to A, presenting one deployment's live credential to another deployment's
+# gateway. Nothing downstream can detect that, because both halves look internally
+# consistent.
+#
+# This lives in ONE function because there is more than one way to establish a
+# session: `login` mints one interactively and `import` adopts an existing refresh
+# token headlessly. `import` originally bypassed this check entirely (it is a plain
+# pass-through to the auth helper, which honours its own --gateway-url and persists
+# it), so `adp --deployment prod import --gateway-url https://dev...` wrote dev's
+# token into prod's store and every later prod request carried it. Any future verb
+# that accepts a gateway URL must call this too.
+#
+# Echoes the canonical URL to use; exits non-zero when the URL contradicts the
+# selection. `$2` is the gerund naming the action, for the error message.
+require_url_matches_selected_deployment() {
+    local gateway_url="$1" action="$2"
+    if [ -z "${ADP_DEPLOYMENT_URL:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; then
+        printf '%s' "${gateway_url}"
+        return 0
+    fi
+    local requested_canonical registered_canonical
+    requested_canonical="$(deployments canonicalize "${gateway_url}" 2>/dev/null)" || {
+        print_error "'${gateway_url}' is not a usable gateway URL. Use the form https://<host>."
+        exit 1
+    }
+    registered_canonical="$(deployments canonicalize "${ADP_DEPLOYMENT_URL}" 2>/dev/null || printf '%s' "${ADP_DEPLOYMENT_URL}")"
+    if [ "${requested_canonical}" != "${registered_canonical}" ]; then
+        print_error "Deployment '${ADP_DEPLOYMENT_NAME:-}' is registered for ${registered_canonical}, not ${requested_canonical}."
+        print_warning "${action} elsewhere under this name would store that gateway's token against this one."
+        print_warning "Use the registered gateway, or point the name at the new URL with: adp deployment add ${ADP_DEPLOYMENT_NAME:-<name>} --url ${requested_canonical}"
+        exit 1
+    fi
+    printf '%s' "${requested_canonical}"
+}
+
+# `import` adopts an existing refresh token into the selected deployment's store.
+# The auth helper owns every other flag; we inspect ONLY --gateway-url, and only to
+# refuse a value that contradicts the selected deployment (see
+# require_url_matches_selected_deployment). Args are forwarded unchanged so the
+# helper stays the single owner of import's surface and exit codes.
+cmd_import() {
+    local arg previous=""
+    for arg in "$@"; do
+        if [ "${previous}" = "--gateway-url" ]; then
+            require_url_matches_selected_deployment "${arg}" "Importing a session from" >/dev/null
+            break
+        fi
+        previous="${arg}"
+    done
+    core import "$@"
 }
 
 # --- status -----------------------------------------------------------------
 # Read-only day-1 confirmation and day-N "am I still good?". Exits non-zero
 # when there is no session, so it is usable in a script.
 cmd_status() {
+    if [ "${1:-}" = "--json" ] && [ $# -eq 1 ]; then
+        deployments status --json
+        return $?
+    fi
+    if [ $# -ne 0 ]; then
+        print_error "Usage: adp status [--json]"
+        return 1
+    fi
+    # With three terminals on one machine, "Signed in as alice" is ambiguous
+    # unless it says WHICH deployment and WHY that one was selected. Printed
+    # first, and only when a named deployment is in play — on a legacy
+    # single-deployment machine it would name a concept the user never met.
+    local deployment
+    deployment="$(selected_deployment)"
+    if [ -n "${deployment}" ]; then
+        echo "Deployment:   ${deployment} (selected by ${ADP_DEPLOYMENT_SOURCE:-default})"
+    fi
+
     if [ ! -f "${CONFIG_FILE}" ]; then
         echo "Not signed in."
-        echo "Run 'adp login' to sign in."
+        if [ -n "${deployment}" ]; then
+            echo "Run 'adp --deployment ${deployment} login' to sign in to this deployment."
+        else
+            echo "Run 'adp login' to sign in."
+        fi
         return 1
     fi
 
@@ -502,6 +929,10 @@ cmd_codex_setup() {
         exit 1
     fi
 
+    local setup_proxy_port="${CODEX_PROXY_PORT}"
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
+        setup_proxy_port="$(deployments setup-port)"
+    fi
     mkdir -p "$(dirname "${CODEX_CONFIG_FILE}")"
 
     # Everything we do NOT own, preserved verbatim. awk (not sed) because the
@@ -545,7 +976,7 @@ cmd_codex_setup() {
 
 [model_providers.${CODEX_PROVIDER}]
 name = "${CODEX_PROVIDER}"
-base_url = "http://127.0.0.1:${CODEX_PROXY_PORT}/openai/v1"
+base_url = "http://127.0.0.1:${setup_proxy_port}/openai/v1"
 wire_api = "responses"
 env_key = "ADP_GATEWAY_DUMMY"
 EOF
@@ -562,6 +993,14 @@ EOF
     echo ""
     echo "  adp daemon install"
     echo ""
+}
+
+pinned_token_helper() {
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ]; then
+        deployments helper-command "$(adp_path)"
+    else
+        python3 -c 'import shlex,sys; print(shlex.join([sys.argv[1], "token"]))' "$(adp_path)"
+    fi
 }
 
 # --- claude setup -----------------------------------------------------------
@@ -597,7 +1036,7 @@ cmd_claude_setup() {
     local merged
     merged=$(printf '%s' "${existing}" | jq \
         --arg base_url "${gateway_url}" \
-        --arg helper "$(adp_path) token" \
+        --arg helper "$(pinned_token_helper)" \
         --argjson ttl "${CLAUDE_HELPER_TTL_MS}" \
         '. as $orig
          | .env = (($orig.env // {}) * {
@@ -686,35 +1125,23 @@ cmd_daemon_install() {
 
     mkdir -p "$(dirname "${LAUNCH_AGENT_FILE}")" "${ADP_LOG_DIR}"
 
-    # KeepAlive so a crashed proxy comes back; RunAtLoad so it is up after a
-    # reboot without the user thinking about it. Both streams to the same log the
-    # on-demand launcher uses, so there is one place to look either way.
-    cat > "${LAUNCH_AGENT_FILE}" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${LAUNCH_AGENT_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>${core_path}</string>
-        <string>serve</string>
-        <string>--port</string>
-        <string>${CODEX_PROXY_PORT}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>${PROXY_LOG_FILE}</string>
-    <key>StandardErrorPath</key>
-    <string>${PROXY_LOG_FILE}</string>
-</dict>
-</plist>
-EOF
+    local daemon_port="${CODEX_PROXY_PORT}"
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
+        daemon_port="$(deployments setup-port)"
+    fi
+    python3 - "${LAUNCH_AGENT_FILE}" "${LAUNCH_AGENT_LABEL}" "${core_path}" "${daemon_port}" "${PROXY_LOG_FILE}" <<'PYPLIST'
+import os, plistlib, sys
+path, label, core, port, log = sys.argv[1:]
+keys = ("ADP_DEPLOYMENT_ID", "ADP_DEPLOYMENT_NAME", "ADP_DEPLOYMENT_URL", "ADP_LEGACY_CONFIG_DIR", "ADP_HOME",
+        "BG_CONFIG_DIR", "ADP_STATE_DIR", "ADP_RUNTIME_DIR", "ADP_LOG_DIR", "BG_AWS_PROFILE")
+env = {key: os.environ[key] for key in keys if key in os.environ}
+env["ADP_DEPLOYMENT_SOURCE"] = "daemon"
+with open(path, "wb") as output:
+    plistlib.dump({"Label": label, "ProgramArguments": ["/bin/bash", core, "serve", "--port", port],
+                  "EnvironmentVariables": env, "RunAtLoad": True, "KeepAlive": True,
+                  "StandardOutPath": log, "StandardErrorPath": log}, output)
+os.chmod(path, 0o600)
+PYPLIST
 
     # Unload first so a re-run picks up a changed plist instead of leaving the
     # old definition loaded. Failure is expected when nothing is loaded yet.
@@ -764,7 +1191,12 @@ cmd_daemon_uninstall() {
         removed=1
     fi
 
-    daemon_remove_rc_export "$(daemon_rc_file)"
+    # Other deployments' daemons still need the shared bare-Codex placeholder.
+    local remaining_daemons
+    remaining_daemons=$(find "${HOME}/Library/LaunchAgents" -name 'com.adp.gateway-proxy*.plist' -print 2>/dev/null || true)
+    if [ -z "${remaining_daemons}" ]; then
+        daemon_remove_rc_export "$(daemon_rc_file)"
+    fi
 
     if [ "${removed}" -eq 0 ]; then
         print_info "No always-on proxy was installed — nothing to remove."
@@ -868,6 +1300,18 @@ cmd_update() {
 
     local gateway_url
     gateway_url="$(stored_gateway_url)"
+    # Fall back to the URL the SELECTED deployment is registered under. The stored
+    # config is written by sign-in, so a deployment that has been added but not yet
+    # signed in to has no config.json — and once such a deployment is the saved
+    # default, `adp update` failed with "No gateway URL ... cannot tell where to
+    # update from" even though the registry has held its URL since `deployment
+    # add`. Every named deployment serves the same CLI, so any of them can answer
+    # the question; refusing to update the software because one of several
+    # deployments is not signed in makes no sense to the user, whose CLI is
+    # installed once, not per deployment.
+    if [ -z "${gateway_url}" ]; then
+        gateway_url="${ADP_DEPLOYMENT_URL:-}"
+    fi
     if [ -z "${gateway_url}" ]; then
         print_error "No gateway URL in ${CONFIG_FILE} — cannot tell where to update from."
         print_warning "Reinstall with: curl -fsSL <gateway>/api/cli/install.sh | sh -s -- --gateway-url <gateway>"
@@ -901,12 +1345,26 @@ usage() {
 adp ${ADP_VERSION} — one command for the ADP gateway CLI
 
 Usage:
-    adp <command> [options]
+    adp [--deployment <name>] <command> [options]
+
+Work with more than one ADP deployment (each keeps its own sign-in):
+    deployment add <name> --url <url>
+                          Register a deployment (local only — no sign-in)
+    deployment list       Show registered deployments and which one is selected
+    deployment use <name> Set the saved default for new terminals
+    deployment remove <name>
+                          Forget a deployment locally (never touches the cloud)
+
+    Which deployment a command uses, first match winning:
+        adp --deployment <name> ...   this one command only
+        ADP_DEPLOYMENT=<name>         every command in this terminal
+        deployment use <name>         the saved default
+    An unknown name fails — it never quietly falls back to another deployment.
 
 Sign in (one login is shared by every tool):
     login [--gateway-url <url>] [--no-browser]
                           Browser-approval sign-in — no password, nothing pasted
-    status                Signed-in user, token validity, gateway, refresh mode
+    status [--json]       Signed-in user, token validity, gateway, refresh mode
     logout                Clear the local token store
     refresh               Force a token refresh now
     import                Headless fallback: paste a refresh token
@@ -973,6 +1431,13 @@ Day 1, start to finish:
     adp codex setup        # or: adp claude setup
     adp codex              # or: claude
 
+Three deployments, three terminals, one machine:
+    adp deployment add dev         --url https://<dev-host>
+    adp deployment add integration --url https://<integration-host>
+    # then, in each terminal:
+    export ADP_DEPLOYMENT=dev      # or integration
+    adp login && adp codex         # sessions stay independent
+
 Why the two launchers differ:
     Codex has no hook for refreshing a credential, so it needs the local proxy
     running and a placeholder in ADP_GATEWAY_DUMMY — 'adp codex' does both for
@@ -982,13 +1447,98 @@ Why the two launchers differ:
 EOF
 }
 
+# Refuse `--deployment` AFTER the verb, for the verbs that own their own flags.
+#
+# The flag is global and parsed before the verb, so a later one used to be passed
+# down and ignored: `adp token --deployment prod` printed the DEFAULT deployment's
+# access token and exited 0, and `adp status --deployment prod` reported the
+# default while naming prod on the command line. A user cannot tell either from
+# success, which makes it the same silent-substitution failure an unknown name is
+# already refused for. `codex` and `claude` are exempt: every token after those
+# verbs belongs to the tool, and stealing one would break a legitimate tool flag.
+reject_post_verb_deployment() {
+    local argument
+    for argument in "$@"; do
+        case "${argument}" in
+            --deployment|--deployment=*)
+                print_error "--deployment selects the deployment for the whole command, so it goes BEFORE the verb."
+                print_warning "Use: adp --deployment <name> ${ADP_CURRENT_VERB:-<command>}"
+                exit 1
+                ;;
+            --) return 0 ;;
+        esac
+    done
+}
+
 main() {
     check_dependencies
+
+    # `--deployment NAME` is a GLOBAL option and must appear BEFORE the verb.
+    # It is parsed here, not per-verb, because `codex` and `claude` pass every
+    # token they do not own straight through to the tool — accepting it after the
+    # verb would mean stealing a flag that might belong to Codex or Claude Code.
+    local requested_deployment=""
+    while [ $# -gt 0 ]; do
+        case "${1:-}" in
+            --deployment)
+                if [ -n "${requested_deployment}" ]; then
+                    print_error "Supply --deployment only once, before the command."
+                    exit 1
+                fi
+                if [ -z "${2:-}" ]; then
+                    print_error "--deployment needs a name: adp --deployment dev status"
+                    exit 1
+                fi
+                requested_deployment="$2"
+                shift 2
+                ;;
+            --deployment=*)
+                if [ -n "${requested_deployment}" ]; then
+                    print_error "Supply --deployment only once, before the command."
+                    exit 1
+                fi
+                requested_deployment="${1#--deployment=}"
+                if [ -z "${requested_deployment}" ]; then
+                    print_error "--deployment needs a name: adp --deployment dev status"
+                    exit 1
+                fi
+                shift
+                ;;
+            *) break ;;
+        esac
+    done
 
     local command="${1:-}"
     shift || true
 
+    # Resolve before dispatch, so every verb below — and every child process —
+    # sees one pinned deployment.
+    #
+    # Three verbs are exempt, all for the same reason: they are what a user runs
+    # when the selection is BROKEN. `deployment` is how you fix a bad selection,
+    # and `help`/`version` must never be the commands that refuse to run because
+    # ADP_DEPLOYMENT has a typo in it.
     case "${command}" in
+        deployment)
+            if [ -n "${requested_deployment}" ]; then
+                print_error "'adp deployment' manages deployments; it takes no --deployment selection."
+                exit 1
+            fi
+            ;;
+        help|--help|-h|version|--version|-v|"") ;;
+        *) resolve_deployment "${requested_deployment}" ;;
+    esac
+
+    # Every verb below EXCEPT the two tool launchers owns its own flag surface, so
+    # a `--deployment` among its arguments is a misplaced global option rather than
+    # the tool's own flag, and is refused instead of silently ignored.
+    case "${command}" in
+        codex|claude|help|--help|-h|version|--version|-v|"") ;;
+        *) ADP_CURRENT_VERB="${command}" reject_post_verb_deployment "$@" ;;
+    esac
+
+    case "${command}" in
+        deployment) cmd_deployment "$@" ;;
         aws)     exec_python_helper "adp-aws.py" "$@" ;;
         bedrock) exec_python_helper "adp-bedrock.py" "$@" ;;
         admin)   exec_python_helper "adp-admin.py" "$@" ;;
@@ -1003,8 +1553,11 @@ main() {
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.
-        logout|token|refresh|import|serve)
+        logout|token|refresh|serve)
                  core "${command}" "$@" ;;
+        # `import` establishes a session, like `login`, so it gets login's
+        # URL-vs-selection check rather than going straight through.
+        import)  cmd_import "$@" ;;
         # `setup` is our own subcommand; anything else — including nothing at all
         # — is a LAUNCH with passthrough args. Codex and Claude both have rich
         # flag surfaces we must not shadow, so the tool owns every token we do
