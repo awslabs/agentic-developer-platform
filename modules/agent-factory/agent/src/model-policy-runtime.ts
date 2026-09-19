@@ -144,6 +144,25 @@ async function prepareAuthorizedQuery(params: QueryParams, signal: AbortSignal):
     if (policy.posture === 'disabled' || policy.posture === 'report_only') {
       console.info('Model-policy SDK admission', { posture: policy.posture, status: policy.status,
         legacyModel: params.options?.model, enforced: false });
+      if (policy.posture === 'report_only') {
+        const decision = policy.decision && typeof policy.decision === 'object' && !Array.isArray(policy.decision)
+          ? policy.decision as ObjectValue : {};
+        // Selection evidence at this fresh SDK boundary, not a provider receipt.
+        // The nonce joins PMM-08 usage when that launch reaches the gateway ledger.
+        console.info('PMM09_MODEL_SHADOW ' + JSON.stringify({
+          event: 'persona_model_shadow_comparison', schema_version: 1, phase: 'sdk_admission',
+          invocation_id: runId, tenant_id: tenant, attempt: generation, model_decision_id: nonce,
+          timestamp_utc: new Date().toISOString(),
+          channel: arc ? 'github' : chat ? 'chat' : process.env.ADP_DISPATCH_CHANNEL,
+          trigger: arc ? 'arc_workflow' : chat ? 'chat' : process.env.ADP_DISPATCH_TRIGGER,
+          persona: decision.persona, principal_kind: decision.principal_kind, principal_id: decision.principal_id,
+          legacy_model: params.options?.model, actual_model: params.options?.model, proposed_model: decision.resolved_model_id,
+          mapping_exists: decision.resolution_source === 'principal-mapping', resolution_source: decision.resolution_source,
+          policy_revision: decision.policy_revision, snapshot_digest: decision.snapshot_digest,
+          posture_revision: decision.posture_revision, runtime_posture: policy.posture,
+          posture_verified: policy.posture_verified, policy_status: policy.status, admission_refusal: false,
+        }));
+      }
       return withUsageEvidence(params, nonce);
     }
     const decision = object(policy.decision);

@@ -249,6 +249,8 @@ class ModelPolicySnapshot:
 @dataclass(frozen=True)
 class ModelPolicyDecision:
     schema_version: int
+    principal_kind: Literal["human", "service_account"]
+    principal_id: str
     tenant_id: str
     invocation_id: str
     correlation_id: str
@@ -283,6 +285,8 @@ class ModelPolicyDecision:
     def to_dict(self) -> dict:
         return {
             "schema_version": self.schema_version,
+            "principal_kind": self.principal_kind,
+            "principal_id": self.principal_id,
             "tenant_id": self.tenant_id,
             "invocation_id": self.invocation_id,
             "correlation_id": self.correlation_id,
@@ -423,6 +427,8 @@ def resolve_decision(
         raise ModelPolicyError("harness_incompatible")
     return ModelPolicyDecision(
         schema_version=SNAPSHOT_SCHEMA_VERSION,
+        principal_kind=snapshot.principal_kind,
+        principal_id=snapshot.principal_id,
         tenant_id=snapshot.tenant_id,
         invocation_id=invocation_id,
         correlation_id=snapshot.correlation_id,

@@ -1617,7 +1617,6 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         bootstrap_log.close()
         return 1
 
-
     # Issue #5144: the engine marks a dispatch whose delivery must produce a durable
     # continuation receipt before this run's exit counts for anything. Same shape and
     # same reasoning as the marker above: trusted dispatch envelope only, and never
@@ -1973,6 +1972,9 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         # enforcing bootstrap would become the "legacy" model after rollback.
 
     env_vars = {
+        # Reporting context for fresh SDK admission events; never authorization.
+        "ADP_DISPATCH_CHANNEL": str(envelope.get("channel") or "unknown")[:64],
+        "ADP_DISPATCH_TRIGGER": str(envelope.get("intent", {}).get("trigger") or "unknown")[:64],
         "GITHUB_TOKEN": token,
         "GH_TOKEN": token,
         "GIT_ASKPASS": "/usr/local/bin/git-askpass-helper",
