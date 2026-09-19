@@ -330,6 +330,42 @@ jobs:
             --cov-config=/tmp/superplane-receiver-cov.ini \
             --cov-report=term-missing --cov-fail-under=85
 
+      - name: Enforce coverage on provider-handle persistence
+        # Issue #5054 (U11c) requires >=85% on the API/service logic it changed.
+        # Scoped to the three modules this story wrote, for the same reason as the
+        # step above: an app-wide percentage lets exactly this code rot behind an
+        # aggregate dominated by modules the story did not touch.
+        #
+        # The greenlet concurrency setting is required here for the same reason and
+        # was verified the same way: these are async SQLAlchemy paths, and without
+        # it coverage.py never sees those frames. Measured both ways on this
+        # story's suite — 96% with, 84% without, and the lines it reports as missed
+        # without the setting include the committed-write `return` that the passing
+        # 201-status assertion proves executed. pytest-cov is installed by the step
+        # above; it is not re-installed here.
+        working-directory: modules/domain-apps/superplane/src/superplane-api
+        run: |
+          set -euo pipefail
+          cat > /tmp/superplane-handles-cov.ini <<'INI'
+          [run]
+          concurrency = greenlet,thread
+          INI
+          # The transferred tree is excluded from the general module lint pass.
+          # Explicitly lint these maintained provider modules and regressions.
+          ruff check --isolated --select E4,E7,E9,F,I app/services/provider_handles.py app/services/provider_authority.py \
+            app/services/provider_inventory.py app/routers/provider_handles.py \
+            app/models/provider_handle.py tests/test_provider_handles.py \
+            tests/test_provider_handles_postgres.py \
+            alembic/versions/013_add_provider_operations.py
+          python3 -m pytest tests/test_provider_handles.py -v --tb=short \
+            --cov=app.services.provider_handles \
+            --cov=app.services.provider_authority \
+            --cov=app.services.provider_inventory \
+            --cov=app.routers.provider_handles \
+            --cov=app.models.provider_handle \
+            --cov-config=/tmp/superplane-handles-cov.ini \
+            --cov-report=term-missing --cov-fail-under=85
+
       - name: Set up Go for the transferred components
         # Pinned to the version the transferred go.mod files declare (go 1.23.0), so the
         # toolchain that judges this code is the one it was written against.

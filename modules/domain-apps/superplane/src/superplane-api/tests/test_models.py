@@ -39,6 +39,15 @@ def test_all_tables_registered():
         # schema able to express that, so authority was the caller's organization
         # and every org-mate reached every workspace in it.
         "workspace_grants",
+        # Durable provider-operation records (issue #5054, U11c — R15). One row per
+        # idempotency identity, written BEFORE the provider call it identifies, so a
+        # response lost to a timeout or a crash still has something to reconcile
+        # against. Without it the handle contract's "recorded before the call counts
+        # as made" rule has no storage to be true in.
+        "provider_operations",
+            "provider_allocations",
+        "provider_reference_conflicts",
+        "provider_allocation_resources",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (
