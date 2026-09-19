@@ -27,7 +27,7 @@ or Codex.
 
 ### Prerequisites
 
-- `curl`, `jq`
+- `curl`, `jq`, `python3`
 - `ps` (the `procps` package) — only for named deployments, and only on a slim
   Linux image that ships without it. It is already present on macOS and on any
   normal Linux install, and `/proc` is used in preference where available.
@@ -59,7 +59,13 @@ and leaves your session alone.
 and local session metadata in the shared JSON envelope. It never refreshes or
 contacts the gateway: `configured` means a cached session exists, including an
 expired access token that can refresh on use; `unavailable` exits 1 when no
-session exists. Credential values are excluded.
+session exists. Credential values are excluded. The `aws_profile` field identifies
+the AWS profile shared by every alias of the selected deployment. Named profiles
+use `adp-deployment-<stable-id>`; older `bedrock-gateway-<name>` profiles are retired
+on login, refresh or logout, so scripts should use the reported profile name.
+
+Reinstalling against a different gateway refuses before changing binaries or
+session files. Use `adp deployment add <name> --url <gateway>` to add that gateway.
 
 **One login is shared by every tool.** `adp login` seeds `~/.bedrock-gateway/`
 once; both `setup` verbs only write config and never authenticate, so adding a

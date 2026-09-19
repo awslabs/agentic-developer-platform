@@ -15,6 +15,54 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("ANTHROPIC_API_KEY", "other-credential"),
+        ("ANTHROPIC_AUTH_TOKEN", "other-credential"),
+        ("ANTHROPIC_BASE_URL", "https://other.example.test"),
+        ("ANTHROPIC_BEDROCK_BASE_URL", "https://other.example.test"),
+        ("CLAUDE_CODE_USE_BEDROCK", "0"),
+        ("CLAUDE_CODE_SKIP_BEDROCK_AUTH", "0"),
+        ("CLAUDE_CODE_USE_VERTEX", "1"),
+        ("CLAUDE_CODE_USE_FOUNDRY", "1"),
+    ],
+)
+def test_claude_inherited_transport_override_fails_before_refresh(installed, key, value):
+    run, _, stores, _, prefix, network = installed
+    tool = prefix / "claude"
+    tool.write_text("#!/bin/sh\necho incorrectly-started\n")
+    tool.chmod(0o755)
+    tokens = stores["dev"] / "tokens.json"
+    session = json.loads(tokens.read_text())
+    session["expires_at"] = 1
+    tokens.write_text(json.dumps(session))
+    result = run("--deployment", "dev", "claude", extra={key: value})
+    assert result.returncode != 0
+    assert key in result.stderr and "override" in result.stderr
+    assert "incorrectly-started" not in result.stdout
+    assert "other-credential" not in result.stderr
+    assert not network.exists()
+
+
+def test_alias_logout_clears_stable_and_legacy_alias_profiles(installed):
+    run, _, stores, home, _, _ = installed
+    assert run("deployment", "add", "development", "--url", "https://dev.example.test").returncode == 0
+    aws_dir = home / ".aws"
+    aws_dir.mkdir(exist_ok=True)
+    stable = "adp-deployment-" + stores["dev"].name
+    names = [stable, "bedrock-gateway-dev", "bedrock-gateway-development", "unrelated"]
+    for filename, prefix in (("credentials", ""), ("config", "profile ")):
+        (aws_dir / filename).write_text("".join(f"[{prefix}{name}]\nfixture=value\n" for name in names))
+    result = run("--deployment", "development", "logout")
+    assert result.returncode == 0, result.stderr
+    assert not (stores["dev"] / "tokens.json").exists()
+    for filename, prefix in (("credentials", ""), ("config", "profile ")):
+        parsed = configparser.RawConfigParser()
+        parsed.read(aws_dir / filename)
+        assert parsed.sections() == [prefix + "unrelated"]
+
+
 @pytest.mark.parametrize("other_action", ["refresh", "logout"])
 def test_concurrent_named_aws_profile_updates_preserve_other_profiles(installed, tmp_path, other_action):
     _, env, stores, home, binary, network = installed
@@ -78,10 +126,13 @@ def test_concurrent_named_aws_profile_updates_preserve_other_profiles(installed,
     regions.read(config)
     assert profiles["unrelated"]["aws_access_key_id"] == "keep"
     assert regions["profile unrelated"]["region"] == "us-west-2"
-    assert profiles["bedrock-gateway-dev"]["aws_access_key_id"] == "new-dev"
-    assert ("bedrock-gateway-integration" in profiles) == (other_action == "refresh")
+    dev_profile = "adp-deployment-" + stores["dev"].name
+    integration_profile = "adp-deployment-" + stores["integration"].name
+    assert profiles[dev_profile]["aws_access_key_id"] == "new-dev"
+    assert "bedrock-gateway-dev" not in profiles and "bedrock-gateway-integration" not in profiles
+    assert (integration_profile in profiles) == (other_action == "refresh")
     if other_action == "refresh":
-        assert profiles["bedrock-gateway-integration"]["aws_access_key_id"] == "new-integration"
+        assert profiles[integration_profile]["aws_access_key_id"] == "new-integration"
     assert not network.exists()
 
 

@@ -224,9 +224,17 @@ store without writing anything, so inspecting a machine never changes it.
 The auth core's Identity Pool exchange writes a profile into the user's own
 `~/.aws/credentials`, under a fixed name. Three deployments would each overwrite
 the other two's AWS credentials — the same class of crossing, in a file we do not
-own. Named deployments get `bedrock-gateway-<name>`; the legacy deployment keeps
+own. Named deployments get `adp-deployment-<stable-id>`, shared by all aliases;
+the legacy deployment keeps
 `bedrock-gateway`, because an existing user has `AWS_PROFILE=bedrock-gateway` in
 their shell profile and scripts.
+
+`adp status --json` reports `aws_profile`. Older alias-derived
+`bedrock-gateway-<name>` profiles are retired on the next login, refresh or logout;
+scripts using those names should switch to the reported stable profile. Removing
+an alias deletes its old profile, and final local removal deletes the stable
+profile as well. Auth and removal share one file-update lock, preserving unrelated
+AWS profiles.
 
 ---
 

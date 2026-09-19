@@ -718,7 +718,22 @@ cmd_codex_launch() {
 # working. This verb exists for symmetry and for the fail-fast login hint.
 cmd_claude_launch() {
     require_tool claude
-    require_live_session "Claude Code"
+
+    local key value expected
+    for key in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_BEDROCK_BASE_URL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_SKIP_BEDROCK_AUTH CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do
+        value="${!key:-}"
+        [ -n "${value}" ] || continue
+        expected=""
+        case "${key}" in
+            ANTHROPIC_BEDROCK_BASE_URL) expected="${ADP_DEPLOYMENT_URL:-}" ;;
+            CLAUDE_CODE_USE_BEDROCK|CLAUDE_CODE_SKIP_BEDROCK_AUTH) expected="1" ;;
+            CLAUDE_CODE_USE_VERTEX|CLAUDE_CODE_USE_FOUNDRY) expected="0" ;;
+        esac
+        if [ "${value}" != "${expected}" ]; then
+            print_error "${key} is an inherited transport override. Unset it before using adp claude."
+            exit 1
+        fi
+    done
 
     local settings='{}' rest=() supplied
     while [ $# -gt 0 ]; do
@@ -732,16 +747,19 @@ cmd_claude_launch() {
                 settings="$(printf '%s' "${supplied}" | jq -e 'select(type == "object")')" || {
                     print_error "Claude --settings must be a JSON object or a settings file."; exit 1;
                 }
-                if printf '%s' "${settings}" | jq -e 'has("apiKeyHelper") or ((.env // {}) | keys | any(. == "ANTHROPIC_BEDROCK_BASE_URL" or . == "ANTHROPIC_BASE_URL" or . == "ANTHROPIC_AUTH_TOKEN" or . == "ANTHROPIC_API_KEY" or . == "CLAUDE_CODE_USE_BEDROCK" or . == "CLAUDE_CODE_SKIP_BEDROCK_AUTH"))' >/dev/null; then
+                if printf '%s' "${settings}" | jq -e 'has("apiKeyHelper") or ((.env // {}) | keys | any(. == "ANTHROPIC_BEDROCK_BASE_URL" or . == "ANTHROPIC_BASE_URL" or . == "ANTHROPIC_AUTH_TOKEN" or . == "ANTHROPIC_API_KEY" or . == "CLAUDE_CODE_OAUTH_TOKEN" or . == "CLAUDE_CODE_USE_VERTEX" or . == "CLAUDE_CODE_USE_FOUNDRY" or . == "CLAUDE_CODE_USE_BEDROCK" or . == "CLAUDE_CODE_SKIP_BEDROCK_AUTH"))' >/dev/null; then
                     print_error "The supplied Claude settings replace the selected ADP transport."; exit 1
                 fi ;;
             *) rest+=("$1"); shift ;;
         esac
     done
+    require_live_session "Claude Code"
     if [ -n "${ADP_DEPLOYMENT_URL:-}" ]; then
         settings="$(printf '%s' "${settings}" | jq -c --arg helper "$(pinned_token_helper)" --arg url "${ADP_DEPLOYMENT_URL}" \
             '.apiKeyHelper = $helper | .env = ((.env // {}) + {ANTHROPIC_BEDROCK_BASE_URL: $url, CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_SKIP_BEDROCK_AUTH: "1"})')"
         export ANTHROPIC_BEDROCK_BASE_URL="${ADP_DEPLOYMENT_URL}"
+        export CLAUDE_CODE_USE_BEDROCK=1 CLAUDE_CODE_SKIP_BEDROCK_AUTH=1
+        unset CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
         exec claude --settings "${settings}" ${rest[@]+"${rest[@]}"}
     fi
     exec claude ${rest[@]+"${rest[@]}"}

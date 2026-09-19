@@ -647,64 +647,16 @@ update_aws_profile() {
     shift
     # Credential values travel on stdin, never in a subprocess argument list.
     printf '%s\n' "$@" | python3 -c '
-import fcntl, os, re, stat, sys, tempfile, time
-from pathlib import Path
-operation, profile, region, credentials, config = sys.argv[1:]
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from adp_deployments import DeploymentError, update_aws_profile
 try:
-    if operation not in ("write", "delete") or any(c in profile for c in "\r\n[]") or any(c in region for c in "\r\n"):
-        raise ValueError("invalid profile metadata")
-    values = sys.stdin.read().splitlines()
-    if operation == "write" and (len(values) != 3 or not all(values)):
-        raise ValueError("invalid credential fields")
-    directory = Path(credentials).parent
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock = os.open(directory / ".adp-profiles.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(lock, "r+") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-            raise ValueError("unsafe lock")
-        deadline = time.monotonic() + 30
-        while True:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("another profile update is still running")
-                time.sleep(0.05)
-        updates = []
-        for path, section in ((Path(credentials), profile), (Path(config), "profile " + profile)):
-            if operation == "delete" and not path.exists():
-                continue
-            existing = path.read_text() if path.exists() else ""
-            lines, skip = [], False
-            for line in existing.splitlines(keepends=True):
-                header = re.match(r"^\s*\[([^\]]+)\]\s*(?:[#;].*)?$", line.strip())
-                if header:
-                    skip = header.group(1) == section
-                if not skip:
-                    lines.append(line)
-            content = "".join(lines)
-            if operation == "write":
-                content += "\n[" + section + "]\n"
-                if path == Path(credentials):
-                    for key, value in zip(("aws_access_key_id", "aws_secret_access_key", "aws_session_token"), values):
-                        content += key + " = " + value + "\n"
-                else:
-                    content += "region = " + region + "\noutput = json\n"
-            updates.append((path, content))
-        for path, content in updates:
-            fd, temporary = tempfile.mkstemp(prefix=".adp-profile-", dir=path.parent)
-            try:
-                with os.fdopen(fd, "w") as output:
-                    output.write(content)
-                os.replace(temporary, path)
-            finally:
-                Path(temporary).unlink(missing_ok=True)
-except (OSError, ValueError):
-    sys.stderr.write("[ERROR] Could not update the shared AWS profiles. Check file permissions or retry after the other update finishes.\n")
+    update_aws_profile(sys.argv[2], sys.argv[3], sys.argv[4], sys.stdin.read().splitlines(),
+                       retired_profiles=json.loads(sys.argv[5]))
+except DeploymentError as exc:
+    sys.stderr.write("[ERROR] " + str(exc) + "\n")
     sys.exit(1)
-' "${operation}" "${PROFILE_NAME}" "${REGION:-us-east-1}" "${AWS_CREDENTIALS_FILE}" "${AWS_CONFIG_FILE}"
+' "$(dirname "$(script_path)")" "${operation}" "${PROFILE_NAME}" "${REGION:-us-east-1}" "${BG_AWS_RETIRED_PROFILES:-[]}"
 }
 
 write_aws_credentials() {

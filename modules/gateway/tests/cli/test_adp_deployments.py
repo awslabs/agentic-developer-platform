@@ -347,6 +347,24 @@ class TestUse:
 
 
 class TestRemove:
+    def test_aliases_share_one_profile_and_removal_retires_old_credentials(self):
+        import configparser
+
+        deployments.add("dev", DEV_URL)
+        deployments.add("integration", INT_URL)
+        deployments.add("int", INT_URL)
+        selected = deployments.resolve("integration")
+        assert deployments.resolve("int").aws_profile == selected.aws_profile
+        for profile in (selected.aws_profile, "bedrock-gateway-integration", "bedrock-gateway-int", "unrelated"):
+            deployments.update_aws_profile("write", profile, "us-east-1", ("fixture-access", "fixture-secret", "fixture-session"))
+        deployments.remove("int")
+        assert deployments.resolve("integration").aws_profile == selected.aws_profile
+        deployments.remove("integration")
+        for filename, prefix in (("credentials", ""), ("config", "profile ")):
+            parsed = configparser.RawConfigParser()
+            parsed.read(Path.home() / ".aws" / filename)
+            assert parsed.sections() == [prefix + "unrelated"]
+
     def test_registry_publication_failure_preserves_the_entire_store(self, monkeypatch) -> None:
         deployments.add("dev", DEV_URL)
         deployments.add("integration", INT_URL)

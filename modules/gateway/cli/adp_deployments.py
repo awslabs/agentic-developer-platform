@@ -67,6 +67,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import fcntl
 import json
 import os
 import re
@@ -560,6 +561,7 @@ class Deployment:
             "deployment_id": self.id,
             "gateway_url": self.gateway_url,
             "selection_source": self.selection_source,
+            "aws_profile": self.aws_profile,
         }
         if include_paths:
             detail["config_dir"] = str(self.config_dir)
@@ -578,9 +580,17 @@ class Deployment:
         The legacy deployment keeps the original name, because an existing user
         has `AWS_PROFILE=bedrock-gateway` in their shell profile, scripts and
         muscle memory; renaming it would break them for no benefit. Named
-        deployments get a suffixed profile, so they coexist instead of colliding.
+        deployments use their stable id, so aliases share credentials and removing
+        one name cannot change the profile identity of the remaining aliases.
         """
-        return LEGACY_AWS_PROFILE if self.legacy else f"{LEGACY_AWS_PROFILE}-{self.name}"
+        return LEGACY_AWS_PROFILE if self.legacy else f"adp-deployment-{self.id}"
+
+    def alias_aws_profiles(self):
+        """Profiles written by older CLI builds using aliases instead of ids."""
+        if self.legacy:
+            return []
+        records = load_registry()["deployments"]
+        return [f"{LEGACY_AWS_PROFILE}-{name}" for name, record in records.items() if record["id"] == self.id]
 
     def environment(self):
         """The pin handed to children, so one command cannot drift mid-flight.
@@ -600,6 +610,7 @@ class Deployment:
             "ADP_RUNTIME_DIR": str(self.runtime_dir),
             "ADP_LOG_DIR": str(self.log_dir),
             "BG_AWS_PROFILE": self.aws_profile,
+            "BG_AWS_RETIRED_PROFILES": json.dumps(self.alias_aws_profiles()),
         }
 
     def __repr__(self):
@@ -979,6 +990,74 @@ def _busy_reason(deployment):
     return None
 
 
+def update_aws_profile(operation, profile, region="", values=(), *, retired_profiles=()):
+    """Serialize complete-file AWS profile changes across all deployments.
+
+    Retire old alias-derived sections while publishing the stable profile. The
+    same primitive is used by auth and local removal, including their lock.
+    """
+    credentials = Path.home() / ".aws" / "credentials"
+    config = Path.home() / ".aws" / "config"
+    try:
+        if operation not in ("write", "delete") or any(c in profile for c in "\r\n[]") or any(c in region for c in "\r\n"):
+            raise ValueError("invalid profile metadata")
+        if operation == "write" and (len(values) != 3 or not all(values) or any("\n" in v or "\r" in v for v in values)):
+            raise ValueError("invalid credential fields")
+        if operation == "delete" and not credentials.exists() and not config.exists():
+            return
+        directory = Path(credentials).parent
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock = os.open(directory / ".adp-profiles.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(lock, "r+") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise ValueError("unsafe lock")
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("another profile update is still running")
+                    time.sleep(0.05)
+            updates = []
+            for path, section in ((Path(credentials), profile), (Path(config), "profile " + profile)):
+                if operation == "delete" and not path.exists():
+                    continue
+                sections = {section, *(p if path == Path(credentials) else "profile " + p for p in retired_profiles)}
+                existing = path.read_text() if path.exists() else ""
+                lines, skip = [], False
+                for line in existing.splitlines(keepends=True):
+                    header = re.match(r"^\s*\[([^\]]+)\]\s*(?:[#;].*)?$", line.strip())
+                    if header:
+                        skip = header.group(1) in sections
+                    if not skip:
+                        lines.append(line)
+                content = "".join(lines)
+                if operation == "write":
+                    content += "\n[" + section + "]\n"
+                    if path == Path(credentials):
+                        for key, value in zip(("aws_access_key_id", "aws_secret_access_key", "aws_session_token"), values):
+                            content += key + " = " + value + "\n"
+                    else:
+                        content += "region = " + region + "\noutput = json\n"
+                updates.append((path, content))
+            for path, content in updates:
+                fd, temporary = tempfile.mkstemp(prefix=".adp-profile-", dir=path.parent)
+                try:
+                    with os.fdopen(fd, "w") as output:
+                        output.write(content)
+                    os.replace(temporary, path)
+                finally:
+                    Path(temporary).unlink(missing_ok=True)
+    except (OSError, ValueError):
+        raise DeploymentError(
+            "Could not update the shared AWS profiles. Check file permissions or retry after the other update finishes.",
+            "aws_profile_update_failed",
+        ) from None
+
+
 def remove(name):
     """Forget a deployment LOCALLY. Deletes nothing in the cloud, signs no one out.
 
@@ -987,6 +1066,7 @@ def remove(name):
     """
     validate_name(name)
     cleanup = None
+    profiles_to_remove = []
     with _RegistryLock():
         registry, _ = adopt_legacy(load_registry())
         record = registry["deployments"].get(name)
@@ -1019,21 +1099,27 @@ def remove(name):
                 raise DeploymentError("Refusing to remove a deployment store through a symlink.", "unsafe_file")
             private_directory(deployment.root)
             cleanup = deployment.root
+        if not deployment.legacy:
+            profiles_to_remove = [f"{LEGACY_AWS_PROFILE}-{name}"]
+            if not aliases_left:
+                profiles_to_remove.append(deployment.aws_profile)
         registry = {**registry, "deployments": remaining}
         # Publish before destructive cleanup. A failed publication leaves the
         # entire registered store intact; interruption after publication leaves
         # only an unregistered, recoverable private directory. New registrations
         # use fresh stable ids, so they cannot reuse this cleanup target.
         save_registry(registry)
-    if cleanup is not None:
-        try:
+    try:
+        if profiles_to_remove:
+            update_aws_profile("delete", profiles_to_remove[0], retired_profiles=profiles_to_remove[1:])
+        if cleanup is not None:
             shutil.rmtree(cleanup)
-        except OSError:
-            raise DeploymentError(
-                f"The registration was removed, but local cleanup is incomplete at {cleanup}. "
-                "Remove that unregistered directory after resolving the filesystem error.",
-                "deployment_cleanup_incomplete",
-            ) from None
+    except (OSError, DeploymentError):
+        raise DeploymentError(
+            f"The registration was removed, but local cleanup is incomplete at {cleanup or Path.home() / '.aws'}. "
+            "Remove residual AWS profile sections and any unregistered directory after resolving the filesystem error.",
+            "deployment_cleanup_incomplete",
+        ) from None
     return {
         # `_emit_result` keys its wording off this status, and its default is
         # "configured" — so omitting it made a successful `adp deployment remove
