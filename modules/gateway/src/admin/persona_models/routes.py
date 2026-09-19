@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +23,9 @@ from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
-from . import catalogue_routes, service
+from . import catalogue_routes, catalogue_service, service
+from .catalogue import persona_compatibility_class
+from .catalogue_schemas import ModelCatalogueResponse
 from .schemas import (
     AliasResponse,
     ConflictResponse,
@@ -72,6 +74,72 @@ async def list_service_principal_preferences(
 
     entries = await service.build_preference_list(db, org_id=current_user.org_id, principal_kind="service_account", principal_id=canonical_id)
     return PreferenceListResponse(principal_kind="service_account", principal_id=canonical_id, entries=entries)
+
+
+@router.get("/{canonical_id}/persona-models/catalog", response_model=ModelCatalogueResponse)
+async def get_service_principal_catalogue(
+    canonical_id: str,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    persona_key: Annotated[str, Query(description="Persona whose selectable models are requested.")],
+) -> ModelCatalogueResponse:
+    """Read the catalogue for an administered service principal.
+
+    The human administrator is only the actor.  Destination, lifecycle and
+    principal restrictions are evaluated for the tenant-checked service
+    principal named by ``canonical_id``.  This keeps the managed UI/CLI view
+    identical to the save path instead of accidentally projecting the human
+    administrator's catalogue.
+    """
+    await _require_human_org_admin(db, current_user)
+
+    try:
+        target = await service.validate_target_service_principal(
+            db,
+            canonical_id=canonical_id,
+            org_id=current_user.org_id,
+        )
+    except service.PreferenceRejectedError as exc:
+        raise _rejected(exc) from exc
+
+    compatibility_class = persona_compatibility_class(persona_key)
+    if compatibility_class is None:
+        raise _rejected(
+            service.PreferenceRejectedError(
+                "unknown_persona",
+                f"Unknown persona key '{persona_key}'.",
+            )
+        )
+
+    target_context = current_user.model_copy(
+        update={
+            "user_id": canonical_id,
+            "team_id": "",
+            "department_id": "",
+            "account_type": "service",
+            "canonical_service_principal_id": canonical_id,
+        }
+    )
+    account_id, region = await catalogue_routes.resolve_effective_destination(
+        db,
+        target_context,
+        routing_user_id="",
+    )
+    models = await catalogue_service.build_model_catalogue(
+        db,
+        persona_key=persona_key,
+        account_id=account_id,
+        region=region,
+        principal_kind="service_account",
+        canonical_principal_id=canonical_id,
+        principal_status=target.status,
+        tenant_allowed_patterns=None,
+    )
+    return ModelCatalogueResponse(
+        persona_key=persona_key,
+        compatibility_class=compatibility_class,
+        models=models,
+    )
 
 
 @router.get("/{canonical_id}/persona-models/explain/{persona_key}", response_model=PreferenceDetailResponse)
@@ -417,7 +485,7 @@ async def register_service_principal(
     await db.commit()
 
     return RegisterServicePrincipalResponse(
-        canonical_principal_id=principal.canonical_service_principal_id,
+        canonical_service_principal_id=principal.canonical_service_principal_id,
         display_name=principal.display_name,
         alias_source=alias.alias_source,
         alias_id=alias.alias_id,
@@ -466,7 +534,7 @@ async def link_alias(
     return AliasResponse(
         alias_id=alias.alias_id,
         alias_source=alias.alias_source,
-        canonical_principal_id=canonical_id,
+        canonical_service_principal_id=canonical_id,
         is_active=alias.is_active,
         registered_by=alias.registered_by,
     )
@@ -535,7 +603,7 @@ async def transition_service_principal_status(
     await db.commit()
 
     return StatusTransitionResponse(
-        canonical_principal_id=principal.canonical_service_principal_id,
+        canonical_service_principal_id=principal.canonical_service_principal_id,
         display_name=principal.display_name,
         previous_status=previous_status,
         status=principal.status,
@@ -583,7 +651,7 @@ async def revoke_alias(
     return AliasResponse(
         alias_id=alias.alias_id,
         alias_source=alias.alias_source,
-        canonical_principal_id=canonical_id,
+        canonical_service_principal_id=canonical_id,
         is_active=alias.is_active,
         registered_by=alias.registered_by,
     )
