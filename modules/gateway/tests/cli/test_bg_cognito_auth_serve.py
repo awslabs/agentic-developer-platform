@@ -650,10 +650,11 @@ class TestStreaming:
 
         # The decisive assertion: the first chunk landed long before the last.
         # A proxy that buffered to EOF would deliver every chunk at ~the same,
-        # late, timestamp.
+        # late, timestamp. Measure the interval between chunks, not from the
+        # request start: resolving/refreshing authentication happens before the
+        # upstream stream starts and is independent of response buffering.
         first_arrival = arrivals[0][0]
         last_arrival = arrivals[-1][0]
-        assert first_arrival < SSE_CHUNK_GAP_SECONDS, f"first chunk was buffered: arrived at {first_arrival:.2f}s"
         assert last_arrival - first_arrival > SSE_CHUNK_GAP_SECONDS, "chunks arrived in one batch — response was buffered"
         _drain(proxy.process)
 
