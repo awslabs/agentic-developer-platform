@@ -764,34 +764,6 @@ async def accept_amendment(
     if draft is None:
         raise AmendmentDraftNotFoundError(f"no pending amendment {draft_id!r} in this tenant")
 
-    # --- Replay before refusal ---------------------------------------------------
-    # Checked FIRST, and before the base comparison, because an already-accepted draft's
-    # base is *guaranteed* not to match current state — it superseded it. A base check
-    # ordered first would answer every repeated accept with a conflict, which is precisely
-    # the "repeated accept returns the original result" property inverted. A human
-    # re-sending a comment, or a duplicated delivery, must see what they saw the first
-    # time.
-    if draft.state == PendingAmendmentState.ACCEPTED.value:
-        return AmendmentAcceptResult(
-            draft_id=draft.id,
-            flow_id=draft.flow_id,
-            plan_version=draft.accepted_plan_version or 0,
-            superseded_version=draft.base_plan_version,
-            decision_id=draft.accepted_by_decision_id or "",
-            gate_diff=GateDiff(),
-            replayed=True,
-        )
-
-    if draft.state != PendingAmendmentState.PENDING.value:
-        # Rejected or superseded. Terminal, and not re-openable: a superseded draft's base
-        # describes a plan that is no longer in force, so "accept it anyway" is the
-        # discard-someone-else's-amendment failure by another route.
-        raise AmendmentConflictError(
-            "draft_not_pending",
-            f"amendment `{draft_id}` is `{draft.state}` and can no longer be accepted. Comment "
-            "`@agent-engine replan: <what should change>` to request a fresh one.",
-        )
-
     async with session.begin_nested():
         # Serialize against other acceptances on this flow before reading what is in
         # force. Same row and same order as `amend_plan`'s own lock, so the two nest
@@ -799,6 +771,39 @@ async def accept_amendment(
         await session.execute(
             select(OrchestrationFlow).where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.id == draft.flow_id).with_for_update()
         )
+        # Another acceptance may have committed while this transaction waited
+        # for the flow lock. Refresh the identity-map row before deciding replay
+        # or terminal status; its original pending snapshot is no longer current.
+        await session.refresh(draft)
+
+        # --- Replay before refusal ---------------------------------------------------
+        # Checked FIRST, and before the base comparison, because an already-accepted draft's
+        # base is *guaranteed* not to match current state — it superseded it. A base check
+        # ordered first would answer every repeated accept with a conflict, which is precisely
+        # the "repeated accept returns the original result" property inverted. A human
+        # re-sending a comment, or a duplicated delivery, must see what they saw the first
+        # time.
+        if draft.state == PendingAmendmentState.ACCEPTED.value:
+            return AmendmentAcceptResult(
+                draft_id=draft.id,
+                flow_id=draft.flow_id,
+                plan_version=draft.accepted_plan_version or 0,
+                superseded_version=draft.base_plan_version,
+                decision_id=draft.accepted_by_decision_id or "",
+                gate_diff=GateDiff(),
+                replayed=True,
+            )
+
+        if draft.state != PendingAmendmentState.PENDING.value:
+            # Rejected or superseded. Terminal, and not re-openable: a superseded draft's base
+            # describes a plan that is no longer in force, so "accept it anyway" is the
+            # discard-someone-else's-amendment failure by another route.
+            raise AmendmentConflictError(
+                "draft_not_pending",
+                f"amendment `{draft_id}` is `{draft.state}` and can no longer be accepted. Comment "
+                "`@agent-engine replan: <what should change>` to request a fresh one.",
+            )
+
         in_force = await in_force_plan(session, org_id=actor.org_id, flow_id=draft.flow_id)
 
         current_version = in_force.version if in_force is not None else None
