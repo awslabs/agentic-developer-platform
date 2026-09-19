@@ -46,6 +46,12 @@ export interface ChecksState {
   total: number;
 }
 
+// This live-fleet diagnostic is intentionally not a required merge context:
+// it measures shared dev-worker capacity and remains red when a healthy route
+// is merely queued past its SLA. Keep this in sync with the policy documented
+// in .github/workflows/gitlab-integration-tests.yml.
+const NON_BLOCKING_CHECKS = new Set(["GitLab Live Fleet"]);
+
 export class GitHubClient {
   constructor(
     private readonly repository: string,
@@ -100,17 +106,23 @@ export class GitHubClient {
     ]);
     const failing: string[] = [];
     const pending: string[] = [];
-    for (const check of checks.check_runs) {
+    const blockingChecks = checks.check_runs.filter(
+      (check) => !NON_BLOCKING_CHECKS.has(check.name),
+    );
+    const blockingStatuses = statuses.statuses.filter(
+      (status) => !NON_BLOCKING_CHECKS.has(status.context),
+    );
+    for (const check of blockingChecks) {
       if (check.status !== "completed") pending.push(check.name);
       else if (!["success", "neutral", "skipped"].includes(check.conclusion ?? "")) {
         failing.push(check.name);
       }
     }
-    for (const status of statuses.statuses) {
+    for (const status of blockingStatuses) {
       if (status.state === "pending") pending.push(status.context);
       else if (status.state !== "success") failing.push(status.context);
     }
-    const total = checks.check_runs.length + statuses.statuses.length;
+    const total = blockingChecks.length + blockingStatuses.length;
     return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total };
   }
 

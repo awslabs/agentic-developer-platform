@@ -48,3 +48,33 @@ test("a verdict is posted as a PR comment with the default GitHub identity", asy
   assert.match(requested, /\/repos\/aws-e\/adp\/issues\/5471\/comments$/);
   assert.deepEqual(JSON.parse(payload), { body: "Reviewed current head." });
 });
+
+test("shared live-fleet diagnostics do not block an otherwise ready merge", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    const body = url.endsWith("/check-runs?per_page=100")
+      ? {
+          check_runs: [
+            { name: "Codex Adapter Unit Tests", status: "completed", conclusion: "success" },
+            { name: "GitLab Live Fleet", status: "completed", conclusion: "failure" },
+          ],
+        }
+      : { state: "success", statuses: [] };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const github = new GitHubClient("aws-e/adp", async () => "default-token");
+    assert.deepEqual(await github.checks("a".repeat(40)), {
+      ready: true,
+      failing: [],
+      pending: [],
+      total: 1,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
