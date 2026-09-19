@@ -262,28 +262,37 @@ def arms_used_by_module_logic() -> set[str]:
     Every reference is counted except the two places an arm can appear without being
     reachable: its own declaration in the enum, and its row in the explanation table.
     An arm named nowhere else is declared and dead.
+
+    Scans the ingest module as well as the validator, because the arms are declared
+    in one module and some are raised only by the other. `NO_EXECUTION` is raised
+    solely by `review_ingest.resolve_review_context` — an arm this guard would have
+    called dead if it only read the module that declares it, which would have been
+    the same false report in the opposite direction from the one it was written for.
     """
     import ast
 
-    source = Path(review_evidence_module.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    # The enum body and the explanation table's dict are the two excluded regions.
-    excluded: list[tuple[int, int]] = []
-    for node in ast.walk(tree):
-        is_enum = isinstance(node, ast.ClassDef) and node.name == "ReviewEvidenceRefusal"
-        is_table = isinstance(node, ast.FunctionDef) and node.name == "refusal_explanation"
-        if (is_enum or is_table) and node.end_lineno is not None:
-            excluded.append((node.lineno, node.end_lineno))
+    from src.orchestration import review_ingest as review_ingest_module
 
     used: set[str] = set()
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)):
-            continue
-        if node.value.id != "ReviewEvidenceRefusal":
-            continue
-        if any(start <= node.lineno <= end for start, end in excluded):
-            continue
-        used.add(node.attr)
+    for module in (review_evidence_module, review_ingest_module):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        # The enum body and the explanation table's dict are the two excluded regions.
+        excluded: list[tuple[int, int]] = []
+        for node in ast.walk(tree):
+            is_enum = isinstance(node, ast.ClassDef) and node.name == "ReviewEvidenceRefusal"
+            is_table = isinstance(node, ast.FunctionDef) and node.name == "refusal_explanation"
+            if (is_enum or is_table) and node.end_lineno is not None:
+                excluded.append((node.lineno, node.end_lineno))
+
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)):
+                continue
+            if node.value.id != "ReviewEvidenceRefusal":
+                continue
+            if any(start <= node.lineno <= end for start, end in excluded):
+                continue
+            used.add(node.attr)
     return used
 
 

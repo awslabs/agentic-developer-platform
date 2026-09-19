@@ -235,6 +235,7 @@ class ReviewEvidenceRefusal(StrEnum):
 
     # Binding and identity arms. Each compares the document against state the
     # submitter cannot write.
+    NO_EXECUTION = "no_execution"  # No execution recorded for the reviewed attempt
     NO_BINDING = "no_binding"  # No pull request registered for this story
     AMBIGUOUS_PR = "ambiguous_pr"  # Several active bindings; which was reviewed is unknown
     NOT_IMPLEMENTATION = "not_implementation"  # Bound PR is a reviewer artifact
@@ -835,6 +836,10 @@ def outstanding_block(refusal: ReviewEvidenceRefusal, *, owner: str) -> BlockRec
     }:
         code = BlockCode.HUMAN_INPUT_REQUIRED
     elif refusal in {
+        # No execution row for the reviewed attempt means the work this review
+        # describes is not recorded as live. Re-running the reviewer cannot create
+        # it, so this is an operator condition rather than a dependency.
+        ReviewEvidenceRefusal.NO_EXECUTION,
         ReviewEvidenceRefusal.TENANT_MISMATCH,
         ReviewEvidenceRefusal.SCOPE_MISMATCH,
         ReviewEvidenceRefusal.POLICY_MISMATCH,
@@ -881,6 +886,11 @@ def refusal_explanation(refusal: ReviewEvidenceRefusal) -> str:
         ),
         ReviewEvidenceRefusal.WRONG_CONTRACT: (
             "The submitted document belongs to a different contract or version than the review-result contract this surface reads."
+        ),
+        ReviewEvidenceRefusal.NO_EXECUTION: (
+            "No live execution is recorded for the story attempt this review was dispatched for, so there is no work for the "
+            "review to be evidence about. Either the attempt was superseded while the review ran, or the execution was never "
+            "created; an operator must establish which before the review can be recorded."
         ),
         ReviewEvidenceRefusal.NO_BINDING: (
             "No pull request is registered for this story, so a review has nothing to be evidence about. "
