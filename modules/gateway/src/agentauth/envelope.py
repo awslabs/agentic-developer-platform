@@ -84,6 +84,11 @@ ENVELOPE_ISSUER = "adp-gateway-control"
 # The audience is the worker control listener surface.
 ENVELOPE_AUDIENCE = "adp-agent-control-listener"
 
+# A model decision is consumed by worker bootstrap, not by the live-control
+# listener.  Keeping a distinct audience prevents a valid decision token from
+# being replayed as a control authorization (PMM-06).
+MODEL_POLICY_AUDIENCE = "adp-agent-model-policy"
+
 # Signing key secret name (PEM-encoded Ed25519 private key), gateway only.
 SIGNING_KEY_ENV = "AGENT_CONTROL_ENVELOPE_SIGNING_KEY"
 # Key ID so a listener holding two public keys can pick the right one during
@@ -189,6 +194,7 @@ class ControlEnvelope:
     flow_id: str | None = None
     authority_reference_id: str | None = None
     authority_kind: str = "delegated_grant"
+    chain_id: str | None = None
 
 
 def _b64e(raw: bytes) -> str:
@@ -233,6 +239,8 @@ def sign_envelope(
     authority_kind: str = "delegated_grant",
     flow_id: str | None = None,
     authority_reference_id: str | None = None,
+    audience: str = ENVELOPE_AUDIENCE,
+    chain_id: str | None = None,
     ttl_seconds: int = MAX_ENVELOPE_TTL_SECONDS,
     now: datetime | None = None,
     env: dict[str, str] | None = None,
@@ -267,7 +275,7 @@ def sign_envelope(
     payload: dict[str, object] = {
         "v": ENVELOPE_VERSION,
         "iss": ENVELOPE_ISSUER,
-        "aud": ENVELOPE_AUDIENCE,
+        "aud": audience,
         "alg": "ed25519",
         "kid": key_id,
         "tenant_id": tenant_id,
@@ -289,6 +297,8 @@ def sign_envelope(
         payload["flow_id"] = flow_id
     if authority_reference_id:
         payload["authority_reference_id"] = authority_reference_id
+    if chain_id:
+        payload["chain_id"] = chain_id
 
     body = _canonical(payload)
     signature = _signing_key(env).sign(ENVELOPE_VERSION.encode() + b"." + body)
@@ -304,6 +314,8 @@ def verify_envelope(
     expected_action: str,
     expected_command_id: str,
     request_body: bytes,
+    expected_audience: str = ENVELOPE_AUDIENCE,
+    expected_chain_id: str | None = None,
     now: datetime | None = None,
 ) -> ControlEnvelope:
     """Verify an envelope against what the verifier already knows independently.
@@ -371,7 +383,7 @@ def verify_envelope(
         raise EnvelopeError("unsupported envelope algorithm")
     if payload["iss"] != ENVELOPE_ISSUER:
         raise EnvelopeError("untrusted envelope issuer")
-    if payload["aud"] != ENVELOPE_AUDIENCE:
+    if payload["aud"] != expected_audience:
         raise EnvelopeError("envelope audience mismatch")
 
     key_id = payload["kid"]
@@ -398,6 +410,8 @@ def verify_envelope(
         raise EnvelopeError("envelope command mismatch")
     if payload["body_digest"] != body_digest(request_body):
         raise EnvelopeError("envelope body mismatch")
+    if expected_chain_id is not None and payload.get("chain_id") != expected_chain_id:
+        raise EnvelopeError("envelope chain mismatch")
 
     epoch = payload.get("revocation_epoch")
 
@@ -417,6 +431,7 @@ def verify_envelope(
 
     flow_id = payload.get("flow_id")
     authority_ref = payload.get("authority_reference_id")
+    chain_id = payload.get("chain_id")
 
     return ControlEnvelope(
         tenant_id=payload["tenant_id"],
@@ -435,6 +450,7 @@ def verify_envelope(
         flow_id=str(flow_id) if flow_id else None,
         authority_reference_id=str(authority_ref) if authority_ref else None,
         authority_kind=authority_kind,
+        chain_id=str(chain_id) if chain_id else None,
     )
 
 

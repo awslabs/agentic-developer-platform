@@ -97,12 +97,23 @@ def _generate_output(module: object) -> tuple[str, int]:
     persona_compatibility_class = dict(module.PERSONA_COMPATIBILITY_CLASS)
     harness_revisions = _load_harness_revisions()
 
-    # Sanity check
+    # The staged copy recomputes VALID_PERSONAS from the three emitted mappings, so if
+    # the source's own VALID_PERSONAS is not exactly that union the generated copy is
+    # wrong by construction.  This must fail rather than warn: when AUTOMATIC_PERSONAS
+    # was introduced (a persona category selected by platform events rather than by a
+    # label or @-mention) the generator did not emit it, silently dropped a persona from
+    # the staged copy, and exited 0 -- surfacing only as a confusing red parity test in
+    # an unrelated PR's CI.  Failing here reports the drift at the point it is
+    # introduced, consistent with the PERSONA_COMPATIBILITY_CLASS/harness checks below.
     derived = set(label_to_persona.values()) | set(mention_to_persona.values()) | automatic_personas
     if derived != valid_personas:
-        print(
-            f"WARNING: derived VALID_PERSONAS differs from source.\n  Derived: {sorted(derived)}\n  Source:  {sorted(valid_personas)}",
-            file=sys.stderr,
+        raise ValueError(
+            "Source VALID_PERSONAS is not the union of LABEL_TO_PERSONA, MENTION_TO_PERSONA "
+            "and AUTOMATIC_PERSONAS, so the staged copy cannot reproduce it. If a new persona "
+            "category was added to personas.py, teach this generator to emit it.\n"
+            f"  Derived:     {sorted(derived)}\n"
+            f"  Source only: {sorted(valid_personas - derived)}\n"
+            f"  Derived only: {sorted(derived - valid_personas)}"
         )
     if set(persona_compatibility_class) != valid_personas:
         raise ValueError("PERSONA_COMPATIBILITY_CLASS keys must exactly match VALID_PERSONAS")

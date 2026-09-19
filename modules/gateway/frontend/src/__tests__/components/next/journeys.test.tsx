@@ -115,6 +115,7 @@ describe('journey model — Issue #5080', () => {
       ['connections', 'connections'],
       ['credentials', 'credentials'],
       ['gitlab', 'gitlab'],
+      ['agent_models', 'agent-models'],
     ] as const)('drops %s entries when the feature is off', (flag, entryId) => {
       expect(useIds({ [flag]: true })).toContain(entryId);
       expect(useIds({ [flag]: false })).not.toContain(entryId);
@@ -163,6 +164,15 @@ describe('journey model — Issue #5080', () => {
       // page where the personal Bedrock selector actually lives.
       expect(modelAccess?.currentUi).toBe(true);
       expect(modelAccess?.to).toBe('/settings/credentials');
+    });
+
+    it('links Agent Models to its one current-UI implementation', () => {
+      const entry = journeyEntries(buildJourneys(features({ agent_models: true }), MEMBER).use)
+        .find((candidate) => candidate.id === 'agent-models');
+      expect(entry).toMatchObject({
+        to: '/settings/agent-models',
+        currentUi: true,
+      });
     });
 
     it('marks the server-owned GitLab path as external, and nothing else', () => {

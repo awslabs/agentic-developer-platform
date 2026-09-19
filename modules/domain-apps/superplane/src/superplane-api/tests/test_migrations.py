@@ -792,27 +792,50 @@ class TestCredentialReferenceMigrationRefusesToGuess:
     def test_the_revision_extends_the_repaired_single_head(self) -> None:
         """012 must extend U13's repaired chain, which is the issue's hard dependency.
 
-        Asserted as "the sole head, with 010 among its ancestors" rather than as a literal
-        `down_revision == "010_add_workspace_grants"`. The literal form was what this test
-        originally checked, and it encoded the wrong requirement: the dependency is on
-        U13's repaired chain being *underneath* this revision, not on this revision being
-        the immediate child of one particular id. When U15 (#5387) landed its own revision
-        on 010, satisfying the literal assertion would have meant leaving the chain
-        two-headed -- passing the test by breaking the invariant it exists to protect.
+        Asserted as "on the single-headed chain's path to head, with 010 among its
+        ancestors" rather than as a literal `down_revision == "010_add_workspace_grants"`.
+        The literal form was what this test originally checked, and it encoded the wrong
+        requirement: the dependency is on U13's repaired chain being *underneath* this
+        revision, not on this revision being the immediate child of one particular id.
+        When U15 (#5387) landed its own revision on 010, satisfying the literal assertion
+        would have meant leaving the chain two-headed -- passing the test by breaking the
+        invariant it exists to protect.
 
-        This form holds however many siblings land on 010 later, and it still fails if this
-        revision is detached from the chain, is not the head, or ends up parallel to
-        another head.
+        The same correction applies one level up, and is why this no longer asserts
+        `get_heads() == ["012_adp_credential_reference"]`. That form pinned 012 as the
+        *terminal* revision, which is a different and stronger claim than the invariant:
+        012 being terminal is not what makes `alembic upgrade head` unambiguous -- the
+        chain being single-headed is. Requiring 012 to stay terminal would mean no later
+        revision could ever extend it, so issue #5054's 013 (provider-operation records)
+        would have had to land parallel to 012 to keep this test passing, i.e. satisfy
+        the assertion by creating the second head whose absence it is checking for.
+
+        What is checked instead: exactly one head, and 012 lies on the path `upgrade head`
+        walks. That still fails if 012 is detached from the chain, if it ends up on a side
+        branch that head never reaches, or if any second head appears -- including one
+        created by a descendant of 012.
         """
         config = Config(str(API_ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(API_ROOT / "alembic"))
         script = ScriptDirectory.from_config(config)
 
-        # `list(...)`: `get_heads()` returns a list, and comparing it to a tuple is
-        # always False regardless of the chain's actual shape.
-        assert list(script.get_heads()) == ["012_adp_credential_reference"], (
-            "this revision must be the single head; a second head makes "
-            "`alembic upgrade head` ambiguous and applies no migration at all"
+        heads = list(script.get_heads())
+        assert len(heads) == 1, (
+            f"the chain must have a single head; a second head makes "
+            f"`alembic upgrade head` ambiguous and applies no migration at all. "
+            f"Found {len(heads)}: {sorted(heads)}"
+        )
+
+        # "Reached by `upgrade head`", not "is head". `iterate_revisions` walks from the
+        # head down to base, which is exactly the set of revisions an upgrade applies, so
+        # a 012 that sits on an orphaned side branch fails here even though the chain is
+        # single-headed.
+        on_path_to_head = {
+            rev.revision for rev in script.iterate_revisions("heads", "base")
+        }
+        assert "012_adp_credential_reference" in on_path_to_head, (
+            "this revision must lie on the path `alembic upgrade head` walks; a revision "
+            "off that path is never applied no matter how many heads the chain has"
         )
 
         ancestors = {

@@ -24,6 +24,8 @@ export interface FeatureFlags {
   new_ui: boolean;
   /** Superplane domain app — Issue #5037 (EPIC #4910). Fail-closed. */
   superplane: boolean;
+  /** Per-persona model preferences — Issue #5422. Fail-closed until PMM-09. */
+  agent_models: boolean;
 }
 
 export interface FeaturesResponse {
@@ -75,6 +77,9 @@ export const ALL_FEATURES_ENABLED: FeatureFlags = {
   // available: the criterion is that no existing ADP surface changes behaviour while the
   // gate is off, and a fail-open default means the gate is never observably off.
   superplane: false,
+  // Fail-closed — Issue #5422. The screen is useful only after catalogue
+  // evidence and enforcement readiness, and the flag is its rollback lever.
+  agent_models: false,
 };
 
 export async function fetchFeatures(): Promise<FeatureFlags> {

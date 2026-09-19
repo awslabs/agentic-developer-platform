@@ -122,5 +122,9 @@ async def get_features(_current_user=Depends(get_current_user)):
             # failing in front of a user rather than staying invisible until its owners
             # have landed. Off is the correct state until then.
             "superplane": _is_enabled_strict("FEATURE_SUPERPLANE_ENABLED"),
+            # Fail-closed rollout control for the per-persona model preferences
+            # page (Issue #5422). PMM-09 enables it only after model evidence and
+            # runtime enforcement are ready; absence must therefore remain off.
+            "agent_models": _is_enabled_strict("FEATURE_AGENT_MODELS_ENABLED"),
         }
     }

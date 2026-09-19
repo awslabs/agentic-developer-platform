@@ -16,6 +16,7 @@ from functools import lru_cache, partial
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
@@ -33,6 +34,7 @@ from src.agentauth.waves import WaveRequest
 from src.agentauth.workload import WORKLOAD_HEADER, KubernetesWorkloadVerifier, WorkloadRefusedError
 from src.internal.auth_deps import verify_internal_or_irsa
 from src.orchestration.work_claims import WorkClaimError
+from src.shared.database import get_db
 
 logger = logging.getLogger("bedrockgateway.agentauth.routes")
 
@@ -283,7 +285,12 @@ def get_agent_runtime() -> AgentRuntime:
 
 
 @router.post("/bootstrap")
-async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRuntime = Depends(get_agent_runtime)) -> JSONResponse:
+async def bootstrap(
+    body: BootstrapRequest,
+    request: Request,
+    runtime: AgentRuntime = Depends(get_agent_runtime),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
     try:
         result = await run_in_threadpool(runtime.bootstrap, body, request.headers.get(WORKLOAD_HEADER, ""))
         caller = verify_credential(result["credential"], env=runtime.env)
@@ -297,6 +304,15 @@ async def bootstrap(body: BootstrapRequest, request: Request, runtime: AgentRunt
 
         await worker_checkpoint(org_id=record.tenant_id, invocation_id=record.invocation_id, store=runtime.store)
         result = issue_bound_credential(record, now=datetime.now(UTC), env=runtime.env)
+        from src.agentauth.model_policy import bootstrap_model_policy_live
+
+        result["model_policy"] = await bootstrap_model_policy_live(
+            db,
+            store=runtime.store,
+            record=record,
+            grant=grant,
+            env=runtime.env,
+        )
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except WorkClaimError as exc:
         if exc.code == "work_waiting":

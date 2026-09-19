@@ -52,6 +52,7 @@ export const ALLOWED_ALGORITHMS = new Set(['ed25519']);
 /** Must match `src/agentauth/envelope.py` on the gateway side. */
 export const ENVELOPE_ISSUER = 'adp-gateway-control';
 export const ENVELOPE_AUDIENCE = 'adp-agent-control-listener';
+export const MODEL_POLICY_AUDIENCE = 'adp-agent-model-policy';
 
 /**
  * Maximum validity this worker will accept, in seconds. An envelope claiming
@@ -141,6 +142,7 @@ export interface ControlEnvelope {
   expiresAt: number;
   flowId?: string;
   authorityReferenceId?: string;
+  chainId?: string;
 }
 
 /**
@@ -162,6 +164,7 @@ export type EnvelopeFailure =
   | 'action_mismatch'
   | 'command_mismatch'
   | 'body_mismatch'
+  | 'chain_mismatch'
   | 'expired'
   | 'not_yet_valid'
   | 'validity_too_long';
@@ -178,6 +181,10 @@ export interface ExpectedBinding {
   commandId: string;
   /** The raw body bytes as received off the socket — not a re-serialized object. */
   body: Buffer;
+  /** Defaults to the control-listener audience for backward compatibility. */
+  audience?: string;
+  /** Required for a chain-bound model decision; absent for control commands. */
+  chainId?: string;
   /** Injectable for tests; milliseconds since epoch. */
   nowMs?: number;
 }
@@ -328,7 +335,9 @@ export function verifyEnvelope(
     return { ok: false, reason: 'unsupported_algorithm' };
   }
   if (payload.iss !== ENVELOPE_ISSUER) return { ok: false, reason: 'untrusted_issuer' };
-  if (payload.aud !== ENVELOPE_AUDIENCE) return { ok: false, reason: 'audience_mismatch' };
+  if (payload.aud !== (expected.audience ?? ENVELOPE_AUDIENCE)) {
+    return { ok: false, reason: 'audience_mismatch' };
+  }
 
   const keyId = payload.kid as string;
   const key = keys.get(keyId);
@@ -358,6 +367,9 @@ export function verifyEnvelope(
   }
   if (payload.body_digest !== bodyDigest(expected.body)) {
     return { ok: false, reason: 'body_mismatch' };
+  }
+  if (expected.chainId !== undefined && payload.chain_id !== expected.chainId) {
+    return { ok: false, reason: 'chain_mismatch' };
   }
 
   const issuedAt = parseTimestamp(payload.iat);
@@ -396,6 +408,7 @@ export function verifyEnvelope(
         typeof payload.authority_reference_id === 'string'
           ? payload.authority_reference_id
           : undefined,
+      chainId: typeof payload.chain_id === 'string' ? payload.chain_id : undefined,
     },
   };
 }

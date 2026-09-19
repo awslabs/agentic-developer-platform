@@ -50,18 +50,24 @@ SUBMITTER_HEADER = "x-superplane-submitter"
 # mistaken for a signature of a different algorithm later.
 SIGNATURE_PREFIX = "sha256="
 
+# Bound JSON work even for callers that have not authenticated.
+MAX_OBSERVATION_BODY_BYTES = 1024 * 1024
+
 
 @dataclass(frozen=True)
 class Submitter:
     """An authenticated submitter and the workspaces it may speak for.
 
     `workspaces` is the grant, and it is a set rather than a single value because
-    a monitor legitimately watches several workspaces. It is never inferred from
+    a monitor legitimately watches several workspaces. Entries are immutable workspace
+    IDs, not display names. It is never inferred from
     the payload — see `scoping.py`.
     """
 
     submitter_id: str
     workspaces: frozenset[str] = field(default_factory=frozenset)
+    # Exact non-cluster scope grants, assigned by deployment configuration only.
+    lease_scopes: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         if not self.submitter_id or not self.submitter_id.strip():
@@ -167,13 +173,15 @@ def verify_submission(
             authenticated=False, reason="raw UTF-8 request bytes required"
         )
     body = observation
+    if len(body) > MAX_OBSERVATION_BODY_BYTES:
+        return AuthResult(authenticated=False, reason="observation body too large")
     try:
         payload = json.loads(
             body.decode("utf-8"), parse_constant=_invalid_json_constant
         )
         if not isinstance(payload, dict):
             raise ValueError("body must be an object")
-    except (ValueError, UnicodeDecodeError, TypeError):
+    except (ValueError, UnicodeDecodeError, TypeError, RecursionError):
         return AuthResult(authenticated=False, reason="invalid JSON body")
     version = check_version(lowered.get(VERSION_HEADER), payload.get(VERSION_FIELD))
     if not version.accepted:
