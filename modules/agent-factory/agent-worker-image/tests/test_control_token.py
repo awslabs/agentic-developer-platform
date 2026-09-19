@@ -139,8 +139,8 @@ class TestControlPort:
 
 class TestTokenTtl:
     @patch.dict(os.environ, {"ADP_POD_DEADLINE_SECONDS": "3600"}, clear=False)
-    def test_uses_the_pod_deadline(self):
-        """The credential expires with the process it authenticates."""
+    def test_uses_the_configured_duration_cap(self):
+        """The duration cap is separate from verified absolute lifetime evidence."""
         assert entrypoint._control_token_ttl_seconds() == 3600
 
     @patch.dict(os.environ, {"ADP_POD_DEADLINE_SECONDS": "999999"}, clear=False)
@@ -478,9 +478,30 @@ class TestSetupAgentControl:
         assert child["ADP_CONTROL_TOKEN_EXPIRES_AT"] == deadline
         assert register.call_args.kwargs["token_expires_at"] == deadline
 
+    @pytest.mark.parametrize("deadline", ["1970-01-01T00:00:00Z", "2099-01-01T00:00:00"])
+    def test_unusable_lifecycle_evidence_keeps_reads_without_rewriting_pause_bound(
+        self, monkeypatch, deadline
+    ):
+        now = 1_790_000_000
+        monkeypatch.setattr(entrypoint.time, "time", lambda: now)
+        monkeypatch.setenv("FEATURE_AGENT_CONTROL_ENABLED", "true")
+        monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
+        monkeypatch.setenv("POD_IP", "10.0.1.5")
+        monkeypatch.setenv("ADP_POD_DEADLINE_SECONDS", "3600")
+        register = MagicMock(return_value=1)
+        monkeypatch.setattr(entrypoint, "register_control_endpoint", register)
+        monkeypatch.setattr(entrypoint, "_install_control_teardown_guard", lambda *_: None)
+        child = {"ADP_POD_DEADLINE_AT": deadline}
+        assert entrypoint._setup_agent_control(child, *RUN_KEY)
+        expected = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 3600))
+        assert child["ADP_CONTROL_TOKEN_EXPIRES_AT"] == expected
+        assert register.call_args.kwargs["token_expires_at"] == expected
+        # Registration never replaces unknown/expired pause evidence with a fresh TTL.
+        assert child["ADP_POD_DEADLINE_AT"] == deadline
+
     @pytest.mark.parametrize("deadline", [60, 900, 21600])
-    def test_expiry_is_bounded_by_the_pod_deadline(self, ddb, deadline):
-        """A token that outlived its pod would authenticate to a reused IP.
+    def test_expiry_is_bounded_by_the_configured_duration(self, ddb, deadline):
+        """Registration must honor the configured token duration cap.
 
         The written timestamp is parsed and compared to the deadline, not merely
         matched against an ISO shape. The shape-only version of this assertion
@@ -507,10 +528,10 @@ class TestSetupAgentControl:
         assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", expiry)
 
         expiry_epoch = calendar.timegm(time.strptime(expiry, "%Y-%m-%dT%H:%M:%SZ"))
-        # The bound: no later than the moment the pod itself is killed. One second
-        # of slack absorbs the truncation to whole seconds in the format.
+        # One second of slack absorbs truncation to whole seconds. Absolute Job
+        # lifetime is separately enforced by the verified-deadline test above.
         assert expiry_epoch <= after + deadline + 1, (
-            f"expiry {expiry} outlives the pod deadline of {deadline}s"
+            f"expiry {expiry} exceeds the configured duration of {deadline}s"
         )
         # And not so early that control is dead for most of a legitimate run.
         assert expiry_epoch >= before + deadline - 1

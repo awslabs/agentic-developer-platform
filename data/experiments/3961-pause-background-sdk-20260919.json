@@ -368,6 +368,12 @@
       "absolute_deadline": 4
     },
     "signed_cross_action_before_repair": "Same ID/body pause then resume returned 200; repaired route returns 409.",
-    "scope": "Local source verification, no Terraform apply, authority activation, live acceptance or qualification."
+    "scope": "Local source verification, no Terraform apply, authority activation, live acceptance or qualification.",
+    "control_python_exact_ci_coverage": {
+      "tests_passed": 158,
+      "new_control_functions_lines_percent": 100,
+      "partial_branches": [],
+      "threshold_percent": 85
+    }
   }
 }
