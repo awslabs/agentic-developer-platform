@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import os
 
 import boto3
@@ -12,8 +13,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from src.agentauth.artifact_keys import artifact_prefix
+from src.agentauth.review_upload import REVIEW_RESULT_KIND, ReviewUploadRefusedError, observe_review_upload
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_transport
 from src.agentauth.run_services import live_context
+from src.agentauth.store import AuthorityStoreError
 
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 _KINDS = {
@@ -22,6 +25,10 @@ _KINDS = {
     "comment": ("AGENT_FALLBACK_BUCKET", "md", "text/markdown"),
     "git-changes": ("AGENT_FALLBACK_BUCKET", "tar.gz", "application/gzip"),
     "git-manifest": ("AGENT_FALLBACK_BUCKET", "md", "text/markdown"),
+    # #5146. Stored like every other own-run artifact — the review result *is* one,
+    # and the server-derived key is what later makes a reference to it verifiable.
+    # Unlike the others it is additionally *observed*: see `_observe_review_result`.
+    REVIEW_RESULT_KIND: ("AGENT_RUN_LOGS_BUCKET", "json", "application/json"),
 }
 router = APIRouter(prefix="/internal/v1/agent/self", tags=["agent-authority"], dependencies=[Depends(require_agent_transport)])
 
@@ -62,9 +69,65 @@ async def upload_artifact(kind: str, request: Request, runtime: AgentRuntime = D
             # Same bytes converge on the same key; arbitrary metadata, ACLs,
             # bucket, encryption keys and destination headers are never forwarded.
             await run_in_threadpool(storage.put_object, Bucket=bucket, Key=key, Body=body, ContentType=content_type)
+            receipt = {"key": key, "uri": f"s3://{bucket}/{key}", "sha256": digest}
+            if kind == REVIEW_RESULT_KIND:
+                # Stored first, then observed. The document survives a refusal: an
+                # attempted-and-refused review is a fact an operator needs, and a
+                # reviewer told "refused" with nothing retained cannot evidence it.
+                receipt |= await _observe_review_result(request, runtime, current, body=body)
             final = await live_context(request, runtime)
             if current[1:] != final[1:]:
                 raise HTTPException(404, "not found")
-            return JSONResponse({"key": key, "uri": f"s3://{bucket}/{key}", "sha256": digest}, headers={"Cache-Control": "no-store"})
+            return JSONResponse(receipt, headers={"Cache-Control": "no-store"})
     except (BotoCoreError, ClientError, TimeoutError):
         raise HTTPException(503, "artifact storage unavailable") from None
+
+
+async def _observe_review_result(request: Request, runtime: AgentRuntime, context, *, body: bytes) -> dict:
+    """Validate and record an uploaded review result (#5146).
+
+    Only this kind reaches orchestration state, so the work lives in
+    :mod:`src.agentauth.review_upload` and the session boundary is its own. What
+    stays here is the transport's own rule: a caller who is not a dispatched
+    reviewer gets the same 404 as every other authorization failure, because a
+    caller able to distinguish them learns about runs it does not own.
+
+    A *validation* refusal is the one thing reported specifically. It is reachable
+    only after the caller authenticated as itself, and the arm is the whole
+    diagnostic value — it is what the reviewer reports and what an operator acts on.
+    Returned in the receipt with HTTP 200 rather than as an error status: the upload
+    genuinely succeeded and the bytes are stored, so a 4xx would tell the worker its
+    document was lost.
+    """
+    _, _, record, _ = context
+    try:
+        document = json.loads(body)
+    except ValueError:
+        # Not JSON at all. A 422 rather than a 404: the caller is authenticated and
+        # this is a body defect it can fix, not an authorization answer.
+        raise HTTPException(422, "review result is not valid JSON") from None
+    if not isinstance(document, dict):
+        raise HTTPException(422, "review result is not an object") from None
+
+    try:
+        execution = await run_in_threadpool(runtime.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
+    except AuthorityStoreError:
+        raise HTTPException(503, "agent authority unavailable") from None
+    if not execution:
+        raise HTTPException(404, "not found")
+
+    async def reverify() -> None:
+        # Re-checked inside the observer's transaction, immediately before it
+        # commits. `live_context` raises its own 404 on a changed authority.
+        if (await live_context(request, runtime))[1:] != context[1:]:
+            raise HTTPException(404, "not found")
+
+    try:
+        return await observe_review_upload(record, execution, document=document, reverify=reverify)
+    except ReviewUploadRefusedError as refused:
+        return {"recorded": False, "refusal": refused.code, "detail": refused.detail}
+    except (KeyError, TypeError, ValueError):
+        # No engine assignment on the execution row, or not a reviewer persona:
+        # not a dispatched reviewer, and indistinguishable from a run that does
+        # not exist.
+        raise HTTPException(404, "not found") from None
