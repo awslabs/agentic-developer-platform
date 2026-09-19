@@ -809,9 +809,7 @@ else:
             assert (isolated_home / "holder-entered").exists()
 
             os.utime(lock_path, (stale_time, stale_time))
-            contender = subprocess.Popen(
-                [sys.executable, "-c", worker, str(MODULE_PATH), "contender", str(isolated_home)], env=os.environ.copy()
-            )
+            contender = subprocess.Popen([sys.executable, "-c", worker, str(MODULE_PATH), "contender", str(isolated_home)], env=os.environ.copy())
             while not (isolated_home / "contender-ready").exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert (isolated_home / "contender-ready").exists()
