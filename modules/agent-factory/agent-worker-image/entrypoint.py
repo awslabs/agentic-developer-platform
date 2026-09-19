@@ -529,6 +529,11 @@ def _receive_one_message(queue_url: str, region: str):
     receive semantics; for single-message-at-a-time processing the defaults
     are fine.
     """
+    if authority_enabled():
+        from lib.task_gateway_client import own_task
+
+        body = own_task()
+        return body, "run-bound-task" if body is not None else None
     sqs = boto3.client("sqs", region_name=region)
     resp = sqs.receive_message(
         QueueUrl=queue_url,
@@ -546,6 +551,11 @@ def _receive_one_message(queue_url: str, region: str):
 
 def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
     """Ack-by-delete so the message doesn't come back after visibility timeout."""
+    if authority_enabled():
+        from lib.task_gateway_client import acknowledge_task
+
+        acknowledge_task()
+        return
     boto3.client("sqs", region_name=region).delete_message(
         QueueUrl=queue_url,
         ReceiptHandle=receipt_handle,
@@ -613,17 +623,25 @@ class VisibilityHeartbeat:
         """Heartbeat loop: sleep for interval, then extend visibility."""
         # Create a per-thread SQS client (boto3 clients are not thread-safe).
         try:
-            sqs = boto3.client("sqs", region_name=self._region)
+            if authority_enabled():
+                from lib.task_gateway_client import heartbeat_task
+
+                extend = heartbeat_task
+            else:
+                sqs = boto3.client("sqs", region_name=self._region)
+
+                def extend():
+                    return sqs.change_message_visibility(
+                        QueueUrl=self._queue_url,
+                        ReceiptHandle=self._receipt_handle,
+                        VisibilityTimeout=HEARTBEAT_EXTEND,
+                    )
         except Exception as exc:
             logger.warning("Heartbeat: failed to create SQS client: %s", exc)
             return
         while not self._stop_event.wait(timeout=HEARTBEAT_INTERVAL):
             try:
-                sqs.change_message_visibility(
-                    QueueUrl=self._queue_url,
-                    ReceiptHandle=self._receipt_handle,
-                    VisibilityTimeout=HEARTBEAT_EXTEND,
-                )
+                extend()
                 self._extensions += 1
                 self._consecutive_failures = 0
                 logger.debug("Heartbeat extended visibility (extensions=%d)", self._extensions)
@@ -831,6 +849,16 @@ def _upload_transcript_to_s3(
     un-applied accounts) or if final_text is empty. Failures are logged but
     NEVER affect pod exit code — same contract as check-run finalize.
     """
+    from lib.status_gateway_client import authority_enabled, upload_transcript
+
+    if authority_enabled():
+        if not final_text:
+            return None
+        try:
+            return upload_transcript(final_text)
+        except Exception:
+            logger.warning("Own-run transcript upload unavailable (non-fatal; maximum 8 MiB)")
+            return None
     bucket = os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
     if not bucket or not final_text:
         return None
@@ -1249,8 +1277,20 @@ def _reuse_work_branch(branch: str, *, allow_cleanup: bool, persona: str, issue:
 
 
 def main() -> int:
+    if authority_enabled():
+        # Lease starts at task assignment, before clone/bootstrap/model startup.
+        # Always stop it on early refusal as well as normal harness termination.
+        heartbeat = VisibilityHeartbeat("", os.environ.get("AWS_REGION", "us-east-1"), "")
+        try:
+            return _main(task_heartbeat=heartbeat)
+        finally:
+            heartbeat.stop()
+    return _main()
+
+
+def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     queue_url = os.environ.get("QUEUE_URL")
-    if not queue_url:
+    if not queue_url and task_heartbeat is None:
         logger.error("QUEUE_URL env var is not set")
         return 1
     region = os.environ.get("AWS_REGION", "us-east-1")
@@ -1261,6 +1301,9 @@ def main() -> int:
         # receive. Exit clean (not an error — KEDA will handle scaling).
         logger.info("No message available after long-poll; exiting cleanly")
         return 0
+
+    if task_heartbeat is not None:
+        task_heartbeat.start()
 
     # --- Bootstrap Logger: initialized after first parse to get correlation_id ---
     # We do a lightweight pre-parse to extract correlation_id before the full
@@ -2351,7 +2394,10 @@ def main() -> int:
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = "http://127.0.0.1:9090"
+            agent_env["SIGV4_PROXY_PORT"] = proxy_env.get("SIGV4_PROXY_PORT") or "9090"
+            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = (
+                f"http://127.0.0.1:{agent_env['SIGV4_PROXY_PORT']}"
+            )
             if agent_env.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
                 # Only this loopback hop is unsigned. The proxy authenticates
                 # upstream with protected IRSA and the current run/pod proof.
@@ -2427,8 +2473,9 @@ def main() -> int:
     # Start SQS visibility heartbeat — keeps the message in-flight for the
     # duration of the agent run without requiring a 6h base visibility timeout.
     # A dead worker's heartbeat stops → message frees in ~5min for retry.
-    heartbeat = VisibilityHeartbeat(queue_url, region, receipt_handle)
-    heartbeat.start()
+    heartbeat = task_heartbeat or VisibilityHeartbeat(queue_url, region, receipt_handle)
+    if task_heartbeat is None:
+        heartbeat.start()
 
     command = worker_command(persona)
     logger.info(

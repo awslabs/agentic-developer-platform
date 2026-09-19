@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import re
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -35,7 +35,9 @@ class VerifiedPod:
     namespace: str
     service_account: str
     ip: str
-    deadline_at: str | None = None
+    # Optional lifecycle evidence controls pause, not workload identity. A Jobs
+    # API blip must not invalidate a task already assigned to the same verified pod.
+    deadline_at: str | None = field(default=None, compare=False)
 
 
 class KubernetesWorkloadVerifier:

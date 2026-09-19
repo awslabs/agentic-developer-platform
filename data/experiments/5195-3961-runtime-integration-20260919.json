@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-19T16:13:46.182210+00:00",
+  "purpose": "Integration verification for #5513 after the normal merge of #5205.",
+  "source_parent": "3876565b3ea78338db2f203237bb42906e41328a",
+  "merged_main": "58c5c45907404e3bc6f435c365393a9dff4a70db",
+  "conflict_resolution": {
+    "files": [
+      ".github/workflows/agent-control-ci.yml",
+      "modules/agent-factory/agent/src/agent-worker.ts"
+    ],
+    "behavior": "Retain both required suite lists and both pause-control and run-service imports. Auto-merged Python entrypoint and gateway bootstrap retain both paths."
+  },
+  "previous_runtime_preview": {
+    "commit": "9d53737ce8a2a66763235285ddce783db287648a",
+    "comparison": "Production runtime sources and control workflow are identical. The only selected test-file difference is a trailing blank line in pause-output-race.test.ts, inherited from main."
+  },
+  "checks": {
+    "worker_control": {
+      "passed": 761,
+      "suites": 19,
+      "lines_percent": 97.58,
+      "branches_percent": 91.11,
+      "threshold_percent": 85
+    },
+    "typescript": {
+      "command": "tsc --noEmit",
+      "exit_code": 0
+    },
+    "python_worker": {
+      "passed": 281,
+      "skipped": 0,
+      "selection": [
+        "test_run_identity.py",
+        "test_control_token.py",
+        "test_control_renewal.py",
+        "test_run_service_client.py",
+        "test_task_gateway_client.py",
+        "test_task_credentials.py",
+        "test_entrypoint.py"
+      ]
+    },
+    "gateway": {
+      "passed": 1574,
+      "skipped": 0,
+      "selection": [
+        "tests/agentauth/",
+        "tests/orchestration/test_dispatch_pass.py",
+        "tests/orchestration/test_controls.py",
+        "tests/activity/test_control_proxy.py",
+        "tests/activity/test_agent_control_flag_parity.py",
+        "tests/activity/test_workspace_activity.py"
+      ],
+      "postgres": "Real isolated pgserver supplied through ADP_GRAPH_TEST_DATABASE_URL; fixture-managed PostgreSQL tests also ran. Server cleaned after tests."
+    }
+  },
+  "source_files_sha256": {
+    "modules/agent-factory/agent/src/harnesses/claude-control.ts": "785f5fe7cbcb0cb10fade46ea3e2bf45bd3c40b59acce2b1b7cea0bf1e4721d8",
+    "modules/agent-factory/agent/src/pause-gate.ts": "2b12cbbe98096bb47c98ff78765d61390550b3828ac4906635681acb020ffdb7",
+    "modules/agent-factory/agent/src/control-runtime.integration.ts": "988cb0bd784608dfb0ac6c489ab1d596d7a10ec6e683b0acdd90466bc00297db",
+    "modules/agent-factory/agent/src/utils/resilientQuery.ts": "e98a88383cc029d72e0836cd7b4001151a6b7ce0099b409e83e0720825220ede",
+    "modules/agent-factory/agent/src/developer-checkpoints.ts": "b0612d9d9048fb633d20331d077f8998719ad1fd6d836aa93419fbb7de4651ec",
+    "modules/agent-factory/agent/src/utils/spill/index.ts": "4ecf8798cd358393c7acc34d133f8672a84047e144f80c22070f366383940fe4",
+    "modules/agent-factory/agent/src/utils/spill/store.ts": "d2619b09b66496a0534e88272bd259a28276dda4905b89fe4b06a5f75cade0e5",
+    "modules/agent-factory/agent/src/control-runtime.ts": "03408582eda90af5aae118e00fdeaa426af97ef9d172b75edd74c505334189d5",
+    "modules/agent-factory/agent/src/control-command-apply.ts": "2673f26984b3a8daad967037902a1efb78a80f443530def21adde4c8d9eee999",
+    "modules/agent-factory/agent/src/control-state.ts": "7bd6714340f7f50a944fd38669b0b51c57a202febdbf17fae02bd6e7468c12c1",
+    "modules/agent-factory/agent/src/control-listener.ts": "2169fd3843e4b2ba3cd68d9cd200a4821f5c6678a5bb4422bcad8d76057264e8",
+    "modules/agent-factory/agent/src/control-deadline.ts": "0b87a0c0a83571977e6c7b219267ff9b529998a4b35033eb56209c949bba9d4f",
+    "modules/agent-factory/agent/src/agent-worker.ts": "6b3c9d69922481fe94c25903fe0f1134f96eac13cee274fa1bc2fae02d306754",
+    "modules/agent-factory/agent-worker-image/entrypoint.py": "67760512b78280645ff04b1867aea0df892f49d0bb9a8ac765b440f4e72af5e9",
+    "modules/agent-factory/agent-worker-image/lib/run_identity.py": "8cab8399660b69987c67907e8a346d950a70eb87c8e14f7f407e8cf30587897a",
+    "modules/gateway/src/agentauth/workload.py": "dd461962c966092f23a30941ee26384a36a0505a73aaafb9330e17da373888c7",
+    "modules/gateway/src/agentauth/routes.py": "ceafd7d86dcbe2194d5eb5e1344e7cd27ba3e8a2587e26001e4631bb98c1e7ab",
+    "modules/agent-factory/webhook-ingress/infra/agent-authority-bootstrap.tf": "4f3b177846546cf479c015fb9d98ad727027979e8052c75c600b86624832fb6e"
+  },
+  "sdk_evidence": {
+    "historical_artifact": "data/experiments/3961-pause-background-sdk-20260919.json",
+    "unchanged_sdk_used_sources": [
+      "modules/agent-factory/agent/src/harnesses/claude-control.ts",
+      "modules/agent-factory/agent/src/pause-gate.ts",
+      "modules/agent-factory/agent/src/control-runtime.integration.ts",
+      "modules/agent-factory/agent/src/utils/resilientQuery.ts",
+      "modules/agent-factory/agent/src/developer-checkpoints.ts",
+      "modules/agent-factory/agent/src/utils/spill/index.ts",
+      "modules/agent-factory/agent/src/utils/spill/store.ts"
+    ],
+    "changed_non_sdk_sources": [
+      "modules/agent-factory/agent/src/agent-worker.ts",
+      "modules/agent-factory/agent-worker-image/entrypoint.py",
+      "modules/gateway/src/agentauth/routes.py"
+    ],
+    "scope": "The original ten-scenario SDK artifact remains historical evidence for its pinned sources. Its seven SDK-used source hashes match this composition. It was not re-executed at this integrated head. The three changed bootstrap/worker sources are covered by the current unit/integration checks above, not by a live SDK/bootstrap claim."
+  },
+  "limits": [
+    "No deployment, Terraform apply, authority activation, key projection, worker drain or IAM retirement.",
+    "No deployed gateway or Kubernetes bootstrap proof. No Q3 qualifying run.",
+    "Required current-head CI and independent current-head review still gate the normal source merge."
+  ]
+}
