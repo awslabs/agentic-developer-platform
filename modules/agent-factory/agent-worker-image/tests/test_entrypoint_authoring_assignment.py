@@ -704,12 +704,26 @@ class TestTheBriefSurvivesIntoTheAgentProcess:
 def test_the_real_bootstrap_delivers_the_snapshot_to_the_agent_process(run_worker, monkeypatch):
     seen = []
     original = _subprocess_side_effect
+    real_subprocess_run = entrypoint.subprocess.run
 
     def capture(*args, **kwargs):
         command = args[0] if args else kwargs.get("args", [])
         if command == entrypoint.worker_command("aidlc"):
-            path = kwargs["env"][AMENDMENT_BASE_PATH_ENV]
-            seen.append(json.loads(Path(path).read_text()))
+            # Use the actual OS process boundary with the final author environment.
+            # Reading only in this test process would miss subprocess visibility.
+            result = real_subprocess_run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os,pathlib; print(pathlib.Path(os.environ['ADP_AMENDMENT_BASE_PATH']).read_text())",
+                ],
+                env=kwargs["env"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+            seen.append(json.loads(result.stdout))
         return original(*args, **kwargs)
 
     monkeypatch.setattr(sys.modules[__name__], "_subprocess_side_effect", capture)
