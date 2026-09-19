@@ -109,6 +109,7 @@ from enum import StrEnum
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .execution_state import (
+    TERMINAL_EXECUTION_STATUSES,
     BlockCode,
     BlockRecord,
     ExecutionIdentity,
@@ -131,6 +132,7 @@ __all__ = [
     "HandoffOutcome",
     "HandoffReceipt",
     "HandoffResult",
+    "OutstandingContinuation",
     "adopt_legacy_lane",
     "adoption_enabled",
     "commit_handoff",
@@ -141,6 +143,7 @@ __all__ = [
     "handoff_required",
     "missing_receipt_hold",
     "outstanding_block",
+    "outstanding_continuation",
     "receipt_for",
 ]
 
@@ -650,6 +653,98 @@ async def identity_for_attempt(
         claim_id=row.claim_id,
         claim_generation=row.claim_generation,
     )
+
+
+@dataclass(frozen=True)
+class OutstandingContinuation:
+    """Why a claim may not be released, in the terms a refusal has to name (#5144 F1).
+
+    Deliberately narrow: the execution, its cycle and the receipt at stake. A caller
+    refusing a release needs to say *which* continuation it is protecting, and nothing
+    more — a full ``ExecutionRecord`` here would invite release paths to start reading
+    phase and block state they have no business acting on.
+    """
+
+    execution_id: str
+    node_id: str
+    cycle: int
+    receipt_ref: str
+
+
+async def outstanding_continuation(session: AsyncSession, *, org_id: str, claim_id: str) -> OutstandingContinuation | None:
+    """The execution whose committed continuation this claim still backs, or ``None``.
+
+    This is the reader reviewer blocker F1 turns on. A committed handoff records that
+    another party owes the next step, and that promise rests on the claim generation
+    the receipt was minted under: ``results._delivery_receipt`` attributes the stored
+    receipt through :func:`receipt_for`, which returns ``None`` once the fences no
+    longer match. So releasing the claim does not merely tidy ownership — it makes the
+    receipt unattributable, and the story is then held forever on evidence that exists
+    but can no longer be credited to any attempt.
+
+    That is worse than the defect being fixed. The original bug let a worker exit 0
+    with work outstanding; this would let a worker do everything right, commit a
+    durable continuation, and *still* have its story stall — with a receipt sitting in
+    the row proving the work was handed off correctly.
+
+    Deliberately keyed on ``claim_id`` rather than on a node: the release paths know
+    which claim they are ending and nothing else, and making them resolve a node first
+    would be a second, weaker lookup beside this one.
+
+    A read only, and no lock: callers take the claim row ``FOR UPDATE`` before asking,
+    so the claim cannot change under them, and the execution row is consulted for a
+    receipt that is already durable. Nothing here releases, advances or repairs
+    anything — it answers one question, and the caller decides.
+
+    Returns an :class:`OutstandingContinuation` for a **non-terminal** execution
+    carrying a receipt minted under this exact claim and generation. ``None`` when
+    there is no such execution, which is the ordinary case for every legacy lane and
+    every run that never handed off.
+    """
+    from sqlalchemy import select
+
+    from .models import OrchestrationExecution
+
+    rows = (
+        await session.execute(
+            select(OrchestrationExecution)
+            .where(
+                OrchestrationExecution.org_id == org_id,
+                OrchestrationExecution.claim_id == claim_id,
+                OrchestrationExecution.handoff_receipt_ref.is_not(None),
+                # A concluded or superseded execution owes nothing further, so its
+                # claim is free. Filtered in SQL rather than after the fact so a lane
+                # with a long history does not read every cycle it ever ran.
+                OrchestrationExecution.status.notin_([status.value for status in TERMINAL_EXECUTION_STATUSES]),
+            )
+            # Newest cycle first: the one in flight is the one whose continuation a
+            # release would strand.
+            .order_by(OrchestrationExecution.cycle.desc())
+            .execution_options(populate_existing=True)
+        )
+    ).scalars()
+
+    for row in rows:
+        identity = ExecutionIdentity(
+            org_id=row.org_id,
+            node_id=row.node_id,
+            cycle=row.cycle,
+            accepted_plan_version=row.accepted_plan_version,
+            claim_id=row.claim_id,
+            claim_generation=row.claim_generation,
+        )
+        # Attribution, not mere presence — the same rule `receipt_for` applies, reached
+        # through the same helper. A stored value that is not the receipt THIS identity
+        # mints belongs to other ownership and is not a continuation this claim backs,
+        # so releasing does not strand it.
+        if row.handoff_receipt_ref == handoff_receipt_ref(identity, row.id):
+            return OutstandingContinuation(
+                execution_id=row.id,
+                node_id=row.node_id,
+                cycle=row.cycle,
+                receipt_ref=row.handoff_receipt_ref,
+            )
+    return None
 
 
 async def receipt_for(session: AsyncSession, *, identity: ExecutionIdentity) -> str | None:
