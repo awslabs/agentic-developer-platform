@@ -1,7 +1,6 @@
 import {
   buildModelPolicyFeedback,
   deliverModelPolicyFeedback,
-  feedbackAlreadyPosted,
   sanitizeUntrusted,
   suppressedBy,
   FeedbackComment,
@@ -326,9 +325,13 @@ describe('dedup evidence', () => {
     ).toBe(true);
   });
 
-  it('keeps the predicate form aligned with the evidence check', () => {
+  it('ignores an unrelated marker from a different run', () => {
     const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
-    expect(feedbackAlreadyPosted([{ body: feedback.body, viewerDidAuthor: true }], feedback)).toBe(true);
-    expect(feedbackAlreadyPosted([{ body: feedback.body, viewerDidAuthor: false }], feedback)).toBe(false);
+    const other = buildModelPolicyFeedback({ ...REFUSED_ENV, ADP_MESSAGE_ID: 'run-2' })!;
+
+    expect(other.marker).not.toBe(feedback.marker);
+    expect(
+      suppressedBy([{ body: other.body, viewerDidAuthor: true }], feedback).suppressed,
+    ).toBe(false);
   });
 });

@@ -213,14 +213,6 @@ export function suppressedBy(
   return { suppressed: false, forgedMarkerSeen, authorshipUnknown };
 }
 
-/** Backwards-compatible predicate form of {@link suppressedBy}. */
-export function feedbackAlreadyPosted(
-  comments: ReadonlyArray<FeedbackComment>,
-  feedback: ModelPolicyFeedback,
-): boolean {
-  return suppressedBy(comments, feedback).suppressed;
-}
-
 export type FeedbackOutcome = 'posted' | 'suppressed' | 'not_applicable';
 
 /**
