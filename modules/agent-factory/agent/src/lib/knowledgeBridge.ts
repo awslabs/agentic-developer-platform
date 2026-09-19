@@ -3,8 +3,11 @@ import { IncomingMessage, ServerResponse } from 'node:http';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Hash } from '@smithy/hash-node';
 import { gatewaySigningRegion, workerAwsCredentials, workerIdentityHeaders } from './runIdentity';
+import { proxyPort } from './proxyPort';
 
-export const KNOWLEDGE_BRIDGE_URL = 'http://127.0.0.1:9090/__run/knowledge';
+export function knowledgeBridgeUrl(): string {
+  return `http://127.0.0.1:${proxyPort()}/__run/knowledge`;
+}
 const MAX_BODY = 1024 * 1024;
 const MAX_RESPONSE = 4 * 1024 * 1024;
 

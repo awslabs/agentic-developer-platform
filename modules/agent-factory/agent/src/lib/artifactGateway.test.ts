@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { MAX_ARTIFACT_BYTES, uploadRunArtifact } from './artifactGateway';
 import { saveToS3Fallback } from '../utils/ghPost';
 import { S3Fallback } from '../services/S3Fallback';
+import { S3Client } from '@aws-sdk/client-s3';
 
 jest.mock('./runIdentity', () => ({
   ...jest.requireActual('./runIdentity'),
@@ -26,6 +27,7 @@ beforeEach(() => {
     ADP_RUN_CREDENTIAL_FILE: join(dir, 'run'), ADP_WORKLOAD_TOKEN_FILE: join(dir, 'pod'), ADP_WORKER_AWS_REGION: 'us-east-1',
     AWS_REGION: 'eu-west-2', AGENT_FALLBACK_BUCKET: 'must-not-use', AGENT_RUN_LOGS_BUCKET: 'must-not-use' };
   mockS3Send.mockClear();
+  (S3Client as jest.Mock).mockClear();
   upstream = jest.fn(async (_url, options) => new Response(JSON.stringify({ key: 'runs/own/file', uri: 's3://gateway-bucket/runs/own/file', sha256: createHash('sha256').update(options.body).digest('hex') })));
   global.fetch = upstream;
 });
@@ -82,4 +84,5 @@ it('both legacy fallback callers stay on the gateway and never try S3 after refu
   expect(await new S3Fallback(logger as never, 123).upload('arbitrary-label', 'comment')).toBeNull();
   expect(upstream).toHaveBeenCalledTimes(2);
   expect(mockS3Send).not.toHaveBeenCalled();
+  expect(S3Client).not.toHaveBeenCalled();
 });

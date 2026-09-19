@@ -34,10 +34,10 @@
  * because it is the name the same secret already carries in the agent-context
  * ScaledJob (manifests/ingestion-scaledjob.yaml) and the value is identical.
  */
-import { isProtectedKnowledgeRun, KNOWLEDGE_BRIDGE_URL } from './knowledgeBridge';
+import { isProtectedKnowledgeRun, knowledgeBridgeUrl } from './knowledgeBridge';
 
 export function getDoorBaseUrl(legacy: string): string {
-  return isProtectedKnowledgeRun() ? KNOWLEDGE_BRIDGE_URL : legacy;
+  return isProtectedKnowledgeRun() ? knowledgeBridgeUrl() : legacy;
 }
 
 export function getDoorHeaders(identity: Record<string, string> = {}): Record<string, string> {

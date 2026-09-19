@@ -2374,7 +2374,10 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = "http://127.0.0.1:9090"
+            agent_env["SIGV4_PROXY_PORT"] = proxy_env.get("SIGV4_PROXY_PORT") or "9090"
+            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = (
+                f"http://127.0.0.1:{agent_env['SIGV4_PROXY_PORT']}"
+            )
             if agent_env.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
                 # Only this loopback hop is unsigned. The proxy authenticates
                 # upstream with protected IRSA and the current run/pod proof.

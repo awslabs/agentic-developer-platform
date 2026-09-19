@@ -1,10 +1,10 @@
-import { createServer, Server } from 'node:http';
+import { createServer, request, Server } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { handleKnowledgeBridge, KNOWLEDGE_BRIDGE_URL } from './knowledgeBridge';
+import { handleKnowledgeBridge, knowledgeBridgeUrl } from './knowledgeBridge';
 import { buildKnowledgeLayerHeaders, getKnowledgeLayerMcpConfig } from '../knowledge-layer-config';
-import { getDoorAuthHeaders, getDoorHeaders } from './doorAuth';
+import { getDoorAuthHeaders, getDoorHeaders, getDoorBaseUrl } from './doorAuth';
 import { saveExperienceLearnings } from '../experience-save-hook';
 
 jest.mock('./runIdentity', () => ({
@@ -48,10 +48,21 @@ describe('protected Knowledge Door bridge', () => {
   });
 
   it('native MCP config holds neither shared keys, identity headers nor a static run token', () => {
-    expect(getKnowledgeLayerMcpConfig()).toEqual({ type: 'http', url: KNOWLEDGE_BRIDGE_URL + '/mcp/', headers: {} });
+    expect(getKnowledgeLayerMcpConfig()).toEqual({ type: 'http', url: knowledgeBridgeUrl() + '/mcp/', headers: {} });
     expect(buildKnowledgeLayerHeaders()).toEqual({});
     expect(getDoorAuthHeaders()).toEqual({});
     expect(getDoorHeaders({ 'X-Owner-Sub': 'victim', 'X-Tenant-Id': 'victim' })).toEqual({});
+  });
+
+  it.each([undefined, '8181'])('uses the configured proxy port %s for every protected Door client', async port => {
+    if (port === undefined) delete process.env.SIGV4_PROXY_PORT;
+    else process.env.SIGV4_PROXY_PORT = port;
+    const expected = `http://127.0.0.1:${port || '9090'}/__run/knowledge`;
+    expect(getDoorBaseUrl('https://legacy.invalid')).toBe(expected);
+    expect(getKnowledgeLayerMcpConfig()).toEqual({ type: 'http', url: expected + '/mcp/', headers: {} });
+    process.env.PERSONAL_CONTEXT_SAVE_ENABLED = 'true';
+    await saveExperienceLearnings({ agentOutput: '### Learnings\n- Preserve the configured port.', persona: 'developer', identityHeaders: null });
+    expect(upstream.mock.calls[0][0]).toBe(expected + '/call');
   });
 
   it('experience save uses the bridge without relying on mutable identity metadata', async () => {
@@ -62,7 +73,7 @@ describe('protected Knowledge Door bridge', () => {
     });
     expect(saved.saved).toBe(1);
     const [url, options] = upstream.mock.calls[0];
-    expect(url).toBe(KNOWLEDGE_BRIDGE_URL + '/call');
+    expect(url).toBe(knowledgeBridgeUrl() + '/call');
     expect(options.headers).toEqual({ 'Content-Type': 'application/json' });
   });
 
@@ -73,7 +84,7 @@ describe('protected Knowledge Door bridge', () => {
     const result = await recall!.recallAtTaskStart(null, 'How do tests run?', 'developer');
     expect(result.attempted).toBe(true);
     const [url, options] = upstream.mock.calls[0];
-    expect(url).toBe(KNOWLEDGE_BRIDGE_URL + '/call');
+    expect(url).toBe(knowledgeBridgeUrl() + '/call');
     expect(options.headers).toEqual({ 'Content-Type': 'application/json' });
   });
 
@@ -124,6 +135,24 @@ describe('protected Knowledge Door bridge', () => {
     process.env.ADP_AGENT_AUTHORITY_ENABLED = 'false';
     const response = await nativeFetch(local + '/__run/knowledge/call', { method: 'POST', body: '{}' });
     expect(response.status).toBe(404);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it('returns a readable 413 while a chunked upload is still in progress', async () => {
+    const response = await new Promise<{ status: number; text: string }>((resolve, reject) => {
+      const client = request(local + '/__run/knowledge/call', { method: 'POST', headers: { 'Transfer-Encoding': 'chunked' } }, incoming => {
+        const chunks: Buffer[] = [];
+        incoming.on('data', chunk => chunks.push(chunk));
+        incoming.on('error', reject);
+        incoming.on('end', () => { resolve({ status: incoming.statusCode!, text: Buffer.concat(chunks).toString() }); client.destroy(); });
+      });
+      client.on('error', reject);
+      client.setTimeout(2000, () => client.destroy(new Error('No bounded response')));
+      // Deliberately leave the request open: rejection must survive iterator
+      // cleanup before the client has sent its final chunk.
+      client.write(Buffer.alloc(2 * 1024 * 1024));
+    });
+    expect(response).toEqual({ status: 413, text: 'Request too large' });
     expect(upstream).not.toHaveBeenCalled();
   });
 

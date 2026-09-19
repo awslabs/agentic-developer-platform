@@ -22,6 +22,7 @@ import { SignatureV4 } from '@smithy/signature-v4';
 import { Hash } from '@smithy/hash-node';
 import { workerAwsCredentialProvider, workerIdentityHeaders, gatewaySigningRegion } from './lib/runIdentity';
 import { handleKnowledgeBridge } from './lib/knowledgeBridge';
+import { proxyPort } from './lib/proxyPort';
 
 const args = process.argv.slice(2);
 const get = (flag: string, def: string) => {
@@ -30,7 +31,7 @@ const get = (flag: string, def: string) => {
 };
 
 const TARGET    = get('--target', process.env.SIGV4_PROXY_TARGET || '');
-const PORT      = parseInt(get('--port', process.env.SIGV4_PROXY_PORT || '8080'), 10);
+const PORT      = parseInt(get('--port', proxyPort()), 10);
 const TENANT_ID = process.env.TENANT_ID || '';
 const AGENT_RUN_ID = process.env.ADP_MESSAGE_ID || '';
 const AGENT_CORRELATION_ID = process.env.ADP_CORRELATION_ID || '';

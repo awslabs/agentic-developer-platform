@@ -7,12 +7,11 @@ import { resolveFallbackBucket, buildFallbackKey } from '../utils/s3Fallback';
 const S3_REGION = workerAwsRegion();
 
 export class S3Fallback {
-  private s3: S3Client;
+  private s3?: S3Client;
   private logger: Logger;
   private issueNumber: number;
 
   constructor(logger: Logger, issueNumber: number) {
-    this.s3 = new S3Client({ region: S3_REGION, credentials: workerAwsCredentials() });
     this.logger = logger;
     this.issueNumber = issueNumber;
   }
@@ -35,6 +34,7 @@ export class S3Fallback {
     const key = buildFallbackKey(this.issueNumber, label);
 
     try {
+      this.s3 ??= new S3Client({ region: S3_REGION, credentials: workerAwsCredentials() });
       await this.s3.send(new PutObjectCommand({
         Bucket: bucket,
         Key: key,

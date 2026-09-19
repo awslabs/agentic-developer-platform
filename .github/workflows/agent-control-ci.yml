@@ -72,6 +72,8 @@ on:
       - 'modules/agent-factory/agent/src/control-authorization.ts'
       - 'modules/agent-factory/agent/src/lib/runIdentity*'
       - 'modules/agent-factory/agent/src/lib/artifactGateway*'
+      - 'modules/agent-factory/agent/src/lib/gitArchiveGateway*'
+      - 'modules/agent-factory/agent/src/lib/proxyPort*'
       - 'modules/agent-factory/agent/src/lib/knowledgeBridge*'
       - 'modules/agent-factory/agent/src/services/S3Fallback.ts'
       - 'modules/agent-factory/agent/src/utils/ghPost.ts'
@@ -451,7 +453,7 @@ jobs:
         # withhold — could merge green.
         run: |
           npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
-            src/lib/artifactGateway.test.ts src/lib/knowledgeBridge.test.ts \
+            src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
             src/sigv4-proxy.identity.test.ts src/beads-s3-config.test.ts \
             src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
             src/token-init-guard.test.ts \

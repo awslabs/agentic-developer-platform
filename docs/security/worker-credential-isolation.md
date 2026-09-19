@@ -145,7 +145,7 @@ identical uploads converge. Neither request bodies nor headers select an object
 key, tenant, run, ACL, encryption key or bucket. Responses contain a URI, key and
 content digest; no S3 credentials or presigned capability is returned.
 
-Uploads are limited to 8 MiB and 30 seconds, with bounded S3 connection/read timeouts
+Each upload is limited to 8 MiB and 30 seconds, with bounded S3 connection/read timeouts
 and no automatic retry. Run and workload proofs are checked after request streaming
 and again after the storage call. An upload completed during revocation can leave
 an object under its original run prefix, but no receipt is released to an expired
@@ -154,6 +154,15 @@ refused artifacts and do not fall back to shared S3. Workspace spill locators re
 usable independently of archival. The status service accepts transcript pointers
 only under the presenting run/attempt's transcript prefix, preventing an own-row
 write from becoming a read of another run's private artifact.
+
+Git recovery archives larger than one request are uploaded sequentially in parts
+of at most 8 MiB. The recovery manifest records the issue, timestamp, ordered part
+URIs, byte counts, per-part SHA256 and complete archive SHA256. Download and
+concatenate every listed part in order, including repeated URIs, to recover the
+original tar.gz. Each successful part URI is also printed before proceeding, so
+a later failure does not hide partial recovery locations. Only a confirmed
+manifest produces the final backup-success message and deletes the local tar;
+failure prints a prominent preservation alert and retains the local archive.
 
 Protected workers use the existing GitHub task-tracking fallback instead of the
 optional shared Beads/Dolt S3 remote. They neither initialize that remote nor claim

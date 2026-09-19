@@ -1,4 +1,5 @@
 import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
+import { archiveProtectedGitChanges } from './lib/gitArchiveGateway';
 import { saveToS3Fallback } from './utils/ghPost';
 import { workerAwsCredentials, workerAwsRegion, workerAwsEnvironment } from './lib/runIdentity';
 /**
@@ -1844,12 +1845,7 @@ async function uploadGitChangesToS3(): Promise<void> {
     // silently AccessDenied on every occurrence. When the bucket is unconfigured,
     // say so on stdout too: a log line the operator never reads is not an alert.
     if (protectedArtifactRun()) {
-      try {
-        const archive = await uploadRunArtifact('git-changes', fs.readFileSync(tarFile));
-        const manifest = `# Git Changes Backup\nArchive: ${archive.uri}\nFiles:\n${uniqueFiles.map(f => '- ' + f).join('\n')}\n`;
-        await uploadRunArtifact('git-manifest', manifest);
-        log('INFO', `Git changes archived at ${archive.uri} (${uniqueFiles.length} files)`);
-      } finally { try { fs.unlinkSync(tarFile); } catch {} }
+      await archiveProtectedGitChanges({ archivePath: tarFile, issueNumber: ISSUE_NUMBER, timestamp, files: uniqueFiles });
       return;
     }
     const bucket = resolveFallbackBucket(msg => log('ERROR', msg));
