@@ -184,9 +184,12 @@ Every directory is created 0700 and every file 0600, via one `private_directory`
 helper that also verifies ownership and mode after creation rather than trusting
 `mkdir`'s mode against the process umask.
 
-The registry is read-modify-written under a brief `mkdir`-based lock
-(`~/.adp/registry.lock`). `mkdir` rather than `flock(1)` because macOS does not
-ship `flock`. The lock is held only across the registry replacement itself —
+The registry is read-modify-written under a brief exclusive lock on a persistent
+0600 file (`~/.adp/registry.lock`), using Python's `fcntl.flock` API. Both macOS
+and Linux support this API; macOS does not ship the separate `flock(1)` command.
+The kernel releases ownership when the process exits, so an old file timestamp
+never permits another writer to reclaim an active lock. The lock is held only
+across the registry replacement itself —
 never across a login, a network call or a token refresh, since those take minutes
 and blocking every other terminal's `deployment list` behind one browser approval
 would be its own bug.
