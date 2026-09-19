@@ -235,6 +235,9 @@ class HandoffReceipt:
 
     contract_version: int
     receipt_ref: str
+    execution_id: str
+    policy_id: str | None
+    policy_hash: str | None
     org_id: str
     flow_id: str
     node_id: str
@@ -252,6 +255,9 @@ class HandoffReceipt:
         return {
             "contract_version": self.contract_version,
             "receipt_ref": self.receipt_ref,
+            "execution_id": self.execution_id,
+            "policy_id": self.policy_id,
+            "policy_hash": self.policy_hash,
             "org_id": self.org_id,
             "flow_id": self.flow_id,
             "node_id": self.node_id,
@@ -344,7 +350,8 @@ def handoff_action_id(identity: ExecutionIdentity, execution_id: str) -> str:
     return f"{HANDOFF_RECEIPT_SCHEME}-action:{execution_id}:{identity.cycle}:{identity.claim_generation}"
 
 
-def _receipt_for_record(
+async def _receipt_for_record(
+    session: AsyncSession,
     identity: ExecutionIdentity,
     record: ExecutionRecord,
     *,
@@ -360,9 +367,17 @@ def _receipt_for_record(
     if record.next_check_at is None:
         logger.warning("handoff: committed execution %s has no next check; refusing to assert a continuation", record.id)
         return None
+    from .policy_admission import load_in_force_policy
+
+    inputs = await load_in_force_policy(session, org_id=record.org_id, flow_id=record.flow_id)
+    if inputs.refusal is not None or inputs.plan_version != record.accepted_plan_version:
+        return None
     return HandoffReceipt(
         contract_version=HANDOFF_RECEIPT_CONTRACT_VERSION,
         receipt_ref=receipt_ref,
+        execution_id=record.id,
+        policy_id=inputs.policy.policy_id if inputs.policy else None,
+        policy_hash=inputs.policy.policy_hash if inputs.policy else None,
         # Read off the stored record, not the identity, wherever the row carries it:
         # the point of the readback is that the worker sees what is durable.
         org_id=record.org_id,
@@ -415,7 +430,7 @@ async def commit_handoff(
         :class:`HandoffResult`. Only ``accepted`` results license the caller to
         report an accepted handoff.
     """
-    current = await load_execution(session, identity=identity)
+    current = await load_execution(session, identity=identity, for_update=True)
     if current is None:
         # No row at all: there is nothing to hand off, and inventing one here would
         # let a caller create work that no policy admitted.
@@ -436,7 +451,7 @@ async def commit_handoff(
         # another attempt now, and returning it as success is precisely the
         # stale-attempt acceptance the story forbids.
         if record.handoff_receipt_ref == expected:
-            replay = _receipt_for_record(identity, record, receipt_ref=record.handoff_receipt_ref)
+            replay = await _receipt_for_record(session, identity, record, receipt_ref=record.handoff_receipt_ref)
             if replay is None:
                 # A stored receipt whose row no longer carries a due continuation
                 # cannot be replayed as an acceptance: the receipt's whole claim is
@@ -505,7 +520,7 @@ async def commit_handoff(
         logger.warning("handoff: readback mismatch on execution %s", record.id)
         return HandoffResult(outcome=HandoffOutcome.REFUSED, record=committed, reason="handoff_readback_mismatch")
 
-    receipt = _receipt_for_record(identity, committed, receipt_ref=stored)
+    receipt = await _receipt_for_record(session, identity, committed, receipt_ref=stored)
     if receipt is None:
         # The write landed but did not leave a due continuation. Reported as a
         # refusal rather than a success: the caller must not treat this as a handoff,
@@ -671,7 +686,7 @@ class OutstandingContinuation:
     receipt_ref: str
 
 
-async def outstanding_continuation(session: AsyncSession, *, org_id: str, claim_id: str) -> OutstandingContinuation | None:
+async def outstanding_continuation(session: AsyncSession, *, org_id: str, claim_id: str, claim_generation: int) -> OutstandingContinuation | None:
     """The execution whose committed continuation this claim still backs, or ``None``.
 
     This is the reader reviewer blocker F1 turns on. A committed handoff records that
@@ -711,6 +726,7 @@ async def outstanding_continuation(session: AsyncSession, *, org_id: str, claim_
             .where(
                 OrchestrationExecution.org_id == org_id,
                 OrchestrationExecution.claim_id == claim_id,
+                OrchestrationExecution.claim_generation == claim_generation,
                 OrchestrationExecution.handoff_receipt_ref.is_not(None),
                 # A concluded or superseded execution owes nothing further, so its
                 # claim is free. Filtered in SQL rather than after the fact so a lane

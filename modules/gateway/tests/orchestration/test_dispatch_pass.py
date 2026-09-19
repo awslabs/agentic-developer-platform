@@ -1760,8 +1760,14 @@ async def test_opted_in_story_is_marked_as_owing_a_handoff_and_has_a_real_execut
     # #5144 item 1: the fences the worker validates the receipt against. Without them
     # the worker can confirm the gateway said "yes" but not that the "yes" was about
     # its own dispatch, which is the readback's entire purpose.
+    from src.orchestration.policy_admission import load_in_force_policy
+
+    policy = (await load_in_force_policy(session, org_id=flow.org_id, flow_id=flow.id)).policy
     assert report.pending[0].envelope["handoff_expect"] == {
         "contract_version": 1,
+        "execution_id": execution.id,
+        "policy_id": policy.policy_id,
+        "policy_hash": policy.policy_hash,
         "org_id": flow.org_id,
         "flow_id": flow.id,
         "node_id": node.id,
@@ -1942,23 +1948,6 @@ async def test_policy_absent_story_owes_no_handoff_and_admits_no_execution(sessi
     assert (await session.scalars(select(OrchestrationExecution))).all() == []
 
 
-async def test_story_without_the_execution_ledger_owes_no_handoff(session, monkeypatch, policy_bound_dispatch):
-    """A dispatch with no claim has no ownership fence, so it admits no execution.
-
-    Distinct from the policy-absent case above: there the flow is unpolicied, here
-    ownership itself is disabled. Both must reach exactly the code they reached before
-    this contract existed.
-    """
-    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
-    flow, _, _ = await _ready_story(session)
-    await _accept_execution_policy(session, flow)
-    report = await run_dispatch_pass(session, _config())
-    assert report.dispatched == 1
-    assert "handoff_required" not in report.pending[0].envelope
-    dispatch = (await session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == DecisionKind.NODE_DISPATCHED.value))).one()
-    assert json.loads(dispatch.reason)["handoff_required"] is False
-
-
 async def test_non_story_nodes_owe_no_handoff(session, work_claims_enabled):
     """An evaluation's completion boundary is the human gate, not a worker handoff.
 
@@ -1973,3 +1962,28 @@ async def test_non_story_nodes_owe_no_handoff(session, work_claims_enabled):
     report = await run_dispatch_pass(session, _config())
     assert report.dispatched == 1
     assert "handoff_required" not in report.pending[0].envelope
+
+
+@pytest.mark.parametrize("unreadable_policy", [False, True])
+async def test_governed_dispatch_refuses_when_claims_are_disabled(session, monkeypatch, policy_bound_dispatch, unreadable_policy):
+    flow, node, _ = await _ready_story(session)
+    await _accept_execution_policy(session, flow)
+    if unreadable_policy:
+        from src.orchestration.models import OrchestrationAcceptedPlan
+
+        plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == flow.id))
+        plan.plan_document = {"execution_policy": {"schema_version": "unreadable"}}
+        await session.flush()
+    monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 0 and not report.pending
+    assert await _state_of(session, node.id) == NodeState.READY.value
+    refusal = (
+        await session.scalars(
+            select(OrchestrationDecision).where(
+                OrchestrationDecision.node_id == node.id,
+                OrchestrationDecision.kind == DecisionKind.TRANSITION_REJECTED.value,
+            )
+        )
+    ).one()
+    assert json.loads(refusal.rejection_reason)["block_code"] == "authority_unverifiable"

@@ -53,7 +53,7 @@ def select_execution(identity: ExecutionIdentity):
     )
 
 
-async def handed_off_lane(session, *, run="run-1", issue=5161):
+async def handed_off_lane(session, *, run="run-1", issue=5161, commit=True):
     """A lane that reached a genuinely committed durable continuation (#5144 F1).
 
     Built through production code end to end — `admit` mints the claim, `create_execution`
@@ -87,6 +87,8 @@ async def handed_off_lane(session, *, run="run-1", issue=5161):
     )
     created = await create_execution(session, identity=identity, flow_id=flow.id)
     assert created.kind is OutcomeKind.APPLIED
+    if not commit:
+        return receipt["claim_id"], run, identity, None
     handoff = await commit_handoff(session, identity=identity, now=datetime.now(UTC))
     assert handoff.accepted is True
     return receipt["claim_id"], run, identity, handoff.receipt_ref
@@ -198,16 +200,11 @@ class TestTerminalStatusCannotStrandACommittedContinuation:
     own failure mode.
     """
 
-    async def test_terminal_report_is_refused_while_the_continuation_is_due(self, session, monkeypatch):
+    async def test_terminal_report_preserves_the_claim_while_the_continuation_is_due(self, session, monkeypatch):
         monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
         claim_id, run, _, _ = await handed_off_lane(session)
 
-        with pytest.raises(WorkClaimError) as raised:
-            await maintain_worker_claim(session, org_id=ORG, invocation_id=run, terminal=True)
-
-        # Named, not merely refused: `/status` maps the code to 409, so the worker
-        # learns its exit did not end the lane instead of assuming a release.
-        assert raised.value.code == "continuation_outstanding"
+        await maintain_worker_claim(session, org_id=ORG, invocation_id=run, terminal=True)
         claim = await session.get(OrchestrationWorkClaim, claim_id)
         assert (claim.state, claim.generation, claim.active_run_id) == (ClaimState.HELD.value, 1, run)
 
@@ -223,10 +220,46 @@ class TestTerminalStatusCannotStrandACommittedContinuation:
         monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
         _, run, identity, receipt_ref = await handed_off_lane(session)
 
-        with pytest.raises(WorkClaimError):
-            await maintain_worker_claim(session, org_id=ORG, invocation_id=run, terminal=True)
+        await maintain_worker_claim(session, org_id=ORG, invocation_id=run, terminal=True)
 
         assert await receipt_for(session, identity=identity) == receipt_ref
+
+    async def test_old_valid_receipt_does_not_hold_replacement_ownership(self, session, monkeypatch):
+        monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
+        claim_id, _, identity, receipt_ref = await handed_off_lane(session)
+        claim = await session.get(OrchestrationWorkClaim, claim_id)
+        claim.generation += 1
+        claim.claim_event_id = claim.active_run_id = "replacement"
+        await session.flush()
+        await maintain_worker_claim(session, org_id=ORG, invocation_id="replacement", terminal=True)
+        assert claim.state == ClaimState.RELEASED.value
+        assert (await session.scalar(select_execution(identity))).handoff_receipt_ref == receipt_ref
+
+    async def test_recovery_rechecks_handoff_after_external_observation(self, session, monkeypatch):
+        from src.orchestration import work_admission
+
+        claim_id, run, identity, _ = await handed_off_lane(session, commit=False)
+        release = work_admission.release_work
+
+        async def commit_before_release(*args, **kwargs):
+            result = await commit_handoff(session, identity=identity, now=datetime.now(UTC))
+            assert result.accepted
+            return await release(*args, **kwargs)
+
+        monkeypatch.setattr(work_admission, "release_work", commit_before_release)
+        store = SimpleNamespace(
+            _read=Mock(
+                return_value={
+                    "tenant_id": {"S": ORG},
+                    "status": {"S": "active"},
+                    "pod_name": {"S": run},
+                    "workload_binding": {"S": run},
+                }
+            )
+        )
+        report = await recover_exited_claims(session, store=store, workloads=SimpleNamespace(has_exited=Mock(return_value=True)))
+        assert report.released == 0
+        assert (await session.get(OrchestrationWorkClaim, claim_id)).state == ClaimState.HELD.value
 
     async def test_recovery_skips_the_claim_instead_of_abandoning_the_sweep(self, session):
         """Positive exit evidence is exactly when this fires — and it must not release.

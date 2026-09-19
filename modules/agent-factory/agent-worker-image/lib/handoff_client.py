@@ -121,7 +121,15 @@ _TRUE_SPELLINGS = frozenset({"1", "true", "yes", "on"})
 # explicit tuple, not derived from whatever keys happen to be present on either
 # side: a receipt missing a field, or an expectation missing one, must be a refusal
 # rather than a comparison that silently skips it.
-_STRING_FENCES = ("org_id", "flow_id", "node_id", "claim_id")
+_STRING_FENCES = (
+    "org_id",
+    "flow_id",
+    "node_id",
+    "claim_id",
+    "execution_id",
+    "policy_id",
+    "policy_hash",
+)
 _INT_FENCES = ("cycle", "accepted_plan_version", "claim_generation")
 
 # The closed vocabulary of actions this worker understands. An action a newer server
@@ -223,7 +231,10 @@ def _validate_receipt(body: dict, expect: dict[str, object]) -> str:
     if not isinstance(receipt, dict):
         return "the response carried no typed receipt to validate"
 
-    if receipt.get("contract_version") != HANDOFF_RECEIPT_CONTRACT_VERSION:
+    if (
+        type(receipt.get("contract_version")) is not int
+        or receipt["contract_version"] != HANDOFF_RECEIPT_CONTRACT_VERSION
+    ):
         return f"receipt contract version {receipt.get('contract_version')!r} is not the version this worker validates ({HANDOFF_RECEIPT_CONTRACT_VERSION})"
 
     top_ref = body.get("receipt_ref")
@@ -262,10 +273,29 @@ def _validate_receipt(body: dict, expect: dict[str, object]) -> str:
     next_check = receipt.get("next_check_at")
     if not isinstance(next_check, str) or not next_check:
         return "the receipt asserts no next-check time, so no continuation is scheduled"
+    from datetime import datetime
+
+    try:
+        due = datetime.fromisoformat(next_check)
+    except ValueError:
+        return "the receipt next-check time is not a timestamp"
+    if due.utcoffset() is None or due.isoformat() != next_check:
+        return "the receipt next-check time is not canonical and timezone-aware"
 
     action_id = receipt.get("action_id")
     if not isinstance(action_id, str) or not action_id:
         return "the receipt names no continuation action"
+    expected_action = (
+        f"handoff-action:{expect['execution_id']}:{expect['cycle']}:{expect['claim_generation']}"
+    )
+    if action_id != expected_action:
+        return "the receipt names another continuation action"
+    expected_ref = (
+        f"handoff:execution={expect['execution_id']}:cycle={expect['cycle']}:"
+        f"plan={expect['accepted_plan_version']}:claim={expect['claim_id']}:generation={expect['claim_generation']}"
+    )
+    if inner_ref != expected_ref:
+        return "the receipt reference belongs to another execution"
 
     return ""
 

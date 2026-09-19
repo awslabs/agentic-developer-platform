@@ -920,6 +920,9 @@ async def _dispatch_one_unclaimed(
         assert identity is not None
         envelope["handoff_expect"] = {
             "contract_version": HANDOFF_RECEIPT_CONTRACT_VERSION,
+            "execution_id": admission.execution_id,
+            "policy_id": admission.policy_id,
+            "policy_hash": admission.policy_hash,
             "org_id": identity.org_id,
             "flow_id": node.flow_id,
             "node_id": identity.node_id,
@@ -1018,7 +1021,7 @@ async def _admit_execution(session: AsyncSession, *, node: OrchestrationNode, cl
     from .policy_admission import load_in_force_policy
 
     claim_id, generation = claim.get("claim_id"), claim.get("generation")
-    if not claim_id or not isinstance(generation, int) or generation < 1:
+    if not claim_id or type(generation) is not int or generation < 1:
         # Unusable ownership fence. This is a refusal, not absence of policy: work
         # ownership was required for this dispatch to get here, so unreadable claim
         # data is a broken invariant. The receipt's whole value is that it names the
@@ -1047,6 +1050,14 @@ async def _admit_execution(session: AsyncSession, *, node: OrchestrationNode, cl
         # publish an unmarked dispatch. #5128 owns this rule; it is read from
         # `load_in_force_policy` and never re-decided here.
         return _NO_POLICY
+
+    if not inputs.policy.policy_id or not inputs.policy.policy_hash:
+        return _admission_refused(
+            "authority_unverifiable",
+            owner="platform-operator",
+            required_input="restore the accepted policy identity before dispatching",
+            detail="the accepted policy has no server-stamped identity",
+        )
 
     try:
         identity = ExecutionIdentity(
@@ -1090,7 +1101,13 @@ async def _admit_execution(session: AsyncSession, *, node: OrchestrationNode, cl
             required_input="reconcile this node's execution record with its current ownership generation",
             detail=f"execution admission was not applied: {outcome.reason}",
         )
-    return _ExecutionAdmission(kind=AdmissionKind.ADMITTED, identity=identity)
+    return _ExecutionAdmission(
+        kind=AdmissionKind.ADMITTED,
+        identity=identity,
+        execution_id=outcome.record.id,
+        policy_id=inputs.policy.policy_id,
+        policy_hash=inputs.policy.policy_hash,
+    )
 
 
 class AdmissionKind(StrEnum):
@@ -1130,6 +1147,9 @@ class _ExecutionAdmission:
 
     kind: AdmissionKind
     identity: Any | None = None
+    execution_id: str | None = None
+    policy_id: str | None = None
+    policy_hash: str | None = None
     block_code: str | None = None
     owner: str | None = None
     required_input: str | None = None
@@ -1171,7 +1191,28 @@ async def _dispatch_one(session, node, *, config, report) -> None:
     from .work_admission import admit, enabled, require_authority, resolve_repository_id
     from .work_claims import ClaimOwner, OwnerKind, WorkClaimError
 
-    if not enabled() or not config.configured:
+    if not config.configured:
+        await _dispatch_one_unclaimed(session, node, config=config, report=report)
+        return
+    if not enabled():
+        from .policy_admission import load_in_force_policy
+
+        inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
+        if inputs.policy is not None or inputs.refusal is not None:
+            await _record_admission_refusal(
+                session,
+                node_id=node.id,
+                org_id=node.org_id,
+                flow_id=node.flow_id,
+                admission=_admission_refused(
+                    "authority_unverifiable",
+                    owner="platform-operator",
+                    required_input="enable work-claim admission before dispatching governed work",
+                    detail="work claims are disabled; governed work cannot use legacy dispatch",
+                ),
+            )
+            report.record(node.org_id, "admission_refused")
+            return
         await _dispatch_one_unclaimed(session, node, config=config, report=report)
         return
     before = len(report.pending)

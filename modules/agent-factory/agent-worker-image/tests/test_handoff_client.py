@@ -58,6 +58,9 @@ RECEIPT = "handoff:execution=exec-1:cycle=1:plan=3:claim=claim-1:generation=1"
 # "what happens when the receipt is for other work?".
 EXPECT = {
     "contract_version": HANDOFF_RECEIPT_CONTRACT_VERSION,
+    "execution_id": "exec-1",
+    "policy_id": "policy-1",
+    "policy_hash": "a" * 64,
     "org_id": "tenant-1",
     "flow_id": "flow-1",
     "node_id": "node-1",
@@ -284,6 +287,9 @@ class TestReadbackIsBoundToThisDispatch:
             ("accepted_plan_version", 4),
             ("claim_id", "other-claim"),
             ("claim_generation", 2),
+            ("execution_id", "other-execution"),
+            ("policy_id", "other-policy"),
+            ("policy_hash", "b" * 64),
         ],
     )
     def test_each_fence_is_compared_individually(self, field, wrong):
@@ -321,6 +327,11 @@ class TestReadbackIsBoundToThisDispatch:
         [
             ({"next_check_at": None}, "no next-check time"),
             ({"next_check_at": ""}, "no next-check time"),
+            ({"next_check_at": "not-a-time"}, "not a timestamp"),
+            ({"next_check_at": "2026-09-19T12:00:00"}, "timezone-aware"),
+            ({"next_check_at": "20260919T120000+0000"}, "canonical"),
+            ({"contract_version": True}, "contract version"),
+            ({"action_id": "handoff-action:other-execution:1:1"}, "another continuation action"),
             ({"action": "deploying"}, "does not recognise"),
             ({"action": None}, "does not recognise"),
             ({"action_id": ""}, "no continuation action"),

@@ -75,6 +75,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
+from httpx import HTTPError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -177,7 +178,7 @@ async def _adopt_lane_for_resume(
     from .models import ClaimState, OrchestrationWorkClaim
     from .policy_admission import load_in_force_policy
     from .work_admission import enabled as work_claims_enabled
-    from .work_claims import OwnerKind
+    from .work_claims import OwnerKind, WorkClaimError
 
     if not work_claims_enabled() or not adoption_enabled():
         # Both flags off is the deployed default. Read per call, so neither a test
@@ -193,7 +194,7 @@ async def _adopt_lane_for_resume(
     # away. `DIRECT_DISPATCH` is the filter that makes this adoption of a *legacy*
     # lane — an `ENGINE_FLOW` claim is already the engine's and needs no transfer,
     # and taking one would let this control steal a live engine lane.
-    claim = await db.scalar(
+    candidates = (
         select(OrchestrationWorkClaim)
         .where(
             OrchestrationWorkClaim.org_id == org_id,
@@ -203,6 +204,28 @@ async def _adopt_lane_for_resume(
         )
         .execution_options(populate_existing=True)
     )
+    if await db.scalar(candidates.with_only_columns(OrchestrationWorkClaim.id).limit(1)) is None:
+        return None
+
+    # Claims are unique per repository, not per tenant-wide issue number. Use
+    # the same trusted configured repository and tenant installation as dispatch.
+    from .dispatch_pass import DispatchPassConfig, resolve_installation_id
+    from .work_admission import resolve_repository_id
+
+    try:
+        repository = DispatchPassConfig.from_env().repo
+        installation = await resolve_installation_id(db, org_id=org_id)
+        if not repository or installation is None:
+            raise WorkClaimError("repository_unresolved", "No trusted repository/installation binding is available.")
+        repository_id = await resolve_repository_id(org_id=org_id, installation_id=installation, repo=repository)
+    except (WorkClaimError, ValueError, HTTPError) as exc:
+        return outstanding_block(
+            BlockCode.AUTHORITY_UNVERIFIABLE,
+            owner="platform-operator",
+            required_input="resolve this tenant's configured repository identity before adopting its lane",
+            detail=f"repository identity unavailable ({exc.code if isinstance(exc, WorkClaimError) else type(exc).__name__})",
+        )
+    claim = await db.scalar(candidates.where(OrchestrationWorkClaim.provider_repository_id == repository_id))
     if claim is None:
         return None
 

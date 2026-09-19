@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,6 +54,7 @@ from src.agentauth.routes import require_agent_transport
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.workload import WorkloadRefusedError
 from src.orchestration.dispatch_pass import attempt_run_id
+from src.orchestration.execution_policy import Action, ExecutionPolicy, PolicyLimits, stamp_policy
 from src.orchestration.execution_state import ExecutionIdentity, ExecutionStatus, OutcomeKind
 from src.orchestration.execution_store import create_execution
 from src.orchestration.models import (
@@ -118,7 +121,26 @@ async def _story(session, issue: int, *, claim_id: str = CLAIM_ID, generation: i
             ),
         )
     )
-    session.add(OrchestrationAcceptedPlan(org_id=ORG, flow_id=flow.id, version=PLAN_VERSION, plan_document={}, plan_hash=f"plan-{issue}"))
+    policy = stamp_policy(
+        ExecutionPolicy(
+            org_id=ORG,
+            repository_ids=[REPO],
+            allowed_actions=[Action.DEVELOP],
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            limits=PolicyLimits(max_wall_clock_seconds=86400, max_spend_usd=Decimal("100"), max_attempts_per_node=10, max_concurrent_actions=5),
+        ),
+        principal_id="handoff-approver",
+        org_id=ORG,
+    )
+    session.add(
+        OrchestrationAcceptedPlan(
+            org_id=ORG,
+            flow_id=flow.id,
+            version=PLAN_VERSION,
+            plan_document={"execution_policy": policy.model_dump(mode="json")},
+            plan_hash=f"plan-{issue}",
+        )
+    )
     session.add(
         OrchestrationWorkClaim(
             id=claim_id,
@@ -161,6 +183,10 @@ async def handoff(db_session_factory, monkeypatch):
     async with db_session_factory() as session:
         session.add(Organization(id=ORG, name=ORG, github_installation_ids=[str(INSTALLATION)]))
         node, run = await _story(session, ISSUE)
+        execution = (await session.scalars(select(OrchestrationExecution).where(OrchestrationExecution.node_id == node.id))).one()
+        from src.orchestration.policy_admission import load_in_force_policy
+
+        policy = (await load_in_force_policy(session, org_id=ORG, flow_id=node.flow_id)).policy
     agent_runtime = MagicMock()
     agent_runtime.validate_flow = AsyncMock()
     _authenticate(agent_runtime, node, run)
@@ -176,7 +202,9 @@ async def handoff(db_session_factory, monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="https://gateway.test") as client:
         # `runtime` is the AgentRuntime mock: it owns `authenticate`/`validate_flow`,
         # which is what the credential and workload assertions below inspect.
-        yield SimpleNamespace(client=client, runtime=agent_runtime, sessions=db_session_factory, node=node, run=run)
+        yield SimpleNamespace(
+            client=client, runtime=agent_runtime, sessions=db_session_factory, node=node, run=run, execution_id=execution.id, policy=policy
+        )
 
 
 def _dispatch_expectation(handoff, **overrides) -> dict:
@@ -188,6 +216,9 @@ def _dispatch_expectation(handoff, **overrides) -> dict:
     """
     expect = {
         "contract_version": 1,
+        "execution_id": handoff.execution_id,
+        "policy_id": handoff.policy.policy_id,
+        "policy_hash": handoff.policy.policy_hash,
         "org_id": ORG,
         "flow_id": handoff.node.flow_id,
         "node_id": handoff.node.id,

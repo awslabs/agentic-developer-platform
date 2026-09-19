@@ -53,7 +53,7 @@ from src.orchestration.models import (
     OrchestrationNode,
     OrchestrationWorkClaim,
 )
-from src.orchestration.work_claims import OwnerKind
+from src.orchestration.work_claims import OwnerKind, ReleaseReason, release_work
 
 # `pg_server` is session-scoped, so a run that also touches the migration or store
 # tests shares one server rather than starting a second.
@@ -388,3 +388,42 @@ async def test_the_locked_reread_still_confirms_an_undisturbed_receipt(pg_sessio
     assert await _receipt_under_lock(pg_session_factory, seeded) == result.receipt_ref
     # Repeatable: the locked read is not a one-shot that consumes what it verified.
     assert await _receipt_under_lock(pg_session_factory, seeded) == result.receipt_ref
+
+
+async def test_release_waits_for_uncommitted_handoff_and_preserves_its_claim(pg_session_factory, seeded):
+    """Recovery cannot free ownership after a handoff has won the claim lock."""
+    written = asyncio.Event()
+    order = []
+
+    async def report():
+        async with pg_session_factory() as session:
+            result = await commit_handoff(session, identity=seeded, now=datetime.now(UTC))
+            assert result.accepted
+            written.set()
+            await asyncio.sleep(0.5)
+            await session.commit()
+            order.append("handoff-committed")
+
+    async def release():
+        await asyncio.wait_for(written.wait(), timeout=10)
+        async with pg_session_factory() as session:
+            result = await release_work(
+                session,
+                org_id=ORG_A,
+                claim_id=CLAIM,
+                generation=seeded.claim_generation,
+                reason=ReleaseReason.COMPLETED,
+                terminal_evidence="protected terminal report",
+            )
+            order.append("release-checked")
+            await session.commit()
+            return result
+
+    _, released = await asyncio.wait_for(asyncio.gather(report(), release()), timeout=10)
+    assert not released.admitted
+    assert released.reason == "continuation_outstanding"
+    assert order == ["handoff-committed", "release-checked"]
+    async with pg_session_factory() as session:
+        claim = await session.get(OrchestrationWorkClaim, CLAIM)
+        assert (claim.state, claim.generation) == (ClaimState.HELD.value, seeded.claim_generation)
+        assert await receipt_for(session, identity=seeded) is not None

@@ -19,7 +19,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
-from .handoff import outstanding_continuation
 from .models import ClaimState, OrchestrationWorkClaim
 from .work_claims import (
     ClaimBinding,
@@ -228,46 +227,6 @@ async def admit_deferred_bootstrap(store, invocation_id: str, digest: str) -> No
         raise
 
 
-async def refuse_release_if_continuation_outstanding(session, *, org_id: str, claim_id: str, invocation_id: str) -> None:
-    """Refuse to release a claim that still backs a committed continuation (#5144 F1).
-
-    The raising form, for the worker's own terminal report. The recovery pass consults
-    the same underlying reader (:func:`handoff.outstanding_continuation`) but *skips*
-    rather than raising, because an exception in a bounded batch would abandon every
-    remaining claim in the sweep. Both release paths are covered deliberately: a guard
-    on only the reporting one would be defeated by a worker that exits *without*
-    reporting, which is the original defect's own failure mode.
-
-    Not a policy decision and not an ownership decision: it reads durable state that
-    already exists and refuses. Callers must hold the claim row lock first.
-
-    Raises:
-        WorkClaimError: ``continuation_outstanding``. The caller must not release. At
-            ``/status`` this surfaces as 409 so the worker learns its exit did not end
-            the lane, rather than assuming a release that never happened.
-    """
-    pending = await outstanding_continuation(session, org_id=org_id, claim_id=claim_id)
-    if pending is None:
-        return
-    # The receipt reference is a sanitized reference, not a credential (see
-    # `OrchestrationExecution`'s docstring on the reference columns), so naming it here
-    # is what makes the refusal diagnosable instead of merely blocking.
-    logger.info(
-        "work_claim release refused org=%s claim=%s invocation=%s — execution %s cycle %s has an outstanding continuation %s",
-        org_id,
-        claim_id,
-        invocation_id,
-        pending.execution_id,
-        pending.cycle,
-        pending.receipt_ref,
-    )
-    raise WorkClaimError(
-        "continuation_outstanding",
-        "This run committed a durable continuation that is still due, so its work ownership cannot be released; "
-        "releasing would leave the committed receipt unattributable and the work permanently held.",
-    )
-
-
 async def maintain_worker_claim(
     session, *, org_id: str, invocation_id: str, terminal: bool = False, reason: ReleaseReason = ReleaseReason.COMPLETED
 ) -> None:
@@ -290,19 +249,8 @@ async def maintain_worker_claim(
     if row.active_run_id != invocation_id or row.state != ClaimState.HELD.value:
         raise WorkClaimError("claim_not_owned", "This invocation no longer owns the work.")
     if terminal:
-        # #5144 F1: a terminal status is ADVISORY about the process and must not undo
-        # an AUTHORITATIVE handoff. The receipt this claim backs is attributed through
-        # its claim id and generation, so releasing here would make a correctly
-        # committed continuation unattributable and hold the story forever — on
-        # evidence that exists in the row and can no longer be credited to any
-        # attempt. Worse than the defect being closed, because the worker did
-        # everything right.
-        #
-        # The claim row is already locked above, so this read cannot race the state it
-        # is checking. The refusal is deliberately NOT silent: `/status` maps a
-        # WorkClaimError to 409, so the worker learns its exit did not end the lane
-        # rather than believing a release it never got.
-        await refuse_release_if_continuation_outstanding(session, org_id=org_id, claim_id=row.id, invocation_id=invocation_id)
+        # Process status is advisory. The locked release primitive preserves a
+        # current continuation without rejecting a valid terminal status report.
         await release_work(
             session,
             org_id=org_id,
@@ -425,22 +373,6 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
         releasable.append((row, reason, evidence))
     released = 0
     for row, reason, evidence in releasable:
-        # #5144 F1, the half that matters most here: this pass releases on positive
-        # exit evidence, so it fires for exactly the worker that handed off correctly
-        # and then exited without reporting. Releasing would make its committed
-        # continuation unattributable and hold the story forever.
-        #
-        # Skipped, not raised: this is a bounded sweep over many tenants' claims, and
-        # an exception would abandon every claim after this one. The claim simply stays
-        # held — which is correct, because the work genuinely is still outstanding —
-        # and the runner (#5143) advances the continuation from the execution row.
-        if await outstanding_continuation(session, org_id=row.org_id, claim_id=row.id) is not None:
-            logger.info(
-                "work_claim_recovery skipping claim=%s org=%s — a committed continuation is still due",
-                row.id,
-                row.org_id,
-            )
-            continue
         # Never hold a claim lock across an external read. The captured generation
         # fences this release if ownership changed while Kubernetes was queried.
         receipt = await release_work(

@@ -975,6 +975,54 @@ class TestLegacyLaneAdoptionThroughResume:
 
         monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "true")
         monkeypatch.setenv(ADOPTION_ENABLED_ENV, "true")
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", "acme/work")
+        monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=42))
+        monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=987_654_321))
+
+    @pytest.mark.asyncio
+    async def test_same_tenant_issue_in_another_repository_is_not_adopted(self, session, app_with_router):
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+        from src.orchestration.work_claims import ClaimBinding, ClaimOwner, OwnerKind, bind_run, claim_work
+        from tests.orchestration.test_handoff_adoption import _exited_row
+
+        other = await claim_work(
+            session,
+            binding=ClaimBinding(org_id=ORG_A, provider_repository_id=111, issue_number=5144),
+            owner=ClaimOwner(OwnerKind.DIRECT_DISPATCH, "other-repository"),
+            event_id="other-event",
+        )
+        await bind_run(session, org_id=ORG_A, claim_id=other.claim_id, generation=other.generation, run_id="other-run")
+        _, node, own = await self._held_story(session, run_id="own-run")
+        self._resolver(app_with_router, {"own-run": _exited_row(), "other-run": _exited_row()})
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+        assert response.status_code == 200, response.text
+        row = await session.get(OrchestrationWorkClaim, other.claim_id)
+        assert (row.state, row.generation, row.active_run_id) == (ClaimState.HELD.value, other.generation, "other-run")
+        assert (await session.get(OrchestrationWorkClaim, own.claim_id)).generation == own.generation + 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["missing_repo", "missing_installation", "credentials_unavailable", "provider_unavailable"])
+    async def test_missing_repository_identity_blocks_adoption(self, session, app_with_router, monkeypatch, failure):
+        from src.orchestration.models import ClaimState, OrchestrationWorkClaim
+
+        _, node, own = await self._held_story(session, run_id="own-run")
+        from unittest.mock import AsyncMock
+
+        from httpx import ConnectError
+
+        if failure == "missing_repo":
+            monkeypatch.delenv("BG_ORCH_DISPATCH_REPO")
+        elif failure == "missing_installation":
+            monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=None))
+        else:
+            error = ValueError("credentials unavailable") if failure == "credentials_unavailable" else ConnectError("provider unavailable")
+            monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(side_effect=error))
+        response = client_for(app_with_router).post(resume_route(node.id), json={"reconciled": True})
+        assert response.status_code == 409, response.text
+        assert (await session.get(OrchestrationWorkClaim, own.claim_id)).state == ClaimState.HELD.value
+        assert self._blocks(await decisions_for(session, node.flow_id))[-1][1]["block_code"] == "authority_unverifiable"
 
     @pytest.mark.asyncio
     async def test_an_exited_reconciled_legacy_lane_is_adopted_once(self, session, app_with_router):
