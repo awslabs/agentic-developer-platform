@@ -30,7 +30,6 @@ from src.agentauth.runtime_posture import (
 )
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
-from src.shared.identity.resolver import resolve_canonical_user_id
 from src.shared.schemas.auth import TokenContext
 
 from . import posture_service
@@ -106,11 +105,27 @@ async def set_runtime_posture(
         HTTPException:
             ``403`` for any caller who is not a platform admin;
             ``409`` when the expected revision is stale — nothing is written;
-            ``422`` for an unsupported posture, malformed revision, or unknown
-            or unprovisioned compatibility class.
+            ``422`` for an unsupported posture, an unknown or unprovisioned
+            compatibility class, or an acting administrator who does not resolve
+            to exactly one registered platform identity;
+            ``422`` from schema validation for a non-integer or non-positive
+            ``expected_revision``.
     """
     AccessControl(db).require_platform_admin(current_user)
-    actor_id = await resolve_canonical_user_id(db, current_user.user_id)
+    try:
+        actor_id = await posture_service.resolve_posture_actor_id(db, current_user.user_id)
+    except posture_service.PostureMutationError as exc:
+        # No actor_id is passed on: the point of the refusal is that a raw token
+        # subject must not be persisted anywhere, the refusal record included.
+        await db.rollback()
+        await posture_service.write_posture_refusal_audit(
+            db,
+            compatibility_class=compatibility_class,
+            requested_posture=str(request.posture),
+            reason=exc.reason,
+            actor_id=None,
+        )
+        raise _rejected(exc) from exc
 
     try:
         row = await posture_service.set_runtime_posture(

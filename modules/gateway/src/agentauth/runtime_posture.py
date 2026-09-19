@@ -23,8 +23,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import event, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import Session as SyncSession
+from sqlalchemy.pool import SingletonThreadPool, StaticPool
 
 from src.shared.models.persona_models import PersonaModelPolicySetting
 
@@ -119,13 +120,27 @@ def _flag_pending_posture_writes(sync_session: SyncSession, _flush_context, _ins
     """Latch the uncommitted marker at flush time.
 
     ``flush()`` moves objects out of ``session.dirty``, so inspecting those
-    collections after a flush would wrongly report a clean session and promote
-    a not-yet-committed posture into the shared cache.  This listener records
-    the fact durably in ``session.info`` instead; ``commit``/``rollback`` clear
-    it.  It also catches bulk ``update()`` statements executed in the session.
+    collections after a flush would wrongly report a clean session.  This
+    listener records the fact durably in ``session.info`` instead.
+
+    This is one of several detectors, not the guarantee: it does not see
+    arbitrary Core/bulk UPDATE statements, so ``mark_session_uncommitted`` is
+    mandatory on the mutation path and the cache-write decision below rests on
+    a transaction-independent read rather than on this flag.
     """
     tracked = list(sync_session.new) + list(sync_session.dirty) + list(sync_session.deleted)
     if any(isinstance(obj, PersonaModelPolicySetting) for obj in tracked):
+        sync_session.info[UNCOMMITTED_SESSION_FLAG] = True
+
+
+def _flag_core_posture_statements(sync_session: SyncSession, statement, *_args, **_kwargs) -> None:
+    """Catch bulk/Core UPDATE and DELETE against the settings table.
+
+    ``before_flush`` never fires for ``session.execute(update(...))``, which is
+    exactly the shape the audited compare-and-set uses.
+    """
+    table = getattr(statement, "table", None)
+    if table is not None and table.name == PersonaModelPolicySetting.__tablename__ and not statement.is_select:
         sync_session.info[UNCOMMITTED_SESSION_FLAG] = True
 
 
@@ -133,8 +148,22 @@ def _clear_pending_posture_writes(sync_session: SyncSession) -> None:
     sync_session.info.pop(UNCOMMITTED_SESSION_FLAG, None)
 
 
+def _clear_on_real_commit(sync_session: SyncSession) -> None:
+    """Clear the marker only for a genuine outer commit.
+
+    Releasing a nested savepoint also fires ``after_commit`` in some code
+    paths; treating that as a commit would clear the marker while the outer
+    transaction is still open and let a value that can still roll back be
+    published.  Only clear when no transaction remains active.
+    """
+    transaction = sync_session.get_transaction()
+    if transaction is None or not transaction.is_active:
+        _clear_pending_posture_writes(sync_session)
+
+
 event.listen(SyncSession, "before_flush", _flag_pending_posture_writes)
-event.listen(SyncSession, "after_commit", _clear_pending_posture_writes)
+event.listen(SyncSession, "do_orm_execute", lambda state: _flag_core_posture_statements(state.session, state.statement))
+event.listen(SyncSession, "after_commit", _clear_on_real_commit)
 event.listen(SyncSession, "after_soft_rollback", lambda s, _ctx: _clear_pending_posture_writes(s))
 
 
@@ -197,28 +226,113 @@ async def read_live_posture(
         # posture the operator has already rolled back.
         _CACHE.pop(compatibility_class, None)
 
-    row = await session.scalar(
-        select(PersonaModelPolicySetting).where(
-            PersonaModelPolicySetting.compatibility_class == compatibility_class,
-        )
-    )
-    if row is None:
-        raise RuntimePostureError("runtime_posture_unavailable")
+    independent = await _read_independent_committed_posture(session, compatibility_class=compatibility_class)
+    if independent is not None:
+        # Proven committed: read on a connection outside the caller's
+        # transaction, so neither a retained identity-map row nor the caller's
+        # own pending write can be mistaken for live platform state.
+        posture, revision = independent
+        cacheable = True
+    else:
+        # No independent connection is available (a session bound to a single
+        # shared connection, as some harnesses use).  Report what the caller's
+        # transaction sees, re-reading attributes rather than trusting retained
+        # ones, and refuse to publish it if this session holds a posture write
+        # that may still roll back.
+        visible = await _read_session_visible_posture(session, compatibility_class=compatibility_class)
+        if visible is None:
+            raise RuntimePostureError("runtime_posture_unavailable")
+        posture, revision = visible
+        cacheable = not _has_uncommitted_posture_writes(session)
 
-    posture = coerce_posture(row.enforcement_posture)
-    revision = coerce_posture_revision(row.posture_revision)
     ttl = measured_cache_ttl_seconds()
     observation = LivePosture(
         compatibility_class=compatibility_class,
         posture=posture,
         posture_revision=revision,
         observed_at=current,
-        expires_at=current + timedelta(seconds=ttl),
+        expires_at=current + timedelta(seconds=ttl if cacheable else 0),
         source="live",
     )
-    # Never promote a value this session could still roll back into the shared
-    # cache: a failed or reverted audited change must not become a live
-    # decision for any later hop.
-    if ttl > 0 and not _has_uncommitted_posture_writes(session):
+    # A failed or reverted audited change must never become a live decision, and
+    # an expired entry must be replaced by genuinely fresh committed state
+    # rather than by a value carried over from before the rollback.
+    if ttl > 0 and cacheable:
         _CACHE[compatibility_class] = observation
     return observation
+
+
+def _independent_connection_source(session: AsyncSession) -> AsyncEngine | None:
+    """The session's engine, when a second connection from it is truly separate.
+
+    ``session.get_bind()`` hands back the *synchronous* engine facade, which
+    cannot be used with ``async with``; the ``AsyncEngine`` is on ``session.bind``
+    when the session came from an ``async_sessionmaker``.
+
+    Pools that hand out one shared connection (``StaticPool``,
+    ``SingletonThreadPool`` — the in-memory SQLite shapes) are rejected: a
+    "second" connection there is the *same* connection and the same transaction,
+    so reading on it would see the caller's uncommitted writes while claiming
+    they were committed.  That is the failure this function exists to avoid, so
+    it must not be papered over by a pool that silently aliases connections.
+    """
+    engine = getattr(session, "bind", None)
+    if not isinstance(engine, AsyncEngine):
+        return None
+    sync_engine = getattr(engine, "sync_engine", None)
+    if sync_engine is None or isinstance(sync_engine.pool, StaticPool | SingletonThreadPool):
+        return None
+    return engine
+
+
+async def _read_independent_committed_posture(
+    session: AsyncSession,
+    *,
+    compatibility_class: str,
+) -> tuple[RuntimePosture, int] | None:
+    """Read durably committed posture state outside the caller's transaction.
+
+    Selects columns rather than the mapped entity, so the result can never be
+    served from the caller's identity map: ``session.scalar(select(Entity))``
+    returns a retained object with its original attribute values, which is how
+    a pre-rollback posture survived past the hard staleness ceiling.
+
+    Returns ``None`` when no independent connection is available, leaving the
+    caller to fall back to an explicitly guarded session read.  The caller's
+    transaction and any savepoint it owns are never touched.
+    """
+    engine = _independent_connection_source(session)
+    if engine is None:
+        return None
+    statement = select(
+        PersonaModelPolicySetting.enforcement_posture,
+        PersonaModelPolicySetting.posture_revision,
+    ).where(PersonaModelPolicySetting.compatibility_class == compatibility_class)
+    async with engine.connect() as connection:
+        result = (await connection.execute(statement)).first()
+    if result is None:
+        # Absent in committed state.  It may still exist uncommitted in the
+        # caller's transaction; that is the caller's view, never cacheable.
+        return None
+    return (coerce_posture(result[0]), coerce_posture_revision(result[1]))
+
+
+async def _read_session_visible_posture(
+    session: AsyncSession,
+    *,
+    compatibility_class: str,
+) -> tuple[RuntimePosture, int] | None:
+    """Read what the caller's own transaction sees, refreshing stale attributes.
+
+    ``populate_existing`` is essential: without it a retained identity-map row
+    is returned with its original attribute values even though the database has
+    moved on.
+    """
+    row = await session.scalar(
+        select(PersonaModelPolicySetting)
+        .where(PersonaModelPolicySetting.compatibility_class == compatibility_class)
+        .execution_options(populate_existing=True)
+    )
+    if row is None:
+        return None
+    return (coerce_posture(row.enforcement_posture), coerce_posture_revision(row.posture_revision))

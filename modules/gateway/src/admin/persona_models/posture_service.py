@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.persona_models.catalogue import COMPATIBILITY_CLASSES
@@ -40,6 +41,7 @@ from src.agentauth.runtime_posture import (
 )
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import utcnow
+from src.shared.models.organization import User
 from src.shared.models.persona_models import PersonaModelPolicySetting
 
 logger = logging.getLogger("bedrockgateway.admin.persona_models.posture")
@@ -72,6 +74,64 @@ class PostureConflictError(PostureMutationError):
         )
         self.current_posture = current_posture
         self.current_revision = current_revision
+
+
+async def resolve_posture_actor_id(db: AsyncSession, cognito_sub: str) -> str:
+    """Resolve the authenticated admin to a canonical ``users.id``, or refuse.
+
+    Deliberately **not** :func:`src.shared.identity.resolver.resolve_canonical_user_id`,
+    whose documented contract is to "fall back to the raw ``cognito_sub`` value so
+    callers degrade gracefully rather than failing".  That contract is right for a
+    read path and wrong here.  This is the audit actor for a platform-wide
+    enforcement change: degrading means persisting a raw token subject as
+    ``updated_by`` and as the audit ``actor_id``, which is a different namespace
+    from every other actor in the table, so the one record that must attribute the
+    change to a real accountable person would instead carry an unjoinable string.
+    The same resolver module already draws this distinction explicitly — write
+    paths raise, because "persisting an unresolvable id is precisely the bug".
+
+    Three failure modes are refused, not papered over:
+
+    * **Unregistered** — a valid platform-admin token whose subject has no
+      ``users`` row.  There is nobody to attribute the change to.
+    * **Unreadable** — a failed identity read.  An unauditable change must not
+      proceed, so a database error here refuses rather than substituting the sub.
+    * **Ambiguous** — more than one match.  This is *defence in depth, not a
+      reachable state*: ``uq_users_cognito_sub`` is unique across all non-NULL
+      subs, so the database already prevents it.  The check earns its place only
+      because the invariant lives in a partial index that a partially-migrated
+      database might lack, and because the alternative — ``scalar()`` quietly
+      returning the first of several rows — would attribute a platform-wide
+      enforcement change to an arbitrarily chosen identity.  Do not read this
+      branch as a claim that duplicate subs occur in production.
+
+    A NULL ``cognito_sub`` never matches here, because the comparison is against a
+    non-empty string; such a user cannot be the authenticated caller.
+
+    Raises:
+        PostureMutationError: ``actor_identity_unresolved``; nothing is written.
+    """
+    if not isinstance(cognito_sub, str) or not cognito_sub.strip():
+        raise PostureMutationError(
+            "actor_identity_unresolved",
+            "The authenticated subject is empty; refusing to record an unattributable posture change.",
+        )
+    try:
+        matches = list(await db.scalars(select(User.id).where(User.cognito_sub == cognito_sub)))
+    except SQLAlchemyError as exc:
+        logger.warning("Identity read failed while resolving a posture actor", exc_info=True)
+        raise PostureMutationError(
+            "actor_identity_unresolved",
+            "Could not verify the acting administrator's identity; refusing to record an unattributable posture change.",
+        ) from exc
+    if len(matches) != 1 or not matches[0]:
+        # Neither branch logs the subject: it is an authentication identifier.
+        logger.warning("Refusing a posture change with %d canonical identity matches", len(matches))
+        raise PostureMutationError(
+            "actor_identity_unresolved",
+            "The acting administrator does not resolve to exactly one registered platform identity.",
+        )
+    return matches[0]
 
 
 async def get_posture_setting(

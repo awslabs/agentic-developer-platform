@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 
 
 class SetRuntimePostureRequest(BaseModel):
@@ -17,11 +18,17 @@ class SetRuntimePostureRequest(BaseModel):
     audit trail.
 
     ``expected_revision`` is mandatory: a caller that has not read the current
-    revision cannot safely change the platform's enforcement state.
+    revision cannot safely change the platform's enforcement state.  It is
+    ``StrictInt`` with ``ge=1`` rather than a plain ``int``, which is load-bearing
+    rather than stylistic: Pydantic coerces ``true`` to ``1`` and ``"1"`` to ``1``
+    for a plain ``int`` field, so a malformed body reached the service already
+    looking like a well-formed compare-and-set and the service's own
+    bool-rejecting validator never saw the boolean.  Strictness must live at the
+    boundary, where the untrusted value actually arrives.
     """
 
     posture: str = Field(description="Target posture: disabled, report_only or enforcing.")
-    expected_revision: int = Field(
+    expected_revision: Annotated[StrictInt, Field(ge=1)] = Field(
         description="The posture_revision the caller believes is current. A stale value is refused.",
     )
     reason: str | None = Field(

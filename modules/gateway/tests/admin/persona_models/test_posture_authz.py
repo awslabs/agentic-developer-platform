@@ -287,6 +287,183 @@ class TestRefusalsThroughTheRoute:
         assert [row.details["change_reason"] for row in rows] == ["staged flip", "operational rollback"]
 
 
+class TestCanonicalActorIsRequired:
+    """The audit actor must be a verified canonical identity, or the change is refused.
+
+    Operator-reproduced defect: a platform admin whose subject had no ``users``
+    row received HTTP 200 and the raw token subject was persisted as
+    ``updated_by`` and as the audit ``actor_id`` — an identifier in a different
+    namespace from every other actor in the table, so the one record whose purpose
+    is accountability for a platform-wide enforcement change was unjoinable.
+    """
+
+    async def test_unregistered_platform_admin_is_refused_and_writes_nothing(self, session, seeded):
+        """A valid admin token with no identity row cannot change enforcement."""
+        async with client_for(session, context_for("signed-admin-sub", is_admin=True)) as client:
+            response = await client.put(
+                f"/admin/persona-models/posture/{CLASS}",
+                json={"posture": "enforcing", "expected_revision": 1},
+            )
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"]["reason"] == "actor_identity_unresolved"
+        assert await _stored(session) == ("report_only", 1)
+
+    async def test_the_raw_subject_is_never_persisted(self, session, seeded):
+        """Not as updated_by, and not as an audit actor on the refusal either."""
+        async with client_for(session, context_for("signed-admin-sub", is_admin=True)) as client:
+            await client.put(
+                f"/admin/persona-models/posture/{CLASS}",
+                json={"posture": "enforcing", "expected_revision": 1},
+            )
+        row = await session.get(PersonaModelPolicySetting, CLASS)
+        assert row.updated_by != "signed-admin-sub"
+        audits = list(await session.scalars(sa.select(AuditLog)))
+        assert all(audit.actor_id != "signed-admin-sub" for audit in audits), "a raw subject reached the audit trail"
+
+    async def test_the_refusal_is_itself_audited(self, session, seeded):
+        async with client_for(session, context_for("signed-admin-sub", is_admin=True)) as client:
+            await client.put(
+                f"/admin/persona-models/posture/{CLASS}",
+                json={"posture": "enforcing", "expected_revision": 1},
+            )
+        rows = list(await session.scalars(sa.select(AuditLog).where(AuditLog.event_type == "persona_model_posture_rejected")))
+        assert len(rows) == 1
+        assert rows[0].details["reason"] == "actor_identity_unresolved"
+        assert rows[0].actor_id is None
+
+    async def test_the_database_itself_prevents_a_duplicate_subject(self, session, seeded):
+        """Why the ambiguity branch is defence in depth, recorded as a test.
+
+        A second account sharing the sub cannot be created: ``uq_users_cognito_sub``
+        is unique across all non-NULL subs.  Pinning that here keeps the service's
+        docstring honest — the multi-match branch exists for a partially-migrated
+        database, not because duplicate subs happen — and would fail loudly if the
+        constraint were ever relaxed to per-workspace uniqueness, at which point
+        the "which workspace identity acted?" question becomes real.
+        """
+        session.add(Organization(id="org-other", name="Other Corp"))
+        session.add(
+            User(
+                id="user-platform-admin-elsewhere",
+                cognito_sub=PLATFORM_ADMIN_SUB,
+                email="elsewhere@example.com",
+                org_id="org-other",
+                team_id=TEAM_ID,
+            )
+        )
+        with pytest.raises(sa.exc.IntegrityError) as err:
+            await session.commit()
+        assert "cognito_sub" in str(err.value)
+        await session.rollback()
+
+    async def test_multiple_canonical_matches_are_refused(self, session, seeded, monkeypatch):
+        """The branch itself, driven directly since the schema blocks the data."""
+        from src.admin.persona_models import posture_service
+
+        async def two_matches(_statement, *_args, **_kwargs):
+            return ["user-a", "user-b"]
+
+        monkeypatch.setattr(session, "scalars", two_matches)
+        with pytest.raises(posture_service.PostureMutationError) as err:
+            await posture_service.resolve_posture_actor_id(session, PLATFORM_ADMIN_SUB)
+        assert err.value.reason == "actor_identity_unresolved"
+
+    @pytest.mark.parametrize("blank", ["", "   ", None])
+    async def test_an_empty_subject_is_refused(self, session, seeded, blank):
+        from src.admin.persona_models import posture_service
+
+        with pytest.raises(posture_service.PostureMutationError) as err:
+            await posture_service.resolve_posture_actor_id(session, blank)
+        assert err.value.reason == "actor_identity_unresolved"
+
+    async def test_a_failed_identity_read_refuses_rather_than_substituting(self, session, seeded, monkeypatch):
+        """An unauditable change must not proceed on a degraded identity read."""
+        from src.admin.persona_models import posture_service
+
+        real_scalars = session.scalars
+
+        async def failing_scalars(statement, *args, **kwargs):
+            if "users" in str(statement).lower():
+                raise sa.exc.OperationalError("SELECT users", {}, Exception("identity store unreachable"))
+            return await real_scalars(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "scalars", failing_scalars)
+        with pytest.raises(posture_service.PostureMutationError) as err:
+            await posture_service.resolve_posture_actor_id(session, PLATFORM_ADMIN_SUB)
+        assert err.value.reason == "actor_identity_unresolved"
+
+    async def test_the_registered_admin_is_attributed_by_canonical_id(self, session, seeded):
+        """The positive case: the canonical id, not the subject, is recorded."""
+        async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+            response = await client.put(
+                f"/admin/persona-models/posture/{CLASS}",
+                json={"posture": "enforcing", "expected_revision": 1},
+            )
+        assert response.status_code == 200, response.text
+        row = await session.get(PersonaModelPolicySetting, CLASS)
+        assert row.updated_by == PLATFORM_ADMIN_ID
+        assert row.updated_by != PLATFORM_ADMIN_SUB
+        rows = list(await session.scalars(sa.select(AuditLog).where(AuditLog.event_type == "persona_model_posture_changed")))
+        assert [audit.actor_id for audit in rows] == [PLATFORM_ADMIN_ID]
+
+
+class TestExpectedRevisionIsStrictAtTheBoundary:
+    """Compare-and-set is only a guarantee if the revision survives parsing.
+
+    Operator-reproduced defect: ``expected_revision: true`` received HTTP 200 and
+    moved the setting to revision 2.  Pydantic coerced the boolean to ``1`` for a
+    plain ``int`` field, so the service's own bool-rejecting validator was handed
+    an already-laundered value and had nothing left to reject.
+    """
+
+    @pytest.mark.parametrize(
+        "bad",
+        [True, False, 1.5, "1", "", None, 0, -1, [1], {"revision": 1}],
+        ids=["true", "false", "fractional", "numeric-string", "empty-string", "null", "zero", "negative", "list", "object"],
+    )
+    async def test_a_non_positive_integer_revision_changes_nothing(self, session, seeded, bad):
+        async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+            response = await client.put(
+                f"/admin/persona-models/posture/{CLASS}",
+                json={"posture": "enforcing", "expected_revision": bad},
+            )
+        assert response.status_code == 422, f"expected_revision={bad!r} -> {response.status_code}: {response.text}"
+        assert await _stored(session) == ("report_only", 1), f"expected_revision={bad!r} changed the setting"
+
+    async def test_a_missing_revision_changes_nothing(self, session, seeded):
+        """A caller that never read the revision cannot compare-and-set."""
+        async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+            response = await client.put(f"/admin/persona-models/posture/{CLASS}", json={"posture": "enforcing"})
+        assert response.status_code == 422, response.text
+        assert await _stored(session) == ("report_only", 1)
+
+    async def test_a_valid_integer_revision_still_works(self, session, seeded):
+        """Strictness must not break the supported path."""
+        async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+            response = await client.put(
+                f"/admin/persona-models/posture/{CLASS}",
+                json={"posture": "enforcing", "expected_revision": 1},
+            )
+        assert response.status_code == 200, response.text
+        assert await _stored(session) == ("enforcing", 2)
+
+    async def test_a_stale_integer_revision_is_still_a_conflict(self, session, seeded):
+        """The boundary check must not shadow the compare-and-set refusal."""
+        async with client_for(session, context_for(PLATFORM_ADMIN_SUB, is_admin=True)) as client:
+            first = await client.put(
+                f"/admin/persona-models/posture/{CLASS}",
+                json={"posture": "enforcing", "expected_revision": 1},
+            )
+            assert first.status_code == 200, first.text
+            stale = await client.put(
+                f"/admin/persona-models/posture/{CLASS}",
+                json={"posture": "disabled", "expected_revision": 1},
+            )
+        assert stale.status_code == 409, stale.text
+        assert stale.json()["detail"]["reason"] == "posture_revision_conflict"
+        assert await _stored(session) == ("enforcing", 2)
+
+
 class TestSourceLevelGate:
     """A route added later without the gate must fail here, not in production."""
 
