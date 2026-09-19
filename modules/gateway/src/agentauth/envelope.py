@@ -108,8 +108,6 @@ _REQUIRED_CLAIMS = (
     "action",
     "command_id",
     "body_digest",
-    "grant_id",
-    "revocation_epoch",
     "iat",
     "nbf",
     "exp",
@@ -149,13 +147,12 @@ _STRING_CLAIMS = (
     "action",
     "command_id",
     "body_digest",
-    "grant_id",
     "iat",
     "nbf",
     "exp",
 )
 
-_INT_CLAIMS = ("target_generation", "revocation_epoch")
+_INT_CLAIMS = ("target_generation",)
 
 
 class EnvelopeError(Exception):
@@ -183,14 +180,15 @@ class ControlEnvelope:
     action: str
     command_id: str
     body_digest: str
-    grant_id: str
-    revocation_epoch: int
+    grant_id: str | None
+    revocation_epoch: int | None
     key_id: str
     issued_at: datetime
     not_before: datetime
     expires_at: datetime
     flow_id: str | None = None
     authority_reference_id: str | None = None
+    authority_kind: str = "delegated_grant"
 
 
 def _b64e(raw: bytes) -> str:
@@ -230,8 +228,9 @@ def sign_envelope(
     action: str,
     command_id: str,
     request_body: bytes,
-    grant_id: str,
-    revocation_epoch: int,
+    grant_id: str | None = None,
+    revocation_epoch: int | None = None,
+    authority_kind: str = "delegated_grant",
     flow_id: str | None = None,
     authority_reference_id: str | None = None,
     ttl_seconds: int = MAX_ENVELOPE_TTL_SECONDS,
@@ -244,6 +243,14 @@ def sign_envelope(
     different image, and the signing key is delivered only to the gateway. That
     separation is the whole security property — see the module docstring.
     """
+    if authority_kind == "human_session":
+        if grant_id is not None or revocation_epoch is not None or authority_reference_id is not None:
+            raise EnvelopeError("human authority cannot carry delegated claims")
+    elif authority_kind == "delegated_grant":
+        if not isinstance(grant_id, str) or not grant_id or type(revocation_epoch) is not int or revocation_epoch < 1:
+            raise EnvelopeError("delegated authority requires a grant and revocation epoch")
+    else:
+        raise EnvelopeError("unknown authority kind")
     source = env if env is not None else os.environ
     key_id = source.get(SIGNING_KEY_ID_ENV, "")
     if not key_id:
@@ -265,12 +272,14 @@ def sign_envelope(
         "action": action,
         "command_id": command_id,
         "body_digest": body_digest(request_body),
-        "grant_id": grant_id,
-        "revocation_epoch": int(revocation_epoch),
+        "authority_kind": authority_kind,
         "iat": _iso(issued),
         "nbf": _iso(issued),
         "exp": _iso(issued + timedelta(seconds=ttl)),
     }
+    if authority_kind == "delegated_grant":
+        payload["grant_id"] = grant_id
+        payload["revocation_epoch"] = revocation_epoch
     if flow_id:
         payload["flow_id"] = flow_id
     if authority_reference_id:
@@ -337,6 +346,20 @@ def verify_envelope(
         if isinstance(value, bool) or not isinstance(value, int):
             raise EnvelopeError("invalid envelope")
 
+    # Missing kind is the original delegated wire format, never human authority.
+    # The kind and conditional claims are covered by the signature below.
+    authority_kind = payload.get("authority_kind", "delegated_grant")
+    if authority_kind == "human_session":
+        if any(claim in payload for claim in ("grant_id", "revocation_epoch", "authority_reference_id")):
+            raise EnvelopeError("invalid envelope")
+    elif authority_kind == "delegated_grant":
+        if not isinstance(payload.get("grant_id"), str) or not payload["grant_id"]:
+            raise EnvelopeError("invalid envelope")
+        if type(payload.get("revocation_epoch")) is not int or payload["revocation_epoch"] < 1:
+            raise EnvelopeError("invalid envelope")
+    else:
+        raise EnvelopeError("invalid envelope")
+
     # Algorithm and key selection happen BEFORE signature verification, and the
     # algorithm is checked against the allowlist rather than used to dispatch.
     if payload["alg"] not in ALLOWED_ALGORITHMS:
@@ -371,9 +394,7 @@ def verify_envelope(
     if payload["body_digest"] != body_digest(request_body):
         raise EnvelopeError("envelope body mismatch")
 
-    epoch = payload["revocation_epoch"]
-    if epoch < 1:
-        raise EnvelopeError("invalid envelope")
+    epoch = payload.get("revocation_epoch")
 
     issued = _parse_iso(payload["iat"])
     not_before = _parse_iso(payload["nbf"])
@@ -400,7 +421,7 @@ def verify_envelope(
         action=payload["action"],
         command_id=payload["command_id"],
         body_digest=payload["body_digest"],
-        grant_id=payload["grant_id"],
+        grant_id=payload.get("grant_id"),
         revocation_epoch=epoch,
         key_id=key_id,
         issued_at=issued,
@@ -408,6 +429,7 @@ def verify_envelope(
         expires_at=expires,
         flow_id=str(flow_id) if flow_id else None,
         authority_reference_id=str(authority_ref) if authority_ref else None,
+        authority_kind=authority_kind,
     )
 
 

@@ -70,13 +70,9 @@ from src.agentauth.run_credential import CredentialError, RunCredential, verify_
 
 logger = logging.getLogger("bedrockgateway.agentauth.policy")
 
-# Verbs whose behaviour actually exists in this deployment. Empty, matching
-# ``control_service.SUPPORTED_ACTIONS``: this story delivers authorization, not
-# control behaviour, and each verb joins this set when its own story ships. The
-# two sets are checked against each other by a parity test rather than merged,
-# because the gateway's *human* control path and this *agent* path are allowed
-# to enable verbs on different schedules.
-SUPPORTED_AGENT_ACTIONS: frozenset[AgentAction] = frozenset({AgentAction.MONITOR})
+# Live controls with a signed forwarding and pre-delivery revalidation path.
+# This set stays in lockstep with the human service and worker runtime (#5222).
+SUPPORTED_AGENT_ACTIONS: frozenset[AgentAction] = frozenset({AgentAction.MONITOR, AgentAction.PAUSE, AgentAction.RESUME})
 
 # Status codes this policy produces. Named so the adapters cannot drift.
 REFUSED_STATUS = 404

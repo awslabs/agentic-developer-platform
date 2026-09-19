@@ -61,6 +61,7 @@ import httpx
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from src.activity.control_schemas import (
     MAX_REQUEST_BYTES,
@@ -68,6 +69,7 @@ from src.activity.control_schemas import (
     ControlAction,
     ControlCapabilities,
     ControlCommandRequest,
+    ControlCommandResponse,
     ControlPingResponse,
     ControlState,
     ControlStateResponse,
@@ -77,39 +79,11 @@ from src.activity.liveness import OBSERVED_TERMINAL_STATUSES
 
 logger = logging.getLogger("bedrockgateway.activity.control")
 
-# Verbs this deployment can actually perform. Started empty in S1 by design: the
-# routing, authorization and transport foundation ships first, and each later
-# story adds its verb here once its behaviour is proven. An authorized request for
-# a verb absent from this set is a 501, and `capabilities` reports it false — so
-# the dashboard never renders a control whose handler cannot honour it.
-#
-# Still EMPTY after S2 (#3961), deliberately. S2 built the worker-side pause
-# barrier and it meets its contract, but a verb enters this set only when the
-# *human dashboard path* can actually perform it end to end, and today it cannot:
-# enabling a verb makes the worker listener demand a gateway-signed authorization
-# envelope (#5028's `requiresEnvelope` coupling), and this path mints none — a
-# logged-in operator has no grant to derive one from. Three further gaps sit
-# behind that one (the pre-delivery revalidation refuses pause via
-# `SUPPORTED_AGENT_ACTIONS`; envelope keys are unprovisioned unless
-# `agent_authority_enabled`; and no verb-enabling evaluation artifact exists).
-#
-# Flipping this flag anyway would report `capabilities.pause=true` to the browser
-# while `command_invocation_agent` still answers 501 — precisely what
-# `ControlCapabilities` forbids: "a capability that defaulted true would advertise
-# a button whose handler returns 501, and an operator who believes a run is
-# pausing stops watching it."
-#
-# See `docs/design-notes/3961-control-authorization-intersection.md` for the
-# evidence and the proposed `human_session` authority kind that would unblock it.
-#
-# This list and the worker's `IMPLEMENTED_CONTROL_VERBS` are deliberately
-# independent, and each story owns BOTH. Widening only one side is a shipped bug
-# in one of two directions: a verb the dashboard offers and the worker rejects, or
-# a working worker verb the gateway answers 501 for. `agent-control-ci.yml` asserts
-# the two sets agree, so the pair cannot drift silently.
-#
-# `steer`/`abort` stay out until S6/S4 land their own runtime proofs.
-SUPPORTED_ACTIONS: frozenset[str] = frozenset()
+# #3961 provides the pause barrier; #5222 signs human commands and revalidates
+# ownership before delivery. Keep this set synchronized with policy, worker and
+# CI. Per-run adapter capability and deployed signing configuration can still
+# veto either verb. Steer and abort remain unavailable.
+SUPPORTED_ACTIONS: frozenset[str] = frozenset({"pause", "resume"})
 
 # Feature flag. Read strictly (explicit "true" only) and read *independently* of
 # the worker's own flag: a gateway that could activate worker capabilities by
@@ -430,10 +404,12 @@ class ControlService:
         http_client: httpx.AsyncClient | None = None,
         now: Callable[[], datetime] | None = None,
         env: dict[str, str] | None = None,
+        authority_store=None,
     ) -> None:
         self._env = env
         self._now = now or (lambda: datetime.now(UTC))
         self._http_client = http_client
+        self._authority_store = authority_store
         if table is not None:
             self._table = table
         else:
@@ -518,6 +494,19 @@ class ControlService:
         if not _is_flag_enabled(self._env):
             raise ControlError(503, "live run control is not enabled in this deployment")
 
+    def authorization_ready(self) -> bool:
+        """Do not advertise controls when signing/bootstrap is unconfigured."""
+        from src.agentauth.envelope import SIGNING_KEY_ID_ENV, EnvelopeError, _signing_key
+
+        config = os.environ if self._env is None else self._env
+        if config.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true" or not config.get("AGENT_AUTHORITY_TABLE"):
+            return False
+        try:
+            _signing_key(self._env)
+            return bool(config.get(SIGNING_KEY_ID_ENV))
+        except EnvelopeError:
+            return False
+
     def token_is_live(self, target: ControlTarget) -> bool:
         """Whether the registered token is still within its recorded expiry.
 
@@ -560,6 +549,8 @@ class ControlService:
         path: str,
         *,
         json_body: dict | None = None,
+        raw_body: bytes | None = None,
+        authorization_envelope: str | None = None,
     ) -> httpx.Response:
         """Make one authenticated request to the worker's control listener.
 
@@ -591,11 +582,125 @@ class ControlService:
             "X-Adp-Control-Generation": str(target.generation or 0),
         }
         timeout = httpx.Timeout(_READ_TIMEOUT_SECONDS, connect=_CONNECT_TIMEOUT_SECONDS)
+        if method != "GET" and authorization_envelope is None:
+            raise ControlError(404, "run not found")
+        if authorization_envelope is not None:
+            headers["X-Adp-Control-Authorization"] = authorization_envelope
+        body_args = {"json": json_body}
+        if raw_body is not None:
+            headers["Content-Type"] = "application/json"
+            body_args = {"content": raw_body}
 
         if self._http_client is not None:
-            return await self._http_client.request(method, url, json=json_body, headers=headers, timeout=timeout, follow_redirects=False)
+            return await self._http_client.request(method, url, **body_args, headers=headers, timeout=timeout, follow_redirects=False)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-            return await client.request(method, url, json=json_body, headers=headers)
+            return await client.request(method, url, **body_args, headers=headers)
+
+    async def command(self, run_id: str, action: ControlAction, *, request_body: bytes, session) -> tuple[ControlCommandResponse, int]:
+        """Forward one human command with its exact signed bytes and target."""
+        from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore
+        from src.agentauth.envelope import EnvelopeError, sign_envelope
+        from src.agentauth.human_control import require_protected_human_owner
+        from src.agentauth.store import AuthorityStoreError
+
+        command_id = validate_command_body(action, request_body)
+        target = await run_in_threadpool(self.authorize_command, run_id, action, user_id=session.user_id, tenant_id=session.tenant_id)
+        config = os.environ if self._env is None else self._env
+        try:
+            if self._authority_store is None:
+                table_name = config.get("AGENT_AUTHORITY_TABLE")
+                if config.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true" or not table_name:
+                    raise ControlError(503, "live control authorization is unavailable")
+                import boto3
+
+                self._authority_store = BootstrapStore(
+                    table_name=table_name, dynamodb_client=boto3.client("dynamodb", region_name=config.get("AWS_REGION", "us-east-1"))
+                )
+            await run_in_threadpool(
+                require_protected_human_owner,
+                self._authority_store,
+                user_id=session.user_id,
+                tenant_id=session.tenant_id,
+                run_id=run_id,
+                generation=target.generation,
+                now=self._now(),
+            )
+            now = self._now()
+            ttl = int((session.expires_at - now).total_seconds())
+            if ttl < 1:
+                raise ControlError(404, "run not found")
+            envelope = sign_envelope(
+                tenant_id=session.tenant_id,
+                principal=session.user_id,
+                authority_kind="human_session",
+                target_run_id=run_id,
+                target_generation=target.generation,
+                action=action,
+                command_id=command_id,
+                request_body=request_body,
+                ttl_seconds=ttl,
+                now=now,
+                env=self._env,
+            )
+        except (BootstrapRefusedError, EnvelopeError, AuthorityStoreError):
+            raise ControlError(404, "run not found") from None
+        return await self.forward_command(target, action, request_body=request_body, envelope=envelope)
+
+    async def forward_command(self, target: ControlTarget, action: ControlAction, *, request_body: bytes, envelope: str):
+        """Shared signed transport; callers must authorize the exact target first."""
+        run_id = target.run_id
+        command_id = validate_command_body(action, request_body)
+        try:
+            response = await self._request_pod(target, "POST", f"/agent/{action}", raw_body=request_body, authorization_envelope=envelope)
+        except httpx.HTTPError:
+            raise ControlError(502, "control listener unreachable; command outcome is unknown") from None
+        status = self.status_for_pod_outcome(response)
+        if status not in (200, 202):
+            raise ControlError(status, "control listener refused the command")
+        try:
+            payload = response.json()
+            command = payload["command"]
+            if command["command_id"] != command_id or command["action"] != action:
+                raise ValueError
+            result = ControlCommandResponse(
+                run_id=run_id, action=action, state=payload["state"], command_id=command_id, command_status=command["status"]
+            )
+        except (ValueError, KeyError, TypeError):
+            raise ControlError(502, "control listener returned an invalid acknowledgement") from None
+        return result, status
+
+    async def command_for_agent(self, prepared, *, request_body: bytes):
+        """Use the delegated policy's target without fabricating human ownership."""
+        facts = prepared.authorized.target
+        tenant_id = prepared.authorized.credential.tenant_id
+        if self._authority_store is None or prepared.envelope is None:
+            raise ControlError(404, "run not found")
+        record = await run_in_threadpool(self._authority_store.authority.load_execution, invocation_id=facts.run_id, tenant_id=tenant_id)
+        if record is None or not record.arrived_at:
+            raise ControlError(404, "run not found")
+        response = await run_in_threadpool(self._table.get_item, Key={"event_id": facts.run_id, "arrived_at": record.arrived_at}, ConsistentRead=True)
+        row = response.get("Item") or {}
+        if row.get("tenant_id") != tenant_id or _optional_int(row.get("control_generation")) != facts.generation:
+            raise ControlError(404, "run not found")
+        target = ControlTarget(
+            run_id=facts.run_id,
+            arrived_at=record.arrived_at,
+            status=str(row.get("status", "")),
+            address=_optional_str(row.get("control_address")),
+            port=_optional_int(row.get("control_port")),
+            token=_optional_str(row.get("control_token")),
+            generation=facts.generation,
+            token_expires_at=_optional_str(row.get("control_token_expires_at")),
+        )
+        self.require_enabled()
+        if target.is_terminal:
+            raise ControlError(410, "run has already finished; the command was not applied")
+        if prepared.authorized.action.value not in SUPPORTED_ACTIONS:
+            raise ControlError(501, "control verb is not implemented")
+        reason = self.unavailable_reason(target)
+        if reason is not None:
+            raise ControlError(409, reason)
+        return await self.forward_command(target, prepared.authorized.action.value, request_body=request_body, envelope=prepared.envelope)
 
     # -- operations -------------------------------------------------------
 
@@ -731,11 +836,12 @@ class ControlService:
 
         raw_caps = payload.get("capabilities")
         raw_caps = raw_caps if isinstance(raw_caps, dict) else {}
+        authorization_ready = self.authorization_ready()
         capabilities = ControlCapabilities(
-            pause=bool(raw_caps.get("pause")) and "pause" in SUPPORTED_ACTIONS,
-            resume=bool(raw_caps.get("resume")) and "resume" in SUPPORTED_ACTIONS,
-            steer=bool(raw_caps.get("steer")) and "steer" in SUPPORTED_ACTIONS,
-            abort=bool(raw_caps.get("abort")) and "abort" in SUPPORTED_ACTIONS,
+            pause=authorization_ready and bool(raw_caps.get("pause")) and "pause" in SUPPORTED_ACTIONS,
+            resume=authorization_ready and bool(raw_caps.get("resume")) and "resume" in SUPPORTED_ACTIONS,
+            steer=authorization_ready and bool(raw_caps.get("steer")) and "steer" in SUPPORTED_ACTIONS,
+            abort=authorization_ready and bool(raw_caps.get("abort")) and "abort" in SUPPORTED_ACTIONS,
         )
 
         state = payload.get("state")
@@ -776,7 +882,7 @@ class ControlService:
             run_id=run_id,
             generation=target.generation,
             available=True,
-            reason=None,
+            reason=None if authorization_ready else "live control authorization is unavailable",
             capabilities=capabilities,
             state=resolved_state,
             active_tool_count=active_tool_count,

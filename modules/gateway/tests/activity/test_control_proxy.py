@@ -51,10 +51,12 @@ from src.activity.control_service import (
 )
 from src.activity.routes import get_control_service
 from src.activity.routes import router as activity_router
+from src.agentauth.envelope import SIGNING_KEY_ENV, SIGNING_KEY_ID_ENV
 from src.auth.dependencies import get_current_user
 from src.orchestration.controls import get_run_control_service
 from src.orchestration.controls import router as orchestration_router
 from src.shared.database import get_db
+from tests.agentauth.test_envelope import _keypair
 
 CANONICAL_USER_ID = "canonical-abc-999"
 TENANT_ID = "org-tenant-001"
@@ -66,6 +68,10 @@ TOKEN = "pod-minted-control-token-value"
 # A CIDR set that contains POD_IP. Passed explicitly everywhere rather than left
 # to the ambient environment, so no test depends on a deployment's config.
 ENV = {
+    "AGENT_AUTHORITY_ENABLED": "true",
+    "AGENT_AUTHORITY_TABLE": "test-authority",
+    SIGNING_KEY_ENV: _keypair()[0],
+    SIGNING_KEY_ID_ENV: "test-control-key",
     "FEATURE_AGENT_CONTROL_ENABLED": "true",
     "AGENT_CONTROL_CLUSTER_POD_CIDRS": "10.42.0.0/16",
     "AGENT_CONTROL_PORT": str(CONTROL_PORT),
@@ -161,11 +167,14 @@ def make_service(
         )
         client.request = AsyncMock(return_value=response)
 
+    authority = MagicMock()
+    authority.authority.load_execution.return_value = None
     return ControlService(
         table=table if table is not None else make_table(items),
         http_client=client,
         env=env if env is not None else ENV,
         now=lambda: datetime(2026, 9, 12, 12, 0, tzinfo=UTC),
+        authority_store=authority,
     )
 
 
@@ -290,13 +299,13 @@ class TestUnauthenticated:
 # ===========================================================================
 
 
-class TestNoVerbIsSupported:
-    def test_supported_actions_is_empty(self):
+class TestSupportedVerbBoundary:
+    def test_supported_actions_are_pause_and_resume(self):
         """The single switch that makes every verb a 501 and every capability false."""
-        assert SUPPORTED_ACTIONS == frozenset()
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})
 
     @BOTH_ADAPTERS
-    @pytest.mark.parametrize("action", ALL_ACTIONS)
+    @pytest.mark.parametrize("action", ["steer", "abort"])
     def test_authorized_verb_returns_501(self, action, orchestration, regular_user, mock_db):
         client = build_client(make_service(items=[row()]), regular_user, mock_db, orchestration=orchestration)
 
@@ -316,19 +325,22 @@ class TestNoVerbIsSupported:
         service._http_client.request.assert_not_awaited()
 
     @BOTH_ADAPTERS
-    def test_all_four_verbs_are_routed_by_both_adapters(self, orchestration, regular_user, mock_db):
+    def test_all_four_verbs_are_routed_by_both_adapters(self, orchestration, regular_user, mock_db, monkeypatch):
         """Neither adapter may offer a different verb set than the other.
 
         The orchestration seam originally lacked ``resume``; two adapters with
         different verb sets is how one of them ends up with a weaker gate.
         """
+        # Disable the verbs explicitly to isolate route existence from the live
+        # authorization store's legitimate opaque 404 refusal.
+        monkeypatch.setattr("src.activity.control_service.SUPPORTED_ACTIONS", frozenset())
         client = build_client(make_service(items=[row()]), regular_user, mock_db, orchestration=orchestration)
 
         for action in ALL_ACTIONS:
             response = client.post(command_path(action, orchestration), json=valid_body(action))
             assert response.status_code != 404, f"{action} is not routed"
 
-    def test_capabilities_are_false_even_when_the_pod_claims_otherwise(self):
+    def test_only_implemented_capabilities_survive_the_pod_claim(self):
         """A compromised or newer worker must not produce a button the gateway 501s.
 
         The gateway intersects the pod's claim with its own SUPPORTED_ACTIONS, so
@@ -345,8 +357,8 @@ class TestNoVerbIsSupported:
 
         state = _run(service.get_state(RUN_ID, user_id=CANONICAL_USER_ID, tenant_id=TENANT_ID))
 
-        assert state.capabilities.pause is False
-        assert state.capabilities.resume is False
+        assert state.capabilities.pause is True
+        assert state.capabilities.resume is True
         assert state.capabilities.steer is False
         assert state.capabilities.abort is False
 

@@ -192,18 +192,25 @@ class AgentRuntime:
         pod, _, _, _ = context or self.authenticate(credential_token, workload_token)
         return self.adapter.status(credential_token=credential_token, target_run_id=run_id, presented_workload_binding=pod.uid).to_public_dict()
 
-    def control(self, run_id: str, action: AgentAction, body: bytes, credential_token: str, workload_token: str, *, context=None) -> None:
+    async def control(self, run_id: str, action: AgentAction, body: bytes, credential_token: str, workload_token: str, *, context=None):
+        from src.activity.control_service import ControlError, ControlService
+
         pod, _, _, _ = context or self.authenticate(credential_token, workload_token)
-        self.adapter.prepare_command(
+        prepared = await run_in_threadpool(
+            self.adapter.prepare_command,
             credential_token=credential_token,
             target_run_id=run_id,
             action=action,
             request_body=body,
             presented_workload_binding=pod.uid,
         )
-        # This runtime ships no command implementation. Enabling a policy verb
-        # alone must never return success without actually forwarding its effect.
-        raise PolicyError(501, f"{action.value} is not implemented in this deployment")
+        config = os.environ if self.env is None else self.env
+        service = ControlService(table_name=config.get("WEBHOOK_EVENTS_TABLE"), env=self.env, authority_store=self.store)
+        try:
+            result, status = await service.command_for_agent(prepared, request_body=body)
+            return JSONResponse(result.model_dump(), status_code=status, headers={"Cache-Control": "no-store"})
+        except ControlError as exc:
+            raise PolicyError(exc.status_code, exc.detail) from None
 
     def bootstrap(self, body: BootstrapRequest, token: str) -> dict:
         pod = self.workloads.verify(token)
@@ -294,6 +301,9 @@ async def _agent_call(request: Request, runtime: AgentRuntime, method, *args) ->
             result = await method(*call_args, context=context)
         else:
             result = await run_in_threadpool(method, *call_args, context=context)
+        if isinstance(result, JSONResponse):
+            audit("allowed", result.status_code)
+            return result
         audit("allowed", 202 if isinstance(args[0], DispatchRequest) else 200)
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
     except (BootstrapRefusedError, WorkloadRefusedError, CredentialError, ExecutionStateError):

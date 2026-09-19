@@ -257,14 +257,8 @@ describe('adapter identity and capabilities', () => {
     await adapter.dispose();
   });
 
-  it('ships with no verb in the ADP set, so nothing is advertised end to end', () => {
-    // S2 built the barrier but does not enable the verb: the human control path
-    // cannot yet authorize a pause to the worker, and an unproven capability must
-    // not be advertised. See the design note referenced on PAUSE_AND_RESUME.
-    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual([]);
-    // Two independent reasons a run advertises nothing, so neither alone is load
-    // bearing: the empty ADP set above, and — even with the verb injected — a
-    // gateless adapter that has no barrier to hold a tool at.
+  it('still advertises nothing without a barrier even when ADP enables pause and resume', () => {
+    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual(['pause', 'resume']);
     expect(Object.values(new ClaudeControlAdapter().capabilities())).toEqual([false, false, false, false]);
     expect(
       Object.values(new ClaudeControlAdapter({ implementedVerbs: PAUSE_AND_RESUME }).capabilities()),

@@ -244,7 +244,7 @@ jobs:
             test_adapter.py test_envelope.py test_envelope_vectors.py \
             test_execution.py test_grants.py test_policy.py \
             test_run_credential.py test_store.py test_store_lifecycle.py \
-            test_store_reservations.py test_wave_dispatch.py test_revalidation.py; do
+            test_store_reservations.py test_wave_dispatch.py test_revalidation.py test_human_control.py; do
             test -f "tests/agentauth/$suite" || exit 1
           done
           pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py -v --tb=short --timeout=120
@@ -264,15 +264,16 @@ jobs:
         # nothing at all. Verified locally: the dotted form reports 100% line and
         # branch on both modules; the path form reports 0.00%.
         run: |
-          pytest tests/activity/test_control_proxy.py \
+          pytest tests/activity/test_control_proxy.py tests/agentauth/test_human_control.py \
             --cov=src.activity.control_service \
             --cov=src.activity.control_schemas \
+            --cov=src.agentauth.human_control \
             --cov-branch \
             --cov-report=term-missing \
             --cov-fail-under=85 \
             --timeout=120
 
-      - name: Assert no control verb is advertised as supported
+      - name: Assert only implemented control verbs are advertised
         working-directory: modules/gateway
         # The story's central invariant, asserted outside the test suite too. A
         # verb added to SUPPORTED_ACTIONS without its transport would make every
@@ -283,7 +284,7 @@ jobs:
         # empty". S2/S4/S6 each deliver one verb, and against the old form their
         # only way forward was to delete the guard — which is how a gate that
         # cannot express "three of four" dies. It now compares against an explicit
-        # expected set (still empty at this stage: all four verbs unsupported) and
+        # expected set (pause/resume at this stage) and
         # additionally pins the verb universe, so adding a fifth verb without
         # updating this list fails here rather than passing unexamined.
         env:
@@ -308,18 +309,9 @@ jobs:
           # without a deliberate edit to this gate.
           ALL_VERBS = {"pause", "resume", "steer", "abort"}
 
-          # Verbs with a proven runtime boundary as of this stage. S3 delivers the
-          # adapter contract and the Claude transport, NOT a verb: pause without
-          # proven tool quiescence would let the dashboard claim "Paused" while a
-          # Bash call is still writing to the repository.
-          #
-          # Still empty after S2 (#3961). S2 built and unit-proved the pause
-          # barrier, but end-to-end pause on the dashboard path is blocked on the
-          # control-authorization intersection — see
-          # docs/design-notes/3961-control-authorization-intersection.md. A verb
-          # joins this set only in the change that demonstrates it end to end, so
-          # this gate is what keeps "built" from being read as "shippable".
-          EXPECTED_SUPPORTED: set[str] = set()
+          # Pause/resume: #3961 admission barrier plus #5222 signed human path.
+          # Keep both language gates, gateway and worker in lockstep.
+          EXPECTED_SUPPORTED: set[str] = {"pause", "resume"}
 
           # Guard the guard: `frozenset()` and "the name vanished" are both falsy in
           # a truthiness check, so a refactor that drops the constant could report
@@ -472,12 +464,9 @@ jobs:
           } from './src/control-runtime';
 
           const ALL_VERBS = ['pause', 'resume', 'steer', 'abort'] as const;
-          // Verbs with a proven runtime boundary at this stage. Empty in S3, and
-          // still empty after S2 (#3961): the barrier is built and unit-proven but
-          // the dashboard path is blocked on the control-authorization
-          // intersection (docs/design-notes/3961-control-authorization-intersection.md).
+          // #3961 pause barrier plus the #5222 signed human command path.
           // Must stay in lockstep with the Python gate's EXPECTED_SUPPORTED above.
-          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>();
+          const EXPECTED_SUPPORTED: ReadonlySet<string> = new Set<string>(['pause', 'resume']);
 
           const fail = (msg: string): never => {
             console.error(msg);

@@ -331,10 +331,10 @@ def test_connected_status_rechecks_revocation_on_each_request(store, connected_h
     assert client.get("/internal/v1/agent/status?run=run-b", headers=headers).status_code == 404
 
 
-def test_connected_control_authorized_unsupported_returns_501(connected_http):
+def test_connected_control_without_signing_key_fails_closed(connected_http):
     client, headers, _ = connected_http
     response = client.post("/internal/v1/agent/control/run-b/pause", json={"command_id": "same-command"}, headers=headers)
-    assert response.status_code == 501
+    assert response.status_code == 404
     assert client.post("/internal/v1/agent/control/unrelated/pause", json={"command_id": "same-command"}, headers=headers).status_code == 404
     assert client.post("/internal/v1/agent/control/run-b/abort", json={"command_id": "same-command"}, headers=headers).status_code == 404
 

@@ -1,5 +1,51 @@
 # #3961 — The control-authorization intersection: two callers, one gate
 
+## Implementation update — #5222, 2026-09-19
+
+The signed envelope now distinguishes `human_session` from `delegated_grant`.
+Existing envelopes without `authority_kind` retain the delegated format and
+must still contain a grant ID and positive revocation epoch. Human envelopes
+must omit grant, epoch and delegated authority-reference claims. Both verifiers
+consume the same signed positive and negative test vectors.
+
+The human Activity and orchestration routes require a current JWT human session,
+resolve its canonical user within the authenticated tenant, and read active
+membership from SQL. Before signing, the control service checks the target's
+active execution, owning human and registration generation in the protected
+store. Worker-writable attribution is insufficient. The signed lifetime is at
+most 30 seconds and cannot outlive the user's authenticated session. Before
+execution, the worker's existing revalidation endpoint checks current ownership
+and membership again. Removing membership after acceptance rejects the queued
+command. No human credential is sent to the worker.
+
+Both human routes now forward the exact signed bytes through the existing
+validated pod transport. The delegated route uses the same transport after its
+existing grant authorization; it retains grant/epoch/flow revocation checks.
+Neither path reports success merely because authorization succeeded. Public
+acknowledgements project the expected command and state fields, preserving
+200 versus 202 and returning an unknown outcome on transport failure.
+
+Pause/resume are included together in the gateway, delegated-policy, worker and
+CI implementation sets. An absent adapter barrier or unavailable attempt still
+vetoes support. The gateway also withholds advertised controls when authority or
+signing configuration is missing. Steer and abort remain unavailable.
+
+**Deployment decision:** keep `agent_authority_enabled` default **false**. Pause
+requires the existing protected bootstrap and signing configuration; do not
+bypass that requirement or enable broad authority merely to distribute keys.
+Verify the approved worker digest, gateway signing key and worker verification
+keys through the scoped rollout, retaining #5195/#5210 release and isolation
+gates. This change makes no Terraform/IAM apply and flips no live feature flag.
+The rollback is to disable the control feature, then revert the implementation
+sets together; preserve queued command and invocation history.
+
+The owner selected **Option A**: #3961 remains open until this authorization
+integration and deployed live acceptance are complete. The implementation and
+standalone SDK fixtures do not establish #3968 or Q3 acceptance. The analysis
+below records the original gap and alternatives; this update supersedes its
+statements that human signing and command forwarding are unimplemented.
+
+
 **Status:** blocker found during #3961 implementation. The pause barrier itself is
 built and proven; **end-to-end pause on the human dashboard path cannot work**
 until this is resolved. Filed as the ADR-1 change proposal the story's stop
