@@ -11,7 +11,8 @@
  * 1. No *new* tool work can start — admission is closed, and anything arriving
  *    afterwards is parked before it runs.
  * 2. Every *already admitted* tool has reached a safe boundary, and no untracked
- *    background work remains behind it.
+ *    background work remains behind it. Output consumers also hold admission
+ *    until they finish processing, so a yielded message cannot cross confirmation.
  *
  * Anything short of both is `requested` or `unavailable` **with a reason**. That
  * asymmetry is the whole design: a false `requested` costs an operator some
@@ -56,6 +57,9 @@
 /** Neutral admission decision returned to whatever calls the barrier. */
 export type AdmissionDecision = 'admit' | 'deny';
 
+/** Held until the output consumer finishes, including terminal teardown. */
+export interface OutputAdmission { release(): void; }
+
 /**
  * A granted admission, returned so the caller can report the tool's completion.
  *
@@ -90,6 +94,7 @@ export type PauseGateFailure =
 
 export type PauseGateEvent =
   | { type: 'pause_requested' }
+  | { type: 'pause_waiting'; reason: string }
   | { type: 'pause_confirmed' }
   | { type: 'pause_released'; expired: boolean }
   | { type: 'pause_unavailable'; failure: PauseGateFailure; reason: string }
@@ -177,6 +182,7 @@ export class PauseGate {
   private readonly inFlight = new Map<number, AdmissionTicket>();
   private readonly parked = new Set<ParkedAdmission>();
   private readonly outputWaiters = new Set<() => void>();
+  private outputsInFlight = 0;
   private ticketSeq = 0;
 
   /** Resolvers waiting for in-flight work to reach zero. */
@@ -339,12 +345,28 @@ export class PauseGate {
     });
   }
 
-  /** Hold task output and terminal teardown without counting them as tools. */
-  async waitForOutput(): Promise<boolean> {
-    while (this.isPauseActive()) {
-      await new Promise<void>((resolve) => this.outputWaiters.add(resolve));
+  /** Admit output in the pause epoch and retain it until the consumer settles. */
+  async waitForOutput(): Promise<OutputAdmission | false> {
+    while (true) {
+      const admission = await this.serialize(async () => {
+        if (this.phase === 'cancelled') return { result: false as const };
+        if (this.isPauseActive()) {
+          // Register under the same lock as the phase check; resume cannot wake
+          // between the check and registration and leave this waiter stranded.
+          return { waiting: new Promise<void>(resolve => this.outputWaiters.add(resolve)) };
+        }
+        this.outputsInFlight += 1;
+        let released = false;
+        return { result: { release: () => {
+          if (released) return;
+          released = true;
+          this.outputsInFlight -= 1;
+          this.notifyQuiescence();
+        } } };
+      });
+      if ('result' in admission) return admission.result!;
+      await admission.waiting;
     }
-    return this.phase !== 'cancelled';
   }
 
   private wakeOutput(): void {
@@ -363,7 +385,15 @@ export class PauseGate {
     if (!ticket || !this.inFlight.has(ticket.id)) return;
     this.inFlight.delete(ticket.id);
     this.onEvent({ type: 'active_work', count: this.inFlight.size });
-    if (this.inFlight.size === 0) {
+    this.notifyQuiescence();
+  }
+
+  private isQuiescent(): boolean {
+    return this.inFlight.size === 0 && this.outputsInFlight === 0;
+  }
+
+  private notifyQuiescence(): void {
+    if (this.isQuiescent()) {
       const waiters = [...this.quiescenceWaiters];
       this.quiescenceWaiters.clear();
       for (const waiter of waiters) waiter();
@@ -412,7 +442,7 @@ export class PauseGate {
     await this.serialize(async () => {
       if (this.pauseEpoch !== epoch) return;
       if (this.phase !== 'pause_requested') return;
-      if (this.inFlight.size !== 0) return;
+      if (!this.isQuiescent()) return;
       this.confirmIfClear();
     });
   }
@@ -429,10 +459,14 @@ export class PauseGate {
   private confirmIfClear(): string | null {
     const background = this.backgroundWorkProbe();
     if (background === null) {
-      return 'background work behind completed tools is not observable';
+      const reason = 'background work behind completed tools is not observable';
+      this.onEvent({ type: 'pause_waiting', reason });
+      return reason;
     }
     if (background > 0) {
-      return `${background} background task(s) still running`;
+      const reason = `${background} background task(s) still running`;
+      this.onEvent({ type: 'pause_waiting', reason });
+      return reason;
     }
     this.phase = 'paused';
     this.onEvent({ type: 'pause_confirmed' });
@@ -531,7 +565,9 @@ export class PauseGate {
       // state resolves itself rather than waiting for another command.
       return {
         outcome: 'requested',
-        reason: `still waiting for ${this.inFlight.size} admitted tool(s) to finish`,
+        reason: this.outputsInFlight
+          ? `still waiting for ${this.inFlight.size} admitted tool(s) and ${this.outputsInFlight} admitted output(s) to finish`
+          : `still waiting for ${this.inFlight.size} admitted tool(s) to finish`,
       };
     }
 
@@ -675,7 +711,7 @@ export class PauseGate {
 
   /** Wait, bounded, for admitted work to drain. `false` on timeout. */
   private awaitQuiescence(): Promise<boolean> {
-    if (this.inFlight.size === 0) return Promise.resolve(true);
+    if (this.isQuiescent()) return Promise.resolve(true);
     return new Promise<boolean>((resolve) => {
       let done = false;
       const finish = (settled: boolean) => {
@@ -685,7 +721,7 @@ export class PauseGate {
         this.scheduler.clearTimer(timer);
         resolve(settled);
       };
-      const waiter = () => finish(this.inFlight.size === 0);
+      const waiter = () => finish(this.isQuiescent());
       this.quiescenceWaiters.add(waiter);
       const timer = this.scheduler.setTimer(() => finish(false), this.settleTimeoutMs);
     });

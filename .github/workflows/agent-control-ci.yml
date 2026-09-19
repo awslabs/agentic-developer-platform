@@ -445,6 +445,7 @@ jobs:
             src/control-runtime.test.ts src/harnesses/claude-control.test.ts src/utils/resilientQuery.test.ts \
             src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
             src/pause-attempt-fencing.test.ts \
+            src/pause-output-race.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \

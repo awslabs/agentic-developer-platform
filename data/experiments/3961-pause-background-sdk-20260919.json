@@ -36,7 +36,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 8746,
+        "total_elapsed_ms": 9185,
         "denied_tools": []
       }
     },
@@ -79,7 +79,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 13691,
+        "total_elapsed_ms": 18518,
         "denied_tools": []
       }
     },
@@ -118,7 +118,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 0,
         "controlled_service_exercised": false,
-        "total_elapsed_ms": 8441,
+        "total_elapsed_ms": 8566,
         "denied_tools": []
       }
     },
@@ -157,7 +157,7 @@
         "held_work_completed_after_resume": true,
         "fixture_service_calls_after_resume": 1,
         "controlled_service_exercised": true,
-        "total_elapsed_ms": 8435,
+        "total_elapsed_ms": 8057,
         "denied_tools": []
       }
     },
@@ -167,8 +167,8 @@
       "detail": "sessions=1 inits=1 sameAttempt=true heldAdmissions=1 heldWithoutSideEffects=true completed=true",
       "artifact": {
         "released_count": 1,
-        "session_id_before": "f9fc11a7-ee7f-4655-8226-254a96e1839d",
-        "session_id_after": "f9fc11a7-ee7f-4655-8226-254a96e1839d",
+        "session_id_before": "c9cad63a-f180-4394-a589-56bb1728c3d9",
+        "session_id_after": "c9cad63a-f180-4394-a589-56bb1728c3d9",
         "attempt_id_before": "attempt-1",
         "attempt_id_after": "attempt-1",
         "interrupt_called": false,
@@ -194,10 +194,10 @@
     {
       "name": "a PreToolUse hook may hold a tool for seconds (AC-P1/AC-P6)",
       "ok": true,
-      "detail": "the hook held a real tool call for 6001ms without being abandoned; the declared bound is honoured, so a pause can outlive a tool",
+      "detail": "the hook held a real tool call for 6002ms without being abandoned; the declared bound is honoured, so a pause can outlive a tool",
       "artifact": {
         "exercised": true,
-        "held_ms": 6001,
+        "held_ms": 6002,
         "signal_aborted": false,
         "hook_reached": true,
         "hook_timeout_seconds": 1860,
@@ -218,8 +218,8 @@
         "checkpoint_clock_setup": "constructor aged 16 minutes; live callbacks use real clock",
         "spill_readback_matches_tool_response": true,
         "model_returned_exact_locator": true,
-        "model_returned_text": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-P9h0jr/.adp-spill/Read-toolu_bdrk_01J94HQdinrQYnpVSstdpEDn.txt",
-        "expected_locator": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-P9h0jr/.adp-spill/Read-toolu_bdrk_01J94HQdinrQYnpVSstdpEDn.txt",
+        "model_returned_text": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-l4wW01/.adp-spill/Read-toolu_bdrk_01Ew6FMSsaQ3yLkEUf5gDTPa.txt",
+        "expected_locator": "/var/folders/_d/45_t7fyj0fs2h1qvxbq9hjbc0000gq/T/adp-composed-spill-l4wW01/.adp-spill/Read-toolu_bdrk_01Ew6FMSsaQ3yLkEUf5gDTPa.txt",
         "settled_before_pause": true,
         "phase_during_hold": "paused",
         "no_write_during_hold": true,
@@ -272,15 +272,16 @@
     "scope": "Standalone real-SDK fixture; not deployed gateway control or wave-2 acceptance. Eight measured scenarios use the production worker hook builder. The one-second matcher timeout is an explicit fault injection; the production budget remains unchanged. The checkpoint constructor timestamp alone is aged 16 minutes; all live callbacks and waits use real time. Fixture servers closed and directories removed in finally cleanup."
   },
   "source_files_sha256": {
-    "modules/agent-factory/agent/src/harnesses/claude-control.ts": "a709da1246dac92dbaff1930496ab5b360d43cccfa0c29ab52fe8b0595fb8271",
-    "modules/agent-factory/agent/src/pause-gate.ts": "36a1759a55d9f5472a66e11231d503f269f8903c5cf155ef4e5acc2841d900b7",
+    "modules/agent-factory/agent/src/harnesses/claude-control.ts": "d4c7722eeecfd374757866af9bb74ac606feeb84622717f69a73bfc6844ab559",
+    "modules/agent-factory/agent/src/pause-gate.ts": "149952db6946d3e39a189d12a258ee951b1a1d8ca96664c4d3eb32c696c48aaa",
     "modules/agent-factory/agent/src/control-runtime.integration.ts": "07fc4f7a08b23abed2a98eb53656cbdbaae6a4348c807fb8f21ac30afe498a7a",
-    "modules/agent-factory/agent/src/utils/resilientQuery.ts": "cabf90534cf8dc85873866229b982cc554b333b1d6a1d5a869a48a133121bd6f",
+    "modules/agent-factory/agent/src/utils/resilientQuery.ts": "e98a88383cc029d72e0836cd7b4001151a6b7ce0099b409e83e0720825220ede",
     "modules/agent-factory/agent/src/developer-checkpoints.ts": "b0612d9d9048fb633d20331d077f8998719ad1fd6d836aa93419fbb7de4651ec",
     "modules/agent-factory/agent/src/utils/spill/index.ts": "4ecf8798cd358393c7acc34d133f8672a84047e144f80c22070f366383940fe4",
     "modules/agent-factory/agent/src/utils/spill/store.ts": "d2619b09b66496a0534e88272bd259a28276dda4905b89fe4b06a5f75cade0e5",
-    "modules/agent-factory/agent/src/control-runtime.ts": "43fc61bde73110084a8b7088f240857dcc3b81500eb71f4a50db48eacf889182",
-    "modules/agent-factory/agent/src/control-command-apply.ts": "26b01936cc83d40dbd46842148c0f342551cfbbbb40404f66bf3112a9ae75552"
+    "modules/agent-factory/agent/src/control-runtime.ts": "03408582eda90af5aae118e00fdeaa426af97ef9d172b75edd74c505334189d5",
+    "modules/agent-factory/agent/src/control-command-apply.ts": "2673f26984b3a8daad967037902a1efb78a80f443530def21adde4c8d9eee999",
+    "modules/agent-factory/agent/src/control-state.ts": "de79680fd5faf13a0877c67af077ffb6d167010e03d7643e6ce34bd5c578b90a"
   },
   "pre_repair_observation": {
     "production_spill_fixture": "The callback returned a locator but the real model wrote NO_LOCATOR. The native SDK rejected the string replacement against the Read output schema and retained the original output.",

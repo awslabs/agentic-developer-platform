@@ -719,7 +719,7 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
       return { outcome: 'unavailable', reason: boundReason('the accepting attempt ended; same-execution resume is unavailable') };
     }
     if (gateResult.outcome === 'requested') {
-      return { outcome: 'requested' };
+      return { outcome: 'requested', reason: boundReason(gateResult.reason) };
     }
     if (gateResult.outcome === 'confirmed') {
       return { outcome: 'confirmed' };

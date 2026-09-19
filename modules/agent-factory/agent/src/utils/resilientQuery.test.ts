@@ -2340,13 +2340,13 @@ describe('pause holds task output and terminal teardown', () => {
       onAttemptHandle: adapter.onAttemptHandle(),
       cancellation: adapter.cancellationSource(),
       beforeOutput: () => gate.waitForOutput(),
-    } as ResilientQueryOptions & { beforeOutput: () => Promise<boolean> });
+    });
     await stream.next();
     const attempt = adapter.currentAttempt();
     expect(attempt).not.toBeNull();
-    expect(await adapter.requestPause()).toMatchObject({ outcome: 'confirmed' });
     let delivered = false;
     const next = stream.next().then((value) => { delivered = true; return value; });
+    expect(await adapter.requestPause()).toMatchObject({ outcome: 'confirmed' });
     emit();
     await new Promise((resolve) => setImmediate(resolve));
     try {

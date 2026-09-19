@@ -920,6 +920,8 @@ describe('pause gate: task output lifetime', () => {
     if (action === 'resume') await gate.resume();
     else if (action === 'expiry') scheduler.fireByDuration(60_000);
     else gate.cancel();
-    expect(await output).toBe(action !== 'cancel');
+    const admission = await output;
+    expect(Boolean(admission)).toBe(action !== 'cancel');
+    if (admission) admission.release();
   });
 });

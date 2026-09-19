@@ -168,7 +168,7 @@ export interface PauseUnavailable {
  * operator reads "Paused" as "nothing is touching my repository right now."
  */
 export type PauseResult =
-  | { outcome: 'requested' }
+  | { outcome: 'requested'; reason?: string }
   | { outcome: 'confirmed' }
   | PauseUnavailable;
 
@@ -195,6 +195,7 @@ export type ControlRuntimeEvent =
   /** `count: null` means "cannot observe", which is not `0`. */
   | { type: 'active_work'; attemptId: AttemptId; count: number | null }
   | { type: 'pause_requested'; attemptId: AttemptId }
+  | { type: 'pause_waiting'; attemptId: AttemptId; reason: string }
   | { type: 'pause_confirmed'; attemptId: AttemptId }
   | { type: 'pause_released'; attemptId: AttemptId; expired?: boolean }
   | { type: 'pause_unavailable'; attemptId: AttemptId; reason: string }

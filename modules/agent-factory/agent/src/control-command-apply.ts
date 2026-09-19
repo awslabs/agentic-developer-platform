@@ -38,7 +38,7 @@ import type { ClaudeControlAdapter } from './harnesses/claude-control';
  */
 export function bindRuntimeTransitionsToStore(args: {
   adapter: Pick<ClaudeControlAdapter, 'subscribe' | 'activeWorkCount' | 'currentAttempt'>;
-  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'setActiveToolCount'>;
+  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'setActiveToolCount' | 'annotateDelivered'>;
   log?: (level: string, message: string, context?: Record<string, unknown>) => void;
 }): () => void {
   const { adapter, store } = args;
@@ -73,11 +73,19 @@ export function bindRuntimeTransitionsToStore(args: {
         return;
       case 'pause_requested':
         store.setPhase('pause_requested');
+        for (const command of store.snapshot().commands) {
+          if (command.action === 'pause') store.annotateDelivered(command.command_id, 'waiting for admitted tools, output or background work to settle');
+        }
         return;
       case 'active_work':
         // Report the barrier's own count, and only the barrier's: `0` here is a
         // quiescence claim and the gate is the only thing entitled to make it.
         store.setActiveToolCount(event.count);
+        return;
+      case 'pause_waiting':
+        for (const command of store.snapshot().commands) {
+          if (command.action === 'pause') store.annotateDelivered(command.command_id, event.reason);
+        }
         return;
       case 'pause_confirmed':
         store.setPhase('paused');
@@ -116,7 +124,7 @@ export async function applyControlCommand(args: {
   action: ControlAction;
   commandId: string;
   adapter: Pick<ClaudeControlAdapter, 'requestPause' | 'resumeFromPause'>;
-  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup'>;
+  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup' | 'annotateDelivered'>;
   log?: (level: string, message: string, context?: Record<string, unknown>) => void;
 }): Promise<void> {
   const { action, commandId, adapter, store } = args;
@@ -174,7 +182,9 @@ export async function applyControlCommand(args: {
   if (result.outcome === 'requested') {
     // Phase only — the command stays pending. See the doc comment above.
     if (isLatestDelivered()) store.setPhase('pause_requested');
-    log('INFO', 'control: pause requested, awaiting quiescence', { command_id: commandId });
+    const reason = result.reason ?? 'waiting for admitted work to reach a safe boundary';
+    store.annotateDelivered(commandId, reason);
+    log('INFO', 'control: pause requested, awaiting quiescence', { command_id: commandId, detail: reason });
     return;
   }
   // `unavailable`. The phase goes back to `running` because that is the truth:

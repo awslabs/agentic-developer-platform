@@ -9,6 +9,67 @@ import { resilientQuery } from './utils/resilientQuery';
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
+it.each(['running-tool', 'unobservable-background'])('publishes the %s pause blocker while the command remains delivered', async blocker => {
+  const gate = new PauseGate({ settleTimeoutMs: 5, backgroundWorkProbe: () => blocker === 'unobservable-background' ? null : 0 });
+  const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+  const store = new ControlStateStore({ generation: 1, supportedActions: new Set(['pause', 'resume']) });
+  const unbind = bindRuntimeTransitionsToStore({ adapter, store });
+  const attempt = adapter.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: '' });
+  await adapter.onAttemptHandle()({ attemptNumber: 1, session: { close() {} } });
+  const ticket = blocker === 'running-tool' ? (await gate.admit('Read')).ticket : undefined;
+  try {
+    submit(store, 'pause-reason');
+    await applyControlCommand({ action: 'pause', commandId: 'pause-reason', adapter, store });
+    const command = store.snapshot().commands.find(command => command.command_id === 'pause-reason');
+    expect(command?.status).toBe('delivered');
+    expect(command?.reason).toMatch(blocker === 'running-tool' ? /admitted/ : /not observable/);
+  } finally { await gate.resume(); gate.settle(ticket); await attempt.dispose(); unbind(); await adapter.dispose(); }
+});
+
+it('settles output exactly once before confirming a pending pause, without counting it as a tool', async () => {
+  const gate = new PauseGate({ settleTimeoutMs: 5 });
+  const admission = await gate.waitForOutput();
+  expect(admission).not.toBe(false);
+  try {
+    expect(gate.activeToolCount()).toBe(0);
+    expect(await gate.requestPause()).toMatchObject({ outcome: 'requested', reason: expect.stringContaining('admitted output') });
+    if (admission) { admission.release(); admission.release(); }
+    await flush();
+    expect(gate.currentPhase()).toBe('paused');
+  } finally { await gate.resume(); }
+});
+
+it('pending diagnostics cannot overwrite a command after resume has cancelled it', () => {
+  const store = new ControlStateStore({ generation: 1, supportedActions: new Set(['pause', 'resume']) });
+  submit(store, 'pause');
+  expect(store.annotateDelivered('pause', 'a'.repeat(2048))).toBe(true);
+  expect(store.snapshot().commands[0].reason).toHaveLength(1024);
+  store.settle('pause', 'cancelled', 'resumed');
+  expect(store.annotateDelivered('pause', 'late blocker')).toBe(false);
+  expect(store.annotateDelivered('missing', 'blocker')).toBe(false);
+  expect(store.snapshot().commands[0].reason).toBe('resumed');
+});
+
+it('updates the blocker when a completed tool leaves unobservable background work', async () => {
+  let background: number | null = 0;
+  const gate = new PauseGate({ settleTimeoutMs: 5, backgroundWorkProbe: () => background });
+  const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+  const store = new ControlStateStore({ generation: 1, supportedActions: new Set(['pause', 'resume']) });
+  const unbind = bindRuntimeTransitionsToStore({ adapter, store });
+  const attempt = adapter.attemptInputFactory()({ attemptNumber: 1, isResume: false, promptText: '' });
+  await adapter.onAttemptHandle()({ attemptNumber: 1, session: { close() {} } });
+  const ticket = (await gate.admit('Bash')).ticket;
+  try {
+    submit(store, 'pause');
+    await applyControlCommand({ action: 'pause', commandId: 'pause', adapter, store });
+    expect(store.snapshot().commands[0].reason).toContain('admitted tool');
+    background = null;
+    gate.settle(ticket);
+    await flush();
+    expect(store.snapshot().commands[0]).toMatchObject({ status: 'delivered', reason: expect.stringContaining('not observable') });
+  } finally { await gate.resume(); gate.settle(ticket); await attempt.dispose(); unbind(); await adapter.dispose(); }
+});
+
 function submit(store: ControlStateStore, id: string) {
   expect(store.submit('pause', id, id).kind).toBe('accepted');
   expect(store.markDelivered(id)).toBe(true);
@@ -39,6 +100,7 @@ it.each(['requested', 'confirmed'] as const)('retrying away from a %s pause ends
   });
   await stream.next();
   const originalAttempt = adapter.currentAttempt();
+  const reading = stream.next();
   const ticket = phase === 'requested' ? (await gate.admit('Read')).ticket : undefined;
   submit(store, 'pause-a');
   await applyControlCommand({ action: 'pause', commandId: 'pause-a', adapter, store });
@@ -46,7 +108,7 @@ it.each(['requested', 'confirmed'] as const)('retrying away from a %s pause ends
   let next: Promise<IteratorResult<unknown>> | undefined;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
-    next = stream.next();
+    next = reading;
     fail();
     await Promise.race([replacement, new Promise((_, reject) => { watchdog = setTimeout(() => reject(new Error('replacement did not start')), 1500); })]);
     clearTimeout(watchdog);

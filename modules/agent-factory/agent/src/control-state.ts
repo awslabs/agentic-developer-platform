@@ -321,6 +321,15 @@ export class ControlStateStore {
     return true;
   }
 
+  /** Update diagnostics without settling or redelivering an accepted command. */
+  annotateDelivered(commandId: string, reason: string): boolean {
+    const entry = this.journal.get(commandId);
+    if (!entry || entry.record.status !== 'delivered') return false;
+    entry.record.reason = reason.slice(0, 1024);
+    this.touch();
+    return true;
+  }
+
   /** Commands awaiting delivery, in submission order (FIFO — ADR-2). */
   pending(): CommandRecord[] {
     this.prune();

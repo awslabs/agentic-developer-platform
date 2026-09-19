@@ -147,7 +147,7 @@ export interface ResilientQueryOptions {
     promptText: string;
   }) => { input: AsyncIterable<unknown>; dispose: () => void | Promise<void>; options?: Record<string, unknown> };
   /** Hold task output and end-of-stream teardown during an operator pause. */
-  beforeOutput?: () => Promise<boolean>;
+  beforeOutput?: () => Promise<{ release(): void } | false>;
   /**
    * Optional callback receiving the live query handle for each attempt
    * (issue #3962).
@@ -425,6 +425,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
       }
 
       const session = query(effectiveParams);
+      let outputAdmission: { release(): void } | undefined;
       try {
         let pendingAssistantError: SDKResponseError | undefined;
         // Await attachment before reading output. Cancellation wakes stalled setup.
@@ -477,7 +478,24 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           }
           // The read resolved, so the next window starts a new one.
           nextMessage = null;
-          if (beforeOutput && !await wait(beforeOutput())) throw cancellationError();
+          if (beforeOutput) {
+            let abandoned = false;
+            let received: { release(): void } | false | undefined;
+            const admission = beforeOutput().then(value => {
+              received = value;
+              if (abandoned && value) value.release();
+              return value;
+            });
+            try {
+              const granted = await wait(admission);
+              if (!granted) throw cancellationError();
+              outputAdmission = granted;
+            } catch (error) {
+              abandoned = true;
+              if (received) received.release();
+              throw error;
+            }
+          }
           if (result.done) break;
           // Capture the session id the first time the SDK surfaces it, so a
           // later retry can resume this exact conversation.
@@ -505,7 +523,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           // replace it with a successful top-level assistant response.
           if (result.value.type === 'assistant' && result.value.parent_tool_use_id == null) {
             pendingAssistantError = assistantResponseError(result.value);
-            if (pendingAssistantError) continue;
+            if (pendingAssistantError) { outputAdmission?.release(); outputAdmission = undefined; continue; }
           }
           if (result.value.type === 'result') {
             const responseError = resultResponseError(result.value, pendingAssistantError);
@@ -514,14 +532,22 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           messagesThisAttempt++;
           totalMessagesYielded++;
           yield result.value;
+          // Resuming the iterator acknowledges that the consumer finished this
+          // output. A return/throw instead retains it through the finally below.
+          outputAdmission?.release();
+          outputAdmission = undefined;
         }
         // Some SDK paths end without a result after reporting an API error.
         if (pendingAssistantError) throw pendingAssistantError;
       } finally {
         // Invalidate input before closing the transport. Ordinary callers keep
         // synchronous teardown when no input factory is installed.
-        if (disposeAttemptInput) await disposeInput();
-        session.close();
+        try {
+          if (disposeAttemptInput) await disposeInput();
+          session.close();
+        } finally {
+          outputAdmission?.release();
+        }
       }
       // Stream completed successfully — we're done.
       return;
