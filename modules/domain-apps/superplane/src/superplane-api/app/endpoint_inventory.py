@@ -117,6 +117,7 @@ PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
 
 INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
+        ("GET", "/internal/installation"),
         ("PATCH", "/internal/clusters/{cluster_id}/resources"),
         ("POST", "/internal/vault-sync/trigger"),
         ("POST", "/internal/workspaces/{workspace_id}/reconcile"),
@@ -246,6 +247,49 @@ DOMAIN_ROUTES: dict[tuple[str, str], tuple[Scope, Permission]] = {
         Scope.ORGANIZATION,
         Permission.RENEW_CREDENTIAL,
     ),
+    # -- Provider connections and workspace bindings (issue #5053, U7b) ------
+    #
+    # WORKSPACE-scoped, not ORGANIZATION, and the distinction is load-bearing twice
+    # over.
+    #
+    # First, correctness of the check: `authorize_delegation` requires
+    # `workspace:renew_credential` from the caller's server-held grant, and
+    # `app/domain_guard.py` publishes that grant on `request.state.grant` ONLY for
+    # WORKSPACE-scoped routes. Registered as ORGANIZATION these routes would see an
+    # empty permission set and deny every caller, however privileged — a failure that
+    # passes every negative test, which is why `tests/test_workspaces.py` pins a
+    # positive case per route too.
+    #
+    # Second, the tenant boundary these routes exist to enforce: organization
+    # authority is explicitly NOT a workspace binding. Accepting it as one would mean
+    # delegating a single credential effectively delegated every credential to
+    # everyone in the org, which is the exposure R7 acceptance 2 is about.
+    #
+    # RENEW_CREDENTIAL throughout, matching the policy's grouping of credential
+    # lifecycle operations and the `/vault/credentials` entries above. The read is
+    # READ: it returns the four validation readings and no credential material.
+    # DELETE disables rather than deletes — it blocks admissions and renewals and does
+    # not revoke already-delivered credentials, which the response states.
+    (
+        "POST",
+        "/workspaces/{workspace_id}/provider-connections",
+    ): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+    (
+        "GET",
+        "/workspaces/{workspace_id}/provider-connections/{connection_id}",
+    ): (Scope.WORKSPACE, Permission.READ),
+    (
+        "POST",
+        "/workspaces/{workspace_id}/provider-connections/{connection_id}/validation",
+    ): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+    (
+        "POST",
+        "/workspaces/{workspace_id}/provider-connections/{connection_id}/rotation",
+    ): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
+    (
+        "DELETE",
+        "/workspaces/{workspace_id}/provider-connections/{connection_id}",
+    ): (Scope.WORKSPACE, Permission.RENEW_CREDENTIAL),
     # -- Research surface ----------------------------------------------------
     # Twelve routes with no authentication dependency at all before this story,
     # and still the only domain routes with no LEGACY per-route dependency

@@ -1617,3 +1617,28 @@ class TestLeases:
         )
 
         assert response.status_code == 200
+
+
+async def test_only_configured_controller_identity_advances_heartbeat(client, monkeypatch):
+    from dataclasses import replace
+
+    controller_credential = "test-controller-credential"
+    controller_key = b"test-controller-signing-key"
+    entries = json.loads(settings.observation_submitters)
+    entries.append({"submitter_id": "controller-1", "credential": controller_credential, "signing_key": controller_key.decode(), "workspaces": [_WS_OWNED]})
+    monkeypatch.setattr(settings, "observation_submitters", json.dumps(entries))
+    monkeypatch.setattr(settings, "controller_observation_submitter_id", "controller-1")
+    cluster_id = await _seed_cluster()
+    # An authenticated monitor claiming to be the controller is still a monitor.
+    spoof = replace(_observation(cluster_id), reporter="controller-1")
+    assert (await _submit(client, spoof)).status_code == 202
+    async with async_session_test() as session:
+        cluster = await session.get(Cluster, cluster_id)
+        assert cluster.last_heartbeat is None
+        monitor_at = cluster.last_reconciled_at
+    genuine = replace(_observation(cluster_id), reporter="arbitrary-payload-label")
+    assert (await _submit(client, genuine, controller_credential, controller_key)).status_code == 202
+    async with async_session_test() as session:
+        cluster = await session.get(Cluster, cluster_id)
+        assert cluster.last_heartbeat.replace(tzinfo=UTC) == genuine.reported_at
+        assert cluster.last_reconciled_at == monitor_at

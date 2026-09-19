@@ -146,6 +146,7 @@ pricing_policy = ["snapshots/*.json"]
 # omitted from a wheel, it raises at runtime while every test passes from a
 # source checkout.
 "src.orchestration.manifests" = ["*.yaml"]
+"src.domain_proxy" = ["*.json"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/cli/conftest.py" = ["N802", "E501"]

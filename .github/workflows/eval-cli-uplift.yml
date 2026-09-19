@@ -50,7 +50,7 @@ on:
         options: [start, resume, status, cleanup]
         default: start
       suites:
-        description: 'Start with login (install + Cognito login + cleanup); full selects the complete evaluation.'
+        description: 'Start with login (install + Cognito login + cleanup); full selects the complete evaluation. multi-deployment selects #5413 E16/E17 and requires the CLI_UPLIFT_EVAL_DEPLOYMENTS variable — three reachable gateways, each with its own sign-in fixture.'
         required: false
         type: string
         default: login
@@ -229,6 +229,15 @@ jobs:
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      # #5413's three deployment bindings, as a JSON ARRAY of
+      # {name, gateway_url, credential_secret_name} objects. Its own variable
+      # rather than the scalar overlay because every other name here maps one
+      # variable to one string: routing an array through that path would store
+      # the literal JSON as a value and fail validation pointing at the config
+      # instead of at the variable. Each entry names a secret, never a password.
+      # Unset means E16/E17 BLOCK, which is the honest state until a coordinator
+      # supplies real integration and pre-production gateways.
+      CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
       # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
       # overlay by `config.from_environment()`. The repository variables are
       # unset and the identity executing this evaluation gets HTTP 403 on the
@@ -551,6 +560,15 @@ jobs:
       CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_DESTINATION_ROLE_ARN }}
       CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN: ${{ vars.CLI_UPLIFT_EVAL_PROVISIONER_ROLE_ARN }}
       CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME: ${{ vars.CLI_UPLIFT_EVAL_CREDENTIAL_SECRET_NAME }}
+      # #5413's three deployment bindings, as a JSON ARRAY of
+      # {name, gateway_url, credential_secret_name} objects. Its own variable
+      # rather than the scalar overlay because every other name here maps one
+      # variable to one string: routing an array through that path would store
+      # the literal JSON as a value and fail validation pointing at the config
+      # instead of at the variable. Each entry names a secret, never a password.
+      # Unset means E16/E17 BLOCK, which is the honest state until a coordinator
+      # supplies real integration and pre-production gateways.
+      CLI_UPLIFT_EVAL_DEPLOYMENTS: ${{ vars.CLI_UPLIFT_EVAL_DEPLOYMENTS }}
       # Reviewed NON-SECRET fallback for the identifiers above, layered UNDER the
       # overlay by `config.from_environment()`. The repository variables are
       # unset and the identity executing this evaluation gets HTTP 403 on the

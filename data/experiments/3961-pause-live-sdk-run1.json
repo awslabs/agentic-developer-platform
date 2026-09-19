@@ -1,0 +1,67 @@
+{
+  "sdk_version": "0.3.220",
+  "reports": [
+    {
+      "name": "barrier blocks tool side effects (AC-P1)",
+      "ok": true,
+      "detail": "a real Write call was parked at the barrier for 5000ms with no file created, then completed after resume — held, not dropped",
+      "artifact": {
+        "adapter_id": "claude",
+        "sdk_version": "0.3.220",
+        "permission_mode": "bypassPermissions",
+        "requested": {
+          "admission_closed": true
+        },
+        "held_interval": {
+          "duration_ms": 5000,
+          "new_admissions": 0,
+          "fixture_writes": 0,
+          "fixture_service_calls": 0,
+          "task_output_bytes": 811,
+          "observed_by": "fixture"
+        },
+        "confirmed": {
+          "state": "paused",
+          "active_tool_count": 0
+        },
+        "parked_tools": 1,
+        "held_work_completed_after_resume": true,
+        "total_elapsed_ms": 10031,
+        "denied_tools": []
+      }
+    },
+    {
+      "name": "resume continues the same execution (AC-P2)",
+      "ok": true,
+      "detail": "one session (2e9595a7-5a81-46aa-9f3a-3fac9d88e93e) spanned the pause; both steps completed",
+      "artifact": {
+        "released_count": 1,
+        "session_id_before": "2e9595a7-5a81-46aa-9f3a-3fac9d88e93e",
+        "session_id_after": "2e9595a7-5a81-46aa-9f3a-3fac9d88e93e",
+        "attempt_id_before": null,
+        "attempt_id_after": null,
+        "interrupt_called": false,
+        "initial_prompt_replayed": false,
+        "prior_history_preserved": true,
+        "task_completed": true,
+        "held_tools_admitted_after_resume": null,
+        "session_count": 1,
+        "init_count": 1,
+        "races": null
+      }
+    },
+    {
+      "name": "a PreToolUse hook may hold a tool for seconds (AC-P1/AC-P6)",
+      "ok": true,
+      "detail": "the hook held a real tool call for 6007ms without being abandoned; the declared bound is honoured, so a pause can outlive a tool",
+      "artifact": {
+        "exercised": true,
+        "held_ms": 6007,
+        "signal_aborted": false,
+        "hook_reached": true,
+        "hook_timeout_seconds": 1860,
+        "pause_budget_seconds": 1800
+      }
+    }
+  ]
+}

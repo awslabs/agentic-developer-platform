@@ -20,6 +20,7 @@ from sqlalchemy.exc import OperationalError
 
 from src.admin.persona_models.catalogue import HARNESS_CONTRACT_REVISION
 from src.admin.persona_models.catalogue_service import compute_request_shape_sha256
+from src.agentauth import envelope as envelope_module
 from src.agentauth import model_policy as model_policy_module
 from src.agentauth.envelope import (
     MODEL_POLICY_AUDIENCE,
@@ -60,6 +61,25 @@ NOW = datetime(2026, 9, 19, 12, 0, tzinfo=UTC)
 OPUS = "global.anthropic.claude-opus-5"
 SONNET = "global.anthropic.claude-sonnet-4-6"
 HAIKU = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+@pytest.fixture
+def snapshot_clock(monkeypatch):
+    """Resolve and sign fixed-date snapshots against that same fixed clock."""
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(model_policy_module, "datetime", Clock)
+    monkeypatch.setattr(envelope_module, "datetime", Clock)
+    return NOW
+
+
+def test_snapshot_is_refused_at_its_exact_expiry():
+    with pytest.raises(ModelPolicyError, match="snapshot_expired"):
+        resolve_decision(snapshot(), invocation_id="run-review", persona="reviewer", now=NOW + timedelta(hours=2))
 
 
 def active_allowlist_revision(
@@ -387,11 +407,8 @@ def _put(store, item):
 
 
 @pytest.mark.asyncio
-async def test_child_inherits_exact_parent_snapshot_without_rereading_preferences(db_session, policy_store):
-    # `live_snapshot`, not `snapshot`: the `bootstrap_model_policy` call at the end
-    # of this test resolves against the real clock, so the window has to be open
-    # against that same clock. The admission call above it is still pinned to `NOW`.
-    root = live_snapshot().to_dict()
+async def test_child_inherits_exact_parent_snapshot_without_rereading_preferences(db_session, policy_store, snapshot_clock):
+    root = snapshot().to_dict()
     raw, digest = canonical_json(root).decode(), policy_digest(root)
     _put(
         policy_store,
@@ -1267,7 +1284,7 @@ async def test_lkg_rejects_stale_unsigned_and_revision_mismatched_rows(
         await build_root_snapshot(**kwargs, now=NOW + timedelta(seconds=60))
 
 
-def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store):
+def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store, snapshot_clock):
     private = Ed25519PrivateKey.generate()
     pem = private.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -1314,7 +1331,7 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
         request_body=canonical_json(decision),
         expected_audience=MODEL_POLICY_AUDIENCE,
         expected_chain_id="chain-a",
-        now=datetime.now(UTC),
+        now=snapshot_clock,
     )
 
     assert result["posture"] == "report_only"
@@ -1326,12 +1343,8 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
     assert verified.chain_id == "chain-a"
 
 
-def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(policy_store):
-    # `live_snapshot`: `bootstrap_model_policy` resolves against the real clock. An
-    # expired snapshot would also produce an `unavailable` result here, but with
-    # reason `snapshot_expired` -- masking the `direct_override_unresolved` refusal
-    # this test exists to pin, which is why the assertion is on the reason.
-    value = live_snapshot().to_dict()
+def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(policy_store, snapshot_clock):
+    value = snapshot().to_dict()
     raw, digest = canonical_json(value).decode(), policy_digest(value)
     _put(
         policy_store,

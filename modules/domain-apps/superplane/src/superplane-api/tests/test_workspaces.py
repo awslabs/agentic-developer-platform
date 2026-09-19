@@ -897,3 +897,1937 @@ class TestTheFacadeIsAMock:
             "modules/harness/jobs/ now exists: B's operation facade may be real. "
             "Revisit the mocked facade in this file and the live criterion."
         )
+
+
+# ===========================================================================
+# Provider connections and workspace bindings — issue #5053 (U7b)
+# ===========================================================================
+#
+# The server half of U7's offline contract (#5294). These tests are written
+# against the HTTP routes rather than against the service functions, because the
+# contract itself is already covered offline by
+# `modules/domain-apps/superplane/tests/test_connection_contract.py`. What is
+# untested until here is the wiring: whether the routes actually ASK the contract,
+# with the server's own evidence, on every path.
+#
+# TWO THINGS ABOUT HOW THIS SECTION IS WRITTEN
+#
+# **Every route has a positive case, not only negative ones.** A route that denies
+# every caller satisfies every negative assertion about authorization, and that is
+# not a hypothetical failure mode here: registering this family as
+# organization-scoped would leave `request.state.grant` unpublished, the delegation
+# check reading an empty permission set, and every caller refused. The negative
+# cases below would all still pass. So each route is also driven to success.
+#
+# **Both enforcement modes are exercised.** `domain_auth_enforced` is False by
+# default today, so a suite testing only that mode would say nothing about the
+# path production moves to; and the ownership half of the check only becomes
+# load-bearing under enforcement, where a real token subject exists. The
+# `enforcing_connection` fixture below is the strict path, and the tests that use
+# the plain `_auth_header` helper are the legacy path.
+
+
+# Strict-enforcement machinery, reused from `tests/test_auth.py` rather than
+# reimplemented. That file owns the "tokens are really signed" convention — a real
+# in-process RSA keypair whose public half is served through the JWKS cache — and a
+# second copy here would eventually drift, in the direction of the copy that stops
+# verifying something. Nothing imported below is a credential for anything: the key
+# is generated per run and never written to disk.
+from app import auth as domain_auth  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.main import app as fastapi_app  # noqa: E402
+from app.models.workspace import Workspace  # noqa: E402
+from app.models.workspace_grant import WorkspaceGrantRecord  # noqa: E402
+from tests.test_auth import TEST_CLIENT_ID as _DOMAIN_CLIENT_ID  # noqa: E402
+from tests.test_auth import TEST_ISSUER as _DOMAIN_ISSUER  # noqa: E402
+from tests.test_auth import _mint as _mint_domain_token  # noqa: E402
+from tests.test_auth import _rsa_keypair as _domain_rsa_keypair  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def domain_signing_keys():
+    """One throwaway RSA keypair for this module. Module-scoped: generating a
+    2048-bit key per test is the slowest thing in the file and the key is not
+    test-specific state."""
+    return _domain_rsa_keypair()
+
+
+_vault_owners = {}
+
+
+@pytest.fixture(autouse=True)
+def connection_security(request, monkeypatch, domain_signing_keys):
+    """Real signed callers and explicit grants for the provider-route tests.
+
+    The vault reader is a named test adapter, never a production implementation.
+    Negative cases replace its independently held ownership/attestation response.
+    """
+    if not request.cls or request.cls.__name__ not in {
+        "TestRegistrationRefusesSecretMaterial", "TestTheTwoChecksAreIndependent",
+        "TestFourSeparateReadings", "TestRotationIsAtomicAndKeepsTheOldCredential",
+        "TestDisablementIsHonest", "TestNoResponseOrLogCarriesSecretMaterial",
+        "TestMalformedBodiesAreRefusedAsBadRequests", "TestTrustedCredentialEvidence",
+        "TestConnectionLifecycleIntegrity",
+    }:
+        yield None
+        return
+    from datetime import datetime, timezone, timedelta
+    from app.services import credential_evidence
+    from superplane_contracts.connections import VaultOwnership
+    private_pem, public_jwk = domain_signing_keys
+    monkeypatch.setattr(settings, "domain_auth_enforced", True)
+    monkeypatch.setattr(settings, "cognito_issuer", _DOMAIN_ISSUER)
+    monkeypatch.setattr(settings, "domain_auth_allowed_client_ids", [_DOMAIN_CLIENT_ID])
+    monkeypatch.setattr(settings, "cognito_jwks_url", "https://example.invalid/jwks")
+    domain_auth.jwks_cache.load([public_jwk])
+    previous = getattr(fastapi_app.state, "domain_policy", None)
+    fastapi_app.state.domain_policy = domain_auth.build_domain_policy()
+    _vault_owners.clear()
+
+    class TestVaultReader:
+        owner_override = None
+        attest = True
+        async def read(self, *, org_id, workspace_id, reference, principal, report_digest):
+            owner = self.owner_override or _vault_owners.get((org_id, reference.credential_id))
+            if owner is None:
+                return None
+            return credential_evidence.VerifiedCredentialEvidence(
+                org_id=org_id, workspace_id=workspace_id, reference=reference,
+                ownership=VaultOwnership(credential_id=reference.credential_id, owner_principal=owner),
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                attested_report_digest=report_digest if self.attest else None,
+                report_checked_at=datetime.now(timezone.utc) - timedelta(seconds=1) if report_digest else None,
+            )
+
+    reader = TestVaultReader()
+    monkeypatch.setattr(credential_evidence, "_reader", reader)
+    def signed_header(org_id=None):
+        token = _mint_domain_token(private_pem, sub="user-abc", **{"custom:org_id": str(org_id or uuid.uuid4())})
+        return {"Authorization": f"Bearer {token}"}
+    monkeypatch.setattr(sys.modules[__name__], "_auth_header", signed_header)
+    try:
+        yield reader
+    finally:
+        fastapi_app.state.domain_policy = previous
+        domain_auth.jwks_cache.clear()
+        _vault_owners.clear()
+
+
+CONNECTIONS = "/workspaces/{ws}/provider-connections"
+
+# Opaque vault handles, matching the shape `validate_adp_credential_id` accepts.
+# Not credentials for anything: no vault is contacted by any test in this section.
+CRED_A = "adp-cred-01HQ8V3XK2AAAA"
+CRED_B = "adp-cred-01HQ8V3XK2BBBB"
+
+# Structurally complete so the ARN detector matches, with the reserved all-zeros
+# account id and a secret name that does not exist.
+FAKE_SECRET_ARN = (
+    "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake-not-real-AbCdEf"
+)
+
+# `AKIA` plus 16 uppercase characters is the AWS access-key-id shape. This is not
+# an access key; it matches the pattern the refusal is keyed on.
+FAKE_AWS_KEY = "AKIA" + "Z" * 16
+
+
+async def _seed_org_workspace_credentials(*credential_ids, workspaces=1):
+    """Create an org, N workspaces and the given credential-registry rows.
+
+    Committed in stages because SQLite enforces foreign keys immediately (the test
+    conftest sets `PRAGMA foreign_keys=ON`), so a workspace inserted in the same
+    flush as its organization fails on the parent not yet existing.
+
+    The registry rows matter to what is being tested: `register` requires the
+    reference to already exist in this org's `credential_registry`, which is
+    server-held evidence the caller did not write. A test that skipped them would
+    be asserting a 404 path and calling it authorization.
+    """
+    from app.models.credential import CredentialRegistry
+    from app.models.organization import Organization
+    from app.models.workspace import Workspace
+
+    org = uuid.uuid4()
+    workspace_ids = [uuid.uuid4() for _ in range(workspaces)]
+    async with async_session_test() as session:
+        session.add(
+            Organization(id=org, name=f"org-{org.hex[:8]}", billing_plan="enterprise")
+        )
+        await session.commit()
+    async with async_session_test() as session:
+        for index, workspace_id in enumerate(workspace_ids):
+            session.add(
+                Workspace(
+                    id=workspace_id,
+                    org_id=org,
+                    name=f"ws-{index}",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+        for credential_id in credential_ids:
+            session.add(
+                CredentialRegistry(
+                    id=uuid.uuid4(),
+                    org_id=org,
+                    provider="nebius",
+                    friendly_name=credential_id,
+                    credential_type="api_key",
+                    adp_credential_id=credential_id,
+                )
+            )
+        await session.commit()
+    async with async_session_test() as session:
+        for workspace_id in workspace_ids:
+            session.add(WorkspaceGrantRecord(id=uuid.uuid4(), workspace_id=workspace_id, org_id=org, principal="user-abc", permissions="workspace:renew_credential workspace:read"))
+        await session.commit()
+    for credential_id in credential_ids:
+        _vault_owners[(str(org), credential_id)] = "user-abc"
+    return (org, *workspace_ids)
+
+
+def _passing_report(**overrides):
+    """A validation body whose three credential readings all pass.
+
+    `observed_capacity` is deliberately absent unless a test supplies it, so the
+    default exercises the "not measured" case rather than quietly asserting a
+    capacity nobody reported.
+    """
+    body = {
+        "credential_valid": True,
+        "permissions_sufficient": True,
+        "quota_available": True,
+    }
+    body.update(overrides)
+    return body
+
+
+async def _register(client, headers, workspace_id, credential_id=CRED_A, **extra):
+    """Register a connection and return the response."""
+    body = {
+        "credential_id": credential_id,
+        "service": "nebius",
+        "label": "prod",
+        "provider": "nebius",
+    }
+    body.update(extra)
+    return await client.post(
+        CONNECTIONS.format(ws=workspace_id), json=body, headers=headers
+    )
+
+
+async def _active_connection(client, headers, workspace_id, credential_id=CRED_A):
+    """Register and validate a connection, returning its id in ACTIVE status."""
+    created = await _register(client, headers, workspace_id, credential_id)
+    assert created.status_code == 201, created.text
+    connection_id = created.json()["connection_id"]
+    validated = await client.post(
+        f"{CONNECTIONS.format(ws=workspace_id)}/{connection_id}/validation",
+        json=_passing_report(observed_capacity=4),
+        headers=headers,
+    )
+    assert validated.status_code == 200, validated.text
+    assert validated.json()["status"] == "active"
+    return connection_id
+
+
+class _EnforcedConnection:
+    """One ACTIVE connection, under strict enforcement, with real signed tokens.
+
+    Holds the knobs the authorization tests need: mint a token for an arbitrary
+    subject, add or downgrade a grant, add a sibling workspace. Everything it hands
+    out is server-held state seeded through the models, never asserted in a request.
+    """
+
+    def __init__(self, private_pem, org, workspace, owner, connection_id):
+        self._private_pem = private_pem
+        self.org = org
+        self.workspace = workspace
+        self.owner = owner
+        self.connection_id = connection_id
+
+    def headers(self, subject=None):
+        """A really-signed token for `subject`, carrying this fixture's org claim."""
+        token = _mint_domain_token(
+            self._private_pem,
+            sub=subject or self.owner,
+            **{"custom:org_id": str(self.org)},
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    async def grant(self, principal, permissions, workspace=None):
+        """Create or replace `principal`'s grant, so a downgrade is expressible.
+
+        Upsert rather than insert because ``workspace_grants`` is unique on
+        (workspace, principal) — two rows would make the effective permission set
+        depend on row order, which is why the constraint exists.
+        """
+        from sqlalchemy import select
+
+        target = workspace or self.workspace
+        async with async_session_test() as session:
+            existing = (
+                await session.execute(
+                    select(WorkspaceGrantRecord).where(
+                        WorkspaceGrantRecord.workspace_id == target,
+                        WorkspaceGrantRecord.principal == principal,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    WorkspaceGrantRecord(
+                        id=uuid.uuid4(),
+                        workspace_id=target,
+                        org_id=self.org,
+                        principal=principal,
+                        permissions=permissions,
+                    )
+                )
+            else:
+                existing.permissions = permissions
+            await session.commit()
+
+    async def add_workspace(self):
+        """A second workspace in the SAME organization — an org-mate, not a stranger.
+
+        The point of the binding check is that this workspace is still refused, so a
+        cross-org workspace (which the org filter already rejects) would not test it.
+        """
+        workspace_id = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(
+                Workspace(
+                    id=workspace_id,
+                    org_id=self.org,
+                    name=f"sibling-{workspace_id.hex[:8]}",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+            await session.commit()
+        return workspace_id
+
+
+@pytest.fixture
+async def enforcing_connection(client, domain_signing_keys, monkeypatch):
+    """Enforcement ON, a granted owner, and one ACTIVE connection they registered.
+
+    The connection is registered *through the route under enforcement* rather than
+    inserted directly, because `owner_principal` is then the verified token subject —
+    which is the fact the ownership half of `authorize_delegation` turns on. Seeding
+    the row by hand would let the fixture pick an owner the server never verified, and
+    the ownership tests would be asserting against fixture data instead of against the
+    path production takes.
+    """
+    private_pem, public_jwk = domain_signing_keys
+    monkeypatch.setattr(settings, "domain_auth_enforced", True)
+    monkeypatch.setattr(settings, "cognito_issuer", _DOMAIN_ISSUER)
+    monkeypatch.setattr(settings, "domain_auth_allowed_client_ids", [_DOMAIN_CLIENT_ID])
+    monkeypatch.setattr(settings, "cognito_jwks_url", "https://example.invalid/jwks")
+
+    domain_auth.jwks_cache.load([public_jwk])
+    previous = getattr(fastapi_app.state, "domain_policy", None)
+    fastapi_app.state.domain_policy = domain_auth.build_domain_policy()
+
+    owner = "user-abc"
+    org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+    ctx = _EnforcedConnection(private_pem, org, workspace, owner, connection_id=None)
+    await ctx.grant(owner, "workspace:renew_credential")
+    ctx.connection_id = await _active_connection(client, ctx.headers(), workspace)
+
+    yield ctx
+
+    fastapi_app.state.domain_policy = previous
+    domain_auth.jwks_cache.clear()
+
+
+class TestRegistrationRefusesSecretMaterial:
+    """Acceptance 1: a credential POINTER is accepted; a secret is refused."""
+
+    @pytest.mark.asyncio
+    async def test_a_valid_reference_is_accepted(self, client):
+        """The positive case. Created PENDING — an unvalidated reference admits nothing."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await _register(client, _auth_header(org), workspace)
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert body["credential"]["credential_id"] == CRED_A
+        assert body["status"] == "pending"
+        assert body["admits_new_work"] is False
+        # Renewal is permitted while PENDING: the contract separates the two
+        # answers so a connection being brought up can have its credential
+        # replaced without being able to admit work.
+        assert body["allows_renewal"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_whole_request_is_refused_when_it_carries_a_secret(self, client):
+        """A stray secret beside a VALID reference fails the whole request.
+
+        This is the heart of acceptance 1 and the reason the handler takes the raw
+        body instead of a Pydantic model: under the default `extra="ignore"` the
+        `secret_access_key` below would be dropped before the contract ever saw it,
+        the request would succeed on the strength of its well-formed reference, and
+        nothing would report that a secret had crossed the wire. The submitter would
+        believe they had sent a credential and would have sent it nowhere.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await _register(
+            client, _auth_header(org), workspace, secret_access_key=FAKE_AWS_KEY
+        )
+
+        assert response.status_code == 400, response.text
+        # Refused, not stripped-and-accepted.
+        assert response.json()["detail"].startswith("connection request carries")
+        # The refusal names the offending FIELD and never its contents.
+        assert FAKE_AWS_KEY not in response.text
+        assert "secret_access_key" in response.text
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_persisted_when_the_request_is_refused(self, client):
+        """The refusal is not merely a status code: no connection row survives it."""
+        from sqlalchemy import select
+
+        from app.models.provider_connection import ProviderConnection
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        refused = await _register(
+            client, _auth_header(org), workspace, secret_access_key=FAKE_AWS_KEY
+        )
+        assert refused.status_code == 400
+
+        async with async_session_test() as session:
+            rows = (await session.execute(select(ProviderConnection))).scalars().all()
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_a_secret_arn_is_refused_as_the_reference(self, client):
+        """An ARN is not an acceptable pointer. It names the account, region and secret.
+
+        Acceptance 4's reasoning: anyone holding the ARN needs only a credential with
+        `secretsmanager:GetSecretValue` to complete the read, and rotating the secret
+        does not retract the string.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await _register(
+            client, _auth_header(org), workspace, credential_id=FAKE_SECRET_ARN
+        )
+
+        assert response.status_code == 400, response.text
+        assert FAKE_SECRET_ARN not in response.text
+        assert "000000000000" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_a_secret_nested_inside_the_payload_is_refused(self, client):
+        """The check recurses, so a secret in a provider blob is reached, not skipped."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await _register(
+            client,
+            _auth_header(org),
+            workspace,
+            provider_config={"region": "eu-north1", "api_token": "t0ken-value-here"},
+        )
+
+        assert response.status_code == 400, response.text
+        assert "api_token" in response.text
+
+    @pytest.mark.asyncio
+    async def test_a_credential_this_org_never_registered_is_refused(self, client):
+        """The reference must exist in this org's registry — evidence the caller did not write.
+
+        Org-scoping, not per-principal vault ownership: `credential_registry` has no
+        owner column, and reconciling against the real vault is the gated R7 6-7 work.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await _register(
+            client, _auth_header(org), workspace, credential_id=CRED_B
+        )
+
+        assert response.status_code == 404, response.text
+        assert "not registered" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_another_orgs_workspace_is_not_found(self, client):
+        """A workspace outside the caller's organization does not resolve."""
+        org_a, workspace_a = await _seed_org_workspace_credentials(CRED_A)
+        _, workspace_b = await _seed_org_workspace_credentials(CRED_B)
+
+        response = await _register(client, _auth_header(org_a), workspace_b)
+
+        assert response.status_code == 403, response.text
+
+
+class TestTheTwoChecksAreIndependent:
+    """Acceptance 2: vault delegation and workspace binding, both required.
+
+    Under enforcement, where a real token subject exists and the ownership half of
+    `authorize_delegation` is load-bearing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_owner_with_the_grant_succeeds(self, client, enforcing_connection):
+        """The positive case under enforcement. Without it, the denials below prove nothing."""
+        ctx = enforcing_connection
+        response = await client.get(
+            f"{CONNECTIONS.format(ws=ctx.workspace)}/{ctx.connection_id}",
+            headers=ctx.headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["credential"]["credential_id"] == CRED_A
+
+    @pytest.mark.asyncio
+    async def test_a_principal_who_is_neither_owner_nor_delegate_is_refused(
+        self, client, enforcing_connection
+    ):
+        """Org membership satisfies neither check.
+
+        `other-principal` holds `workspace:renew_credential` on this very workspace —
+        so the PERMISSION half passes — and is refused anyway, because the vault
+        records someone else as the credential's owner. That is the hole acceptance 2
+        names: delegating a credential one merely has access to.
+        """
+        ctx = enforcing_connection
+        await ctx.grant("other-principal", "workspace:renew_credential")
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=ctx.workspace)}/{ctx.connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(),
+            },
+            headers=ctx.headers(subject="other-principal"),
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == (
+            "not authorized to delegate this credential for this workspace"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_owner_without_the_renewal_permission_is_refused(
+        self, client, enforcing_connection
+    ):
+        """Ownership alone is not enough: the workspace grant is the other half.
+
+        The mirror of the test above — same connection, same owner, the permission
+        removed — so the two together show neither half alone admits.
+        """
+        ctx = enforcing_connection
+        await ctx.grant(ctx.owner, "workspace:read")
+
+        response = await client.delete(
+            f"{CONNECTIONS.format(ws=ctx.workspace)}/{ctx.connection_id}",
+            headers=ctx.headers(),
+        )
+
+        # 403 either from the guard (the route requires RENEW_CREDENTIAL) or from the
+        # delegation check. Both are refusals of the same missing authority; what
+        # matters is that downgrading the grant closes the route.
+        assert response.status_code == 403, response.text
+
+    @pytest.mark.asyncio
+    async def test_registration_checks_the_permission_itself(
+        self, client, enforcing_connection, monkeypatch
+    ):
+        """Registration's own permission check is not redundant with the guard.
+
+        Registration cannot run `authorize_delegation` — there is no stored connection
+        to resolve ownership from yet — so it checks the permission half directly
+        against the same server-held grant. Today the guard already demands
+        `renew_credential` for this route, which makes the in-handler check
+        unreachable: deleting it breaks no test, which is how this one came to be
+        written.
+
+        So the test reaches it the only way it can be reached — by weakening the
+        inventory entry to `READ`, exactly the change that would otherwise turn
+        registration into an operation any reader can perform. That is what the gate
+        defends against, and pinning it here means the defence is not silently
+        deleted as dead code.
+        """
+        from app import endpoint_inventory
+        from superplane_auth.policy import Permission
+
+        ctx = enforcing_connection
+        key = ("POST", "/workspaces/{workspace_id}/provider-connections")
+        weakened = dict(endpoint_inventory.DOMAIN_ROUTES)
+        weakened[key] = (endpoint_inventory.Scope.WORKSPACE, Permission.READ)
+        monkeypatch.setattr(endpoint_inventory, "DOMAIN_ROUTES", weakened)
+
+        # A principal holding only `read` now clears the (weakened) guard.
+        await ctx.grant("reader-only", "workspace:read")
+
+        response = await _register(
+            client, ctx.headers(subject="reader-only"), ctx.workspace, CRED_B
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == (
+            "not authorized to delegate this credential for this workspace"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_credential_bound_elsewhere_is_refused_in_this_workspace(
+        self, client, enforcing_connection
+    ):
+        """The binding is EXACT. A sibling workspace in the same org is not a binding.
+
+        The caller here owns the credential and holds `renew_credential` on the
+        workspace in the URL, so the delegation half passes completely. It is refused
+        on the binding alone — which is the isolation acceptance 2 exists to create,
+        since ADP's own handlers filter on org and would otherwise let every org-mate
+        through.
+        """
+        ctx = enforcing_connection
+        sibling = await ctx.add_workspace()
+        await ctx.grant(ctx.owner, "workspace:renew_credential", workspace=sibling)
+
+        response = await client.get(
+            f"{CONNECTIONS.format(ws=sibling)}/{ctx.connection_id}",
+            headers=ctx.headers(),
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == "credential is not bound to this workspace"
+
+    @pytest.mark.asyncio
+    async def test_the_binding_is_enforced_with_explicit_workspace_grants(self, client):
+        """The isolation half does not depend on which mode the deployment runs in.
+
+        `granted_permissions` concedes the PERMISSION half when no grant is published
+        (the legacy default). It concedes nothing about the binding, which is
+        database-backed — so cross-workspace refusal holds in both modes, and this
+        test is the evidence rather than the docstring claiming it.
+        """
+        org, workspace_a, workspace_b = await _seed_org_workspace_credentials(
+            CRED_A, workspaces=2
+        )
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace_a)
+        connection_id = created.json()["connection_id"]
+
+        response = await client.get(
+            f"{CONNECTIONS.format(ws=workspace_b)}/{connection_id}", headers=headers
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == "credential is not bound to this workspace"
+
+    @pytest.mark.asyncio
+    async def test_another_organizations_connection_is_not_found(self, client):
+        """Cross-tenant reads are 404, not 403: a 403 would confirm the id exists."""
+        org_a, workspace_a = await _seed_org_workspace_credentials(CRED_A)
+        org_b, workspace_b = await _seed_org_workspace_credentials(CRED_B)
+        created = await _register(client, _auth_header(org_b), workspace_b, CRED_B)
+        foreign_id = created.json()["connection_id"]
+
+        response = await client.get(
+            f"{CONNECTIONS.format(ws=workspace_a)}/{foreign_id}",
+            headers=_auth_header(org_a),
+        )
+
+        assert response.status_code == 404, response.text
+
+
+class TestFourSeparateReadings:
+    """Acceptance 3: four readings, no aggregate, and unmeasured is not zero."""
+
+    @pytest.mark.asyncio
+    async def test_the_four_readings_are_reported_separately(self, client):
+        """Four fields on the wire, and no aggregate boolean anywhere in the body.
+
+        Asserted at the WIRE, not on the Python object: every consumer reads the
+        response, so an aggregate added at serialization would undo the separation no
+        matter how carefully the dataclass avoids one.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json=_passing_report(observed_capacity=7, detail="checked"),
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        validation = response.json()["validation"]
+        assert validation["credential_valid"] is True
+        assert validation["permissions_sufficient"] is True
+        assert validation["quota_available"] is True
+        assert validation["observed_capacity"] == 7
+        for banned in ("ok", "healthy", "ready", "valid", "status"):
+            assert banned not in validation
+
+    @pytest.mark.asyncio
+    async def test_unmeasured_capacity_stays_null_and_is_not_zero(self, client):
+        """"We did not look" is a different operational fact from "nothing is free".
+
+        Collapsing them is what acceptance 3 forbids, and the wire is where it would
+        happen: an omitted key defaulting to 0 would report a measurement nobody took.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json=_passing_report(),
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        validation = response.json()["validation"]
+        assert validation["observed_capacity"] is None
+        assert validation["observed_capacity"] != 0
+
+    @pytest.mark.asyncio
+    async def test_unmeasured_capacity_survives_the_round_trip_as_null(self, client):
+        """Still null when read back, not only in the response that reported it.
+
+        Added because mutating the READ path — `to_validation`'s
+        `observed_capacity or 0` — left the whole suite green: the POST response is
+        built from the submitted report, so every "is None" assertion above passes
+        while the stored reading is served as a measured zero. The distinction
+        acceptance 3 protects has to survive persistence, and this is the only test
+        that reads it back through `GET` after an unmeasured validation.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+        await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json=_passing_report(),
+            headers=headers,
+        )
+
+        readback = await client.get(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+
+        assert readback.status_code == 200, readback.text
+        assert readback.json()["validation"]["observed_capacity"] is None
+
+    @pytest.mark.asyncio
+    async def test_measured_zero_capacity_is_preserved_as_zero(self, client):
+        """The other side of the same distinction: an explicit 0 survives as 0.
+
+        Read with a sentinel rather than `payload.get(key, None)` so a falsy explicit
+        value is not confused with an absent one.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json=_passing_report(observed_capacity=0),
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["validation"]["observed_capacity"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_valid_credential_with_no_capacity_still_activates(self, client):
+        """Validity is not capacity. The connection is ACTIVE and admits nothing.
+
+        A working key with zero free GPUs is the concrete outage acceptance 3 is
+        about: an admission reading "credential valid" as "capacity available"
+        succeeds here and fails later at the provider, in someone else's log.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json=_passing_report(observed_capacity=0),
+            headers=headers,
+        )
+
+        assert response.json()["status"] == "active"
+        assert response.json()["validation"]["observed_capacity"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_true_capacity_flag_is_not_a_measurement(self, client):
+        """`True` is an `int` in Python; it must not arrive as a capacity of 1.
+
+        Without the explicit `bool` refusal the contract would accept it and the
+        connection would report one free unit on the strength of a flag.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json=_passing_report(observed_capacity=True),
+            headers=headers,
+        )
+
+        assert response.status_code == 400, response.text
+        assert "observed_capacity" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_reading_records_the_four_and_does_not_activate(
+        self, client
+    ):
+        """A failed validation keeps the readings and leaves the status alone.
+
+        Which of the four failed is the operationally useful fact. `activate` would
+        raise on this report and the readings would be lost, so there is a separate
+        recording path — and the connection stays PENDING rather than becoming ACTIVE.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json={
+                "credential_valid": True,
+                "permissions_sufficient": True,
+                "quota_available": False,
+                "observed_capacity": 3,
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "pending"
+        assert body["validation"]["quota_available"] is False
+        assert body["validation"]["credential_valid"] is True
+
+        # And the readings were persisted, not just echoed.
+        stored = await client.get(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+        assert stored.json()["validation"]["quota_available"] is False
+        assert stored.json()["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_active_cannot_be_reached_by_asserting_it(self, client):
+        """There is no route that sets status. ACTIVE is only ever reached through
+        a report the contract accepted, so "checked and working" is what it means."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace, status="active")
+
+        assert created.status_code == 201
+        assert created.json()["status"] == "pending"
+
+
+class TestRotationIsAtomicAndKeepsTheOldCredential:
+    """Acceptance 5, first half."""
+
+    @pytest.mark.asyncio
+    async def test_rotation_switches_onto_a_validated_replacement(self, client):
+        """The positive case: one call, new reference, ACTIVE, binding moved with it."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(observed_capacity=2),
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["credential"]["credential_id"] == CRED_B
+        assert body["status"] == "active"
+        # The binding follows the reference in the same transaction. Leaving it
+        # behind would produce a connection whose own binding denies it on the next
+        # `authorize_use`.
+        assert body["binding"]["credential_id"] == CRED_B
+        assert body["binding"]["workspace_id"] == str(workspace)
+
+    @pytest.mark.asyncio
+    async def test_the_superseded_credential_is_reported_not_deleted(self, client):
+        """The old reference comes back in the response, flagged as still registered.
+
+        Revocation is a separate, deliberate step once traffic is confirmed on the
+        replacement. A sequence that deleted first would leave the connection dead
+        for the width of that window, which is what "atomically" forbids — and an
+        operator who is not TOLD the old credential is live will not revoke it.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(),
+            },
+            headers=headers,
+        )
+
+        superseded = response.json()["superseded_credential"]
+        assert superseded["credential_id"] == CRED_A
+        assert superseded["still_registered"] is True
+        assert "Revoke it at the vault" in superseded["next_step"]
+
+    @pytest.mark.asyncio
+    async def test_a_rotated_connection_is_still_usable_afterwards(self, client):
+        """Read the connection back after rotating it, and rotate it again.
+
+        The assertions on the rotation *response* cannot see this: that body is built
+        from the contract state `rotate` returned, so it reports the new credential
+        correctly even if the stored binding row was never moved. Mutating away the
+        binding update left every other rotation test green while turning the
+        connection into a permanent 409 — `to_state` refuses a row whose binding names
+        a different credential than the connection, so the connection becomes
+        unreadable and unmanageable by every route at once.
+
+        That is the failure `record_rotation` updates the binding in the same
+        transaction to prevent, and a subsequent read is the only thing that detects
+        it. Rotating a second time also confirms the connection is still *manageable*,
+        not merely readable.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        base = CONNECTIONS.format(ws=workspace)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        rotated = await client.post(
+            f"{base}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(),
+            },
+            headers=headers,
+        )
+        assert rotated.status_code == 200, rotated.text
+
+        readback = await client.get(f"{base}/{connection_id}", headers=headers)
+        assert readback.status_code == 200, readback.text
+        assert readback.json()["credential"]["credential_id"] == CRED_B
+        assert readback.json()["binding"]["credential_id"] == CRED_B
+        assert readback.json()["status"] == "active"
+
+        # And back onto the original credential, which is still registered.
+        again = await client.post(
+            f"{base}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_A,
+                    "service": "nebius",
+                    "label": "prod",
+                },
+                "validation": _passing_report(),
+            },
+            headers=headers,
+        )
+        assert again.status_code == 200, again.text
+        assert again.json()["credential"]["credential_id"] == CRED_A
+
+    @pytest.mark.asyncio
+    async def test_rotation_onto_an_unvalidated_replacement_is_refused(self, client):
+        """No passing report, no rotation. The contract's signature is the enforcement."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(quota_available=False),
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 400, response.text
+        assert "has not validated" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_the_connection_is_unchanged_when_rotation_is_refused(self, client):
+        """A refused rotation leaves the original reference serving.
+
+        The point of atomicity: there is no intermediate state in which the
+        connection references nothing, including on the failure path.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(credential_valid=False),
+            },
+            headers=headers,
+        )
+
+        current = await client.get(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+        assert current.json()["credential"]["credential_id"] == CRED_A
+        assert current.json()["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_rotation_onto_the_same_credential_is_refused(self, client):
+        """A no-op reported as a rotation is worse than an error.
+
+        A caller believing they had rotated away from a compromised key would be
+        wrong, and would stop looking.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_A,
+                    "service": "nebius",
+                    "label": "prod",
+                },
+                "validation": _passing_report(),
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 400, response.text
+        assert "own credential" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_pending_connection_can_be_rotated(self, client):
+        """Rotation needs `allows_renewal()`, NOT `admits_new_work()`.
+
+        This is a bug the first version of these routes had: guarding rotation with
+        the admission gate (`authorize_use`, which requires ACTIVE) stranded exactly
+        the connection rotation exists to rescue — one registered against a
+        credential that never validates, and so can never be activated, leaving
+        disablement as its only remaining transition. The contract separates
+        `allows_renewal` from `admits_new_work` precisely to keep this case open.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+        assert created.json()["status"] == "pending"
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(),
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["credential"]["credential_id"] == CRED_B
+
+    @pytest.mark.asyncio
+    async def test_an_unregistered_replacement_is_refused(self, client):
+        """The replacement needs the same registry evidence as the original."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(),
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 404, response.text
+        assert "replacement credential is not registered" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_replacement_carrying_a_secret_is_refused(self, client):
+        """Acceptance 1 applies to the rotation body too, not only to registration."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                    "secret_value": FAKE_AWS_KEY,
+                },
+                "validation": _passing_report(),
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 400, response.text
+        assert FAKE_AWS_KEY not in response.text
+
+
+class TestDisablementIsHonest:
+    """Acceptance 5, second half: it blocks, and it says what it does not do."""
+
+    @pytest.mark.asyncio
+    async def test_disablement_blocks_admission_and_renewal(self, client):
+        """The positive case, and both flags it is supposed to move."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.delete(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "disabled"
+        assert body["admits_new_work"] is False
+        assert body["allows_renewal"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_limitation_is_in_the_response_body(self, client):
+        """Not in a log, not in a docstring — in the body the operator reads.
+
+        An operator who reads "disabled" as "revoked" skips the provider-side
+        revocation that actually contains the credential. The limitation has to reach
+        the person who just disabled it, which means the response.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.delete(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+
+        limitation = response.json()["limitation"]
+        assert "does not revoke them" in limitation
+        assert "may remain usable until they are revoked at the provider" in limitation
+        # The exact contract text, so a reworded-but-weaker message fails here.
+        from superplane_contracts.connections import DISABLEMENT_LIMITATION
+
+        assert limitation == DISABLEMENT_LIMITATION
+
+    @pytest.mark.asyncio
+    async def test_renewal_is_actually_refused_after_disablement(self, client):
+        """The flag is not decorative: rotation is genuinely closed afterwards.
+
+        And it is refused AS disablement. Reporting it as "not bound to this
+        workspace" — which the admission gate's single refusal string would have
+        produced — would send the operator who just disabled it to look in the wrong
+        place for a problem that does not exist.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        await client.delete(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={
+                "replacement": {
+                    "credential_id": CRED_B,
+                    "service": "nebius",
+                    "label": "next",
+                },
+                "validation": _passing_report(),
+            },
+            headers=headers,
+        )
+
+        assert response.status_code == 409, response.text
+        assert "disabled" in response.json()["detail"]
+        assert "renewals" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_validation_is_refused_after_disablement(self, client):
+        """Recording a fresh passing reading on a disabled connection is refused.
+
+        Otherwise storage would assert a healthy credential on a connection that
+        admits nothing, and `activate` raises on a disabled connection anyway.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        await client.delete(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json=_passing_report(observed_capacity=9),
+            headers=headers,
+        )
+
+        assert response.status_code == 409, response.text
+
+    @pytest.mark.asyncio
+    async def test_disabling_twice_is_allowed(self, client):
+        """Idempotent, deliberately.
+
+        Refusing the second call would make containment depend on the caller knowing
+        the current status, and an operator retrying because they are unsure whether
+        the first attempt landed would get an error that reads like a failure to
+        disable.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        url = f"{CONNECTIONS.format(ws=workspace)}/{connection_id}"
+
+        first = await client.delete(url, headers=headers)
+        second = await client.delete(url, headers=headers)
+
+        assert first.status_code == 200
+        assert second.status_code == 200, second.text
+        assert second.json()["status"] == "disabled"
+        assert second.json()["limitation"]
+
+    @pytest.mark.asyncio
+    async def test_disablement_does_not_delete_the_connection(self, client):
+        """DELETE disables. The row survives, so the credential stays auditable.
+
+        A deleted row would lose the record that this credential was ever bound
+        here — precisely the evidence needed to know what still has to be revoked.
+        """
+        from sqlalchemy import select
+
+        from app.models.provider_connection import ProviderConnection
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        await client.delete(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+
+        async with async_session_test() as session:
+            rows = (await session.execute(select(ProviderConnection))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].status == "disabled"
+
+        # And it is still readable through the API, with its limitation intact.
+        readback = await client.get(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers
+        )
+        assert readback.status_code == 200
+        assert readback.json()["limitation"]
+
+
+class TestNoResponseOrLogCarriesSecretMaterial:
+    """Acceptance 4: not in a body, not in an error, not in a log line."""
+
+    @pytest.mark.asyncio
+    async def test_no_response_in_the_lifecycle_contains_an_arn_or_a_value(
+        self, client
+    ):
+        """Every response across the whole lifecycle, checked as a set.
+
+        Asserted over all five routes rather than one, because the emission
+        allowlist is only as good as its weakest response and a per-route spot check
+        would miss the one that copied a field.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        base = CONNECTIONS.format(ws=workspace)
+
+        bodies = []
+        created = await _register(client, headers, workspace)
+        bodies.append(created.text)
+        connection_id = created.json()["connection_id"]
+        bodies.append(
+            (
+                await client.post(
+                    f"{base}/{connection_id}/validation",
+                    json=_passing_report(observed_capacity=1),
+                    headers=headers,
+                )
+            ).text
+        )
+        bodies.append((await client.get(f"{base}/{connection_id}", headers=headers)).text)
+        bodies.append(
+            (
+                await client.post(
+                    f"{base}/{connection_id}/rotation",
+                    json={
+                        "replacement": {
+                            "credential_id": CRED_B,
+                            "service": "nebius",
+                            "label": "next",
+                        },
+                        "validation": _passing_report(),
+                    },
+                    headers=headers,
+                )
+            ).text
+        )
+        bodies.append((await client.delete(f"{base}/{connection_id}", headers=headers)).text)
+
+        assert len(bodies) == 5
+        for body in bodies:
+            assert "arn:" not in body
+            assert FAKE_AWS_KEY not in body
+            assert "AKIA" not in body
+            # No secret-named key is emitted at all, so a value cannot arrive under
+            # one later.
+            for key in ("secret", "password", "private_key", "token"):
+                assert key not in body.lower()
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_does_not_echo_the_secret_it_refused(self, client):
+        """The refusal is the response most likely to carry the thing it refused."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await _register(
+            client,
+            _auth_header(org),
+            workspace,
+            credential_id=FAKE_SECRET_ARN,
+            api_key=FAKE_AWS_KEY,
+        )
+
+        assert response.status_code == 400
+        assert FAKE_SECRET_ARN not in response.text
+        assert FAKE_AWS_KEY not in response.text
+        assert "000000000000" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_no_log_line_carries_the_submitted_secret(self, client, caplog):
+        """The log is the surface that leaks, and it has the larger blast radius.
+
+        A response body is designed and reviewable; a log line interpolates whatever
+        object is in scope, and it ships to CloudWatch, to the aggregator, and — for
+        an agent surface — into a run transcript and a model's context. Rotating the
+        credential does not retract any of those copies.
+
+        Captured at the root logger at DEBUG so this covers the audit and middleware
+        loggers too, not only the router's own.
+        """
+        import logging
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        with caplog.at_level(logging.DEBUG):
+            await _register(
+                client,
+                _auth_header(org),
+                workspace,
+                credential_id=FAKE_SECRET_ARN,
+                secret_access_key=FAKE_AWS_KEY,
+            )
+            await _register(
+                client, _auth_header(org), workspace, api_key=FAKE_AWS_KEY
+            )
+
+        captured = "\n".join(
+            [record.getMessage() for record in caplog.records] + [caplog.text]
+        )
+        assert FAKE_AWS_KEY not in captured
+        assert FAKE_SECRET_ARN not in captured
+        assert "000000000000" not in captured
+        assert "fake-not-real-AbCdEf" not in captured
+
+
+class TestMalformedBodiesAreRefusedAsBadRequests:
+    """The caller-error branches, asserted as 400 rather than merely "not 200".
+
+    A malformed body that reached the contract would surface a `ContractViolation`
+    message naming internal fields, and one that reached a Pydantic model would go
+    through FastAPI's 422 path — which is the `input`-echoing handler these routes
+    deliberately keep off the credential surface. Both are refused here instead, so
+    the status class is the thing worth asserting.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_is_not_json_is_refused(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await client.post(
+            CONNECTIONS.format(ws=workspace),
+            content=b"not json at all",
+            headers={**_auth_header(org), "Content-Type": "application/json"},
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == "body must be valid JSON"
+
+    @pytest.mark.asyncio
+    async def test_a_json_body_that_is_not_an_object_is_refused(self, client):
+        """A bare list parses as JSON but has no fields to read."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await client.post(
+            CONNECTIONS.format(ws=workspace),
+            json=[CRED_A],
+            headers=_auth_header(org),
+        )
+
+        assert response.status_code == 400, response.text
+        assert "must be a JSON object" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_provider_is_refused(self, client):
+        """`provider` is required and is not defaulted.
+
+        Defaulting it would record a connection against a provider nobody named,
+        which is a wrong answer stored as if it were reported.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await client.post(
+            CONNECTIONS.format(ws=workspace),
+            json={"credential_id": CRED_A, "service": "nebius", "label": "prod"},
+            headers=_auth_header(org),
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == "provider is required"
+
+    @pytest.mark.asyncio
+    async def test_a_non_integer_capacity_is_refused(self, client):
+        """A string capacity is refused rather than coerced.
+
+        `int("4")` would succeed and store a measurement the caller never made in
+        that type; the point of the four separate readings is that each one means
+        exactly what was reported.
+        """
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_id = created.json()["connection_id"]
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation",
+            json=_passing_report(observed_capacity="lots"),
+            headers=headers,
+        )
+
+        assert response.status_code == 400, response.text
+        assert "observed_capacity must be an integer or omitted" in (
+            response.json()["detail"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_rotation_body_without_a_replacement_is_refused(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={"validation": _passing_report()},
+            headers=headers,
+        )
+
+        assert response.status_code == 400, response.text
+        assert "replacement" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_connection_id_is_not_found(self, client):
+        """A syntactically valid id that names nothing is 404, before any auth work."""
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+
+        response = await client.get(
+            f"{CONNECTIONS.format(ws=workspace)}/{uuid.uuid4()}",
+            headers=_auth_header(org),
+        )
+
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "provider connection not found"
+
+
+class TestRoutesAreInventoriedAndScopedCorrectly:
+    """The registration that makes the grant exist at all."""
+
+    def test_every_route_is_workspace_scoped_with_a_recorded_decision(self):
+        """WORKSPACE scope is load-bearing, not cosmetic.
+
+        `app/domain_guard.py` publishes `request.state.grant` only under
+        `Scope.WORKSPACE`. Registered as ORGANIZATION these routes would read an
+        empty permission set and deny every caller, however privileged — and every
+        negative test in this file would still pass. Pinned here so the scope cannot
+        be "simplified" later.
+        """
+        from app.endpoint_inventory import DOMAIN_ROUTES, Scope
+        from superplane_auth.policy import Permission
+
+        routes = {
+            key: value
+            for key, value in DOMAIN_ROUTES.items()
+            if "provider-connections" in key[1]
+        }
+        assert len(routes) == 5
+        assert all(scope is Scope.WORKSPACE for scope, _ in routes.values())
+        # The path parameter must be named as the guard resolves it, or the
+        # workspace cannot be resolved and every request is refused.
+        from app.endpoint_inventory import WORKSPACE_PATH_PARAM
+
+        assert all("{" + WORKSPACE_PATH_PARAM + "}" in path for _, path in routes)
+
+        by_method = {(method, path.count("/")): perm for (method, path), (_, perm) in routes.items()}
+        # The read is READ; every mutation is RENEW_CREDENTIAL, matching the
+        # policy's grouping of credential lifecycle operations.
+        assert by_method[("GET", 4)] is Permission.READ
+        assert all(
+            perm is Permission.RENEW_CREDENTIAL
+            for (method, _), perm in by_method.items()
+            if method != "GET"
+        )
+
+    def test_the_mounted_routes_match_the_inventory_templates(self):
+        """Byte-identical templates. A near-miss classifies as unrecorded and 403s."""
+        from fastapi.routing import APIRoute
+
+        from app.endpoint_inventory import DOMAIN_ROUTES
+        from app.main import app as fastapi_app
+
+        mounted = {
+            (method, route.path)
+            for route in fastapi_app.routes
+            if isinstance(route, APIRoute) and "provider-connections" in route.path
+            for method in route.methods
+            if method != "HEAD"
+        }
+        inventoried = {key for key in DOMAIN_ROUTES if "provider-connections" in key[1]}
+        assert mounted == inventoried
+
+
+class TestTrustedCredentialEvidence:
+    @pytest.mark.parametrize("field", ["label", "service", "provider", "detail"])
+    @pytest.mark.parametrize("material", ["xAKIA" + "Z" * 16, "_arn:aws:secretsmanager:us-east-1:000000000000:secret:fake", "sk-ant-api03-" + "x" * 40, "%61rn%3Aaws%3Asecretsmanager%3Aus-east-1%3A000000000000%3Asecret%3Afake"])
+    async def test_recoverable_secret_metadata_is_never_persisted_or_emitted(self, client, caplog, field, material):
+        from sqlalchemy import select
+        from app.models.provider_connection import ProviderConnection
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        if field == "detail":
+            connection_id = await _active_connection(client, headers, workspace)
+            response = await client.post(f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation", json=_passing_report(detail=material), headers=headers)
+        else:
+            response = await _register(client, headers, workspace, **{field: material})
+        assert response.status_code == 400, response.text
+        assert material not in response.text
+        assert material not in caplog.text
+        async with async_session_test() as session:
+            rows = (await session.execute(select(ProviderConnection).where(ProviderConnection.org_id == org))).scalars().all()
+            if field != "detail":
+                assert rows == []
+            else:
+                assert all(material not in repr(row.__dict__) for row in rows)
+
+    @pytest.mark.parametrize("operation", ["register", "validation", "failed_validation", "rotation", "disable"])
+    async def test_committed_mutation_reports_success_after_evidence_expires(self, client, monkeypatch, operation):
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy.ext.asyncio import AsyncSession
+        from app.routers import provider_connections as router
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = None
+        if operation != "register":
+            connection_id = await _active_connection(client, headers, workspace)
+        committed = False
+        original_commit = AsyncSession.commit
+
+        class CommitClock:
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.now(tz) + (timedelta(minutes=10) if committed else timedelta())
+
+        async def commit_then_expire(session):
+            nonlocal committed
+            await original_commit(session)
+            committed = True
+
+        # Preserve the evidence type guard while advancing only the freshness clock.
+        def current(evidence):
+            from fastapi import HTTPException
+            if evidence.expires_at <= CommitClock.now(timezone.utc):
+                raise HTTPException(status_code=403, detail="expired")
+        monkeypatch.setattr(router, "_current", current)
+        monkeypatch.setattr(AsyncSession, "commit", commit_then_expire)
+        url = f"{CONNECTIONS.format(ws=workspace)}/{connection_id}"
+        if operation == "register":
+            response = await _register(client, headers, workspace)
+        elif operation in {"validation", "failed_validation"}:
+            report = _passing_report() if operation == "validation" else _passing_report(credential_valid=False, permissions_sufficient=False)
+            response = await client.post(url + "/validation", json=report, headers=headers)
+        elif operation == "rotation":
+            response = await client.post(url + "/rotation", json={"replacement": {"credential_id": CRED_B, "service": "nebius", "label": "prod"}, "validation": _passing_report()}, headers=headers)
+        else:
+            response = await client.delete(url, headers=headers)
+        assert committed
+        assert response.status_code == (201 if operation == "register" else 200), response.text
+        if operation == "register":
+            connection_id = response.json()["connection_id"]
+        stored = await client.get(f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers)
+        assert stored.status_code == 200
+        expected_status = {"register": "pending", "validation": "active", "failed_validation": "pending", "rotation": "active", "disable": "disabled"}[operation]
+        assert stored.json()["status"] == expected_status
+        assert stored.json()["credential"]["credential_id"] == (CRED_B if operation == "rotation" else CRED_A)
+
+    async def test_explicit_vault_delegate_can_manage_exact_workspace(self, client, connection_security, monkeypatch):
+        from dataclasses import replace
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        original = connection_security.read
+        async def delegated(**kwargs):
+            evidence = await original(**kwargs)
+            return replace(evidence, ownership=replace(evidence.ownership, owner_principal="vault-owner", delegated_to_workspaces=frozenset({str(workspace)})))
+        monkeypatch.setattr(connection_security, "read", delegated)
+        connection_id = await _active_connection(client, headers, workspace)
+        from sqlalchemy import select
+        from app.models.provider_connection import ProviderConnection, ProviderConnectionBinding
+        from tests.conftest import async_session_test
+        async with async_session_test() as session:
+            connection = await session.get(ProviderConnection, uuid.UUID(connection_id))
+            binding = (await session.execute(select(ProviderConnectionBinding).where(ProviderConnectionBinding.connection_id == uuid.UUID(connection_id)))).scalar_one()
+            assert connection.owner_principal == "vault-owner"
+            assert binding.bound_by == "user-abc"
+        url = f"{CONNECTIONS.format(ws=workspace)}/{connection_id}"
+        rotated = await client.post(url + "/rotation", json={"replacement": {"credential_id": CRED_B, "service": "nebius", "label": "prod"}, "validation": _passing_report()}, headers=headers)
+        assert rotated.status_code == 200, rotated.text
+        disabled = await client.delete(url, headers=headers)
+        assert disabled.status_code == 200, disabled.text
+
+    @pytest.mark.parametrize("mismatch", ["workspace", "credential"])
+    async def test_vault_delegation_cannot_cross_binding(self, client, connection_security, monkeypatch, mismatch):
+        from dataclasses import replace
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        original = connection_security.read
+        async def delegated(**kwargs):
+            evidence = await original(**kwargs)
+            return replace(evidence, ownership=replace(evidence.ownership, owner_principal="vault-owner", credential_id=CRED_B if mismatch == "credential" else CRED_A, delegated_to_workspaces=frozenset({str(uuid.uuid4()) if mismatch == "workspace" else str(workspace)})))
+        monkeypatch.setattr(connection_security, "read", delegated)
+        response = await _register(client, _auth_header(org), workspace)
+        assert response.status_code == 403
+
+    async def test_rotation_expiry_during_replacement_lookup_preserves_original(self, client, connection_security, monkeypatch):
+        import asyncio
+        from dataclasses import replace
+        from datetime import datetime, timedelta, timezone
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        original = connection_security.read
+
+        async def delayed_lookup(**kwargs):
+            evidence = await original(**kwargs)
+            if kwargs["reference"].credential_id == CRED_A:
+                return replace(evidence, expires_at=datetime.now(timezone.utc) + timedelta(milliseconds=50))
+            await asyncio.sleep(0.1)
+            return evidence
+
+        monkeypatch.setattr(connection_security, "read", delayed_lookup)
+        response = await client.post(
+            f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation",
+            json={"replacement": {"credential_id": CRED_B, "service": "nebius", "label": "prod"}, "validation": _passing_report()},
+            headers=headers,
+        )
+        assert response.status_code == 403
+        read = await client.get(f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers)
+        assert read.json()["credential"]["credential_id"] == CRED_A
+
+    async def test_registration_cannot_claim_another_vault_owners_credential(self, client, connection_security):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        connection_security.owner_override = "different-owner"
+        response = await _register(client, _auth_header(org), workspace)
+        assert response.status_code == 403
+
+    async def test_no_vault_adapter_refuses_registration(self, client, monkeypatch):
+        from app.services import credential_evidence
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        monkeypatch.setattr(credential_evidence, "_reader", None)
+        response = await _register(client, _auth_header(org), workspace)
+        assert response.status_code == 503
+
+    async def test_caller_report_without_independent_attestation_cannot_activate(self, client, connection_security):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        connection_security.attest = False
+        response = await client.post(f"{CONNECTIONS.format(ws=workspace)}/{created.json()['connection_id']}/validation", json=_passing_report(observed_capacity=4), headers=headers)
+        assert response.status_code == 403
+        read = await client.get(f"{CONNECTIONS.format(ws=workspace)}/{created.json()['connection_id']}", headers=headers)
+        assert read.json()["status"] == "pending"
+
+    async def test_rotation_requires_ownership_of_replacement(self, client, connection_security):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        _vault_owners[(str(org), CRED_B)] = "different-owner"
+        response = await client.post(f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation", json={"replacement": {"credential_id": CRED_B, "service": "nebius", "label": "prod"}, "validation": _passing_report(observed_capacity=4)}, headers=headers)
+        assert response.status_code == 403
+        read = await client.get(f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers)
+        assert read.json()["credential"]["credential_id"] == CRED_A
+
+    @pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+    async def test_validation_readings_are_not_truthiness_coerced(self, client, value):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        response = await client.post(f"{CONNECTIONS.format(ws=workspace)}/{created.json()['connection_id']}/validation", json=_passing_report(credential_valid=value), headers=headers)
+        assert response.status_code == 400
+
+    async def test_failed_revalidation_stops_active_admission_and_remains_readable(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        response = await client.post(f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/validation", json=_passing_report(quota_available=False, observed_capacity=4), headers=headers)
+        assert response.status_code == 200
+        read = await client.get(f"{CONNECTIONS.format(ws=workspace)}/{connection_id}", headers=headers)
+        assert read.status_code == 200
+        assert read.json()["status"] == "pending"
+        assert read.json()["admits_new_work"] is False
+
+    async def test_legacy_organization_token_does_not_grant_credential_authority(self, client, monkeypatch):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        with monkeypatch.context() as legacy:
+            legacy.setattr(settings, "domain_auth_enforced", False)
+            legacy.setattr(fastapi_app.state, "domain_policy", None)
+            token, _ = create_access_token(org)
+            response = await _register(client, {"Authorization": f"Bearer {token}"}, workspace)
+        assert response.status_code == 403
+
+
+    @pytest.mark.parametrize("bad_field", ["org", "workspace", "reference", "owner", "expired", "naive", "missing"])
+    async def test_unbound_or_stale_vault_evidence_cannot_register(self, client, connection_security, monkeypatch, bad_field):
+        from dataclasses import replace
+        from datetime import datetime, timezone, timedelta
+        from superplane_contracts.connections import CredentialReference, VaultOwnership
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        original = connection_security.read
+        async def corrupt(**kwargs):
+            result = await original(**kwargs)
+            if bad_field == "missing": return None
+            updates = {
+                "org": {"org_id": str(uuid.uuid4())},
+                "workspace": {"workspace_id": str(uuid.uuid4())},
+                "reference": {"reference": CredentialReference(credential_id=CRED_B, service="nebius", label="prod")},
+                "owner": {"ownership": VaultOwnership(credential_id=CRED_B, owner_principal="user-abc")},
+                "expired": {"expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)},
+                "naive": {"expires_at": datetime.now()},
+            }
+            return replace(result, **updates[bad_field])
+        monkeypatch.setattr(connection_security, "read", corrupt)
+        response = await _register(client, _auth_header(org), workspace)
+        assert response.status_code == 403
+
+    async def test_vault_errors_do_not_echo_secret_material(self, client, connection_security, monkeypatch):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        async def failed(**kwargs): raise RuntimeError(FAKE_SECRET_ARN)
+        monkeypatch.setattr(connection_security, "read", failed)
+        response = await _register(client, _auth_header(org), workspace)
+        assert response.status_code == 503
+        assert FAKE_SECRET_ARN not in response.text
+
+    async def test_rotation_refuses_secret_material_outside_known_fields(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        response = await client.post(f"{CONNECTIONS.format(ws=workspace)}/{connection_id}/rotation", json={"replacement": {"credential_id": CRED_B, "service": "nebius", "label": "prod"}, "validation": _passing_report(), "secret_access_key": FAKE_AWS_KEY}, headers=headers)
+        assert response.status_code == 400
+        assert FAKE_AWS_KEY not in response.text
+
+    async def test_oversized_body_is_bounded(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        response = await _register(client, _auth_header(org), workspace, padding="x" * 65536)
+        assert response.status_code == 413
+
+
+    async def test_duplicate_registration_returns_conflict_and_preserves_binding(self, client):
+        org, first, second = await _seed_org_workspace_credentials(CRED_A, workspaces=2)
+        headers = _auth_header(org)
+        created = await _register(client, headers, first)
+        duplicate = await _register(client, headers, second)
+        assert duplicate.status_code == 409
+        read = await client.get(f"{CONNECTIONS.format(ws=first)}/{created.json()['connection_id']}", headers=headers)
+        assert read.status_code == 200
+
+    @pytest.mark.parametrize("fields", [{"provider": "x"*51}, {"service": "x"*101}, {"label": "x"*256}, {"credential_id": "x"*256}])
+    async def test_reference_fields_fit_postgresql_columns(self, client, fields):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        response = await _register(client, _auth_header(org), workspace, **fields)
+        assert response.status_code == 400
+
+
+class TestConnectionLifecycleIntegrity:
+    @pytest.mark.parametrize("operation", ["register", "validation", "failed_validation", "rotation", "disable"])
+    @pytest.mark.parametrize("revocation", ["revoke", "downgrade"])
+    async def test_grant_changed_during_vault_wait_prevents_write(self, client, connection_security, monkeypatch, operation, revocation):
+        from datetime import datetime, timezone
+        from sqlalchemy import select, update
+        from app.models.provider_connection import ProviderConnection
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = None if operation == "register" else await _active_connection(client, headers, workspace)
+        original = connection_security.read
+        changed = False
+
+        async def revoke_during_read(**kwargs):
+            nonlocal changed
+            evidence = await original(**kwargs)
+            if not changed:
+                changed = True
+                async with async_session_test() as session:
+                    values = {"revoked_at": datetime.now(timezone.utc)} if revocation == "revoke" else {"permissions": "workspace:read"}
+                    await session.execute(update(WorkspaceGrantRecord).where(WorkspaceGrantRecord.workspace_id == workspace).values(**values))
+                    await session.commit()
+            return evidence
+
+        monkeypatch.setattr(connection_security, "read", revoke_during_read)
+        url = f"{CONNECTIONS.format(ws=workspace)}/{connection_id}"
+        if operation == "register":
+            response = await _register(client, headers, workspace)
+        elif operation in {"validation", "failed_validation"}:
+            response = await client.post(url + "/validation", json=_passing_report(credential_valid=operation == "validation", permissions_sufficient=operation == "validation"), headers=headers)
+        elif operation == "rotation":
+            response = await client.post(url + "/rotation", json={"replacement": {"credential_id": CRED_B, "service": "nebius", "label": "next"}, "validation": _passing_report()}, headers=headers)
+        else:
+            response = await client.delete(url, headers=headers)
+        assert changed
+        assert response.status_code == 403, response.text
+        async with async_session_test() as session:
+            rows = (await session.execute(select(ProviderConnection).where(ProviderConnection.org_id == org))).scalars().all()
+            if operation == "register":
+                assert rows == []
+            else:
+                assert len(rows) == 1
+                assert rows[0].status == "active"
+                assert rows[0].adp_credential_id == CRED_A
+
+    @pytest.mark.parametrize("provider,service", [("aws", "nebius"), ("aws", "aws"), ("nebius", "aws")])
+    async def test_registration_refuses_provider_mismatch(self, client, provider, service):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        response = await _register(client, _auth_header(org), workspace, provider=provider, service=service)
+        assert response.status_code == 400, response.text
+
+    async def test_rotation_refuses_different_provider_and_preserves_reference(self, client):
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        connection_id = await _active_connection(client, headers, workspace)
+        url = f"{CONNECTIONS.format(ws=workspace)}/{connection_id}"
+        response = await client.post(url + "/rotation", json={"replacement": {"credential_id": CRED_B, "service": "aws", "label": "next"}, "validation": _passing_report()}, headers=headers)
+        assert response.status_code == 400, response.text
+        assert (await client.get(url, headers=headers)).json()["credential"]["credential_id"] == CRED_A
+
+    @pytest.mark.parametrize("state", ["pending", "active", "disabled", "superseded"])
+    async def test_deregistration_respects_connection_lifecycle_and_retains_audit(self, client, state):
+        from sqlalchemy import select
+        from app.models.credential import CredentialAuditLog, CredentialRegistry
+
+        org, workspace = await _seed_org_workspace_credentials(CRED_A, CRED_B)
+        headers = _auth_header(org)
+        created = await _register(client, headers, workspace)
+        assert created.status_code == 201
+        url = f"{CONNECTIONS.format(ws=workspace)}/{created.json()['connection_id']}"
+        if state != "pending":
+            assert (await client.post(url + "/validation", json=_passing_report(), headers=headers)).status_code == 200
+        if state == "disabled":
+            assert (await client.delete(url, headers=headers)).status_code == 200
+        elif state == "superseded":
+            assert (await client.post(url + "/rotation", json={"replacement": {"credential_id": CRED_B, "service": "nebius", "label": "next"}, "validation": _passing_report()}, headers=headers)).status_code == 200
+        async with async_session_test() as session:
+            registry_id = (await session.execute(select(CredentialRegistry.id).where(CredentialRegistry.org_id == org, CredentialRegistry.adp_credential_id == CRED_A))).scalar_one()
+        response = await client.delete(f"/vault/credentials/{registry_id}", headers=headers)
+        allowed = state in {"disabled", "superseded"}
+        assert response.status_code == (200 if allowed else 409), response.text
+        async with async_session_test() as session:
+            row = await session.get(CredentialRegistry, registry_id)
+            assert row is not None
+            assert row.status == ("Deregistered" if allowed else "Active")
+            events = (await session.execute(select(CredentialAuditLog).where(CredentialAuditLog.credential_registry_id == registry_id))).scalars().all()
+            assert len(events) == int(allowed)
+            if allowed:
+                assert events[0].accessed_by == "user-abc"
+        if allowed:
+            listing = await client.get("/vault/credentials", headers=headers)
+            assert listing.status_code == 200, listing.text
+            assert str(registry_id) not in {item["id"] for item in listing.json()["credentials"]}
+            assert (await _register(client, headers, workspace)).status_code == 404
+
+    async def test_deregistration_cannot_cross_tenant(self, client):
+        from sqlalchemy import select
+        from app.models.credential import CredentialRegistry
+        org, _ = await _seed_org_workspace_credentials(CRED_A)
+        other_org, _ = await _seed_org_workspace_credentials(CRED_B)
+        async with async_session_test() as session:
+            row_id = (await session.execute(select(CredentialRegistry.id).where(CredentialRegistry.org_id == org))).scalar_one()
+        assert (await client.delete(f"/vault/credentials/{row_id}", headers=_auth_header(other_org))).status_code == 404
+        async with async_session_test() as session:
+            assert (await session.get(CredentialRegistry, row_id)).status == "Active"
+
+    async def test_deregistration_refuses_cluster_assignment(self, client):
+        from sqlalchemy import select
+        from app.models.cluster import Cluster
+        from app.models.credential import ClusterVaultAssignment, CredentialRegistry
+        org, workspace = await _seed_org_workspace_credentials(CRED_A)
+        async with async_session_test() as session:
+            row_id = (await session.execute(select(CredentialRegistry.id).where(CredentialRegistry.org_id == org))).scalar_one()
+            cluster = Cluster(org_id=org, workspace_id=workspace, name="assigned", status="Active")
+            session.add(cluster)
+            await session.flush()
+            session.add(ClusterVaultAssignment(cluster_id=cluster.id, credential_registry_id=row_id, status="Synced"))
+            await session.commit()
+        response = await client.delete(f"/vault/credentials/{row_id}", headers=_auth_header(org))
+        assert response.status_code == 409, response.text

@@ -18,15 +18,43 @@
 set -euo pipefail
 
 # Configuration file locations
-CONFIG_DIR="${HOME}/.bedrock-gateway"
+#
+# BG_CONFIG_DIR (Issue #5413) is how the selected deployment reaches this script.
+# `adp` resolves the deployment ONCE at entry and exports this, so a machine with
+# three deployments keeps three independent token stores; unset, the path is the
+# original single-deployment one, which is what keeps every existing install and
+# every direct invocation of this script working unchanged.
+#
+# Read here and nowhere else: everything below derives from CONFIG_DIR, so there
+# is one place where "which store" is decided and no way for the config file and
+# the token file to end up belonging to different deployments.
+CONFIG_DIR="${BG_CONFIG_DIR:-${HOME}/.bedrock-gateway}"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 AWS_CREDENTIALS_FILE="${HOME}/.aws/credentials"
 AWS_CONFIG_FILE="${HOME}/.aws/config"
-PROFILE_NAME="bedrock-gateway"
+
+# The AWS profile the Identity Pool exchange writes into the user's own
+# ~/.aws/credentials. BG_AWS_PROFILE (Issue #5413) is set by the deployment
+# resolver so three deployments write three profiles instead of silently
+# overwriting each other's credentials; unset, it stays the original name, which
+# is what existing AWS_PROFILE=bedrock-gateway setups depend on.
+PROFILE_NAME="${BG_AWS_PROFILE:-bedrock-gateway}"
 
 # Local auth-proxy mode (Issue #4154)
-PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
+#
+# ADP_RUNTIME_DIR (Issue #5413) is the selected deployment's runtime directory,
+# exported by the resolver. The pidfile MUST agree with what `adp` reads, or one
+# half would think no proxy is running while the other refuses to start a second
+# — so both derive it from the same variable, defaulting to the original path
+# when no deployment is selected.
+PROXY_RUNTIME_DIR="${ADP_RUNTIME_DIR:-${CONFIG_DIR}}"
+PROXY_PID_FILE="${PROXY_RUNTIME_DIR}/proxy.pid"
+# Where the proxy publishes its bound port and which deployment it serves, after
+# binding (Issue #5413). Separate from the pidfile because it answers a different
+# question: the pidfile says "a proxy exists", this says "on this port, for this
+# deployment" — which is what a launcher must know before reusing one.
+PROXY_IDENTITY_FILE="${PROXY_RUNTIME_DIR}/proxy.json"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEFAULT_PROXY_PORT=9191
 
@@ -134,17 +162,15 @@ save_config() {
     # gateway does it server-side (Issue #4837 follow-up). Empty = direct Cognito.
     local refresh_via="${6:-}"
 
-    cat > "${CONFIG_FILE}" << EOF
-{
-    "gateway_url": "${gateway_url}",
-    "user_pool_id": "${user_pool_id}",
-    "client_id": "${client_id}",
-    "identity_pool_id": "${identity_pool_id}",
-    "region": "${region}",
-    "refresh_via": "${refresh_via}"
-}
-EOF
-    chmod 600 "${CONFIG_FILE}"
+    local tmp
+    tmp=$(mktemp "${CONFIG_FILE}.XXXXXX")
+    jq -n --arg gateway_url "${gateway_url}" --arg user_pool_id "${user_pool_id}" \
+        --arg client_id "${client_id}" --arg identity_pool_id "${identity_pool_id}" \
+        --arg region "${region}" --arg refresh_via "${refresh_via}" \
+        '{gateway_url: $gateway_url, user_pool_id: $user_pool_id, client_id: $client_id,
+          identity_pool_id: $identity_pool_id, region: $region, refresh_via: $refresh_via}' > "${tmp}"
+    chmod 600 "${tmp}"
+    mv -f "${tmp}" "${CONFIG_FILE}"
 }
 
 # Load configuration
@@ -605,7 +631,7 @@ exchange_for_aws_credentials() {
     fi
 
     # Write credentials to AWS credentials file
-    write_aws_credentials "${access_key_id}" "${secret_access_key}" "${session_token}"
+    write_aws_credentials "${access_key_id}" "${secret_access_key}" "${session_token}" || return 1
 
     print_success "AWS credentials obtained successfully!"
     print_info "Credentials expire at: ${expiration}"
@@ -613,62 +639,28 @@ exchange_for_aws_credentials() {
     return 0
 }
 
-# Write AWS credentials to credentials file
+# All deployments share these two AWS files. Hold one OS-managed lock across
+# complete-file replacements, including logout; per-deployment refresh locks
+# cannot serialize updates to unrelated profiles in the same file.
+update_aws_profile() {
+    local operation="$1"
+    shift
+    # Credential values travel on stdin, never in a subprocess argument list.
+    printf '%s\n' "$@" | python3 -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from adp_deployments import DeploymentError, update_aws_profile
+try:
+    update_aws_profile(sys.argv[2], sys.argv[3], sys.argv[4], sys.stdin.read().splitlines(),
+                       retired_profiles=json.loads(sys.argv[5]))
+except DeploymentError as exc:
+    sys.stderr.write("[ERROR] " + str(exc) + "\n")
+    sys.exit(1)
+' "$(dirname "$(script_path)")" "${operation}" "${PROFILE_NAME}" "${REGION:-us-east-1}" "${BG_AWS_RETIRED_PROFILES:-[]}"
+}
+
 write_aws_credentials() {
-    local access_key_id="$1"
-    local secret_access_key="$2"
-    local session_token="$3"
-
-    # Backup existing credentials file
-    if [ -f "${AWS_CREDENTIALS_FILE}" ]; then
-        # Remove existing bedrock-gateway profile if present
-        local temp_file
-        temp_file=$(mktemp)
-
-        # Use awk to filter out the existing profile
-        awk -v profile="[${PROFILE_NAME}]" '
-            BEGIN { skip = 0 }
-            /^\[/ { skip = ($0 == profile) }
-            !skip { print }
-        ' "${AWS_CREDENTIALS_FILE}" > "${temp_file}"
-
-        mv "${temp_file}" "${AWS_CREDENTIALS_FILE}"
-    fi
-
-    # Append the new profile
-    cat >> "${AWS_CREDENTIALS_FILE}" << EOF
-
-[${PROFILE_NAME}]
-aws_access_key_id = ${access_key_id}
-aws_secret_access_key = ${secret_access_key}
-aws_session_token = ${session_token}
-EOF
-
-    chmod 600 "${AWS_CREDENTIALS_FILE}"
-
-    # Also update AWS config with region
-    if [ -f "${AWS_CONFIG_FILE}" ]; then
-        # Remove existing profile config
-        local temp_file
-        temp_file=$(mktemp)
-
-        awk -v profile="[profile ${PROFILE_NAME}]" '
-            BEGIN { skip = 0 }
-            /^\[/ { skip = ($0 == profile) }
-            !skip { print }
-        ' "${AWS_CONFIG_FILE}" > "${temp_file}"
-
-        mv "${temp_file}" "${AWS_CONFIG_FILE}"
-    fi
-
-    cat >> "${AWS_CONFIG_FILE}" << EOF
-
-[profile ${PROFILE_NAME}]
-region = ${REGION}
-output = json
-EOF
-
-    chmod 600 "${AWS_CONFIG_FILE}"
+    update_aws_profile write "$1" "$2" "$3"
 }
 
 # Login command
@@ -1099,19 +1091,7 @@ cmd_logout() {
         rm -f "${TOKEN_FILE}"
     fi
 
-    # Remove credentials profile
-    if [ -f "${AWS_CREDENTIALS_FILE}" ]; then
-        local temp_file
-        temp_file=$(mktemp)
-
-        awk -v profile="[${PROFILE_NAME}]" '
-            BEGIN { skip = 0 }
-            /^\[/ { skip = ($0 == profile) }
-            !skip { print }
-        ' "${AWS_CREDENTIALS_FILE}" > "${temp_file}"
-
-        mv "${temp_file}" "${AWS_CREDENTIALS_FILE}"
-    fi
+    update_aws_profile delete
 
     print_success "Logged out successfully."
 }
@@ -1216,7 +1196,18 @@ cmd_token() {
 # loop lives in bg-gateway-proxy.py. The proxy obtains tokens by calling this
 # script's `token` subcommand, so there is exactly one refresh implementation.
 cmd_serve() {
+    # A named deployment defaults to an OS-assigned port (Issue #5413): three
+    # deployments cannot all own 9191, and the caller reads the real port back
+    # from the identity file the proxy publishes after binding. A legacy
+    # single-deployment run keeps 9191, which is what every existing
+    # config.toml, doc and the /setup page already say.
     local port="${DEFAULT_PROXY_PORT}"
+    if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
+        port=0
+        if [ -f "${PROXY_RUNTIME_DIR}/setup-port.json" ]; then
+            port="$(jq -er '.port' "${PROXY_RUNTIME_DIR}/setup-port.json")"
+        fi
+    fi
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1238,8 +1229,9 @@ cmd_serve() {
         esac
     done
 
-    if ! [[ "${port}" =~ ^[0-9]+$ ]] || [ "${port}" -lt 1 ] || [ "${port}" -gt 65535 ]; then
-        print_error "Invalid --port: ${port}" >&2
+    # 0 is now legal and means "let the OS assign a free port" (Issue #5413).
+    if ! [[ "${port}" =~ ^[0-9]+$ ]] || [ "${port}" -gt 65535 ]; then
+        print_error "Invalid --port: ${port} (0 means let the OS choose)" >&2
         exit 1
     fi
 
@@ -1266,18 +1258,19 @@ cmd_serve() {
         exit 1
     fi
 
-    # A stale pidfile from a killed session is normal; a live one is not, and
-    # would otherwise surface as an opaque "address already in use".
-    if [ -f "${PROXY_PID_FILE}" ]; then
-        local existing_pid
-        existing_pid=$(cat "${PROXY_PID_FILE}" 2>/dev/null || true)
-        if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" 2>/dev/null; then
-            print_error "A gateway proxy is already running (pid ${existing_pid}). Stop it first: kill ${existing_pid}" >&2
-            exit 1
-        fi
-        rm -f "${PROXY_PID_FILE}"
+    # A reused PID may belong to an unrelated process. Only durable process
+    # identity and matching deployment metadata prove ownership.
+    local existing_pid
+    existing_pid=$(python3 "$(dirname "$(script_path)")/adp_deployments.py" proxy-owner \
+        "${PROXY_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${GATEWAY_URL}") || exit $?
+    if [ -n "${existing_pid}" ]; then
+        print_error "A gateway proxy is already running (pid ${existing_pid}). Stop the original proxy session first." >&2
+        exit 1
     fi
+    rm -f "${PROXY_PID_FILE}" "${PROXY_IDENTITY_FILE}"
 
+    # The runtime dir may not exist on a named deployment's first serve.
+    mkdir -p "${PROXY_RUNTIME_DIR}" 2>/dev/null || true
     echo "$$" > "${PROXY_PID_FILE}"
     chmod 600 "${PROXY_PID_FILE}"
 
@@ -1287,7 +1280,10 @@ cmd_serve() {
         --gateway-url "${GATEWAY_URL}" \
         --auth-helper "$(script_path)" \
         --port "${port}" \
-        --pidfile "${PROXY_PID_FILE}"
+        --pidfile "${PROXY_PID_FILE}" \
+        --identity-file "${PROXY_IDENTITY_FILE}" \
+        --deployment-id "${ADP_DEPLOYMENT_ID:-}" \
+        --deployment "${ADP_DEPLOYMENT_NAME:-}"
 }
 
 # Absolute path to this script, so `serve` can find its sibling proxy file and
@@ -1387,8 +1383,58 @@ EOF
 }
 
 # Main entry point
+resolve_auth_deployment() {
+    local resolver="$(dirname "$(script_path)")/adp_deployments.py"
+    local registry="${ADP_HOME:-${HOME}/.adp}/deployments.json"
+    if [ ! -f "${resolver}" ]; then
+        if [ -n "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}" ] || [ -f "${registry}" ]; then
+            print_error "Deployment resolver is missing. Reinstall the CLI before using this session." >&2
+            exit 1
+        fi
+        return
+    fi
+    if [ -z "${ADP_DEPLOYMENT:-}${ADP_DEPLOYMENT_ID:-}" ] && [ ! -f "${registry}" ] && [ ! -f "${CONFIG_FILE}" ]; then
+        return
+    fi
+    local exports
+    exports=$(python3 "${resolver}" resolve --format env --validate-config --lease-pid "$$") || exit $?
+    eval "${exports}"
+    CONFIG_DIR="${BG_CONFIG_DIR}"
+    CONFIG_FILE="${CONFIG_DIR}/config.json"
+    TOKEN_FILE="${CONFIG_DIR}/tokens.json"
+    PROFILE_NAME="${BG_AWS_PROFILE}"
+    PROXY_RUNTIME_DIR="${ADP_RUNTIME_DIR}"
+    PROXY_PID_FILE="${PROXY_RUNTIME_DIR}/proxy.pid"
+    PROXY_IDENTITY_FILE="${PROXY_RUNTIME_DIR}/proxy.json"
+    LOCK_DIR="${CONFIG_DIR}/refresh.lock"
+
+    # Validate every supplied URL before discovery, authentication, or writes.
+    # In particular a second flag cannot replace an already-validated first one.
+    local seen=0 requested
+    while [ $# -gt 0 ]; do
+        if [ "$1" = "--gateway-url" ]; then
+            if [ "${seen}" = 1 ] || [ -z "${2:-}" ]; then
+                print_error "Supply --gateway-url exactly once with a value." >&2
+                exit 1
+            fi
+            seen=1
+            requested=$(python3 "${resolver}" canonicalize "$2") || exit $?
+            if [ -n "${ADP_DEPLOYMENT_URL:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ] && [ "${requested}" != "${ADP_DEPLOYMENT_URL}" ]; then
+                print_error "Gateway URL does not match the selected deployment." >&2
+                exit 1
+            fi
+            shift
+        fi
+        shift
+    done
+}
+
 main() {
     check_dependencies
+    case "${1:-}" in
+        help|--help|-h|"") ;;
+        *) resolve_auth_deployment "$@" ;;
+    esac
     init_config
 
     local command="${1:-}"

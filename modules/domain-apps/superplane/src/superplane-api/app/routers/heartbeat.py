@@ -257,6 +257,16 @@ async def submit_observation(
             status_code=refusal.status_code, detail=refusal.reason
         ) from None
 
+    if applied:
+        submitter = await _authenticated_submitter(request)
+        delivery = getattr(request.app.state, "observation_delivery", {})
+        delivery[submitter.submitter_id] = {
+            "workspace": observation.subject.workspace,
+            "cluster_id": observation.subject.cluster_id,
+            "reported_at": observation.reported_at.isoformat(),
+            "status": observation.status.value,
+        }
+        request.app.state.observation_delivery = delivery
     return ObservationAccepted(
         applied=applied,
         cluster_id=observation.subject.cluster_id,

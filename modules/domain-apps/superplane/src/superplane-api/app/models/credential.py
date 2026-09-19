@@ -15,13 +15,19 @@ from app.database import Base
 # The ARN and secret-value rules below mirror `superplane_contracts.secrets`
 # (`_ARN_PATTERN`, `_SECRET_VALUE_PATTERNS`) as plain values rather than importing them.
 #
-# This is the arrangement `app/services/provisioning.py` documents and uses for the same
-# reason: `superplane_contracts` lives one directory above this component and the API's
-# image is built with a context pinned to `src/superplane-api` (enforced by
-# `releases/build-image.sh`), so that package is genuinely not importable at API runtime.
-# `alembic/env.py` imports `app.models`, so an import here would also become a
-# migration-runner requirement inside the same image. Widening the build context is the
-# release story's (#5327), not this one's.
+# This is the arrangement `app/services/provisioning.py` documents, but NOT for the
+# reason an earlier version of both comments gave. They claimed `superplane_contracts`
+# is "genuinely not importable at API runtime" because it lives above the pinned build
+# context; that was inaccurate — it was merely unstaged, and issue #5053 staged it
+# (`scripts/stage-domain-auth.sh`, with the Dockerfile failing by name if it is
+# missing). Three modules in this tree were already importing it at runtime when that
+# claim was written.
+#
+# The reason to keep mirroring HERE is narrower and still holds: `alembic/env.py`
+# imports `app.models`, so an import in this file would make the contract package a
+# requirement of the migration runner as well as the API. A migration that cannot run
+# because a validation-rule package is missing is a worse failure than a duplicated
+# regex, and the duplication is covered by a test that fails on drift.
 #
 # A mirror can drift, so `tests/test_models.py::TestTheMirroredSecretRulesMatchTheContract`
 # compares these patterns against the contract's and asserts the one deliberate divergence

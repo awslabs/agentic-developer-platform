@@ -144,6 +144,9 @@ def kubernetes(tmp_path):
                     }
                 },
             )
+        if "/jobs/" in request.url.path:
+            assert request.url.path == "/apis/batch/v1/namespaces/adp-agents/jobs/job-a"
+            return httpx.Response(state.get("job_status", 200), json=state.get("job", {}))
         return httpx.Response(
             200,
             json={
@@ -152,10 +155,12 @@ def kubernetes(tmp_path):
                     "name": "worker-a",
                     "namespace": "adp-agents",
                     "deletionTimestamp": "now" if state["deleted"] else None,
+                    **state.get("metadata", {}),
                 },
                 "spec": {
                     "serviceAccountName": "agent-scaledjob-sa",
                     "containers": [{"name": "agent-worker", "env": [{"name": "ADP_AGENT_AUTHORITY_ENABLED", "value": "true"}]}],
+                    **state.get("spec", {}),
                 },
                 "status": {
                     "phase": state["phase"],
@@ -313,6 +318,60 @@ def test_tokenreview_must_match_live_approved_pod(kubernetes, field, value):
         kubernetes[0].verify("pod-token")
 
 
+def lifecycle_job(kubernetes):
+    state = kubernetes[1]
+    state["metadata"] = {
+        "creationTimestamp": "2026-09-19T10:50:00Z",
+        "ownerReferences": [{"controller": True, "kind": "Job", "apiVersion": "batch/v1", "name": "job-a", "uid": "job-uid"}],
+    }
+    state["job"] = {
+        "metadata": {"uid": "job-uid", "name": "job-a", "namespace": "adp-agents", "creationTimestamp": "2026-09-19T10:00:00Z"},
+        "spec": {"activeDeadlineSeconds": 3600},
+        "status": {"startTime": "2026-09-19T10:00:05Z"},
+    }
+    return state
+
+
+def test_bootstrap_projects_job_deadline_including_time_before_replacement_pod(store, kubernetes, monkeypatch):
+    lifecycle_job(kubernetes)
+    envelope, _ = provision(store)
+    client, _ = http_client(store, kubernetes, monkeypatch)
+    response = client.post(
+        "/internal/v1/agent/bootstrap",
+        json={"invocation_id": "run-a", "envelope_digest": envelope_digest(envelope)},
+        headers={"X-Caller-Identity": "registered-worker-transport", WORKLOAD_HEADER: "pod-token"},
+    )
+    assert response.status_code == 200
+    assert response.json()["pod_deadline_at"] == "2026-09-19T11:00:00Z"
+    assert kubernetes[0].verify("pod-token").deadline_at == "2026-09-19T11:00:00Z"
+
+
+@pytest.mark.parametrize("failure", ["missing", "denied", "replaced", "cross-namespace", "invalid-time", "no-limit", "bad-limit"])
+def test_unverified_job_deadline_disables_pause_without_disabling_identity(kubernetes, failure):
+    state = lifecycle_job(kubernetes)
+    if failure in {"missing", "denied"}:
+        state["job_status"] = 404 if failure == "missing" else 403
+    elif failure == "replaced":
+        state["job"]["metadata"]["uid"] = "replacement-job"
+    elif failure == "cross-namespace":
+        state["job"]["metadata"]["namespace"] = "victim"
+    elif failure == "invalid-time":
+        state["job"]["metadata"]["creationTimestamp"] = "invalid"
+    elif failure == "no-limit":
+        state["job"]["spec"].clear()
+    else:
+        state["job"]["spec"]["activeDeadlineSeconds"] = True
+    verified = kubernetes[0].verify("pod-token")
+    assert verified.uid == "pod-a"
+    assert verified.deadline_at is None
+
+
+def test_pod_limit_can_only_tighten_owning_job_deadline(kubernetes):
+    state = lifecycle_job(kubernetes)
+    state["spec"] = {"activeDeadlineSeconds": 120}
+    assert kubernetes[0].verify("pod-token").deadline_at == "2026-09-19T10:52:00Z"
+
+
 def test_gateway_token_is_not_returned_in_failure(kubernetes):
     kubernetes[2].unlink()
     with pytest.raises(WorkloadRefusedError, match="workload verifier unavailable"):
@@ -421,10 +480,10 @@ def test_connected_status_rechecks_revocation_on_each_request(store, connected_h
     assert client.get("/internal/v1/agent/status?run=run-b", headers=headers).status_code == 404
 
 
-def test_connected_control_authorized_unsupported_returns_501(connected_http):
+def test_connected_control_without_signing_key_fails_closed(connected_http):
     client, headers, _ = connected_http
     response = client.post("/internal/v1/agent/control/run-b/pause", json={"command_id": "same-command"}, headers=headers)
-    assert response.status_code == 501
+    assert response.status_code == 404
     assert client.post("/internal/v1/agent/control/unrelated/pause", json={"command_id": "same-command"}, headers=headers).status_code == 404
     assert client.post("/internal/v1/agent/control/run-b/abort", json={"command_id": "same-command"}, headers=headers).status_code == 404
 

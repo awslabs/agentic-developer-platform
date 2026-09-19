@@ -38,6 +38,8 @@ from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
 from lib.engine_registration import draft_registration_note
+from lib.handoff_client import HANDOFF_EXPECT_ENV, HANDOFF_REQUIRED_ENV
+from lib.handoff_client import handoff_note as delivery_handoff_note
 from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
 from lib.pr_binding import binding_note as pr_binding_note
 from lib.invocation_completion import (
@@ -527,6 +529,11 @@ def _receive_one_message(queue_url: str, region: str):
     receive semantics; for single-message-at-a-time processing the defaults
     are fine.
     """
+    if authority_enabled():
+        from lib.task_gateway_client import own_task
+
+        body = own_task()
+        return body, "run-bound-task" if body is not None else None
     sqs = boto3.client("sqs", region_name=region)
     resp = sqs.receive_message(
         QueueUrl=queue_url,
@@ -544,6 +551,11 @@ def _receive_one_message(queue_url: str, region: str):
 
 def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
     """Ack-by-delete so the message doesn't come back after visibility timeout."""
+    if authority_enabled():
+        from lib.task_gateway_client import acknowledge_task
+
+        acknowledge_task()
+        return
     boto3.client("sqs", region_name=region).delete_message(
         QueueUrl=queue_url,
         ReceiptHandle=receipt_handle,
@@ -611,17 +623,25 @@ class VisibilityHeartbeat:
         """Heartbeat loop: sleep for interval, then extend visibility."""
         # Create a per-thread SQS client (boto3 clients are not thread-safe).
         try:
-            sqs = boto3.client("sqs", region_name=self._region)
+            if authority_enabled():
+                from lib.task_gateway_client import heartbeat_task
+
+                extend = heartbeat_task
+            else:
+                sqs = boto3.client("sqs", region_name=self._region)
+
+                def extend():
+                    return sqs.change_message_visibility(
+                        QueueUrl=self._queue_url,
+                        ReceiptHandle=self._receipt_handle,
+                        VisibilityTimeout=HEARTBEAT_EXTEND,
+                    )
         except Exception as exc:
             logger.warning("Heartbeat: failed to create SQS client: %s", exc)
             return
         while not self._stop_event.wait(timeout=HEARTBEAT_INTERVAL):
             try:
-                sqs.change_message_visibility(
-                    QueueUrl=self._queue_url,
-                    ReceiptHandle=self._receipt_handle,
-                    VisibilityTimeout=HEARTBEAT_EXTEND,
-                )
+                extend()
                 self._extensions += 1
                 self._consecutive_failures = 0
                 logger.debug("Heartbeat extended visibility (extensions=%d)", self._extensions)
@@ -829,6 +849,16 @@ def _upload_transcript_to_s3(
     un-applied accounts) or if final_text is empty. Failures are logged but
     NEVER affect pod exit code — same contract as check-run finalize.
     """
+    from lib.status_gateway_client import authority_enabled, upload_transcript
+
+    if authority_enabled():
+        if not final_text:
+            return None
+        try:
+            return upload_transcript(final_text)
+        except Exception:
+            logger.warning("Own-run transcript upload unavailable (non-fatal; maximum 8 MiB)")
+            return None
     bucket = os.environ.get("AGENT_RUN_LOGS_BUCKET", "")
     if not bucket or not final_text:
         return None
@@ -1247,8 +1277,20 @@ def _reuse_work_branch(branch: str, *, allow_cleanup: bool, persona: str, issue:
 
 
 def main() -> int:
+    if authority_enabled():
+        # Lease starts at task assignment, before clone/bootstrap/model startup.
+        # Always stop it on early refusal as well as normal harness termination.
+        heartbeat = VisibilityHeartbeat("", os.environ.get("AWS_REGION", "us-east-1"), "")
+        try:
+            return _main(task_heartbeat=heartbeat)
+        finally:
+            heartbeat.stop()
+    return _main()
+
+
+def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     queue_url = os.environ.get("QUEUE_URL")
-    if not queue_url:
+    if not queue_url and task_heartbeat is None:
         logger.error("QUEUE_URL env var is not set")
         return 1
     region = os.environ.get("AWS_REGION", "us-east-1")
@@ -1259,6 +1301,9 @@ def main() -> int:
         # receive. Exit clean (not an error — KEDA will handle scaling).
         logger.info("No message available after long-poll; exiting cleanly")
         return 0
+
+    if task_heartbeat is not None:
+        task_heartbeat.start()
 
     # --- Bootstrap Logger: initialized after first parse to get correlation_id ---
     # We do a lightweight pre-parse to extract correlation_id before the full
@@ -1437,6 +1482,23 @@ def main() -> int:
     # trigger, or a legacy dispatch) must keep its existing behaviour exactly.
     if envelope.get("pr_binding_required") is True:
         os.environ[PR_BINDING_REQUIRED_ENV] = "true"
+
+    # Issue #5144: the engine marks a dispatch whose delivery must produce a durable
+    # continuation receipt before this run's exit counts for anything. Same shape and
+    # same reasoning as the marker above: trusted dispatch envelope only, and never
+    # defaulted on, so a webhook trigger or a legacy dispatch keeps its existing
+    # behaviour exactly. The worker does not get to decide that it owes a handoff.
+    if envelope.get("handoff_required") is True:
+        os.environ[HANDOFF_REQUIRED_ENV] = "true"
+        # The fences this dispatch was admitted under. The worker compares the
+        # gateway's receipt against them so an acceptance for *some other* run — a
+        # different cycle, a superseded ownership generation, another tenant's node —
+        # cannot be reported as this run's handoff. Trusted dispatch envelope only,
+        # exactly like the marker above; the worker never authors these, and the
+        # gateway never reads authority back from them.
+        expect = envelope.get("handoff_expect")
+        if isinstance(expect, dict):
+            os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
@@ -2404,7 +2466,10 @@ def main() -> int:
         else:
             # Gateway mode: SDK talks to local proxy, proxy re-signs for API GW
             agent_env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = "http://127.0.0.1:9090"
+            agent_env["SIGV4_PROXY_PORT"] = proxy_env.get("SIGV4_PROXY_PORT") or "9090"
+            agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = (
+                f"http://127.0.0.1:{agent_env['SIGV4_PROXY_PORT']}"
+            )
             if agent_env.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
                 # Only this loopback hop is unsigned. The proxy authenticates
                 # upstream with protected IRSA and the current run/pod proof.
@@ -2480,8 +2545,9 @@ def main() -> int:
     # Start SQS visibility heartbeat — keeps the message in-flight for the
     # duration of the agent run without requiring a 6h base visibility timeout.
     # A dead worker's heartbeat stops → message frees in ~5min for retry.
-    heartbeat = VisibilityHeartbeat(queue_url, region, receipt_handle)
-    heartbeat.start()
+    heartbeat = task_heartbeat or VisibilityHeartbeat(queue_url, region, receipt_handle)
+    if task_heartbeat is None:
+        heartbeat.start()
 
     command = worker_command(persona)
     logger.info(
@@ -2920,11 +2986,10 @@ def _setup_agent_control(
     the flag is off, nothing is minted, nothing is written and no port is
     advertised — the row is byte-identical to a run without this feature (FR-1.1).
 
-    **The token's lifetime is bounded by the pod's, not by a fixed window.** The
-    expiry is derived from ``ADP_POD_DEADLINE_SECONDS`` — the same
-    ``activeDeadlineSeconds`` Kubernetes enforces on this pod — so a token cannot
-    outlive the process it authenticates; a leaked token from a finished run is
-    already expired even if terminal cleanup never ran.
+    A verified absolute Kubernetes deadline bounds the token when available.
+    The configured TTL alone is only a duration cap; registration occurs after
+    bootstrap and cannot establish when the Job started. Without lifecycle
+    evidence the read channel remains usable, while pause remains unavailable.
 
     **The generation is assigned by the invocation row, not read from config.**
     ``register_control_endpoint`` returns it from an atomic increment, so a retry
@@ -2957,11 +3022,21 @@ def _setup_agent_control(
         token = secrets.token_urlsafe(32)
         port = _control_port()
 
-        # Bound by the pod deadline so the credential cannot outlive the listener
-        # that honours it.
+        # Bootstrap receives the absolute Kubernetes lifetime from the gateway.
+        # A TTL minted after clone does not establish when a Job began. Missing
+        # lifecycle evidence leaves reads available but disables worker pause.
+        expiry = time.time() + _control_token_ttl_seconds()
+        try:
+            deadline = datetime.fromisoformat(
+                agent_env.get("ADP_POD_DEADLINE_AT", "").replace("Z", "+00:00")
+            )
+            if deadline.tzinfo is not None and deadline.timestamp() > time.time():
+                expiry = min(expiry, deadline.timestamp())
+        except (ValueError, TypeError):
+            pass
         expires_at = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(time.time() + _control_token_ttl_seconds()),
+            time.gmtime(expiry),
         )
 
         # The generation comes back from the write. It is not computed here: see
@@ -3053,19 +3128,11 @@ def _setup_agent_control(
 
 
 def _control_token_ttl_seconds() -> int:
-    """Token TTL, bounded by the deadline Kubernetes actually enforces.
+    """Configured duration cap, not evidence of an absolute workload deadline.
 
-    Reads ``ADP_POD_DEADLINE_SECONDS``, which the ScaledJob renders from the same
-    ``var.agent_pod_deadline_seconds`` it passes to ``activeDeadlineSeconds``. The
-    two therefore cannot drift: whatever wall-clock limit the pod is killed at is
-    the limit the credential expires at.
-
-    Falls back to ``MAX_CONTROL_TOKEN_TTL_SECONDS`` when unset or unparseable, and
-    never exceeds it. The cap is not redundant with the deadline: an operator can
-    raise ``agent_pod_deadline_seconds``, and an unbounded TTL would silently turn
-    a leaked token into a near-permanent one. A too-short TTL only costs the
-    ability to control a long run's tail; a too-long one is a live credential for
-    a pod that no longer exists.
+    The verified Kubernetes deadline is applied separately during registration
+    and by the worker pause gate. Never add this duration to registration time
+    and treat that result as the Job's lifetime.
     """
     raw = os.environ.get("ADP_POD_DEADLINE_SECONDS", "").strip()
     if raw.isdigit() and int(raw) > 0:
@@ -3397,12 +3464,17 @@ def _handle_success(
             summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
                 meta, repo, issue
             )
+            # #5144: reported on BOTH terminal-success paths, for the same reason the
+            # binding note is — this is the common path for a persona that pushes its
+            # own work, and wiring the handoff only on the PR-creating path below would
+            # leave exactly the case the issue is about silently unrecorded.
+            handoff = delivery_handoff_note(summary=f"{persona} — {git_outcome}")
             _post_comment(
                 repo,
                 issue,
                 message_id,
                 "completed",
-                _join_notes(summary, draft_note, binding_note),
+                _join_notes(summary, draft_note, binding_note, handoff),
                 check_run_url,
             )
             update_invocation_status(
@@ -3507,12 +3579,17 @@ def _handle_success(
         summary = f"Agent `{persona}` run ended. {git_outcome}" + _outcome_report_link(
             _read_result_metadata(), repo, issue
         )
+        # #5144: the second terminal-success path. `handoff_note` never raises — the
+        # branch is pushed and the PR is open by now, so bookkeeping must not destroy
+        # delivered work — but its failure is visible, because an unrecorded handoff
+        # means the engine holds this work as still-due.
+        handoff = delivery_handoff_note(summary=f"{persona} — {git_outcome}")
         _post_comment(
             repo,
             issue,
             message_id,
             "completed",
-            _join_notes(summary, draft_note, binding_note),
+            _join_notes(summary, draft_note, binding_note, handoff),
             check_run_url,
         )
         update_invocation_status(

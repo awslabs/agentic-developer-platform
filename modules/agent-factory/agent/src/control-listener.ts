@@ -127,6 +127,24 @@ export interface ControlListenerConfig {
   logger?: (level: string, message: string, context?: Record<string, unknown>) => void;
 
   /**
+   * Apply an accepted command to the running agent — Issue #3961.
+   *
+   * The seam between the wire and the harness. Absent for a run with no adapter
+   * (or before any verb was implemented), in which case accepted commands stay
+   * `pending` — see {@link applyAccepted} for why that, and not `rejected`.
+   *
+   * Called after the 202 is written, deliberately: `pause` waits for admitted
+   * tool work to reach a boundary, and a synchronous apply would hold the socket
+   * open for the whole settle timeout. The journal carries the outcome, and the
+   * dashboard already polls state.
+   *
+   * Invoked *through* the journal's delivery gate rather than directly, so an
+   * envelope-bearing command is revalidated against the gateway first. The
+   * executor itself must therefore settle the command it is handed.
+   */
+  executor?: (action: ControlAction, commandId: string) => Promise<void>;
+
+  /**
    * This run's own id — Issue #5028.
    *
    * The listener's independently-known target identity, used to check the
@@ -164,6 +182,9 @@ export type StartOutcome =
 
 export class ControlListener {
   private server: http.Server | null = null;
+  // Serialize revalidation and executor *start* in journal acceptance order.
+  // Never wait for pause settlement here: resume must be able to cancel it.
+  private deliveryTail: Promise<void> = Promise.resolve();
   private readonly config: ControlListenerConfig;
   private readonly tokenExpiresAt: number;
   private readonly credentials?: ControlCredentials;
@@ -308,7 +329,19 @@ export class ControlListener {
     if (method === 'GET' && path === '/agent/state') {
       // A state read touches no SDK object and starts no assistant turn — it is
       // served entirely from recorded state (revival-design §2).
-      this.writeJson(res, 200, this.config.store.snapshot());
+      const state = this.config.store.snapshot();
+      const keyIds = this.verificationKeyIds();
+      const ready = keyIds.length > 0;
+      this.writeJson(res, 200, {
+        ...state,
+        verification_key_ids: keyIds,
+        capabilities: {
+          pause: ready && state.capabilities.pause,
+          resume: ready && state.capabilities.resume,
+          steer: ready && state.capabilities.steer,
+          abort: ready && state.capabilities.abort,
+        },
+      });
       return;
     }
     if (path === RESERVED_EVENTS_PATH) {
@@ -482,36 +515,88 @@ export class ControlListener {
         this.writeJson(res, 200, { command: outcome.record, state: this.config.store.snapshot().state });
         return;
       case 'accepted':
+        // Respond first, then apply — Issue #3961. The HTTP contract is 202
+        // "accepted", not "done": pause has to wait for admitted tool work to
+        // reach a boundary, and holding the socket for that would turn a bounded
+        // acknowledgement into a request that hangs for the settle timeout. The
+        // journal is the durable record, and the dashboard polls state, so the
+        // outcome reaches the operator either way.
         this.writeJson(res, 202, { command: outcome.record, state: this.config.store.snapshot().state });
+        this.deliveryTail = this.deliveryTail.then(() => this.applyAccepted(action, validation.commandId));
         return;
+    }
+  }
+
+  /**
+   * Hand an accepted command to whatever can actually perform it — Issue #3961.
+   *
+   * Delivery goes through the journal, never straight to the executor, and the
+   * method depends on whether the command carried an envelope:
+   *
+   * - proof-bearing commands go through `deliverAuthorized`, which re-checks the
+   *   grant against the gateway immediately before handoff. Calling the executor
+   *   directly would skip that re-check and execute an action whose authority may
+   *   have been revoked since the 202 — the exact hidden-queue bypass
+   *   `ClaudeAttemptEndpoint.deliver` documents as forbidden;
+   * - unauthorized-path commands (no envelope required for this verb) go through
+   *   `markDelivered`, which is the only transition `settle('applied', ...)` will
+   *   accept afterwards.
+   *
+   * With **no executor** the command is left `pending` and nothing is settled.
+   * That is deliberate: `pending` means "accepted, not yet acted on", which is
+   * the truth for a run whose harness cannot perform the verb, and it keeps the
+   * pending cap doing its job. Auto-rejecting here instead would silently drain
+   * the queue and disable the 429 backpressure the cap exists to provide.
+   */
+  private async applyAccepted(action: ControlAction, commandId: string): Promise<void> {
+    const executor = this.config.executor;
+    if (!executor) {
+      // Nothing to apply it with. Logged, not settled — see above.
+      this.log('warn', 'control command accepted with no executor attached', { action, command_id: commandId });
+      return;
+    }
+    try {
+      const store = this.config.store;
+      // Synchronous by contract: `deliverAuthorized` permits no `await` between
+      // its bounded re-check and the handoff, so the executor is *started* here
+      // and its failure is caught on the promise rather than by the try below,
+      // which has already returned by then. Without this catch an executor
+      // rejection would surface as an unhandled rejection and could take the
+      // worker down over a control command.
+      const run = () => {
+        void store.executeDelivered(commandId, () => executor(action, commandId)).catch((err: unknown) => {
+          this.log('warn', 'control executor failed', { action, command_id: commandId,
+            detail: (err as Error)?.message ?? String(err) });
+          store.settle(commandId, 'rejected', 'control executor failed');
+        });
+      };
+      // `deliverAuthorized` returns false when the re-check fails, having already
+      // settled the command `rejected`. Nothing more to do on that path.
+      if (this.requiresEnvelope(action)) {
+        await store.deliverAuthorized(commandId, run);
+        return;
+      }
+      if (store.markDelivered(commandId)) run();
+    } catch (err) {
+      // An executor failure is the run's business, not the listener's: the
+      // listener has already answered, and a throw here would become an
+      // unhandled rejection that takes down a worker over a control command.
+      this.log('warn', 'control executor failed', { action, command_id: commandId,
+        detail: (err as Error)?.message ?? String(err) });
+      this.config.store.settle(commandId, 'rejected', 'control executor failed');
     }
   }
 
   /**
    * Whether this verb must present a gateway envelope — Issue #5028.
    *
-   * Only verbs this build can actually perform. The alternative — demand an
-   * envelope for every verb — reads as stricter and is worse, for two reasons.
-   *
-   * First, it changes the answer for unsupported verbs from 501 to 403. The
-   * platform's contract is that `pause`/`resume`/`steer`/`abort` are unimplemented
-   * and say so; a 403 would tell an operator their authorization was rejected when
-   * in fact the verb does not exist, sending them to debug key distribution over a
-   * feature that was never built.
-   *
-   * Second, an envelope check on a verb that cannot act protects nothing. What
-   * needs the envelope is the transition from "recorded in the journal" to
-   * "applied to a running agent", and no verb reaches that yet.
-   *
-   * The consequence is that this returns false for every verb today, so the
-   * envelope path ships tested but dormant — which is the same shape as the rest
-   * of this story: authorization first, behaviour later. When a verb joins
-   * `SUPPORTED_ACTIONS`, it becomes envelope-gated by that fact alone, with no
-   * second edit to remember here. That coupling is the point; a separate opt-in
-   * list is a list someone forgets to add to.
+   * Every implemented verb requires a signed envelope. Unsupported verbs keep
+   * their 501 contract because there is no effect to authorize. Deriving this
+   * from the capability set ensures a newly implemented verb cannot accidentally
+   * bypass verification through a separate opt-in list.
    */
   private requiresEnvelope(action: ControlAction): boolean {
-    return this.config.store.capabilities()[action] === true;
+    return this.config.store.isSupported(action);
   }
 
   /**
@@ -552,6 +637,15 @@ export class ControlListener {
 
   private verificationKeys(): Map<string, KeyObject> {
     return this.config.envelopeKeysFile ? readControlKeyring(this.config.envelopeKeysFile) : (this.config.envelopeKeys ?? new Map());
+  }
+
+  private verificationKeyIds(): string[] {
+    if (!this.config.runId?.trim()) return [];
+    const ids = [...this.verificationKeys().keys()];
+    // Report only bounded public identifiers. The gateway intersects these
+    // with its current signer; a retired projection cannot advertise support.
+    if (ids.length > 8 || ids.some((id) => !/^[A-Za-z0-9._-]{1,128}$/.test(id))) return [];
+    return ids.sort();
   }
 
   /**

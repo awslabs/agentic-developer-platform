@@ -14,20 +14,34 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY pyproject.toml .
 RUN pip install --no-cache-dir --prefix=/install .
 
-# The domain authorization policy (issue #5055, U14 — imported by app/auth.py).
-# It is maintained at modules/domain-apps/superplane/auth/ and staged into this
-# context by scripts/stage-domain-auth.sh, because releases/build-image.sh pins the
-# build context to this directory and Docker cannot COPY from above it.
+# The two sibling source packages app/ imports at module scope: the domain
+# authorization policy (issue #5055, U14 — app/auth.py) and the domain contracts
+# (issue #5053, U7b — app/main.py, and the routers/services under it). Both are
+# maintained one directory above this component and staged into this context by
+# scripts/stage-domain-auth.sh, because releases/build-image.sh pins the build
+# context to this directory and Docker cannot COPY from above it.
 #
-# Not optional: without it `app.main` raises ModuleNotFoundError at startup. The
-# build fails here with that named cause rather than producing an image that
-# crash-loops on import.
+# Neither is optional and neither is in pyproject.toml's dependency list: without
+# them `app.main` raises ModuleNotFoundError at startup. The build fails here with
+# that named cause rather than producing an image that crash-loops on import —
+# which is the whole point of checking, since the test lane pip-installs both from
+# their paths and cannot see their absence.
 COPY vendor/superplane-auth ./vendor/superplane-auth
-RUN test -f vendor/superplane-auth/superplane_auth/policy.py || { \
-      echo "error: superplane_auth is not staged; run scripts/stage-domain-auth.sh before docker build" >&2; \
-      exit 1; \
-    } \
-    && pip install --no-cache-dir --prefix=/install ./vendor/superplane-auth
+COPY vendor/superplane-contracts ./vendor/superplane-contracts
+# `set -e` plus one `if` per package rather than a chain of `||`/`&&`: those two
+# operators have equal precedence and associate left-to-right, so a mixed chain
+# guarding two tests reads as though each failure is caught independently when it
+# does not. Written out so the build's failure behaviour is not a precedence puzzle.
+RUN set -eu; \
+    for pkg in "superplane-auth/superplane_auth/policy.py" \
+               "superplane-contracts/superplane_contracts/emission.py"; do \
+      if [ ! -f "vendor/$pkg" ]; then \
+        echo "error: vendor/$pkg is missing; run scripts/stage-domain-auth.sh before docker build" >&2; \
+        exit 1; \
+      fi; \
+    done; \
+    pip install --no-cache-dir --prefix=/install ./vendor/superplane-auth; \
+    pip install --no-cache-dir --prefix=/install ./vendor/superplane-contracts
 
 # Stage 2: Runtime image
 FROM public.ecr.aws/docker/library/python:3.12-slim

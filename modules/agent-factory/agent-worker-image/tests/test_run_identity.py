@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import stat
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -355,6 +356,23 @@ def test_unsupported_policy_revision_is_reported_and_never_blocks_legacy_identit
     )
     # Report-only, so this is not a failure and the run proceeds unchanged.
     assert session.model_policy_report.enforcement_failure is None
+
+
+@pytest.mark.parametrize("deadline", [None, "bad", "2026-09-19T15:00:00Z"])
+def test_start_projects_verified_absolute_deadline_without_extending_it_on_refresh(
+    identity, monkeypatch, deadline
+):
+    session, _ = identity
+    monkeypatch.delenv("ADP_POD_DEADLINE_AT", raising=False)
+    monkeypatch.setattr(session, "_request", lambda: reply(pod_deadline_at=deadline))
+    monkeypatch.setattr("threading.Thread.start", lambda _: None)
+    session.start()
+    expected = deadline if deadline == "2026-09-19T15:00:00Z" else "1970-01-01T00:00:00Z"
+    assert os.environ["ADP_POD_DEADLINE_AT"] == expected
+    monkeypatch.setattr(session, "_request", lambda: reply(pod_deadline_at="2099-01-01T00:00:00Z"))
+    session.refresh()
+    assert session.pod_deadline_at == expected
+    assert os.environ["ADP_POD_DEADLINE_AT"] == expected
 
 
 def test_refresh_atomically_replaces_live_cli_file(identity, monkeypatch):

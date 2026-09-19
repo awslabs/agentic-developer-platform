@@ -31,6 +31,7 @@ from . import (
     cleanup,
     config as config_module,
     contracts,
+    ports as ports_module,
     preflight,
     release,
 )
@@ -70,6 +71,29 @@ def require(condition, message):
 # ---------------------------------------------------------------------------
 # preflight
 # ---------------------------------------------------------------------------
+
+
+def _deployment_discovery(http):
+    """#5413: read a deployment's discovery document through the run's transport.
+
+    Wrapped rather than passed raw for two reasons. `http.get` returns
+    `(status, document)` while the check wants the document; and both a non-200 and
+    an unreachable host must surface as the named problem for THAT deployment. A
+    `PortError` escaping here would abort the whole run over an absent
+    multi-deployment fixture, which is precisely the "a missing fixture blocks, a
+    wrong target aborts" line this harness draws everywhere else.
+    """
+
+    def read(url):
+        try:
+            status, document = http.get(url, expect=None)
+        except ports_module.PortError as exc:
+            raise preflight.PreflightError(str(exc)) from None
+        if status != 200:
+            raise preflight.PreflightError(f"returned HTTP {status}")
+        return document
+
+    return read
 
 
 def preflight_stage(cfg, ports):
@@ -240,6 +264,18 @@ def preflight_stage(cfg, ports):
             cfg,
             github_available=ports["github_available"](),
             hosted_available=ports["hosted_available"](),
+            # #5413. Probed only when a selected case needs it, because it is three
+            # more gateway reads and every other suite runs one deployment. The
+            # check itself is read-only and never aborts: an unreachable binding
+            # blocks E16/E17 and leaves the rest of the matrix to run.
+            deployments_available=preflight.check_deployment_bindings(
+                cfg, record, fetch=_deployment_discovery(http)
+            )
+            if any(
+                cases.THREE_DEPLOYMENTS in cases.BY_ID[case_id].requires
+                for case_id in ctx["matrix"]
+            )
+            else None,
         )
         record["fixture_classes"] = sorted(available)
         record["missing_fixtures"] = preflight.missing_fixture_report(cfg, available)
@@ -677,6 +713,12 @@ JOURNEY_DRIVERS = {
     "E12": "agent_task",
     "E13": "api_parity",
     "E14": "update_rollback",
+    # #5413. Two purposes, one module: E16 is the concurrent-overlap proof and E17
+    # is what a default switch, a refresh and one logout do to the other two. Split
+    # because they fail for different reasons and a single row would report "the
+    # multi-deployment case failed" without saying which half.
+    "E16": "multi_deployment_concurrency",
+    "E17": "multi_deployment_lifecycle",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

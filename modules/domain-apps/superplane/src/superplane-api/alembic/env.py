@@ -3,15 +3,16 @@
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from app.config import settings
-from app.database import Base
-
 # Import all models so they register with Base.metadata
 import app.models  # noqa: F401
+from alembic import context
+from app.config import settings
+from app.database import Base
+from app.migration_version import SuperplanePostgresqlImpl  # noqa: F401
+from app.schema_boundary import connect_args, schema_name
 
 config = context.config
 
@@ -21,7 +22,8 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Override sqlalchemy.url from settings if DATABASE_URL is set
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+domain_schema = schema_name(settings.superplane_db_schema)
 
 
 def run_migrations_offline() -> None:
@@ -32,14 +34,26 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        version_table_schema=domain_schema,
     )
     with context.begin_transaction():
+        # Preserve existing revision IDs and rows while accommodating the long
+        # inherited identifiers. Fresh tables use the public implementation hook.
+        context.execute(
+            "ALTER TABLE IF EXISTS alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)"
+        )
         context.run_migrations()
 
 
 def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(connection=connection, target_metadata=target_metadata,
+                      version_table_schema=domain_schema)
     with context.begin_transaction():
+        # Preserve existing revision IDs and rows while accommodating the long
+        # inherited identifiers. Fresh tables use the public implementation hook.
+        context.execute(
+            "ALTER TABLE IF EXISTS alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)"
+        )
         context.run_migrations()
 
 
@@ -49,6 +63,7 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args(settings.superplane_db_schema),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

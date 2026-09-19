@@ -237,9 +237,7 @@ class TestInstall:
         to a live session and are merged, not overwritten."""
         config_dir = install_home / ".bedrock-gateway"
         config_dir.mkdir()
-        (config_dir / "config.json").write_text(
-            json.dumps({"gateway_url": "https://old.example.com/api", "client_id": "abc123", "refresh_via": "gateway"})
-        )
+        (config_dir / "config.json").write_text(json.dumps({"gateway_url": GATEWAY_URL, "client_id": "abc123", "refresh_via": "gateway"}))
 
         assert run_install(["--prefix", str(prefix), "--gateway-url", GATEWAY_URL]).returncode == 0
 
@@ -247,6 +245,32 @@ class TestInstall:
         assert config["client_id"] == "abc123"
         assert config["refresh_via"] == "gateway"
         assert config["gateway_url"] == GATEWAY_URL
+
+    @pytest.mark.parametrize("existing", ["https://old.example.com/api", None])
+    def test_reinstall_cannot_rebind_existing_credentials(self, run_install, prefix, install_home, existing):
+        config_dir = install_home / ".bedrock-gateway"
+        config_dir.mkdir()
+        if existing:
+            (config_dir / "config.json").write_text(json.dumps({"gateway_url": existing, "client_id": "old-client"}))
+        (config_dir / "tokens.json").write_text('{"refresh_token":"old-credential"}')
+        prefix.mkdir(parents=True)
+        (prefix / "adp").write_text("old-binary")
+        before = {str(p): p.read_bytes() for root in (prefix, config_dir) for p in root.rglob("*") if p.is_file()}
+        result = run_install(["--prefix", str(prefix), "--gateway-url", GATEWAY_URL])
+        assert result.returncode != 0
+        assert "adp deployment add" in result.stderr
+        assert {str(p): p.read_bytes() for root in (prefix, config_dir) for p in root.rglob("*") if p.is_file()} == before
+
+    def test_reinstall_accepts_equivalent_gateway_binding(self, run_install, prefix, install_home):
+        config_dir = install_home / ".bedrock-gateway"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(json.dumps({"gateway_url": "https://GW.EXAMPLE.COM:443/", "client_id": "old-client"}))
+        token = config_dir / "tokens.json"
+        token.write_text('{"refresh_token":"same-deployment"}')
+        before = token.read_bytes()
+        result = run_install(["--prefix", str(prefix), "--gateway-url", GATEWAY_URL])
+        assert result.returncode == 0, result.stderr
+        assert token.read_bytes() == before
 
     def test_never_writes_to_the_legacy_bin_dir(self, run_install, prefix: Path, install_home: Path) -> None:
         """~/bin may hold a hand-installed bg-cognito-auth.sh that must keep

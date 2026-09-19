@@ -391,9 +391,6 @@ WAVE_REVISIONS: dict[int, str] = {
 # indistinguishable from a check the harness forgot.
 PENDING_CHECK_OWNERS: dict[str, str] = {
     "W2-01": "S2 #3961 — consolidated Wave 2 preflight after S3/S2/S5 merge",
-    "W2-03": "S2 #3961 — pause admission and quiescence (AC-P1)",
-    "W2-04": "S2 #3961 — same-execution resume (AC-P2)",
-    "W2-05": "S2 #3961 — auto-resume, heartbeats and deadline clamp (AC-P3/P5/P6)",
     "W2-10": "evaluation #3968 — Wave 2 cleanup and security recheck",
 }
 
@@ -487,6 +484,51 @@ REQUIRED_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
         "suites",
     ),
     "stats_schema_keys": ("levels",),
+    # Wave 2 / S2 (#3961). The pause barrier's proof is inherently in-cluster: the
+    # claim is about tool side effects during an interval, which no HTTP reader can
+    # observe. Keys are declared per named property for the same reason as
+    # neutral_contract below — "pause_suite_passed: true" cannot say which of AC-P1's
+    # four zero-counters was actually measured.
+    "pause_boundary": (
+        "adapter_id",
+        "sdk_version",
+        "permission_mode",
+        "spill_hooks_composed",
+        "requested",
+        "held_interval",
+        "tool_coverage",
+        "confirmed",
+        "degraded",
+    ),
+    "pause_resume": (
+        "released_count",
+        "session_id_before",
+        "session_id_after",
+        "attempt_id_before",
+        "attempt_id_after",
+        "interrupt_called",
+        "initial_prompt_replayed",
+        "prior_history_preserved",
+        "task_completed",
+        "held_tools_admitted_after_resume",
+        "races",
+    ),
+    "pause_expiry": (
+        "auto_resumed",
+        "annotation_count",
+        "extra_assistant_turn",
+        "neutral_annotation",
+        "resolved_before_release",
+        "pod_killed",
+        "idle_retry_fired",
+        "exit_watchdog_fired",
+        "heartbeats_during_pause",
+        "paused_distinguishable_from_stalled",
+        "spill_output_preserved",
+        "held_hook_timeout",
+        "deadline_clamp",
+        "cancellation",
+    ),
     # W2-02 / AC-T7. One key per property the acceptance table names, rather than
     # a single "contract_suite_passed": a green suite is not the claim, the named
     # properties are, and a collapsed boolean cannot say which one is unproven.
@@ -2018,6 +2060,420 @@ class Driver:
                 )
 
 
+    # ---- W2-03 (S2 / #3961) --------------------------------------------
+
+    def check_w2_03(self) -> None:
+        """Pause closes the tool boundary, and `paused` means it (AC-P1).
+
+        The assertion that carries this check is about **side effects, not
+        statuses**. A run can report `paused` while a tool writes a file, and every
+        weaker form of this check — a check-run count, a command status, a quiet
+        progress display — would pass in exactly that case. So the fixture is
+        required to hold a pause across an interval and record what the run did to
+        the world during it: files written, service calls made, tool invocations
+        admitted, task output produced. All four must be zero.
+
+        The state read is the second half rather than the first, because a
+        `paused` state whose zero counters are missing is the failure this check
+        exists to catch, not evidence.
+        """
+        pause = self._artifact("pause_boundary")
+
+        # --- the mechanism actually under test -------------------------------
+        if pause["adapter_id"] != CLAUDE_ADAPTER_ID:
+            raise AssertionError(
+                f"the pause evidence is from adapter {pause['adapter_id']!r}, expected "
+                f"{CLAUDE_ADAPTER_ID!r}: Claude is this wave's production adapter, and another "
+                "adapter's barrier is not evidence for the one that ships"
+            )
+        if pause["sdk_version"] != EXPECTED_CLAUDE_SDK_VERSION:
+            raise AssertionError(
+                f"pause was exercised against SDK {pause['sdk_version']!r} but the lockfile pins "
+                f"{EXPECTED_CLAUDE_SDK_VERSION!r}. The hook-timeout and PreToolUse behaviours the "
+                "barrier rests on are observed SDK behaviour, so evidence from another version does "
+                "not carry over"
+            )
+        if pause.get("permission_mode") != "bypassPermissions":
+            raise AssertionError(
+                f"the experiment ran with permission_mode {pause.get('permission_mode')!r}, expected "
+                "'bypassPermissions'. A run that asks permission before each tool would appear to "
+                "contain side effects no matter whether the barrier works"
+            )
+        if pause.get("spill_hooks_composed") is not True:
+            raise AssertionError(
+                "'spill_hooks_composed' is not True: the barrier must be proven with the existing "
+                "spill hooks in place, because composition is where a PreToolUse addition could "
+                "displace another hook's output"
+            )
+
+        # --- pause_requested closes admission immediately --------------------
+        # Each nested object is shape-checked before it is read: `REQUIRED_ARTIFACT_KEYS`
+        # guarantees the key is present, not that it holds an object, and an
+        # AttributeError from deep in a predicate tells an operator far less than a
+        # sentence naming the field.
+        requested = pause["requested"]
+        if not isinstance(requested, dict):
+            raise AssertionError(f"`requested` must be an object, got {requested!r}")
+        if requested.get("admission_closed") is not True:
+            raise AssertionError(
+                "admission was not closed at `pause_requested`: the operator-visible state and the "
+                "barrier must change together, or the run keeps starting tools while the dashboard "
+                "says it is pausing"
+            )
+
+        # --- the interval, and what the run did during it ---------------------
+        held = pause["held_interval"]
+        if not isinstance(held, dict):
+            raise AssertionError(f"`held_interval` must be an object, got {held!r}")
+        duration = held.get("duration_ms")
+        if not isinstance(duration, (int, float)) or duration <= 0:
+            raise AssertionError(
+                f"`held_interval.duration_ms` is {duration!r}; a pause held for no measurable time "
+                "cannot show that side effects ceased"
+            )
+        for key in ("new_admissions", "fixture_writes", "fixture_service_calls", "task_output_bytes"):
+            value = held.get(key)
+            if value != 0:
+                raise AssertionError(
+                    f"`held_interval.{key}` is {value!r}, expected 0. This is the whole claim of a "
+                    "pause: while the operator is told the run is paused, it must not admit tools, "
+                    "write files, call services or produce output. A nonzero value here means "
+                    "`paused` was displayed over a run that was still acting"
+                )
+        if held.get("observed_by") != "fixture":
+            raise AssertionError(
+                f"`held_interval.observed_by` is {held.get('observed_by')!r}, expected 'fixture': the "
+                "counters must come from instrumentation outside the agent, since a paused agent "
+                "reporting its own inactivity is the claim under test rather than evidence for it"
+            )
+
+        # --- long, delegated and background tool activity ---------------------
+        coverage = pause.get("tool_coverage")
+        if not isinstance(coverage, dict):
+            raise AssertionError(f"`tool_coverage` must be an object, got {coverage!r}")
+        for kind in ("long_running_bash", "delegated_task", "background_task"):
+            if coverage.get(kind) is not True:
+                raise AssertionError(
+                    f"`tool_coverage.{kind}` is not True. A barrier that only ever held a fast "
+                    "foreground tool has not met AC-P1: the hard cases are the tool that outlives "
+                    "the settle wait and the work that continues behind a completed parent"
+                )
+
+        # --- confirmation requires an observed zero --------------------------
+        confirmed = pause["confirmed"]
+        if not isinstance(confirmed, dict):
+            raise AssertionError(f"`confirmed` must be an object, got {confirmed!r}")
+        if confirmed.get("state") != "paused":
+            raise AssertionError(
+                f"the confirmed state is {confirmed.get('state')!r}, expected 'paused'"
+            )
+        if confirmed.get("active_tool_count") != 0:
+            raise AssertionError(
+                f"the run reported `paused` with active_tool_count "
+                f"{confirmed.get('active_tool_count')!r}. `paused` with unsettled work is precisely "
+                "the false claim this story forbids"
+            )
+
+        # --- the honest-degradation half -------------------------------------
+        # Both failure modes must have been exercised, and neither may have
+        # produced `paused`. An implementation that can only succeed has not been
+        # shown to fail safely.
+        degraded = pause.get("degraded")
+        if not isinstance(degraded, dict):
+            raise AssertionError(f"`degraded` must be an object, got {degraded!r}")
+        for case in ("untracked_activity", "hook_timeout"):
+            outcome = degraded.get(case)
+            if not isinstance(outcome, dict):
+                raise AssertionError(f"`degraded.{case}` must be an object, got {outcome!r}")
+            state = outcome.get("state")
+            if state not in {"pause_requested", "running"}:
+                raise AssertionError(
+                    f"`degraded.{case}` reported state {state!r}. Untracked activity and a timed-out "
+                    "hook must degrade to requested/unavailable with a reason — never to `paused`, "
+                    "which would tell an operator the run was contained when it was not"
+                )
+            if not str(outcome.get("reason") or "").strip():
+                raise AssertionError(
+                    f"`degraded.{case}` carries no reason; an operator told only that the pause did "
+                    "not take cannot tell whether to retry or to abort"
+                )
+
+        # --- and the live surface agrees with the artifact --------------------
+        # The artifact describes the experiment; this confirms the deployment the
+        # evaluation is about reports the same capability. Without it a green
+        # experiment could sit beside a build that never shipped the barrier.
+        run_id = self._require("live_run_id")
+        for adapter, paths in ADAPTERS.items():
+            observation = self.probe.request(
+                "GET", paths["state"].format(run_id=run_id), role="owner", token=self._token("owner")
+            )
+            if observation.status != 200:
+                raise AssertionError(
+                    f"{adapter}: the state read returned {observation.status}, expected 200"
+                )
+            body = self._body_of(observation)
+            capabilities = body.get("capabilities")
+            if not isinstance(capabilities, dict):
+                raise AssertionError(f"{adapter}: capabilities missing from the state read: {body!r}")
+            if capabilities.get("pause") is not True:
+                raise AssertionError(
+                    f"{adapter}: the deployment reports pause capability "
+                    f"{capabilities.get('pause')!r} while the recorded experiment proves a working "
+                    "barrier. A capability an operator cannot use is not an accepted pause, and a "
+                    "passing artifact beside a build that disables the verb is the mismatch §7 exists "
+                    "to catch"
+                )
+            if "active_tool_count" not in body:
+                raise AssertionError(
+                    f"{adapter}: the state read omits `active_tool_count`; the gateway must report "
+                    "runtime truth from the barrier rather than let a reader infer it from "
+                    "invocation status"
+                )
+
+    # ---- W2-04 (S2 / #3961) --------------------------------------------
+
+    def check_w2_04(self) -> None:
+        """Resume continues the same execution, exactly once (AC-P2).
+
+        "Same execution" is the property that separates a pause from a restart. An
+        implementation that interrupts the turn and starts a new one with the
+        history replayed can look identical in a status field and in a transcript
+        summary, so this check demands the identity evidence — same session, same
+        attempt, prior history intact, no replayed prompt — and treats an interrupt
+        call as a failure rather than as an implementation detail.
+        """
+        resume = self._artifact("pause_resume")
+
+        if resume.get("released_count") != 1:
+            raise AssertionError(
+                f"the pause was released {resume.get('released_count')!r} times, expected exactly 1. "
+                "A double release admits held work twice and makes 'resumed' unreliable as a record"
+            )
+        for identity in ("session_id", "attempt_id"):
+            for boundary in ("before", "after"):
+                value = resume.get(f"{identity}_{boundary}")
+                if not isinstance(value, str) or not value.strip():
+                    raise AssertionError(
+                        f"{identity} {boundary} resume was not observed as a non-empty identity"
+                    )
+        if resume.get("session_id_before") != resume.get("session_id_after"):
+            raise AssertionError(
+                f"the session changed across the pause: {resume.get('session_id_before')!r} → "
+                f"{resume.get('session_id_after')!r}. A new session is a restart, not a resume, and "
+                "loses the run's accumulated context"
+            )
+        if resume.get("attempt_id_before") != resume.get("attempt_id_after"):
+            raise AssertionError(
+                f"the attempt changed across the pause: {resume.get('attempt_id_before')!r} → "
+                f"{resume.get('attempt_id_after')!r}; interrupt-and-new-turn is explicitly not a "
+                "successful same-execution pause/resume"
+            )
+        if resume.get("interrupt_called") is not False:
+            raise AssertionError(
+                "an interrupt was called: the contract keeps `Query.interrupt` out of the adapter, "
+                "because an interrupted turn cannot then be continued as the same execution"
+            )
+        if resume.get("initial_prompt_replayed") is not False:
+            raise AssertionError(
+                "the initial prompt was replayed. A replayed prompt means the model is starting the "
+                "task again rather than continuing it, which duplicates every side effect it already "
+                "performed"
+            )
+        if resume.get("prior_history_preserved") is not True:
+            raise AssertionError(
+                "prior history was not preserved across the pause; a resumed run that has forgotten "
+                "its work will redo or contradict it"
+            )
+        if resume.get("task_completed") is not True:
+            raise AssertionError(
+                "the fixture task did not complete after resuming. A pause that leaves the run unable "
+                "to finish has converted a pause into an abort"
+            )
+        held = resume.get("held_tools_admitted_after_resume")
+        if not isinstance(held, int) or held <= 0:
+            raise AssertionError(
+                f"`held_tools_admitted_after_resume` is {held!r}; the tools parked at the barrier must "
+                "actually run once the operator lets them, or pause silently dropped the model's work"
+            )
+
+        # Races, which is where "exactly once" is usually lost.
+        races = resume.get("races")
+        if not isinstance(races, dict):
+            raise AssertionError(f"`races` must be an object, got {races!r}")
+        for case in ("resume_before_pause", "repeated_resume"):
+            outcome = races.get(case)
+            if not isinstance(outcome, dict):
+                raise AssertionError(f"`races.{case}` must be an object, got {outcome!r}")
+            if outcome.get("serialized") is not True:
+                raise AssertionError(
+                    f"`races.{case}` was not serialized: two transitions each observing the "
+                    "pre-state is how a pause gets released twice or confirmed after it was cancelled"
+                )
+            if outcome.get("errored") is not False:
+                raise AssertionError(
+                    f"`races.{case}` errored. An operator double-clicking resume, or a resume racing "
+                    "ahead of its pause, is ordinary and must not fail the run"
+                )
+
+    # ---- W2-05 (S2 / #3961) --------------------------------------------
+
+    def check_w2_05(self) -> None:
+        """Expiry, visibility and the deadline clamp (AC-P3, AC-P5, AC-P6).
+
+        Three properties that share one theme: a pause must be bounded, and the
+        boundary must be visible. An unbounded pause silently consumes a pod's
+        remaining life and ends as an expiry the operator never sees; a pause
+        indistinguishable from a stall gets killed by a watchdog that was trying to
+        help.
+        """
+        expiry = self._artifact("pause_expiry")
+
+        # --- auto-resume on expiry -------------------------------------------
+        if expiry.get("auto_resumed") is not True:
+            raise AssertionError(
+                "the shortened fixture timeout did not auto-resume; an unbounded pause outlives the "
+                "pod and the operator learns about it when the run vanishes"
+            )
+        if expiry.get("annotation_count") != 1:
+            raise AssertionError(
+                f"expiry produced {expiry.get('annotation_count')!r} annotations, expected exactly 1. "
+                "The model has to be told the run continued by itself, once — zero leaves it acting on "
+                "a stale belief, more than one is noise in the transcript"
+            )
+        if expiry.get("extra_assistant_turn") is not False:
+            raise AssertionError(
+                "expiry produced an extra assistant turn: the annotation must ride the existing turn "
+                "rather than provoke a new one, which would cost a model call and confuse the "
+                "transcript"
+            )
+        if expiry.get("neutral_annotation") is not True:
+            raise AssertionError(
+                "the expiry annotation was not published as a neutral runtime fact. Only the Claude "
+                "adapter may translate it into `shouldQuery:false`; a provider-shaped event in the "
+                "shared path is the leak the neutral contract forbids"
+            )
+        # An expiry that never reported the pause it ended is the defect found in
+        # review of this story: "pausing…" for the whole budget, then a silent resume.
+        if expiry.get("resolved_before_release") is not True:
+            raise AssertionError(
+                "the pause was released without first reporting a confirmation or a failure. An "
+                "operator who pressed Pause, waited out the budget and was never told the pause did "
+                "not take has been shown a state that never resolved"
+            )
+
+        # --- nothing mistook a pause for a stall ------------------------------
+        for key, consequence in (
+            ("pod_killed", "the pod was killed during a valid pause"),
+            ("idle_retry_fired", "the idle-retry watchdog fired during a valid pause"),
+            ("exit_watchdog_fired", "the post-completion exit watchdog fired during a valid pause"),
+        ):
+            if expiry.get(key) is not False:
+                raise AssertionError(
+                    f"{consequence}: a run that is quiet *because an operator paused it* must not be "
+                    "treated as stalled, or pausing a run becomes a way to lose it"
+                )
+        heartbeats = expiry.get("heartbeats_during_pause")
+        if not isinstance(heartbeats, int) or heartbeats <= 0:
+            raise AssertionError(
+                f"`heartbeats_during_pause` is {heartbeats!r}; visibility output must continue so a "
+                "paused run stays distinguishable from a dead one"
+            )
+        if expiry.get("paused_distinguishable_from_stalled") is not True:
+            raise AssertionError(
+                "the heartbeat did not distinguish `paused` from `stalled`. Going silent is the one "
+                "thing a pause must not do, because silence is what a hung run looks like"
+            )
+        if expiry.get("spill_output_preserved") is not True:
+            raise AssertionError(
+                "spill output was not preserved across the pause; the barrier composes with the spill "
+                "hooks, so a lost tool-output locator is a regression the pause caused"
+            )
+
+        # --- the clamp, and refusing a pause there is no room for -------------
+        clamp = expiry.get("deadline_clamp")
+        if not isinstance(clamp, dict):
+            raise AssertionError(f"`deadline_clamp` must be an object, got {clamp!r}")
+        granted = clamp.get("granted_ms")
+        remaining = clamp.get("remaining_ms")
+        margin = clamp.get("finalization_margin_ms")
+        for name, value in (("granted_ms", granted), ("remaining_ms", remaining),
+                            ("finalization_margin_ms", margin)):
+            if not isinstance(value, (int, float)):
+                raise AssertionError(f"`deadline_clamp.{name}` is {value!r}, expected a number")
+        if granted > remaining - margin:
+            raise AssertionError(
+                f"the granted pause of {granted!r}ms exceeds the remaining deadline {remaining!r}ms "
+                f"less the finalization margin {margin!r}ms. A pause that consumes the whole deadline "
+                "leaves no room to write a terminal state, so the run ends indistinguishably from a "
+                "pod that vanished"
+            )
+        if clamp.get("nonpositive_budget_rejected") is not True:
+            raise AssertionError(
+                "a nonpositive safe budget was not rejected: a pause that expires the instant it "
+                "begins looks to an operator exactly like a pause that never happened"
+            )
+
+        # --- a hook held past its own bound ----------------------------------
+        # The barrier parks a tool inside a PreToolUse hook, and the CLI enforces that
+        # hook's timeout on its side. If the bound is shorter than the pause budget
+        # then every long pause has its parked tool aborted out from under it — so the
+        # case has to be exercised deliberately, and its outcome must be an honest
+        # degradation rather than a pause that appears to hold.
+        hook = expiry.get("held_hook_timeout")
+        if not isinstance(hook, dict):
+            raise AssertionError(f"`held_hook_timeout` must be an object, got {hook!r}")
+        if hook.get("exercised") is not True:
+            raise AssertionError(
+                "the held-hook timeout was never exercised. It is the one bound the adapter does not "
+                "enforce itself, so leaving it untested means the pause budget and the hook budget "
+                "could disagree in production with nothing to catch it"
+            )
+        if hook.get("state") == "paused":
+            raise AssertionError(
+                "a pause whose hook timed out still reported `paused`. The parked tool was released by "
+                "the CLI, so admission is no longer closed and the operator is being shown containment "
+                "that has already lapsed"
+            )
+        if not str(hook.get("reason") or "").strip():
+            raise AssertionError(
+                "the hook timeout produced no reason; 'pause did not take' without a cause leaves an "
+                "operator with nothing to act on"
+            )
+        bound = hook.get("hook_timeout_seconds")
+        budget = hook.get("pause_budget_seconds")
+        if not isinstance(bound, (int, float)) or not isinstance(budget, (int, float)):
+            raise AssertionError(
+                f"`held_hook_timeout` must record both bounds as numbers, got "
+                f"hook_timeout_seconds={bound!r} pause_budget_seconds={budget!r}"
+            )
+        if bound <= budget:
+            raise AssertionError(
+                f"the hook bound of {bound!r}s does not exceed the pause budget of {budget!r}s. The "
+                "hook has to outlive the pause it is holding, or the budget is decorative and every "
+                "pause held to its limit ends as an aborted tool"
+            )
+
+        # --- cancellation must not flush the work it cancelled -----------------
+        cancel = expiry.get("cancellation")
+        if not isinstance(cancel, dict):
+            raise AssertionError(f"`cancellation` must be an object, got {cancel!r}")
+        if cancel.get("held_work_admitted") is not False:
+            raise AssertionError(
+                "abort admitted work that was held at the barrier. An abort that flushes its parked "
+                "tools on the way out runs exactly the side effects the operator aborted to prevent"
+            )
+        if cancel.get("annotation_emitted") is not False:
+            raise AssertionError(
+                "cancellation emitted a resume annotation; an aborted run is not a resumed one and "
+                "must not tell the model to carry on"
+            )
+        if cancel.get("held_work_denied") is not True:
+            raise AssertionError(
+                "held work was neither admitted nor denied on cancellation, so those tool calls were "
+                "left unresolved and the aborting run cannot finish cleanly"
+            )
+
+
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed
 # method is an immediate KeyError instead of a silently shorter report.
 WAVE1_PREDICATES: dict[str, str] = {
@@ -2033,15 +2489,18 @@ WAVE1_PREDICATES: dict[str, str] = {
     "W1-10": "check_w1_10",
 }
 
-# S3 provides W2-02 and S5 provides W2-06..09. The other five checks retain
-# named NOT RUN results until their implementation and live evidence land.
+# S3 provides W2-02, S2 provides W2-03..05 and S5 provides W2-06..09. W2-01 and
+# W2-10 retain named NOT RUN results until their implementation and live evidence
+# land — see PENDING_CHECK_OWNERS.
 WAVE2_PREDICATES: dict[str, str] = {
     "W2-02": "check_w2_02",
+    "W2-03": "check_w2_03",
+    "W2-04": "check_w2_04",
+    "W2-05": "check_w2_05",
     "W2-06": "check_w2_06",
     "W2-07": "check_w2_07",
     "W2-08": "check_w2_08",
     "W2-09": "check_w2_09",
-
 }
 
 CHECK_PREDICATES: dict[str, str] = {**WAVE1_PREDICATES, **WAVE2_PREDICATES}

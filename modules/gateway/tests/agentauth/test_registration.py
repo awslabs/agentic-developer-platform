@@ -587,3 +587,36 @@ class TestNothingSensitiveIsLogged:
             service().record_status(credential_token=credential(run_id=RUN_A), pod=POD_A, status="in_progress", fields={"owner": "x"})
 
         assert any("owner" in str(record.__dict__.get("fields", "")) for record in caplog.records)
+
+
+class TestTranscriptPointerIsolation:
+    @pytest.mark.parametrize("different", ["tenant", "run", "attempt", "kind", "suffix"])
+    def test_an_own_row_cannot_point_to_another_runs_artifact(self, aws, service, two_workers, different):
+        from types import SimpleNamespace
+
+        from src.agentauth.artifact_keys import artifact_prefix
+
+        identity = SimpleNamespace(tenant_id=TENANT, invocation_id=RUN_A, current_attempt=1)
+        if different == "tenant":
+            identity.tenant_id = OTHER_TENANT
+        if different == "run":
+            identity.invocation_id = RUN_B
+        if different == "attempt":
+            identity.current_attempt = 2
+        kind = "spill" if different == "kind" else "transcript"
+        key = artifact_prefix(identity) + kind + "/" + "a" * 64 + ".md"
+        if different == "suffix":
+            key += "/../victim"
+        with pytest.raises(RegistrationRefusedError, match="unsupported transcript"):
+            service().record_status(credential_token=credential(run_id=RUN_A), pod=POD_A, status="in_progress", fields={"transcript_key": key})
+        assert "transcript_key" not in row(aws, run_id=RUN_A, arrived_at=ARRIVED_A)
+
+    def test_own_transcript_pointer_is_preserved(self, aws, service, two_workers):
+        from types import SimpleNamespace
+
+        from src.agentauth.artifact_keys import artifact_prefix
+
+        identity = SimpleNamespace(tenant_id=TENANT, invocation_id=RUN_A, current_attempt=1)
+        key = artifact_prefix(identity) + "transcript/" + "a" * 64 + ".md"
+        service().record_status(credential_token=credential(run_id=RUN_A), pod=POD_A, status="in_progress", fields={"transcript_key": key})
+        assert row(aws, run_id=RUN_A, arrived_at=ARRIVED_A)["transcript_key"]["S"] == key

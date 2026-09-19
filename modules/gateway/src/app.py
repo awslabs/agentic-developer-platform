@@ -25,6 +25,7 @@ from src.shared.tracing import setup_tracing, shutdown_tracing
 logger = logging.getLogger("bedrockgateway")
 
 UNIT_MODULES = [
+    "src.domain_proxy.superplane",
     "src.auth.routes",
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
     "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
@@ -44,6 +45,10 @@ UNIT_MODULES = [
     # unconditioned DynamoDBWebhookEventsUpdate permission and onto a service that
     # derives the row key from the protected execution record.
     "src.agentauth.registration_routes",
+    "src.agentauth.run_services",
+    "src.agentauth.knowledge_service",
+    "src.agentauth.task_routes",
+    "src.agentauth.artifact_service",
     # #5223: mediated GitHub operations. A separate module from
     # registration_routes even though it shares the /self prefix, because this is
     # the only route on that prefix that reaches an external provider and holds an

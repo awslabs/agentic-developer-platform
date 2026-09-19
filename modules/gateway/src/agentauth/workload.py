@@ -11,7 +11,8 @@ from __future__ import annotations
 import os
 import re
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -34,6 +35,9 @@ class VerifiedPod:
     namespace: str
     service_account: str
     ip: str
+    # Optional lifecycle evidence controls pause, not workload identity. A Jobs
+    # API blip must not invalidate a task already assigned to the same verified pod.
+    deadline_at: str | None = field(default=None, compare=False)
 
 
 class KubernetesWorkloadVerifier:
@@ -135,13 +139,53 @@ class KubernetesWorkloadVerifier:
                 or not pod_status.get("podIP")
             ):
                 raise WorkloadRefusedError("workload refused")
-            return VerifiedPod(uid, name, self._namespace, self._service_account, pod_status["podIP"])
+            return VerifiedPod(uid, name, self._namespace, self._service_account, pod_status["podIP"], self._deadline(pod, headers))
         except WorkloadRefusedError:
             raise
         except (OSError, httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
             # Do not expose an HTTP exception or request body: TokenReview
             # contains the worker credential, and Authorization contains ours.
             raise WorkloadRefusedError("workload verifier unavailable") from None
+
+    def _deadline(self, pod: dict, headers: dict) -> str | None:
+        """Conservative absolute lifetime from Kubernetes, including Job retries.
+
+        A Job's activeDeadlineSeconds starts before registration and before a
+        replacement pod. Creation time is an earlier bound than status.startTime
+        and remains conservative across suspension/resumption. Missing lifecycle
+        evidence disables pause; it does not disable unrelated worker services.
+        """
+        try:
+            bounds = []
+
+            def add_bound(resource):
+                seconds = resource["spec"].get("activeDeadlineSeconds")
+                if type(seconds) is not int or seconds <= 0:
+                    return
+                created = datetime.fromisoformat(resource["metadata"]["creationTimestamp"].replace("Z", "+00:00"))
+                if created.tzinfo is None or created > datetime.now(UTC):
+                    raise ValueError("invalid lifecycle timestamp")
+                bounds.append(created + timedelta(seconds=seconds))
+
+            add_bound(pod)
+            owners = [owner for owner in pod["metadata"].get("ownerReferences", []) if owner.get("controller") is True]
+            if owners:
+                if len(owners) != 1:
+                    return None
+                owner = owners[0]
+                name = owner.get("name", "")
+                if owner.get("kind") != "Job" or owner.get("apiVersion") != "batch/v1" or not _NAME.fullmatch(name) or not owner.get("uid"):
+                    return None
+                response = self._client.get(f"/apis/batch/v1/namespaces/{self._namespace}/jobs/{name}", headers=headers)
+                response.raise_for_status()
+                job = response.json()
+                metadata = job["metadata"]
+                if metadata.get("uid") != owner["uid"] or metadata.get("name") != name or metadata.get("namespace") != self._namespace:
+                    return None
+                add_bound(job)
+            return min(bounds).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ") if bounds else None
+        except (httpx.HTTPError, KeyError, ValueError, TypeError, AttributeError, OverflowError):
+            return None
 
     def has_exited(self, *, name: str, uid: str) -> bool:
         """Positive container-exit evidence for a previously verified workload.
