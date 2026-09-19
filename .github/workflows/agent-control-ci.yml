@@ -274,7 +274,10 @@ jobs:
             test_adapter.py test_envelope.py test_envelope_vectors.py \
             test_execution.py test_grants.py test_policy.py \
             test_run_credential.py test_store.py test_store_lifecycle.py \
-            test_store_reservations.py test_wave_dispatch.py test_revalidation.py; do
+            test_store_reservations.py test_wave_dispatch.py test_revalidation.py \
+            test_run_services.py test_artifact_service.py \
+            test_task_delivery.py test_task_routes.py \
+            test_knowledge_service.py test_knowledge_service_postgres.py; do
             test -f "tests/agentauth/$suite" || exit 1
           done
           pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py -v --tb=short --timeout=120

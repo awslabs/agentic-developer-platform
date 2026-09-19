@@ -74,6 +74,9 @@ class MarkerIdentity:
     chain_depth: str
 
     def canonical(self) -> str:
+        # Match the existing webhook verifier's wire format. Every field must
+        # remain server-derived; a caller-controlled field would require a
+        # versioned, unambiguous encoding on both signing and verification sides.
         return ":".join((self.correlation_id, self.root_human_id, self.is_human_rooted, self.invocation_id, self.chain_depth))
 
     def signed_fields(self, key: str) -> dict[str, str]:
