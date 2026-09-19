@@ -145,9 +145,9 @@ locals {
     "                    value: \"true\"",
     "                  - name: ADP_CONTROL_PORT",
     "                    value: \"${var.agent_control_port}\"",
-    "                  # The control token expires with the pod. Rendered from the",
-    "                  # same variable as activeDeadlineSeconds below so the",
-    "                  # credential's lifetime and the pod's cannot drift apart.",
+    "                  # Duration cap only; the gateway supplies the absolute Job",
+    "                  # deadline from Kubernetes during protected bootstrap.",
+    "                  # Registration time is not the beginning of Job lifetime.",
     "                  - name: ADP_POD_DEADLINE_SECONDS",
     "                    value: \"${var.agent_pod_deadline_seconds}\"",
   ]) : ""

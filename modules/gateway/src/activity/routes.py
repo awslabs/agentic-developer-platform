@@ -17,7 +17,7 @@ from typing import Annotated, Literal
 import boto3
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.activity.control_schemas import (
@@ -863,30 +863,24 @@ async def command_invocation_agent(
     control: Annotated[ControlService, Depends(get_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ControlCommandResponse:
-    """Submit a control command.
-
-    All four verbs are authenticated and authorized here in S1 and answer 501
-    once authorized, because the alternative — omitting the routes until each
-    story lands — would leave the authorization path for the most dangerous verb
-    (abort, cross-tenant, on someone else's run) untested until the story that
-    implements it. The gate is proven now; the behaviour arrives later.
-
-    A 501 from this route is a promise that nothing happened: `authorize_command`
-    reaches the unsupported-verb check before any transport call exists.
-    """
+    """Submit a signed human command; acceptance is distinct from application."""
     try:
         await _validated_command_body(action, request)
     except ControlError as exc:
         _raise_control_error(exc)
 
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+
     user_id, tenant_id = await _control_identity(current_user, db)
     try:
+        # Preserve the authorization/flag/terminal/verb status ordering before
+        # doing the additional signing and live-session checks.
         control.authorize_command(invocation_id, action, user_id=user_id, tenant_id=tenant_id)
+        session = await authorize_human_session(current_user, db)
+        result, status = await control.command(invocation_id, action, request_body=await request.body(), session=session)
+        return JSONResponse(result.model_dump(), status_code=status, headers={"Cache-Control": "no-store"})
+    except BootstrapRefusedError:
+        raise HTTPException(status_code=404, detail="run not found") from None
     except ControlError as exc:
         _raise_control_error(exc)
-
-    # Unreachable while SUPPORTED_ACTIONS is empty: authorize_command raises 501
-    # for every verb in S1. Retained as the declared success shape so the story
-    # that enables a verb wires its implementation here rather than inventing a
-    # response contract (revival-design §2).
-    raise HTTPException(status_code=501, detail=f"{action} is not implemented in this deployment")
