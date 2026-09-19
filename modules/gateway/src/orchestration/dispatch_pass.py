@@ -869,6 +869,19 @@ async def _dispatch_one_unclaimed(
     if binding_required:
         envelope["pr_binding_required"] = True
 
+    # #5144: the same envelope-and-decision pattern, for the same reason. A story
+    # dispatch owes a durable continuation receipt before its worker's exit means
+    # anything, and `handoff.handoff_required` reads this off the decision to decide
+    # whether a missing receipt holds the node or is simply not applicable.
+    #
+    # Gated on the execution ledger: the receipt is committed against an execution
+    # row, so a dispatch made with no engine execution behind it cannot produce one
+    # and must not be held for the lack. `work_claim_required` marks exactly the
+    # dispatches the ledger covers.
+    receipt_required = binding_required and work_claim_required
+    if receipt_required:
+        envelope["handoff_required"] = True
+
     session.add(
         OrchestrationDecision(
             org_id=org_id,
@@ -889,6 +902,7 @@ async def _dispatch_one_unclaimed(
                     "issue": issue,
                     "root_decision_id": genesis.decision_id,
                     "pr_binding_required": binding_required,
+                    "handoff_required": receipt_required,
                     "provider_repository_id": repository_id,
                     "installation_id": installation_id,
                 }

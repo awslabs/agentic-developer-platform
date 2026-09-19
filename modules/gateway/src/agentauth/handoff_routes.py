@@ -119,8 +119,7 @@ async def commit_handoff_route(
     """
     from datetime import UTC, datetime
 
-    from src.orchestration.execution_state import ExecutionIdentity
-    from src.orchestration.handoff import HandoffOutcome, commit_handoff
+    from src.orchestration.handoff import HandoffOutcome, commit_handoff, current_identity
     from src.orchestration.pr_bindings import BindingError, resolve_registration_target
     from src.shared.database import get_session_factory
 
@@ -153,23 +152,20 @@ async def commit_handoff_route(
             if target.flow_id != record.flow_id or target.flow_id != grant.flow_id:
                 raise HTTPException(404, "not found")
 
-            # Authority fences come from the live execution row, never the caller.
+            # Authority fences come from the live execution row, never the caller, and
+            # through the SAME reader the engine's reconciliation uses — two resolvers
+            # that agree today is how the evidence path and the write path drift apart.
             # Read here and re-verified under the row lock inside the store, which is
             # what keeps a value read before slow work from being trusted after it.
-            fences = await _authority_fences(session, org_id=target.org_id, node_id=target.node_id)
-            if fences is None:
+            identity = await current_identity(session, org_id=target.org_id, node_id=target.node_id)
+            if identity is None:
+                # No execution row: a handoff for work the engine has no execution for
+                # is not something to create here.
                 raise HTTPException(404, "not found")
 
             result = await commit_handoff(
                 session,
-                identity=ExecutionIdentity(
-                    org_id=target.org_id,
-                    node_id=target.node_id,
-                    cycle=fences["cycle"],
-                    accepted_plan_version=fences["accepted_plan_version"],
-                    claim_id=fences["claim_id"],
-                    claim_generation=fences["claim_generation"],
-                ),
+                identity=identity,
                 now=datetime.now(UTC),
                 progress_note=(body.summary or None),
             )
@@ -206,38 +202,3 @@ async def commit_handoff_route(
         status_code=201 if result.outcome is HandoffOutcome.COMMITTED else 200,
         headers={"Cache-Control": "no-store"},
     )
-
-
-async def _authority_fences(session, *, org_id: str, node_id: str) -> dict | None:
-    """The live authority fences for this node's current execution.
-
-    Read from the execution row rather than accepted from the caller, and returned as
-    plain values the store then re-verifies under its own row lock. Returns ``None``
-    when no execution exists, which the caller answers 404: a handoff for work the
-    engine has no execution for is not something to create here.
-    """
-    from sqlalchemy import select
-
-    from src.orchestration.models import OrchestrationExecution
-
-    row = (
-        await session.execute(
-            select(OrchestrationExecution)
-            .where(
-                OrchestrationExecution.org_id == org_id,
-                OrchestrationExecution.node_id == node_id,
-            )
-            # Newest cycle: a repair cycle is separate work with its own ledger, and a
-            # handoff belongs to the cycle currently in flight.
-            .order_by(OrchestrationExecution.cycle.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        return None
-    return {
-        "cycle": row.cycle,
-        "accepted_plan_version": row.accepted_plan_version,
-        "claim_id": row.claim_id,
-        "claim_generation": row.claim_generation,
-    }

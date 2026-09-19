@@ -128,8 +128,12 @@ __all__ = [
     "adopt_legacy_lane",
     "adoption_enabled",
     "commit_handoff",
+    "current_identity",
     "handoff_receipt_ref",
+    "handoff_required",
+    "missing_receipt_hold",
     "outstanding_block",
+    "receipt_for",
 ]
 
 # The scheme prefix every receipt carries. Present so a stored value can be
@@ -346,6 +350,102 @@ async def commit_handoff(
 
     logger.info("handoff: committed receipt and due continuation for execution %s", record.id)
     return HandoffResult(outcome=HandoffOutcome.COMMITTED, receipt_ref=stored, record=committed)
+
+
+def handoff_required(dispatch: dict) -> bool:
+    """Whether this dispatch must produce a durable handoff receipt (#5144).
+
+    Read from the dispatch record's own marker, exactly as ``results.binding_required``
+    reads ``pr_binding_required``, and for the same reason: the contract a run was
+    dispatched under is a property of *that run*, so the boundary is deterministic
+    rather than a wall-clock or deploy-time inference.
+
+    A dispatch written before this contract existed carries no marker, so it keeps its
+    prior behaviour unchanged. That asymmetry is deliberate — "no marker, therefore
+    require a receipt" would hold every in-flight legacy run the moment this deploys,
+    and "no receipt, therefore complete" would reintroduce the defect for new work.
+    """
+    return bool(dispatch.get("handoff_required"))
+
+
+async def current_identity(session: AsyncSession, *, org_id: str, node_id: str) -> ExecutionIdentity | None:
+    """The live authority fences for this node's current execution, or ``None``.
+
+    One reader, used by both the worker-facing route and the engine's reconciliation,
+    because two resolvers that agree today is how the evidence path and the write path
+    come to disagree about which cycle a receipt belongs to.
+
+    Every fence is read from the execution row rather than accepted from a caller. The
+    caller passes the result to :func:`commit_handoff`, which re-verifies the
+    generation **under its own row lock** — so this is a candidate to act on, not a
+    trusted authority decision.
+
+    Returns ``None`` when the node has no execution row. Callers must not create one:
+    a handoff for work the engine has no execution for is not something to invent.
+    """
+    from sqlalchemy import select
+
+    from .models import OrchestrationExecution
+
+    row = (
+        await session.execute(
+            select(OrchestrationExecution)
+            .where(
+                OrchestrationExecution.org_id == org_id,
+                OrchestrationExecution.node_id == node_id,
+            )
+            # Newest cycle: a repair cycle is separate work with its own ledger, and a
+            # handoff belongs to the cycle currently in flight.
+            .order_by(OrchestrationExecution.cycle.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return ExecutionIdentity(
+        org_id=row.org_id,
+        node_id=row.node_id,
+        cycle=row.cycle,
+        accepted_plan_version=row.accepted_plan_version,
+        claim_id=row.claim_id,
+        claim_generation=row.claim_generation,
+    )
+
+
+async def receipt_for(session: AsyncSession, *, identity: ExecutionIdentity) -> str | None:
+    """The durable handoff receipt for this work, or ``None`` if there is none.
+
+    A read, never a write: the caller uses it to decide whether delivery may be
+    treated as finished, and the absence of a receipt must leave work due rather than
+    cause anything to be created here.
+
+    Returns ``None`` for an execution whose authority fences no longer match, because
+    a receipt that cannot be attributed to the current attempt is not evidence about
+    it. Fail closed: unverifiable means absent.
+    """
+    current = await load_execution(session, identity=identity)
+    if current is None or current.kind is OutcomeKind.CONFLICT:
+        return None
+    record = current.record
+    if record is None or not record.handoff_receipt_ref:
+        return None
+    # Attribution, not mere presence: a stored receipt minted under a different
+    # generation or plan version belongs to other ownership.
+    return record.handoff_receipt_ref if record.handoff_receipt_ref == handoff_receipt_ref(identity, record.id) else None
+
+
+def missing_receipt_hold(reason: str = "") -> str:
+    """The operator-facing hold text for delivery with no durable receipt.
+
+    Phrased as the actionable condition rather than "waiting": the point of the
+    story is that a worker's clean exit is not completion, and an operator reading
+    this needs to know what is outstanding and that it is still tracked.
+    """
+    return (
+        "Agent exited without committing a durable continuation receipt, so the remaining "
+        "review/deployment/evaluation work is not accounted for. This work stays due rather than "
+        "being treated as complete." + (f" ({reason})" if reason else "")
+    )
 
 
 def adoption_enabled() -> bool:
