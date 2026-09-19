@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from src.agentauth.grants import AuthorityReference, DelegatedGrant
+from src.agentauth.grants import AUTHORITY_GITHUB_EVENT, AuthorityReference, DelegatedGrant
 from src.internal.credential_routes import get_secrets_manager, router
 from src.orchestration.models import OrchestrationAcceptedPlan  # noqa: F401 — register policy tables before fixture creation
 from src.shared.database import get_db
@@ -40,7 +40,14 @@ async def vault(db_session, monkeypatch):
         grant_id="grant:vault",
         tenant_id="vault-org",
         principal="vault-run#1",
-        authority=AuthorityReference("human_event", "approval", "vault-user", "vault-org"),
+        # A real kind the platform mints, not a plausible-looking string. `"human_event"`
+        # was never in `RECOGNIZED_AUTHORITY_KINDS` and is minted nowhere in `src/` — this
+        # fixture passed only because `authorize_worker_credential` read "not the engine
+        # kind, therefore unrestricted" and fail-open-permitted every unknown kind. #4529
+        # closed that hole, so the fixture now has to name the kind it actually means: a
+        # verified GitHub installation event, which is what roots a worker holding a
+        # user-configured credential.
+        authority=AuthorityReference(AUTHORITY_GITHUB_EVENT, "approval", "vault-user", "vault-org"),
         allowed_actions=frozenset(),
         flow_id="vault-flow",
         expires_at=datetime.now(UTC) + timedelta(hours=1),

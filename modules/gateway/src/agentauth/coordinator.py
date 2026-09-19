@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, _iso, _key
 from src.agentauth.engine import ensure_engine_authority
-from src.agentauth.grants import AgentAction, AuthorityReference, TargetRelationship
+from src.agentauth.grants import AUTHORITY_GITHUB_EVENT, AgentAction, AuthorityReference, TargetRelationship
 from src.agentauth.store import AuthorityStoreError
 from src.orchestration.dispatch_pass import _latest_approval_decision_id
 from src.orchestration.genesis import EngineGenesis, resolve_engine_genesis
@@ -97,7 +97,7 @@ async def resolve_coordinator_assignment(*, session, execution, grant, configure
     if (
         execution.get("persona", {}).get("S") not in {"operations", "aidlc"}
         or execution.get("parent_principal")
-        or grant.authority.kind != "github_event"
+        or grant.authority.kind != AUTHORITY_GITHUB_EVENT
         or AgentAction.DISPATCH not in grant.allowed_actions
     ):
         return None
@@ -143,7 +143,7 @@ def bind_coordinator(*, store: BootstrapStore, record, grant, assignment: Coordi
         record.tenant_id != assignment.genesis.org_id
         or grant.tenant_id != record.tenant_id
         or grant.principal != record.principal
-        or grant.authority.kind != "github_event"
+        or grant.authority.kind != AUTHORITY_GITHUB_EVENT
         or not record.workload_binding
         or assignment.repo not in grant.repo_scope
     ):

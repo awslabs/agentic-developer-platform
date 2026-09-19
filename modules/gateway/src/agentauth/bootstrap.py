@@ -144,6 +144,12 @@ class BootstrapStore:
             "orchestration_node_id",
             "orchestration_node_attempt",
             "provider_repository_id",
+            # Issue #4529: the amendment request an AI-DLC authoring run answers.
+            # Server-written by `engine.provision_authoring` and re-read on every call
+            # by `validate_authoring_authority`, which is what stops an authoring run
+            # re-pointing itself at a different assignment. Additive: the gate-rooted
+            # dispatch path never sets it.
+            "orchestration_amendment_request_id",
         }:
             raise BootstrapRefusedError("invalid dispatch metadata")
         if set(grant_metadata) - {"dispatch_personas", "max_total_dispatches", "work_item_issue"}:

@@ -38,7 +38,7 @@ from src.admin.persona_models.catalogue import (
 from src.admin.persona_models.catalogue_schemas import SelectionRejection
 from src.admin.persona_models.catalogue_service import validate_selection
 from src.agentauth.envelope import MODEL_POLICY_AUDIENCE, EnvelopeError, sign_envelope
-from src.agentauth.grants import DelegatedGrant
+from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY, DelegatedGrant
 from src.agentauth.runtime_posture import (
     LivePosture,
     RuntimePosture,
@@ -724,9 +724,9 @@ async def _resolve_principal(
     grant: DelegatedGrant,
     authority: dict,
 ) -> tuple[Literal["human", "service_account"], str]:
-    if grant.authority.kind in {"github_event", "gate_decision", "chat_event", "gitlab_event", "github_actions_event"}:
+    if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_GATE_DECISION, "chat_event", "gitlab_event", "github_actions_event"}:
         return "human", await resolve_root_user_entity_id(session, tenant_id, grant.authority.human_id)
-    if grant.authority.kind != "service_policy":
+    if grant.authority.kind != AUTHORITY_SERVICE_POLICY:
         raise ModelPolicyError("authority_kind_unsupported")
     service_identity = authority.get("service_identity", {}).get("S", "")
     alias_source = service_identity.partition(":")[0]
@@ -889,12 +889,12 @@ def _canonical_owner_locator(
 
 def _trusted_root_locator(grant: DelegatedGrant, authority: dict) -> str:
     """Derive the cache root only from the already-verified authority record."""
-    if grant.authority.kind in {"github_event", "gate_decision", "chat_event", "gitlab_event", "github_actions_event"}:
+    if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_GATE_DECISION, "chat_event", "gitlab_event", "github_actions_event"}:
         human_id = authority.get("human_id", {}).get("S")
         if not human_id or human_id != grant.authority.human_id:
             raise ModelPolicyError("unverified_provenance")
         return f"{grant.authority.kind}:{human_id}"
-    if grant.authority.kind == "service_policy":
+    if grant.authority.kind == AUTHORITY_SERVICE_POLICY:
         service_identity = authority.get("service_identity", {}).get("S")
         if not service_identity:
             raise ModelPolicyError("service_principal_unregistered")

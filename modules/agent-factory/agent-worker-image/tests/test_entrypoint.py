@@ -60,6 +60,10 @@ def ready_gateway_proxy(monkeypatch):
     monkeypatch.setattr("entrypoint.record_delivery_completed", MagicMock())
     monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", "false")
     monkeypatch.setenv("ADP_GH_TOKEN_BROKER_ENABLED", "0")
+    # main() exports runtime telemetry with os.environ.update, outside monkeypatch.
+    # Restore those writes too so later model-policy tests see their own run state.
+    with patch.dict(os.environ):
+        yield
 
 
 SAMPLE_ENVELOPE = {

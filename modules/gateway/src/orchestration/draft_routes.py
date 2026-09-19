@@ -1,9 +1,20 @@
 """Operator-plane ingress for draft plan registration.
 
-Issue #4528 (EPIC #4191, intent #4120).
+Issues #4528 and #4529 (EPIC #4191, intent #4120).
 
 - POST /orchestration/flows/drafts — register a compiled loop proposal as an inert
   draft. Gated on `Permission.PLAN_DRAFT`.
+- POST /orchestration/flows/{flow_id}/amendments/drafts — register an authored
+  **amendment** to an already-accepted plan as a pending draft awaiting one named
+  human accept (#4529). Same permission, same tenant resolution, and inert in a
+  stronger sense: it writes no graph rows at all.
+
+Both routes exist because an authoring agent must be able to make a plan *visible*
+without being able to make it *run*. They differ only in what the author is
+amending: nothing (a new flow) or an accepted plan (an amendment). The second one
+additionally requires the server to have commissioned the authoring run — see
+`register_amendment_draft` — because unlike a new flow, an amendment names an
+existing plan of record, so "which plan" cannot be left to the caller.
 
 --------------------------------------------------------------------------------
 Why this is a separate router from `routes.py`
@@ -78,8 +89,14 @@ from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.budget.run_binding import RunBindingResolver
+from src.orchestration.amend import FlowNotFoundError
 from src.orchestration.compile import ApprovalContext, NonApprovalSupersedeError, ProposalRejectedError, TenantMismatchError
 from src.orchestration.draft_binding import DraftBindingError, resolve_draft_tenant
+from src.orchestration.pending_amendments import (
+    AmendmentRequestNotFoundError,
+    register_amendment_draft,
+    resolve_authoring_request,
+)
 from src.orchestration.proposal import LoopProposal
 from src.orchestration.registration import DraftFlowConflictError, register_draft_proposal
 from src.orchestration.state import ActorKind
@@ -174,6 +191,55 @@ _SERVER_RESOLVED_TENANT_SCOPE = "internal"
 RUN_ID_HEADER = "X-Agent-RunId"
 
 
+async def _resolve_owning_tenant(
+    current_user: TokenContext,
+    *,
+    run_bindings: RunBindingResolver,
+    run_id: str | None,
+    target: str,
+) -> str:
+    """Which tenant this registration's rows land in. Server-written state only.
+
+    For a human caller the authenticated org is the tenant, exactly as before — a
+    human registering a draft sends no run id, and both `X-Agent-RunId` and
+    `X-Agent-OrgId` are ignored for tenant purposes (the #4132 pin).
+
+    For an internal-scope service caller the authenticated org is `__platform__`,
+    which equals no real tenant, so the tenant is resolved from the run's ingress
+    row instead. See `draft_binding.py` for why that row and not the `X-Agent-OrgId`
+    header the worker's intent is also available in.
+
+    Shared by both draft routes deliberately. Two copies of this would be two
+    chances for one of them to grow a fallback to `attributed_org_id`, and a
+    fallback is the whole bypass — reachable by any caller who can make the lookup
+    fail.
+
+    Args:
+        target: What is being registered against, for the refusal log only. Never an
+            input to the decision.
+
+    Raises:
+        HTTPException: 403 with a machine-readable `error` code when an
+            internal-scope caller's run does not bind to a tenant.
+    """
+    if current_user.scope != _SERVER_RESOLVED_TENANT_SCOPE:
+        return current_user.org_id
+    try:
+        return await resolve_draft_tenant(run_id=run_id, resolver=run_bindings)
+    except DraftBindingError as exc:
+        # 403 and not 422: a 422 here would be indistinguishable, in the worker's
+        # closing-comment warning, from the tenant-mismatch refusal a document can
+        # also earn — which is a different problem with a different fix. The
+        # machine-readable `error` code says which arm fired.
+        logger.warning(
+            "draft registration refused, run did not bind to a tenant: target=%s actor=%s reason=%s",
+            target,
+            current_user.user_id,
+            exc.code,
+        )
+        raise HTTPException(status_code=403, detail={"error": exc.code, "message": exc.message}) from exc
+
+
 @router.post("/flows/drafts", response_model=DraftRegisteredResponse, status_code=201)
 async def register_draft(
     proposal: LoopProposal,
@@ -237,30 +303,13 @@ async def register_draft(
         target_org_id=current_user.org_id,
     )
 
-    # Question 2. For a human caller the authenticated org is the tenant, exactly as
-    # before — a human registering a draft sends no run id and both `X-Agent-RunId`
-    # and `X-Agent-OrgId` are ignored for tenant purposes (the #4132 pin).
-    #
-    # For an internal-scope service caller the authenticated org is `__platform__`,
-    # so the tenant is resolved from the run's ingress row instead. See
-    # `draft_binding.py` for why that row and not the `X-Agent-OrgId` header the
-    # worker's intent is also available in.
-    owning_org_id = current_user.org_id
-    if current_user.scope == _SERVER_RESOLVED_TENANT_SCOPE:
-        try:
-            owning_org_id = await resolve_draft_tenant(run_id=x_agent_run_id, resolver=run_bindings)
-        except DraftBindingError as exc:
-            # 403 and not 422: a 422 here would be indistinguishable, in the
-            # worker's closing-comment warning, from the tenant-mismatch refusal
-            # below — which is a different problem with a different fix. The
-            # machine-readable `error` code says which arm fired.
-            logger.warning(
-                "draft registration refused, run did not bind to a tenant: flow=%s actor=%s reason=%s",
-                proposal.flow_slug,
-                current_user.user_id,
-                exc.code,
-            )
-            raise HTTPException(status_code=403, detail={"error": exc.code, "message": exc.message}) from exc
+    # Question 2. See `_resolve_owning_tenant`.
+    owning_org_id = await _resolve_owning_tenant(
+        current_user,
+        run_bindings=run_bindings,
+        run_id=x_agent_run_id,
+        target=proposal.flow_slug,
+    )
 
     # Server-resolved, every field. `actor_kind` is SERVICE and stated explicitly:
     # the default is HUMAN because the overwhelming majority of compiles are a
@@ -343,6 +392,211 @@ async def register_draft(
         acceptance_gate_address=gate_address,
         accept_command=ACCEPT_COMMAND,
         flow_url=_flow_url(result.flow_id),
+    )
+
+
+# --- Amendment drafts (#4529) -------------------------------------------------
+
+
+class GateDiffResponse(BaseModel):
+    """Which gate addresses an amendment adds, keeps and drops.
+
+    Returned so the worker's comment can tell a human what the amendment does to
+    their *decision points*, which is the one consequence not visible in a diff of
+    the plan document: a removed gate reads as an ordinary edit and is a removed
+    human decision. Computed server-side from the two documents, never taken from
+    the authoring agent's own summary of what it changed — an author describing its
+    own gate removals is exactly the claim that should not be trusted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    added: list[str]
+    removed: list[str]
+    unchanged: list[str]
+    changes_gating: bool
+
+
+class AmendmentDraftRegisteredResponse(BaseModel):
+    """The outcome of registering an authored amendment. Nothing is accepted yet.
+
+    Fresh drafts report `pending_human_accept`. Replays report the stored state,
+    so an accepted or superseded draft never appears to be awaiting a new decision.
+
+    `accept_command` is composed server-side for the same reason as
+    `DraftRegisteredResponse.accept_command`: the worker puts this string in a GitHub
+    comment a human types back, so if the wording drifts from what
+    `engine_commands.py` parses, the human follows a working instruction that does
+    nothing. Here it must also carry the draft id, because acceptance names the
+    draft — there is deliberately no "accept the latest amendment" form.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    flow_id: str
+    request_id: str
+    # The accepted version this amendment was authored against. Compared exactly at
+    # acceptance, so it is reported here: a human who sees a base older than the
+    # current version knows the answer will be a conflict before they type it.
+    base_plan_version: int | None
+    proposal_hash: str
+    gate_diff: GateDiffResponse
+    already_registered: bool
+    status: str
+    accept_command: str
+    flow_url: str | None
+
+
+# What the human types to accept ONE named amendment. Spelled here, once, as a
+# format rather than a constant, because the id is not optional: a bare
+# `@agent-engine accept` answers the acceptance gate and must never select an
+# amendment.
+ACCEPT_AMENDMENT_COMMAND = "@agent-engine accept amendment {draft_id}"
+
+# The status every fresh registration reports. A literal, so no code path can
+# report an amendment as applied.
+PENDING_HUMAN_ACCEPT = "pending_human_accept"
+
+
+@router.post(
+    "/flows/{flow_id}/amendments/drafts",
+    response_model=AmendmentDraftRegisteredResponse,
+    status_code=201,
+)
+async def register_amendment(
+    flow_id: str,
+    proposal: LoopProposal,
+    response: Response,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    run_bindings: Annotated[RunBindingResolver, Depends(get_run_binding_resolver)],
+    request_id: Annotated[str, Query(max_length=36, min_length=1)],
+    x_agent_run_id: Annotated[str | None, Header(alias=RUN_ID_HEADER)] = None,
+) -> AmendmentDraftRegisteredResponse:
+    """File an authored amendment as a pending draft. Accepts nothing.
+
+    Writes one row holding a proposal document, and **no** node, edge, decision, work
+    claim, gate or accepted-plan version — see `pending_amendments.py`. A human
+    commenting `@agent-engine accept amendment <draft-id>` is the only thing that
+    applies it, and that path runs the existing `amend_plan` with the accepting
+    human's own context.
+
+    `request_id` is required and is the authorization, not a hint. It names the
+    authoring assignment the server created when a verified human commented
+    `replan:`, and `resolve_authoring_request` refuses unless the presented
+    `X-Agent-RunId` equals the `author_run_id` the server wrote on that assignment.
+    So holding `PLAN_DRAFT` is not sufficient to file an amendment: the server must
+    have commissioned this run for this request. That is what stops an authoring
+    agent from proposing amendments to plans nobody asked it to touch, and it is why
+    the flow the draft attaches to comes from the assignment rather than from
+    `flow_id` or from the document (#4556's target-ambiguity protection).
+
+    `flow_id` in the path is therefore a *check*, not the source of truth: it must
+    agree with the assignment's flow, and a mismatch is refused.
+
+    Returns 201 on a first registration, 200 when the identical document was already
+    on file (a fail-soft author retries, and a retry is not a second draft), 403
+    without `PLAN_DRAFT` or when the run does not bind to a tenant, 404 when no open
+    assignment matches this run, and 422 for a document that fails validation.
+    """
+    # Gate first, before any read or write, so a denied caller cannot learn whether
+    # anything exists. `target_org_id` is the AUTHENTICATED org for the reason spelled
+    # out at length in `register_draft` — the two values disagree here by design.
+    await access.check_permission(
+        current_user,
+        Permission.PLAN_DRAFT,
+        target_org_id=current_user.org_id,
+    )
+
+    owning_org_id = await _resolve_owning_tenant(
+        current_user,
+        run_bindings=run_bindings,
+        run_id=x_agent_run_id,
+        target=flow_id,
+    )
+
+    # The binding. Refused unless the server itself commissioned this run for this
+    # assignment. `(run_id or "")` so an absent header cannot match a NULL
+    # `author_run_id` — `resolve_authoring_request` also refuses that, and this keeps
+    # the type honest at the boundary.
+    try:
+        request = await resolve_authoring_request(
+            db,
+            org_id=owning_org_id,
+            request_id=request_id,
+            author_run_id=(x_agent_run_id or ""),
+        )
+    except AmendmentRequestNotFoundError as exc:
+        # 404 and one message for absent, cross-tenant, wrong-run and
+        # already-answered. Distinguishing them would let a caller enumerate request
+        # ids and learn which are real.
+        logger.warning(
+            "amendment registration refused, no open assignment: request=%s flow=%s actor=%s",
+            request_id,
+            flow_id,
+            current_user.user_id,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "no_open_authoring_request", "message": str(exc)},
+        ) from exc
+
+    # The path's flow must be the assignment's flow. Checked rather than trusted, and
+    # reported as the same 404: an author asking to amend a flow it was not
+    # commissioned for should learn nothing about whether that flow exists.
+    if request.flow_id != flow_id:
+        logger.warning(
+            "amendment registration refused, flow does not match the assignment: request=%s asked=%s assigned=%s",
+            request_id,
+            flow_id,
+            request.flow_id,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "no_open_authoring_request",
+                "message": f"no authoring assignment {request_id!r} is open for this run on flow {flow_id!r}",
+            },
+        )
+
+    try:
+        draft = await register_amendment_draft(
+            db,
+            org_id=owning_org_id,
+            request=request,
+            author_run_id=(x_agent_run_id or ""),
+            proposal=proposal,
+        )
+    except FlowNotFoundError as exc:
+        # The assignment's flow has been deleted since it was created. 404 for the
+        # same reason as above, and the draft is not written: an amendment to a
+        # nonexistent flow could never be accepted.
+        raise HTTPException(status_code=404, detail={"error": "flow_not_found", "message": str(exc)}) from exc
+
+    # `register_amendment_draft` does not commit — the caller owns the transaction.
+    await db.commit()
+
+    if draft.already_registered:
+        response.status_code = 200
+
+    return AmendmentDraftRegisteredResponse(
+        draft_id=draft.draft_id,
+        flow_id=draft.flow_id,
+        request_id=draft.request_id,
+        base_plan_version=draft.base_plan_version,
+        proposal_hash=draft.proposal_hash,
+        gate_diff=GateDiffResponse(
+            added=draft.gate_diff.added,
+            removed=draft.gate_diff.removed,
+            unchanged=draft.gate_diff.unchanged,
+            changes_gating=draft.gate_diff.changes_gating,
+        ),
+        already_registered=draft.already_registered,
+        status=PENDING_HUMAN_ACCEPT if draft.state == "pending" else draft.state,
+        accept_command=ACCEPT_AMENDMENT_COMMAND.format(draft_id=draft.draft_id) if draft.state == "pending" else "",
+        flow_url=_flow_url(draft.flow_id),
     )
 
 

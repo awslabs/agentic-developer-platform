@@ -809,6 +809,7 @@ class OrchestrationRepository:
         rejection_reason: str | None = None,
         from_state: str | None = None,
         to_state: str | None = None,
+        decision_id: str | None = None,
     ) -> OrchestrationDecision:
         """Append one decision record. There is deliberately no counterpart
         `update_decision` / `delete_decision` — see the class docstring."""
@@ -825,6 +826,8 @@ class OrchestrationRepository:
             from_state=from_state,
             to_state=to_state,
         )
+        if decision_id is not None:
+            decision.id = decision_id
         self._session.add(decision)
         await self._session.flush()
         return decision

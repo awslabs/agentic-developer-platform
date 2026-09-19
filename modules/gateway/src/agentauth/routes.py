@@ -25,7 +25,14 @@ from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, issue
 from src.agentauth.composition import build_authorization_service, build_control_adapter
 from src.agentauth.dispatch import FAN_OUT_CAPABILITY, FAN_OUT_CAPABILITY_FIELD, DispatchRequest, DispatchService
 from src.agentauth.execution import ExecutionStateError, evaluate_execution_state
-from src.agentauth.grants import LIVE_CONTROL_ACTIONS, AgentAction
+from src.agentauth.grants import (
+    AUTHORITY_GATE_DECISION,
+    AUTHORITY_GITHUB_EVENT,
+    AUTHORITY_REPLAN_REQUEST,
+    AUTHORITY_SERVICE_POLICY,
+    LIVE_CONTROL_ACTIONS,
+    AgentAction,
+)
 from src.agentauth.model_policy import MODEL_POLICY_CONTRACT_VERSION
 from src.agentauth.policy import PolicyError
 from src.agentauth.revalidation import RevalidationRequest, revalidate_command
@@ -119,18 +126,46 @@ class AgentRuntime:
         is authorized can keep ignoring the result — refusal is still an
         exception.
         """
-        if grant.authority.kind in {"github_event", "service_policy"}:
+        if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY}:
             return None
-        if grant.authority.kind != "gate_decision":
+        if grant.authority.kind not in {AUTHORITY_GATE_DECISION, AUTHORITY_REPLAN_REQUEST}:
             raise BootstrapRefusedError("unsupported authority source")
-        from src.agentauth.engine import validate_engine_authority
+        from src.agentauth.engine import validate_authoring_authority, validate_engine_authority
         from src.shared.database import get_session_factory
 
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         try:
             async with get_session_factory()() as session:
+                if grant.authority.kind == AUTHORITY_REPLAN_REQUEST:
+                    # Issue #4529. Re-proves the amendment-authoring assignment against
+                    # live state — tenant, flow, run binding and base revision — and
+                    # returns no graph attribution, because an authoring run owns no
+                    # node and its spend must not be charged to one.
+                    await validate_authoring_authority(session=session, execution=execution or {}, grant=grant)
+                    return None
                 return await validate_engine_authority(session=session, execution=execution or {}, grant=grant, store=self.store)
+        except BootstrapRefusedError:
+            # Issue #4529: a deliberate refusal passes through with its own reason.
+            #
+            # Both validators end in `except BootstrapRefusedError: raise` followed by a
+            # relabelling `except Exception`, specifically so that "we decided no" stays
+            # distinguishable from "we could not decide". Re-wrapping everything here
+            # defeated that: every refusal — a stolen authoring assignment, a halted
+            # node, a base revision that moved — reached the caller as "engine authority
+            # unavailable", which reads as an outage. An operator seeing it would go
+            # looking for a broken database instead of the run presenting a stale
+            # assignment, and the two have opposite responses.
+            #
+            # Not a security change: both paths deny. The refusal text is already
+            # deliberately coarse — one sentence for every way an authoring assignment
+            # can fail, so a caller cannot tell "no such request" from "not your
+            # request" — so passing it through leaks nothing that the inner functions
+            # have not already decided to say.
+            raise
         except Exception:
+            # Genuinely unexpected: the session could not be opened, the store read
+            # failed, something raised a shape neither validator anticipated. Still
+            # fail-closed, and still deliberately unspecific.
             raise BootstrapRefusedError("engine authority unavailable") from None
 
     async def enroll_coordinator(self, record, grant):
@@ -139,7 +174,7 @@ class AgentRuntime:
 
         config = os.environ if self.env is None else self.env
         repo = config.get("BG_ORCH_DISPATCH_REPO", "")
-        if grant.authority.kind != "github_event" or not repo:
+        if grant.authority.kind != AUTHORITY_GITHUB_EVENT or not repo:
             return record, grant
         execution = await run_in_threadpool(self.store._read, f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}")
         if not execution or execution.get("persona", {}).get("S") not in {"operations", "aidlc"}:
@@ -213,7 +248,7 @@ class AgentRuntime:
         return self._dispatcher
 
     async def dispatch_request(self, body, credential_token, workload_token, *, context):
-        if context[3].authority.kind != "gate_decision":
+        if context[3].authority.kind != AUTHORITY_GATE_DECISION:
             cleared = await self.resolve_fan_out(body, context)
             return await run_in_threadpool(partial(self.dispatch, body, credential_token, workload_token, context=context, fan_out_cleared=cleared))
         from src.agentauth.graph_dispatch import dispatch_graph

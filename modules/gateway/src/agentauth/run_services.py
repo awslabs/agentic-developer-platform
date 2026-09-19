@@ -22,6 +22,7 @@ from starlette.responses import JSONResponse
 from src.agentauth.adapter import CREDENTIAL_HEADER
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.agentauth.execution import ExecutionStateError
+from src.agentauth.grants import AUTHORITY_SERVICE_POLICY
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_transport
 from src.agentauth.run_credential import CredentialError
 from src.agentauth.store import AuthorityStoreError
@@ -112,7 +113,7 @@ def marker_identity(record, grant, execution: dict | None) -> MarkerIdentity:
     return MarkerIdentity(
         correlation_id=record.flow_id,
         root_human_id=grant.authority.human_id,
-        is_human_rooted="false" if grant.authority.kind == "service_policy" else "true",
+        is_human_rooted="false" if grant.authority.kind == AUTHORITY_SERVICE_POLICY else "true",
         invocation_id=record.invocation_id,
         chain_depth=str(int(raw_depth)),
     )

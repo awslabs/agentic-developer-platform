@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.responses import Response
 
+from src.agentauth.grants import AUTHORITY_SERVICE_POLICY
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, require_agent_transport
 from src.agentauth.run_services import live_context
 from src.shared.database import get_session_factory
@@ -36,7 +37,7 @@ async def locked_door_identity(record, grant):
     A service root has no human identity and cannot impersonate one at the Door.
     """
     if (
-        grant.authority.kind == "service_policy"
+        grant.authority.kind == AUTHORITY_SERVICE_POLICY
         or grant.authority.org_id != record.tenant_id
         or grant.tenant_id != record.tenant_id
         or grant.principal != record.principal
