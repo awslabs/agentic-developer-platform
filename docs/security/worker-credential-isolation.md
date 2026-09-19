@@ -51,8 +51,8 @@ token. Tokens already delivered retain their provider lifetime/revocation rules.
 Protected App runs always use the broker. Bootstrap carries the provider's actual
 expiry to the Node runtime and removes both private-key environment aliases.
 Protected bootstrap also removes inherited shared gateway/Door keys and does not
-load the shared marker HMAC key. Door and signed-marker compatibility require
-mediation before activation, as recorded below.
+load the shared marker HMAC key. The run-service source below supplies mediation;
+deployed compatibility remains required before activation.
 Concurrent timer, posting-helper and forced refresh calls share one renewal.
 Transient network/429/502/503/504 failures receive at most three attempts; access
 refusals are not retried and provider response bodies are not included in errors.
@@ -76,6 +76,45 @@ must explicitly declare a command safe to retry.
 Bootstrap logs now use a provisioned log group without CreateLogGroup. The Node
 correlation writer uses UpdateItem, preserving webhook-managed attributes and
 matching its intended IAM permission.
+
+## Run-bound marker and Knowledge Door services (#5195)
+
+The source adds four fixed surfaces under `/internal/v1/agent/self`: `POST
+/marker`, `POST /knowledge/call`, `POST /knowledge/mcp/`, and `GET
+/knowledge/tools`. Each requires the protected SigV4 transport, a current run
+credential, and a TokenReview-verified workload. A refreshed proof is checked
+after slow reads; a changed grant or execution is refused.
+
+Marker requests have an empty typed body. The gateway derives all marker fields
+from the protected execution and grant, including the persisted chain depth. It
+signs with gateway-only `ADP_MARKER_SIGNING_KEY`. Protected workers never sign
+caller-selected text or fall back to a shared key. A missing key is unavailable.
+
+The Door bridge accepts only its fixed method/path pairs, with no query string.
+The gateway resolves the human's current tenant membership, Cognito subject and
+linked GitHub login in PostgreSQL. Shared row locks prevent removal or reassignment
+while the request is used. Platform teams are not asserted as GitHub teams. A
+missing GitHub link leaves code access unresolved while preserving an available
+personal identity. Service roots cannot borrow a human's identity.
+
+Only the gateway receives `ADP_DOOR_SERVICE_URL` (an HTTP(S) origin) and
+`ADP_DOOR_SERVICE_KEY` (the Door's existing internal key). It builds downstream
+headers itself, drops caller credentials, cookies, session IDs and identity
+headers, disables redirects and environment proxies, and bounds uploads to 1 MiB,
+responses to 4 MiB and service work to 30 seconds. Private responses are withheld
+if authority is withdrawn during the Door query. Run-bound Door ACLs enforce the
+delegated tenant even when the legacy tenant-scope flag is off, including the
+owner-only repository visibility branch.
+
+Native MCP, experience save and recall use the worker's existing loopback proxy
+at `/__run/knowledge`. This process holds only the worker's own run/pod proofs and
+platform transport identity. It is **not** a privileged supervisor. Static MCP
+configuration holds no credentials; the bridge reads rotating proof files on each
+request and signs only the fixed gateway paths. Protected callers ignore mutable
+identity environment variables and never fall back to direct Door authentication.
+
+These source changes do not mount keys, activate flags, provision IAM or remove
+live permissions. Queue/artifact mediation and the scoped rollout remain required.
 
 ## Prepared IAM contract
 

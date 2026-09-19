@@ -1,5 +1,10 @@
 /**
- * Shared-secret header for calls to the Door (context-mcp).
+ * Door transport selection for protected and legacy workers.
+ *
+ * Protected runs use the loopback bridge. It rereads this run's credentials and
+ * signs a fixed gateway route per request; the isolated gateway owns the Door
+ * key and derives ACL identity from protected records. No static MCP headers
+ * contain either a shared key or a rotating run credential.
  *
  * Issue #4073, finding #8. The Door derives every ACL decision from the identity
  * headers its caller supplies (X-GitHub-Login, X-GitHub-Teams, X-Owner-Sub,
@@ -8,11 +13,10 @@
  * tenant's indexed source, wikis and agent memory. The Door now requires this
  * header on every path except /health.
  *
- * There are three independent Door callers in this package — the native MCP
+ * There are three Door callers in this package — the native MCP
  * transport (knowledge-layer-config.ts), the experience save hook, and
- * recall-at-task-start — and each one silently degrades to a 401 if the header
- * is missing. Centralising the lookup here means adding a fourth caller cannot
- * forget it, and there is one place to change if the credential ever moves.
+ * recall-at-task-start. All select the protected bridge here. The shared-key
+ * lookup below remains only for unprotected legacy callers.
  */
 
 /**
@@ -30,7 +34,18 @@
  * because it is the name the same secret already carries in the agent-context
  * ScaledJob (manifests/ingestion-scaledjob.yaml) and the value is identical.
  */
+import { isProtectedKnowledgeRun, KNOWLEDGE_BRIDGE_URL } from './knowledgeBridge';
+
+export function getDoorBaseUrl(legacy: string): string {
+  return isProtectedKnowledgeRun() ? KNOWLEDGE_BRIDGE_URL : legacy;
+}
+
+export function getDoorHeaders(identity: Record<string, string> = {}): Record<string, string> {
+  return isProtectedKnowledgeRun() ? {} : { ...getDoorAuthHeaders(), ...identity };
+}
+
 export function getDoorAuthHeaders(): Record<string, string> {
+  if (isProtectedKnowledgeRun()) return {};
   const key = process.env.DOOR_API_KEY || process.env.GATEWAY_INTERNAL_API_KEY;
   return key ? { 'X-Internal-Api-Key': key } : {};
 }

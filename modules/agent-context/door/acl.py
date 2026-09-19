@@ -61,6 +61,7 @@ class CallerPrincipal:
     github_teams: list[str] = field(default_factory=list)
     tenant_id: str = ""
     owner_sub: str = ""
+    run_bound: bool = False
 
     @property
     def is_resolved(self) -> bool:
@@ -148,6 +149,7 @@ def extract_caller_principal(headers: dict[str, str]) -> CallerPrincipal | None:
         github_teams=teams,
         tenant_id=tenant_id,
         owner_sub=owner_sub,
+        run_bound=normalized.get("x-adp-run-service") == "true",
     )
 
 
@@ -297,7 +299,9 @@ class PostgresACLStore:
 
         Raises on connection failure (caller handles as fail-closed).
         """
-        if self._tenant_scope_enabled:
+        if principal.run_bound and not principal.tenant_id:
+            return set()
+        if self._tenant_scope_enabled or principal.run_bound:
             return self._get_allowed_repos_scoped(principal)
         return self._get_allowed_repos_legacy(principal)
 
@@ -359,6 +363,15 @@ class PostgresACLStore:
             )
         """
         params = [tenant_id, PUBLIC_SENTINEL, login, teams, owner_sub, owner_sub]
+        if principal.run_bound:
+            # The legacy owner-only branch can span tenants for the same login.
+            # A run is delegated in exactly one tenant, including personal data.
+            query = """
+                SELECT repo_name FROM repositories
+                WHERE (tenant_id IS NULL OR tenant_id = %s)
+                  AND (allowed_principals ? %s OR allowed_principals ? %s
+                       OR allowed_principals ?| %s OR (%s != '' AND owner_sub = %s))
+            """
 
         conn = self._pool.getconn()
         try:

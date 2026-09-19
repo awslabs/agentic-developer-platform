@@ -21,6 +21,7 @@ import { URL } from 'url';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Hash } from '@smithy/hash-node';
 import { workerAwsCredentialProvider, workerIdentityHeaders, gatewaySigningRegion } from './lib/runIdentity';
+import { handleKnowledgeBridge } from './lib/knowledgeBridge';
 
 const args = process.argv.slice(2);
 const get = (flag: string, def: string) => {
@@ -57,6 +58,7 @@ const signer = new SignatureV4({
 });
 
 const server = http.createServer(async (req, res) => {
+  if (await handleKnowledgeBridge(req, res)) return;
   // Health-check endpoint for entrypoint readiness probe (issue #747)
   if (req.url === '/__health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
