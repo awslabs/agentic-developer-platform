@@ -39,6 +39,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from src.orchestration import review_evidence as review_evidence_module
 from src.orchestration.execution_state import BlockCode, ExecutionIdentity
 from src.orchestration.models import (
     BindingRole,
@@ -63,6 +64,7 @@ from src.orchestration.review_evidence import (
     outstanding_block,
     parse_review_result,
     refusal_explanation,
+    require_verified_state,
     resolve_expected_subject,
     review_artifact_ref,
     validate_review_result,
@@ -160,6 +162,19 @@ def binding(
     )
 
 
+def _all_refs(document: dict) -> frozenset[str]:
+    """Every evidence reference in a document, finding-level included.
+
+    Used to build the "caller verified them all" default. Derived from the document
+    so a golden gaining a reference does not quietly turn the happy path into an
+    untrusted-artifact test.
+    """
+    refs = {ref["ref"] for ref in document.get("evidence_refs", [])}
+    for finding in document.get("findings", []):
+        refs.update(ref["ref"] for ref in finding.get("evidence_refs", []))
+    return frozenset(refs)
+
+
 def matching_state(document: dict) -> dict:
     """The protected state a server would hold for a document that IS legitimate.
 
@@ -167,8 +182,24 @@ def matching_state(document: dict) -> dict:
     accidentally also a scope-mismatch test. It does not weaken any assertion: every
     forgery test overrides one section and asserts the arm for that section, and the
     happy path is the case where the server's own state genuinely agrees.
+
+    Includes the four inputs a *production* ingestion resolves — the authenticated
+    producer, the server-resolved execution, the provider's freshly-read head and the
+    verified artifact references. They are part of the default state rather than
+    opt-in extras because of a reproduced finding: with all four omitted the result
+    reported ``is_complete_review=True``, so the suite's own happy path was asserting
+    the behaviour of a validation that had checked almost nothing. A test that wants
+    the partially-checked case now says so by overriding one of them to ``None``,
+    which is the honest direction for the default to lean.
     """
     return {
+        # The run that authenticated as this artifact's producer.
+        "reviewer_run_id": document["lineage"]["reviewer_run_id"],
+        "execution_id": document["scope"]["execution_id"],
+        # The provider's current head, read now. Equal to the reviewed head on the
+        # happy path — that is what "not stale" means.
+        "actual_head_sha": document["subject"]["reviewed_head_sha"],
+        "trusted_artifact_refs": _all_refs(document),
         "identity": ExecutionIdentity(
             org_id=document["scope"]["org_id"],
             node_id=document["scope"]["node_id"],
@@ -207,8 +238,51 @@ def accept(document: dict | None = None, **overrides):
     # only thing that can differ. Another accepted golden gets its own state.
     reference = body if body.get("result_id") in _OWN_STATE_RESULT_IDS else APPROVE
     base = matching_state(reference)
+    if "binding" in overrides and "actual_head_sha" not in overrides:
+        # A test that moves the binding's head is testing the stale-head rule, and the
+        # provider's head is where the move actually happened. Without this, the
+        # default fresh-read head would still say the reviewed commit is current and
+        # contradict the binding the test just supplied — the two would disagree about
+        # the same fact, and which one refused would be an accident of check order.
+        base["actual_head_sha"] = overrides["binding"].head_sha
     base.update(overrides)
     return validate_review_result(body, **base)
+
+
+def arms_used_by_module_logic() -> set[str]:
+    """Which refusal arms the module's *logic* names, read from its source.
+
+    Answers "is this arm reachable at all", which is what `REVIEWER_UNVERIFIED`
+    silently failed. Determined statically rather than by observing which arms this
+    suite happens to raise, because that would depend on test execution order — and a
+    coverage guard that passes or fails based on ordering is not a guard.
+
+    Every reference is counted except the two places an arm can appear without being
+    reachable: its own declaration in the enum, and its row in the explanation table.
+    An arm named nowhere else is declared and dead.
+    """
+    import ast
+
+    source = Path(review_evidence_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    # The enum body and the explanation table's dict are the two excluded regions.
+    excluded: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        is_enum = isinstance(node, ast.ClassDef) and node.name == "ReviewEvidenceRefusal"
+        is_table = isinstance(node, ast.FunctionDef) and node.name == "refusal_explanation"
+        if (is_enum or is_table) and node.end_lineno is not None:
+            excluded.append((node.lineno, node.end_lineno))
+
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)):
+            continue
+        if node.value.id != "ReviewEvidenceRefusal":
+            continue
+        if any(start <= node.lineno <= end for start, end in excluded):
+            continue
+        used.add(node.attr)
+    return used
 
 
 def refusal(document: dict | None = None, **overrides) -> ReviewEvidenceRefusal:
@@ -386,6 +460,26 @@ class TestEveryRefusalArmIsDistinct:
         }
         assert len(codes) == 8, f"refusal arms collapsed into shared codes: {sorted(codes)}"
 
+    def test_every_declared_arm_is_reachable_and_explained(self):
+        """No arm may exist only in the enum.
+
+        `REVIEWER_UNVERIFIED` did exactly that: declared, documented in the
+        explanation table, promised in the validator's docstring, and raised by nothing
+        — so the condition it named passed silently while the enum read as coverage.
+        This asserts the two cheap properties that would have caught it: every arm is
+        raised somewhere in this suite, and every arm has operator-facing prose.
+
+        Reachability is read from the module's source rather than from which arms this
+        suite happens to raise, so the guard does not depend on test ordering.
+        """
+        reachable = arms_used_by_module_logic()
+        for arm in ReviewEvidenceRefusal:
+            assert refusal_explanation(arm), f"{arm.value} has no operator explanation"
+            assert arm.name in reachable, (
+                f"{arm.value} is declared and explained but no code path raises it — either a check is "
+                "missing or the arm is dead. REVIEWER_UNVERIFIED was exactly this."
+            )
+
 
 class TestTenantIsolationIsCheckedFirst:
     def test_cross_tenant_document_is_not_diffed_against_this_tenants_state(self):
@@ -500,10 +594,31 @@ class TestArtifactTrust:
         """`None` means the caller states it did not verify; an empty frozenset means
         it verified nothing. Collapsing them would make 'not checked' silently pass
         as 'checked and trusted'.
+
+        Both are non-complete, for different reasons, and the reasons are what a
+        caller acts on. An empty set is a *refusal*: the caller looked and the
+        references were not there. `None` is *accepted but incomplete*, carrying the
+        unverified reason — a draft validation legitimately has nothing to check
+        against, so it must not raise, and it must equally not report a complete
+        review. Previously `None` returned `is_complete_review is True`, which is the
+        collapse this test's own description says must not happen.
         """
-        assert accept(trusted_artifact_refs=None).is_complete_review is True
+        unchecked = accept(trusted_artifact_refs=None)
+        assert unchecked.is_complete_review is False
+        assert any("were not verified" in reason for reason in unchecked.unverified)
         with pytest.raises(ReviewEvidenceError):
             accept(trusted_artifact_refs=frozenset())
+
+    def test_not_checking_cannot_reach_the_ledger(self):
+        """The distinction has teeth: unchecked evidence is refused at persistence.
+
+        `validate_review_result` still accepts it so a draft can be validated, so the
+        fail-closed boundary has to be the write. Without this, "accepted but
+        incomplete" would be one forgetful caller away from being stored as fact.
+        """
+        with pytest.raises(ReviewEvidenceError) as caught:
+            require_verified_state(accept(trusted_artifact_refs=None))
+        assert caught.value.code is ReviewEvidenceRefusal.ARTIFACTS_UNVERIFIED
 
     def test_finding_level_evidence_is_verified_too(self):
         """A 'resolved' blocking finding's proof lives on the finding. An
@@ -925,12 +1040,17 @@ class TestReviewerIsBoundToTheAuthenticatedProducer:
         """Pin *why* the separate arm is needed.
 
         The substituted id differs from the author, so the self-review check is
-        satisfied and cannot be the thing that refuses this. Without an
-        authenticated producer to compare against, the document is accepted.
+        satisfied and cannot be the thing that refuses this. Without an authenticated
+        producer to compare against, the substitution is structurally invisible —
+        which is exactly why the document must not come back as a complete review.
         """
         body = patched(APPROVE, lineage={"reviewer_run_id": "run-somebody-else-entirely"})
         assert body["lineage"]["reviewer_run_id"] != AUTHOR_RUN
-        assert accept(body).is_complete_review
+        unauthenticated = accept(body, reviewer_run_id=None)
+        assert unauthenticated.is_complete_review is False
+        assert any("was not authenticated" in reason for reason in unauthenticated.unverified)
+        # And with the producer supplied, the substitution is caught outright.
+        assert refusal(body, reviewer_run_id=REVIEWER_RUN) is ReviewEvidenceRefusal.REVIEWER_MISMATCH
 
     def test_unverified_producer_is_not_silently_trusted(self):
         """Omitting the producer must not read as "verified".
@@ -942,6 +1062,105 @@ class TestReviewerIsBoundToTheAuthenticatedProducer:
         evidence = accept()
         assert evidence.is_complete_review
         assert refusal(reviewer_run_id="run-the-real-authenticated-reviewer") is ReviewEvidenceRefusal.REVIEWER_MISMATCH
+
+
+class TestUncheckedStateIsNotCompleteEvidence:
+    """ "I did not look" must never be reported as "I looked and it was fine".
+
+    Reproduced finding: with `reviewer_run_id`, `execution_id`, `actual_head_sha` and
+    `trusted_artifact_refs` *all* omitted, `validate_review_result` returned
+    `is_complete_review=True` — and `REVIEWER_UNVERIFIED` was never raised anywhere,
+    existing only in the enum and the explanation table. A validation that performed
+    almost none of its protected comparisons was reporting the strongest result the
+    type can carry.
+
+    Two layers, deliberately. `validate_review_result` still *accepts* a
+    partially-checked document, because a pre-submission producer validating its own
+    draft has no authenticated producer, no resolved execution and no provider read to
+    offer. What it may not do is call the result complete. `require_verified_state` is
+    the fail-closed gate on the paths that persist or act on evidence, and it is
+    enforced inside `record_review_evidence` so no ingestion path can route around it.
+    """
+
+    def test_every_protected_value_omitted_is_not_a_complete_review(self):
+        evidence = accept(
+            reviewer_run_id=None,
+            execution_id=None,
+            actual_head_sha=None,
+            trusted_artifact_refs=None,
+        )
+        assert evidence.is_complete_review is False
+        assert len(evidence.unverified) == 4, evidence.unverified
+
+    def test_each_omission_names_its_own_reason(self):
+        """Four distinct gaps, four distinct reasons — an operator acts on which one."""
+        cases = {
+            "reviewer_run_id": "was not authenticated",
+            "execution_id": "was not resolved server-side",
+            "actual_head_sha": "current head was not read",
+            "trusted_artifact_refs": "references this review relies on were not verified",
+        }
+        for field, fragment in cases.items():
+            evidence = accept(**{field: None})
+            assert [r for r in evidence.unverified if fragment in r], f"{field} did not report its gap"
+            assert len(evidence.unverified) == 1, f"{field} reported unrelated gaps: {evidence.unverified}"
+
+    def test_each_omission_has_its_own_refusal_arm_at_the_gate(self):
+        arms = {
+            "reviewer_run_id": ReviewEvidenceRefusal.REVIEWER_UNVERIFIED,
+            "execution_id": ReviewEvidenceRefusal.EXECUTION_UNVERIFIED,
+            "actual_head_sha": ReviewEvidenceRefusal.HEAD_UNVERIFIED,
+            "trusted_artifact_refs": ReviewEvidenceRefusal.ARTIFACTS_UNVERIFIED,
+        }
+        for field, arm in arms.items():
+            with pytest.raises(ReviewEvidenceError) as caught:
+                require_verified_state(accept(**{field: None}))
+            assert caught.value.code is arm, field
+
+    def test_reviewer_unverified_is_actually_raised_somewhere(self):
+        """The specific gap: the arm existed in the enum and no code path reached it.
+
+        A refusal code that nothing raises is worse than a missing one — it reads as
+        coverage in the enum and in the explanation table while the condition it names
+        passes silently.
+        """
+        with pytest.raises(ReviewEvidenceError) as caught:
+            require_verified_state(accept(reviewer_run_id=None))
+        assert caught.value.code is ReviewEvidenceRefusal.REVIEWER_UNVERIFIED
+        assert refusal_explanation(caught.value.code)
+
+    def test_fully_verified_state_passes_the_gate_and_is_complete(self):
+        """The rule must not be a blanket refusal: real ingestion supplies all four."""
+        evidence = accept()
+        assert evidence.unverified == ()
+        assert evidence.is_complete_review is True
+        require_verified_state(evidence)  # does not raise
+
+    def test_a_freshly_read_head_that_moved_still_refuses(self):
+        """Supplying the provider read is not the same as it agreeing.
+
+        Pins that the new "did you read it" check did not displace the stale-head
+        comparison: a cached binding head alone cannot establish that a later push did
+        not invalidate the review, which is the point of reading it.
+        """
+        assert refusal(actual_head_sha=MOVED_HEAD) is ReviewEvidenceRefusal.STALE_HEAD
+
+    def test_an_unverified_gap_is_not_an_approval_blocker(self):
+        """The two lists answer different questions and must stay separate.
+
+        `approval_blockers` is what the *reviewer* found; `unverified` is what the
+        *ingestion path* failed to check. Merging them would tell an operator the
+        reviewer objected when nobody had looked.
+        """
+        evidence = accept(reviewer_run_id=None)
+        assert evidence.approval_blockers == ()
+        assert evidence.unverified
+
+    def test_the_read_surface_reports_the_gaps(self):
+        body = evidence_summary(accept(reviewer_run_id=None))
+        assert body["complete_review"] is False
+        assert any("was not authenticated" in reason for reason in body["unverified"])
+        assert evidence_summary(accept())["unverified"] == []
 
 
 class TestExecutionIsBoundServerSide:
@@ -969,10 +1188,21 @@ class TestExecutionIsBoundServerSide:
         """Backwards compatibility: no server-resolved execution, no check.
 
         A caller that is only validating a producer's draft does not have an
-        execution to compare against, and must not be forced to invent one.
+        execution to compare against, and must not be forced to invent one — so this
+        must not raise. It must equally not report a complete review: a validation
+        that never resolved the execution cannot claim the evidence is bound to one.
         """
         body = patched(APPROVE, scope={"execution_id": None})
-        assert accept(body).is_complete_review
+        draft = accept(body, execution_id=None)
+        assert draft.is_complete_review is False
+        assert any("was not resolved server-side" in reason for reason in draft.unverified)
+
+    def test_an_unresolved_execution_cannot_reach_the_ledger(self):
+        """The draft allowance stops at the write, where the row becomes fact."""
+        body = patched(APPROVE, scope={"execution_id": None})
+        with pytest.raises(ReviewEvidenceError) as caught:
+            require_verified_state(accept(body, execution_id=None))
+        assert caught.value.code is ReviewEvidenceRefusal.EXECUTION_UNVERIFIED
 
 
 # ---------------------------------------------------------------------------

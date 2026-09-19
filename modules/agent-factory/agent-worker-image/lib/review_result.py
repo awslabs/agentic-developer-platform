@@ -71,6 +71,7 @@ commit now exists.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -861,6 +862,10 @@ def review_result_note(
 
     try:
         document = build_review_result(
+            # Provisional when the caller named no id: the derived id has to see the
+            # assembled content to distinguish a changed result from a replay, and
+            # `_content_fingerprint` reads none of the fields that depend on it, so
+            # stamping the real id after assembly below is not circular.
             result_id=result_id or _default_result_id(reviewed_head_sha),
             repo=repo,
             provider_repository_id=provider_repository_id,
@@ -881,6 +886,13 @@ def review_result_note(
             "engine cannot treat it as evidence about the current revision, and it grants no "
             "approval."
         )
+
+    if not result_id:
+        # Now that the content exists, bind the identity to it. Two results from one
+        # reviewer invocation at one head — the failed publication and its authorized
+        # retry — differ here, so they no longer fold onto a single immutable ledger
+        # observation. A byte-identical redelivery still lands on the same id.
+        document["result_id"] = _default_result_id(reviewed_head_sha, document)
 
     try:
         written = write_review_result(document, path=path)
@@ -1041,12 +1053,59 @@ def _local_blockers(document: dict[str, object]) -> list[str]:
     return reasons
 
 
-def _default_result_id(reviewed_head_sha: str) -> str:
-    """A result id derived from the run and the commit reviewed.
+#: The parts of a review result whose change makes it a *different* result. Named
+#: explicitly rather than "everything except a deny-list" so a field added to the
+#: contract later cannot silently start or stop distinguishing two results: a new
+#: field is non-identifying until someone adds it here on purpose.
+#:
+#: ``observed_at`` is deliberately excluded. It moves on every call, and including it
+#: would give a byte-identical redelivery of one review a fresh identity — turning
+#: every SQS retry into another recorded review, which is the failure the derived id
+#: exists to prevent.
+_IDENTIFYING_KEYS = ("verdict", "stages", "findings", "evidence_refs", "publication")
 
-    Derived rather than random so a retry of the same review at the same head
-    converges on one id instead of accumulating apparent reviews — the reasoning
-    `ActionIntent.operation_key` documents on the consumer side.
+
+def _content_fingerprint(document: dict[str, object]) -> str:
+    """A short digest of what this result actually says.
+
+    Why the result id cannot just be run + head: a publication retry inside the SAME
+    reviewer invocation keeps both. The reproduced sequence is one run whose verdict
+    failed to publish with HTTP 401 and then published successfully on the unchanged
+    head — two genuinely different results, one identity. Downstream those collapse
+    onto a single immutable ledger observation, and the second is refused as
+    ``action_already_settled`` while the first, incomplete, record is what survives.
+
+    So identity follows content: the verdict, what ran, what was found, what it
+    relies on, and what publication returned. The publication block is included
+    precisely because that is the field that differs across the retry — a fingerprint
+    covering only the review body would reproduce the collision exactly.
+
+    ``sort_keys`` so two assemblies of the same result agree regardless of dict
+    ordering, and the components are length-prefixed for the reason
+    ``_result_identity`` gives on the consumer side: a bare join is not injective.
+    """
+    material = "".join(
+        f"{key}={len(part)}:{part}"
+        for key in _IDENTIFYING_KEYS
+        for part in (json.dumps(document.get(key), sort_keys=True, separators=(",", ":")),)
+    )
+    return hashlib.sha256(material.encode()).hexdigest()[:16]
+
+
+def _default_result_id(reviewed_head_sha: str, document: dict[str, object] | None = None) -> str:
+    """A result id derived from the run, the commit reviewed and what the result says.
+
+    Derived rather than random so a retry of the *same* review converges on one id
+    instead of accumulating apparent reviews — the reasoning
+    ``ActionIntent.operation_key`` documents on the consumer side. Derived from the
+    content as well as the run and head so a *changed* result within one invocation
+    is a different id, which is what keeps a publication recovery from colliding with
+    the failed attempt it is recovering from.
+
+    ``document`` is optional only so the id can be computed before assembly for a
+    caller that has nothing to fingerprint yet; omitting it restores the old
+    run-and-head-only behaviour and should not be relied on for anything persisted.
     """
     run = os.environ.get("ADP_MESSAGE_ID", "").strip() or "unknown-run"
-    return f"review-{run}-{reviewed_head_sha[:12]}"
+    stem = f"review-{run}-{reviewed_head_sha[:12]}"
+    return stem if document is None else f"{stem}-{_content_fingerprint(document)}"

@@ -188,6 +188,9 @@ class ReviewEvidenceRefusal(StrEnum):
     REVIEWER_UNVERIFIED = "reviewer_unverified"  # No authenticated producer to compare against
     EXECUTION_MISMATCH = "execution_mismatch"  # Result names another execution
     EXECUTION_UNBOUND = "execution_unbound"  # Persisted evidence must name its execution
+    EXECUTION_UNVERIFIED = "execution_unverified"  # No server-resolved execution to compare against
+    HEAD_UNVERIFIED = "head_unverified"  # The provider's current head was never read
+    ARTIFACTS_UNVERIFIED = "artifacts_unverified"  # Head-bound references were never checked
 
     # Evidence-quality arms. The result is well-formed and correctly bound, and
     # still cannot be treated as review evidence for the current revision.
@@ -232,17 +235,27 @@ class ReviewEvidence:
     pr_number: int
     approval_blockers: tuple[str, ...]
     publication_blockers: tuple[str, ...] = ()
+    unverified: tuple[str, ...] = ()
 
     @property
     def is_complete_review(self) -> bool:
-        """True when the artifact itself carries no blocker.
+        """True when the artifact carries no blocker **and** nothing went unchecked.
 
         Named for what it checks. It is not ``may_merge`` and not ``approved``: this
         object cannot see the provider's review list, its required checks or its
         merge state, and a name suggesting otherwise is how the next caller skips
         the checks that do.
+
+        ``unverified`` is part of the answer because of a reproduced finding: with
+        the authenticated producer, the server-resolved execution, the provider's
+        current head and the artifact references all omitted, this returned True. A
+        caller that checked none of those learned nothing, and "I did not look"
+        must not be reported as "I looked and it was fine". A validation missing a
+        protected input therefore yields an *incomplete* review rather than a
+        complete one, and the production ingestion path refuses outright — see
+        ``require_verified_state``.
         """
-        return not self.approval_blockers
+        return not self.approval_blockers and not self.unverified
 
     @property
     def review_concluded_without_blockers(self) -> bool:
@@ -501,6 +514,28 @@ def validate_review_result(
             else "The review result names a different execution than the one resolved for this story.",
         )
 
+    # What this validation was NOT given, recorded before the remaining comparisons
+    # so it reaches the caller even on the happy path. Each entry names a protected
+    # input the caller did not supply, which means the corresponding comparison above
+    # never ran. Kept as prose an operator can read rather than a bare flag, because
+    # the actionable part is *which* check is missing.
+    unverified: list[str] = []
+    if reviewer_run_id is None:
+        unverified.append("the reviewing run was not authenticated against the artifact's producer")
+    if execution_id is None:
+        unverified.append("the execution this review belongs to was not resolved server-side")
+    if actual_head_sha is None:
+        # The binding's head is a cached value written when the binding was
+        # registered. Comparing against it alone cannot establish that no later push
+        # moved the head, which is the whole point of binding review to an exact
+        # revision.
+        unverified.append("the provider's current head was not read, so a later push may have invalidated this review")
+    if trusted_artifact_refs is None and _head_bound_refs(result):
+        # Only when the result actually leans on head-bound references. A review
+        # citing none has nothing to verify, and reporting a missing check that does
+        # not apply would train a reader to ignore the field.
+        unverified.append("the head-bound artifact references this review relies on were not verified")
+
     current_head = actual_head_sha or binding.head_sha
     if result.subject.reviewed_head_sha != current_head:
         # Refused rather than invalidated-and-accepted. `invalidate_for_head` exists
@@ -545,7 +580,56 @@ def validate_review_result(
         pr_number=binding.pr_number,
         approval_blockers=tuple(blockers),
         publication_blockers=publication_blockers,
+        unverified=tuple(unverified),
     )
+
+
+#: Which refusal arm reports each unchecked protected input. Keyed on the same order
+#: the validator records them so a caller converting "unverified" into a typed block
+#: does not have to re-derive the mapping — and so a newly recorded gap without an
+#: arm fails loudly in :func:`require_verified_state` rather than being skipped.
+_UNVERIFIED_ARMS: tuple[tuple[str, ReviewEvidenceRefusal], ...] = (
+    ("was not authenticated", ReviewEvidenceRefusal.REVIEWER_UNVERIFIED),
+    ("was not resolved server-side", ReviewEvidenceRefusal.EXECUTION_UNVERIFIED),
+    ("current head was not read", ReviewEvidenceRefusal.HEAD_UNVERIFIED),
+    ("references this review relies on were not verified", ReviewEvidenceRefusal.ARTIFACTS_UNVERIFIED),
+)
+
+
+def require_verified_state(evidence: ReviewEvidence) -> None:
+    """Refuse evidence whose protected inputs were never checked.
+
+    The fail-closed gate for any path that *persists* or *acts on* review evidence.
+    :func:`validate_review_result` deliberately still accepts a partially-checked
+    document — a pre-submission producer validating its own draft has no
+    authenticated producer, no resolved execution and no provider read to offer, and
+    forcing it to invent them would be worse. But the production observer does have
+    all four, and a reproduced finding showed what happens when that difference is
+    left to the caller's discipline: with all four omitted the result reported
+    ``is_complete_review=True`` and ``REVIEWER_UNVERIFIED`` was never raised at all,
+    existing only in the enum.
+
+    So the rule lives here rather than in each caller. A caller that genuinely only
+    wants structural validation simply does not call this; a caller recording
+    evidence calls it and cannot forget a check it never passed.
+
+    Raises:
+        ReviewEvidenceError: the arm for the first unchecked input, in the order the
+            validator records them — producer, execution, head, artifacts.
+    """
+    for reason in evidence.unverified:
+        for fragment, arm in _UNVERIFIED_ARMS:
+            if fragment in reason:
+                raise ReviewEvidenceError(
+                    arm,
+                    f"This review evidence cannot be recorded as trusted: {reason}.",
+                )
+        # An unverified reason with no mapped arm is a bug in this module, not an
+        # acceptable pass. Refused generically rather than ignored.
+        raise ReviewEvidenceError(
+            ReviewEvidenceRefusal.REVIEWER_UNVERIFIED,
+            f"This review evidence cannot be recorded as trusted: {reason}.",
+        )
 
 
 def _head_bound_refs(result: Any) -> list[Any]:
@@ -701,8 +785,17 @@ def outstanding_block(refusal: ReviewEvidenceRefusal, *, owner: str) -> BlockRec
         ReviewEvidenceRefusal.REVIEWER_UNVERIFIED,
         ReviewEvidenceRefusal.EXECUTION_MISMATCH,
         ReviewEvidenceRefusal.EXECUTION_UNBOUND,
+        ReviewEvidenceRefusal.EXECUTION_UNVERIFIED,
     }:
         code = BlockCode.AUTHORITY_UNVERIFIABLE
+    elif refusal in {
+        # The ingestion path did not read the provider or check the referenced
+        # artifacts. Neither is the reviewer's fault and neither is resolved by an
+        # operator decision — the platform condition has to clear first.
+        ReviewEvidenceRefusal.HEAD_UNVERIFIED,
+        ReviewEvidenceRefusal.ARTIFACTS_UNVERIFIED,
+    }:
+        code = BlockCode.PROVIDER_UNAVAILABLE
     else:
         code = BlockCode.DEPENDENCY_UNSATISFIED
     return BlockRecord(code=code, owner=owner, required_input=refusal_explanation(refusal), detail=f"review_evidence_refusal={refusal.value}")
@@ -774,6 +867,18 @@ def refusal_explanation(refusal: ReviewEvidenceRefusal) -> str:
             "The review result does not name the execution it belongs to, so persisted evidence could not be bound to the "
             "work it examined. The producer must include the execution it was dispatched for."
         ),
+        ReviewEvidenceRefusal.EXECUTION_UNVERIFIED: (
+            "The review evidence was validated without resolving which execution it belongs to, so it cannot be recorded "
+            "against a specific attempt. This is a platform condition: the ingestion path must resolve the execution before persisting."
+        ),
+        ReviewEvidenceRefusal.HEAD_UNVERIFIED: (
+            "The provider's current head was never read, so this review could have been invalidated by a later push without "
+            "anything noticing. This is a platform condition: the ingestion path must read the pull request's head before persisting."
+        ),
+        ReviewEvidenceRefusal.ARTIFACTS_UNVERIFIED: (
+            "The review relies on head-bound test or artifact references that were never verified, so the evidence behind its "
+            "conclusion is unconfirmed. This is a platform condition: the ingestion path must verify referenced artifacts before persisting."
+        ),
         ReviewEvidenceRefusal.STALE_HEAD: (
             "The reviewed commit is not the pull request's current head, so the review's findings and test evidence describe different code. "
             "A fresh review of the current head is required."
@@ -808,8 +913,19 @@ async def record_review_evidence(
 
     Returns the store's outcome unchanged, including ``STALE``/``CONFLICT``, so the
     caller sees which arm fired rather than a swallowed failure.
+
+    Raises:
+        ReviewEvidenceError: when the evidence carries an unchecked protected input.
+            Persisting is the point at which an optional check stops being optional:
+            a stored row is what later readers treat as fact, and a row written from
+            a validation that never authenticated the producer, resolved the
+            execution, read the provider's head or verified the referenced artifacts
+            would make "not checked" indistinguishable from "checked". Enforced here,
+            at the write, so no ingestion path can reach durable storage around it.
     """
     from .execution_store import prepare_action, record_observation
+
+    require_verified_state(evidence)
 
     prepared = await prepare_action(session, identity=identity, intent=evidence_action_intent(evidence))
     if prepared.kind is not OutcomeKind.APPLIED or prepared.action is None:
@@ -838,6 +954,11 @@ def evidence_summary(evidence: ReviewEvidence) -> dict[str, object]:
         "blocking_findings": len(result.blocking_findings),
         "approval_blockers": list(evidence.approval_blockers),
         "complete_review": evidence.is_complete_review,
+        # Which protected checks this validation did not perform. Surfaced beside
+        # `complete_review` rather than only inside it: a reader seeing an incomplete
+        # review needs to know whether the reviewer found something or whether the
+        # ingestion path simply never looked, and those call for opposite responses.
+        "unverified": list(evidence.unverified),
         # Distinct from `complete_review`, which stays False for an unpublished
         # verdict. This says *why* it is false: the reviewing work concluded and only
         # the formal publication is outstanding. Still not an approval, and a caller

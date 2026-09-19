@@ -64,6 +64,8 @@ from src.orchestration.models import (
     OrchestrationWorkClaim,
 )
 from src.orchestration.review_evidence import (
+    ReviewEvidenceError,
+    ReviewEvidenceRefusal,
     evidence_operation_key,
     record_review_evidence,
     validate_review_result,
@@ -218,7 +220,18 @@ async def story(sessions):
     async with sessions() as session:
         await create_execution(session, identity=identity, flow_id=flow_id)
         await session.commit()
-    return {"identity": identity, "flow_id": flow_id, "node_id": node_id}
+    async with sessions() as session:
+        # Read back rather than assumed: the execution id the ledger will key rows on
+        # is whatever the store wrote, and evidence has to name that exact row.
+        execution_id = (
+            await session.execute(
+                select(OrchestrationExecution.id).where(
+                    OrchestrationExecution.node_id == node_id,
+                    OrchestrationExecution.cycle == CYCLE,
+                )
+            )
+        ).scalar_one()
+    return {"identity": identity, "flow_id": flow_id, "node_id": node_id, "execution_id": execution_id}
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +240,31 @@ async def story(sessions):
 
 
 def _document(story, *, node_id: str, **overrides) -> dict:
-    """The golden document re-pointed at this test's real node and execution."""
+    """The golden document re-pointed at this test's real node and execution.
+
+    ``execution_id`` carries the row ``create_execution`` actually wrote, resolved in
+    the ``story`` fixture. A real producer may emit it unset, but evidence that is
+    about to be *persisted* must name the exact execution — so a suite about
+    persistence has to supply it, or it is exercising a path production refuses.
+    """
     body = json.loads(json.dumps(FAILED_PUBLICATION))
-    body["scope"] = {**body["scope"], "flow_id": story["flow_id"], "node_id": node_id, "execution_id": None}
+    body["scope"] = {
+        **body["scope"],
+        "flow_id": story["flow_id"],
+        "node_id": node_id,
+        "execution_id": story["execution_id"],
+    }
     for section, value in overrides.items():
         body[section] = {**body[section], **value} if isinstance(value, dict) else value
     return body
+
+
+def _trusted_refs(document: dict) -> frozenset[str]:
+    """Every reference in the document, as a caller that verified them all would pass."""
+    refs = {ref["ref"] for ref in document.get("evidence_refs", [])}
+    for finding in document.get("findings", []):
+        refs.update(ref["ref"] for ref in finding.get("evidence_refs", []))
+    return frozenset(refs)
 
 
 async def _validated(story, sessions, document):
@@ -240,6 +272,12 @@ async def _validated(story, sessions, document):
 
     The binding is loaded from the database rather than constructed, so the head this
     evidence is bound to is the head the server recorded.
+
+    All four protected inputs are supplied — authenticated producer, server-resolved
+    execution, freshly-read provider head and verified artifact references — because
+    this suite records evidence, and ``record_review_evidence`` refuses anything whose
+    protected inputs went unchecked. Supplying them is what a production ingestion
+    does; omitting one here would test a path that cannot reach the ledger.
     """
     async with sessions() as session:
         binding = (
@@ -252,6 +290,12 @@ async def _validated(story, sessions, document):
             flow_id=story["flow_id"],
             author_run_id=AUTHOR_RUN,
             reviewer_run_id=document["lineage"]["reviewer_run_id"],
+            execution_id=document["scope"]["execution_id"],
+            # The head as the provider reports it now. Equal to the binding's head in
+            # this suite: the reproduced sequence is two publications at an UNCHANGED
+            # head, so a moved head would be a different test.
+            actual_head_sha=binding.head_sha,
+            trusted_artifact_refs=_trusted_refs(document),
         )
 
 
@@ -435,3 +479,67 @@ class TestRedeliveryStillConverges:
 
         outcome = await _record(story, sessions, evidence)
         assert outcome.kind is not OutcomeKind.APPLIED, "evidence from a superseded generation must not be recorded"
+
+
+class TestUncheckedEvidenceCannotReachTheLedger:
+    """The fail-closed boundary, asserted against the real store.
+
+    ``validate_review_result`` still accepts a partially-checked document so a draft
+    can be validated, which means the only thing standing between "nobody
+    authenticated the producer" and a durable row that later readers treat as fact is
+    the check inside ``record_review_evidence``. Asserted here rather than only
+    against the synthetic store because the claim is about what is *in the database*,
+    and a row absent from a real table is the only convincing form of that claim.
+    """
+
+    async def _unverified(self, story, sessions, **omit):
+        """Evidence validated with one protected input deliberately withheld."""
+        document = _document(story, node_id=story["node_id"])
+        async with sessions() as session:
+            binding = (
+                await session.execute(
+                    select(OrchestrationPullRequestBinding).where(OrchestrationPullRequestBinding.node_id == story["node_id"])
+                )
+            ).scalar_one()
+        state = {
+            "reviewer_run_id": document["lineage"]["reviewer_run_id"],
+            "execution_id": document["scope"]["execution_id"],
+            "actual_head_sha": binding.head_sha,
+            "trusted_artifact_refs": _trusted_refs(document),
+        }
+        state.update(omit)
+        return validate_review_result(
+            document,
+            identity=story["identity"],
+            binding=binding,
+            flow_id=story["flow_id"],
+            author_run_id=AUTHOR_RUN,
+            **state,
+        )
+
+    @pytest.mark.parametrize(
+        ("omitted", "arm"),
+        [
+            ("reviewer_run_id", ReviewEvidenceRefusal.REVIEWER_UNVERIFIED),
+            ("execution_id", ReviewEvidenceRefusal.EXECUTION_UNVERIFIED),
+            ("actual_head_sha", ReviewEvidenceRefusal.HEAD_UNVERIFIED),
+            ("trusted_artifact_refs", ReviewEvidenceRefusal.ARTIFACTS_UNVERIFIED),
+        ],
+    )
+    async def test_each_unchecked_input_is_refused_and_writes_nothing(self, story, sessions, omitted, arm):
+        evidence = await self._unverified(story, sessions, **{omitted: None})
+        assert evidence.is_complete_review is False, f"{omitted} went unchecked and the review still read as complete"
+
+        with pytest.raises(ReviewEvidenceError) as caught:
+            await _record(story, sessions, evidence)
+        assert caught.value.code is arm
+
+        async with sessions() as session:
+            actions = (await session.execute(select(OrchestrationAction))).scalars().all()
+        assert actions == [], "a refused write must leave no partial row behind"
+
+    async def test_fully_checked_evidence_still_records(self, story, sessions):
+        """The gate must refuse the unchecked case only, not every write."""
+        evidence = await self._unverified(story, sessions)
+        assert evidence.unverified == ()
+        assert (await _record(story, sessions, evidence)).kind is OutcomeKind.APPLIED
