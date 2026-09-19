@@ -26,8 +26,11 @@ from src.orchestration.models import (
     OrchestrationAcceptedPlan,
     OrchestrationDecision,
     OrchestrationEdge,
+    OrchestrationExecution,
     OrchestrationFlow,
     OrchestrationNode,
+    OrchestrationPullRequestBinding,
+    OrchestrationWorkClaim,
 )
 from src.shared.models.base import Base
 from src.shared.models.onboarding import TenantMembership
@@ -77,6 +80,9 @@ if os.environ.get("ADP_GRAPH_TEST_DATABASE_URL"):
             OrchestrationEdge.__table__,
             OrchestrationDecision.__table__,
             OrchestrationAcceptedPlan.__table__,
+            OrchestrationWorkClaim.__table__,
+            OrchestrationExecution.__table__,
+            OrchestrationPullRequestBinding.__table__,
         ]
         async with database.begin() as connection:
             await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=tables))

@@ -7,7 +7,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel, ConfigDict, Field
@@ -103,6 +103,7 @@ class GraphAssignment:
     graph_address: str
     wave_key: str | None = None
     wave_coordinator: bool = False
+    review_expect: dict[str, Any] | None = None
 
 
 class DispatchService:
@@ -204,6 +205,10 @@ class DispatchService:
                     "graph_address": graph.graph_address,
                     "root_decision_id": grant.authority.reference_id,
                 }
+                if graph.review_expect is not None:
+                    if body.persona != "reviewer":
+                        raise BootstrapRefusedError("review expectation requires a reviewer assignment")
+                    envelope["review_expect"] = graph.review_expect
             child_grant = self._child_grant(body, grant, invocation, graph=graph)
             prior = {
                 **_key(pk, command_key),
@@ -235,6 +240,11 @@ class DispatchService:
             or prior.get("orchestration_dispatch_receipt") != {"S": graph.receipt_id}
         ):
             raise PolicyError(409, "dispatch request belongs to a different workflow attempt")
+        if graph and json.loads(prior["envelope_json"]["S"]).get("review_expect") != graph.review_expect:
+            # Retries keep the originally reserved envelope and its bootstrap digest.
+            # A changed head or authority needs a fresh admitted review, never an
+            # in-place rewrite of the old child or a second child on the same key.
+            raise PolicyError(409, "review dispatch expectation changed; existing request cannot be repointed")
         return prior, grant, caller
 
     def _child_grant(self, body, parent, invocation, *, graph=None):
