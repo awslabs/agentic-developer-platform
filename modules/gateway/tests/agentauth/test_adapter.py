@@ -410,7 +410,7 @@ class TestTwoWorkersSharingOneRole:
 
 
 class TestUnsupportedVerbsStay501:
-    @pytest.mark.parametrize("action", [AgentAction.PAUSE, AgentAction.RESUME, AgentAction.STEER, AgentAction.ABORT])
+    @pytest.mark.parametrize("action", [AgentAction.STEER, AgentAction.ABORT])
     def test_an_authorized_live_control_verb_is_501(self, action):
         """The hard boundary: authorization ships, behaviour does not."""
         adapter, _ = build_adapter(
@@ -451,7 +451,7 @@ class TestUnsupportedVerbsStay501:
         never gets.
         """
         adapter, _ = build_adapter(
-            grants={"inv-coordinator#1": grant()},
+            grants={"inv-coordinator#1": grant(allowed_actions=frozenset({AgentAction.STEER}))},
             targets={"run-developer-7": target()},
         )
 
@@ -459,7 +459,7 @@ class TestUnsupportedVerbsStay501:
             adapter.prepare_command(
                 credential_token=credential(),
                 target_run_id="run-developer-7",
-                action=AgentAction.PAUSE,
+                action=AgentAction.STEER,
                 request_body=b"not json at all",
             )
 

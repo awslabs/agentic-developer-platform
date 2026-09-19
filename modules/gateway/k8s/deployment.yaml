@@ -33,20 +33,29 @@ spec:
             - containerPort: 8080
               protocol: TCP
           # Memory sized for 4 uvicorn workers + streaming/chat-logging buffers.
-          # The memory REQUEST is 1.25Gi (raised from 1Gi): the HPA's utilization
-          # math is computed against requests, and at a 1Gi request the observed
-          # ~800Mi idle baseline was already 80% — above the 75% scale-out target —
-          # so the autoscaler pinned the fleet at 4-5 pods even at idle and had
-          # almost no burst headroom left before its ceiling. At 1.25Gi the 75%
-          # line is ~960Mi, comfortably above idle baseline, so idle settles toward
-          # minReplicas and scale-out fires only on real load. The 2Gi LIMIT is
-          # unchanged — it stays the OOM ceiling, now with more room above the
-          # request. CPU is untouched: the gateway is async I/O-bound and idles at
-          # 1-2% even under full agent traffic. See k8s/hpa.yaml.
+          # The memory REQUEST is 1.5Gi. The HPA's utilization math is computed
+          # against requests, so this value sets the scale-out line: too low and
+          # the idle baseline alone exceeds the 75% target, the autoscaler reads
+          # idle as overload, and the fleet pins at maxReplicas with no burst
+          # headroom. That has now happened twice — first at a 1Gi request
+          # (768Mi line vs ~800Mi baseline), then at 1.25Gi (960Mi line vs a
+          # baseline that has since grown to ~900Mi as new routers landed).
+          # Measured 2026-09-19: a freshly started pod is 890-900Mi, so 1.25Gi
+          # left only ~60Mi of margin. At 1.5Gi the 75% line is ~1152Mi, giving
+          # ~250Mi over baseline, so idle settles toward minReplicas and
+          # scale-out fires on real load.
+          #
+          # When adding anything that raises cold-start footprint, re-measure the
+          # baseline and keep it under ~60% of this request, or the autoscaler
+          # silently degenerates into "always at max" again.
+          #
+          # The 2Gi LIMIT is unchanged — it stays the OOM ceiling. CPU is
+          # untouched: the gateway is async I/O-bound and idles at 1-2% even
+          # under full agent traffic. See k8s/hpa.yaml.
           resources:
             requests:
               cpu: 250m
-              memory: 1.25Gi
+              memory: 1.5Gi
             limits:
               cpu: 1000m
               memory: 2Gi
@@ -94,6 +103,19 @@ spec:
                   name: bedrockgateway-secrets
                   key: internal-api-key
                   optional: true
+            # Cap glibc's per-thread malloc arenas. Default is 8 x ncores, and
+            # each arena grows in 64Mi steps that are never returned to the OS.
+            # proxy/service.py dispatches one asyncio.to_thread per streaming
+            # chunk, so threads contend constantly and spread allocations across
+            # every arena; measured effect was pod RSS ratcheting up ~400 bytes
+            # per streamed delta and never coming back down (all inactive_anon).
+            # 2 arenas keeps freed heap reusable and lets trim actually return it.
+            - name: MALLOC_ARENA_MAX
+              value: "2"
+            # Return freed heap to the OS at 128KiB rather than letting glibc's
+            # adaptive threshold grow unbounded under streaming churn.
+            - name: MALLOC_TRIM_THRESHOLD_
+              value: "131072"
             - name: AGENT_RUN_CREDENTIAL_KEY
               valueFrom:
                 secretKeyRef:

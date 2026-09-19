@@ -415,7 +415,14 @@ class StreamingResponseBuffer:
 
     def __init__(self) -> None:
         """Initialize the buffer."""
-        self._chunks: list[dict[str, Any]] = []
+        # Count chunks rather than retaining them. Holding the parsed dicts for
+        # the life of the stream cost ~1.5KB per delta across this buffer and
+        # PricingCapture's copy, and nothing ever read them back -- only the
+        # length was used. Long agent streams (tool calls emit one
+        # input_json_delta per few bytes) reached hundreds of thousands of
+        # deltas, and glibc never returns that heap, so each stream permanently
+        # raised pod RSS.
+        self._chunk_count = 0
         self._content_parts: list[str] = []
         self._usage: dict[str, Any] = {}
         self._stop_reason: str | None = None
@@ -427,7 +434,7 @@ class StreamingResponseBuffer:
         Args:
             chunk: Parsed streaming chunk
         """
-        self._chunks.append(chunk)
+        self._chunk_count += 1
         chunk_type = chunk.get("type", "")
 
         if chunk_type == "content_block_delta":
@@ -476,8 +483,8 @@ class StreamingResponseBuffer:
 
     @property
     def chunk_count(self) -> int:
-        """Get the number of chunks buffered."""
-        return len(self._chunks)
+        """Get the number of chunks seen."""
+        return self._chunk_count
 
 
 # =============================================================================

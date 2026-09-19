@@ -350,20 +350,11 @@ class TestControlPortAgreesEverywhereItIsWritten:
         )
 
 
-class TestVerbsRemainUnsupportedRegardlessOfTheFlag:
-    """The flag is not a verb switch — asserted here so parity is not misread.
+class TestFlagDoesNotEnableUnimplementedVerbs:
+    """The flag enables routing; runtime support and authority still gate control."""
 
-    Someone reading this file could reasonably conclude that setting the SSM
-    parameter to "true" makes pause/resume/steer/abort available. It does not, and
-    the flag's whole risk profile depends on that staying true: an environment with
-    the flag on is a routable read path, not an actionable control plane.
-    """
-
-    def test_no_verb_is_advertised_as_supported(self, monkeypatch):
+    def test_only_implemented_verbs_are_available(self, monkeypatch):
         monkeypatch.setenv(FLAG_ENV_VAR, "true")
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert SUPPORTED_ACTIONS == frozenset(), (
-            f"SUPPORTED_ACTIONS must be empty in S1, found {sorted(SUPPORTED_ACTIONS)}. "
-            "Implementing a verb requires its transport, state contract and evaluation in the same change."
-        )
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})

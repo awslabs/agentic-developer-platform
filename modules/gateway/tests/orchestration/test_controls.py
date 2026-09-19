@@ -809,20 +809,11 @@ class TestRO3fDeclaredSeam:
         assert "not implemented" in response.json()["detail"].lower()
         service.authorize_command.assert_called_once()
 
-    def test_no_verb_is_advertised_as_supported(self):
-        """The single source of truth behind every 501 above.
-
-        If a later story adds a verb to this set without implementing the
-        transport, these routes stop answering 501 and start reporting outcomes
-        they cannot deliver — so the seam is pinned at the constant, not only at
-        the status code.
-        """
+    def test_only_implemented_verbs_are_advertised_as_supported(self):
+        """Pause/resume have signed transport; steer/abort remain unavailable."""
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert SUPPORTED_ACTIONS == frozenset(), (
-            "A control verb was marked supported. Issue #3960 ships the authenticated path with every verb unsupported; "
-            "implementing one requires the transport and the state contract in the same change."
-        )
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})
 
     @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
     def test_all_four_verbs_are_routed(self, app_with_router, action):

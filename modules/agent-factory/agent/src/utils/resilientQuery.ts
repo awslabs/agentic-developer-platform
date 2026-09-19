@@ -61,6 +61,28 @@ export interface ResilientQueryOptions {
    */
   idleTimeoutMs?: number;
   /**
+   * Optional probe answering "is this stream idle on purpose right now?" —
+   * issue #3961.
+   *
+   * Consulted only at the instant the idle timeout fires. `true` re-arms the
+   * window instead of failing the attempt; `false` (and the default absence)
+   * leaves the pre-#3961 behaviour exactly as it was.
+   *
+   * This exists because the idle guard and a pause barrier read the same
+   * evidence — no SDK messages — and draw opposite conclusions from it. An
+   * operator-paused run produces no messages *because a tool is parked at the
+   * barrier*, and treating that as a stall would retry the query: a retry
+   * abandons the live attempt for a resumed one, which is precisely the
+   * "same-execution resume" property pause is built to provide. So the pause
+   * would destroy the thing it promises.
+   *
+   * Re-arming rather than disabling is deliberate — the window keeps running
+   * throughout, so the moment the pause ends an actually-hung stream is caught by
+   * the next window. The pause itself is separately bounded by the gate's expiry
+   * timer, clamped to the pod deadline, so this cannot become an unbounded wait.
+   */
+  idleSuspended?: () => boolean;
+  /**
    * Optional callback that generates the retry prompt on attempts 2+.
    * Called with the attempt number (2+) and the total number of messages
    * yielded across all prior attempts.
@@ -123,7 +145,9 @@ export interface ResilientQueryOptions {
     isResume: boolean;
     /** The prompt this attempt would otherwise send (task or continuation nudge). */
     promptText: string;
-  }) => { input: AsyncIterable<unknown>; dispose: () => void | Promise<void> };
+  }) => { input: AsyncIterable<unknown>; dispose: () => void | Promise<void>; options?: Record<string, unknown> };
+  /** Hold task output and end-of-stream teardown during an operator pause. */
+  beforeOutput?: () => Promise<{ release(): void } | false>;
   /**
    * Optional callback receiving the live query handle for each attempt
    * (issue #3962).
@@ -270,6 +294,8 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
     attemptInputFactory,
     onAttemptHandle,
     cancellation,
+    idleSuspended,
+    beforeOutput,
   } = opts;
 
   /** Typed cancellation error, never routed through error-text classification. */
@@ -382,7 +408,13 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
         // what allows a second turn to be delivered into a live attempt. The
         // cast is confined to this Claude-specific helper — the neutral contract
         // never exposes an iterable.
-        effectiveParams = { ...effectiveParams, prompt: attemptInput.input } as typeof queryParams;
+        effectiveParams = {
+          ...effectiveParams,
+          prompt: attemptInput.input,
+          ...(attemptInput.options ? {
+            options: { ...((effectiveParams as { options?: Record<string, unknown> }).options ?? {}), ...attemptInput.options },
+          } : {}),
+        } as typeof queryParams;
       }
 
       // Last check before committing to a query: a cancellation that landed
@@ -393,6 +425,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
       }
 
       const session = query(effectiveParams);
+      let outputAdmission: { release(): void } | undefined;
       try {
         let pendingAssistantError: SDKResponseError | undefined;
         // Await attachment before reading output. Cancellation wakes stalled setup.
@@ -405,20 +438,63 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           }
         }
         const iterator = (session as AsyncIterable<SDKStreamMessage>)[Symbol.asyncIterator]();
+        // Hoisted out of the loop body: one `iterator.next()` must survive across
+        // idle re-arms (#3961). Racing a *fresh* `next()` against each new window
+        // would leave the previous one pending on the same iterator, and the SDK's
+        // async iterator is single-consumer — two overlapping reads is how a
+        // message gets delivered to a promise nobody is awaiting any more.
+        let nextMessage: Promise<IteratorResult<SDKStreamMessage>> | null = null;
         while (true) {
           let idleTimer: ReturnType<typeof setTimeout> | undefined;
-          const idle = new Promise<never>((_, reject) => {
+          // Issue #3961: `idleSuspended` turns the timeout into a re-arm rather
+          // than a rejection. Evaluated when the timer fires — not when it is set —
+          // because a pause typically begins long after the window opened.
+          const idle = new Promise<never | 'rearm'>((resolve, reject) => {
             idleTimer = setTimeout(
-              () => reject(new Error(`stream idle timeout: no SDK message for ${Math.round(idleTimeoutMs / 1000)}s`)),
+              () => {
+                if (idleSuspended?.()) {
+                  resolve('rearm');
+                  return;
+                }
+                reject(new Error(`stream idle timeout: no SDK message for ${Math.round(idleTimeoutMs / 1000)}s`));
+              },
               idleTimeoutMs,
             );
           });
-          let result: IteratorResult<SDKStreamMessage>;
+          let result: IteratorResult<SDKStreamMessage> | 'rearm';
           try {
             if (cancellation?.isCancelled()) throw cancellationError();
-            result = await wait(Promise.race([iterator.next(), idle]));
+            nextMessage ??= iterator.next();
+            result = await wait(Promise.race([nextMessage, idle]));
           } finally {
             clearTimeout(idleTimer);
+          }
+          if (result === 'rearm') {
+            // Deliberately idle, so open a fresh window and keep waiting on the
+            // SAME pending read. Logged because an operator reading a long quiet
+            // stretch in the log needs to see that it was a decision.
+            log(`   ⏸️  Stream idle for ${Math.round(idleTimeoutMs / 1000)}s while intentionally suspended — not retrying`);
+            continue;
+          }
+          // The read resolved, so the next window starts a new one.
+          nextMessage = null;
+          if (beforeOutput) {
+            let abandoned = false;
+            let received: { release(): void } | false | undefined;
+            const admission = beforeOutput().then(value => {
+              received = value;
+              if (abandoned && value) value.release();
+              return value;
+            });
+            try {
+              const granted = await wait(admission);
+              if (!granted) throw cancellationError();
+              outputAdmission = granted;
+            } catch (error) {
+              abandoned = true;
+              if (received) received.release();
+              throw error;
+            }
           }
           if (result.done) break;
           // Capture the session id the first time the SDK surfaces it, so a
@@ -447,7 +523,7 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           // replace it with a successful top-level assistant response.
           if (result.value.type === 'assistant' && result.value.parent_tool_use_id == null) {
             pendingAssistantError = assistantResponseError(result.value);
-            if (pendingAssistantError) continue;
+            if (pendingAssistantError) { outputAdmission?.release(); outputAdmission = undefined; continue; }
           }
           if (result.value.type === 'result') {
             const responseError = resultResponseError(result.value, pendingAssistantError);
@@ -456,14 +532,22 @@ export async function* resilientQuery(opts: ResilientQueryOptions): AsyncGenerat
           messagesThisAttempt++;
           totalMessagesYielded++;
           yield result.value;
+          // Resuming the iterator acknowledges that the consumer finished this
+          // output. A return/throw instead retains it through the finally below.
+          outputAdmission?.release();
+          outputAdmission = undefined;
         }
         // Some SDK paths end without a result after reporting an API error.
         if (pendingAssistantError) throw pendingAssistantError;
       } finally {
         // Invalidate input before closing the transport. Ordinary callers keep
         // synchronous teardown when no input factory is installed.
-        if (disposeAttemptInput) await disposeInput();
-        session.close();
+        try {
+          if (disposeAttemptInput) await disposeInput();
+          session.close();
+        } finally {
+          outputAdmission?.release();
+        }
       }
       // Stream completed successfully — we're done.
       return;
