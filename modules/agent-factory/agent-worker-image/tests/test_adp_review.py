@@ -382,7 +382,7 @@ def test_explicit_review_token_takes_precedence_over_regular_rotated_token(monke
     assert review_client._github_token() == "explicit-reviewer-token"
 
 
-@pytest.mark.parametrize("file_state", ["missing", "empty", "unreadable"])
+@pytest.mark.parametrize("file_state", ["missing", "empty", "unreadable", "non_ascii"])
 def test_token_without_usable_mount_keeps_existing_environment_fallback(
     monkeypatch, tmp_path, file_state
 ):
@@ -391,6 +391,8 @@ def test_token_without_usable_mount_keeps_existing_environment_fallback(
         token_file.write_text(" \n")
     elif file_state == "unreadable":
         token_file.mkdir()
+    elif file_state == "non_ascii":
+        token_file.write_bytes(b"\xff-corrupt-token")
     monkeypatch.setenv("ADP_TOKEN_FILE", str(token_file))
     monkeypatch.delenv("ADP_REVIEW_TOKEN", raising=False)
     monkeypatch.setenv("GH_TOKEN", "ordinary-environment-token")

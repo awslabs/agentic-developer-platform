@@ -79,7 +79,7 @@ def _github_token() -> str:
             token = handle.read().strip()
         if token:
             return token
-    except OSError:
+    except (OSError, UnicodeError):
         pass
     for var in ("GH_TOKEN", "GITHUB_TOKEN"):
         value = os.environ.get(var, "").strip()
