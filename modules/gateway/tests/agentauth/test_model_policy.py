@@ -15,6 +15,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from moto import mock_aws
+from sqlalchemy import update
 from sqlalchemy.exc import OperationalError
 
 from src.admin.persona_models.catalogue import HARNESS_CONTRACT_REVISION
@@ -30,8 +31,10 @@ from src.agentauth.grants import AuthorityReference, DelegatedGrant
 from src.agentauth.model_policy import (
     SNAPSHOT_AUDIENCE,
     SNAPSHOT_SCHEMA_VERSION,
+    ModelPolicyDecision,
     ModelPolicyError,
     ModelPolicySnapshot,
+    apply_live_posture,
     bootstrap_model_policy,
     bootstrap_model_policy_live,
     build_root_snapshot,
@@ -42,6 +45,7 @@ from src.agentauth.model_policy import (
     policy_digest,
     resolve_decision,
 )
+from src.agentauth.runtime_posture import measured_cache_ttl_seconds
 from src.proxy.bedrock_routing import BedrockTarget, bedrock_routing_resolver
 from src.shared.models.organization import User
 from src.shared.models.persona_model_catalogue import ModelInvocabilityEvidence
@@ -201,21 +205,109 @@ def test_unresolved_direct_override_is_reported_as_refusal_not_defaulted():
 
 
 @pytest.mark.parametrize(
-    "class_policy",
+    ("class_policy", "reason"),
     [
-        {"model_id": SONNET, "posture": "enforcing", "posture_revision": 3},
-        {"model_id": SONNET, "posture": "report_only", "posture_revision": 0},
-        {"model_id": SONNET, "posture": "unknown", "posture_revision": 3},
+        ({"model_id": SONNET, "posture": "unknown", "posture_revision": 3}, "runtime_posture_unsupported"),
+        ({"model_id": SONNET, "posture": "", "posture_revision": 3}, "runtime_posture_unsupported"),
+        ({"model_id": SONNET, "posture": None, "posture_revision": 3}, "runtime_posture_unsupported"),
+        ({"model_id": SONNET, "posture": "report_only", "posture_revision": 0}, "posture_revision_unsupported"),
+        ({"model_id": SONNET, "posture": "report_only", "posture_revision": True}, "posture_revision_unsupported"),
+        ({"model_id": SONNET, "posture": "report_only", "posture_revision": "3"}, "posture_revision_unsupported"),
+        ({"model_id": SONNET, "posture": "report_only"}, "posture_revision_unsupported"),
     ],
 )
-def test_partial_slice_never_issues_load_bearing_or_unknown_posture_decision(class_policy):
-    with pytest.raises(ModelPolicyError, match="runtime_posture_unsupported"):
+def test_a_malformed_snapshot_posture_is_refused_not_guessed(class_policy, reason):
+    """An unreadable posture is a malformed snapshot, never a substituted default."""
+    with pytest.raises(ModelPolicyError, match=reason):
         resolve_decision(
             snapshot(class_defaults={"claude-agent-sdk": class_policy}),
             invocation_id="run-developer",
             persona="developer",
             now=NOW,
         )
+
+
+@pytest.mark.parametrize("posture", ["disabled", "report_only", "enforcing"])
+def test_all_three_postures_resolve_and_are_marked_unverified(posture):
+    """Source supports the full vocabulary; the snapshot's value is not trusted.
+
+    Rejecting the string ``enforcing`` in this helper would not be an enforcement
+    implementation — it would only hide the refusal somewhere less visible. What
+    makes a decision safe is that ``posture_source`` is ``None`` until the live
+    per-hop read replaces the snapshot's value, so an unverified decision is
+    distinguishable by inspection rather than by trust.
+    """
+    decision = resolve_decision(
+        snapshot(class_defaults={"claude-agent-sdk": {"model_id": SONNET, "posture": posture, "posture_revision": 3}}),
+        invocation_id="run-developer",
+        persona="developer",
+        now=NOW,
+    )
+    assert decision.runtime_posture == posture
+    assert decision.posture_revision == 3
+    assert decision.snapshot_runtime_posture == posture
+    assert decision.snapshot_posture_revision == 3
+    assert decision.posture_source is None, "a decision that skipped the live read must not look verified"
+    assert decision.posture_observed_at is None
+
+
+@pytest.mark.asyncio
+async def test_one_unchanged_snapshot_follows_posture_rollover_within_the_measured_bound(db_session):
+    """``report_only -> enforcing -> report_only`` on a single frozen snapshot.
+
+    The dispatch requirement this pins: the root snapshot is immutable — same
+    object, same digest, same frozen ``snapshot_runtime_posture`` at every hop —
+    yet it must not pin the chain into ``enforcing`` after an audited operational
+    rollback.  So the posture each hop actually runs under comes from a live read,
+    and the only staleness allowed is the measured cache window.
+
+    A fake clock rather than ``sleep``: the guarantee is stated in elapsed
+    seconds, and a test that waited for real time would be both slow and, near
+    the boundary, flaky.  Advancing an injected ``now`` tests the same comparison
+    the deployed code performs.
+    """
+    ttl = measured_cache_ttl_seconds()
+    assert ttl > 0, "the rollover window under test only exists when caching is on"
+    policy = snapshot()
+    frozen_digest = policy_digest(policy.to_dict())
+    _add_live_posture_setting(db_session, posture="report_only", posture_revision=5)
+    await db_session.commit()
+
+    async def hop(label: str, *, at: datetime) -> ModelPolicyDecision:
+        decision = resolve_decision(policy, invocation_id=f"run-{label}", persona="developer", now=NOW)
+        # Every hop re-reads: the frozen snapshot is never the authority.
+        return await apply_live_posture(db_session, decision=decision, now=at)
+
+    async def operator_sets(posture: str, revision: int) -> None:
+        await db_session.execute(update(PersonaModelPolicySetting).values(enforcement_posture=posture, posture_revision=revision))
+        await db_session.commit()
+
+    first = await hop("one", at=NOW)
+    assert (first.runtime_posture, first.posture_revision, first.posture_source) == ("report_only", 5, "live")
+
+    # Roll forward to enforcing.  Within the bound the old observation may still
+    # be served — that is the measured window, and it must be visible as such.
+    await operator_sets("enforcing", 6)
+    still_cached = await hop("two", at=NOW + timedelta(seconds=ttl - 1))
+    assert (still_cached.runtime_posture, still_cached.posture_revision) == ("report_only", 5)
+    assert still_cached.posture_source == "cache", "a stale observation must not be reported as a fresh read"
+
+    enforcing = await hop("three", at=NOW + timedelta(seconds=ttl + 1))
+    assert (enforcing.runtime_posture, enforcing.posture_revision, enforcing.posture_source) == ("enforcing", 6, "live")
+
+    # The audited rollback.  This is the case a snapshot-pinned posture would
+    # get wrong: the chain's root still says enforcing forever.
+    await operator_sets("report_only", 7)
+    rolled_back = await hop("four", at=NOW + timedelta(seconds=(2 * ttl) + 2))
+    assert (rolled_back.runtime_posture, rolled_back.posture_revision) == ("report_only", 7)
+    assert rolled_back.posture_source == "live"
+
+    for hop_decision in (first, still_cached, enforcing, rolled_back):
+        assert hop_decision.snapshot_digest == frozen_digest, "the snapshot must not be rewritten to follow the posture"
+        assert hop_decision.snapshot_runtime_posture == "report_only"
+        assert hop_decision.snapshot_posture_revision == 2
+        assert hop_decision.posture_observed_at is not None
+        assert hop_decision.resolved_model_id == SONNET, "posture changes must not change the selected model"
 
 
 def test_unknown_persona_and_missing_class_default_fail_distinctly():
@@ -1265,12 +1357,18 @@ def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(po
         },
     )()
 
+    # ``posture: None`` rather than ``"report_only"``: a failure that never
+    # established a posture must not claim one. The old shape hard-coded the
+    # permissive value into every handler, so an enforcing-class failure reported
+    # itself as benign — an enforcing failure becoming report_only by exception
+    # handling, which is exactly what this story has to prevent.
     assert bootstrap_model_policy(
         store=policy_store,
         record=record,
         grant=_grant("github_event"),
     ) == {
-        "posture": "report_only",
+        "posture": None,
+        "posture_verified": False,
         "status": "unavailable",
         "reason": "direct_override_unresolved",
     }
@@ -1322,7 +1420,12 @@ def test_bootstrap_refuses_an_expired_snapshot_rather_than_signing_a_stale_propo
 
     result = bootstrap_model_policy(store=policy_store, record=record, grant=_grant("github_event"))
 
-    assert result == {"posture": "report_only", "status": "unavailable", "reason": "snapshot_expired"}
+    assert result == {
+        "posture": None,
+        "posture_verified": False,
+        "status": "unavailable",
+        "reason": "snapshot_expired",
+    }
     # No assertion, so there is nothing a downstream verifier could mistake for a
     # current decision.
     assert "assertion" not in result
@@ -1378,6 +1481,28 @@ def _live_policy_record(policy_store, policy: ModelPolicySnapshot):
     )()
 
 
+def _add_live_posture_setting(db_session, *, posture: str = "report_only", posture_revision: int = 1) -> None:
+    """Seed the settings row the per-hop live posture read requires.
+
+    Live bootstrap no longer takes the posture from the frozen snapshot — a root
+    snapshot must not pin a chain into enforcing after an audited rollback — so a
+    missing settings row is now a genuine readiness failure
+    (``runtime_posture_unavailable``) rather than something the snapshot can
+    paper over. Tests that exercise live bootstrap therefore have to provision it,
+    exactly as a deployed environment does by migration.
+    """
+    db_session.add(
+        PersonaModelPolicySetting(
+            compatibility_class="claude-agent-sdk",
+            harness_contract_revision="0.3.220",
+            active_default_model_id=SONNET,
+            revision=1,
+            posture_revision=posture_revision,
+            enforcement_posture=posture,
+        )
+    )
+
+
 def _add_invocability_evidence(
     db_session,
     *,
@@ -1404,8 +1529,19 @@ def _add_invocability_evidence(
     )
 
 
+def _assert_bare_refusal(result: dict, reason: str) -> None:
+    """A refusal raised before any allowlist revision could be computed.
+
+    Same honesty requirement as ``_assert_revisioned_refusal``: the result must
+    not report ``report_only``, because nothing verified the live posture on this
+    path.  It simply has no revision evidence to carry, so the shape is exact.
+    """
+    assert result == {"posture": None, "posture_verified": False, "status": "unavailable", "reason": reason}
+
+
 def _assert_revisioned_refusal(result: dict, reason: str) -> None:
-    assert result["posture"] == "report_only"
+    assert result["posture"] is None, "a refusal must not claim a posture it never established"
+    assert result["posture_verified"] is False
     assert result["status"] == "unavailable"
     assert result["reason"] == reason
     assert result["evidence"]["snapshot_allowlist_policy_revision"]
@@ -1426,6 +1562,7 @@ async def test_live_bootstrap_signs_only_exact_fresh_destination_evidence(
         allowlist_policy_revision=active_allowlist_revision(),
     )
     record = _live_policy_record(policy_store, policy)
+    _add_live_posture_setting(db_session)
     db_session.add(
         User(
             id="user-a",
@@ -1490,6 +1627,7 @@ async def test_live_bootstrap_signs_permitted_mid_chain_allowlist_drift(
         allowlist_policy_revision=active_allowlist_revision(),
     )
     record = _live_policy_record(policy_store, policy)
+    _add_live_posture_setting(db_session)
     db_session.add(
         User(
             id="user-a",
@@ -1569,6 +1707,7 @@ async def test_live_bootstrap_refuses_stale_refused_and_wrong_destination_eviden
         expires_at=current + timedelta(hours=2),
     )
     record = _live_policy_record(policy_store, policy)
+    _add_live_posture_setting(db_session)
     db_session.add(
         User(
             id="user-a",
@@ -1630,6 +1769,7 @@ async def test_live_bootstrap_refuses_missing_or_suspended_service_principal(
         expires_at=current + timedelta(hours=2),
     )
     record = _live_policy_record(policy_store, policy)
+    _add_live_posture_setting(db_session)
     if principal_status is not None:
         db_session.add(
             ServicePrincipal(
@@ -1661,11 +1801,7 @@ async def test_live_bootstrap_refuses_missing_or_suspended_service_principal(
     )
 
     if principal_status is None:
-        assert result == {
-            "posture": "report_only",
-            "status": "unavailable",
-            "reason": expected_reason,
-        }
+        _assert_bare_refusal(result, expected_reason)
     else:
         _assert_revisioned_refusal(result, expected_reason)
 
@@ -1691,6 +1827,7 @@ async def test_live_bootstrap_refuses_model_outside_or_unavailable_tenant_policy
         expires_at=current + timedelta(hours=2),
     )
     record = _live_policy_record(policy_store, policy)
+    _add_live_posture_setting(db_session)
     db_session.add(
         User(
             id="user-a",
@@ -1724,11 +1861,7 @@ async def test_live_bootstrap_refuses_model_outside_or_unavailable_tenant_policy
     )
 
     if policy_config == "not-json":
-        assert result == {
-            "posture": "report_only",
-            "status": "unavailable",
-            "reason": "not_permitted",
-        }
+        _assert_bare_refusal(result, "not_permitted")
     else:
         _assert_revisioned_refusal(result, "not_permitted")
         assert result["evidence"]["allowlist_policy_drift"] is True
@@ -1760,6 +1893,7 @@ async def test_live_bootstrap_refuses_registry_allowed_models_or_disabled_row(
         expires_at=current + timedelta(hours=2),
     )
     record = _live_policy_record(policy_store, policy)
+    _add_live_posture_setting(db_session)
     db_session.add(
         ServicePrincipal(
             canonical_service_principal_id="service-a",

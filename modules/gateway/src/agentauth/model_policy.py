@@ -39,6 +39,14 @@ from src.admin.persona_models.catalogue_schemas import SelectionRejection
 from src.admin.persona_models.catalogue_service import validate_selection
 from src.agentauth.envelope import MODEL_POLICY_AUDIENCE, EnvelopeError, sign_envelope
 from src.agentauth.grants import DelegatedGrant
+from src.agentauth.runtime_posture import (
+    LivePosture,
+    RuntimePosture,
+    RuntimePostureError,
+    coerce_posture,
+    coerce_posture_revision,
+    read_live_posture,
+)
 from src.agentauth.store import AuthorityStoreError
 from src.shared.config import get_settings
 from src.shared.identity.resolver import resolve_root_user_entity_id
@@ -244,11 +252,21 @@ class ModelPolicyDecision:
     requested_model_id: str | None
     resolved_model_id: str
     resolution_source: Literal["explicit-direct", "principal-mapping", "system-default"]
-    runtime_posture: Literal["report_only"]
+    #: The **live** posture at this hop, not the snapshot's.  See
+    #: :func:`resolve_decision` for why the snapshot's value is not authoritative.
+    runtime_posture: RuntimePosture
     posture_revision: int
     policy_revision: str
     catalogue_revision: str
     snapshot_allowlist_policy_revision: str
+    #: The posture recorded in the frozen root snapshot, kept separately so
+    #: PMM-08 can attribute a hop that ran under a posture the root never saw —
+    #: and so an audited rollback between root and hop is visible as evidence
+    #: rather than being silently overwritten.
+    snapshot_runtime_posture: RuntimePosture | None = None
+    snapshot_posture_revision: int | None = None
+    posture_observed_at: datetime | None = None
+    posture_source: Literal["live", "cache"] | None = None
     live_allowlist_policy_revision: str | None = None
     allowlist_policy_drift: bool | None = None
     destination_account_id: str | None = None
@@ -270,6 +288,10 @@ class ModelPolicyDecision:
             "resolution_source": self.resolution_source,
             "runtime_posture": self.runtime_posture,
             "posture_revision": self.posture_revision,
+            "snapshot_runtime_posture": self.snapshot_runtime_posture,
+            "snapshot_posture_revision": self.snapshot_posture_revision,
+            "posture_observed_at": (_iso(self.posture_observed_at) if self.posture_observed_at is not None else None),
+            "posture_source": self.posture_source,
             "policy_revision": self.policy_revision,
             "catalogue_revision": self.catalogue_revision,
             "snapshot_allowlist_policy_revision": self.snapshot_allowlist_policy_revision,
@@ -335,10 +357,17 @@ def resolve_decision(
 ) -> ModelPolicyDecision:
     """Resolve one hop from gateway-owned, frozen policy facts.
 
-    Only the report-only posture is deliberately accepted by this PMM-07
-    slice.  Returning an enforcing decision before the live admission and
-    invocability gates exist would turn a partial implementation into the
-    load-bearing selector.
+    The snapshot freezes *which* model the root principal selected.  The posture
+    it recorded is carried through as evidence but is **not** authoritative for
+    this hop: a frozen root snapshot must not pin a chain into ``enforcing``
+    after an audited operational rollback, so the live posture is read
+    separately per hop by :func:`apply_live_posture`.  Until that runs, the
+    decision carries the snapshot's posture and is marked as unverified by a
+    ``posture_source`` of ``None``.
+
+    All three postures are accepted here.  Rejecting ``enforcing`` in this
+    helper would not be an enforcement implementation — it would only move the
+    refusal somewhere less visible.
     """
     current = (now or datetime.now(UTC)).astimezone(UTC)
     if current >= snapshot.expires_at:
@@ -353,15 +382,19 @@ def resolve_decision(
     class_policy = snapshot.class_defaults.get(compatibility_class)
     if not isinstance(class_policy, dict):
         raise ModelPolicyError("class_default_unavailable")
-    posture = class_policy.get("posture")
-    posture_revision = class_policy.get("posture_revision")
-    if posture != "report_only" or type(posture_revision) is not int or posture_revision < 1:
-        raise ModelPolicyError("runtime_posture_unsupported")
+    try:
+        snapshot_posture = coerce_posture(class_policy.get("posture"))
+        snapshot_posture_revision = coerce_posture_revision(class_policy.get("posture_revision"))
+    except RuntimePostureError as exc:
+        # An unreadable snapshot posture is still a refusal: it means the frozen
+        # facts are malformed, which is not a posture and must not be guessed at.
+        raise ModelPolicyError(exc.reason) from None
 
     # An explicit directive that edge validation could not resolve is a
     # proposed refusal, not permission to silently continue down the ladder.
-    # Report-only callers record this refusal while preserving legacy runtime
-    # behaviour; enforcing callers are intentionally not implemented here.
+    # This refusal is posture-independent: report-only callers record it while
+    # preserving legacy runtime behaviour, and enforcing callers must not fall
+    # through to a substituted model.
     if direct_requested and not direct_override:
         raise ModelPolicyError("direct_override_unresolved")
     if direct_override and not direct_requested:
@@ -393,11 +426,60 @@ def resolve_decision(
         requested_model_id=requested,
         resolved_model_id=resolved,
         resolution_source=source,
-        runtime_posture="report_only",
-        posture_revision=posture_revision,
+        # The snapshot's posture, pending the per-hop live read.  ``posture_source``
+        # stays None so an unverified decision is distinguishable from a verified
+        # one by inspection rather than by trust.
+        runtime_posture=snapshot_posture,
+        posture_revision=snapshot_posture_revision,
         policy_revision=snapshot.policy_revision,
         catalogue_revision=snapshot.catalogue_revision,
         snapshot_allowlist_policy_revision=snapshot.allowlist_policy_revision,
+        snapshot_runtime_posture=snapshot_posture,
+        snapshot_posture_revision=snapshot_posture_revision,
+    )
+
+
+async def apply_live_posture(
+    session: AsyncSession,
+    *,
+    decision: ModelPolicyDecision,
+    now: datetime | None = None,
+) -> ModelPolicyDecision:
+    """Replace the snapshot's posture with the live one for this hop.
+
+    This is the §9 rollback guarantee in code.  The root snapshot is immutable by
+    design — its digest and policy are never rewritten — but the *posture* is an
+    audited operational control, so a chain whose root was captured under
+    ``enforcing`` must stop enforcing once an operator has rolled the setting
+    back, without waiting for the chain to end.  Re-reading per hop, bounded by
+    the measured cache in :mod:`src.agentauth.runtime_posture`, is what makes
+    that true across gateway instances.
+
+    Both values are preserved: ``runtime_posture`` is what this hop actually ran
+    under, ``snapshot_runtime_posture`` is what the root recorded.  Keeping them
+    separate is what lets PMM-08 attribute a hop honestly instead of reporting a
+    posture that was already reverted.
+
+    Raises:
+        ModelPolicyError: the live posture is unreadable or unsupported.  It is
+            deliberately not defaulted: substituting a permissive value here
+            would be exactly the enforcing-becomes-report_only bypass this
+            story must prevent.
+    """
+    try:
+        live: LivePosture = await read_live_posture(
+            session,
+            compatibility_class=decision.compatibility_class,
+            now=now,
+        )
+    except RuntimePostureError as exc:
+        raise ModelPolicyError(exc.reason) from None
+    return replace(
+        decision,
+        runtime_posture=live.posture,
+        posture_revision=live.posture_revision,
+        posture_observed_at=live.observed_at,
+        posture_source=live.source,
     )
 
 
@@ -429,6 +511,12 @@ async def validate_live_decision(
             extra={"error_type": type(exc).__name__},
         )
         raise ModelPolicyError("not_permitted") from None
+
+    # The live posture is read first, and inside the same isolated read as the
+    # rest of the live facts, so that the posture a decision claims is the one
+    # its admission was evaluated under rather than a later re-read.
+    async with _optional_read_savepoint(session):
+        decision = await apply_live_posture(session, decision=decision)
     # Per-hop bootstrap also shares the caller's session, so this live read is
     # isolated for the same reason: its SQL failure must not abort the caller's
     # transaction.  The handler in bootstrap_model_policy_live() catches outside.
@@ -1151,10 +1239,39 @@ def _sign_policy_decision(
     )
     return {
         "posture": decision.runtime_posture,
+        # True only because _sign_policy_decision is reached solely after the
+        # per-hop live read succeeded; see apply_live_posture.
+        "posture_verified": decision.posture_source is not None,
         "status": "proposed",
         "decision": decision.to_dict(),
         "assertion": assertion,
     }
+
+
+def _unavailable(reason: str, *, evidence: dict[str, object] | None = None) -> dict:
+    """A bootstrap failure that does not claim a posture it never established.
+
+    The earlier shape hard-coded ``"posture": "report_only"`` in every handler.
+    That was a false statement in two directions at once: under an enforcing
+    class it reported the permissive posture, and in the cases where the posture
+    read itself failed it reported a posture nothing had determined.  A consumer
+    keying off that field would read an enforcing failure as a benign
+    report-only outcome — which is precisely how an enforcing failure silently
+    becomes report_only by exception handling.
+
+    ``posture`` is therefore ``None`` and ``posture_verified`` is ``False``.  A
+    caller that cannot see a verified posture must treat the decision as absent,
+    not as permissive.
+    """
+    response: dict[str, object] = {
+        "posture": None,
+        "posture_verified": False,
+        "status": "unavailable",
+        "reason": reason,
+    }
+    if evidence is not None:
+        response["evidence"] = evidence
+    return response
 
 
 def _resolve_execution_decision(*, raw_execution: dict, record) -> tuple[ModelPolicySnapshot, ModelPolicyDecision]:
@@ -1170,12 +1287,17 @@ def _resolve_execution_decision(*, raw_execution: dict, record) -> tuple[ModelPo
 
 
 def bootstrap_model_policy(*, store, record, grant: DelegatedGrant, env: dict[str, str] | None = None) -> dict:
-    """Build a deterministic report-only decision without live DB admission.
+    """Build a deterministic decision without live DB admission.
 
     Retained as the pure snapshot/crypto seam used by unit and compatibility
     tests.  Production bootstrap uses :func:`bootstrap_model_policy_live`,
     which must pass PMM-03's exact fresh evidence check before this decision is
     signed.
+
+    Because it takes no session, it **cannot** verify the live posture, so its
+    result always carries ``posture_verified: False`` and the posture it reports
+    is the snapshot's.  That is not a decision an enforcing consumer may act on,
+    and the worker-side guard rejects it for exactly that reason.
     """
     raw_execution = store._read(f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}") or {}
     try:
@@ -1191,9 +1313,9 @@ def bootstrap_model_policy(*, store, record, grant: DelegatedGrant, env: dict[st
             env=env,
         )
     except ModelPolicyError as exc:
-        return {"posture": "report_only", "status": "unavailable", "reason": exc.reason}
+        return _unavailable(exc.reason)
     except (EnvelopeError, AuthorityStoreError):
-        return {"posture": "report_only", "status": "unavailable", "reason": "decision_unavailable"}
+        return _unavailable("decision_unavailable")
 
 
 async def bootstrap_model_policy_live(
@@ -1231,35 +1353,23 @@ async def bootstrap_model_policy_live(
             env=env,
         )
     except ModelPolicyError as exc:
-        response = {
-            "posture": "report_only",
-            "status": "unavailable",
-            "reason": exc.reason,
-        }
-        if exc.evidence is not None:
-            response["evidence"] = exc.evidence
-        return response
+        return _unavailable(exc.reason, evidence=exc.evidence)
     except SQLAlchemyError:
         logger.warning(
             "Live model-policy admission unavailable",
             extra={"invocation_id": record.invocation_id},
             exc_info=True,
         )
-        return {
-            "posture": "report_only",
-            "status": "unavailable",
-            "reason": "model_validation_unavailable",
-        }
+        return _unavailable("model_validation_unavailable")
     except (EnvelopeError, AuthorityStoreError):
-        return {
-            "posture": "report_only",
-            "status": "unavailable",
-            "reason": "decision_unavailable",
-        }
+        return _unavailable("decision_unavailable")
     except Exception as exc:
-        # Report-only must never turn a successful bootstrap into an outage.
-        # Keep the response stable and log only the exception type; destination
-        # credentials and database details are not requester-visible evidence.
+        # A bootstrap failure must not become an outage — but it must also not
+        # become a *permissive* result.  The response says "no verified posture,
+        # no decision"; whether that is survivable is the consumer's call, made
+        # against the live posture it reads for itself, not a claim made here.
+        # Only the exception type is logged: destination credentials and database
+        # details are not requester-visible evidence.
         logger.warning(
             "Live model-policy decision failed",
             extra={
@@ -1267,8 +1377,4 @@ async def bootstrap_model_policy_live(
                 "error_type": type(exc).__name__,
             },
         )
-        return {
-            "posture": "report_only",
-            "status": "unavailable",
-            "reason": "decision_unavailable",
-        }
+        return _unavailable("decision_unavailable")
