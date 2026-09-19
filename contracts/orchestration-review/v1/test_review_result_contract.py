@@ -28,7 +28,7 @@ from pydantic import ValidationError
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from models import (  # noqa: E402  (path shim above must run first)
+from models import (
     CLEARED_DISPOSITIONS,
     CONCLUSIVE_STAGE_OUTCOMES,
     PUBLICATION_ACCEPTED,
@@ -82,7 +82,9 @@ def _ids(variants: list[dict[str, Any]]) -> list[str]:
 class TestFixtureIntegrity:
     def test_golden_fixture_exists(self):
         """A missing fixture must fail loudly, not skip the contract silently."""
-        assert GOLDEN_PATH.is_file(), f"golden contract fixture not found at {GOLDEN_PATH}"
+        assert GOLDEN_PATH.is_file(), (
+            f"golden contract fixture not found at {GOLDEN_PATH}"
+        )
 
     def test_fixture_declares_rejected_variants(self):
         """Guards against a future edit that empties the variant list.
@@ -183,7 +185,8 @@ class TestFunctionalStageIsMandatory:
             "destructive-apply-gate-fails-open"
         ]
         assert any(
-            "destructive-apply-gate-fails-open" in reason for reason in result.approval_blockers()
+            "destructive-apply-gate-fails-open" in reason
+            for reason in result.approval_blockers()
         )
 
 
@@ -277,7 +280,9 @@ class TestBlockingFindingsGateApproval:
                 "severity": "blocking",
                 "disposition": "resolved",
                 "summary": "A blocking defect, re-tested at this head.",
-                "evidence_refs": [{"kind": "test-run", "ref": "check-run:1", "head_bound": True}],
+                "evidence_refs": [
+                    {"kind": "test-run", "ref": "check-run:1", "head_bound": True}
+                ],
             }
         ]
         result = ReviewResult.model_validate(body)
@@ -328,7 +333,9 @@ class TestStaleHeadInvalidation:
         result = ReviewResult.model_validate(APPROVE_DOC)
         stale = invalidate_for_head(result, self.NEW_HEAD)
         assert stale.verdict is ReviewVerdict.INCOMPLETE
-        assert stale.approval_blockers(), "an invalidated result must never be approval-capable"
+        assert stale.approval_blockers(), (
+            "an invalidated result must never be approval-capable"
+        )
 
     def test_moved_head_marks_dispositions_stale(self):
         body = dict(APPROVE_DOC)
@@ -339,7 +346,9 @@ class TestStaleHeadInvalidation:
                 "severity": "blocking",
                 "disposition": "resolved",
                 "summary": "Allegedly fixed at the old head.",
-                "evidence_refs": [{"kind": "test-run", "ref": "check-run:1", "head_bound": True}],
+                "evidence_refs": [
+                    {"kind": "test-run", "ref": "check-run:1", "head_bound": True}
+                ],
             }
         ]
         stale = invalidate_for_head(ReviewResult.model_validate(body), self.NEW_HEAD)
@@ -399,3 +408,140 @@ class TestApprovalBlockersReportsEveryReason:
 
     def test_supported_approval_has_no_blockers(self):
         assert ReviewResult.model_validate(APPROVE_DOC).approval_blockers() == ()
+
+
+# ---------------------------------------------------------------------------
+# Strict wire types on exact-identity integers
+# ---------------------------------------------------------------------------
+
+
+#: Every protocol/identity integer, with the object path to reach it on a
+#: validated result. Parametrized rather than spelled out per field so a new
+#: identity integer added to the contract without strictness shows up here as a
+#: missing entry rather than as an untested coercion.
+WIRE_INT_FIELDS = [
+    ("version", ("version",)),
+    ("scope.cycle", ("scope", "cycle")),
+    ("authority.claim_generation", ("authority", "claim_generation")),
+    ("authority.accepted_plan_version", ("authority", "accepted_plan_version")),
+    ("repository.provider_repository_id", ("repository", "provider_repository_id")),
+    ("subject.pr_number", ("subject", "pr_number")),
+]
+
+#: `true`/`false` are the reported defect: lax `int` coerces them to 1/0. The
+#: string and float forms are the same class of silent repair.
+NON_INTEGRAL_VALUES = [True, False, "1", 1.0, "  1  ", None]
+
+
+def _patch_path(
+    base: dict[str, Any], path: tuple[str, ...], value: Any
+) -> dict[str, Any]:
+    """Deep-copy `base` with `path` replaced, then round-trip it through JSON.
+
+    The JSON round trip is deliberate and is what the reproducer requires: the
+    consumer must refuse the *serialized* document. Validating a hand-built dict
+    could pass a Python `bool` through a path that never parses real wire bytes.
+    """
+    body = json.loads(json.dumps(base))
+    cursor = body
+    for part in path[:-1]:
+        cursor = cursor[part]
+    cursor[path[-1]] = value
+    return json.loads(json.dumps(body))
+
+
+class TestExactIdentityIntegersRejectCoercion:
+    """Protocol/identity integers must refuse bool, string and non-integral input.
+
+    Reproducer: starting from `accepted_result_approve` and independently
+    replacing `version`, `scope.cycle`, `authority.claim_generation` or
+    `repository.provider_repository_id` with JSON `true`, lax `int` validated all
+    four and coerced them to `1`. A `claim_generation` of `true` became the
+    generation-1 fence; a `provider_repository_id` of `true` became repository 1.
+
+    These are exact-identity comparisons, so a wrong-but-plausible `1` binds
+    evidence to the wrong repository or presents a fence nobody issued. The same
+    defect was repaired for receipt versions in #5144.
+    """
+
+    @pytest.mark.parametrize("value", NON_INTEGRAL_VALUES)
+    @pytest.mark.parametrize(
+        "name,path", WIRE_INT_FIELDS, ids=[f[0] for f in WIRE_INT_FIELDS]
+    )
+    def test_non_integral_value_is_rejected(
+        self, name: str, path: tuple[str, ...], value: Any
+    ):
+        with pytest.raises(ValidationError):
+            ReviewResult.model_validate(_patch_path(APPROVE_DOC, path, value))
+
+    @pytest.mark.parametrize(
+        "name,path", WIRE_INT_FIELDS, ids=[f[0] for f in WIRE_INT_FIELDS]
+    )
+    def test_rejection_is_not_a_silent_coercion(self, name: str, path: tuple[str, ...]):
+        """Pin the actual defect: `true` must not arrive as `1`.
+
+        Asserting only "raises" would still pass if a later refactor moved the
+        check into an after-validator that receives an already-coerced integer and
+        happens to reject it for an unrelated reason. This asserts the value never
+        becomes 1 in the first place.
+        """
+        try:
+            result = ReviewResult.model_validate(_patch_path(APPROVE_DOC, path, True))
+        except ValidationError:
+            return
+        observed = result
+        for part in path:
+            observed = getattr(observed, part)
+        pytest.fail(f"{name} accepted JSON true and coerced it to {observed!r}")
+
+    @pytest.mark.parametrize(
+        "name,path", WIRE_INT_FIELDS, ids=[f[0] for f in WIRE_INT_FIELDS]
+    )
+    def test_genuine_integer_is_still_accepted(self, name: str, path: tuple[str, ...]):
+        """Strictness must not break the valid producer.
+
+        `version` is pinned to the contract version and `accepted_plan_version`
+        legitimately allows 0, so each field is exercised with a value its own
+        range permits rather than one shared number.
+        """
+        value = (
+            1
+            if name == "version"
+            else (0 if name.endswith("accepted_plan_version") else 7)
+        )
+        result = ReviewResult.model_validate(_patch_path(APPROVE_DOC, path, value))
+        observed = result
+        for part in path:
+            observed = getattr(observed, part)
+        assert observed == value
+        assert type(observed) is int
+
+    def test_every_contract_integer_is_covered(self):
+        """Fail when a new identity integer is added without a strictness case.
+
+        Introspects the models instead of trusting this list to stay current: the
+        gap this contract had was an unstrict field nobody thought to test.
+        """
+        from models import (
+            ContractEnvelope,
+            ReviewAuthority,
+            ReviewRepository,
+            ReviewScope,
+            ReviewSubject,
+        )
+
+        covered = {name for name, _ in WIRE_INT_FIELDS}
+        for prefix, model in (
+            ("", ContractEnvelope),
+            ("scope", ReviewScope),
+            ("authority", ReviewAuthority),
+            ("repository", ReviewRepository),
+            ("subject", ReviewSubject),
+        ):
+            for field_name, info in model.model_fields.items():
+                if info.annotation is int:
+                    qualified = f"{prefix}.{field_name}" if prefix else field_name
+                    assert qualified in covered, (
+                        f"{qualified} is a lax `int` on the wire: it will coerce JSON true to 1. "
+                        "Type it as WireInt and add it to WIRE_INT_FIELDS."
+                    )

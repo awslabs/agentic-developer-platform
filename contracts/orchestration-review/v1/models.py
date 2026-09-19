@@ -63,11 +63,36 @@ import re
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 CONTRACT_NAME = "orchestration-review"
 CONTRACT_VERSION = 1
 CONTRACT_OWNER = "orchestration/review"
+
+#: Every protocol/identity integer on the wire: contract version, cycle, claim
+#: generation, accepted-plan version, provider repository id and PR number.
+#:
+#: `StrictInt`, not `int`, and the distinction is the whole point. Pydantic's
+#: lax `int` accepts JSON `true` and coerces it to `1` — so a document whose
+#: `claim_generation` is `true` validates as generation 1, and a
+#: `provider_repository_id` of `true` becomes repository 1. These are exact
+#: identity and fence values; being off by "whatever `bool` casts to" means
+#: binding evidence to the wrong repository or passing a claim fence that was
+#: never issued. `"1"` and `1.0` are refused for the same reason: a producer
+#: that cannot emit a JSON integer here has a serialization bug, and silently
+#: repairing it hides the bug until it reaches identity comparison.
+#:
+#: This must be the *field type* rather than an `@field_validator`. A validator
+#: runs after coercion and is handed an already-converted `1`, with no way to
+#: learn the input was `true` — the receipt-version defect repaired in #5144.
+WireInt = StrictInt
 
 #: A provider commit id. 40 hex for SHA-1, 64 for SHA-256, matching the pattern
 #: `orchestration/pr_identity.py` already validates provider heads against. Pinned
@@ -175,7 +200,9 @@ class FindingDisposition(StrEnum):
 
 #: Dispositions that clear a finding. `acknowledged` is excluded on purpose — see
 #: its docstring. Absence from this set is what makes a blocking finding blocking.
-CLEARED_DISPOSITIONS: frozenset[FindingDisposition] = frozenset({FindingDisposition.RESOLVED})
+CLEARED_DISPOSITIONS: frozenset[FindingDisposition] = frozenset(
+    {FindingDisposition.RESOLVED}
+)
 
 
 class PublicationOutcome(StrEnum):
@@ -209,7 +236,9 @@ class PublicationOutcome(StrEnum):
     were actually in while reporting success."""
 
 
-PUBLICATION_ACCEPTED: frozenset[PublicationOutcome] = frozenset({PublicationOutcome.PUBLISHED})
+PUBLICATION_ACCEPTED: frozenset[PublicationOutcome] = frozenset(
+    {PublicationOutcome.PUBLISHED}
+)
 
 
 class ReviewVerdict(StrEnum):
@@ -237,7 +266,7 @@ class ContractEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid", use_enum_values=False)
 
     name: str = Field(description=f"Contract name. Must be {CONTRACT_NAME!r}.")
-    version: int = Field(description="Contract version. 1 for this contract.")
+    version: WireInt = Field(description="Contract version. 1 for this contract.")
     owner: str = Field(description=f"Owning surface. Must be {CONTRACT_OWNER!r}.")
 
     @field_validator("name")
@@ -278,12 +307,16 @@ class ReviewScope(BaseModel):
     model_config = ConfigDict(extra="forbid", use_enum_values=False)
 
     org_id: str = Field(
-        min_length=1, description="Tenant partition. Every read and write is scoped to it."
+        min_length=1,
+        description="Tenant partition. Every read and write is scoped to it.",
     )
     flow_id: str = Field(min_length=1)
-    node_id: str = Field(min_length=1, description="The graph node whose delivery is under review.")
-    cycle: int = Field(
-        ge=1, description="Which delivery/repair cycle of the node this is. Cycles start at 1."
+    node_id: str = Field(
+        min_length=1, description="The graph node whose delivery is under review."
+    )
+    cycle: WireInt = Field(
+        ge=1,
+        description="Which delivery/repair cycle of the node this is. Cycles start at 1.",
     )
     execution_id: str | None = Field(
         default=None,
@@ -311,13 +344,15 @@ class ReviewAuthority(BaseModel):
 
     model_config = ConfigDict(extra="forbid", use_enum_values=False)
 
-    accepted_plan_version: int = Field(
+    accepted_plan_version: WireInt = Field(
         ge=0,
         description="Accepted-plan version in force. 0 is legal and means no accepted plan "
         "exists — the legacy path, which must stay usable.",
     )
     claim_id: str = Field(min_length=1)
-    claim_generation: int = Field(ge=1, description="The claim fence. Generations start at 1.")
+    claim_generation: WireInt = Field(
+        ge=1, description="The claim fence. Generations start at 1."
+    )
 
 
 class ReviewRepository(BaseModel):
@@ -332,13 +367,17 @@ class ReviewRepository(BaseModel):
 
     model_config = ConfigDict(extra="forbid", use_enum_values=False)
 
-    provider_repository_id: int = Field(ge=1, description="Immutable provider repository id.")
+    provider_repository_id: WireInt = Field(
+        ge=1, description="Immutable provider repository id."
+    )
     repo: str = Field(description="Mutable display path, `owner/name`.")
 
     @field_validator("repo")
     @classmethod
     def _check_repo(cls, value: str) -> str:
-        if not REPO_PATTERN.match(value) or any(part in {".", ".."} for part in value.split("/")):
+        if not REPO_PATTERN.match(value) or any(
+            part in {".", ".."} for part in value.split("/")
+        ):
             raise ValueError(f"repo must look like 'owner/name', got {value!r}")
         return value
 
@@ -356,7 +395,7 @@ class ReviewSubject(BaseModel):
 
     model_config = ConfigDict(extra="forbid", use_enum_values=False)
 
-    pr_number: int = Field(ge=1)
+    pr_number: WireInt = Field(ge=1)
     provider_pr_node_id: str = Field(
         min_length=1, description="Immutable provider pull-request node id."
     )
@@ -398,7 +437,9 @@ class ReviewLineage(BaseModel):
     author_run_id: str = Field(
         min_length=1, description="The run that produced the change under review."
     )
-    reviewer_run_id: str = Field(min_length=1, description="The run that performed this review.")
+    reviewer_run_id: str = Field(
+        min_length=1, description="The run that performed this review."
+    )
     reviewer_identity: str | None = Field(
         default=None,
         description="Provider login the verdict was published under, when known. Advisory: a "
@@ -430,7 +471,8 @@ class EvidenceRef(BaseModel):
     model_config = ConfigDict(extra="forbid", use_enum_values=False)
 
     kind: str = Field(
-        min_length=1, description="What sort of evidence, e.g. 'test-run', 'artifact', 'check-run'."
+        min_length=1,
+        description="What sort of evidence, e.g. 'test-run', 'artifact', 'check-run'.",
     )
     ref: str = Field(
         min_length=1, description="Opaque reference resolved by the store that owns it."
@@ -440,7 +482,8 @@ class EvidenceRef(BaseModel):
         "Test and check results are; static documents are not.",
     )
     summary: str | None = Field(
-        default=None, description="Optional human-readable note. Never load-bearing for a decision."
+        default=None,
+        description="Optional human-readable note. Never load-bearing for a decision.",
     )
     stale: bool = Field(
         default=False,
@@ -477,7 +520,9 @@ class ReviewFinding(BaseModel):
     )
     severity: FindingSeverity
     disposition: FindingDisposition
-    summary: str = Field(min_length=1, description="What the defect is, in one statement.")
+    summary: str = Field(
+        min_length=1, description="What the defect is, in one statement."
+    )
     evidence_refs: list[EvidenceRef] = Field(
         default_factory=list,
         description="Per-finding evidence, e.g. the reproduction that showed it open or "
@@ -545,7 +590,10 @@ class ReviewStage(BaseModel):
         # An unexplained `not-run` is the silent skip this contract exists to make
         # noisy. Requiring a reason means the artifact says what went wrong instead
         # of leaving an operator to infer it from an empty review list.
-        if self.outcome not in CONCLUSIVE_STAGE_OUTCOMES and not (self.detail or "").strip():
+        if (
+            self.outcome not in CONCLUSIVE_STAGE_OUTCOMES
+            and not (self.detail or "").strip()
+        ):
             raise ValueError(
                 f"stage {self.name.value!r} with outcome {self.outcome.value!r} must "
                 "explain itself in 'detail'"
@@ -572,7 +620,8 @@ class ReviewPublication(BaseModel):
         "is not evidence about it.",
     )
     reference: str | None = Field(
-        default=None, description="Pointer to the published verdict, e.g. a review id or URL."
+        default=None,
+        description="Pointer to the published verdict, e.g. a review id or URL.",
     )
     detail: str | None = Field(
         default=None,
@@ -665,7 +714,9 @@ class ReviewResult(ContractEnvelope):
 
     @field_validator("stages")
     @classmethod
-    def _stages_unique_and_functional_present(cls, value: list[ReviewStage]) -> list[ReviewStage]:
+    def _stages_unique_and_functional_present(
+        cls, value: list[ReviewStage]
+    ) -> list[ReviewStage]:
         if not value:
             raise ValueError(
                 "stages must not be empty; a result that describes no review stage is "
@@ -822,9 +873,7 @@ def invalidate_for_head(result: ReviewResult, actual_head_sha: str) -> ReviewRes
     if actual_head_sha == result.subject.reviewed_head_sha:
         return result
 
-    reason = (
-        f"head moved from {result.subject.reviewed_head_sha} to {actual_head_sha} after this review"
-    )
+    reason = f"head moved from {result.subject.reviewed_head_sha} to {actual_head_sha} after this review"
     body = result.model_dump(mode="python")
     body["verdict"] = ReviewVerdict.INCOMPLETE
     body["findings"] = [
