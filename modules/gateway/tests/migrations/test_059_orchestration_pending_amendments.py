@@ -877,9 +877,20 @@ class TestPostgresRendering:
 
 class TestRevisionChain:
     def test_revision_id_and_down_revision(self):
-        """Chains onto the head that was real when this landed."""
+        """Chains onto the head that was real when this landed.
+
+        Originally `052_orch_pending_amend` on top of `051_orch_pr_bindings`. Main then
+        landed its own `052` (`052_orchestration_executions`, #5142) off that same parent
+        and advanced to `058`, so keeping `051` here would have left the chain with **two
+        heads** — an apply-time break that no line-level merge can detect, because the two
+        migrations share no line to conflict on. Renumbered onto the real current tip.
+
+        Pinning the exact parent (rather than just asserting a single head, which
+        `test_migration_leaves_exactly_one_head` covers) is what makes an accidental
+        re-fork onto a stale parent fail here instead of at `alembic upgrade head`.
+        """
         assert MIG_059.revision == "059_orch_pending_amend"
-        assert MIG_059.down_revision == "051_orch_pr_bindings"
+        assert MIG_059.down_revision == "058_model_probe_admission"
 
     def test_revision_id_fits_the_alembic_version_column(self):
         """`alembic_version.version_num` is VARCHAR(32); a longer id fails at apply.
