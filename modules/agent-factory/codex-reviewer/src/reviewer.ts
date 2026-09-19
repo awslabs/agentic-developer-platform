@@ -62,7 +62,7 @@ export function gitEnvironment(token: string): NodeJS.ProcessEnv {
   };
 }
 
-function childEnvironment(): Record<string, string> {
+export function childEnvironment(): Record<string, string> {
   const env = Object.fromEntries(
     ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "SSL_CERT_FILE"].flatMap(
       (name) => (process.env[name] ? [[name, process.env[name] as string]] : []),
@@ -70,6 +70,9 @@ function childEnvironment(): Record<string, string> {
   );
   return {
     ...env,
+    ADP_GATEWAY_PLACEHOLDER_KEY:
+      process.env.ADP_GATEWAY_PLACEHOLDER_KEY ??
+      "unused-sidecar-restrips-and-resigns",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0",

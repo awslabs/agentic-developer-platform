@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import {
+  childEnvironment,
   gitEnvironment,
   mergeEnabled,
   repositoryUrl,
@@ -30,6 +31,10 @@ test("Git transport uses askpass without placing the token in the remote URL", (
   assert.equal(env.GH_TOKEN, token);
   assert.ok(env.GIT_ASKPASS);
   assert.equal(env.GIT_TERMINAL_PROMPT, "0");
+});
+
+test("Codex child environment preserves the gateway placeholder", () => {
+  assert.ok(childEnvironment().ADP_GATEWAY_PLACEHOLDER_KEY);
 });
 
 async function fixture(): Promise<{
