@@ -96,7 +96,7 @@ import { PauseGate } from './pause-gate';
 // Issue #3961: the outcome→journal mapping and the gate/store mirror live in their
 // own module so they can be unit-tested; importing this file from a test pulls the
 // SDK's ESM entry point into Jest and the suite cannot parse.
-import { applyControlCommand, bindGateTransitionsToStore } from './control-command-apply';
+import { applyControlCommand, bindRuntimeTransitionsToStore } from './control-command-apply';
 
 // Knowledge Layer MCP — Issue #1592: register Door as agent MCP tools (feature-flagged)
 import {
@@ -2248,7 +2248,7 @@ async function main(): Promise<void> {
     // a gate, because `0` is a quiescence claim only the gate may make), plus the
     // confirm/unavailable/expiry edges that change admission with no command behind
     // them. Without the latter the store can report `paused` while tools run.
-    bindGateTransitionsToStore({ gate: pauseGate, store: controlStore, log });
+    bindRuntimeTransitionsToStore({ adapter: controlAdapter, store: controlStore, log });
     const listener = new ControlListener({
       bindAddress: process.env.ADP_CONTROL_BIND_ADDRESS || '',
       port: Number.parseInt(process.env.ADP_CONTROL_PORT || '0', 10),

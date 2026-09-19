@@ -1,3 +1,4 @@
+import { newAttemptId } from './control-runtime';
 /**
  * Store/gate agreement — Issue #3961 (S2).
  *
@@ -12,7 +13,7 @@
  * "these two agree", and a hand-written double would let me assert agreement with
  * something whose behaviour I chose.
  */
-import { applyControlCommand, bindGateTransitionsToStore } from './control-command-apply';
+import { applyControlCommand, bindRuntimeTransitionsToStore } from './control-command-apply';
 import { ControlStateStore } from './control-state';
 import { PauseGate, type PauseGateScheduler } from './pause-gate';
 
@@ -64,7 +65,12 @@ function harness(options: { settleTimeoutMs?: number; defaultTimeoutMs?: number 
     supportedActions: new Set(['pause', 'resume'] as const),
     now: () => now,
   });
-  const unsubscribe = bindGateTransitionsToStore({ gate, store });
+  const unitAttempt = newAttemptId();
+  const unsubscribe = bindRuntimeTransitionsToStore({ adapter: {
+    currentAttempt: () => unitAttempt,
+    activeWorkCount: () => gate.activeToolCount(),
+    subscribe: (listener) => gate.subscribe(event => listener({ ...event, attemptId: unitAttempt })),
+  }, store });
 
   let seq = 0;
   /** Submit a command the way the listener would, then apply it. */

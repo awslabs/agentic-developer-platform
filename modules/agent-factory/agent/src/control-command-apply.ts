@@ -13,10 +13,9 @@
  */
 import type { ControlAction, ControlStateStore } from './control-state';
 import type { ClaudeControlAdapter } from './harnesses/claude-control';
-import type { PauseGate } from './pause-gate';
 
 /**
- * Mirror gate-initiated transitions into the state store — Issue #3961.
+ * Mirror attempt-filtered runtime transitions into the state store — Issue #3961.
  *
  * `applyControlCommand` covers every transition an operator *asked* for. Two
  * transitions happen with no command behind them:
@@ -37,20 +36,18 @@ import type { PauseGate } from './pause-gate';
  * Exported and parameterised so the store/gate agreement is testable without a
  * running agent, matching {@link applyControlCommand}.
  */
-export function bindGateTransitionsToStore(args: {
-  gate: Pick<PauseGate, 'subscribe' | 'activeToolCount'>;
+export function bindRuntimeTransitionsToStore(args: {
+  adapter: Pick<ClaudeControlAdapter, 'subscribe' | 'activeWorkCount' | 'currentAttempt'>;
   store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'setActiveToolCount'>;
   log?: (level: string, message: string, context?: Record<string, unknown>) => void;
 }): () => void {
-  const { gate, store } = args;
+  const { adapter, store } = args;
   const log = args.log ?? (() => {});
 
-  // Seed the count here rather than leaving it to the caller. S1 leaves it `null`
-  // ("unknown"), and a run whose gate is installed but which has not yet run a tool
-  // is genuinely at zero — a fact only the gate may assert. Doing it inside the
-  // binding means attaching the mirror is the single act that makes the store
-  // authoritative, instead of two calls a caller can half-remember.
-  store.setActiveToolCount(gate.activeToolCount());
+  // Unknown while no attempt is attached. The adapter supplies the count after
+  // attachment; all later work/pause events carry that attempt's identity.
+  store.setActiveToolCount(adapter.activeWorkCount());
+  let currentAttempt = adapter.currentAttempt();
 
   /** Settle whichever pause command is still awaiting an outcome, if any. */
   const settlePendingPause = (status: 'applied' | 'rejected', reason: string) => {
@@ -59,8 +56,21 @@ export function bindGateTransitionsToStore(args: {
     }
   };
 
-  return gate.subscribe((event) => {
+  return adapter.subscribe((event) => {
+    if (event.type === 'attempt_attached') {
+      currentAttempt = event.attemptId;
+      store.setPhase('running');
+      store.setActiveToolCount(adapter.activeWorkCount());
+      return;
+    }
+    if (event.attemptId !== currentAttempt) return;
     switch (event.type) {
+      case 'attempt_detached':
+        currentAttempt = null;
+        store.setPhase('running');
+        store.setActiveToolCount(null);
+        settlePendingPause('rejected', 'the accepting attempt ended; same-execution resume is unavailable');
+        return;
       case 'pause_requested':
         store.setPhase('pause_requested');
         return;
@@ -79,7 +89,7 @@ export function bindGateTransitionsToStore(args: {
         // the run is not paused and must not be displayed as pausing.
         store.setPhase('running');
         settlePendingPause('rejected', event.reason);
-        log('WARN', 'control: pause unavailable', { failure: event.failure, detail: event.reason });
+        log('WARN', 'control: pause unavailable', { detail: event.reason });
         return;
       case 'pause_released':
         // Unconditional, for both an expiry and an operator resume. It would be

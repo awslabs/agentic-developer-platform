@@ -517,7 +517,9 @@ describe.each([CLAUDE_CASE, ECHO_CASE])('control runtime contract — $name', (t
     // A double-clicked resume is ordinary and must neither fail nor double-release:
     // a second release would re-open a barrier a *later* pause had legitimately
     // closed, and the operator would never learn their pause had been undone.
-    expect(events.filter((e) => e.type === 'pause_released')).toEqual([{ type: 'pause_released', attemptId }]);
+    expect(events.filter((e) => e.type === 'pause_released')).toEqual([
+      expect.objectContaining({ type: 'pause_released', attemptId }),
+    ]);
   });
 
   it('treats a resume with no pause in force as a no-op rather than an error', async () => {

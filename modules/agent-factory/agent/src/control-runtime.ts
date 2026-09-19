@@ -196,7 +196,7 @@ export type ControlRuntimeEvent =
   | { type: 'active_work'; attemptId: AttemptId; count: number | null }
   | { type: 'pause_requested'; attemptId: AttemptId }
   | { type: 'pause_confirmed'; attemptId: AttemptId }
-  | { type: 'pause_released'; attemptId: AttemptId }
+  | { type: 'pause_released'; attemptId: AttemptId; expired?: boolean }
   | { type: 'pause_unavailable'; attemptId: AttemptId; reason: string }
   | { type: 'input_handoff'; attemptId: AttemptId; command_id?: string; result: InputHandoffResult }
   | { type: 'terminal'; attemptId: AttemptId; outcome: TerminalOutcome };

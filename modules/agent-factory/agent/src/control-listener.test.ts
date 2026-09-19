@@ -1,3 +1,4 @@
+import { newAttemptId } from './control-runtime';
 /**
  * Tests for the in-pod control listener and its bounded journal — Issue #3960.
  *
@@ -11,7 +12,7 @@
 
 import * as http from 'http';
 import { PauseGate } from './pause-gate';
-import { applyControlCommand, bindGateTransitionsToStore } from './control-command-apply';
+import { applyControlCommand, bindRuntimeTransitionsToStore } from './control-command-apply';
 import { AddressInfo } from 'net';
 import { generateKeyPairSync, sign as cryptoSign, createHash, type KeyObject } from 'crypto';
 import { mkdtempSync, writeFileSync, renameSync, rmSync } from 'fs';
@@ -262,7 +263,12 @@ test('signed pause and resume preserve acceptance order across delayed revalidat
       return proof.action === 'pause' ? slowPause : true;
     },
   });
-  const unbind = bindGateTransitionsToStore({ gate, store });
+  const unitAttempt = newAttemptId();
+  const unbind = bindRuntimeTransitionsToStore({ adapter: {
+    currentAttempt: () => unitAttempt,
+    activeWorkCount: () => gate.activeToolCount(),
+    subscribe: (listener) => gate.subscribe(event => listener({ ...event, attemptId: unitAttempt })),
+  }, store });
   const listener = new ControlListener({
     bindAddress: '127.0.0.1', port: await freePort(), token: TOKEN,
     tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),

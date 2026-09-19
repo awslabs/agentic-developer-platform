@@ -483,6 +483,7 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
   private readonly session: ClaudeSessionHandle | null;
   private readonly log: (msg: string) => void;
   private readonly pauseGate?: PauseGate;
+  private readonly onDispose: () => void;
 
   constructor(args: {
     attemptId: AttemptId;
@@ -490,12 +491,14 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
     session: ClaudeSessionHandle | null;
     log: (msg: string) => void;
     pauseGate?: PauseGate;
+    onDispose?: () => void;
   }) {
     this.attemptId = args.attemptId;
     this.channel = args.channel;
     this.session = args.session;
     this.log = args.log;
     this.pauseGate = args.pauseGate;
+    this.onDispose = args.onDispose ?? (() => {});
   }
 
   /**
@@ -559,6 +562,7 @@ class ClaudeAttemptEndpoint implements AttemptEndpoint {
    * the handle closes it.
    */
   async dispose(): Promise<void> {
+    this.onDispose();
     this.channel.close();
     // `session` is retained for diagnostics and to keep the borrowed-handle
     // relationship explicit at the type level; it is deliberately never closed.
@@ -583,6 +587,7 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
   /** The channel for the attempt currently being built, before its handle exists. */
   private pendingChannel: AttemptInputChannel | null = null;
   private activeChannel: AttemptInputChannel | null = null;
+  private pauseOwner: AttemptId | null = null;
   /** Attachment completion for the wrapper and direct adapter callers. */
   private pendingAttach: Promise<void> = Promise.resolve();
 
@@ -604,13 +609,15 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
     // operator resume, a double-clicked resume, or the expiry timer. Emitting from
     // the resume path instead would need every caller to agree not to double-emit.
     this.pauseGate?.subscribe((event) => {
-      if (event.type !== 'pause_released') return;
-      const attemptId = this.registry.currentAttemptId();
-      if (attemptId) this.registry.emit({ type: 'pause_released', attemptId });
-      // An expired pause is the only transition the operator did not ask for, so
-      // it is the only one the run has to explain to the model. The gate publishes
-      // the neutral fact; this is where it becomes a Claude annotation.
-      if (event.expired) void this.annotateExpiry();
+      const attemptId = event.type === 'active_work' ? this.registry.currentAttemptId() : this.pauseOwner;
+      if (!attemptId) return;
+      this.registry.emit({ ...event, attemptId });
+      if (event.type === 'pause_released' && event.expired && this.registry.isCurrent(attemptId)) {
+        void this.annotateExpiry();
+      }
+      if (event.type === 'pause_released' || (event.type === 'pause_unavailable' && this.pauseGate?.currentPhase() === 'running')) {
+        this.pauseOwner = null;
+      }
     });
   }
 
@@ -659,6 +666,12 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
     return this.registry.currentAttemptId();
   }
 
+  private endAttemptPause(attemptId: AttemptId): void {
+    if (this.pauseOwner !== attemptId) return;
+    this.pauseGate?.invalidateAttempt();
+    this.pauseOwner = null;
+  }
+
   subscribe(listener: ControlRuntimeListener): () => void {
     return this.registry.subscribe(listener);
   }
@@ -694,17 +707,24 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
       return { outcome: 'unavailable', reason: boundReason('pause request was cancelled before it began') };
     }
 
-    const gateResult = await this.pauseGate.requestPause({ timeoutMs: options?.timeoutMs });
+    if (this.pauseOwner !== null && this.pauseOwner !== attemptId) {
+      return { outcome: 'unavailable', reason: boundReason('pause belongs to an ended attempt') };
+    }
+    this.pauseOwner = attemptId;
+    const gateResult = await this.pauseGate.requestPause({
+      timeoutMs: options?.timeoutMs,
+      isCurrent: () => this.registry.isCurrent(attemptId) && this.pauseOwner === attemptId,
+    });
+    if (!this.registry.isCurrent(attemptId)) {
+      return { outcome: 'unavailable', reason: boundReason('the accepting attempt ended; same-execution resume is unavailable') };
+    }
     if (gateResult.outcome === 'requested') {
-      this.registry.emit({ type: 'pause_requested', attemptId });
       return { outcome: 'requested' };
     }
     if (gateResult.outcome === 'confirmed') {
-      this.registry.emit({ type: 'pause_confirmed', attemptId });
       return { outcome: 'confirmed' };
     }
     const reason = boundReason(gateResult.reason);
-    this.registry.emit({ type: 'pause_unavailable', attemptId, reason });
     return { outcome: 'unavailable', reason };
   }
 
@@ -791,6 +811,7 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
         input: channel.iterable(),
         ...(hooks ? { options: buildOptions!(hooks) } : {}),
         dispose: async () => {
+          this.endAttemptPause(channel.attemptId);
           channel.close();
           hooks?.dispose();
           if (this.pendingChannel === channel) this.pendingChannel = null;
@@ -827,6 +848,7 @@ export class ClaudeControlAdapter implements ControlRuntimeAdapter {
         session: (handle.session as ClaudeSessionHandle | null) ?? null,
         log: this.log,
         pauseGate: this.pauseGate,
+        onDispose: () => this.endAttemptPause(channel.attemptId),
       });
       // The wrapper awaits attachment before consuming output.
       this.pendingAttach = this.registry.attach(endpoint).then(

@@ -85,6 +85,7 @@ export type PauseGateFailure =
   | 'background_work'
   | 'settle_timeout'
   | 'no_safe_budget'
+  | 'attempt_ended'
   | 'cancelled';
 
 export type PauseGateEvent =
@@ -446,7 +447,7 @@ export class PauseGate {
    * after admitted work has settled and background work is observably clear does
    * it confirm.
    */
-  async requestPause(options: { timeoutMs?: number } = {}): Promise<PauseGateResult> {
+  async requestPause(options: { timeoutMs?: number; isCurrent?: () => boolean } = {}): Promise<PauseGateResult> {
     // Split into two serialized sections with the wait *between* them, rather
     // than one section spanning the wait. Holding the transition lock across
     // `awaitQuiescence` would queue `resume()` behind a pause that is itself
@@ -454,7 +455,12 @@ export class PauseGate {
     // could not resume until the settle timeout elapsed, which reads as a frozen
     // dashboard. The epoch checked in the second section is what keeps the
     // interleaving safe.
-    const started = await this.serialize(async () => this.beginPause(options.timeoutMs));
+    const started = await this.serialize(async () => {
+      if (options.isCurrent && !options.isCurrent()) {
+        return { result: { outcome: 'unavailable' as const, reason: 'the accepting attempt ended before pause admission' } };
+      }
+      return this.beginPause(options.timeoutMs);
+    });
     if ('result' in started) return started.result;
 
     const settled = await this.awaitQuiescence();
@@ -485,6 +491,11 @@ export class PauseGate {
       // command must not turn a good pause into a failure.
       return { result: { outcome: 'confirmed' } };
     }
+    if (this.phase === 'pause_requested') {
+      // Join the existing epoch. A repeated command owns neither a new budget
+      // nor the timer, and cannot reject a barrier that is still holding work.
+      return { epoch: this.pauseEpoch };
+    }
 
     const budget = this.safeBudget(timeoutMs);
     if (budget === null) {
@@ -510,7 +521,8 @@ export class PauseGate {
     // Resume/abort/breach may have landed while we waited; that transition owns
     // the outcome and this request must not overwrite it.
     if (epoch !== this.pauseEpoch || !this.isPauseActive()) {
-      return this.unavailable('cancelled', 'pause superseded before confirmation');
+      // This is an old waiter's result, not a transition of the current gate.
+      return { outcome: 'unavailable', reason: 'pause superseded before confirmation' };
     }
     if (!settled) {
       // Bounded wait elapsed with work still admitted. Reported as `requested`
@@ -543,6 +555,20 @@ export class PauseGate {
       this.releasePause(false);
       return true;
     });
+  }
+
+  /** End only the pause owned by a departing attempt, without admitting its tools. */
+  invalidateAttempt(): void {
+    if (!this.isPauseActive()) return;
+    this.phase = 'running';
+    this.pauseEpoch += 1;
+    this.clearExpiry();
+    const reason = 'the paused attempt ended; same-execution resume is unavailable';
+    for (const entry of [...this.parked]) entry.release('deny', reason);
+    for (const waiter of [...this.quiescenceWaiters]) waiter();
+    this.quiescenceWaiters.clear();
+    this.wakeOutput();
+    this.onEvent({ type: 'pause_unavailable', failure: 'attempt_ended', reason });
   }
 
   /**
