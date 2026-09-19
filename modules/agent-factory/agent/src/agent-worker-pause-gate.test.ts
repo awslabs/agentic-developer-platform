@@ -341,9 +341,9 @@ describe('pause gate: background work blocks confirmation', () => {
     expect(events).toEqual([]);
   });
 
-  it('blames the blocker that actually held the pause when the budget expires', async () => {
+  it.each([null, 3])('names the background blocker %p when the budget expires', async (background) => {
     const { gate, scheduler, setBackground, events } = harness();
-    setBackground(null);
+    setBackground(background);
     await gate.requestPause();
 
     scheduler.fireAll();
@@ -355,7 +355,9 @@ describe('pause gate: background work blocks confirmation', () => {
     // again.
     const unavailable = events.find((e) => e.type === 'pause_unavailable');
     expect(unavailable).toMatchObject({ failure: 'background_work' });
-    expect((unavailable as { reason: string }).reason).toContain('background');
+    expect((unavailable as { reason: string }).reason).toContain(
+      background === null ? 'unobservable' : '3 background task(s) still running',
+    );
   });
 });
 

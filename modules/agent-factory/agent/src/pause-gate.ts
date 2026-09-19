@@ -584,12 +584,15 @@ export class PauseGate {
       // anything. "Waiting for admitted work" invites a retry; "cannot observe
       // background work" tells them a retry will do exactly the same thing.
       const stillAdmitted = this.inFlight.size > 0;
+      const background = stillAdmitted ? null : this.backgroundWorkProbe();
       this.onEvent({
         type: 'pause_unavailable',
         failure: stillAdmitted ? 'settle_timeout' : 'background_work',
         reason: stillAdmitted
           ? `the pause budget expired with ${this.inFlight.size} admitted tool(s) still short of a safe boundary`
-          : 'the pause budget expired while background work behind completed tools stayed unobservable',
+          : background === null
+            ? 'the pause budget expired while background work behind completed tools stayed unobservable'
+            : `the pause budget expired with ${background} background task(s) still running`,
       });
     }
     this.phase = 'running';

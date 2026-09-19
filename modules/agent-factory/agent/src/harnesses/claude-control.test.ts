@@ -946,6 +946,53 @@ describe('pause hook translation', () => {
     expect(gate.currentPhase()).toBe('paused');
   });
 
+  it('never confirms pause when Stop omits a background report after an admitted Bash', async () => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({ scheduler: manualScheduler(), backgroundWorkProbe: () => observer.count() });
+    const hooks = createClaudePauseHooks(gate, observer);
+    await hooks.preToolUse(preToolUse('Bash', { run_in_background: true }, 'background'));
+    await hooks.postToolUse(postToolUse('background'));
+    await hooks.onStop(stop());
+    expect(observer.count()).toBeNull();
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+    expect(gate.currentPhase()).toBe('pause_requested');
+  });
+
+  it.each([
+    [undefined, 'child'], ['child', undefined], ['child-a', 'child-b'],
+  ])('does not let scope %p be cleared by scope %p', async (owner, other) => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({ scheduler: manualScheduler(), backgroundWorkProbe: () => observer.count() });
+    const hooks = createClaudePauseHooks(gate, observer);
+    await hooks.preToolUse(owner === undefined
+      ? preToolUse('Task', {}, 'background')
+      : subagentPreToolUse('Task', {}, 'background', owner));
+    await hooks.postToolUse(postToolUse('background'));
+    await hooks.onStop(other === undefined ? stop([]) : subagentStop(other, []));
+    expect(observer.count()).toBeNull();
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+    await hooks.onStop(owner === undefined ? stop([]) : subagentStop(owner, []));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(observer.count()).toBe(0);
+    expect(gate.currentPhase()).toBe('paused');
+  });
+
+  it('does not record background work for a parked tool that is denied', async () => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({ scheduler: manualScheduler(), backgroundWorkProbe: () => observer.count() });
+    const hooks = createClaudePauseHooks(gate, observer);
+    await gate.requestPause();
+    const parked = hooks.preToolUse(preToolUse('Task', {}, 'denied'));
+    try {
+      await Promise.resolve();
+      expect(observer.count()).toBe(0);
+    } finally {
+      gate.cancel('fixture abort');
+      await parked;
+    }
+    expect(observer.count()).toBe(0);
+  });
+
   it('reports the CLI hook timeout as a breached barrier rather than a declined tool', async () => {
     const gate = new PauseGate({ scheduler: manualScheduler() });
     const hooks = createClaudePauseHooks(gate);
@@ -988,6 +1035,7 @@ describe('background work observation', () => {
   it.each([
     ['a backgrounded shell', 'Bash', { command: 'npm test', run_in_background: true }],
     ['a delegating tool whose subagent outlives the call', 'Task', { prompt: 'go' }],
+    ['the current SDK Agent delegation tool', 'Agent', { prompt: 'go' }],
   ])('cannot vouch for %s until a report arrives', (_label, toolName, toolInput) => {
     const observer = new ClaudeBackgroundWorkObserver();
     observer.noteToolStart(toolName, toolInput);
@@ -1019,15 +1067,14 @@ describe('background work observation', () => {
     expect(observer.count()).toBeNull();
   });
 
-  it('treats a malformed or absent report as no background work', () => {
+  it.each([undefined, null, 42, {}])('treats missing or malformed report %p as unobservable', (report) => {
     const observer = new ClaudeBackgroundWorkObserver();
     observer.noteToolStart('Task', {});
 
-    // The field is read from an `unknown` payload. A non-array is the SDK not
-    // reporting any, which is different from the unobservable case above: a report
-    // did arrive, it simply named nothing.
-    observer.noteBackgroundReport(undefined);
-    expect(observer.count()).toBe(0);
+    // Only a real empty array is an all-clear. Neither absence nor malformed
+    // evidence can establish that the admitted background work has ended.
+    observer.noteBackgroundReport(report);
+    expect(observer.count()).toBeNull();
   });
 
   it.each([

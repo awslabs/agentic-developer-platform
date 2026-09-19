@@ -1,0 +1,166 @@
+{
+  "sdk_version": "0.3.220",
+  "reports": [
+    {
+      "name": "barrier blocks write side effects (AC-P1/P2/P3)",
+      "ok": true,
+      "detail": "a real write call was parked at the barrier for 5000ms with no file created, then completed after resume \u2014 held, not dropped",
+      "artifact": {
+        "adapter_id": "claude",
+        "sdk_version": "0.3.220",
+        "permission_mode": "bypassPermissions",
+        "requested_tool_shape": "write",
+        "observed_tool_shapes": [
+          "write"
+        ],
+        "observed_tool_names": [
+          "Write"
+        ],
+        "requested": {
+          "admission_closed": true
+        },
+        "held_interval": {
+          "duration_ms": 5000,
+          "new_admissions": 0,
+          "fixture_writes": 0,
+          "fixture_service_calls": 0,
+          "task_output_bytes": 0,
+          "observed_by": "fixture"
+        },
+        "confirmed": {
+          "state": "paused",
+          "active_tool_count": 0,
+          "background_work_count": 0
+        },
+        "parked_tools": 1,
+        "held_work_completed_after_resume": true,
+        "total_elapsed_ms": 9081,
+        "denied_tools": []
+      }
+    },
+    {
+      "name": "barrier blocks delegation side effects (AC-P1/P2/P3)",
+      "ok": true,
+      "detail": "a real delegation call was parked at the barrier for 5000ms with no file created, then completed after resume \u2014 held, not dropped",
+      "artifact": {
+        "adapter_id": "claude",
+        "sdk_version": "0.3.220",
+        "permission_mode": "bypassPermissions",
+        "requested_tool_shape": "delegation",
+        "observed_tool_shapes": [
+          "ToolSearch",
+          "delegation",
+          "write"
+        ],
+        "observed_tool_names": [
+          "ToolSearch",
+          "Agent",
+          "Write"
+        ],
+        "requested": {
+          "admission_closed": true
+        },
+        "held_interval": {
+          "duration_ms": 5000,
+          "new_admissions": 0,
+          "fixture_writes": 0,
+          "fixture_service_calls": 0,
+          "task_output_bytes": 0,
+          "observed_by": "fixture"
+        },
+        "confirmed": {
+          "state": "paused",
+          "active_tool_count": 0,
+          "background_work_count": 0
+        },
+        "parked_tools": 1,
+        "held_work_completed_after_resume": true,
+        "total_elapsed_ms": 18639,
+        "denied_tools": []
+      }
+    },
+    {
+      "name": "barrier blocks background_bash side effects (AC-P1/P2/P3)",
+      "ok": true,
+      "detail": "a real background_bash call was parked at the barrier for 5000ms with no file created, then completed after resume \u2014 held, not dropped",
+      "artifact": {
+        "adapter_id": "claude",
+        "sdk_version": "0.3.220",
+        "permission_mode": "bypassPermissions",
+        "requested_tool_shape": "background_bash",
+        "observed_tool_shapes": [
+          "background_bash"
+        ],
+        "observed_tool_names": [
+          "Bash"
+        ],
+        "requested": {
+          "admission_closed": true
+        },
+        "held_interval": {
+          "duration_ms": 5000,
+          "new_admissions": 0,
+          "fixture_writes": 0,
+          "fixture_service_calls": 0,
+          "task_output_bytes": 0,
+          "observed_by": "fixture"
+        },
+        "confirmed": {
+          "state": "paused",
+          "active_tool_count": 0,
+          "background_work_count": 0
+        },
+        "parked_tools": 1,
+        "held_work_completed_after_resume": true,
+        "total_elapsed_ms": 8770,
+        "denied_tools": []
+      }
+    },
+    {
+      "name": "resume continues the same execution (AC-P2)",
+      "ok": true,
+      "detail": "one session (76ef658e-2de2-4d7a-9b5b-801349437206) spanned the pause; both steps completed",
+      "artifact": {
+        "released_count": 1,
+        "session_id_before": "76ef658e-2de2-4d7a-9b5b-801349437206",
+        "session_id_after": "76ef658e-2de2-4d7a-9b5b-801349437206",
+        "attempt_id_before": null,
+        "attempt_id_after": null,
+        "interrupt_called": false,
+        "initial_prompt_replayed": false,
+        "prior_history_preserved": true,
+        "task_completed": true,
+        "held_tools_admitted_after_resume": null,
+        "session_count": 1,
+        "init_count": 1,
+        "races": null
+      }
+    },
+    {
+      "name": "a PreToolUse hook may hold a tool for seconds (AC-P1/AC-P6)",
+      "ok": true,
+      "detail": "the hook held a real tool call for 6002ms without being abandoned; the declared bound is honoured, so a pause can outlive a tool",
+      "artifact": {
+        "exercised": true,
+        "held_ms": 6002,
+        "signal_aborted": false,
+        "hook_reached": true,
+        "hook_timeout_seconds": 1860,
+        "pause_budget_seconds": 1800
+      }
+    }
+  ],
+  "execution_context": {
+    "date": "2026-09-19",
+    "account_id": "879318057152",
+    "aws_profile": "embark1",
+    "region": "us-east-1",
+    "model": "us.anthropic.claude-opus-4-6-v1",
+    "scope": "Standalone real-SDK fixture; not deployed gateway control or wave-2 acceptance. All fixture directories removed by synchronous finally cleanup."
+  },
+  "source_files_sha256": {
+    "modules/agent-factory/agent/src/harnesses/claude-control.ts": "64d6c37fb6faa8b1be3aead632b79a8bfdc1857fa973c03af0c3e3eb26d4cba4",
+    "modules/agent-factory/agent/src/pause-gate.ts": "ecc3e92418a2e11b0bf3e2203ec1d790f190eb6372ead0b12302bd1a7bc2740b",
+    "modules/agent-factory/agent/src/control-runtime.integration.ts": "b931e9e1d594d7d99b1cde8a507073837a3e9c77c1bd0f471d3d104fa57e05a0"
+  }
+}

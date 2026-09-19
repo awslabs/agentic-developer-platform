@@ -211,7 +211,7 @@ export interface ClaudeSessionHandle {
  * a delegating tool whose child keeps working after the parent returns.
  */
 function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
-  if (toolName === 'Task') return true;
+  if (toolName === 'Task' || toolName === 'Agent') return true;
   if (toolInput === null || typeof toolInput !== 'object') return false;
   const input = toolInput as { run_in_background?: unknown };
   return input.run_in_background === true;
@@ -224,9 +224,9 @@ function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
  * question is when this observer is *entitled* to say zero. Three states, and the
  * ordering between them is the entire content of this class:
  *
- * - Nothing in this session ever asked for background work → `0`. Not an
- *   assumption: a tool that never requested backgrounding has nothing behind it,
- *   and `PreToolUse` sees every tool call before it runs.
+ * - No harness-declared background work has been admitted → `0`. This observer
+ *   cannot detect shell-level detachment (`nohup`, `setsid`, daemonizing children)
+ *   that does not set `run_in_background` or use a delegating `Task`/`Agent`.
  * - Something did, and a `Stop`/`SubagentStop` has reported `background_tasks`
  *   *since* then → that reported count.
  * - Something did, and no report has arrived since → `null`.
@@ -235,34 +235,36 @@ function requestsBackgroundWork(toolName: string, toolInput: unknown): boolean {
  * returns to the model immediately while its process keeps writing; a `Task`
  * returns a summary while its subagent may still hold a file handle. Reporting `0`
  * there would tell an operator that nothing is touching their repository at the
- * exact moment something is. Sequence numbers rather than booleans because the
- * interesting case is a *second* spawn after an all-clear: the old report must not
- * keep vouching for work started after it was written.
+ * exact moment something is. Each scope owns its report; a sibling's all-clear
+ * cannot vouch for another scope. A new spawn invalidates that scope's prior
+ * report, and any unobservable scope makes the aggregate unobservable.
  */
 export class ClaudeBackgroundWorkObserver {
-  private seq = 0;
-  private lastSpawnSeq = 0;
-  private lastReportSeq = 0;
-  private lastReportedCount = 0;
+  private readonly counts = new Map<string | null, number | null>();
 
   /** Note a tool call that may leave work running behind it. */
-  noteToolStart(toolName: string, toolInput: unknown): void {
-    this.seq += 1;
-    if (requestsBackgroundWork(toolName, toolInput)) this.lastSpawnSeq = this.seq;
+  noteToolStart(toolName: string, toolInput: unknown, scope: string | null = null): void {
+    if (requestsBackgroundWork(toolName, toolInput)) this.counts.set(scope, null);
   }
 
   /** Record a `Stop`/`SubagentStop` report of in-flight background work. */
-  noteBackgroundReport(tasks: unknown): void {
-    this.seq += 1;
-    this.lastReportSeq = this.seq;
-    this.lastReportedCount = Array.isArray(tasks) ? tasks.length : 0;
+  noteBackgroundReport(tasks: unknown, scope: string | null = null): void {
+    if (Array.isArray(tasks)) {
+      this.counts.set(scope, tasks.length);
+    } else if (this.counts.has(scope)) {
+      // Missing and malformed reports supply no all-clear for observed work.
+      this.counts.set(scope, null);
+    }
   }
 
   /** The gate's `backgroundWorkProbe`: a count, or `null` for "cannot tell". */
   count(): number | null {
-    if (this.lastSpawnSeq === 0) return 0;
-    if (this.lastReportSeq > this.lastSpawnSeq) return this.lastReportedCount;
-    return null;
+    let total = 0;
+    for (const count of this.counts.values()) {
+      if (count === null) return null;
+      total += count;
+    }
+    return total;
   }
 }
 
@@ -350,7 +352,6 @@ export function createClaudePauseHooks(
     async preToolUse(input, toolUseId, options) {
       const fields = toolFields(input);
       const toolName = fields.tool_name ?? 'tool';
-      observer.noteToolStart(toolName, fields.tool_input);
 
       // `options.signal` is the CLI subprocess's abandonment signal for this
       // callback. It is the only way a hook timeout reaches JS — the timeout is
@@ -360,6 +361,7 @@ export function createClaudePauseHooks(
       const result = await gate.admit(toolName, options?.signal);
       const id = fields.tool_use_id ?? toolUseId;
       if (result.decision === 'admit') {
+        observer.noteToolStart(toolName, fields.tool_input, scopeOf(input));
         if (id && result.ticket) outstanding.set(id, { ticket: result.ticket, scope: scopeOf(input) });
         // `{}` rather than an explicit allow: an allow decision would override a
         // deny from another PreToolUse hook or a permission rule, turning a pause
@@ -390,7 +392,7 @@ export function createClaudePauseHooks(
 
     async onStop(input) {
       const stop = input as unknown as { background_tasks?: unknown };
-      observer.noteBackgroundReport(stop.background_tasks);
+      observer.noteBackgroundReport(stop.background_tasks, scopeOf(input));
       // A background report is a quiescence edge in its own right: a pause held back
       // *because* this probe was unobservable can become confirmable the moment a
       // report clears it, with no tool completion and no new command involved. The
