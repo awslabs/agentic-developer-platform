@@ -49,6 +49,9 @@ def _subprocess_side_effect_fresh_branch(*args, **kwargs):
 @pytest.fixture(autouse=True)
 def ready_gateway_proxy(monkeypatch):
     """Main-sequence tests have a healthy proxy unless explicitly overridden."""
+    # Hosted reviewers inherit the worker's real queue. Tests must opt into a
+    # fake queue explicitly, never consume another live assignment from it.
+    monkeypatch.delenv("QUEUE_URL", raising=False)
     monkeypatch.setattr("entrypoint._start_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint._stop_sigv4_proxy", MagicMock())
     monkeypatch.setattr("entrypoint.BootstrapLogger", MagicMock())
@@ -394,12 +397,15 @@ class TestEntrypointMain:
         # Agent was executed
         assert any(call.args[0][0] == "node" for call in mock_subprocess_run.call_args_list)
 
-    def test_missing_sqs_message(self, monkeypatch):
-        """Should return 1 when SQS_MESSAGE_BODY is not set."""
+    def test_missing_queue_configuration_does_not_receive_work(self, monkeypatch):
+        """The fixture removes even an inherited live worker queue."""
         from entrypoint import main
 
+        receiver = MagicMock(side_effect=AssertionError("test tried to receive live work"))
+        monkeypatch.setattr("entrypoint._receive_one_message", receiver)
         monkeypatch.delenv("SQS_MESSAGE_BODY", raising=False)
         assert main() == 1
+        receiver.assert_not_called()
 
     @patch("entrypoint.run_cmd")
     @patch("entrypoint.mint_installation_token")

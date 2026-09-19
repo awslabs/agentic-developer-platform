@@ -46,6 +46,7 @@ class EngineRunStore:
         register, so neither builder gets to omit them independently.
         """
         source = envelope["source_ref"]
+        graph = envelope["orchestration"]
         correlation = envelope["correlation"]
         return {
             "event_id": envelope["message_id"],
@@ -62,6 +63,9 @@ class EngineRunStore:
             "expires_at": int(time.time()) + 30 * 86400,
             "repo": source["repo"],
             "issue_number": source["issue"],
+            # Same bound as webhook activity. Older envelopes still identify
+            # their issue instead of creating another untitled invocation.
+            "topic": ((graph.get("title") or "").strip() or f"{source['repo']}#{source['issue']}")[:120],
             "installation_id": str(source["installation_id"]),
             "persona": envelope["persona"],
             "correlation_id": correlation["correlation_id"],

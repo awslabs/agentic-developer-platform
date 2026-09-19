@@ -679,6 +679,9 @@ def _build_envelope(
         # node is this, and who approved it?" without a database query.
         "orchestration": {
             "node_id": node.id,
+            # Snapshot the accepted node's display title before publication.
+            # Engine runs bypass the webhook writer that normally sets topic.
+            "title": node.title,
             "flow_id": genesis.flow_id,
             "graph_address": graph_address,
             "root_decision_id": genesis.decision_id,
