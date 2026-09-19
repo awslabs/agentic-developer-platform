@@ -1,0 +1,48 @@
+"""Wire shapes for the platform-admin runtime-posture surface (PMM-07)."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+
+class SetRuntimePostureRequest(BaseModel):
+    """One audited posture change.
+
+    ``posture`` is typed as a plain string rather than a ``Literal`` so an
+    unknown value reaches the service's closed-vocabulary check and is refused
+    with the same stable reason code and the same refusal audit record as every
+    other rejection, instead of being turned away by schema validation with no
+    audit trail.
+
+    ``expected_revision`` is mandatory: a caller that has not read the current
+    revision cannot safely change the platform's enforcement state.
+    """
+
+    posture: str = Field(description="Target posture: disabled, report_only or enforcing.")
+    expected_revision: int = Field(
+        description="The posture_revision the caller believes is current. A stale value is refused.",
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Operator note recorded on the audit entry, e.g. 'operational rollback'.",
+    )
+
+
+class RuntimePostureResponse(BaseModel):
+    """The stored posture plus what a caller needs to change it safely."""
+
+    compatibility_class: str
+    posture: str
+    posture_revision: int
+    updated_by: str | None = None
+    updated_at: datetime | None = None
+    supported_postures: list[str]
+    propagation_bound_seconds: int = Field(
+        description=(
+            "Measured upper bound, in seconds, after which every gateway instance "
+            "observes this value. Operational rollback waits this long, then verifies."
+        ),
+    )
