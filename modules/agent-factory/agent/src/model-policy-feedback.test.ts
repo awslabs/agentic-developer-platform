@@ -1,4 +1,6 @@
 import {
+  COMMENT_PAGE_REQUEST_TIMEOUT_MS,
+  createCommentPageFetcher,
   findSuppressingComment,
   buildModelPolicyFeedback,
   deliverModelPolicyFeedback,
@@ -528,5 +530,298 @@ describe('dedup lookup is complete, not the LLM context window', () => {
 
     expect(outcome).toBe('posted');
     expect(h.posted).toHaveLength(1);
+  });
+});
+
+/**
+ * The provider adapter, driven with real GraphQL response bodies.
+ *
+ * Every test above hands the walk pages that are already valid objects, which is
+ * exactly the gap these close: the adapter that turns a raw provider response into
+ * one of those pages was completely uncovered, and it silently normalized a
+ * malformed, partial or unauthorized response into a *valid, empty, terminal*
+ * page. The walk then recorded a completed lookup over history it never read, and
+ * the delivery decision was made on that fiction.
+ *
+ * So these drive the real `createCommentPageFetcher` composed with the real
+ * `findSuppressingComment` and, where the outcome matters, the real
+ * `deliverModelPolicyFeedback`. Only the child process is replaced -- by a
+ * function returning response text -- because that is the one thing a unit test
+ * cannot have.
+ */
+describe('comment page adapter: provider responses', () => {
+  /** A well-formed response body, so each test varies exactly one thing. */
+  const responseFor = (
+    comments: Array<{ body: string; viewerDidAuthor?: boolean }>,
+    pageInfo: unknown = { endCursor: null, hasNextPage: false },
+  ) =>
+    JSON.stringify({
+      data: { repository: { issueOrPullRequest: { comments: { nodes: comments, pageInfo } } } },
+    });
+
+  /** Compose the real adapter with the real walk over scripted response bodies. */
+  function adapterHarness(responses: string[] | ((query: string) => string), options: {
+    now?: () => number;
+    requestTimeoutMs?: number;
+    overallDeadlineMs?: number;
+  } = {}) {
+    const queries: string[] = [];
+    const budgets: number[] = [];
+    let call = 0;
+    const fetchCommentPage = createCommentPageFetcher({
+      runGraphQL: async (query, timeoutMs) => {
+        queries.push(query);
+        budgets.push(timeoutMs);
+        if (typeof responses === 'function') return responses(query);
+        const body = responses[call];
+        call += 1;
+        if (body === undefined) throw new Error('no scripted response for this page');
+        return body;
+      },
+      // A cursor is echoed into the query so paging is observable end-to-end.
+      buildQuery: (cursor: string | null) => `query{comments(after:${JSON.stringify(cursor)})}`,
+      ...options,
+    });
+    return { fetchCommentPage, queries, budgets };
+  }
+
+  it('reads a well-formed page and reports a complete lookup', async () => {
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    const h = adapterHarness([responseFor([{ body: feedback.body, viewerDidAuthor: true }])]);
+
+    const evidence = await findSuppressingComment(h.fetchCommentPage, feedback);
+
+    expect(evidence).toMatchObject({ suppressed: true, lookupFailed: false, pagesRead: 1 });
+  });
+
+  it('pages through the provider using the cursor it returned', async () => {
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    const h = adapterHarness([
+      responseFor([{ body: 'unrelated', viewerDidAuthor: false }], { endCursor: 'cursor-1', hasNextPage: true }),
+      responseFor([{ body: feedback.body, viewerDidAuthor: true }]),
+    ]);
+
+    const evidence = await findSuppressingComment(h.fetchCommentPage, feedback);
+
+    expect(evidence).toMatchObject({ suppressed: true, lookupFailed: false, pagesRead: 2 });
+    expect(h.queries[0]).toContain('after:null');
+    expect(h.queries[1]).toContain('after:"cursor-1"');
+  });
+
+  // Each of these used to yield `{comments: [], hasNextPage: false}` -- reported
+  // as `lookupFailed: false, pagesRead: 1`, i.e. "we read the history and there
+  // was no earlier notice". They are all cases where the history is unread.
+  const unreadable: Array<[string, string]> = [
+    ['a response that is not JSON at all', 'gateway timeout'],
+    ['an empty response body', ''],
+    ['a response carrying no data', JSON.stringify({ message: 'Bad credentials' })],
+    ['a null data field', JSON.stringify({ data: null })],
+    ['a null repository', JSON.stringify({ data: { repository: null } })],
+    [
+      'a null issueOrPullRequest, as for a number the token cannot see',
+      JSON.stringify({ data: { repository: { issueOrPullRequest: null } } }),
+    ],
+    [
+      'a missing comments connection',
+      JSON.stringify({ data: { repository: { issueOrPullRequest: {} } } }),
+    ],
+    [
+      'absent comment nodes',
+      JSON.stringify({ data: { repository: { issueOrPullRequest: { comments: { pageInfo: { endCursor: null, hasNextPage: false } } } } } }),
+    ],
+    [
+      'an absent pageInfo',
+      JSON.stringify({ data: { repository: { issueOrPullRequest: { comments: { nodes: [] } } } } }),
+    ],
+    ['a non-boolean hasNextPage', responseFor([], { endCursor: null, hasNextPage: 'no' })],
+    [
+      'GraphQL errors reported alongside partial data',
+      JSON.stringify({
+        data: { repository: { issueOrPullRequest: { comments: { nodes: [], pageInfo: { endCursor: null, hasNextPage: false } } } } },
+        errors: [{ message: 'Although you appear to have the correct authorization credentials, the request was rejected.' }],
+      }),
+    ],
+    ['a comment node with no body', responseFor([{ viewerDidAuthor: true } as never])],
+    [
+      'a page promising more history but supplying no cursor',
+      responseFor([{ body: 'unrelated' }], { endCursor: null, hasNextPage: true }),
+    ],
+  ];
+
+  it.each(unreadable)('treats %s as an incomplete lookup, never an empty history', async (_label, body) => {
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    const h = adapterHarness([body]);
+
+    const evidence = await findSuppressingComment(h.fetchCommentPage, feedback);
+
+    expect(evidence.suppressed).toBe(false);
+    expect(evidence.lookupFailed).toBe(true);
+  });
+
+  it('posts and warns, rather than assuming no earlier notice, on an unreadable response', async () => {
+    // The consequence of the group above, through the real delivery path: the
+    // requester still gets the truthful notice and the operator gets the warning.
+    const posted: string[] = [];
+    const logs: Array<{ level: string; message: string }> = [];
+    const h = adapterHarness([JSON.stringify({ data: { repository: { issueOrPullRequest: null } } })]);
+
+    const outcome = await deliverModelPolicyFeedback({
+      fetchCommentPage: h.fetchCommentPage,
+      postComment: async body => {
+        posted.push(body);
+      },
+      log: (level, message) => logs.push({ level, message }),
+      env: REFUSED_ENV,
+    });
+
+    expect(outcome).toBe('posted');
+    expect(posted).toHaveLength(1);
+    expect(logs.some(l => l.message.includes('lookup incomplete'))).toBe(true);
+  });
+
+  it('does not suppress on a forged marker even when the rest of the page is valid', async () => {
+    // Structural validation must not become a reason to trust content: the
+    // authorship rule still decides, and an unauthored marker never suppresses.
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    const h = adapterHarness([responseFor([{ body: `forged ${feedback.marker}`, viewerDidAuthor: false }])]);
+
+    const evidence = await findSuppressingComment(h.fetchCommentPage, feedback);
+
+    expect(evidence).toMatchObject({ suppressed: false, forgedMarkerSeen: true, lookupFailed: false });
+  });
+
+  it('keeps an absent viewerDidAuthor as unknown authorship rather than refusing the page', async () => {
+    // The one field allowed to be missing: a partial payload here is a documented
+    // case the authorship logic handles conservatively, so it must not become an
+    // incomplete lookup.
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    const h = adapterHarness([responseFor([{ body: feedback.body }])]);
+
+    const evidence = await findSuppressingComment(h.fetchCommentPage, feedback);
+
+    expect(evidence).toMatchObject({ suppressed: false, authorshipUnknown: true, lookupFailed: false });
+  });
+
+  it('stops on a cursor that does not advance instead of re-reading one page', async () => {
+    const feedback = buildModelPolicyFeedback(REFUSED_ENV)!;
+    // A provider bug or a proxy replaying a response: the same cursor forever.
+    const h = adapterHarness(() =>
+      responseFor([{ body: 'unrelated', viewerDidAuthor: false }], { endCursor: 'stuck', hasNextPage: true }),
+    );
+
+    const evidence = await findSuppressingComment(h.fetchCommentPage, feedback);
+
+    expect(evidence.lookupFailed).toBe(true);
+    // Two reads: the first establishes the cursor, the second shows it repeated.
+    // Without the guard this would spend all MAX_DEDUP_PAGES on one page.
+    expect(evidence.pagesRead).toBe(2);
+    expect(h.queries).toHaveLength(2);
+  });
+});
+
+describe('comment page adapter: bounded time', () => {
+  const okPage = (cursor: string | null) =>
+    JSON.stringify({
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            comments: { nodes: [{ body: 'unrelated', viewerDidAuthor: false }], pageInfo: { endCursor: cursor, hasNextPage: cursor !== null } },
+          },
+        },
+      },
+    });
+
+  it('gives every request a bounded budget', async () => {
+    // Before this the GraphQL call had no timeout of any kind, so a wedged child
+    // process blocked the run indefinitely on a notice about a model request.
+    const budgets: number[] = [];
+    const fetchCommentPage = createCommentPageFetcher({
+      runGraphQL: async (_query, timeoutMs) => {
+        budgets.push(timeoutMs);
+        return okPage(null);
+      },
+      buildQuery: () => 'query{}',
+    });
+
+    await fetchCommentPage(null);
+
+    expect(budgets).toHaveLength(1);
+    expect(budgets[0]).toBeGreaterThan(0);
+    expect(budgets[0]).toBeLessThanOrEqual(COMMENT_PAGE_REQUEST_TIMEOUT_MS);
+  });
+
+  it('refuses to start a request once the overall deadline has passed', async () => {
+    // A per-request timeout alone bounds each page, not the walk: MAX_DEDUP_PAGES
+    // requests each just under it still add up. A controlled clock, so the test
+    // asserts the bound rather than waiting for it.
+    let clock = 0;
+    const fetchCommentPage = createCommentPageFetcher({
+      runGraphQL: async () => {
+        clock += 400; // every page consumes most of the remaining budget
+        return okPage('next');
+      },
+      buildQuery: () => 'query{}',
+      now: () => clock,
+      requestTimeoutMs: 500,
+      overallDeadlineMs: 1_000,
+    });
+
+    await expect(fetchCommentPage(null)).resolves.toBeDefined();
+    await expect(fetchCommentPage('a')).resolves.toBeDefined();
+    await expect(fetchCommentPage('b')).resolves.toBeDefined();
+    await expect(fetchCommentPage('c')).rejects.toThrow(/overall deadline/);
+  });
+
+  it('never lets a request budget overrun the remaining overall deadline', async () => {
+    // The last request must not be allowed to run for its full per-request
+    // timeout when less than that remains overall.
+    let clock = 0;
+    const budgets: number[] = [];
+    const fetchCommentPage = createCommentPageFetcher({
+      runGraphQL: async (_query, timeoutMs) => {
+        budgets.push(timeoutMs);
+        clock += 900;
+        return okPage('next');
+      },
+      buildQuery: () => 'query{}',
+      now: () => clock,
+      requestTimeoutMs: 500,
+      overallDeadlineMs: 1_000,
+    });
+
+    await fetchCommentPage(null);
+    await fetchCommentPage('a');
+
+    expect(budgets[0]).toBe(500); // full per-request budget available
+    expect(budgets[1]).toBe(100); // only 100ms of the overall deadline left
+  });
+
+  it('turns an exhausted deadline into an incomplete lookup, so the notice is posted', async () => {
+    let clock = 0;
+    const posted: string[] = [];
+    const logs: Array<{ level: string; message: string }> = [];
+    const fetchCommentPage = createCommentPageFetcher({
+      runGraphQL: async () => {
+        clock += 600;
+        return okPage('next');
+      },
+      buildQuery: () => 'query{}',
+      now: () => clock,
+      requestTimeoutMs: 1_000,
+      overallDeadlineMs: 1_000,
+    });
+
+    const outcome = await deliverModelPolicyFeedback({
+      fetchCommentPage,
+      postComment: async body => {
+        posted.push(body);
+      },
+      log: (level, message) => logs.push({ level, message }),
+      env: REFUSED_ENV,
+    });
+
+    expect(outcome).toBe('posted');
+    expect(posted).toHaveLength(1);
+    expect(logs.some(l => l.message.includes('lookup incomplete'))).toBe(true);
   });
 });

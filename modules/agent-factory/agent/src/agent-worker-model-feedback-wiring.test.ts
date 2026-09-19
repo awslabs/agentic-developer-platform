@@ -19,7 +19,9 @@ const source = fs.readFileSync(path.join(__dirname, 'agent-worker.ts'), 'utf-8')
 describe('agent-worker model-policy feedback wiring', () => {
   it('delegates the posting decision to the audited orchestration', () => {
     expect(source).toContain('deliverModelPolicyFeedback({');
-    expect(source).toContain("import { deliverModelPolicyFeedback } from './model-policy-feedback'");
+    // Matched without assuming the import's formatting: it is a multi-line named
+    // import now that the bounded adapter factory is imported alongside.
+    expect(source).toMatch(/import \{[\s\S]*?deliverModelPolicyFeedback,?[\s\S]*?\} from '\.\/model-policy-feedback'/);
   });
 
   it('does not re-implement a marker-only dedup at the call site', () => {
@@ -40,11 +42,38 @@ describe('agent-worker model-policy feedback wiring', () => {
     // The defect this pins: feeding getIssueComments(20) into dedup means a
     // genuine earlier notice followed by 21 unrelated comments scrolls out of
     // the window and the requester is warned again on every retry.
-    expect(source).toContain('fetchCommentPage: fetchIssueCommentPage');
+    expect(source).toContain('fetchCommentPage: issueCommentPageFetcher()');
     expect(source).not.toMatch(/deliverModelPolicyFeedback\(\{\s*\n\s*comments:/);
     // The dedicated lookup must request authorship itself and page the history.
     expect(source).toMatch(/query \{ repository\(/);
     expect(source).toContain('body viewerDidAuthor');
     expect(source).toContain('pageInfo { endCursor hasNextPage }');
+  });
+
+  it('routes the lookup through the bounded, validating adapter', () => {
+    // The response parsing and the two timeouts must stay in
+    // model-policy-feedback.ts, where they are covered without a child process.
+    // A worker that went back to parsing the payload itself would reintroduce the
+    // silent "malformed response becomes an empty terminal page" normalization.
+    expect(source).toContain('createCommentPageFetcher({');
+    expect(source).toContain('runGraphQL: runIssueCommentGraphQL');
+    expect(source).toContain('buildQuery: buildIssueCommentPageQuery');
+  });
+
+  it('runs the GraphQL query as an argument vector with a timeout', () => {
+    // Two defects pinned together. `JSON.stringify` is JSON encoding, not shell
+    // escaping, so building a shell string left `$`, backticks and `;` live; and
+    // the call had no timeout at all, so a wedged `gh` blocked the run forever.
+    const adapter = source.slice(
+      source.indexOf('async function runIssueCommentGraphQL'),
+      source.indexOf('function issueCommentPageFetcher'),
+    );
+    expect(adapter).toContain('execFile');
+    expect(adapter).toMatch(/\['api', 'graphql', '-f', `query=\$\{query\}`\]/);
+    expect(adapter).toContain('timeout: timeoutMs');
+    // Neither the shell-string form nor the untimed helpers may come back.
+    expect(adapter).not.toContain('execSync');
+    expect(adapter).not.toMatch(/\bgh\(`api graphql/);
+    expect(source).not.toContain('api graphql -f query=${JSON.stringify(query)}');
   });
 });

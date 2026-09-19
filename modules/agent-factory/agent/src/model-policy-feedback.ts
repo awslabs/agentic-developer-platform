@@ -270,6 +270,169 @@ export interface FeedbackCommentPage {
 /** Fetch one page of issue comments, `cursor === null` meaning "the first page". */
 export type FeedbackCommentPageFetcher = (cursor: string | null) => Promise<FeedbackCommentPage>;
 
+/**
+ * A page could not be established. Thrown, never returned as an empty page.
+ *
+ * The distinction is the whole point. ``findSuppressingComment`` treats a thrown
+ * error as an incomplete lookup and posts; it treats a returned page as fact. So
+ * anything that means "we do not know what is in this page" must throw, or the
+ * caller will conclude there was no earlier notice and warn the requester again --
+ * or, worse, stay silent believing it already warned them.
+ */
+export class CommentPageUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`comment page unavailable: ${reason}`);
+    this.name = 'CommentPageUnavailableError';
+  }
+}
+
+/**
+ * Turn one raw GraphQL response body into a page, or refuse it.
+ *
+ * Every branch here was previously a silent ``?? {}`` / ``?? null`` that
+ * normalized a malformed or partial response into a *valid, empty, terminal*
+ * page -- `comments: [], hasNextPage: false`. That is the most dangerous possible
+ * answer: indistinguishable from "this issue genuinely has no comments", so the
+ * caller recorded a completed lookup (``lookupFailed: false, pagesRead: 1``) over
+ * evidence it never actually read. A missing ``data``, a null
+ * ``issueOrPullRequest`` (deleted issue, wrong number, or a permission the token
+ * lacks) and a GraphQL ``errors`` array all took that path.
+ *
+ * So the shape is validated positively rather than coerced: each level must be
+ * present and of the right type, ``nodes`` must be an array, and ``pageInfo`` must
+ * carry a real boolean. A node's ``body`` must be a string -- coercing a missing
+ * body to ``''`` would make a genuine earlier notice unmatchable and silently
+ * defeat dedup.
+ *
+ * ``viewerDidAuthor`` is the one field allowed to be absent, because that is a
+ * documented partial-payload case the authorship logic already handles
+ * conservatively (unknown authorship never suppresses).
+ */
+export function parseCommentPageResponse(raw: string): FeedbackCommentPage {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new CommentPageUnavailableError('response was not valid JSON');
+  }
+  if (typeof payload !== 'object' || payload === null) {
+    throw new CommentPageUnavailableError('response was not an object');
+  }
+  const envelope = payload as { data?: unknown; errors?: unknown };
+
+  // GraphQL reports partial success as a 200 carrying `errors` alongside whatever
+  // `data` it managed to resolve. Reading the data and ignoring the errors is how
+  // a partial page becomes an apparently complete one.
+  if (Array.isArray(envelope.errors) && envelope.errors.length > 0) {
+    const first = envelope.errors[0] as { message?: unknown };
+    const detail = typeof first?.message === 'string' ? first.message : 'unspecified';
+    throw new CommentPageUnavailableError(`provider returned errors: ${detail}`);
+  }
+
+  const data = envelope.data;
+  if (typeof data !== 'object' || data === null) {
+    throw new CommentPageUnavailableError('response carried no data');
+  }
+  const repository = (data as { repository?: unknown }).repository;
+  if (typeof repository !== 'object' || repository === null) {
+    throw new CommentPageUnavailableError('response carried no repository');
+  }
+  const target = (repository as { issueOrPullRequest?: unknown }).issueOrPullRequest;
+  if (typeof target !== 'object' || target === null) {
+    // Null here is a real condition, not an empty issue: the number does not
+    // resolve, or the token cannot see it. Either way the history is unread.
+    throw new CommentPageUnavailableError('issue or pull request did not resolve');
+  }
+  const page = (target as { comments?: unknown }).comments;
+  if (typeof page !== 'object' || page === null) {
+    throw new CommentPageUnavailableError('response carried no comments connection');
+  }
+  const { nodes, pageInfo } = page as { nodes?: unknown; pageInfo?: unknown };
+  if (!Array.isArray(nodes)) {
+    throw new CommentPageUnavailableError('comment nodes were absent or not a list');
+  }
+  if (typeof pageInfo !== 'object' || pageInfo === null) {
+    throw new CommentPageUnavailableError('response carried no pageInfo');
+  }
+  const { hasNextPage, endCursor } = pageInfo as { hasNextPage?: unknown; endCursor?: unknown };
+  if (typeof hasNextPage !== 'boolean') {
+    throw new CommentPageUnavailableError('pageInfo.hasNextPage was absent or not a boolean');
+  }
+  if (endCursor !== null && typeof endCursor !== 'string') {
+    throw new CommentPageUnavailableError('pageInfo.endCursor was neither a string nor null');
+  }
+  // A page that claims more history but gives no way to reach it is refused here
+  // rather than being passed on as a terminal page. Caught at the adapter because
+  // it is a provider-contract violation, not a decision the walk should make.
+  if (hasNextPage && !endCursor) {
+    throw new CommentPageUnavailableError('pageInfo promised another page but supplied no cursor');
+  }
+
+  const comments = nodes.map((node, index) => {
+    if (typeof node !== 'object' || node === null) {
+      throw new CommentPageUnavailableError(`comment at index ${index} was not an object`);
+    }
+    const { body, viewerDidAuthor } = node as { body?: unknown; viewerDidAuthor?: unknown };
+    if (typeof body !== 'string') {
+      throw new CommentPageUnavailableError(`comment at index ${index} had no body`);
+    }
+    return {
+      body,
+      viewerDidAuthor: typeof viewerDidAuthor === 'boolean' ? viewerDidAuthor : undefined,
+    };
+  });
+
+  return { comments, endCursor: typeof endCursor === 'string' ? endCursor : null, hasNextPage };
+}
+
+/** Bound on one page request, so a hung child process cannot stall the run. */
+export const COMMENT_PAGE_REQUEST_TIMEOUT_MS = 20_000;
+
+/** Bound on the whole paged walk, so many slow-but-not-hung pages cannot either. */
+export const COMMENT_LOOKUP_DEADLINE_MS = 60_000;
+
+/**
+ * Build the page fetcher the worker hands to ``findSuppressingComment``.
+ *
+ * Two separate bounds, because one does not imply the other. A per-request
+ * timeout alone still allows ``MAX_DEDUP_PAGES`` requests each sitting just under
+ * it, so the walk's worst case is the product; an overall deadline alone lets a
+ * single hung request consume all of it. Both are needed, and both are enforced
+ * here rather than trusted to the child process: before this, the GraphQL call had
+ * no timeout of any kind, so an unresponsive network or a wedged ``gh`` left the
+ * run blocked indefinitely on a *notice about a model request*.
+ *
+ * The deadline is checked before spending a request and passed down as the
+ * remaining budget, so the last request cannot overrun it. Exceeding it throws,
+ * which the walk records as an incomplete lookup -- the run then posts rather than
+ * assuming no earlier notice, which is the correct failure direction.
+ *
+ * ``runGraphQL`` receives the query as a value and a millisecond budget. It
+ * deliberately does not receive a shell string: the caller passes the query as one
+ * argument in an argument vector, so no quoting scheme has to be correct.
+ */
+export function createCommentPageFetcher(deps: {
+  runGraphQL: (query: string, timeoutMs: number) => Promise<string>;
+  buildQuery: (cursor: string | null) => string;
+  now?: () => number;
+  requestTimeoutMs?: number;
+  overallDeadlineMs?: number;
+}): FeedbackCommentPageFetcher {
+  const now = deps.now ?? Date.now;
+  const requestTimeoutMs = deps.requestTimeoutMs ?? COMMENT_PAGE_REQUEST_TIMEOUT_MS;
+  const overallDeadlineMs = deps.overallDeadlineMs ?? COMMENT_LOOKUP_DEADLINE_MS;
+  const startedAt = now();
+
+  return async (cursor: string | null): Promise<FeedbackCommentPage> => {
+    const remaining = overallDeadlineMs - (now() - startedAt);
+    if (remaining <= 0) {
+      throw new CommentPageUnavailableError('comment history lookup exceeded its overall deadline');
+    }
+    const raw = await deps.runGraphQL(deps.buildQuery(cursor), Math.min(requestTimeoutMs, remaining));
+    return parseCommentPageResponse(raw);
+  };
+}
+
 export interface SuppressionEvidence {
   suppressed: boolean;
   forgedMarkerSeen: boolean;
@@ -298,6 +461,11 @@ export const MAX_DEDUP_PAGES = 10;
  * A failed page read sets ``lookupFailed``: the caller must then post rather
  * than report a suppression it never established. Absence of evidence from a
  * broken lookup is not evidence of absence.
+ *
+ * ``lookupFailed`` is set for every way the walk can end without having read the
+ * history to its end: a thrown page read, exhausting ``maxPages`` with history
+ * left, a page that promises more but supplies no cursor, and a cursor that does
+ * not advance. Only ``hasNextPage === false`` is a clean completion.
  */
 export async function findSuppressingComment(
   fetchPage: FeedbackCommentPageFetcher,
@@ -325,8 +493,22 @@ export async function findSuppressingComment(
     if (evidence.suppressed) {
       return { suppressed: true, forgedMarkerSeen, authorshipUnknown, lookupFailed: false, pagesRead };
     }
-    if (!batch.hasNextPage || !batch.endCursor) {
+    if (!batch.hasNextPage) {
+      // The only clean ending: the provider says this is the last page.
       return { suppressed: false, forgedMarkerSeen, authorshipUnknown, lookupFailed: false, pagesRead };
+    }
+    if (!batch.endCursor) {
+      // More history exists but there is no cursor to reach it. This used to fall
+      // into the branch above and be reported as a completed lookup -- a claim that
+      // the unread remainder contains no earlier notice. It is the same situation as
+      // exhausting the page bound below, so it gets the same answer: incomplete.
+      return { suppressed: false, forgedMarkerSeen, authorshipUnknown, lookupFailed: true, pagesRead };
+    }
+    if (batch.endCursor === cursor) {
+      // A cursor that does not advance would otherwise re-read one page until the
+      // bound ran out, reporting a bounded-exhaustion failure and hiding the real
+      // cause. Stop immediately, still as an incomplete lookup.
+      return { suppressed: false, forgedMarkerSeen, authorshipUnknown, lookupFailed: true, pagesRead };
     }
     cursor = batch.endCursor;
   }

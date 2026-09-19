@@ -103,7 +103,11 @@ import {
 // Extracts learnings from agent output and persists to personal-context store.
 import { saveExperienceLearnings } from './experience-save-hook';
 import { buildPersonalContextIdentity, getPersonalContextHeaders } from './complex-task-chat/personal-context-headers';
-import { deliverModelPolicyFeedback } from './model-policy-feedback';
+import {
+  createCommentPageFetcher,
+  deliverModelPolicyFeedback,
+  FeedbackCommentPageFetcher,
+} from './model-policy-feedback';
 
 // AIDLC Gate Enforcer — deterministic enforcement of commit + gate comment protocol
 // (Issue #3231, EPIC #3158 hardening wave). Only invoked when AIDLC_ENABLED.
@@ -526,25 +530,73 @@ interface IssueComment {
  * against the installation token; there is no equivalent in the `gh issue view`
  * projection, and `gh api user` is refused for that token (403).
  */
-async function fetchIssueCommentPage(
-  cursor: string | null,
-): Promise<{ comments: Array<{ body: string; viewerDidAuthor?: boolean }>; endCursor: string | null; hasNextPage: boolean }> {
+export function buildIssueCommentPageQuery(cursor: string | null): string {
   const after = cursor ? `, after: ${JSON.stringify(cursor)}` : '';
-  const query = `query { repository(owner: ${JSON.stringify(REPO_OWNER)}, name: ${JSON.stringify(REPO_NAME)}) { issueOrPullRequest(number: ${Number(ISSUE_NUMBER)}) { ... on Issue { comments(first: 100${after}) { nodes { body viewerDidAuthor } pageInfo { endCursor hasNextPage } } } ... on PullRequest { comments(first: 100${after}) { nodes { body viewerDidAuthor } pageInfo { endCursor hasNextPage } } } } } }`;
-  // Let a failure propagate: the caller treats an incomplete lookup as "unknown"
-  // and posts, rather than silently claiming there was no earlier notice.
-  const raw = await gh(`api graphql -f query=${JSON.stringify(query)}`);
-  const target = JSON.parse(raw || '{}')?.data?.repository?.issueOrPullRequest ?? {};
-  const page = target.comments ?? {};
-  const nodes = Array.isArray(page.nodes) ? page.nodes : [];
-  return {
-    comments: nodes.map((n: { body?: string; viewerDidAuthor?: boolean }) => ({
-      body: n?.body || '',
-      viewerDidAuthor: typeof n?.viewerDidAuthor === 'boolean' ? n.viewerDidAuthor : undefined,
-    })),
-    endCursor: page.pageInfo?.endCursor ?? null,
-    hasNextPage: page.pageInfo?.hasNextPage === true,
-  };
+  return `query { repository(owner: ${JSON.stringify(REPO_OWNER)}, name: ${JSON.stringify(REPO_NAME)}) { issueOrPullRequest(number: ${Number(ISSUE_NUMBER)}) { ... on Issue { comments(first: 100${after}) { nodes { body viewerDidAuthor } pageInfo { endCursor hasNextPage } } } ... on PullRequest { comments(first: 100${after}) { nodes { body viewerDidAuthor } pageInfo { endCursor hasNextPage } } } } } }`;
+}
+
+/**
+ * Run one GraphQL query as an argument vector with a hard timeout.
+ *
+ * Deliberately not `gh()`/`execCommand()`, and the difference is the point.
+ *
+ * - **Argument array, not a shell string.** The previous version interpolated the
+ *   JSON-encoded query into a ``gh api graphql -f query=...`` command string and
+ *   handed that to ``execSync``, which runs it through a shell. JSON encoding is
+ *   not shell quoting: it escapes ``"`` and ``\`` but leaves ``$``, backtick,
+ *   ``;`` and ``&`` untouched, so any of those reaching the query -- today via a
+ *   repository or owner name -- would be interpreted by the shell rather than sent
+ *   to GitHub. ``execFile`` with an argv passes the query as one opaque argument,
+ *   so there is no quoting scheme that has to be correct.
+ *   (The old expression is not reproduced literally here: a wiring test asserts it
+ *   appears nowhere in this file, and a comment quoting it would defeat that.)
+ * - **A timeout.** ``execCommand`` sets none, so a wedged ``gh`` or an
+ *   unresponsive network blocked the run indefinitely -- on a notice about a model
+ *   request. ``killSignal: 'SIGKILL'`` because a process ignoring SIGTERM is
+ *   exactly the case the timeout exists for.
+ *
+ * Failures propagate: the caller treats an incomplete lookup as "unknown" and
+ * posts, rather than claiming there was no earlier notice.
+ */
+async function runIssueCommentGraphQL(query: string, timeoutMs: number): Promise<string> {
+  const { execFile } = await import('child_process');
+  const token = process.env.GH_APP_TOKEN || process.env.GITHUB_TOKEN || GITHUB_TOKEN;
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      'gh',
+      ['api', 'graphql', '-f', `query=${query}`],
+      {
+        cwd: CWD,
+        encoding: 'utf-8',
+        env: { ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token },
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: timeoutMs,
+        killSignal: 'SIGKILL',
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(new Error(`gh api graphql failed: ${(error as Error).message}`));
+          return;
+        }
+        resolve(String(stdout).trim());
+      },
+    );
+  });
+}
+
+/**
+ * The paged, bounded, validated comment-history lookup for feedback dedup.
+ *
+ * All three of those properties live in `model-policy-feedback.ts`
+ * (`createCommentPageFetcher` / `parseCommentPageResponse`) rather than here, so
+ * they are testable without a child process. This function is only the wiring:
+ * how to build the query and how to run it.
+ */
+function issueCommentPageFetcher(): FeedbackCommentPageFetcher {
+  return createCommentPageFetcher({
+    runGraphQL: runIssueCommentGraphQL,
+    buildQuery: buildIssueCommentPageQuery,
+  });
 }
 
 async function getIssueComments(limit: number = 20): Promise<IssueComment[]> {
@@ -2209,8 +2261,10 @@ async function main(): Promise<void> {
     // model-policy-feedback.ts. It uses its own paginated lookup rather than
     // `existingComments` above: that 20-comment slice is the LLM context window,
     // and a genuine earlier notice pushed out of it would be posted again.
+    // The fetcher is built per delivery, not shared: its overall deadline starts
+    // when it is created, so a long-lived one would arrive already expired.
     await deliverModelPolicyFeedback({
-      fetchCommentPage: fetchIssueCommentPage,
+      fetchCommentPage: issueCommentPageFetcher(),
       postComment,
       log,
     });
