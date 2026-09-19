@@ -267,3 +267,37 @@ it('replaces prior evidence headers while preserving unrelated SDK headers', asy
   const headers = (query as jest.Mock).mock.calls[0][0].options.env.ANTHROPIC_CUSTOM_HEADERS;
   expect(headers).toMatch(/^X-Existing: retained\nX-Adp-Model-Evidence: [0-9a-f]{64}$/);
 });
+
+it('emits fresh shadow selection at each SDK admission and joins the issued usage nonce', async () => {
+  const logs = jest.spyOn(console, 'info').mockImplementation(() => {});
+  try {
+    process.env.ADP_DISPATCH_CHANNEL = 'github';
+    process.env.ADP_DISPATCH_TRIGGER = 'mention';
+    responsePolicy = policy('report_only');
+    responsePolicy.decision = { ...responsePolicy.decision, principal_kind: 'service_account', principal_id: 'canonical-service',
+      policy_revision: 'policy-1', posture_revision: 3, snapshot_digest: 'a'.repeat(64), resolution_source: 'principal-mapping' };
+    await createPolicyQuery(legacy);
+    responsePolicy.decision.posture_revision = 4;
+    await createPolicyQuery(legacy);
+    const events = logs.mock.calls.filter(call => typeof call[0] === 'string' && call[0].startsWith('PMM09_MODEL_SHADOW '))
+      .map(call => JSON.parse(call[0].slice('PMM09_MODEL_SHADOW '.length)));
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ phase: 'sdk_admission', principal_kind: 'service_account', principal_id: 'canonical-service',
+      legacy_model: 'legacy-model', actual_model: 'legacy-model', proposed_model: model, runtime_posture: 'report_only', posture_revision: 3,
+      channel: 'github', trigger: 'mention' });
+    expect(events[1].posture_revision).toBe(4);
+    expect(events[0].model_decision_id).not.toBe(events[1].model_decision_id);
+    events.forEach((event, index) => expect((query as jest.Mock).mock.calls[index][0].options.env.ANTHROPIC_CUSTOM_HEADERS)
+      .toContain(`X-Adp-Model-Evidence: ${event.model_decision_id}`));
+    expect(JSON.stringify(events)).not.toContain('test-run');
+  } finally { logs.mockRestore(); }
+});
+
+it.each(['disabled', 'enforcing'])('does not emit report-only shadow data under %s', async posture => {
+  const logs = jest.spyOn(console, 'info').mockImplementation(() => {});
+  try {
+    responsePolicy = policy(posture);
+    await createPolicyQuery(legacy);
+    expect(logs.mock.calls.some(call => String(call[0]).startsWith('PMM09_MODEL_SHADOW '))).toBe(false);
+  } finally { logs.mockRestore(); }
+});

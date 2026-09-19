@@ -2054,3 +2054,11 @@ async def test_live_bootstrap_refuses_registry_allowed_models_or_disabled_row(
         org_id="tenant-a",
         canonical_service_principal_id="service-a",
     )
+
+
+@pytest.mark.parametrize("owner_kind,owner_id", [("human", "canonical-human"), ("service_account", "canonical-service")])
+def test_issued_decision_retains_canonical_owner_for_shadow_evidence(owner_kind, owner_id):
+    frozen = snapshot(principal_kind=owner_kind, principal_id=owner_id)
+    decision = resolve_decision(frozen, invocation_id="run-review", persona="reviewer", now=NOW).to_dict()
+    assert decision["principal_kind"] == owner_kind
+    assert decision["principal_id"] == owner_id

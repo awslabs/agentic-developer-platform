@@ -810,3 +810,12 @@ class TestUnsignedPostureCannotDowngradeASignedDecision:
             _run_worker(envelope, monkeypatch, tmp_path, policy_report=report, expect_exit=1)
             is None
         )
+
+
+def test_worker_passes_envelope_dispatch_context_to_fresh_sdk_telemetry(
+    contained_worker, hermetic_process_env, monkeypatch, tmp_path
+):
+    envelope = _webhook_envelope(None)
+    launched = _run_worker(envelope, monkeypatch, tmp_path)
+    assert launched["ADP_DISPATCH_CHANNEL"] == envelope["channel"]
+    assert launched["ADP_DISPATCH_TRIGGER"] == envelope["intent"]["trigger"]
