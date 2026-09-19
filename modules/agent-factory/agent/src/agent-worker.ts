@@ -103,6 +103,7 @@ import {
 // Extracts learnings from agent output and persists to personal-context store.
 import { saveExperienceLearnings } from './experience-save-hook';
 import { buildPersonalContextIdentity, getPersonalContextHeaders } from './complex-task-chat/personal-context-headers';
+import { buildModelPolicyFeedback, feedbackAlreadyPosted } from './model-policy-feedback';
 
 // AIDLC Gate Enforcer — deterministic enforcement of commit + gate comment protocol
 // (Issue #3231, EPIC #3158 hardening wave). Only invoked when AIDLC_ENABLED.
@@ -2156,6 +2157,17 @@ async function main(): Promise<void> {
       ? existingComments.map((c, i) => `### Comment ${i + 1} (by ${c.author} at ${c.createdAt}):\n${c.body}`).join('\n\n---\n\n')
       : '';
     log('INFO', `Found ${existingComments.length} existing comments to include in context`);
+
+    // #2293 / PMM-07: a rejected direct model request must not disappear into
+    // logs. In report-only this accurately says legacy execution is unchanged;
+    // it does not pretend the enforcing flip has happened.
+    const modelPolicyFeedback = buildModelPolicyFeedback();
+    if (
+      modelPolicyFeedback &&
+      !feedbackAlreadyPosted(existingComments, modelPolicyFeedback)
+    ) {
+      await postComment(modelPolicyFeedback.body);
+    }
 
     // AIDLC Presence — synthetic HUMAN_TURN on gate resume (Issue #3232).
     // Must run BEFORE the SDK query starts so that mint-presence.ts sees the

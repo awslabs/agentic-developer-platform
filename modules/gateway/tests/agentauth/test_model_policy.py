@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import pytest
@@ -26,6 +27,7 @@ from src.agentauth.model_policy import (
     bootstrap_model_policy,
     build_root_snapshot,
     canonical_json,
+    classify_live_admission,
     ensure_snapshot_for_admission,
     ensure_snapshot_report_only,
     parse_snapshot,
@@ -513,6 +515,105 @@ def test_bootstrap_decision_is_signed_for_model_audience_and_chain(policy_store)
     assert decision["resolution_source"] == "explicit-direct"
     assert (decision["runtime_posture"], decision["posture_revision"]) == ("report_only", 2)
     assert verified.chain_id == "chain-a"
+    stored = policy_store._read("TENANT#tenant-a", "EXEC#run-developer")
+    evidence = json.loads(stored["model_policy_resolution"]["S"])
+    assert evidence["requested_model_id"] == "sonnet46"
+    assert evidence["resolved_model_id"] == SONNET
+    assert evidence["resolution_source"] == "explicit-direct"
+    assert evidence["admission_status"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_live_admission_uses_gateway_destination_and_shared_exact_evidence_gate(
+    db_session,
+):
+    from src.admin.persona_models.catalogue_schemas import SelectionResult
+    from src.proxy.bedrock_routing import BedrockTarget
+
+    policy = snapshot()
+    decision = resolve_decision(
+        policy,
+        invocation_id="run-developer",
+        persona="developer",
+        now=NOW,
+    )
+    target = BedrockTarget(
+        account_id="123456789012",
+        rung="org",
+        destination_id="destination-a",
+        region="eu-west-1",
+    )
+    verdict = SelectionResult(
+        canonical_model_id=SONNET,
+        compatibility_class="claude-agent-sdk",
+        harness_contract_revision="0.3.220",
+        evidence_verified_at=NOW,
+    )
+    with (
+        patch(
+            "src.proxy.bedrock_routing.bedrock_routing_resolver.resolve",
+            AsyncMock(return_value=target),
+        ) as routing,
+        patch(
+            "src.admin.persona_models.catalogue_service.validate_selection",
+            AsyncMock(return_value=verdict),
+        ) as validate,
+    ):
+        classified = await classify_live_admission(
+            db_session,
+            snapshot=policy,
+            decision=decision,
+        )
+
+    assert classified.admission_status == "admitted"
+    assert classified.admission_reason is None
+    assert classified.destination_account_id == "123456789012"
+    assert classified.destination_region == "eu-west-1"
+    assert classified.destination_id == "destination-a"
+    assert classified.destination_source == "org"
+    routing.assert_awaited_once()
+    assert validate.await_args.kwargs["model"] == SONNET
+    assert validate.await_args.kwargs["account_id"] == "123456789012"
+    assert validate.await_args.kwargs["region"] == "eu-west-1"
+
+
+@pytest.mark.asyncio
+async def test_live_admission_records_refusal_without_substituting_default(db_session):
+    from src.admin.persona_models.catalogue_schemas import SelectionRejection
+    from src.proxy.bedrock_routing import BedrockTarget
+
+    policy = snapshot(mappings={"developer": OPUS})
+    decision = resolve_decision(
+        policy,
+        invocation_id="run-developer",
+        persona="developer",
+        now=NOW,
+    )
+    with (
+        patch(
+            "src.proxy.bedrock_routing.bedrock_routing_resolver.resolve",
+            AsyncMock(return_value=BedrockTarget(None, "platform")),
+        ),
+        patch(
+            "src.admin.persona_models.catalogue_service.validate_selection",
+            AsyncMock(
+                return_value=SelectionRejection(
+                    reason="probing_disabled",
+                    message="destination evidence unavailable",
+                )
+            ),
+        ),
+    ):
+        classified = await classify_live_admission(
+            db_session,
+            snapshot=policy,
+            decision=decision,
+        )
+
+    assert classified.resolved_model_id == OPUS
+    assert classified.resolution_source == "principal-mapping"
+    assert classified.admission_status == "refused"
+    assert classified.admission_reason == "probing_disabled"
 
 
 def test_bootstrap_records_invalid_direct_override_as_report_only_unavailable(policy_store):

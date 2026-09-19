@@ -53,17 +53,16 @@ class TestAliasResolution:
 class TestPassThroughModelIds:
     """Tests that full Bedrock model IDs pass through and are validated."""
 
-    def test_full_bedrock_id_allowed(self):
-        """A full Bedrock model ID that matches default patterns passes through."""
-        model_id = "anthropic.claude-sonnet-4-20250514-v1:0"
+    def test_published_full_bedrock_id_allowed(self):
+        """A published canonical ID passes through."""
+        model_id = "global.anthropic.claude-sonnet-4-6"
         result = resolve_and_validate(model_id)
         assert result == model_id
 
-    def test_us_region_profile_allowed(self):
-        """US-region inference profile IDs are allowed by default patterns."""
+    def test_pattern_shaped_but_unpublished_id_is_refused(self):
+        """An allowlist pattern is not catalogue membership."""
         model_id = "us.anthropic.claude-opus-4-20250514-v1:0"
-        result = resolve_and_validate(model_id)
-        assert result == model_id
+        assert resolve_and_validate(model_id) is None
 
     def test_non_anthropic_model_rejected_by_default(self):
         """A non-Claude model not in patterns is rejected (returns None)."""

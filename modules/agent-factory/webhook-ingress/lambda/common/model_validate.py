@@ -12,38 +12,44 @@ call to the gateway).
 from __future__ import annotations
 
 import fnmatch
+import json
+from pathlib import Path
 
 # Short "latest" aliases that humans type in /model directives.
 # Kept deliberately minimal — just the names users are likely to type.
 # Must stay in sync with model_resolver.py's short aliases.
-MODEL_ALIASES: dict[str, str] = {
-    # Version-pinned aliases: <family><major><minor>, compact, no separators.
-    # Each maps to an invocable inference-profile ID (global. prefix) — verified
-    # ACTIVE via `aws bedrock list-inference-profiles` AND verified to invoke
-    # via bedrock-runtime invoke-model (issue #2300). Bare/ambiguous aliases
-    # (opus/sonnet/haiku) were removed in favour of explicit versions so a
-    # /model choice can't silently drift to a different model over time.
-    "opus5": "global.anthropic.claude-opus-5",
-    "opus48": "global.anthropic.claude-opus-4-8",
-    "opus47": "global.anthropic.claude-opus-4-7",
-    "opus46": "global.anthropic.claude-opus-4-6-v1",
-    "opus45": "global.anthropic.claude-opus-4-5-20251101-v1:0",
-    "sonnet46": "global.anthropic.claude-sonnet-4-6",
-    "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-    # NOTE: claude-sonnet-4-20250514 (Legacy, access-denied after 30d unused)
-    # and claude-fable-5 (requires non-default data-retention mode) are listed
-    # ACTIVE but do NOT invoke for us — deliberately excluded (#2300 lesson:
-    # verify by invocation, not just listing).
-}
+def _load_catalogue() -> dict:
+    try:
+        value = json.loads(
+            Path(__file__).with_name("persona_model_catalogue.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        if (
+            value.get("schema_version") != 1
+            or value.get("compatibility_class") != "claude-agent-sdk"
+            or not isinstance(value.get("aliases"), dict)
+            or not isinstance(value.get("canonical_model_ids"), list)
+            or not isinstance(value.get("allowed_patterns"), list)
+        ):
+            raise ValueError("unsupported generated catalogue")
+        return value
+    except (OSError, ValueError, TypeError):
+        # An edge artefact with missing or malformed generated policy data may
+        # refuse; it must never invent a model from a local fallback.
+        return {
+            "aliases": {},
+            "canonical_model_ids": [],
+            "allowed_patterns": [],
+        }
+
+
+_CATALOGUE = _load_catalogue()
+MODEL_ALIASES: dict[str, str] = _CATALOGUE["aliases"]
+CANONICAL_MODEL_IDS = frozenset(_CATALOGUE["canonical_model_ids"])
 
 # Default allowed patterns (matches model_resolver.py DEFAULT_ALLOWED_PATTERNS)
-DEFAULT_ALLOWED_PATTERNS: list[str] = [
-    "anthropic.claude-*",
-    "us.anthropic.claude-*",
-    "eu.anthropic.claude-*",
-    "global.anthropic.claude-*",
-]
+DEFAULT_ALLOWED_PATTERNS: list[str] = _CATALOGUE["allowed_patterns"]
 
 
 def resolve_and_validate(
@@ -67,8 +73,13 @@ def resolve_and_validate(
         (unknown alias that doesn't match any pattern, or model not in
         the allowed list).
     """
-    # Step 1: Resolve alias → model_id (pass-through if not a known alias)
-    model_id = MODEL_ALIASES.get(alias.lower(), alias)
+    # Step 1: Resolve only a published pinned alias or canonical catalogue ID.
+    # Pattern-shaped pass-through used to accept models the authority had never
+    # published and made the edge a competing selector.
+    normalized = alias.strip()
+    model_id = MODEL_ALIASES.get(normalized.lower(), normalized)
+    if model_id not in CANONICAL_MODEL_IDS:
+        return None
 
     # Step 2: Determine which patterns to validate against
     # Persona-level takes precedence, then tenant, then defaults

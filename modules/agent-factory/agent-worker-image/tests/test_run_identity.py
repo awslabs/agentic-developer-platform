@@ -69,6 +69,12 @@ def policy_reply(**decision_changes):
         "snapshot_digest": "a" * 64,
         "policy_revision": "policy-7",
         "catalogue_revision": "catalogue-4",
+        "admission_status": "admitted",
+        "admission_reason": None,
+        "destination_account_id": "123456789012",
+        "destination_region": "us-east-1",
+        "destination_id": "destination-a",
+        "destination_source": "org",
         **decision_changes,
     }
     return {
@@ -91,11 +97,21 @@ def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
         policy_revision="policy-7",
         catalogue_revision="catalogue-4",
         posture_revision=7,
+        admission_status="admitted",
+        admission_reason=None,
+        destination_account_id="123456789012",
+        destination_region="us-east-1",
+        destination_id="destination-a",
+        destination_source="org",
     )
     evidence = report.environment("global.anthropic.claude-opus-5")
     assert evidence["ADP_MODEL_POLICY_PROPOSED_MODEL"] == "global.anthropic.claude-sonnet-4-6"
     assert evidence["ADP_MODEL_POLICY_LEGACY_MODEL"] == "global.anthropic.claude-opus-5"
     assert evidence["ADP_MODEL_POLICY_MATCH"] == "false"
+    assert evidence["ADP_MODEL_POLICY_ADMISSION_STATUS"] == "admitted"
+    assert evidence["ADP_MODEL_POLICY_DESTINATION_ACCOUNT_ID"] == "123456789012"
+    assert evidence["ADP_MODEL_POLICY_DESTINATION_REGION"] == "us-east-1"
+    assert evidence["ADP_MODEL_POLICY_DESTINATION_SOURCE"] == "org"
     assert "ANTHROPIC_MODEL" not in evidence
 
 
@@ -107,6 +123,9 @@ def test_report_only_policy_is_sanitized_and_compared_without_selecting_model():
         policy_reply(resolution_source="invented"),
         policy_reply(snapshot_digest="not-a-digest"),
         policy_reply(resolved_model_id="bad\nlog"),
+        policy_reply(admission_status="invented"),
+        policy_reply(admission_status="refused", admission_reason=None),
+        policy_reply(destination_source="invented"),
     ],
 )
 def test_invalid_policy_report_never_becomes_worker_environment(policy):

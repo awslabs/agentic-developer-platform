@@ -33,6 +33,8 @@ WORKLOAD_HEADER = "X-Adp-Workload-Token"
 _MAX_TOKEN_BYTES = 8192
 _MAX_POLICY_FIELD_BYTES = 256
 _RESOLUTION_SOURCES = frozenset({"explicit-direct", "principal-mapping", "system-default"})
+_ADMISSION_STATUSES = frozenset({"admitted", "refused", "unavailable"})
+_DESTINATION_SOURCES = frozenset({"user", "team", "org", "platform"})
 
 
 class RunIdentityError(Exception):
@@ -61,6 +63,12 @@ class ModelPolicyReport:
     policy_revision: str | None = None
     catalogue_revision: str | None = None
     posture_revision: int | None = None
+    admission_status: str | None = None
+    admission_reason: str | None = None
+    destination_account_id: str | None = None
+    destination_region: str | None = None
+    destination_id: str | None = None
+    destination_source: str | None = None
 
     def environment(self, legacy_model: str) -> dict[str, str]:
         """Return comparison telemetry without changing ``ANTHROPIC_MODEL``."""
@@ -81,8 +89,19 @@ class ModelPolicyReport:
                 "ADP_MODEL_POLICY_POSTURE_REVISION": str(self.posture_revision),
                 "ADP_MODEL_POLICY_LEGACY_MODEL": legacy_model,
                 "ADP_MODEL_POLICY_MATCH": str(self.resolved_model_id == legacy_model).lower(),
+                "ADP_MODEL_POLICY_ADMISSION_STATUS": self.admission_status or "unavailable",
             }
         )
+        if self.admission_reason:
+            values["ADP_MODEL_POLICY_ADMISSION_REASON"] = self.admission_reason
+        if self.destination_account_id:
+            values["ADP_MODEL_POLICY_DESTINATION_ACCOUNT_ID"] = self.destination_account_id
+        if self.destination_region:
+            values["ADP_MODEL_POLICY_DESTINATION_REGION"] = self.destination_region
+        if self.destination_id:
+            values["ADP_MODEL_POLICY_DESTINATION_ID"] = self.destination_id
+        if self.destination_source:
+            values["ADP_MODEL_POLICY_DESTINATION_SOURCE"] = self.destination_source
         if self.requested_model_id:
             values["ADP_MODEL_POLICY_REQUESTED_MODEL"] = self.requested_model_id
         return values
@@ -121,6 +140,18 @@ def parse_model_policy_report(value: object, *, invocation_id: str) -> ModelPoli
     policy_revision = _safe_policy_text(decision.get("policy_revision"))
     catalogue_revision = _safe_policy_text(decision.get("catalogue_revision"))
     posture_revision = decision.get("posture_revision")
+    admission_status = _safe_policy_text(decision.get("admission_status"))
+    admission_reason = _safe_policy_text(decision.get("admission_reason"), optional=True)
+    destination_account_id = _safe_policy_text(
+        decision.get("destination_account_id"), optional=True
+    )
+    destination_region = _safe_policy_text(
+        decision.get("destination_region"), optional=True
+    )
+    destination_id = _safe_policy_text(decision.get("destination_id"), optional=True)
+    destination_source = _safe_policy_text(
+        decision.get("destination_source"), optional=True
+    )
     if (
         decision.get("invocation_id") != invocation_id
         or decision.get("runtime_posture") != "report_only"
@@ -129,6 +160,10 @@ def parse_model_policy_report(value: object, *, invocation_id: str) -> ModelPoli
         or any(char not in "0123456789abcdef" for char in digest)
         or type(posture_revision) is not int
         or posture_revision < 1
+        or admission_status not in _ADMISSION_STATUSES
+        or (admission_status == "admitted" and admission_reason is not None)
+        or (admission_status != "admitted" and admission_reason is None)
+        or (destination_source is not None and destination_source not in _DESTINATION_SOURCES)
         or not isinstance(value.get("assertion"), str)
         or not value["assertion"].startswith("adpe1.")
     ):
@@ -142,6 +177,12 @@ def parse_model_policy_report(value: object, *, invocation_id: str) -> ModelPoli
         policy_revision=policy_revision,
         catalogue_revision=catalogue_revision,
         posture_revision=posture_revision,
+        admission_status=admission_status,
+        admission_reason=admission_reason,
+        destination_account_id=destination_account_id,
+        destination_region=destination_region,
+        destination_id=destination_id,
+        destination_source=destination_source,
     )
 
 

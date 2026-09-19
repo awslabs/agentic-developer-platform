@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -43,6 +43,7 @@ from src.shared.models.persona_models import (
     ServicePrincipal,
     ServicePrincipalAlias,
 )
+from src.shared.schemas.auth import TokenContext
 
 logger = logging.getLogger("bedrockgateway.agentauth.model_policy")
 
@@ -192,6 +193,12 @@ class ModelPolicyDecision:
     posture_revision: int
     policy_revision: str
     catalogue_revision: str
+    admission_status: Literal["admitted", "refused", "unavailable"] = "unavailable"
+    admission_reason: str | None = "live_admission_not_evaluated"
+    destination_account_id: str | None = None
+    destination_region: str | None = None
+    destination_id: str | None = None
+    destination_source: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -210,6 +217,12 @@ class ModelPolicyDecision:
             "posture_revision": self.posture_revision,
             "policy_revision": self.policy_revision,
             "catalogue_revision": self.catalogue_revision,
+            "admission_status": self.admission_status,
+            "admission_reason": self.admission_reason,
+            "destination_account_id": self.destination_account_id,
+            "destination_region": self.destination_region,
+            "destination_id": self.destination_id,
+            "destination_source": self.destination_source,
         }
 
 
@@ -302,6 +315,130 @@ def resolve_decision(
         policy_revision=snapshot.policy_revision,
         catalogue_revision=snapshot.catalogue_revision,
     )
+
+
+async def classify_live_admission(
+    session: AsyncSession,
+    *,
+    snapshot: ModelPolicySnapshot,
+    decision: ModelPolicyDecision,
+) -> ModelPolicyDecision:
+    """Classify the proposed model against live, destination-bound gates.
+
+    This is deliberately an observation in ``report_only``: the returned
+    classification is signed and persisted, but it does not replace the legacy
+    model assignment.  The destination comes from the gateway routing ladder and
+    the invocability verdict comes from the same exact-key evidence reader used
+    by preference writes.  No provider or other network call occurs here.
+
+    Budget, rate and compliance checks remain load-bearing on the existing
+    inference path.  They cannot be truthfully pre-classified without the actual
+    request, so this function never reports that broader admission as complete.
+    """
+    from src.admin.persona_models import catalogue_service
+    from src.proxy.bedrock_routing import bedrock_routing_resolver
+    from src.shared.config import get_settings
+
+    # The protected snapshot, rather than worker input, supplies the principal.
+    # ``user_id`` is passed explicitly for a human so the routing resolver does
+    # not reinterpret a canonical users.id as an external identity.
+    context = TokenContext(
+        user_id=snapshot.principal_id if snapshot.principal_kind == "human" else "",
+        org_id=snapshot.tenant_id,
+        team_id="",
+        department_id="",
+        account_type="human" if snapshot.principal_kind == "human" else "service",
+        expires_at=snapshot.expires_at,
+        auth_source="jwt" if snapshot.principal_kind == "human" else "iam",
+        canonical_service_principal_id=(snapshot.principal_id if snapshot.principal_kind == "service_account" else ""),
+    )
+    target = await bedrock_routing_resolver.resolve(
+        session,
+        context,
+        user_id=snapshot.principal_id if snapshot.principal_kind == "human" else "",
+    )
+    settings = get_settings()
+    account_id = target.account_id or (settings.platform_bedrock_account_id if target.is_platform else None)
+    region = target.region or settings.aws_region or None
+
+    principal_status: str | None = None
+    if snapshot.principal_kind == "service_account":
+        principal_status = await session.scalar(
+            select(ServicePrincipal.status).where(
+                ServicePrincipal.org_id == snapshot.tenant_id,
+                ServicePrincipal.canonical_service_principal_id == snapshot.principal_id,
+            )
+        )
+        if principal_status is None:
+            return replace(
+                decision,
+                admission_status="refused",
+                admission_reason="service_principal_unregistered",
+                destination_account_id=account_id,
+                destination_region=region,
+                destination_id=target.destination_id,
+                destination_source=target.rung,
+            )
+
+    verdict = await catalogue_service.validate_selection(
+        session,
+        org_id=snapshot.tenant_id,
+        principal_kind=snapshot.principal_kind,
+        canonical_principal_id=snapshot.principal_id,
+        persona_key=decision.persona,
+        model=decision.resolved_model_id,
+        account_id=account_id,
+        region=region,
+        tenant_allowed_patterns=None,
+        principal_status=principal_status,
+    )
+    if isinstance(verdict, catalogue_service.SelectionRejection):
+        return replace(
+            decision,
+            admission_status="refused",
+            admission_reason=verdict.reason,
+            destination_account_id=account_id,
+            destination_region=region,
+            destination_id=target.destination_id,
+            destination_source=target.rung,
+        )
+    return replace(
+        decision,
+        admission_status="admitted",
+        admission_reason=None,
+        destination_account_id=account_id,
+        destination_region=region,
+        destination_id=target.destination_id,
+        destination_source=target.rung,
+    )
+
+
+async def resolve_stored_decision_with_live_admission(
+    session: AsyncSession,
+    *,
+    store,
+    record,
+) -> ModelPolicyDecision:
+    """Load only protected facts and produce one live-classified decision."""
+    raw_execution = (
+        await run_in_threadpool(
+            store._read,
+            f"TENANT#{record.tenant_id}",
+            f"EXEC#{record.invocation_id}",
+        )
+        or {}
+    )
+    raw = raw_execution.get("model_policy_snapshot", {}).get("S")
+    digest = raw_execution.get("model_policy_snapshot_digest", {}).get("S")
+    snapshot = parse_snapshot(raw, digest, tenant_id=record.tenant_id)
+    decision = resolve_decision(
+        snapshot,
+        invocation_id=record.invocation_id,
+        persona=raw_execution.get("persona", {}).get("S", ""),
+        direct_override=raw_execution.get("direct_model_override", {}).get("S") or None,
+        direct_requested=raw_execution.get("direct_model_requested", {}).get("S") or None,
+    )
+    return await classify_live_admission(session, snapshot=snapshot, decision=decision)
 
 
 async def _resolve_principal(
@@ -550,20 +687,88 @@ async def ensure_snapshot_report_only(session: AsyncSession, *, store, invocatio
         return {"status": "unavailable", "reason": "snapshot_unavailable"}
 
 
-def bootstrap_model_policy(*, store, record, grant: DelegatedGrant, env: dict[str, str] | None = None) -> dict:
+def _persist_resolution_evidence(*, store, record, decision: ModelPolicyDecision) -> None:
+    """Freeze the gateway decision on the worker-unwritable execution row."""
+    body = canonical_json(decision.to_dict()).decode("ascii")
+    decision_digest = hashlib.sha256(body.encode("ascii")).hexdigest()
+    try:
+        store.client.update_item(
+            TableName=store.table,
+            Key={
+                "pk": {"S": f"TENANT#{record.tenant_id}"},
+                "sk": {"S": f"EXEC#{record.invocation_id}"},
+            },
+            UpdateExpression=(
+                "SET model_policy_resolution = :body, model_policy_resolution_digest = :decision, model_policy_resolution_recorded_at = :recorded"
+            ),
+            ConditionExpression=(
+                "model_policy_snapshot_digest = :snapshot AND "
+                "(attribute_not_exists(model_policy_resolution_digest) OR "
+                "model_policy_resolution_digest = :decision)"
+            ),
+            ExpressionAttributeValues={
+                ":body": {"S": body},
+                ":decision": {"S": decision_digest},
+                ":snapshot": {"S": decision.snapshot_digest},
+                ":recorded": {"S": _iso(datetime.now(UTC))},
+            },
+        )
+    except (ClientError, BotoCoreError):
+        existing = (
+            store._read(
+                f"TENANT#{record.tenant_id}",
+                f"EXEC#{record.invocation_id}",
+            )
+            or {}
+        )
+        if existing.get("model_policy_resolution_digest") != {"S": decision_digest}:
+            raise ModelPolicyError("decision_evidence_unavailable") from None
+
+
+def bootstrap_model_policy(
+    *,
+    store,
+    record,
+    grant: DelegatedGrant,
+    env: dict[str, str] | None = None,
+    live_decision: ModelPolicyDecision | None = None,
+    live_failure_reason: str | None = None,
+) -> dict:
     """Return a signed, behaviour-neutral proposed decision for one worker hop."""
     raw_execution = store._read(f"TENANT#{record.tenant_id}", f"EXEC#{record.invocation_id}") or {}
     raw = raw_execution.get("model_policy_snapshot", {}).get("S")
     digest = raw_execution.get("model_policy_snapshot_digest", {}).get("S")
     try:
         snapshot = parse_snapshot(raw, digest, tenant_id=record.tenant_id)
-        decision = resolve_decision(
+        base_decision = resolve_decision(
             snapshot,
             invocation_id=record.invocation_id,
             persona=raw_execution.get("persona", {}).get("S", ""),
             direct_override=raw_execution.get("direct_model_override", {}).get("S") or None,
             direct_requested=raw_execution.get("direct_model_requested", {}).get("S") or None,
         )
+        decision = live_decision or replace(
+            base_decision,
+            admission_reason=live_failure_reason or base_decision.admission_reason,
+        )
+        # The asynchronous classifier is an enrichment of this exact protected
+        # selection, never a second selector.  Refuse a stale or mismatched
+        # classification rather than signing it for this run.
+        if live_decision is not None:
+            stable_fields = (
+                "tenant_id",
+                "invocation_id",
+                "snapshot_digest",
+                "persona",
+                "requested_model_id",
+                "resolved_model_id",
+                "resolution_source",
+                "policy_revision",
+                "catalogue_revision",
+                "posture_revision",
+            )
+            if any(getattr(live_decision, field) != getattr(base_decision, field) for field in stable_fields):
+                raise ModelPolicyError("live_admission_mismatch")
         decision_body = canonical_json(decision.to_dict())
         assertion = sign_envelope(
             tenant_id=record.tenant_id,
@@ -581,6 +786,7 @@ def bootstrap_model_policy(*, store, record, grant: DelegatedGrant, env: dict[st
             chain_id=snapshot.correlation_id,
             env=env,
         )
+        _persist_resolution_evidence(store=store, record=record, decision=decision)
         return {
             "posture": decision.runtime_posture,
             "status": "proposed",
