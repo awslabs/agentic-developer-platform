@@ -22,6 +22,7 @@ class PricingCapture:
     finalization_task: asyncio.Task[None] | None = field(default=None, repr=False)
     buffer: StreamingResponseBuffer = field(default_factory=StreamingResponseBuffer)
     _served_tier_conflict: bool = field(default=False, repr=False)
+    provider_request_id: str | None = None
 
     @property
     def is_claude(self) -> bool:
@@ -76,6 +77,10 @@ class PricingCapture:
                 self.routing = replace(self.routing, served_service_tier_raw=raw)
 
     def response(self, body: dict[str, Any], metadata: dict[str, Any]) -> None:
+        response_metadata = metadata.get("ResponseMetadata") or {}
+        request_id = response_metadata.get("RequestId")
+        if isinstance(request_id, str) and request_id:
+            self.provider_request_id = request_id
         self.response_body.update(body)
         self.raw_usage.update(body.get("usage") or {})
         usage = body.get("usage") or {}

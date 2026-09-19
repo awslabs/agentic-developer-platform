@@ -1,8 +1,9 @@
 """Usage service implementing IUsageService interface."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,9 @@ from src.usage.schemas import (
     UsageTimelineEntry,
     UsageTimelineResponse,
 )
+
+if TYPE_CHECKING:
+    from pricing_policy import PricingDecision
 
 
 class UsageService(IUsageService):
@@ -55,6 +59,9 @@ class UsageService(IUsageService):
         cache_read_input_tokens: int | None = None,
         cache_creation_input_tokens: int | None = None,
         client_tool: str | None = None,
+        pricing_decision: "PricingDecision | None" = None,
+        provider_request_id: str | None = None,
+        destination_region: str | None = None,
     ) -> None:
         """
         Log a Bedrock API request.
@@ -82,6 +89,9 @@ class UsageService(IUsageService):
                 not back-fillable, so None is the honest value for an
                 unrecognised client and must stay distinguishable from a real
                 tool name.
+            pricing_decision: The one internally-computed pricing decision used
+                for this request's settlement. It is persisted, never re-read;
+                None means the pricing revision was not captured.
         """
         log_entry = UsageLog(
             # Issue #4132: usage_logs is an ATTRIBUTION surface — a hosted run
@@ -99,6 +109,8 @@ class UsageService(IUsageService):
             latency_ms=latency_ms,
             status_code=status_code,
             request_id=request_id,
+            provider_request_id=provider_request_id,
+            destination_region=destination_region,
             bedrock_account_id=bedrock_account_id,
             agent_run_id=agent_run_id,
             cache_read_input_tokens=cache_read_input_tokens,
@@ -107,10 +119,143 @@ class UsageService(IUsageService):
             # Issue #4898: the graph node this call is attributable to. Resolved
             # from the request's own verified context — see `_graph_address_for`.
             graph_address=self._graph_address_for(context, agent_run_id),
+            **self._persona_evidence_for(context, agent_run_id),
+            **self._pricing_revision_for(pricing_decision),
         )
 
         self.db.add(log_entry)
         await self.db.commit()
+
+    @staticmethod
+    def _persona_evidence_for(context: TokenContext, agent_run_id: str | None) -> dict[str, str | None]:
+        """Return protected PMM evidence, or an all-NULL atomic projection.
+
+        The cross-checks make it impossible to persist a snapshot beside a row
+        for another tenant or run.  The helper cannot raise: both proxy callers
+        intentionally swallow logging failures, so an enrichment exception
+        would silently drop metered spend.
+        """
+        names = {
+            "model_decision": None,
+            "model_decision_id": None,
+            "approving_human_id": None,
+            "persona_key": None,
+            "compatibility_class": None,
+            "harness_contract_revision": None,
+            "root_invocation_id": None,
+            "chain_id": None,
+            "preference_owner_kind": None,
+            "preference_owner_id": None,
+            "model_policy_snapshot_digest": None,
+            "model_policy_revision": None,
+            "model_catalogue_revision": None,
+            "requested_model_id": None,
+            "resolved_model_id": None,
+            "resolution_source": None,
+            "runtime_posture": None,
+            "posture_revision": None,
+        }
+        attribution = getattr(context, "_persona_usage_attribution", None)
+        try:
+            from src.usage.persona_attribution import PersonaUsageAttribution
+
+            if not isinstance(attribution, PersonaUsageAttribution):
+                return names
+            if attribution.tenant_id != context.attributed_org_id:
+                return names
+            if agent_run_id and attribution.invocation_id != agent_run_id:
+                return names
+            proposal = {
+                "requested_model_id": attribution.requested_model_id,
+                "resolved_model_id": attribution.resolved_model_id,
+                "resolution_source": attribution.resolution_source,
+                "runtime_posture": attribution.runtime_posture,
+                "posture_revision": attribution.posture_revision,
+            }
+            if proposal != {
+                "requested_model_id": None,
+                "resolved_model_id": None,
+                "resolution_source": None,
+                "runtime_posture": None,
+                "posture_revision": None,
+            } and not (
+                (attribution.requested_model_id is None or (isinstance(attribution.requested_model_id, str) and bool(attribution.requested_model_id)))
+                and isinstance(attribution.resolved_model_id, str)
+                and bool(attribution.resolved_model_id)
+                and attribution.resolution_source in {"explicit-direct", "principal-mapping", "system-default"}
+                and attribution.runtime_posture in {"disabled", "report_only", "enforcing"}
+                and type(attribution.posture_revision) is int
+                and attribution.posture_revision >= 1
+            ):
+                proposal = {key: None for key in proposal}
+            return {
+                "model_decision": json.loads(attribution.model_decision_json) if attribution.model_decision_json else None,
+                "model_decision_id": attribution.model_decision_id,
+                "approving_human_id": attribution.approving_human_id,
+                "persona_key": attribution.persona_key,
+                "compatibility_class": attribution.compatibility_class,
+                "harness_contract_revision": attribution.harness_contract_revision,
+                "root_invocation_id": attribution.root_invocation_id,
+                "chain_id": attribution.chain_id,
+                "preference_owner_kind": attribution.principal_kind,
+                "preference_owner_id": attribution.principal_id,
+                "model_policy_snapshot_digest": attribution.snapshot_digest,
+                "model_policy_revision": attribution.policy_revision,
+                "model_catalogue_revision": attribution.catalogue_revision,
+                **proposal,
+            }
+        except (AttributeError, TypeError, ValueError):
+            return names
+
+    @staticmethod
+    def _pricing_revision_for(decision: "PricingDecision | None") -> dict[str, str | int | None]:
+        """Project one internally-computed pricing identity atomically.
+
+        Database and bundled decisions have deliberately different shapes.  A
+        malformed or incomplete object writes all NULLs rather than mixing a
+        generation from one decision with a snapshot from another, or implying
+        that the active pricing revision applied when none was captured.
+        """
+        empty: dict[str, str | int | None] = {
+            "pricing_confidence": None,
+            "pricing_estimate_reasons": None,
+            "pricing_decision": None,
+            "pricing_source_kind": None,
+            "pricing_generation_id": None,
+            "pricing_pointer_revision": None,
+            "pricing_snapshot_version": None,
+            "pricing_policy_version": None,
+        }
+        try:
+            if decision.confidence not in {"verified", "estimated"}:
+                return empty
+            source = decision.source_kind
+            generation = decision.generation_id
+            pointer = decision.pointer_revision
+            snapshot = decision.snapshot_version
+            policy = decision.policy_version
+            if type(policy) is not int or policy < 1 or not isinstance(snapshot, str) or not snapshot:
+                return empty
+            if source == "database":
+                if type(generation) is not int or generation < 1 or type(pointer) is not int or pointer < 1:
+                    return empty
+            elif source == "bundled_snapshot":
+                if generation is not None or pointer is not None:
+                    return empty
+            else:
+                return empty
+            return {
+                "pricing_confidence": decision.confidence,
+                "pricing_estimate_reasons": json.dumps(list(decision.estimate_reasons)),
+                "pricing_decision": decision.to_dict(),
+                "pricing_source_kind": source,
+                "pricing_generation_id": generation,
+                "pricing_pointer_revision": pointer,
+                "pricing_snapshot_version": snapshot,
+                "pricing_policy_version": policy,
+            }
+        except (AttributeError, TypeError, ValueError):
+            return empty
 
     @staticmethod
     def _graph_address_for(context: TokenContext, agent_run_id: str | None) -> str | None:

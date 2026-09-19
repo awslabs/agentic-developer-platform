@@ -62,6 +62,16 @@ export async function prepareModelQuery(params: QueryParams): Promise<QueryParam
   } finally { clearTimeout(timer); }
 }
 
+/** Preserve every model option while binding gateway accounting to this launch. */
+function withUsageEvidence(params: QueryParams, nonce: string): QueryParams {
+  const env = params.options?.env ?? process.env;
+  const existing = (env.ANTHROPIC_CUSTOM_HEADERS ?? '').split('\n')
+    .filter(line => !/^x-adp-model-evidence\s*:/i.test(line) && line.trim());
+  return { ...params, options: { ...params.options, env: { ...env,
+    ANTHROPIC_CUSTOM_HEADERS: [...existing, `X-Adp-Model-Evidence: ${nonce}`].join('\n'),
+  } } };
+}
+
 /** No cached decision or startup telemetry can grant permission to start. */
 async function prepareAuthorizedQuery(params: QueryParams, signal: AbortSignal): Promise<QueryParams> {
   try {
@@ -134,7 +144,7 @@ async function prepareAuthorizedQuery(params: QueryParams, signal: AbortSignal):
     if (policy.posture === 'disabled' || policy.posture === 'report_only') {
       console.info('Model-policy SDK admission', { posture: policy.posture, status: policy.status,
         legacyModel: params.options?.model, enforced: false });
-      return params;
+      return withUsageEvidence(params, nonce);
     }
     const decision = object(policy.decision);
     if (policy.posture !== 'enforcing' || policy.status !== 'proposed' || decision.schema_version !== 1 ||
@@ -145,8 +155,8 @@ async function prepareAuthorizedQuery(params: QueryParams, signal: AbortSignal):
     const model = decision.resolved_model_id;
     console.info('Model-policy SDK admission', { posture: policy.posture, legacyModel: params.options?.model,
       resolvedModel: model, source: decision.resolution_source, snapshotDigest: decision.snapshot_digest, enforced: true });
-    return { ...params, options: { ...params.options, model, fallbackModel: undefined,
-      env: { ...(params.options?.env ?? process.env), ANTHROPIC_MODEL: model } } };
+    return withUsageEvidence({ ...params, options: { ...params.options, model, fallbackModel: undefined,
+      env: { ...(params.options?.env ?? process.env), ANTHROPIC_MODEL: model } } }, nonce);
   } catch { throw new ModelPolicyRefused(); }
 }
 

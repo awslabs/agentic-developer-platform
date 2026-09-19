@@ -399,7 +399,9 @@ async def build_preference_list(
                 }
             )
 
-    return entries
+    from .explanation import annotate_preferences
+
+    return await annotate_preferences(db, entries, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id)
 
 
 async def build_explain(
@@ -414,40 +416,10 @@ async def build_explain(
     if persona_key not in PERSONA_KEYS:
         raise PreferenceRejectedError("unknown_persona", f"Unknown persona key '{persona_key}'.")
 
-    pref = await get_preference(db, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id, persona_key=persona_key)
+    entries = await build_preference_list(db, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id)
+    entry = next(row for row in entries if row["persona_key"] == persona_key)
     compatibility_class, default_model_id, class_default_status = await get_persona_class_default(db, persona_key)
-    harness_contract_revision = persona_harness_contract_revision(persona_key)
-
-    if pref is not None:
-        return {
-            "persona_key": persona_key,
-            "compatibility_class": compatibility_class,
-            "harness_contract_revision": harness_contract_revision,
-            "effective_model_id": pref.canonical_model_id,
-            "effective_is_candidate": False,
-            "source": "principal-mapping",
-            "status": "configured",
-            "saved_model_id": pref.canonical_model_id,
-            "requested_alias": pref.requested_alias,
-            "revision": pref.revision,
-            "updated_at": pref.updated_at,
-            "default_model_id": default_model_id,
-            "default_source": compatibility_class,
-            "class_default_status": class_default_status,
-        }
-
-    return {
-        "persona_key": persona_key,
-        "compatibility_class": compatibility_class,
-        "harness_contract_revision": harness_contract_revision,
-        "effective_model_id": default_model_id,
-        "effective_is_candidate": class_default_status == "candidate",
-        "source": "system-default",
-        "status": "not-configured",
-        "default_model_id": default_model_id,
-        "default_source": compatibility_class,
-        "class_default_status": class_default_status,
-    }
+    return {**entry, "default_model_id": default_model_id, "default_source": compatibility_class, "class_default_status": class_default_status}
 
 
 # ── Write operations ─────────────────────────────────────────────────────────

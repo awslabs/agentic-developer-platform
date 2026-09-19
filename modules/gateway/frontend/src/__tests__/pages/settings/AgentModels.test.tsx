@@ -191,6 +191,19 @@ function detail(overrides: Partial<PreferenceDetail> = {}): PreferenceDetail {
 }
 
 describe('Agent Models page — issue #5422', () => {
+  it('shows persisted retirement warnings even when catalogue lookup fails', async () => {
+    const warning = 'model-retired: retired. Choose a verified model before starting a new run.';
+    vi.mocked(selfApi.getPreferences).mockResolvedValue({ ...preferences, entries: [{
+      ...preferences.entries[0], effective_model_id: 'model-retired', saved_model_id: 'model-retired',
+      effective_is_candidate: false, source: 'principal-mapping', status: 'configured',
+      model_lifecycle: 'retired', availability_status: 'unavailable', availability_reason: 'retired', warnings: [warning],
+    }] });
+    vi.mocked(selfApi.getModelCatalogue).mockRejectedValue(new Error('offline'));
+    render(<AgentModels />);
+    expect(await screen.findByText(warning)).toBeInTheDocument();
+    expect(screen.getByText('Retired')).toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(selfApi.getManageableServicePrincipals).mockResolvedValue(noPrincipals);

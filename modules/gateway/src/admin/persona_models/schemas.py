@@ -7,6 +7,7 @@ branches on ``reason`` rather than maintaining two error parsers.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -32,6 +33,11 @@ class PreferenceEntry(BaseModel):
     configurable: bool
     compatibility_class: str
     harness_contract_revision: str
+
+    model_lifecycle: str | None = None
+    availability_status: str = "unknown"
+    availability_reason: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
     effective_model_id: str | None = None
     effective_is_candidate: bool
@@ -61,6 +67,11 @@ class PreferenceDetailResponse(BaseModel):
     persona_key: str
     compatibility_class: str
     harness_contract_revision: str
+    model_lifecycle: str | None = None
+    availability_status: str = "unknown"
+    availability_reason: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
     effective_model_id: str | None = None
     effective_is_candidate: bool
     source: Literal["principal-mapping", "system-default"]
@@ -80,6 +91,43 @@ class ResetPreferenceResponse(PreferenceDetailResponse):
     """Reset result, including whether this request won the atomic delete."""
 
     removed: bool
+
+
+class PersonaModelCostEntryResponse(BaseModel):
+    """One persona/model ledger bucket for a preference owner."""
+
+    persona_key: str
+    model_id: str
+    amount_usd: Decimal | None
+    input_tokens: int
+    output_tokens: int
+    call_count: int
+    unpriced_call_count: int
+    estimated_call_count: int
+    estimate_reasons: tuple[str, ...]
+
+    status: Literal["known", "none_incurred", "estimated", "partial", "unknown"]
+    partial: bool
+
+
+class PersonaCostResponse(BaseModel):
+    """Tenant- and owner-scoped usage-ledger cost report."""
+
+    principal_kind: Literal["human", "service_account"]
+    principal_id: str
+    principal_dimension: Literal["preference_owner"] = "preference_owner"
+    chain_id: str | None = None
+    status: Literal["known", "none_incurred", "estimated", "partial", "unknown"]
+    amount_usd: Decimal | None = None
+    call_count: int
+    unpriced_call_count: int
+    estimated_call_count: int
+    estimate_reasons: tuple[str, ...]
+    partial: bool
+    scope: str
+    caveat: str
+    entries: list[PersonaModelCostEntryResponse]
+    preferences: list[PreferenceEntry]
 
 
 # ── Request models ───────────────────────────────────────────────────────────

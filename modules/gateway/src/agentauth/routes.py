@@ -556,6 +556,9 @@ async def resolved_model_response(*, db, runtime, record, grant, nonce: str, cli
         audience=MODEL_POLICY_AUDIENCE,
         env=runtime.env,
     )
+    from src.usage.model_policy_evidence import record_model_evidence
+
+    await run_in_threadpool(record_model_evidence, store=runtime.store, record=record, result=result)
     return {"result": result, "assertion": assertion}
 
 

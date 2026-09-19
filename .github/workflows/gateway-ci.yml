@@ -5,6 +5,7 @@ on:
     paths:
       - 'modules/gateway/src/**'
       - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
       # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
       # from a generated staged copy of the webhook-ingress source. Registering a
       # persona at the source must re-run the Lint job's sync_personas.py --check,
@@ -86,6 +87,7 @@ on:
     paths:
       - 'modules/gateway/src/**'
       - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
       # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
       # from a generated staged copy of the webhook-ingress source. Registering a
       # persona at the source must re-run the Lint job's sync_personas.py --check,

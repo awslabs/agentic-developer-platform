@@ -47,16 +47,17 @@ function availability(
   model: ModelCatalogueRow | undefined,
   preference?: PersonaPreference,
 ): { label: string; className: string } {
-  if (model?.retired || model?.reason === 'retired') {
+  if (preference?.model_lifecycle === 'retired' || model?.retired || model?.reason === 'retired') {
     return { label: 'Retired', className: 'text-red-700' };
   }
-  if (preference?.status === 'disallowed' || model?.permitted === false || model?.reason === 'not_permitted') {
+  if ((preference?.status === 'disallowed' || preference?.availability_status === 'disallowed') || model?.permitted === false || model?.reason === 'not_permitted') {
     return { label: 'Not permitted', className: 'text-red-700' };
   }
-  if (preference?.status === 'stale' || model?.reason === 'evidence_stale' || model?.evidence?.stale) {
+  if ((preference?.status === 'stale' || preference?.availability_status === 'stale') || model?.reason === 'evidence_stale' || model?.evidence?.stale) {
     return { label: 'Evidence stale', className: 'text-amber-700' };
   }
-  if (preference?.status === 'unavailable' || model?.reason === 'not_invocable' || model?.invocable === false) {
+  if (preference?.effective_is_candidate) return { label: 'Not yet certified', className: 'text-gray-600' };
+  if ((preference?.status === 'unavailable' || preference?.availability_status === 'unavailable') || model?.reason === 'not_invocable' || model?.invocable === false) {
     return { label: 'Unavailable', className: 'text-red-700' };
   }
   if (model?.reason === 'harness_incompatible') {
@@ -65,6 +66,7 @@ function availability(
   if (preference?.effective_is_candidate) {
     return { label: 'Not yet certified', className: 'text-gray-600' };
   }
+  if (preference?.availability_status === 'unknown') return { label: 'Availability unknown', className: 'text-gray-600' };
   if (!model) return { label: 'Availability unknown', className: 'text-gray-600' };
   if (model.invocable === true && !model.evidence?.stale) {
     return { label: 'Verified', className: 'text-green-700' };
@@ -143,6 +145,10 @@ function mergeDetail(entries: PersonaPreference[], detail: PreferenceDetail): Pe
     entry.persona_key === detail.persona_key
       ? {
           ...entry,
+          model_lifecycle: detail.model_lifecycle,
+          availability_status: detail.availability_status,
+          availability_reason: detail.availability_reason,
+          warnings: detail.warnings,
           effective_model_id: detail.effective_model_id,
           compatibility_class: detail.compatibility_class,
           harness_contract_revision: detail.harness_contract_revision,
@@ -218,6 +224,7 @@ function PersonaCard({
             {effectiveSourceLabel(preference)}
           </p>
           <p className={`mt-2 text-sm font-medium ${state.className}`}>{state.label}</p>
+          {preference?.warnings?.map((warning) => <p key={warning} role="status" className="text-sm text-amber-700">{warning}</p>)}
           <EvidenceProvenance model={effective} />
           {preference && <p className="text-xs text-gray-500">Harness revision {preference.harness_contract_revision}</p>}
           {effectivePrice && <p className="text-xs text-gray-500">{effectivePrice}</p>}
@@ -232,6 +239,10 @@ function PersonaCard({
             <fieldset disabled={busy}>
               <legend className="text-xs font-medium uppercase tracking-wide text-gray-500">Saved model</legend>
               <p className="mb-2 text-xs text-gray-500">{preference?.saved_model_id || 'Not set'}</p>
+              {!catalogue && <div role="alert" className="text-sm text-amber-700">
+                <p>Model catalogue unavailable. Saved preferences and warnings remain visible.</p>
+                <Button size="sm" variant="secondary" onClick={onReload}>Retry catalogue</Button>
+              </div>}
               <div className="space-y-2" role="radiogroup" aria-label={`Model for ${persona.display_name}`}>
                 {(catalogue?.models ?? []).map((model) => (
                   <label
@@ -322,7 +333,7 @@ export default function AgentModels() {
           ? selfApi.getPreferences(controller.signal)
           : adminApi.getPreferences(activePrincipalId!, controller.signal),
       ]);
-      const catalogues = await Promise.all(
+      const catalogueResults = await Promise.allSettled(
         personaResponse.personas.map((persona) =>
           activeKind === 'self'
             ? selfApi.getModelCatalogue(persona.key, controller.signal)
@@ -330,6 +341,7 @@ export default function AgentModels() {
         ),
       );
       if (!isCurrent()) return;
+      const catalogues = catalogueResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
       setData({
         personas: personaResponse.personas,
         preferences: preferenceResponse.entries,

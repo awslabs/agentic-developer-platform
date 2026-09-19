@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from src.budget.run_binding import RunBinding
     from src.orchestration.dispatch import GraphAttribution
     from src.orchestration.provider_quotes import ProviderQuote
+    from src.usage.persona_attribution import PersonaUsageAttribution
 
 
 class AuthExchangeRequest(BaseModel):
@@ -186,6 +187,11 @@ class TokenContext(BaseModel):
     # leave it None, which persists as a NULL address meaning "unavailable" —
     # never zero spend, and never a guessed node.
     _graph_attribution: "GraphAttribution | None" = PrivateAttr(default=None)
+    # Issue #5426: persona/chain/preference-owner evidence derived from PMM-06's
+    # protected model-policy snapshot.  A private attribute is the security
+    # boundary: headers, bodies and ``TokenContext(**caller_data)`` cannot stamp
+    # a persona or service principal onto their own usage rows.
+    _persona_usage_attribution: "PersonaUsageAttribution | None" = PrivateAttr(default=None)
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
     _policy_request_id: str | None = PrivateAttr(default=None)

@@ -1,11 +1,12 @@
 """Persona-model preference models — Issue #5419 (PMM-02).
 
-Four tables backing the persona-to-model mapping feature:
+Five tables backing the persona-to-model mapping feature:
 
 - ``PersonaModelPreference`` — one model choice per principal per persona.
 - ``ServicePrincipal`` — canonical service-principal entity with lifecycle.
 - ``ServicePrincipalAlias`` — maps an external subject to a canonical ID.
 - ``PersonaModelPolicySetting`` — per-class platform defaults and posture.
+- ``PersonaModelRetirementAlert`` — durable operator-notification outbox.
 """
 
 from __future__ import annotations
@@ -159,4 +160,39 @@ class PersonaModelPolicySetting(Base):
             "enforcement_posture IN ('disabled', 'report_only', 'enforcing')",
             name="ck_pmps_enforcement_posture",
         ),
+    )
+
+
+class PersonaModelRetirementAlert(Base, TenantMixin):
+    """Durable claim/delivery outbox for operator retirement alerts."""
+
+    __tablename__ = "persona_model_retirement_alerts"
+
+    id: Mapped[str] = mapped_column(String(255), primary_key=True, default=new_uuid)
+    preference_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    persona_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    preference_owner_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    preference_owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    canonical_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    lifecycle_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default="claimed")
+    claim_token: Mapped[str] = mapped_column(String(64), nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "preference_id",
+            "canonical_model_id",
+            "lifecycle_revision",
+            name="uq_persona_retirement_transition",
+        ),
+        CheckConstraint("state IN ('claimed', 'delivered')", name="ck_persona_retirement_state"),
+        CheckConstraint("attempt_count >= 1", name="ck_persona_retirement_attempts"),
+        Index("ix_persona_retirement_claim", "state", "lease_expires_at"),
     )

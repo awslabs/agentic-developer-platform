@@ -32,6 +32,10 @@ export interface PersonaPreference {
   configurable: boolean;
   compatibility_class: string;
   harness_contract_revision: string;
+  model_lifecycle?: string | null;
+  availability_status?: string;
+  availability_reason?: string | null;
+  warnings?: string[];
   effective_model_id: string | null;
   effective_is_candidate: boolean;
   source: PreferenceSource;
@@ -54,6 +58,10 @@ export interface PreferenceDetail {
   persona_key: string;
   compatibility_class: string;
   harness_contract_revision: string;
+  model_lifecycle?: string | null;
+  availability_status?: string;
+  availability_reason?: string | null;
+  warnings?: string[];
   effective_model_id: string | null;
   effective_is_candidate: boolean;
   source: PreferenceSource;

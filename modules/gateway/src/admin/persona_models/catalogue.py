@@ -17,6 +17,8 @@ in the test suite asserts it matches the authoritative source.  See
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Literal
 
@@ -134,6 +136,18 @@ class CatalogueModel:
     compatibility_class: str
     harness_contract_revision: str
     lifecycle: LifecycleStatus = "active"
+    # Increment on each published lifecycle transition, including re-retirement.
+    lifecycle_version: int = 1
+
+    @property
+    def lifecycle_revision(self) -> str:
+        """Stable transition identity for retirement alert deduplication."""
+        canonical = json.dumps(
+            {"lifecycle": self.lifecycle, "model_id": self.canonical_model_id, "version": self.lifecycle_version},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
 
 
 # The catalogue.  Order is presentational (family groups).
@@ -225,7 +239,7 @@ _CATALOGUE_BY_ID: dict[str, CatalogueModel] = {m.canonical_model_id: m for m in 
 
 def catalogue_lookup(canonical_model_id: str) -> CatalogueModel | None:
     """Look up a model by its canonical versioned identifier."""
-    return _CATALOGUE_BY_ID.get(canonical_model_id)
+    return next((model for model in PLATFORM_MODEL_CATALOGUE if model.canonical_model_id == canonical_model_id), None)
 
 
 # ---------------------------------------------------------------------------

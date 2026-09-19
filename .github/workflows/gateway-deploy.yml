@@ -14,6 +14,7 @@ on:
       - 'modules/gateway/lambda/shared/pricing_fallback.py'
       - 'modules/gateway/lambda/shared/*.py'
       - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - 'modules/gateway/lambda/shared/root_principal.py'
       # Issue #4969: shared pricing policy, vendored into both budget Lambda zips
@@ -95,7 +96,7 @@ jobs:
           FRONTEND=false
           MIGRATIONS=false
           BUDGET_LAMBDAS=false
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/)'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/migrate-before-rollout\.py)'; then
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
@@ -104,12 +105,8 @@ jobs:
           if echo "$CHANGED" | grep -qE '^modules/gateway/alembic/versions/'; then
             MIGRATIONS=true
             echo "::warning::New Alembic migration detected in this push"
-            # #4123: migration files are baked into the image, and the migrate
-            # job execs `alembic upgrade head` inside the running pod (/app). A
-            # migration-only push must therefore ALSO rebuild+redeploy the image,
-            # or the migrate job runs the OLD in-pod migration files against the
-            # DB — which is exactly how #4123's over-long revision id kept failing
-            # even after the fix had merged. Force a backend rebuild.
+            # Migration files are baked into the release image. Build it before
+            # the pre-serving Job runs `alembic upgrade head` from that release.
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/lambda/(budget-usage-tracker/|pricing-refresh/|shared/.*\.py$)'; then
@@ -488,8 +485,11 @@ jobs:
             esac
           done
 
-      - name: Roll out new image
+      - name: Migrate schema then roll out new image
         run: |
+          set -euo pipefail
+          RENDERED_DEPLOYMENT=$(mktemp)
+          trap 'rm -f "$RENDERED_DEPLOYMENT"' EXIT
           EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
@@ -555,7 +555,16 @@ jobs:
               -e "s|__FEATURE_AGENT_CONTROL_ENABLED__|${FEATURE_AGENT_CONTROL_ENABLED}|g" \
               -e "s|__FEATURE_NEW_UI_ENABLED__|${FEATURE_NEW_UI_ENABLED}|g" \
               -e "s|__FEATURE_AGENT_MODELS_ENABLED__|${FEATURE_AGENT_MODELS_ENABLED}|g" \
-              modules/gateway/k8s/deployment.yaml | kubectl apply -f - -n ${{ env.NAMESPACE }}
+              modules/gateway/k8s/deployment.yaml > "$RENDERED_DEPLOYMENT"
+
+          # Nullable schema expansion must finish before the new ORM can serve.
+          # A bounded lock/index failure leaves the previous release serving.
+          python3 modules/gateway/scripts/migrate-before-rollout.py \
+            --manifest "$RENDERED_DEPLOYMENT" \
+            --image "${REGISTRY}/adp-gateway:${{ github.sha }}" \
+            --namespace "${{ env.NAMESPACE }}"
+          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${{ github.sha }}|g" \
+            "$RENDERED_DEPLOYMENT" | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
           # Stamp the image tag for this build. The manifest has a generic
           # placeholder; this line pins to the commit SHA for audit.

@@ -621,3 +621,20 @@ def test_equals_form_secret_argument_is_refused_without_echoing_the_value(capsys
     assert code == 1
     assert json.loads(captured.out)["error"]["code"] == "secret_in_argv"
     assert secret not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("argv", [["mappings", "list"], ["explain", "--persona", "architect"]])
+def test_owner_retirement_warning_is_rendered_for_list_and_explain(argv, monkeypatch, capsys):
+    warning = "Saved model is retired; choose a verified model."
+
+    class WarningApi(StubApi):
+        def request(self, method, path, body=None, **kwargs):
+            result = super().request(method, path, body, **kwargs)
+            entries = result.get("entries", [result])
+            for entry in entries:
+                entry.update(warnings=[warning], model_lifecycle="retired", availability_status="unavailable")
+            return result
+
+    monkeypatch.setattr(cli, "ModelsApi", WarningApi)
+    assert cli.main(argv) == 0
+    assert warning in capsys.readouterr().out

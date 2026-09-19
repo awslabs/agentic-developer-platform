@@ -15,7 +15,7 @@ jest.mock('./lib/runIdentity', () => ({
 const keys = generateKeyPairSync('ed25519');
 const originalEnv = process.env;
 const originalFetch = global.fetch;
-const legacy = { prompt: 'test', options: { model: 'legacy-model', fallbackModel: 'fallback-model' } };
+const legacy = { prompt: 'test', options: { model: 'legacy-model', fallbackModel: 'fallback-model', env: { ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: retained' } } };
 const model = 'gateway-model';
 let responsePolicy: any;
 let mutate: ((doc: any) => void) | undefined;
@@ -62,6 +62,15 @@ beforeEach(() => {
 
 afterEach(() => { process.env = originalEnv; global.fetch = originalFetch; });
 
+function expectLegacyCall(index = 0) {
+  const actual = (query as jest.Mock).mock.calls[index][0];
+  expect(actual.prompt).toBe(legacy.prompt);
+  expect(actual.options.model).toBe(legacy.options.model);
+  expect(actual.options.fallbackModel).toBe(legacy.options.fallbackModel);
+  expect(actual.options.env.ANTHROPIC_CUSTOM_HEADERS).toMatch(/^X-Existing: retained\nX-Adp-Model-Evidence: [0-9a-f]{64}$/);
+  expect(legacy.options.env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Existing: retained');
+}
+
 it('reaches the real SDK boundary with the gateway model and no fallback', async () => {
   const session = await createPolicyQuery(legacy);
   for await (const _ of session) { /* consume mocked SDK */ }
@@ -75,7 +84,7 @@ it('reaches the real SDK boundary with the gateway model and no fallback', async
 it.each(['report_only', 'disabled'])('preserves exact legacy options under verified %s', async posture => {
   responsePolicy = { posture, posture_verified: true, status: 'unavailable', reason: 'snapshot_missing' };
   await createPolicyQuery(legacy);
-  expect(query).toHaveBeenCalledWith(legacy);
+  expectLegacyCall();
 });
 
 it.each(['report_only', 'disabled', undefined, 'future'])('refuses an unsigned posture change to %s before query', async posture => {
@@ -103,6 +112,8 @@ it('obtains another decision on a real SDK retry and observes rollback', async (
   }));
   for await (const _ of resilientQuery({ queryParams: legacy, maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1, log: () => {} })) { /* consume */ }
   expect(fetch).toHaveBeenCalledTimes(2);
+  const headers = (query as jest.Mock).mock.calls.map(call => call[0].options.env.ANTHROPIC_CUSTOM_HEADERS);
+  expect(headers[0]).not.toBe(headers[1]);
   expect((query as jest.Mock).mock.calls.map(call => call[0].options.model)).toEqual([model, 'legacy-model']);
 });
 
@@ -206,8 +217,8 @@ it('ARC obtains a new identity and decision for retries and preserves report-onl
   await createPolicyQuery(legacy);
   await createPolicyQuery(legacy);
   expect(fetch).toHaveBeenCalledTimes(4);
-  expect(query).toHaveBeenNthCalledWith(1, legacy);
-  expect(query).toHaveBeenNthCalledWith(2, legacy);
+  expectLegacyCall(0);
+  expectLegacyCall(1);
 });
 
 it('refuses signed ARC authority from another workflow even in report-only', async () => {
@@ -245,4 +256,14 @@ it.each([{ compatibility_class: 'codex-sdk' }, { harness_contract_revision: 'uns
   responsePolicy.decision = { ...responsePolicy.decision, ...change };
   await expect(createPolicyQuery(legacy)).rejects.toBeInstanceOf(ModelPolicyRefused);
   expect(query).not.toHaveBeenCalled();
+});
+
+
+it('replaces prior evidence headers while preserving unrelated SDK headers', async () => {
+  responsePolicy = policy('report_only');
+  const params = { ...legacy, options: { ...legacy.options, env: { ANTHROPIC_CUSTOM_HEADERS:
+    'X-Existing: retained\nx-adp-model-evidence: old\nX-Adp-Model-Evidence: stale' } } };
+  await createPolicyQuery(params);
+  const headers = (query as jest.Mock).mock.calls[0][0].options.env.ANTHROPIC_CUSTOM_HEADERS;
+  expect(headers).toMatch(/^X-Existing: retained\nX-Adp-Model-Evidence: [0-9a-f]{64}$/);
 });

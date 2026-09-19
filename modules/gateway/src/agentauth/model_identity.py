@@ -215,6 +215,18 @@ class AgentModelIdentityMiddleware:
                 # a non-`gate_decision` run's cost invisible to flow-level accounting.
                 flow_id=grant.flow_id if grant.authority.kind in {AUTHORITY_GATE_DECISION, AUTHORITY_REPLAN_REQUEST} else None,
             )
+            # Issue #5426: attach only the protected PMM-06 snapshot projection.
+            # This is report-only evidence and therefore degrades to None; it can
+            # neither deny the provider call nor be supplied by the worker.
+            from src.usage.model_policy_evidence import HEADER, protected_usage_attribution
+
+            context._persona_usage_attribution = await run_in_threadpool(
+                protected_usage_attribution,
+                store=runtime.store,
+                record=record,
+                decision_id=request.headers.get(HEADER),
+                approving_human_id=grant.authority.human_id or None,
+            )
             # Issue #4898: attach the verified graph assignment so the shared
             # usage writer can persist `usage_logs.graph_address`. Captured HERE —
             # before the request reaches the provider — so the value metering

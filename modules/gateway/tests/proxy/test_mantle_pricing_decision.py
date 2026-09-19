@@ -43,7 +43,9 @@ async def test_aws_sol_example_records_one_bound_decimal_decision(metering, monk
     wire = b'data: {"type":"response.completed","response":' + payload + b"}\n\n" if stream else payload
     auth = MagicMock()
     auth.sign.return_value = {"Authorization": "synthetic"}
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=SplitSSE(wire)))) as client:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, headers={"x-amzn-requestid": "provider-original"}, stream=SplitSSE(wire)))
+    ) as client:
         service = base.mantle_service.MantlePassthroughService(auth, "https://bedrock-mantle.us-east-1.api.aws", http_client=client)
         result = await service.create_response(
             b'{"model":"openai.gpt-5.6-sol","service_tier":"flex"}',
@@ -67,6 +69,8 @@ async def test_aws_sol_example_records_one_bound_decimal_decision(metering, monk
     logged = usage_service.log_request.await_args.kwargs
     assert logged["cost_usd"] == Decimal("0.007040") and isinstance(logged["cost_usd"], Decimal)
     assert logged["input_tokens"] == 128 and logged["cache_read_input_tokens"] == 1920
+    assert logged["provider_request_id"] == "provider-original"
+    assert logged["destination_region"] == "us-east-1"
     assert logged["cache_creation_input_tokens"] == 0
     assert base.mantle_service.reconcile_budget_reservation.await_args.kwargs["actual_cost_usd"] == Decimal("0.007040")
 
