@@ -4,6 +4,7 @@ Tests alias resolution and fnmatch validation against allowed patterns.
 """
 
 import sys
+import time
 from pathlib import Path
 
 # Add lambda root to path for imports
@@ -131,3 +132,13 @@ class TestUnknownAliases:
         """Empty string alias is rejected."""
         result = resolve_and_validate("")
         assert result is None
+
+
+def test_edge_validation_adds_no_network_call_and_stays_inside_webhook_budget():
+    """One thousand local resolutions leave overwhelming headroom under 10s."""
+    started = time.perf_counter()
+    for _ in range(1000):
+        assert resolve_and_validate("sonnet46") == (
+            "global.anthropic.claude-sonnet-4-6"
+        )
+    assert time.perf_counter() - started < 0.25
