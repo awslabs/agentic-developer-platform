@@ -53,12 +53,12 @@ function fixPrompt(findings: ReviewFinding[]): string {
   return `Apply only the following reviewer-approved mechanical fixes to the working tree. Do not commit, push, merge, call GitHub, or alter unrelated files. Run focused tests for changed behavior. If a requested repair requires choosing product semantics or changing architecture, leave it untouched and explain that in the final response.\n\n${JSON.stringify(findings, null, 2)}`;
 }
 
-function gitEnvironment(token: string): NodeJS.ProcessEnv {
+export function gitEnvironment(token: string): NodeJS.ProcessEnv {
   return {
     ...childEnvironment(),
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
-    GIT_CONFIG_VALUE_0: `AUTHORIZATION: bearer ${token}`,
+    GITHUB_TOKEN: token,
+    GH_TOKEN: token,
+    GIT_ASKPASS: process.env.GIT_ASKPASS ?? "/usr/local/bin/git-askpass-helper",
   };
 }
 
@@ -76,8 +76,8 @@ function childEnvironment(): Record<string, string> {
   };
 }
 
-function repositoryUrl(repository: string): string {
-  return `https://github.com/${repository}.git`;
+export function repositoryUrl(repository: string): string {
+  return `https://x-access-token@github.com/${repository}.git`;
 }
 
 async function remoteHead(

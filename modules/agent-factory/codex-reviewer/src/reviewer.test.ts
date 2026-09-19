@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { mergeEnabled, validateAutofix } from "./reviewer.js";
+import {
+  gitEnvironment,
+  mergeEnabled,
+  repositoryUrl,
+  validateAutofix,
+} from "./reviewer.js";
 
 const exec = promisify(execFile);
 
@@ -13,6 +18,18 @@ test("merge is enabled by default and can be explicitly disabled", () => {
   assert.equal(mergeEnabled({}), true);
   assert.equal(mergeEnabled({ CODEX_REVIEWER_MERGE_ENABLED: "true" }), true);
   assert.equal(mergeEnabled({ CODEX_REVIEWER_MERGE_ENABLED: "false" }), false);
+});
+
+test("Git transport uses askpass without placing the token in the remote URL", () => {
+  const token = "installation-token";
+  const env = gitEnvironment(token);
+  const url = repositoryUrl("aws-e/adp");
+  assert.equal(url, "https://x-access-token@github.com/aws-e/adp.git");
+  assert.equal(url.includes(token), false);
+  assert.equal(env.GITHUB_TOKEN, token);
+  assert.equal(env.GH_TOKEN, token);
+  assert.ok(env.GIT_ASKPASS);
+  assert.equal(env.GIT_TERMINAL_PROMPT, "0");
 });
 
 async function fixture(): Promise<{
