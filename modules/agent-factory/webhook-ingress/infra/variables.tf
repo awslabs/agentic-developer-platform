@@ -508,6 +508,9 @@ variable "agent_control_enabled" {
   default     = false
 }
 
+# #5222: pause/resume require this protected path and configured signing keys.
+# Keep activation explicit; distributing control keys must not bypass the
+# worker isolation/readiness gates in #5195/#5210.
 variable "agent_authority_enabled" {
   description = "Enable protected dispatch and mandatory pre-repository pod bootstrap. Keep off until the delegated-authority acceptance and writer migration are complete."
   type        = bool

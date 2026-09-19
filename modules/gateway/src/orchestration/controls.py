@@ -74,6 +74,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -865,7 +866,7 @@ async def _run_control_identity(current_user: TokenContext, db: AsyncSession) ->
     `attributed_org_id` instead would let a caller nominate the tenant whose runs
     they may control.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     return canonical_user_id, current_user.org_id
 
 
@@ -876,7 +877,7 @@ async def _run_control(
     current_user: TokenContext,
     db: AsyncSession,
     request: Request,
-) -> None:
+) -> JSONResponse:
     """Validate the body, apply the shared authorization gate, report the status.
 
     One helper for all four verbs so no verb can accidentally acquire a weaker
@@ -900,16 +901,19 @@ async def _run_control(
     except ControlError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+
     user_id, tenant_id = await _run_control_identity(current_user, db)
     try:
         control.authorize_command(run_id, action, user_id=user_id, tenant_id=tenant_id)
+        session = await authorize_human_session(current_user, db)
+        result, status = await control.command(run_id, action, request_body=await request.body(), session=session)
+        return JSONResponse(result.model_dump(), status_code=status, headers={"Cache-Control": "no-store"})
+    except BootstrapRefusedError:
+        raise HTTPException(status_code=404, detail="run not found") from None
     except ControlError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
-    # Unreachable while no verb is supported: the gate raises 501 first. Kept as
-    # the declared success seam so the implementing story wires its behaviour
-    # here instead of inventing a second response contract.
-    raise HTTPException(status_code=501, detail=f"{action} is not implemented in this deployment")
 
 
 @router.post("/runs/{run_id}/pause")
@@ -919,9 +923,9 @@ async def pause_run(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     control: Annotated[ControlService, Depends(get_run_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
-    """Pause a live run — authorized here, not yet implemented (501)."""
-    await _run_control(run_id, "pause", control, current_user, db, request)
+) -> JSONResponse:
+    """Pause a live run through the shared signed human control path."""
+    return await _run_control(run_id, "pause", control, current_user, db, request)
 
 
 @router.post("/runs/{run_id}/resume")
@@ -931,8 +935,8 @@ async def resume_run(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     control: Annotated[ControlService, Depends(get_run_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
-    """Resume a paused run — authorized here, not yet implemented (501).
+) -> JSONResponse:
+    """Resume a paused run through the shared signed human control path.
 
     New in #3960: the original seam declared pause/steer/abort but not resume,
     which would have left the two adapters offering different verb sets. Note
@@ -941,7 +945,7 @@ async def resume_run(
     human-only for reasons documented there. This one releases a live pod's pause
     barrier.
     """
-    await _run_control(run_id, "resume", control, current_user, db, request)
+    return await _run_control(run_id, "resume", control, current_user, db, request)
 
 
 @router.post("/runs/{run_id}/steer")
@@ -951,9 +955,9 @@ async def steer_run(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     control: Annotated[ControlService, Depends(get_run_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
+) -> JSONResponse:
     """Steer a live run — authorized here, not yet implemented (501)."""
-    await _run_control(run_id, "steer", control, current_user, db, request)
+    return await _run_control(run_id, "steer", control, current_user, db, request)
 
 
 @router.post("/runs/{run_id}/abort")
@@ -963,9 +967,9 @@ async def abort_run(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     control: Annotated[ControlService, Depends(get_run_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
+) -> JSONResponse:
     """Abort a live run — authorized here, not yet implemented (501)."""
-    await _run_control(run_id, "abort", control, current_user, db, request)
+    return await _run_control(run_id, "abort", control, current_user, db, request)
 
 
 @router.get("/runs/{run_id}/ping", response_model=ControlPingResponse)

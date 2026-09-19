@@ -23,13 +23,26 @@ import {
   AttemptInputChannel,
   CLAUDE_ADAPTER_ID,
   CLAUDE_SDK_VERSION,
+  ClaudeBackgroundWorkObserver,
   ClaudeControlAdapter,
+  PAUSE_EXPIRY_ANNOTATION,
+  createClaudePauseHooks,
   toSdkUserMessage,
 } from './claude-control';
 import type { ControlAction } from '../control-state';
 import { IMPLEMENTED_CONTROL_VERBS, type ControlInput } from '../control-runtime';
+import { PauseGate, type PauseGateScheduler } from '../pause-gate';
 
 const ALL_VERBS: ControlAction[] = ['pause', 'resume', 'steer', 'abort'];
+
+/**
+ * The verbs S2's barrier implements, injected where this suite tests the adapter's
+ * own behaviour.
+ *
+ * Keep the adapter-specific set explicit so these tests verify the adapter's
+ * behavior independently of the platform capability intersection.
+ */
+const PAUSE_AND_RESUME: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume']);
 
 /**
  * A stand-in for the SDK's query handle, counting closes.
@@ -197,12 +210,13 @@ describe('adapter identity and capabilities', () => {
     expect(JSON.parse(declared).dependencies['@anthropic-ai/claude-agent-sdk']).toBe(CLAUDE_SDK_VERSION);
   });
 
-  it('keeps every verb unsupported while an attempt is live', async () => {
+  it('keeps every verb unsupported when no barrier was installed in this run', async () => {
+    // A live attempt with no gate is the most permissive *gateless* state this
+    // adapter reaches. Pause is enabled at build time now, so if a verb were going
+    // to leak through on a run that cannot actually hold a tool, it would be here.
     const adapter = new ClaudeControlAdapter();
     await startAttempt(adapter);
 
-    // A live attempt is the most permissive state this adapter reaches. If a
-    // verb were going to leak through the intersection, it would be here.
     expect(adapter.currentAttempt()).not.toBeNull();
     for (const verb of ALL_VERBS) {
       expect(adapter.capabilities()[verb]).toBe(false);
@@ -211,41 +225,127 @@ describe('adapter identity and capabilities', () => {
     }
   });
 
-  it('still advertises nothing when ADP implements a verb the adapter cannot prove', async () => {
-    // The forward-looking half of the intersection: when S2 adds `pause` to the
-    // ADP set, this adapter's own lack of support must still veto it. Widening
-    // one side alone is exactly how a dashboard gets a button the worker rejects.
-    const adapter = new ClaudeControlAdapter({ implementedVerbs: new Set<ControlAction>(['pause', 'steer']) });
+  it('advertises pause and resume once a barrier is installed, and nothing more', async () => {
+    const adapter = new ClaudeControlAdapter({ pauseGate: new PauseGate(), implementedVerbs: PAUSE_AND_RESUME });
     await startAttempt(adapter);
 
-    expect(adapter.capabilities().pause).toBe(false);
+    expect(adapter.capabilities()).toEqual({ pause: true, resume: true, steer: false, abort: false });
+    // Steering and abort each need their own runtime proof (S4/S6). The adapter
+    // can already carry input, and that is deliberately not enough: carrying input
+    // is not a delivered control.
+    expect(adapter.describe().capabilities.steer.reason).toBeTruthy();
+    expect(adapter.describe().capabilities.abort.reason).toBeTruthy();
+    await adapter.dispose();
+  });
+
+  it('still advertises nothing when ADP implements a verb the adapter cannot prove', async () => {
+    // The other half of the intersection: `steer` is in the ADP set here, and this
+    // adapter's own lack of a proven boundary must still veto it. Widening one side
+    // alone is exactly how a dashboard gets a button the worker rejects with 501.
+    const adapter = new ClaudeControlAdapter({
+      implementedVerbs: new Set<ControlAction>(['pause', 'steer']),
+      pauseGate: new PauseGate(),
+    });
+    await startAttempt(adapter);
+
     expect(adapter.capabilities().steer).toBe(false);
+    // And the verb that *is* proven still comes through, so this is a conjunction
+    // rather than a blanket refusal.
+    expect(adapter.capabilities().pause).toBe(true);
+    await adapter.dispose();
   });
 
-  it('ships with the empty ADP verb set by default', () => {
-    expect(IMPLEMENTED_CONTROL_VERBS.size).toBe(0);
+  it('still advertises nothing without a barrier even when ADP enables pause and resume', () => {
+    expect([...IMPLEMENTED_CONTROL_VERBS]).toEqual(['pause', 'resume']);
     expect(Object.values(new ClaudeControlAdapter().capabilities())).toEqual([false, false, false, false]);
+    expect(
+      Object.values(new ClaudeControlAdapter({ implementedVerbs: PAUSE_AND_RESUME }).capabilities()),
+    ).toEqual([false, false, false, false]);
   });
 
-  it('never confirms a pause, and treats releasing a pause it cannot hold as a no-op', async () => {
+  it('refuses to confirm a pause with no barrier, and treats the release as a no-op', async () => {
     const adapter = new ClaudeControlAdapter();
     await startAttempt(adapter);
 
     const result = await adapter.requestPause();
     // `unavailable` with a reason, never a fabricated success: an operator reads
-    // "Paused" as "nothing is touching my repository right now", and this story
-    // has no tool-quiescence proof to back that claim. S2 owns it.
+    // "Paused" as "nothing is touching my repository right now", and a run with no
+    // `PreToolUse` gate has nothing standing between the model and a Bash call.
     expect(result.outcome).toBe('unavailable');
     expect((result as { reason: string }).reason).toBeTruthy();
     await expect(adapter.resumeFromPause()).resolves.toBeUndefined();
   });
 
-  it('reports work as unobservable rather than idle', async () => {
+  it('refuses a pause when there is no live attempt to hold', async () => {
+    // A gate and an enabled verb, but nothing running. The barrier is perfectly
+    // capable here — which is the point: capability is not the same as a live
+    // execution to apply it to, and confirming on an adapter between attempts
+    // would report a paused run where there is no run.
+    const adapter = new ClaudeControlAdapter({
+      pauseGate: new PauseGate(),
+      implementedVerbs: PAUSE_AND_RESUME,
+    });
+
+    const result = await adapter.requestPause();
+
+    expect(result.outcome).toBe('unavailable');
+    expect((result as { reason: string }).reason).toContain('no live attempt');
+  });
+
+  it('refuses a pause ADP has not enabled, even though the barrier could hold it', async () => {
+    // The load-bearing case for the three-way intersection. The gate below is real
+    // and would genuinely park a tool, so reaching it directly would return
+    // `confirmed` for a verb the platform has not turned on. The adapter does not
+    // get the deciding vote on its own capability.
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: new Set() });
+    await startAttempt(adapter);
+
+    const result = await adapter.requestPause();
+
+    expect(result.outcome).toBe('unavailable');
+    expect((result as { reason: string }).reason).toBeTruthy();
+    // And the gate was never asked, so no state was changed by the refusal.
+    expect(gate.currentPhase()).toBe('running');
+  });
+
+  it('refuses a pause whose request was already cancelled', async () => {
+    // The operator navigated away, or the command was superseded, before the
+    // request reached the barrier. Closing admission now would pause a run for
+    // somebody who is no longer waiting for it, and nothing would resume it except
+    // the expiry.
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: PAUSE_AND_RESUME });
+    await startAttempt(adapter);
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await adapter.requestPause({ signal: controller.signal });
+
+    expect(result.outcome).toBe('unavailable');
+    expect((result as { reason: string }).reason).toContain('cancelled');
+    expect(gate.currentPhase()).toBe('running');
+  });
+
+  it('reports work as unobservable when no barrier is counting it', async () => {
     const adapter = new ClaudeControlAdapter();
     await startAttempt(adapter);
     // null means "cannot see", which must never be rendered as the quiescence
     // claim 0 — that would let a pause look confirmed while a Bash call runs.
     expect(adapter.activeWorkCount()).toBeNull();
+  });
+
+  it('reports the barrier own count once one is installed, so 0 is a claim not a guess', async () => {
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: PAUSE_AND_RESUME });
+    await startAttempt(adapter);
+
+    expect(adapter.activeWorkCount()).toBe(0);
+    const admission = await gate.admit('Bash');
+    expect(adapter.activeWorkCount()).toBe(1);
+    gate.settle(admission.ticket);
+    expect(adapter.activeWorkCount()).toBe(0);
+    await adapter.dispose();
   });
 });
 
@@ -570,5 +670,587 @@ describe('input handoff reporting', () => {
     expect(handoff).toMatchObject({ command_id: 'cmd-42', result: 'delivered' });
     await adapter.dispose();
     await messages;
+  });
+});
+
+/**
+ * A timer the tests fire by hand, so a pause budget costs no real waiting.
+ *
+ * Every gate below that reaches a confirmed pause needs one: a confirmed pause
+ * arms an expiry timer for its whole budget (thirty minutes by default), and a
+ * test that pauses without resuming would otherwise hold Jest open long after
+ * its last assertion.
+ */
+function manualScheduler(): PauseGateScheduler & { fireAll: () => void } {
+  const timers: Array<{ fn: () => void; cancelled: boolean }> = [];
+  return {
+    setTimer: (fn) => {
+      const entry = { fn, cancelled: false };
+      timers.push(entry);
+      return entry;
+    },
+    clearTimer: (handle) => {
+      (handle as { cancelled: boolean }).cancelled = true;
+    },
+    fireAll: () => {
+      for (const entry of [...timers]) {
+        if (entry.cancelled) continue;
+        entry.cancelled = true;
+        entry.fn();
+      }
+    },
+  };
+}
+
+/**
+ * Real timers that cannot outlive the suite.
+ *
+ * For the one case that needs the gate's *settle* timer to actually fire.
+ * `unref` keeps it safe: the timer exists and would fire, but it is not a reason
+ * for the Jest process to stay alive after the last assertion.
+ */
+function unreffedScheduler(): PauseGateScheduler {
+  return {
+    setTimer: (fn, ms) => {
+      const handle = setTimeout(fn, ms);
+      handle.unref?.();
+      return handle;
+    },
+    clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  };
+}
+
+describe('pause hook translation', () => {
+  /** A PreToolUse hook input, in the shape the CLI actually sends. */
+  function preToolUse(toolName: string, toolInput: unknown, toolUseId: string) {
+    return { hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput, tool_use_id: toolUseId } as never;
+  }
+
+  function postToolUse(toolUseId?: string) {
+    return { hook_event_name: 'PostToolUse', tool_use_id: toolUseId } as never;
+  }
+
+  function stop(backgroundTasks?: unknown) {
+    return { hook_event_name: 'Stop', background_tasks: backgroundTasks } as never;
+  }
+
+  /**
+   * A `SubagentStop`, in the shape the SDK types it: `agent_id` is **required**.
+   *
+   * That requirement is the whole of the review's B8. This event fires once per
+   * finishing subagent rather than at turn end, so a callback that settles every
+   * outstanding admission lets one subagent vouch for the main thread.
+   */
+  function subagentStop(agentId: string, backgroundTasks?: unknown) {
+    return {
+      hook_event_name: 'SubagentStop',
+      agent_id: agentId,
+      agent_type: 'general-purpose',
+      agent_transcript_path: '/tmp/transcript.jsonl',
+      stop_hook_active: false,
+      background_tasks: backgroundTasks,
+    } as never;
+  }
+
+  /** A PreToolUse from inside a subagent: `agent_id` present, per BaseHookInput. */
+  function subagentPreToolUse(toolName: string, toolInput: unknown, toolUseId: string, agentId: string) {
+    return {
+      hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput,
+      tool_use_id: toolUseId, agent_id: agentId, agent_type: 'general-purpose',
+    } as never;
+  }
+
+  it('admits a tool without an explicit allow, so it cannot override another hook deny', async () => {
+    const hooks = createClaudePauseHooks(new PauseGate());
+
+    const decision = await hooks.preToolUse(preToolUse('Bash', { command: 'ls' }, 'tu-1'));
+
+    // `{}` is the load-bearing detail. An explicit `allow` would override a deny
+    // from a permission rule or another PreToolUse hook, so a barrier meant to
+    // *stop* tools would end up authorising ones the operator had blocked.
+    expect(decision).toEqual({});
+  });
+
+  it('holds a tool at the barrier while paused and admits it on resume', async () => {
+    const gate = new PauseGate({ scheduler: manualScheduler() });
+    const hooks = createClaudePauseHooks(gate);
+    await gate.requestPause();
+
+    const held = hooks.preToolUse(preToolUse('Write', { file_path: '/tmp/x' }, 'tu-2'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(gate.heldCount()).toBe(1);
+
+    await gate.resume();
+
+    // Held, not refused. The tool the model chose still runs — just after the
+    // operator lets it — which is what makes resume a continuation of the same
+    // turn rather than a model that has to rediscover what it was doing.
+    expect(await held).toEqual({});
+    expect(gate.activeToolCount()).toBe(1);
+  });
+
+  it('denies with an operator-facing reason when the run is cancelled', async () => {
+    const gate = new PauseGate();
+    const hooks = createClaudePauseHooks(gate);
+    gate.cancel('operator aborted');
+
+    const decision = await hooks.preToolUse(preToolUse('Write', { file_path: '/tmp/x' }, 'tu-2b'));
+
+    // Deny rather than throw: the model reads a denied tool as "not allowed right
+    // now" and stops, whereas a thrown hook reads as a failure it tries to route
+    // around — which is how an aborted run would keep touching the repository.
+    expect(decision).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.any(String),
+      },
+    });
+    const output = (decision as { hookSpecificOutput: { permissionDecisionReason: string } }).hookSpecificOutput;
+    expect(output.permissionDecisionReason).toBeTruthy();
+  });
+
+  it('settles the admission its tool_use_id holds, so a later pause can confirm', async () => {
+    // Real timers here, unlike the tests around it. The gate uses one scheduler
+    // for two jobs, and this is the case that needs the *second* one: the bounded
+    // wait for admitted work to settle. A manual scheduler would never fire it, so
+    // the pause below would wait forever for a timer nobody was going to trigger.
+    // The 20 ms is not the production minute — the *bound* is the contract and its
+    // duration is tuning, so waiting the real value proves nothing extra.
+    const gate = new PauseGate({ settleTimeoutMs: 20, scheduler: unreffedScheduler() });
+    const hooks = createClaudePauseHooks(gate);
+    await hooks.preToolUse(preToolUse('Bash', { command: 'sleep 1' }, 'tu-3'));
+
+    expect(gate.activeToolCount()).toBe(1);
+    // Unsettled, a pause can only be `requested` — the whole point of tracking
+    // admissions is that `paused` is a claim about what is running.
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+
+    await hooks.postToolUse(postToolUse('tu-3'));
+    expect(gate.activeToolCount()).toBe(0);
+    await gate.resume();
+    await expect(gate.requestPause()).resolves.toEqual({ outcome: 'confirmed' });
+  });
+
+  it('ignores a completion for a tool it never admitted', async () => {
+    const gate = new PauseGate();
+    const hooks = createClaudePauseHooks(gate);
+
+    // Hooks can fire for tools that never reached the barrier (installed
+    // mid-session, or an event the CLI replays). Decrementing on those would drive
+    // the in-flight count below the truth and confirm a pause over live work.
+    await expect(hooks.postToolUse(postToolUse('never-admitted'))).resolves.toEqual({});
+    await expect(hooks.postToolUse(postToolUse(undefined))).resolves.toEqual({});
+    expect(gate.activeToolCount()).toBe(0);
+  });
+
+  it('settles admissions the harness never reported a completion for when the turn ends', async () => {
+    const gate = new PauseGate();
+    const hooks = createClaudePauseHooks(gate);
+    await hooks.preToolUse(preToolUse('Bash', { command: 'x' }, 'tu-4'));
+    await hooks.preToolUse(preToolUse('Read', { file_path: '/tmp/y' }, 'tu-5'));
+
+    await hooks.onStop(stop([]));
+
+    // A ticket surviving to Stop is a missing edge — an interrupted tool, a crashed
+    // hook. Nothing is still executing inside a turn that has ended, so holding the
+    // tickets would make every later pause wait on a tool that finished long ago.
+    expect(gate.activeToolCount()).toBe(0);
+  });
+
+  it('will not let a finishing subagent settle the main thread\'s running tools', async () => {
+    // The review's B8, and the reason it is a blocker rather than a wart: the
+    // observable end state was a pause reporting `paused` with `active_tool_count: 0`
+    // while `sleep 600 && rm -rf src` was mid-execution. An operator reads `Paused`
+    // as "nothing is touching my repository" and starts editing files underneath it.
+    const gate = new PauseGate({ settleTimeoutMs: 20, scheduler: unreffedScheduler() });
+    const hooks = createClaudePauseHooks(gate);
+
+    // Main thread: no `agent_id`, per BaseHookInput — absent even in --agent sessions.
+    await hooks.preToolUse(preToolUse('Bash', { command: 'sleep 600 && rm -rf src' }, 'tu-main'));
+    await hooks.preToolUse(subagentPreToolUse('Read', { file_path: '/x' }, 'tu-sub', 'agent-1'), 'tu-sub');
+    expect(gate.activeToolCount()).toBe(2);
+
+    // One subagent finishes. Its own admission is a genuine missing edge to clean
+    // up; the main thread's is none of its business.
+    await hooks.onStop(subagentStop('agent-1', []));
+
+    expect(gate.activeToolCount()).toBe(1);
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+    expect(gate.currentPhase()).not.toBe('paused');
+  });
+
+  it('settles only the scope whose turn ended, for each of several subagents', async () => {
+    const gate = new PauseGate();
+    const hooks = createClaudePauseHooks(gate);
+
+    await hooks.preToolUse(subagentPreToolUse('Read', { file_path: '/a' }, 'tu-a', 'agent-1'), 'tu-a');
+    await hooks.preToolUse(subagentPreToolUse('Grep', { pattern: 'x' }, 'tu-b', 'agent-2'), 'tu-b');
+    expect(gate.activeToolCount()).toBe(2);
+
+    await hooks.onStop(subagentStop('agent-1', []));
+    // Sibling subagents are as separate from each other as from the main thread.
+    expect(gate.activeToolCount()).toBe(1);
+
+    await hooks.onStop(subagentStop('agent-2', []));
+    expect(gate.activeToolCount()).toBe(0);
+  });
+
+  it('still settles a main-thread missing edge when the main turn ends', async () => {
+    // The scoping must not cost the cleanup it was added around. A ticket surviving
+    // to `Stop` is an interrupted tool or a crashed hook, and holding it would make
+    // every later pause wait on a tool that finished long ago.
+    const gate = new PauseGate();
+    const hooks = createClaudePauseHooks(gate);
+    await hooks.preToolUse(preToolUse('Bash', { command: 'x' }, 'tu-1'));
+    await hooks.preToolUse(subagentPreToolUse('Read', { file_path: '/y' }, 'tu-2', 'agent-1'), 'tu-2');
+
+    await hooks.onStop(stop([]));
+
+    // Main thread cleaned up; the live subagent's admission survives, because a
+    // subagent can outlive the main turn that spawned it.
+    expect(gate.activeToolCount()).toBe(1);
+  });
+
+  it('confirms a pause held on an unobservable probe once a stop report clears it', async () => {
+    // The review's B7, through the production path: a report only ever reaches the
+    // observer via `onStop`, and that is the edge that must re-drive confirmation.
+    // Without it the pause sat in `pause_requested` for its whole budget after the
+    // probe cleared, then auto-resumed.
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({
+      scheduler: manualScheduler(),
+      backgroundWorkProbe: () => observer.count(),
+    });
+    const hooks = createClaudePauseHooks(gate, observer);
+
+    // A delegating tool spawns work that outlives it, then completes.
+    await hooks.preToolUse(preToolUse('Task', { prompt: 'go' }, 'tu-1'));
+    await hooks.postToolUse(postToolUse('tu-1'));
+    expect(observer.count()).toBeNull();
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+
+    // The turn ends and reports nothing in flight. One notification, no second
+    // pause command — the operator pressed Pause once.
+    await hooks.onStop(stop([]));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(gate.currentPhase()).toBe('paused');
+  });
+
+  it('never confirms pause when Stop omits a background report after an admitted Bash', async () => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({ scheduler: manualScheduler(), backgroundWorkProbe: () => observer.count() });
+    const hooks = createClaudePauseHooks(gate, observer);
+    await hooks.preToolUse(preToolUse('Bash', { run_in_background: true }, 'background'));
+    await hooks.postToolUse(postToolUse('background'));
+    await hooks.onStop(stop());
+    expect(observer.count()).toBeNull();
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+    expect(gate.currentPhase()).toBe('pause_requested');
+  });
+
+  it.each([
+    [undefined, 'child'], ['child', undefined], ['child-a', 'child-b'],
+  ])('does not let scope %p be cleared by scope %p', async (owner, other) => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({ scheduler: manualScheduler(), backgroundWorkProbe: () => observer.count() });
+    const hooks = createClaudePauseHooks(gate, observer);
+    await hooks.preToolUse(owner === undefined
+      ? preToolUse('Task', {}, 'background')
+      : subagentPreToolUse('Task', {}, 'background', owner));
+    await hooks.postToolUse(postToolUse('background'));
+    await hooks.onStop(other === undefined ? stop([]) : subagentStop(other, []));
+    expect(observer.count()).toBeNull();
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'requested' });
+    await hooks.onStop(owner === undefined ? stop([]) : subagentStop(owner, []));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(observer.count()).toBe(0);
+    expect(gate.currentPhase()).toBe('paused');
+  });
+
+  it('does not record background work for a parked tool that is denied', async () => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({ scheduler: manualScheduler(), backgroundWorkProbe: () => observer.count() });
+    const hooks = createClaudePauseHooks(gate, observer);
+    await gate.requestPause();
+    const parked = hooks.preToolUse(preToolUse('Task', {}, 'denied'));
+    try {
+      await Promise.resolve();
+      expect(observer.count()).toBe(0);
+    } finally {
+      gate.cancel('fixture abort');
+      await parked;
+    }
+    expect(observer.count()).toBe(0);
+  });
+
+  it('reports the CLI hook timeout as a breached barrier rather than a declined tool', async () => {
+    const gate = new PauseGate({ scheduler: manualScheduler() });
+    const hooks = createClaudePauseHooks(gate);
+    await gate.requestPause();
+    const controller = new AbortController();
+    controller.abort();
+
+    // A hook timeout is enforced in the CLI subprocess and reaches JS only as this
+    // aborted signal — the CLI has already stopped waiting and will run the tool.
+    // Treating that as a polite refusal would leave the operator reading "Paused"
+    // while a Bash call proceeds.
+    await hooks.preToolUse(preToolUse('Bash', { command: 'x' }, 'tu-6'), 'tu-6', { signal: controller.signal });
+
+    expect(gate.barrierBreached()).toBe(true);
+    await expect(gate.requestPause()).resolves.toMatchObject({ outcome: 'unavailable' });
+  });
+
+  it('falls back to the callback tool_use_id when the payload omits it', async () => {
+    const gate = new PauseGate();
+    const hooks = createClaudePauseHooks(gate);
+
+    await hooks.preToolUse({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} } as never, 'tu-7');
+    await hooks.postToolUse(postToolUse('tu-7'));
+
+    expect(gate.activeToolCount()).toBe(0);
+  });
+});
+
+describe('background work observation', () => {
+  it.each(['mcp__external__start_job', 'UnknownTool'])(
+    'cannot clear %s with local or sibling SDK task reports', (toolName) => {
+      const observer = new ClaudeBackgroundWorkObserver();
+      observer.noteToolStart(toolName, { run_in_background: false }, 'external');
+      observer.noteBackgroundReport([], 'external');
+      observer.noteToolStart('Task', {}, 'managed');
+      observer.noteBackgroundReport([], 'managed');
+      expect(observer.count()).toBeNull();
+    },
+  );
+
+  it('does not infer a shell is quiescent from its invocation flags', () => {
+    const observer = new ClaudeBackgroundWorkObserver();
+
+    expect(observer.count()).toBe(0);
+    observer.noteToolStart('Bash', { command: 'ls' });
+    // The shell may have detached a child even without run_in_background.
+    expect(observer.count()).toBeNull();
+  });
+
+  it.each([
+    ['a backgrounded shell', 'Bash', { command: 'npm test', run_in_background: true }],
+    ['a delegating tool whose subagent outlives the call', 'Task', { prompt: 'go' }],
+    ['the current SDK Agent delegation tool', 'Agent', { prompt: 'go' }],
+  ])('cannot vouch for %s until a report arrives', (_label, toolName, toolInput) => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    observer.noteToolStart(toolName, toolInput);
+
+    // `null`, never 0. Reporting zero here would tell an operator that nothing is
+    // touching their repository at the exact moment something is.
+    expect(observer.count()).toBeNull();
+  });
+
+  it('uses the reported count once a turn ends', () => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    observer.noteToolStart('Task', {});
+
+    observer.noteBackgroundReport([{ id: 'bg-1' }, { id: 'bg-2' }]);
+
+    expect(observer.count()).toBe(2);
+  });
+
+  it('stops vouching when a second spawn follows an all-clear', () => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    observer.noteToolStart('Task', {});
+    observer.noteBackgroundReport([]);
+    expect(observer.count()).toBe(0);
+
+    observer.noteToolStart('Bash', { command: 'x', run_in_background: true });
+
+    // The sequence check is the whole reason this is not a pair of booleans: a
+    // report written before a spawn must not keep vouching for work started after.
+    expect(observer.count()).toBeNull();
+  });
+
+  it.each([undefined, null, 42, {}])('treats missing or malformed report %p as unobservable', (report) => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    observer.noteToolStart('Task', {});
+
+    // Only a real empty array is an all-clear. Neither absence nor malformed
+    // evidence can establish that the admitted background work has ended.
+    observer.noteBackgroundReport(report);
+    expect(observer.count()).toBeNull();
+  });
+
+  it.each([
+    ['no input at all', null],
+    ['a non-object input', 'a string'],
+    ['run_in_background explicitly false', { command: 'ls', run_in_background: false }],
+  ])('cannot certify shell descendants from %s', (_label, toolInput) => {
+    const observer = new ClaudeBackgroundWorkObserver();
+    observer.noteToolStart('Bash', toolInput);
+    expect(observer.count()).toBeNull();
+  });
+});
+
+describe('pause expiry annotation', () => {
+  it('records an expired pause as an annotation, never as a new instruction', async () => {
+    const scheduler = manualScheduler();
+    const gate = new PauseGate({ scheduler, defaultTimeoutMs: 60_000 });
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: PAUSE_AND_RESUME });
+    const attempt = await startAttempt(adapter);
+    const messages: Array<{ message: { content: string }; shouldQuery?: boolean }> = [];
+    void (async () => {
+      for await (const message of attempt.input as AsyncIterable<never>) messages.push(message);
+    })();
+    await Promise.resolve();
+
+    expect((await adapter.requestPause()).outcome).toBe('confirmed');
+    scheduler.fireAll();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const note = messages.find((m) => m.message.content === PAUSE_EXPIRY_ANNOTATION);
+    expect(note).toBeDefined();
+    // `shouldQuery: false` is where this claim is actually decided. As steering,
+    // an expiring pause would inject an instruction into a run that never asked
+    // for one — the operator's silence would read as a command.
+    expect(note?.shouldQuery).toBe(false);
+    await adapter.dispose();
+  });
+
+  it('survives an expiry whose annotation cannot be delivered', async () => {
+    const scheduler = manualScheduler();
+    const gate = new PauseGate({ scheduler, defaultTimeoutMs: 60_000 });
+    const logged: string[] = [];
+    const adapter = new ClaudeControlAdapter({
+      pauseGate: gate,
+      implementedVerbs: PAUSE_AND_RESUME,
+      log: (m) => logged.push(m),
+    });
+    // An attempt with no reader parked: the channel refuses the push. Routine —
+    // the attempt may have been retried away or finished while paused — and an
+    // undeliverable courtesy note must not turn an auto-resume into a failed one.
+    await startAttempt(adapter);
+
+    expect((await adapter.requestPause()).outcome).toBe('confirmed');
+    scheduler.fireAll();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(gate.currentPhase()).toBe('running');
+    expect(logged.some((m) => m.includes('pause-expiry annotation not delivered'))).toBe(true);
+    await adapter.dispose();
+  });
+
+  it('survives an expiry whose annotation throws rather than declining', async () => {
+    // The other failure shape. `deliver` reporting "not delivered" is handled above;
+    // this is a transport that raises. An auto-resume is a safety mechanism, so an
+    // exception from the courtesy note must not escape and leave the run neither
+    // paused nor resumed.
+    const scheduler = manualScheduler();
+    const gate = new PauseGate({ scheduler, defaultTimeoutMs: 60_000 });
+    const logged: string[] = [];
+    const adapter = new ClaudeControlAdapter({
+      pauseGate: gate,
+      implementedVerbs: PAUSE_AND_RESUME,
+      log: (m) => logged.push(m),
+    });
+    // An attempt whose transport raises on delivery rather than refusing politely.
+    await startAttempt(adapter, { session: { close: () => { throw new Error('transport gone'); } } });
+    const registry = (adapter as unknown as { registry: { deliver: () => Promise<never> } }).registry;
+    jest.spyOn(registry, 'deliver').mockRejectedValue(new Error('transport gone'));
+
+    expect((await adapter.requestPause()).outcome).toBe('confirmed');
+    scheduler.fireAll();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The run resumed regardless — that is the contract; the annotation is context.
+    expect(gate.currentPhase()).toBe('running');
+    expect(logged.some((m) => m.includes('pause-expiry annotation failed'))).toBe(true);
+  });
+
+  it('emits the release exactly once whether the operator resumes or the budget runs out', async () => {
+    const gate = new PauseGate({ scheduler: manualScheduler() });
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate, implementedVerbs: PAUSE_AND_RESUME });
+    await startAttempt(adapter);
+    const events: Array<{ type: string }> = [];
+    adapter.subscribe((event) => events.push(event as never));
+
+    await adapter.requestPause();
+    await adapter.resumeFromPause();
+    await adapter.resumeFromPause();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Observed from the gate rather than reported by the caller, which is what
+    // makes "exactly once" structural: a resume racing an expiry cannot produce
+    // two releases because neither one is the thing that announces it.
+    expect(events.filter((e) => e.type === 'pause_released')).toHaveLength(1);
+    await adapter.dispose();
+  });
+});
+
+
+describe('review regressions: attempt and detached-work ownership', () => {
+  it('stale attempt hooks cannot settle a replacement attempt ticket', async () => {
+    const gate = new PauseGate();
+    const adapter = new ClaudeControlAdapter({ pauseGate: gate });
+    const shared = createClaudePauseHooks(gate);
+    const factory = (adapter.attemptInputFactory as any)((hooks: unknown) => ({ hooks }));
+    const attach = adapter.onAttemptHandle();
+    const before = factory({ attemptNumber: 1, isResume: false, promptText: 'task' });
+    const oldHooks = before.options?.hooks ?? shared;
+    await attach({ attemptNumber: 1, session: { close() {} } });
+    await before.dispose();
+    const after = factory({ attemptNumber: 2, isResume: true, promptText: 'continue' });
+    const currentHooks = after.options?.hooks ?? shared;
+    await attach({ attemptNumber: 2, session: { close() {} } });
+    const pre = { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_use_id: 'reused-id' } as never;
+    const post = { hook_event_name: 'PostToolUse', tool_use_id: 'reused-id' } as never;
+    await currentHooks.preToolUse(pre);
+    expect(gate.activeToolCount()).toBe(1);
+    try {
+      await oldHooks.postToolUse(post);
+      await oldHooks.onStop({ hook_event_name: 'Stop', background_tasks: [] } as never);
+      expect(gate.activeToolCount()).toBe(1);
+    } finally {
+      await currentHooks.postToolUse(post);
+      await after.dispose();
+      await adapter.dispose();
+    }
+  });
+
+  it.each(['Bash', 'mcp__external__start_job', 'UnrecognisedExternalTool'])(
+    '%s cannot certify a paused run after returning while detached work continues', async (toolName) => {
+    const { spawn } = await import('child_process');
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adp-detachment-'));
+    const file = path.join(dir, 'writes');
+    const observer = new ClaudeBackgroundWorkObserver();
+    const gate = new PauseGate({ backgroundWorkProbe: () => observer.count() });
+    const hooks = createClaudePauseHooks(gate, observer);
+    await hooks.preToolUse({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_use_id: 'opaque', tool_input: { command: 'detached service', run_in_background: false } } as never);
+    const child = spawn(process.execPath, ['-e', 'let n=0; setInterval(()=>require("fs").writeFileSync(process.argv[1], String(++n)), 10)', file], { detached: true, stdio: 'ignore' });
+    try {
+      const deadline = Date.now() + 3000;
+      while (!fs.existsSync(file) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(fs.existsSync(file)).toBe(true);
+      await hooks.postToolUse({ hook_event_name: 'PostToolUse', tool_use_id: 'opaque' } as never);
+      expect(gate.activeToolCount()).toBe(0);
+      // A returned MCP response and the SDK's empty task list cannot certify an
+      // external service or detached process has stopped producing effects.
+      await hooks.onStop({ hook_event_name: 'Stop', background_tasks: [] } as never);
+      const result = await gate.requestPause();
+      const before = fs.readFileSync(file, 'utf8');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fs.readFileSync(file, 'utf8')).not.toBe(before);
+      expect(result.outcome).toBe('requested');
+      expect(gate.currentPhase()).not.toBe('paused');
+    } finally {
+      gate.cancel();
+      child.kill('SIGKILL');
+      await new Promise((resolve) => child.once('exit', resolve));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

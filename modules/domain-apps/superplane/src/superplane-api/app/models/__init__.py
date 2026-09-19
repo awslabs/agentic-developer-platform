@@ -18,9 +18,14 @@ from app.models.observation import (  # noqa: F401
     ObservationReceipt,
     ObservationLease,
 )
+from app.models.provider_handle import ProviderOperation  # noqa: F401
 from app.models.api_key import ApiKey  # noqa: F401
 from app.models.research_finding import ResearchFinding  # noqa: F401
 from app.models.research_proposal import ResearchProposal  # noqa: F401
 from app.models.budget_alert import BudgetAlert  # noqa: F401
 from app.models.user import User  # noqa: F401
 from app.models.workspace_grant import WorkspaceGrantRecord  # noqa: F401
+from app.models.provider_connection import (  # noqa: F401
+    ProviderConnection,
+    ProviderConnectionBinding,
+)

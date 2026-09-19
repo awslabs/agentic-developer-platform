@@ -14,14 +14,22 @@
 # workers; 769Mi observed under normal load). CPU is included anyway as a
 # cheap backstop against a future CPU-bound regression.
 #
-# Utilization targets are computed against REQUESTS (1.25Gi / 250m — see
-# deployment.yaml), not limits: memory 75% ≈ 960Mi. The request was raised
-# from 1Gi specifically so this target sits ABOVE the idle baseline (~800Mi
-# for 4 uvicorn workers + buffers). At 1Gi the 75% line (768Mi) fell BELOW
-# baseline, so the HPA read idle as "over target" and pinned the fleet at 4-5
-# pods doing nothing — leaving almost no burst headroom before the ceiling.
-# Now idle settles toward minReplicas and scale-out fires on genuine
-# load-driven growth past ~960Mi.
+# Utilization targets are computed against REQUESTS (1.5Gi / 250m — see
+# deployment.yaml), not limits: memory 75% ≈ 1152Mi. The request must stay
+# comfortably ABOVE the idle baseline or this HPA inverts: when the 75% line
+# falls below baseline, idle reads as "over target" and the fleet pins at
+# maxReplicas doing nothing, with zero burst headroom left. That has bitten
+# twice — at a 1Gi request (768Mi line vs ~800Mi baseline, pinned at 4-5) and
+# at 1.25Gi (960Mi line vs a baseline grown to ~900Mi, pinned at 12/12 on
+# 2026-09-19 while CPU sat at 13%). At 1.5Gi the line is ~1152Mi against a
+# measured ~900Mi baseline, so idle settles toward minReplicas and scale-out
+# fires on genuine load-driven growth.
+#
+# This only holds while memory tracks LOAD. A memory leak makes this HPA
+# actively harmful: it reads the leak as demand, scales out, and adding pods
+# cannot reduce a per-pod leak, so it ratchets to the ceiling and stays there
+# while masking the underlying bug. If the fleet is at maxReplicas with low
+# CPU, suspect a leak before raising maxReplicas.
 #
 # maxReplicas raised 6 → 12 for 100+ concurrent-user headroom. The gateway is
 # async I/O-bound (CPU idles at 1-2%), so a pod holds many concurrent streams;

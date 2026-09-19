@@ -39,6 +39,21 @@ def test_all_tables_registered():
         # schema able to express that, so authority was the caller's organization
         # and every org-mate reached every workspace in it.
         "workspace_grants",
+        # Provider connections and their workspace bindings (issue #5053, U7b —
+        # R7). Two tables, not one, because "who may delegate this credential"
+        # and "which workspace may use it" are the two checks the contract
+        # refuses to let stand in for each other.
+        "provider_connections",
+        "provider_connection_bindings",
+        # Durable provider-operation records (issue #5054, U11c — R15). One row per
+        # idempotency identity, written BEFORE the provider call it identifies, so a
+        # response lost to a timeout or a crash still has something to reconcile
+        # against. Without it the handle contract's "recorded before the call counts
+        # as made" rule has no storage to be true in.
+        "provider_operations",
+        "provider_allocations",
+        "provider_reference_conflicts",
+        "provider_allocation_resources",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (
@@ -965,14 +980,7 @@ class TestTheMirroredSecretRulesAgreeWithTheContract:
         with pytest.raises(ValueError):
             validate_adp_credential_id(value)
 
-    # Where the local copy is deliberately STRONGER. Each entry is a value the contract's
-    # own rules do NOT catch, and the local rule must. Recorded individually so that the
-    # contract gaining a fix makes the corresponding assertion fail loudly (see the
-    # staleness assertion) rather than leaving a redundant divergence in place forever.
     LOCAL_IS_STRONGER = {
-        # `\b` asserts a non-word/word transition, so a leading *word* character suppresses
-        # the contract's patterns entirely. `_arn:...` is not hypothetical: it is the old
-        # column name joined to its old value.
         "word_prefixed_arn": "_arn:aws:secretsmanager:us-east-1:123456789012:secret:k",
         "name_prefixed_arn": (
             "secret_arn:aws:secretsmanager:us-east-1:123456789012:secret:k"
@@ -980,28 +988,23 @@ class TestTheMirroredSecretRulesAgreeWithTheContract:
         "word_prefixed_access_key": "_AKIAIOSFODNN7EXAMPLE",
         "word_suffixed_access_key": "AKIAIOSFODNN7EXAMPLE_",
         "word_prefixed_pat": "_ghp_" + "a" * 36,
-        # The contract's `\bsk-[A-Za-z0-9]{20,}\b` body stops at the first hyphen, so no
-        # real hyphenated provider key of this family matches it.
         "hyphenated_provider_key": "sk-ant-api03-" + "x" * 40,
     }
 
     @pytest.mark.parametrize("name", sorted(LOCAL_IS_STRONGER))
-    def test_the_documented_divergences_are_strictly_stronger(self, name):
+    def test_contract_and_model_reject_recoverable_secret_corpus(self, name):
         from superplane_contracts.secrets import value_is_secret_shaped
 
         from app.models.credential import validate_adp_credential_id
 
         value = self.LOCAL_IS_STRONGER[name]
 
-        assert not value_is_secret_shaped(value), (
-            f"the contract now catches {name!r}; this divergence is obsolete and the "
-            "mirror should be re-aligned with it"
+        assert value_is_secret_shaped(value), (
+            f"contract no longer rejects recoverable material: {name!r}"
         )
         with pytest.raises(ValueError):
             validate_adp_credential_id(value)
 
-    # ARNs the contract's rule catches. Every one must be caught locally too: the mirror
-    # may be stronger than the contract, never weaker.
     CONTRACT_ARNS = (
         "arn:aws:secretsmanager:us-east-1:123456789012:secret:nebius-AbCdEf",
         "arn:aws-cn:kms:cn-north-1:123456789012:key/abcd",
@@ -1010,9 +1013,6 @@ class TestTheMirroredSecretRulesAgreeWithTheContract:
         "ARN:AWS:SECRETSMANAGER:US-EAST-1:123456789012:SECRET:NEBIUS",
     )
 
-    # ARN forms the LOCAL rule catches and the contract's does not. Each is guarded by a
-    # staleness assertion, so if the contract is strengthened to cover one the test says so
-    # instead of silently keeping an obsolete divergence.
     LOCAL_ARNS_ONLY = {
         "word_prefixed": "_arn:aws:secretsmanager:us-east-1:123456789012:secret:k",
         "old_column_name_prefixed": (
@@ -1044,39 +1044,363 @@ class TestTheMirroredSecretRulesAgreeWithTheContract:
             validate_adp_credential_id(value)
 
     @pytest.mark.parametrize("name", sorted(LOCAL_ARNS_ONLY))
-    def test_the_local_arn_rule_is_stronger_than_the_contracts(self, name):
+    def test_contract_and_model_reject_embedded_arns(self, name):
         from superplane_contracts.secrets import looks_like_arn
 
         from app.models.credential import validate_adp_credential_id
 
         value = self.LOCAL_ARNS_ONLY[name]
 
-        assert not looks_like_arn(value), (
-            f"the contract now catches {name!r}; this divergence is obsolete and the "
-            "mirror should be re-aligned with it"
+        assert looks_like_arn(value), (
+            f"contract no longer rejects recoverable material: {name!r}"
         )
         with pytest.raises(ValueError, match="must not be an ARN"):
             validate_adp_credential_id(value)
 
-    def test_the_contracts_own_boundary_weakness_is_recorded_not_forgotten(self):
-        """The contract still has the `\\b` weakness this mirror fixed locally.
+    def test_contract_rejects_prefixed_recoverable_material(self):
+        from superplane_contracts.secrets import looks_like_arn, value_is_secret_shaped
+        assert looks_like_arn("_arn:aws:secretsmanager:us-east-1:123456789012:secret:k")
+        assert value_is_secret_shaped("xAKIAIOSFODNN7EXAMPLE")
 
-        Recorded as an executable note rather than repaired here: the contract guards R7's
-        *inbound payload* boundary, which is U7/U7b's story, and widening it there needs
-        its own tests against its own consumers (`CredentialReference.__post_init__`,
-        `assert_no_secret_material`). This test documents the gap precisely and will fail
-        the moment it is closed, which is the signal to drop the local divergence.
+
+class TestProviderConnectionPersistence:
+    """The two R7 records, and the constraint that is not merely application code.
+
+    Issue #5053 (U7b). `superplane_contracts.connections` decides whether an
+    operation is allowed, but every decision function takes the ownership record
+    and the binding as *arguments* — it reads no storage. These tables are what
+    supplies those arguments, so a property the contract guarantees in Python is
+    only real end-to-end if storage cannot produce a state the contract would
+    have refused to construct.
+
+    The binding's "exactly one workspace" is the case that matters. The contract
+    enforces it by *being* a two-scalar frozen dataclass, which stops nobody from
+    writing two rows: `authorize_use` would then be called with whichever row the
+    query happened to return first, and row order would decide a tenant-isolation
+    question. So the rule is a database constraint, and these tests exercise it
+    through a real flush rather than through the validator.
+    """
+
+    OPAQUE = "adp-cred-01HQ8V3XK2WERTY"
+    REPLACEMENT = "adp-cred-01HQ8V3XK2ZZZZ"
+    ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:nebius-AbCdEf"
+
+    async def _seed_org_and_workspace(self):
+        """An org + workspace for the foreign keys to point at."""
+        import uuid
+
+        from app.models.organization import Organization
+        from app.models.workspace import Workspace
+        from tests.conftest import async_session_test
+
+        org_id, workspace_id = uuid.uuid4(), uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(
+                Organization(
+                    id=org_id, name=f"conn-org-{org_id.hex[:8]}", billing_plan="free"
+                )
+            )
+            session.add(
+                Workspace(
+                    id=workspace_id,
+                    org_id=org_id,
+                    name="ws",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+            await session.commit()
+        return org_id, workspace_id
+
+    async def _seed_connection(self, org_id, credential_id=None):
+        import uuid
+
+        from app.models.provider_connection import ProviderConnection
+        from tests.conftest import async_session_test
+
+        connection_id = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(
+                ProviderConnection(
+                    id=connection_id,
+                    org_id=org_id,
+                    provider="nebius",
+                    adp_credential_id=credential_id or self.OPAQUE,
+                    credential_service="nebius",
+                    credential_label="nebius-prod",
+                    owner_principal="user-owner",
+                )
+            )
+            await session.commit()
+        return connection_id
+
+    def _binding(self, connection_id, workspace_id, credential_id=None):
+        import uuid
+
+        from app.models.provider_connection import ProviderConnectionBinding
+
+        return ProviderConnectionBinding(
+            id=uuid.uuid4(),
+            connection_id=connection_id,
+            adp_credential_id=credential_id or self.OPAQUE,
+            workspace_id=workspace_id,
+            bound_by="user-owner",
+        )
+
+    # --- the constraint ---
+
+    async def test_a_second_binding_for_the_same_credential_is_rejected(self):
+        """Two workspaces cannot both hold a binding for one connection.
+
+        Asserted at the database, not at the validator, because the validator is
+        what a backfill or a fixture bypasses. The second workspace here is a
+        *different* workspace in the same org — the exact shape of the bug this
+        constraint exists to stop, where a credential delegated to one workspace
+        silently becomes usable by another.
         """
-        from superplane_contracts.secrets import (
-            looks_like_arn,
-            value_is_secret_shaped,
+        import uuid
+
+        from sqlalchemy.exc import IntegrityError
+
+        from app.models.workspace import Workspace
+        from tests.conftest import async_session_test
+
+        org_id, workspace_id = await self._seed_org_and_workspace()
+        connection_id = await self._seed_connection(org_id)
+
+        other_workspace = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(
+                Workspace(
+                    id=other_workspace,
+                    org_id=org_id,
+                    name="ws-two",
+                    isolation_mode="shared",
+                    status="active",
+                )
+            )
+            session.add(self._binding(connection_id, workspace_id))
+            await session.commit()
+
+        async with async_session_test() as session:
+            session.add(self._binding(connection_id, other_workspace))
+            with pytest.raises(IntegrityError):
+                await session.commit()
+
+    async def test_one_binding_is_accepted_and_readable(self):
+        """The constraint refuses a second row without refusing the first.
+
+        Paired with the test above deliberately: a constraint that rejected
+        everything would make that test pass while making the feature useless.
+        """
+        from sqlalchemy import select
+
+        from app.models.provider_connection import ProviderConnectionBinding
+        from tests.conftest import async_session_test
+
+        org_id, workspace_id = await self._seed_org_and_workspace()
+        connection_id = await self._seed_connection(org_id)
+        async with async_session_test() as session:
+            session.add(self._binding(connection_id, workspace_id))
+            await session.commit()
+
+        async with async_session_test() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(ProviderConnectionBinding).where(
+                            ProviderConnectionBinding.connection_id == connection_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].workspace_id == workspace_id
+        assert rows[0].adp_credential_id == self.OPAQUE
+
+    async def test_the_same_credential_cannot_be_registered_twice_in_one_org(self):
+        """Two connection ids for one credential would make rotation incoherent.
+
+        Rotating through one row leaves the other pointing at a superseded
+        reference while still reporting itself active, so the duplicate is
+        refused at the database rather than reconciled later.
+        """
+        import uuid
+
+        from sqlalchemy.exc import IntegrityError
+
+        from app.models.provider_connection import ProviderConnection
+        from tests.conftest import async_session_test
+
+        org_id, _ = await self._seed_org_and_workspace()
+        await self._seed_connection(org_id)
+
+        async with async_session_test() as session:
+            session.add(
+                ProviderConnection(
+                    id=uuid.uuid4(),
+                    org_id=org_id,
+                    provider="nebius",
+                    adp_credential_id=self.OPAQUE,
+                    credential_service="nebius",
+                    credential_label="nebius-prod-again",
+                    owner_principal="user-owner",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+
+    # --- the reference columns refuse secret material ---
+
+    def test_the_connection_refuses_an_arn(self):
+        """The reference column reuses U13b's validator rather than a weaker copy."""
+        from app.models.provider_connection import ProviderConnection
+
+        with pytest.raises(ValueError, match="must not be an ARN"):
+            ProviderConnection(adp_credential_id=self.ARN)
+
+    def test_the_binding_refuses_an_arn(self):
+        """The denormalized copy is guarded too, or the rule holds on one column only."""
+        from app.models.provider_connection import ProviderConnectionBinding
+
+        with pytest.raises(ValueError, match="must not be an ARN"):
+            ProviderConnectionBinding(adp_credential_id=self.ARN)
+
+    def test_both_columns_refuse_every_secret_shape_the_registry_refuses(self):
+        """Whatever `credential_registry` refuses, these two columns refuse.
+
+        Written as one test over the shared corpus rather than a second copy of it:
+        the corpus was hardened against specific measured bypasses, and a divergence
+        between the tables would be the gap. Any value the older column rejects must
+        be rejected here, and the assertion names the value's label — not its
+        content — so a failure is diagnosable without printing a credential.
+        """
+        from app.models.credential import CredentialRegistry
+        from app.models.provider_connection import (
+            ProviderConnection,
+            ProviderConnectionBinding,
         )
 
-        assert not looks_like_arn(
-            "_arn:aws:secretsmanager:us-east-1:123456789012:secret:k"
-        ), (
-            "the contract's ARN boundary was fixed; re-align the mirror and drop this note"
-        )
-        assert not value_is_secret_shaped("xAKIAIOSFODNN7EXAMPLE"), (
-            "the contract's secret-shape boundary was fixed; re-align the mirror"
-        )
+        corpus = TestTheReferenceRuleCannotBeSteppedAround.SECRET_SHAPED
+        assert corpus, "the shared secret-shape corpus is empty; this test proves nothing"
+        for label, value in sorted(corpus.items()):
+            try:
+                CredentialRegistry(adp_credential_id=value)
+            except ValueError:
+                pass
+            else:  # pragma: no cover - the corpus is a refusal corpus
+                raise AssertionError(
+                    f"{label!r} is no longer refused by credential_registry; "
+                    "the corpus changed meaning"
+                )
+            with pytest.raises(ValueError):
+                ProviderConnection(adp_credential_id=value)
+            with pytest.raises(ValueError):
+                ProviderConnectionBinding(adp_credential_id=value)
+
+    # --- lifecycle and reporting columns ---
+
+    def test_the_status_vocabulary_matches_the_contract(self):
+        """The stored strings are the contract's enum values, asserted not assumed.
+
+        The column is text rather than a database enum, so nothing structural ties
+        it to `ConnectionStatus`. This test is that tie: an upstream rename fails
+        here instead of silently detaching storage from the decision vocabulary.
+        """
+        from superplane_contracts.connections import ConnectionStatus
+
+        from app.models.provider_connection import CONNECTION_STATUSES
+
+        assert set(CONNECTION_STATUSES) == {str(s) for s in ConnectionStatus}
+
+    def test_an_unknown_status_is_refused(self):
+        """An unrecognized status reads as "not disabled" downstream — permissively."""
+        from app.models.provider_connection import ProviderConnection
+
+        with pytest.raises(ValueError, match="status must be one of"):
+            ProviderConnection(status="quarantined")
+
+    async def test_unmeasured_capacity_is_distinct_from_measured_zero(self):
+        """R7 acceptance 3 survives a round trip through storage.
+
+        "We did not look" and "we looked and there is nothing free" are different
+        operational facts. A non-nullable column defaulting to 0 would erase the
+        distinction at the storage layer, after the contract went to some trouble
+        to preserve it, so this asserts `None` comes back as `None` and `0` comes
+        back as `0` — and as an `int`, not as a falsy string.
+        """
+        import uuid
+
+        from sqlalchemy import select
+
+        from app.models.provider_connection import ProviderConnection
+        from tests.conftest import async_session_test
+
+        org_id, _ = await self._seed_org_and_workspace()
+        unmeasured, measured_zero = uuid.uuid4(), uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(
+                ProviderConnection(
+                    id=unmeasured,
+                    org_id=org_id,
+                    provider="nebius",
+                    adp_credential_id=self.OPAQUE,
+                    credential_service="nebius",
+                    credential_label="unmeasured",
+                    owner_principal="user-owner",
+                    credential_valid=True,
+                    permissions_sufficient=True,
+                    quota_available=True,
+                    observed_capacity=None,
+                )
+            )
+            session.add(
+                ProviderConnection(
+                    id=measured_zero,
+                    org_id=org_id,
+                    provider="nebius",
+                    adp_credential_id=self.REPLACEMENT,
+                    credential_service="nebius",
+                    credential_label="measured-zero",
+                    owner_principal="user-owner",
+                    credential_valid=True,
+                    permissions_sufficient=True,
+                    quota_available=True,
+                    observed_capacity=0,
+                )
+            )
+            await session.commit()
+
+        async with async_session_test() as session:
+            rows = {
+                row.id: row
+                for row in (
+                    (
+                        await session.execute(
+                            select(ProviderConnection).where(
+                                ProviderConnection.org_id == org_id
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            }
+        assert rows[unmeasured].observed_capacity is None
+        assert rows[measured_zero].observed_capacity == 0
+        assert isinstance(rows[measured_zero].observed_capacity, int)
+
+    async def test_a_new_connection_starts_pending_and_admits_nothing(self):
+        """The default is the status that admits no work, not the usable one."""
+        from app.models.provider_connection import STATUS_PENDING, ProviderConnection
+        from tests.conftest import async_session_test
+
+        org_id, _ = await self._seed_org_and_workspace()
+        connection_id = await self._seed_connection(org_id)
+        async with async_session_test() as session:
+            row = await session.get(ProviderConnection, connection_id)
+            assert row.status == STATUS_PENDING
+            assert row.credential_valid is None
+            assert row.limitation == ""

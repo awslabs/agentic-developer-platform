@@ -36,6 +36,7 @@ const AgentChat = lazy(() => import('./pages/AgentChat')); // Issue #97
 const Connections = lazy(() => import('./pages/settings/Connections')); // Issue #465
 const SettingsCredentials = lazy(() => import('./pages/settings/SettingsCredentials')); // Issue #562
 const ConnectAws = lazy(() => import('./pages/settings/ConnectAws')); // Issue #562
+const AgentModels = lazy(() => import('./pages/settings/AgentModels')); // Issue #5422
 const Welcome = lazy(() => import('./pages/onboarding/Welcome')); // Issue #545
 const Pending = lazy(() => import('./pages/onboarding/Pending')); // Issue #545
 const Denied = lazy(() => import('./pages/onboarding/Denied')); // Issue #545
@@ -120,6 +121,7 @@ function App() {
               <Route path="/settings/connections" element={<FeatureGate feature="connections"><Connections /></FeatureGate>} /> {/* Issue #465 */}
               <Route path="/settings/credentials" element={<FeatureGate feature="credentials"><SettingsCredentials /></FeatureGate>} /> {/* Issue #562 */}
               <Route path="/settings/credentials/aws/connect" element={<FeatureGate feature="credentials"><ConnectAws /></FeatureGate>} /> {/* Issue #562 */}
+              <Route path="/settings/agent-models" element={<FeatureGate feature="agent_models"><AgentModels /></FeatureGate>} /> {/* Issue #5422 */}
               <Route path="/admin/access-requests" element={<AccessRequests />} /> {/* Issue #545 */}
               <Route path="/admin/indexing" element={<FeatureGate feature="indexing"><IndexingStatus /></FeatureGate>} /> {/* Issue #1424 */}
               <Route path="/admin/tenant-links" element={<TenantOrgLinks />} /> {/* Issue #2954 */}

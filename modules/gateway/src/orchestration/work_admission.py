@@ -136,10 +136,22 @@ async def admit_pending(store, invocation_id: str, *, session=None, allow_defer:
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues={":repo": {"N": str(repository_id)}, ":pending": {"S": "pending"}},
         )
-    if issue == 0 and grant.authority.kind == "service_policy":
-        # Resolve the repository for future issue-bearing child dispatches even
-        # though the scheduled coordinator itself owns no assigned issue.
-        return {"enforced": True, "disposition": "no_issue"}
+
+    async def with_model_policy(active_session, receipt: dict) -> dict:
+        # PMM-06 is deliberately behaviour-neutral until PMM-09 flips the
+        # posture. Snapshot failures are returned as evidence and never turn a
+        # work-claim success into a producer refusal in report-only mode.
+        from src.agentauth.model_policy import ensure_snapshot_report_only
+
+        result = dict(receipt)
+        result["model_policy_snapshot"] = await ensure_snapshot_report_only(
+            active_session,
+            store=store,
+            invocation_id=invocation_id,
+        )
+        return result
+
+    no_issue = issue == 0 and grant.authority.kind == "service_policy"
     owner = ClaimOwner(OwnerKind.ENGINE_FLOW if grant.authority.kind == "gate_decision" else OwnerKind.DIRECT_DISPATCH, grant.flow_id)
 
     async def reserve(active_session):
@@ -172,11 +184,15 @@ async def admit_pending(store, invocation_id: str, *, session=None, allow_defer:
             return {"disposition": "waiting_for_owner", "invocation_id": invocation_id}
 
     if session is not None:
-        return await reserve(session)
+        receipt = {"enforced": True, "disposition": "no_issue"} if no_issue else await reserve(session)
+        return await with_model_policy(session, receipt)
     from src.shared.database import get_session_factory
 
     async with get_session_factory()() as owned_session:
-        receipt = await reserve(owned_session)
+        # Resolve the repository for future issue-bearing child dispatches even
+        # though the scheduled coordinator itself owns no assigned issue.
+        receipt = {"enforced": True, "disposition": "no_issue"} if no_issue else await reserve(owned_session)
+        receipt = await with_model_policy(owned_session, receipt)
         await owned_session.commit()
         return receipt
 

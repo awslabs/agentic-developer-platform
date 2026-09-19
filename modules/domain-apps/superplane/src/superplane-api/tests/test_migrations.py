@@ -402,6 +402,15 @@ class TestChainCompilesForPostgres:
         sql = buffer.getvalue()
         assert "CREATE TABLE organizations" in sql, "the chain rendered no base schema"
 
+        # A real PostgreSQL run previously failed when a descriptive revision ID
+        # exceeded Alembic's default VARCHAR(32), although every stamp compiled.
+        import re
+        version_table = re.search(r"CREATE TABLE alembic_version \(.*?version_num VARCHAR\((\d+)\)", sql, re.S)
+        assert version_table is not None
+        longest_revision = max(len(revision.revision) for revision in ScriptDirectory.from_config(config).walk_revisions())
+        assert int(version_table.group(1)) >= longest_revision
+        assert "ALTER TABLE IF EXISTS alembic_version ALTER COLUMN version_num TYPE VARCHAR" in sql
+
         # Every revision must stamp itself into alembic_version, so counting the stamps is
         # a direct check that `upgrade head` walked the entire chain rather than a prefix.
         stamps = sql.count("alembic_version SET version_num") + sql.count(
@@ -792,27 +801,50 @@ class TestCredentialReferenceMigrationRefusesToGuess:
     def test_the_revision_extends_the_repaired_single_head(self) -> None:
         """012 must extend U13's repaired chain, which is the issue's hard dependency.
 
-        Asserted as "the sole head, with 010 among its ancestors" rather than as a literal
-        `down_revision == "010_add_workspace_grants"`. The literal form was what this test
-        originally checked, and it encoded the wrong requirement: the dependency is on
-        U13's repaired chain being *underneath* this revision, not on this revision being
-        the immediate child of one particular id. When U15 (#5387) landed its own revision
-        on 010, satisfying the literal assertion would have meant leaving the chain
-        two-headed -- passing the test by breaking the invariant it exists to protect.
+        Asserted as "on the single-headed chain's path to head, with 010 among its
+        ancestors" rather than as a literal `down_revision == "010_add_workspace_grants"`.
+        The literal form was what this test originally checked, and it encoded the wrong
+        requirement: the dependency is on U13's repaired chain being *underneath* this
+        revision, not on this revision being the immediate child of one particular id.
+        When U15 (#5387) landed its own revision on 010, satisfying the literal assertion
+        would have meant leaving the chain two-headed -- passing the test by breaking the
+        invariant it exists to protect.
 
-        This form holds however many siblings land on 010 later, and it still fails if this
-        revision is detached from the chain, is not the head, or ends up parallel to
-        another head.
+        The same correction applies one level up, and is why this no longer asserts
+        `get_heads() == ["012_adp_credential_reference"]`. That form pinned 012 as the
+        *terminal* revision, which is a different and stronger claim than the invariant:
+        012 being terminal is not what makes `alembic upgrade head` unambiguous -- the
+        chain being single-headed is. Requiring 012 to stay terminal would mean no later
+        revision could ever extend it, so issue #5054's 013 (provider-operation records)
+        would have had to land parallel to 012 to keep this test passing, i.e. satisfy
+        the assertion by creating the second head whose absence it is checking for.
+
+        What is checked instead: exactly one head, and 012 lies on the path `upgrade head`
+        walks. That still fails if 012 is detached from the chain, if it ends up on a side
+        branch that head never reaches, or if any second head appears -- including one
+        created by a descendant of 012.
         """
         config = Config(str(API_ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(API_ROOT / "alembic"))
         script = ScriptDirectory.from_config(config)
 
-        # `list(...)`: `get_heads()` returns a list, and comparing it to a tuple is
-        # always False regardless of the chain's actual shape.
-        assert list(script.get_heads()) == ["012_adp_credential_reference"], (
-            "this revision must be the single head; a second head makes "
-            "`alembic upgrade head` ambiguous and applies no migration at all"
+        heads = list(script.get_heads())
+        assert len(heads) == 1, (
+            f"the chain must have a single head; a second head makes "
+            f"`alembic upgrade head` ambiguous and applies no migration at all. "
+            f"Found {len(heads)}: {sorted(heads)}"
+        )
+
+        # "Reached by `upgrade head`", not "is head". `iterate_revisions` walks from the
+        # head down to base, which is exactly the set of revisions an upgrade applies, so
+        # a 012 that sits on an orphaned side branch fails here even though the chain is
+        # single-headed.
+        on_path_to_head = {
+            rev.revision for rev in script.iterate_revisions("heads", "base")
+        }
+        assert "012_adp_credential_reference" in on_path_to_head, (
+            "this revision must lie on the path `alembic upgrade head` walks; a revision "
+            "off that path is never applied no matter how many heads the chain has"
         )
 
         ancestors = {
@@ -837,3 +869,172 @@ class TestCredentialReferenceMigrationRefusesToGuess:
 
         assert "set adp_credential_id = secret_arn" not in lowered
         assert "adp_credential_ids_json = secret_arns_json" not in lowered
+
+
+class TestProviderConnectionRevisionAppliesAndReverses:
+    """014 creates the two R7 tables, and its downgrade removes exactly those.
+
+    Issue #5053 (U7b). Run ONLINE against a live SQLite connection, not only through
+    the offline `--sql` rendering above: offline mode never opens a connection, so it
+    cannot observe that `downgrade()` leaves the surrounding schema alone. The
+    downgrade half is the part worth exercising, because a revision that creates
+    tables holding a credential reference must be reversible without reintroducing
+    anything — and "drops only what it created" is a claim about other tables, which
+    a rendering test cannot check.
+    """
+
+    TABLES = ("provider_connections", "provider_connection_bindings")
+
+    @staticmethod
+    def _revision_module():
+        import importlib.util
+
+        path = API_ROOT / "alembic" / "versions" / "014_add_provider_connections.py"
+        spec = importlib.util.spec_from_file_location("_revision_014", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @pytest.fixture()
+    def connection(self):
+        import sqlalchemy as sa
+
+        engine = sa.create_engine("sqlite://")
+        with engine.connect() as conn:
+            # Only the two tables 014's foreign keys point at, in a minimal shape —
+            # for the same reason the 012 tests hand-build theirs: the earlier chain
+            # uses PostgreSQL types that do not apply cleanly to SQLite, and that
+            # portability question is covered by the rendering tests above.
+            conn.exec_driver_sql("CREATE TABLE organizations (id TEXT PRIMARY KEY)")
+            conn.exec_driver_sql("CREATE TABLE workspaces (id TEXT PRIMARY KEY)")
+            yield conn
+
+    def _run(self, connection, direction: str) -> None:
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        module = self._revision_module()
+        context = MigrationContext.configure(connection=connection)
+        with Operations.context(context):
+            getattr(module, direction)()
+
+    def _tables(self, connection) -> set:
+        import sqlalchemy as sa
+
+        return set(sa.inspect(connection).get_table_names())
+
+    def test_the_upgrade_creates_both_tables(self, connection) -> None:
+        self._run(connection, "upgrade")
+        assert set(self.TABLES) <= self._tables(connection)
+
+    def test_the_downgrade_removes_exactly_what_the_upgrade_added(
+        self, connection
+    ) -> None:
+        """A full round trip returns the schema to byte-level table parity."""
+        before = self._tables(connection)
+        self._run(connection, "upgrade")
+        self._run(connection, "downgrade")
+        assert self._tables(connection) == before
+
+    def test_the_binding_uniqueness_constraint_is_in_the_applied_schema(
+        self, connection
+    ) -> None:
+        """The constraint reaches a real database, not just the model metadata.
+
+        `tests/test_models.py` proves the constraint holds against the metadata the
+        test suite creates with `create_all`. That is a different artifact from what
+        this migration applies, and production gets the migration's version. A
+        constraint present in one and absent from the other is a gap no model test
+        can see.
+        """
+        import sqlalchemy as sa
+
+        self._run(connection, "upgrade")
+        constraints = sa.inspect(connection).get_unique_constraints(
+            "provider_connection_bindings"
+        )
+        assert any(
+            c["column_names"] == ["connection_id"] for c in constraints
+        ), f"one-binding-per-connection is missing from the applied schema: {constraints}"
+
+    def test_the_applied_schema_enforces_one_binding_per_connection(
+        self, connection
+    ) -> None:
+        """Insert two bindings for one connection through SQL and be refused.
+
+        The strongest form available offline: it bypasses the model, the validator
+        and the service layer entirely, so what it exercises is the database rule
+        that survives all three.
+        """
+        import sqlalchemy as sa
+
+        self._run(connection, "upgrade")
+        connection.exec_driver_sql("INSERT INTO organizations (id) VALUES ('org-1')")
+        connection.exec_driver_sql("INSERT INTO workspaces (id) VALUES ('ws-1')")
+        connection.exec_driver_sql("INSERT INTO workspaces (id) VALUES ('ws-2')")
+        connection.exec_driver_sql(
+            "INSERT INTO provider_connections"
+            " (id, org_id, provider, adp_credential_id, credential_service,"
+            "  credential_label, owner_principal, status)"
+            " VALUES ('c-1', 'org-1', 'nebius', 'adp-cred-1', 'nebius',"
+            "         'prod', 'user-owner', 'pending')"
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO provider_connection_bindings"
+            " (id, connection_id, adp_credential_id, workspace_id, bound_by)"
+            " VALUES ('b-1', 'c-1', 'adp-cred-1', 'ws-1', 'user-owner')"
+        )
+        with pytest.raises(sa.exc.IntegrityError):
+            connection.exec_driver_sql(
+                "INSERT INTO provider_connection_bindings"
+                " (id, connection_id, adp_credential_id, workspace_id, bound_by)"
+                " VALUES ('b-2', 'c-1', 'adp-cred-1', 'ws-2', 'user-owner')"
+            )
+
+    def test_capacity_and_the_validation_readings_are_nullable_in_the_applied_schema(
+        self, connection
+    ) -> None:
+        """"Not measured" must be representable after the migration, not just in the model.
+
+        A NOT NULL `observed_capacity` defaulting to 0 would make "we did not look"
+        indistinguishable from "there is nothing free" for every row in a real
+        database, which is R7 acceptance 3 undone at the storage layer.
+        """
+        import sqlalchemy as sa
+
+        self._run(connection, "upgrade")
+        columns = {
+            c["name"]: c
+            for c in sa.inspect(connection).get_columns("provider_connections")
+        }
+        for name in (
+            "credential_valid",
+            "permissions_sufficient",
+            "quota_available",
+            "observed_capacity",
+            "validated_at",
+        ):
+            assert columns[name]["nullable"] is True, (
+                f"{name} must be nullable: unmeasured is not a reading"
+            )
+
+    def test_the_revision_writes_no_rows(self, connection) -> None:
+        """Statically: no INSERT or UPDATE anywhere in the revision.
+
+        The revision deliberately creates empty tables. A backfill would have to
+        invent a vault ownership record — asserting an ownership fact nobody
+        established and then feeding it to `authorize_delegation` as evidence, which
+        is the "delegates a credential they were never authorized to share" failure
+        manufactured by a migration. R7's acceptances 6-7 hold that work open behind
+        an unresolved vault-access gate.
+        """
+        path = API_ROOT / "alembic" / "versions" / "014_add_provider_connections.py"
+        source = path.read_text(encoding="utf-8")
+        lowered = "\n".join(
+            line for line in source.splitlines() if not line.strip().startswith("#")
+        ).lower()
+        for forbidden in ("insert into", "op.bulk_insert", "update "):
+            assert forbidden not in lowered, (
+                f"014 appears to write rows ({forbidden!r}); it must create empty "
+                "tables and leave population to a live vault response"
+            )

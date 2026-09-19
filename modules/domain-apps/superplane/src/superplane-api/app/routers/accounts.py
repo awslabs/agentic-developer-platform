@@ -4,14 +4,19 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware.auth import get_current_org
 from app.models.cloud_account import CloudAccount
-from app.models.credential import CredentialRegistry
+from app.models.credential import (
+    ClusterVaultAssignment,
+    CredentialAuditLog,
+    CredentialRegistry,
+)
+from app.models.provider_connection import STATUS_DISABLED, ProviderConnection
 from app.schemas.account import (
     AccountDeleteResponse,
     AccountListResponse,
@@ -34,9 +39,7 @@ router = APIRouter(tags=["accounts"])
 def _account_to_response(acct: CloudAccount) -> AccountResponse:
     """Convert a CloudAccount model to the API response schema."""
     adp_credential_ids = (
-        json.loads(acct.adp_credential_ids_json)
-        if acct.adp_credential_ids_json
-        else []
+        json.loads(acct.adp_credential_ids_json) if acct.adp_credential_ids_json else []
     )
     irsa_role_arns = (
         json.loads(acct.irsa_role_arns_json) if acct.irsa_role_arns_json else []
@@ -231,7 +234,10 @@ async def list_credentials(
     """List all registered credentials for the organization."""
     result = await db.execute(
         select(CredentialRegistry)
-        .where(CredentialRegistry.org_id == org_id)
+        .where(
+            CredentialRegistry.org_id == org_id,
+            CredentialRegistry.status != "Deregistered",
+        )
         .order_by(CredentialRegistry.created_at.desc())
     )
     credentials = result.scalars().all()
@@ -246,19 +252,25 @@ async def list_credentials(
 )
 async def delete_credential(
     credential_id: uuid.UUID,
+    request: Request,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> CredentialDeleteResponse:
     """Deregister a credential.
 
-    This removes the credential registration from Superplane — it does NOT
-    delete the secret from the user's Secrets Manager.
+    Retain the reference and audit history as a tombstone. Active connections and
+    cluster assignments must be disabled/replaced or detached first. This does not
+    revoke the credential in ADP's vault or at the provider.
     """
     result = await db.execute(
-        select(CredentialRegistry).where(
+        select(CredentialRegistry)
+        .where(
             CredentialRegistry.id == credential_id,
             CredentialRegistry.org_id == org_id,
+            CredentialRegistry.status != "Deregistered",
         )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
     credential = result.scalar_one_or_none()
 
@@ -267,7 +279,41 @@ async def delete_credential(
             status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found"
         )
 
-    await db.delete(credential)
+    connection = (
+        await db.execute(
+            select(ProviderConnection.id)
+            .where(
+                ProviderConnection.org_id == org_id,
+                ProviderConnection.adp_credential_id == credential.adp_credential_id,
+                ProviderConnection.status != STATUS_DISABLED,
+            )
+            .limit(1)
+        )
+    ).first()
+    assignment = (
+        await db.execute(
+            select(ClusterVaultAssignment.id)
+            .where(
+                ClusterVaultAssignment.credential_registry_id == credential_id,
+            )
+            .limit(1)
+        )
+    ).first()
+    if connection or assignment:
+        raise HTTPException(
+            status_code=409,
+            detail="credential is still in use; disable or replace its connections and detach cluster assignments first",
+        )
+    credential.status = "Deregistered"
+    caller = getattr(request.state, "caller", None)
+    db.add(
+        CredentialAuditLog(
+            org_id=org_id,
+            credential_registry_id=credential_id,
+            accessed_by=caller.principal.subject if caller else None,
+            action="Deregistered",
+        )
+    )
     await db.commit()
 
     logger.info("Deregistered credential %s for org %s", credential_id, org_id)

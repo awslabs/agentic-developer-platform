@@ -64,19 +64,12 @@ import type { ControlAction } from './control-state';
 export const CONTROL_PROTOCOL_VERSION = 1;
 
 /**
- * Control verbs implemented by ADP *at this stage of delivery*.
- *
- * Deliberately empty in S3. This story delivers the contract and the first
- * adapter — the plumbing a control travels through — and plumbing is not a
- * control. Advertising `pause` here because an adapter *could* pause would make
- * the dashboard offer a button whose end-to-end behaviour nobody has proven.
- *
- * S2 (#3961) adds `pause`/`resume` after its real-SDK tool-boundary proof, and
- * S4/S6 add `abort`/`steer` after theirs. Each of those stories owns both this
- * set and the gateway's independent allowlist; widening only one side produces a
- * verb the gateway offers and the worker rejects.
+ * Pause/resume have an admission barrier and signed gateway control path.
+ * The adapter, current attempt and deployment configuration each still veto
+ * unavailable controls. Steer/abort remain outside this implementation set.
+ * Kept in lockstep with the gateway and both CI capability gates (#5222).
  */
-export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>();
+export const IMPLEMENTED_CONTROL_VERBS: ReadonlySet<ControlAction> = new Set<ControlAction>(['pause', 'resume']);
 
 /** Per-verb support, with a bounded reason when support is absent. */
 export interface VerbSupport {
@@ -175,7 +168,7 @@ export interface PauseUnavailable {
  * operator reads "Paused" as "nothing is touching my repository right now."
  */
 export type PauseResult =
-  | { outcome: 'requested' }
+  | { outcome: 'requested'; reason?: string }
   | { outcome: 'confirmed' }
   | PauseUnavailable;
 
@@ -202,8 +195,9 @@ export type ControlRuntimeEvent =
   /** `count: null` means "cannot observe", which is not `0`. */
   | { type: 'active_work'; attemptId: AttemptId; count: number | null }
   | { type: 'pause_requested'; attemptId: AttemptId }
+  | { type: 'pause_waiting'; attemptId: AttemptId; reason: string }
   | { type: 'pause_confirmed'; attemptId: AttemptId }
-  | { type: 'pause_released'; attemptId: AttemptId }
+  | { type: 'pause_released'; attemptId: AttemptId; expired?: boolean }
   | { type: 'pause_unavailable'; attemptId: AttemptId; reason: string }
   | { type: 'input_handoff'; attemptId: AttemptId; command_id?: string; result: InputHandoffResult }
   | { type: 'terminal'; attemptId: AttemptId; outcome: TerminalOutcome };
