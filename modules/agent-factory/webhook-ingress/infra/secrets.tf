@@ -113,3 +113,15 @@ resource "aws_secretsmanager_secret" "gitlab_webhook_secret" {
   description = "GitLab webhook secret token for X-Gitlab-Token header validation"
   kms_key_id  = local.webhook_secrets_kms_key_arn
 }
+
+# Older deployments tracked the initial placeholder version. Secret values are
+# now owned by out-of-band setup/rotation; relinquish only Terraform's version
+# ownership without removing stages or deleting an existing version on upgrade.
+# This does not seed a new value or change the current webhook credential.
+removed {
+  from = aws_secretsmanager_secret_version.gitlab_webhook_secret
+
+  lifecycle {
+    destroy = false
+  }
+}

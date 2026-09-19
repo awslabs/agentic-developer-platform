@@ -41,6 +41,15 @@ key is `<environment>/modules/webhook-ingress/terraform.tfstate`;
 `adp-<environment>-eks-cluster`; `eks_cluster_name` supports custom names. A new
 environment never inherits a fallback dev cluster or state key.
 
+Existing deployments must also retain the configuration discovered by
+`platform/scripts/upgrade-state.py prepare` and the gateway ALB inputs used by
+the canonical update path. A plan made only with portable defaults can propose
+removing existing optional integrations, administrator entries or immutable ECR
+encryption settings. Review the saved plan with the actual retained inputs.
+The legacy GitLab placeholder secret-version address uses a `removed` block with
+`destroy=false`: setup/rotation owns its values, and migration must not remove an
+existing version or alter its stages. The secret itself remains managed.
+
 ## Run services (#5195 / #5513)
 
 Protected workers have an explicit deny for **all direct S3 and SQS operations**,
