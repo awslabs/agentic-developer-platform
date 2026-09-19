@@ -115,10 +115,9 @@ def cmd_submit(args: list[str]) -> None:
 
     if identity != "review" and event in ("APPROVE", "REQUEST_CHANGES"):
         print(
-            "note: no distinct reviewer GitHub App is configured, so this review is being "
-            "submitted by the same identity that authored the pull request. GitHub will "
-            "refuse to record the verdict; it will be published as a comment naming the "
-            "pending human approval.",
+            "note: using the run's default GitHub identity. Whether it can record a verdict "
+            "depends on the PR author and repository permissions; GitHub's response will "
+            "determine the publication outcome.",
             file=sys.stderr,
         )
 
@@ -162,7 +161,9 @@ def cmd_identity(args: list[str]) -> None:
         json.dumps(
             {
                 "identity": identity,
-                "can_record_verdict": identity == "review",
+                # The default App can review a human-authored PR. Without a PR
+                # and a submission response, its capability is unknown.
+                "can_record_verdict": True if identity == "review" else None,
             },
             indent=2,
         )

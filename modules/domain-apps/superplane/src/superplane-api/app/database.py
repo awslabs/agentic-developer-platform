@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
+from app.schema_boundary import connect_args
 
 engine = create_async_engine(
     settings.database_url,
@@ -13,6 +14,7 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
+    connect_args=connect_args(settings.superplane_db_schema),
 )
 
 async_session_factory = async_sessionmaker(

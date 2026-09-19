@@ -116,6 +116,7 @@ class PersonaCatalogueResponse(BaseModel):
 class ModelCatalogueResponse(BaseModel):
     """Response for the selectable-model catalogue read."""
 
+    tenant_id: str = Field(description="Authenticated active tenant that scoped this catalogue.")
     persona_key: str = Field(description="The persona this catalogue is filtered for.")
     compatibility_class: str = Field(description="The persona's compatibility class.")
     models: list[ModelCatalogueRow]

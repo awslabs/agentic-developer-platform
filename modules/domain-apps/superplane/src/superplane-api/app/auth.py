@@ -128,6 +128,8 @@ class VerifiedCaller:
 
     principal: DomainPrincipal
     safe_headers: dict[str, str]
+    # Original verified ADP identity when the domain uses an explicit binding.
+    source_org_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

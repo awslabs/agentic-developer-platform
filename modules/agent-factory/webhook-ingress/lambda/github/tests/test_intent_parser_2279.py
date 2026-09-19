@@ -221,7 +221,7 @@ class TestModelDirectiveInIntent:
         }
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.model is None
 
 

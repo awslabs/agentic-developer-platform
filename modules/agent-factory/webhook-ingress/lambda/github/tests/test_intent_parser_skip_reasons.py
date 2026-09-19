@@ -285,7 +285,7 @@ class TestTriggeringEventsCarryNoReason:
         }
         intent, reason = extract_intent_with_reason("pull_request", payload)
         assert intent is not None
-        assert intent.persona == "reviewer"
+        assert intent.persona == "agent-codex-reviewer"
         assert reason is None
 
     def test_mapped_label_returns_intent_and_no_reason(self):

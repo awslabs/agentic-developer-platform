@@ -93,7 +93,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from alembic.script import ScriptDirectory
 from src.shared.models.persona_models import (
     ALIAS_SOURCES,
     PRINCIPAL_SOURCES,
@@ -838,6 +837,7 @@ class TestRealPostgres:
         """
         import psycopg2
 
+        from alembic.script import ScriptDirectory
         from tests.migrations.conftest_postgres import downgrade, upgrade
 
         upgrade(pg_url, "head")
@@ -858,9 +858,8 @@ class TestRealPostgres:
             cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
             restored = {row[0] for row in cursor.fetchall()}
             cursor.execute("SELECT version_num FROM alembic_version")
-            # Keep exercising every later linear successor. Hard-coding PMM-03's
-            # then-current head made this predecessor test fail whenever a
-            # legitimate migration was appended.
+            # Later migrations advance head; verify the real chain's current
+            # head rather than pinning this round trip to an old successor.
             expected_head = ScriptDirectory(str(MIGRATIONS_DIR.parent)).get_current_head()
             assert cursor.fetchone()[0] == expected_head
             cursor.execute(f"SELECT COUNT(*) FROM {SETTINGS}")

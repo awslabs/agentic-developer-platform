@@ -9,7 +9,7 @@ set -euo pipefail
 # or run standalone. It has two plan/runtime prerequisites that no other flow
 # builds:
 #
-#   1. The agent-worker and independent Codex reviewer images their KEDA
+#   1. The shared agent-worker image its KEDA
 #      ScaledJobs run.
 #      Terraform only references the :latest tag; it never validates it, so a
 #      missing image surfaces as ImagePullBackOff on the FIRST real agent run.
@@ -18,7 +18,7 @@ set -euo pipefail
 #
 # This script does all three as one cohesive, idempotent, re-runnable step
 # (mirrors modules/agent-factory/scripts/deploy-gateway.sh):
-#   [1/3] build adp-agent-runtime and adp-codex-reviewer via CodeBuild
+#   [1/3] build adp-agent-runtime via CodeBuild
 #   [2/3] package + upload the webhook Lambda zip to S3
 #   [3/3] terraform apply the webhook-ingress stack
 #
@@ -100,9 +100,9 @@ CODEBUILD_RUN="${REPO_ROOT}/platform/scripts/codebuild-run.sh"
 [ -x "$CODEBUILD_RUN" ] || [ -f "$CODEBUILD_RUN" ] || fail "codebuild-run.sh not found at $CODEBUILD_RUN"
 
 # ---------------------------------------------------------------------------
-# [1/3] Build the two independent worker images
+# [1/3] Build the shared worker image
 # ---------------------------------------------------------------------------
-step "[1/3] Build worker images (agent runtime + Codex reviewer)"
+step "[1/3] Build worker image (agent runtime with Codex adapters)"
 if [ -n "${ADP_RELEASE_DIR:-}" ]; then
   python3 "$REPO_ROOT/platform/scripts/release/artifacts.py" verify-prepared --directory "$ADP_RELEASE_DIR"
   ok "Using verified release worker images"
@@ -110,7 +110,6 @@ elif [ "$SKIP_IMAGE" = true ]; then
   warn "Skipping image build (--skip-image)."
 elif [ "$DRY_RUN" = true ]; then
   echo "  [dry-run] codebuild-run.sh adp-${ENVIRONMENT}-agent-runtime (with source-location-override)"
-  echo "  [dry-run] codebuild-run.sh adp-${ENVIRONMENT}-codex-reviewer (with source-location-override)"
 else
   # Use codebuild-run.sh which handles the source-SHA contract:
   # zips source → uploads to unique S3 key → passes --source-location-override + ADP_SOURCE_SHA
@@ -122,14 +121,6 @@ else
       "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
       "name=STATE_BUCKET,value=${STATE_BUCKET},type=PLAINTEXT"
   ok "adp-${ENVIRONMENT}-agent-runtime: SUCCEEDED"
-  STATE_BUCKET="$STATE_BUCKET" AWS_REGION="$AWS_REGION" \
-    bash "$CODEBUILD_RUN" "adp-${ENVIRONMENT}-codex-reviewer" \
-      "name=AWS_REGION,value=${AWS_REGION},type=PLAINTEXT" \
-      "name=ACCOUNT_ID,value=${ACCOUNT_ID},type=PLAINTEXT" \
-      "name=REGISTRY,value=${REGISTRY},type=PLAINTEXT" \
-      "name=IMAGE_TAG,value=${IMAGE_TAG},type=PLAINTEXT" \
-      "name=STATE_BUCKET,value=${STATE_BUCKET},type=PLAINTEXT"
-  ok "adp-${ENVIRONMENT}-codex-reviewer: SUCCEEDED"
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,10 +158,8 @@ else
   warn "Gateway API URL not found in SSM — resolve-installation fallback will be disabled"
 fi
 
-BACKEND="${REPO_ROOT}/environments/${ENVIRONMENT}/modules/webhook-ingress-backend.tfvars"
-if [ "$DRY_RUN" = false ] && [ "$SKIP_TF" = false ]; then
-  python3 "$REPO_ROOT/platform/scripts/prepare-backends.py" "$REPO_ROOT/environments/$ENVIRONMENT" "$ACCOUNT_ID"
-fi
+TF_WEBHOOK="${SCRIPT_DIR}/terraform-webhook.sh"
+export ADP_ENV="$ENVIRONMENT" AWS_REGION STATE_BUCKET
 
 # Check if gitlab.zip exists in S3; if not, override gitlab_webhook_enabled to
 # false so terraform doesn't fail on the missing artifact (Issue #3488).
@@ -241,8 +230,7 @@ import_bootstrap_log_group() {
   if [ "$UPDATE_MODE" = true ]; then
     import_args+=(-var-file="$UPGRADE_RUN_DIR/webhook-ingress.tfvars.json")
   fi
-  terraform import ${import_args[@]+"${import_args[@]}"} \
-    -var="environment=${ENVIRONMENT}" \
+  bash "$TF_WEBHOOK" import ${import_args[@]+"${import_args[@]}"} \
     aws_cloudwatch_log_group.agent_bootstrap "$BOOTSTRAP_LOG_GROUP"
   ok "Imported aws_cloudwatch_log_group.agent_bootstrap"
 }
@@ -250,18 +238,17 @@ import_bootstrap_log_group() {
 if [ "$SKIP_TF" = true ]; then
   warn "Skipping terraform apply (--skip-terraform)."
 elif [ "$DRY_RUN" = true ]; then
-  echo "  [dry-run] terraform init -backend-config=$BACKEND"
+  echo "  [dry-run] Terraform backend: ${STATE_BUCKET}/${ENVIRONMENT}/modules/webhook-ingress/terraform.tfstate"
   echo "  [dry-run] conditional import of aws_cloudwatch_log_group.agent_bootstrap ($BOOTSTRAP_LOG_GROUP)"
   echo "  [dry-run] terraform apply -var=environment=$ENVIRONMENT -var=gateway_api_url=$GATEWAY_API_URL${GITLAB_OVERRIDE:+ $GITLAB_OVERRIDE}"
 else
   (
     cd "${MODULE_ROOT}/infra"
-    terraform init -backend-config="$BACKEND" -input=false -reconfigure >/dev/null
+    bash "$TF_WEBHOOK" init -input=false -reconfigure >/dev/null
     TF_ARGS=(
       -var="environment=${ENVIRONMENT}"
       -var="aws_region=${AWS_REGION}"
       -var="agent_image=${ADP_RELEASE_AGENT_RUNTIME_IMAGE:-${REGISTRY}/adp-agent-runtime:${IMAGE_TAG}}"
-      -var="codex_reviewer_image=${ADP_RELEASE_CODEX_REVIEWER_IMAGE:-${REGISTRY}/adp-codex-reviewer:${IMAGE_TAG}}"
     )
     if [ "$UPDATE_MODE" = false ]; then
       TF_ARGS+=(-var="gateway_api_url=${GATEWAY_API_URL}")
@@ -273,9 +260,16 @@ else
       [ -z "$INTERNAL_API_KEY_OVERRIDE" ] || TF_ARGS+=("$INTERNAL_API_KEY_OVERRIDE")
     fi
     if [ "$UPDATE_MODE" = true ]; then
-      terraform_update_apply webhook-ingress terraform.tfvars "${TF_ARGS[@]}"
+      # Match the fresh-deploy/CI overlay order while preserving the saved-plan
+      # upgrade gate and the discovered context's existing integration values.
+      OVERLAY_ARGS=()
+      for suffix in tfvars tfvars.json; do
+        overlay="$REPO_ROOT/environments/$ENVIRONMENT/modules/webhook-ingress.$suffix"
+        [ ! -f "$overlay" ] || OVERLAY_ARGS+=("-var-file=$overlay")
+      done
+      terraform_update_apply webhook-ingress terraform.tfvars ${OVERLAY_ARGS[@]+"${OVERLAY_ARGS[@]}"} "${TF_ARGS[@]}"
     else
-      terraform apply "${TF_ARGS[@]}" -input=false -auto-approve
+      bash "$TF_WEBHOOK" apply "${TF_ARGS[@]}" -input=false -auto-approve
     fi
   )
   ok "webhook-ingress applied"

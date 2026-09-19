@@ -85,11 +85,11 @@ export type SubmitOutcome =
   | { kind: 'unsupported' };
 
 /**
- * Maximum pending commands. Configurable per revival-design §2 (default 10).
- * The cap exists because a paused run accumulates steers it cannot deliver until
- * resume; without a bound, a dashboard bug becomes unbounded pod memory. Over-cap
- * submissions are refused with 429 rather than silently dropped, so the submitter
- * learns the command was not accepted.
+ * Maximum live non-resume commands (default 10). Pending, delivered and executor
+ * work all consume capacity until both the journal and the executor settle.
+ * One separate slot is reserved for resume, so a full pause queue cannot block
+ * the command that releases it. A second live resume is refused with 429; retries
+ * of an accepted id still return that id's outcome before the capacity check.
  */
 export const DEFAULT_MAX_PENDING = 10;
 
@@ -118,6 +118,7 @@ interface JournalEntry {
   settledAt: number | null;
   authorization?: Readonly<QueuedAuthorization>;
   checking?: boolean;
+  executing?: boolean;
 }
 
 export interface ControlStateOptions {
@@ -125,6 +126,8 @@ export interface ControlStateOptions {
   generation: number;
   /** Verbs this build can actually perform. Empty in S1 — every capability false. */
   supportedActions?: ReadonlySet<ControlAction>;
+  /** Current runtime availability, intersected with the fixed implementation set. */
+  capabilityProvider?: () => Record<ControlAction, boolean>;
   maxPending?: number;
   maxTerminal?: number;
   terminalRetentionMs?: number;
@@ -143,6 +146,7 @@ export interface ControlStateOptions {
 export class ControlStateStore {
   private readonly generation: number;
   private readonly supported: ReadonlySet<ControlAction>;
+  private readonly capabilityProvider?: ControlStateOptions['capabilityProvider'];
   private readonly maxPending: number;
   private readonly maxTerminal: number;
   private readonly terminalRetentionMs: number;
@@ -158,6 +162,7 @@ export class ControlStateStore {
   constructor(options: ControlStateOptions) {
     this.generation = options.generation;
     this.supported = options.supportedActions ?? new Set<ControlAction>();
+    this.capabilityProvider = options.capabilityProvider;
     this.maxPending = options.maxPending ?? DEFAULT_MAX_PENDING;
     this.maxTerminal = options.maxTerminal ?? DEFAULT_MAX_TERMINAL;
     this.terminalRetentionMs = options.terminalRetentionMs ?? DEFAULT_TERMINAL_RETENTION_MS;
@@ -174,17 +179,16 @@ export class ControlStateStore {
   /**
    * Capabilities as served in state.
    *
-   * Built from `supported` rather than from the phase, so a capability cannot
-   * read true for a verb with no implementation behind it. S1 reports all four
-   * false, and the dashboard therefore renders no control at all.
+   * Intersects the fixed implementation allowlist with live adapter availability.
+   * This projection never changes which verbs require signed authorization.
    */
   capabilities(): Record<ControlAction, boolean> {
-    return {
-      pause: this.isSupported('pause'),
-      resume: this.isSupported('resume'),
-      steer: this.isSupported('steer'),
-      abort: this.isSupported('abort'),
-    };
+    let available: Partial<Record<ControlAction, boolean>> | undefined;
+    try { available = this.capabilityProvider?.(); }
+    catch { available = {}; }
+    const enabled = (action: ControlAction) => this.isSupported(action) &&
+      (this.capabilityProvider === undefined || available?.[action] === true);
+    return { pause: enabled('pause'), resume: enabled('resume'), steer: enabled('steer'), abort: enabled('abort') };
   }
 
   /**
@@ -207,7 +211,7 @@ export class ControlStateStore {
 
     const existing = this.journal.get(commandId);
     if (existing) {
-      if (existing.fingerprint !== fingerprint) {
+      if (existing.record.action !== action || existing.fingerprint !== fingerprint) {
         // Same key, different intent. Refusing is the only safe answer: applying
         // the new payload would silently discard the recorded outcome of the
         // first, and applying the old one would ignore what the caller asked for.
@@ -218,7 +222,9 @@ export class ControlStateStore {
       return { kind: 'replayed', record: { ...existing.record } };
     }
 
-    if (this.pendingCount() >= this.maxPending) {
+    // Resume has one independent slot. Do not let ordinary work consume it,
+    // or repeated unique resumes turn that escape hatch into an unbounded queue.
+    if (this.liveCount(action === 'resume') >= (action === 'resume' ? 1 : this.maxPending)) {
       return { kind: 'queue_full' };
     }
 
@@ -297,10 +303,27 @@ export class ControlStateStore {
     try { handoff(); } catch {
       entry.record.status = 'unknown';
       entry.record.reason = 'SDK handoff outcome unknown';
+      entry.settledAt = this.now();
       this.touch();
+      this.prune();
       return false;
     }
     return true;
+  }
+
+  /** Hold admission capacity until the delivered executor actually finishes.
+   * A gate event can settle the journal before its async continuation returns.
+   * That does not authorize evicting its entry or admitting unlimited executors.
+   */
+  async executeDelivered(commandId: string, executor: () => Promise<void>): Promise<void> {
+    const entry = this.journal.get(commandId);
+    if (!entry || entry.record.status !== 'delivered' || entry.executing) return;
+    entry.executing = true;
+    try { await executor(); }
+    finally {
+      entry.executing = false;
+      this.prune();
+    }
   }
 
   /**
@@ -321,6 +344,15 @@ export class ControlStateStore {
     return true;
   }
 
+  /** Update diagnostics without settling or redelivering an accepted command. */
+  annotateDelivered(commandId: string, reason: string): boolean {
+    const entry = this.journal.get(commandId);
+    if (!entry || entry.record.status !== 'delivered') return false;
+    entry.record.reason = reason.slice(0, 1024);
+    this.touch();
+    return true;
+  }
+
   /** Commands awaiting delivery, in submission order (FIFO — ADR-2). */
   pending(): CommandRecord[] {
     this.prune();
@@ -329,10 +361,11 @@ export class ControlStateStore {
       .map((entry) => ({ ...entry.record }));
   }
 
-  private pendingCount(): number {
+  private liveCount(resume: boolean): number {
     let count = 0;
     for (const entry of this.journal.values()) {
-      if (entry.record.status === 'pending') count += 1;
+      if ((entry.record.action === 'resume') === resume &&
+          (entry.settledAt === null || entry.executing || entry.checking)) count += 1;
     }
     return count;
   }
@@ -379,12 +412,12 @@ export class ControlStateStore {
   private prune(): void {
     const cutoff = this.now() - this.terminalRetentionMs;
     for (const [id, entry] of this.journal) {
-      if (entry.settledAt !== null && entry.settledAt < cutoff) {
+      if (entry.settledAt !== null && !entry.executing && !entry.checking && entry.settledAt < cutoff) {
         this.journal.delete(id);
       }
     }
 
-    const settled = [...this.journal.entries()].filter(([, entry]) => entry.settledAt !== null);
+    const settled = [...this.journal.entries()].filter(([, entry]) => entry.settledAt !== null && !entry.executing && !entry.checking);
     const excess = settled.length - this.maxTerminal;
     for (let i = 0; i < excess; i += 1) {
       this.journal.delete(settled[i][0]);

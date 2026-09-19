@@ -32,7 +32,7 @@ The sequence is therefore fixed, and each step is safe to stop at:
 
 | # | Step | Reversible by |
 |---|---|---|
-| 1 | Apply migration `008` (two new tables, additive) | `alembic downgrade` — no domain data involved |
+| 1 | Apply the reviewed schema including receiver revision `011` (two new tables, additive) | `alembic downgrade` — no domain data involved |
 | 2 | Deploy the receiver (`legacy_heartbeat_enabled` still **true**) | Redeploy previous image |
 | 3 | Configure the submitter credential | Delete the secret |
 | 4 | Deploy the monitor that sends over the contract | Redeploy previous image (still has `DATABASE_URL`) |
@@ -70,16 +70,16 @@ credential's grant and takes no parameter that can widen it.
 
 ## Preconditions
 
-- [ ] **Migration `008_add_observation_receiver_tables` is applied.** It creates
+- [ ] **The reviewed schema including `011_add_observation_receiver_tables` is applied.** It creates
       `observation_receipts` and `observation_leases`. Additive only — no column
       added to or removed from an existing table, no data migration.
-- [ ] **Blocker, read this before scheduling:** the Alembic chain does not have a
-      single head (three files declare `006`, three declare `007`), so
-      `alembic upgrade head` cannot resolve it and `check_migration_contract.py`
-      refuses to run. `releases/superplane.lock.yaml` records
-      `status: unverified`, `single_head: false`. **U13 (#5045) owns that repair,
-      and this procedure cannot start until it lands.** `008` is written to be
-      re-parented by U13 rather than to pre-empt it.
+- [ ] Verify the release lock against the checked-out Alembic graph and the live
+      applied revision. U13 repaired the duplicate revision graph in code; that
+      does not prove a live database has been upgraded. Run only the authorized
+      U23 migration lane, preserving the domain schema and backup/restore plan.
+- [ ] Receiver release includes the #5396 workspace-ID, lease-authorization and
+      malformed-request fixes, and its deployment configuration uses the matching
+      ID-based grants described below. Code merge alone is not this live check.
 - [ ] Receiver image built from a revision containing `POST /internal/observations`.
 - [ ] Monitor image built from a revision whose `config.Config` has no database
       field (`OBSERVATION_API_URL` present, `DATABASE_URL` absent).
@@ -127,9 +127,28 @@ in the deployment's secret store as `superplane-observation-submitter`
 **The `workspaces` list is the tenant boundary.** It is the only thing standing
 between an authenticated monitor and a cross-workspace write, and it comes from
 configuration, not from the payload. Grant the monitor exactly the workspaces it
-must observe. An empty grant authorizes nothing (deliberately fail-closed); a
+must observe, using each workspace’s immutable UUID from the API/database, never
+its display name. Names may repeat across organizations and cannot identify an
+authorization boundary. An empty grant authorizes nothing (deliberately fail-closed); a
 wildcard is not supported and must not be simulated by enumerating every
 workspace.
+
+The receiver now returns that same workspace UUID in scoped cluster listings;
+the monitor uses it unchanged in observation subjects. Update the receiver grant
+configuration together with this release. Display-name grants do not authorize
+any cluster. No workspace-name uniqueness constraint or data migration is needed;
+existing workspace IDs already supply the identity. Reverting the image requires
+restoring its matching grant configuration, without withdrawing the current grant
+until continuity has been established.
+
+Cluster-health leases require the same workspace grant as the cluster read/write
+path. The existing budget monitor also takes `budget_monitor/global`. Grant this
+only to its designated identity with the optional submitter field
+`"lease_scopes": ["budget_monitor/global"]`; the default is no non-cluster lease
+authority. This grant coordinates the global budget monitor and does not expand
+which clusters it can read. Arbitrary non-cluster scopes remain refused. U23 must
+validate both the workspace UUID list and any explicit budget-lease grant as
+installation inputs; never infer global lease authority from a nonempty grant.
 
 Never log, echo or paste either value. They are as sensitive as the database
 password they replace: a party holding the signing key can mint an observation

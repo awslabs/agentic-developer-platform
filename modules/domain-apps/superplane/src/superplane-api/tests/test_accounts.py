@@ -161,6 +161,118 @@ class TestRegisterCredential:
         assert "must not be an ARN" in response.text
 
 
+class TestValidationErrorsDoNotEchoTheRejectedValue:
+    """Issue #5053 (U7b): a 422 refusing secret material must not reproduce it.
+
+    FastAPI's default handler puts each error's ``input`` in the response body
+    verbatim, so before this story the route above — whose entire purpose is refusing
+    a secret ARN — answered with the full ARN, AWS account id, region and secret name
+    included. Measured, not theorized: the assertions below failed against the
+    unpatched handler.
+
+    Written against the real route rather than by calling the handler directly,
+    because the defect was in the wiring: the validator's message was already safe
+    and the leak came from a layer nobody had inspected.
+    """
+
+    # Not a credential for anything. Structurally complete so the ARN detector and
+    # the account-id assertion below have something real to match; the account id is
+    # the reserved all-zeros value and the secret does not exist.
+    FAKE_ARN = "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake-not-real-AbCdEf"
+
+    @pytest.mark.asyncio
+    async def test_422_body_does_not_contain_the_submitted_arn(self, client):
+        """The rejected ARN appears nowhere in the response body."""
+        response = await client.post(
+            "/vault/credentials",
+            json={
+                "name": "test-cred",
+                "provider": "nebius",
+                "adp_credential_id": self.FAKE_ARN,
+            },
+            headers=_auth_header(),
+        )
+
+        assert response.status_code == 422
+        assert self.FAKE_ARN not in response.text
+        # Checked separately from the whole ARN: a partial echo that dropped the
+        # prefix would still disclose the account, which is the part that turns an
+        # over-broad IAM policy into a read of the secret.
+        assert "000000000000" not in response.text
+        assert "fake-not-real-AbCdEf" not in response.text
+        assert "arn:aws:secretsmanager" not in response.text
+
+    @pytest.mark.asyncio
+    async def test_422_still_says_which_rule_was_broken(self, client):
+        """Scrubbing keeps the explanation. A refusal nobody can act on is a defect too.
+
+        The first version of this handler ran the message through ``scrub``, which
+        withholds a whole value — collapsing the explanation to ``[REDACTED]`` and
+        leaving the caller unable to tell a rejected ARN from a rejected empty string.
+        This pins the span-level behaviour that replaced it.
+        """
+        response = await client.post(
+            "/vault/credentials",
+            json={
+                "name": "test-cred",
+                "provider": "nebius",
+                "adp_credential_id": self.FAKE_ARN,
+            },
+            headers=_auth_header(),
+        )
+
+        assert response.status_code == 422
+        assert "must not be an ARN" in response.text
+        # The redaction is visible as a placeholder rather than as a silent deletion,
+        # so an operator reading the body can tell something was withheld.
+        assert "[REDACTED]" in response.text
+
+    @pytest.mark.asyncio
+    async def test_422_does_not_echo_a_secret_value_under_an_unknown_key(self, client):
+        """An AWS key sent under a field we never declared is not echoed either.
+
+        The handler is registered app-wide, not on the credential routes, because any
+        field anywhere can be handed a secret by mistake and a per-route handler
+        protects only the routes someone remembered to annotate. `AKIA` + 16 chars is
+        the shape, matching no real key.
+        """
+        fake_key = "AKIA" + "Z" * 16
+        response = await client.post(
+            "/vault/credentials",
+            json={
+                "name": "test-cred",
+                "provider": "nebius",
+                "adp_credential_id": fake_key,
+            },
+            headers=_auth_header(),
+        )
+
+        assert response.status_code == 422
+        assert fake_key not in response.text
+
+    @pytest.mark.asyncio
+    async def test_ordinary_422s_remain_debuggable(self, client):
+        """Scrubbing is targeted, not a blanket suppression of validation errors.
+
+        Deleting the errors wholesale would have fixed the leak by making every 422
+        in the service undebuggable. A missing-field error still names the field and
+        its error type.
+        """
+        response = await client.post(
+            "/vault/credentials", json={"name": "test"}, headers=_auth_header()
+        )
+
+        assert response.status_code == 422
+        body = response.json()
+        assert isinstance(body["detail"], list) and body["detail"]
+        assert "provider" in response.text
+        # `input` is dropped from every entry — it is the caller's raw value, of
+        # unknown provenance, and any part of it could be the secret.
+        assert all("input" not in entry for entry in body["detail"])
+        # ...but the diagnosis survives.
+        assert all("type" in entry and "loc" in entry for entry in body["detail"])
+
+
 class TestListCredentials:
     """Test GET /vault/credentials."""
 

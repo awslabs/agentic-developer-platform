@@ -253,7 +253,7 @@ class TestPullRequestEvents:
         payload = load_fixture("pr_opened.json")
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.trigger == "pr_opened"
         assert result.label is None
 
@@ -261,7 +261,7 @@ class TestPullRequestEvents:
         payload = load_fixture("pr_synchronize.json")
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.trigger == "pr_synchronize"
 
     def test_pr_closed_no_intent(self):
@@ -288,7 +288,7 @@ class TestPullRequestEvents:
         payload["sender"] = {"login": "dependabot[bot]", "id": 777, "type": "Bot"}
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
 
     def test_pr_opened_by_bot_on_non_agent_branch_ignored(self):
         """Bot PR on a non-agent branch is still blocked by the branch filter."""
@@ -334,6 +334,36 @@ class TestIssueCommentEvents:
         assert result is not None
         assert result.persona == "architect"
         assert result.trigger == "mentioned"
+
+    def test_mention_codex_reviewer(self):
+        payload = {
+            "action": "created",
+            "comment": {"body": "@agent-codex-reviewer review this issue"},
+            "issue": {"number": 42},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        result = extract_intent("issue_comment", payload)
+        assert result is not None
+        assert result.persona == "agent-codex-reviewer"
+        assert result.trigger == "mentioned"
+
+    def test_codex_reviewer_does_not_route_to_codex_supervisor(self):
+        reviewer_payload = {
+            "action": "created",
+            "comment": {"body": "@agent-codex-reviewer review this issue"},
+            "issue": {"number": 42},
+            "sender": {"login": "user", "id": 1, "type": "User"},
+            "installation": {"id": 123},
+        }
+        supervisor_payload = {
+            **reviewer_payload,
+            "comment": {"body": "@agent-codex implement this issue"},
+        }
+        reviewer = extract_intent("issue_comment", reviewer_payload)
+        supervisor = extract_intent("issue_comment", supervisor_payload)
+        assert reviewer is not None and reviewer.persona == "agent-codex-reviewer"
+        assert supervisor is not None and supervisor.persona == "codex"
 
     def test_mention_product(self):
         """@agent-product mention resolves to product persona."""

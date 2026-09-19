@@ -85,6 +85,59 @@ class TargetRelationship(StrEnum):
 _IMPLICIT_SELF_ACTIONS: frozenset[AgentAction] = frozenset({AgentAction.MONITOR})
 
 
+# --------------------------------------------------------------------------------
+# Recognized authority kinds (#4529)
+# --------------------------------------------------------------------------------
+#
+# `AuthorityReference.kind` records which verified authorization model produced a
+# grant, and its docstring says a new initiation path "adds a kind rather than
+# loosening this one". Enforcing that needs the set spelled out as data, because the
+# decision points downstream were written when exactly one kind mattered and so
+# tested for it by inequality:
+#
+#     if grant.authority.kind != "gate_decision":
+#         return Decision.permit("no accepted engine policy binding")
+#
+# That reads "not the engine kind, therefore legacy, therefore unrestricted" — it
+# treats the *absence* of a rule as permission. Survivable while one kind existed;
+# fail-open the moment a second one does, and this one fronted installation-token
+# minting and model spend. Adding `replan_request` for the authoring loop would have
+# opened every such branch at once, which is why the maintainer's ruling on #4529
+# requires these surfaces to enumerate what they accept and deny what they do not
+# recognize.
+#
+# So the members below are the *whole* vocabulary, and each decision point names the
+# subset it handles. A kind added later is refused by every surface that has not
+# explicitly considered it — the failure is a denial at one boundary rather than a
+# silent grant at four.
+
+#: A human answered an AI-DLC gate: an `orchestration_decisions` row with
+#: `actor_kind=HUMAN` and a kind in `genesis.APPROVAL_DECISION_KINDS`. The only kind
+#: that roots *executing* graph work.
+AUTHORITY_GATE_DECISION = "gate_decision"
+#: A webhook delivery from a verified GitHub installation event.
+AUTHORITY_GITHUB_EVENT = "github_event"
+#: An accepted service policy (scheduled / operator-launched coordination).
+AUTHORITY_SERVICE_POLICY = "service_policy"
+#: A verified human `replan:` request, rooting ONE bounded AI-DLC authoring job
+#: (#4529). Deliberately NOT an approval: `REPLAN_REQUESTED` stays absent from
+#: `genesis.APPROVAL_DECISION_KINDS`, so this kind cannot root executing work, and
+#: the grant minted from it carries no `DISPATCH`. It authorizes filing one proposed
+#: amendment against one flow at one base revision — never accepting it.
+AUTHORITY_REPLAN_REQUEST = "replan_request"
+
+#: Every kind this platform issues. A grant whose kind is outside this set is a bug
+#: or a forgery, and every enumerating surface refuses it.
+RECOGNIZED_AUTHORITY_KINDS: frozenset[str] = frozenset(
+    {
+        AUTHORITY_GATE_DECISION,
+        AUTHORITY_GITHUB_EVENT,
+        AUTHORITY_SERVICE_POLICY,
+        AUTHORITY_REPLAN_REQUEST,
+    }
+)
+
+
 class GrantRefusedError(Exception):
     """A grant could not authorize the request.
 

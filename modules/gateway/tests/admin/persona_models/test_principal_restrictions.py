@@ -5,17 +5,16 @@ server-resolved policy inputs.  Before this, ``routes.py`` passed neither, and
 ``service.py`` carried an explicit "all models pass for now" comment — so the
 gate reported permitted for every model unconditionally.
 
-What is deliberately *not* tested here, because it does not exist: a
-per-organization allowed-model-patterns store.  The gateway has no such table,
-column or migration, so there is nothing to read and a test asserting one
-would be asserting a fiction.  That gap is called out in the PR.
-
-What is tested is the policy that does exist: principal status (PMM-02's
-active / suspended / retired) and R1's requirement that a canonical principal
-ID owns a preference.
+The Agent Registry already stores ``allowed_models`` for IAM service callers,
+but before PMM-03 that value stopped at DynamoDB and was never used by model
+selection.  These tests prove D3 makes that real server-resolved restriction
+load-bearing for catalogue and save validation, including managed principals
+with more than one active registry alias.
 """
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -23,6 +22,8 @@ from httpx import ASGITransport, AsyncClient
 
 from src.admin.persona_models.catalogue_routes import (
     principal_policy_inputs,
+    resolve_managed_service_restriction_policy,
+    self_service_restriction_policy,
 )
 from src.admin.persona_models.catalogue_routes import (
     router as persona_models_router,
@@ -34,6 +35,7 @@ from src.admin.persona_models.catalogue_service import (
 )
 from src.auth.dependencies import get_current_user
 from src.shared.database import get_db
+from src.shared.models.persona_models import ServicePrincipal, ServicePrincipalAlias
 
 from .conftest import DEFAULT_MODEL_ID, ORG_ID, member_context
 
@@ -128,6 +130,117 @@ class TestPrincipalInputsFromToken:
         kind, _ = principal_policy_inputs(ctx)
         assert kind == "service_account"
 
+    def test_iam_service_policy_comes_from_authenticated_registry_context(self):
+        ctx = member_context().model_copy(
+            update={
+                "account_type": "service",
+                "canonical_alias_source": "agent_registry",
+                "registered_allowed_models": ["*sonnet*"],
+            }
+        )
+        pattern_sets, unavailable = self_service_restriction_policy(ctx)
+        assert pattern_sets == [["*sonnet*"]]
+        assert unavailable is None
+
+    def test_missing_iam_registry_policy_fails_closed(self):
+        ctx = member_context().model_copy(
+            update={
+                "account_type": "service",
+                "canonical_alias_source": "agent_registry",
+                "registered_allowed_models": None,
+            }
+        )
+        pattern_sets, unavailable = self_service_restriction_policy(ctx)
+        assert pattern_sets == []
+        assert unavailable == "not_permitted"
+
+
+class TestManagedServiceRestrictionResolution:
+    @pytest.mark.asyncio
+    async def test_resolves_every_active_registry_alias(self, session):
+        principal = ServicePrincipal(
+            canonical_service_principal_id="svc-canonical-1",
+            org_id=ORG_ID,
+            display_name="Build service",
+            status="active",
+            approved_by="admin-1",
+        )
+        session.add(principal)
+        session.add_all(
+            [
+                ServicePrincipalAlias(
+                    org_id=ORG_ID,
+                    canonical_service_principal_id=principal.canonical_service_principal_id,
+                    alias_source="agent_registry",
+                    alias_id="builder-a",
+                    registered_by="admin-1",
+                ),
+                ServicePrincipalAlias(
+                    org_id=ORG_ID,
+                    canonical_service_principal_id=principal.canonical_service_principal_id,
+                    alias_source="agent_registry",
+                    alias_id="builder-b",
+                    registered_by="admin-1",
+                ),
+            ]
+        )
+        await session.commit()
+
+        page = SimpleNamespace(
+            items=[
+                SimpleNamespace(agent_name="builder-a", status="active", allowed_models=["*sonnet*"]),
+                SimpleNamespace(agent_name="builder-b", status="active", allowed_models=["global.anthropic.*"]),
+            ],
+            last_key=None,
+        )
+
+        async def _list_agents(**_kwargs):
+            return page
+
+        registry = SimpleNamespace(list_agents=_list_agents)
+        pattern_sets, unavailable = await resolve_managed_service_restriction_policy(
+            session,
+            org_id=ORG_ID,
+            canonical_service_principal_id=principal.canonical_service_principal_id,
+            registry_service=registry,
+        )
+        assert pattern_sets == [["*sonnet*"], ["global.anthropic.*"]]
+        assert unavailable is None
+
+    @pytest.mark.asyncio
+    async def test_missing_registry_row_is_policy_unavailable(self, session):
+        principal = ServicePrincipal(
+            canonical_service_principal_id="svc-canonical-missing",
+            org_id=ORG_ID,
+            display_name="Missing service",
+            status="active",
+            approved_by="admin-1",
+        )
+        session.add(principal)
+        session.add(
+            ServicePrincipalAlias(
+                org_id=ORG_ID,
+                canonical_service_principal_id=principal.canonical_service_principal_id,
+                alias_source="agent_registry",
+                alias_id="missing-builder",
+                registered_by="admin-1",
+            )
+        )
+        await session.commit()
+
+        async def _list_agents(**_kwargs):
+            return SimpleNamespace(items=[], last_key=None)
+
+        registry = SimpleNamespace(list_agents=_list_agents)
+        pattern_sets, unavailable = await resolve_managed_service_restriction_policy(
+            session,
+            org_id=ORG_ID,
+            canonical_service_principal_id=principal.canonical_service_principal_id,
+            registry_service=registry,
+        )
+        assert pattern_sets == []
+        assert unavailable == "not_permitted"
+
 
 class TestCatalogueAppliesGate4:
     @pytest.mark.asyncio
@@ -169,9 +282,26 @@ class TestCatalogueAppliesGate4:
             principal_status="active",
         )
 
-        claude_rows = [r for r in rows if r.reason != "harness_incompatible"]
-        assert claude_rows
-        assert all(r.reason == "probing_disabled" for r in claude_rows)
+        assert rows
+        assert all(r.compatibility_class == "claude-agent-sdk" for r in rows)
+        assert all(r.reason == "probing_disabled" for r in rows)
+
+    @pytest.mark.asyncio
+    async def test_registry_allowed_models_restricts_catalogue(self, session):
+        rows = await build_model_catalogue(
+            session,
+            persona_key="developer",
+            account_id="111111115420",
+            region="us-east-1",
+            principal_kind="service_account",
+            canonical_principal_id="svc-canonical-1",
+            principal_status="active",
+            service_restriction_pattern_sets=[["*opus*"]],
+        )
+        sonnet = next(row for row in rows if row.canonical_model_id == DEFAULT_MODEL_ID)
+        assert sonnet.selectable is False
+        assert sonnet.permitted is False
+        assert sonnet.reason == "not_permitted"
 
 
 class TestValidationAppliesGate4:
@@ -211,6 +341,22 @@ class TestValidationAppliesGate4:
         )
         assert result.reason == "not_permitted"
         assert result.reason != "probing_disabled"
+
+    @pytest.mark.asyncio
+    async def test_registry_allowed_models_restricts_save_validation(self, session):
+        result = await validate_selection(
+            session,
+            org_id=ORG_ID,
+            principal_kind="service_account",
+            canonical_principal_id="svc-canonical-1",
+            principal_status="active",
+            persona_key="developer",
+            model=DEFAULT_MODEL_ID,
+            account_id="111111115420",
+            region="us-east-1",
+            service_restriction_pattern_sets=[["*opus*"]],
+        )
+        assert result.reason == "not_permitted"
 
 
 class TestRouteWiresPolicyInputs:

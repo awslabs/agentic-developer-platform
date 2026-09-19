@@ -50,8 +50,8 @@ _OTHER_KEY = b"test-signing-key-other-not-a-credential"
 _MONITOR_CRED = "test-credential-monitor"
 _OTHER_CRED = "test-credential-other"
 
-_WS_OWNED = "ws-owned"
-_WS_FOREIGN = "ws-foreign"
+_WS_OWNED = "a1111111-a111-4111-8111-a11111111111"
+_WS_FOREIGN = "b2222222-b222-4222-8222-b22222222222"
 
 
 @pytest.fixture(autouse=True)
@@ -142,9 +142,9 @@ async def _seed_cluster(workspace_name: str = _WS_OWNED) -> uuid.UUID:
         await session.flush()
         session.add(
             Workspace(
-                id=uuid.uuid4(),
+                id=uuid.UUID(workspace_name),
                 org_id=org_id,
-                name=workspace_name,
+                name="prod",
                 isolation_mode="namespace",
                 status="Active",
                 cluster_id=cluster_id,
@@ -1471,10 +1471,14 @@ class TestScopedEventWrites:
 
 
 class TestLeases:
+    @pytest.fixture(autouse=True)
+    async def _lease_cluster(self):
+        self.cluster_id = str(await _seed_cluster())
+
     async def _acquire(self, client, credential=_MONITOR_CRED, **overrides):
         payload = {
             "resource_type": "cluster_health",
-            "resource_id": "c1",
+            "resource_id": self.cluster_id,
             "instance_id": "pod-a",
         }
         payload.update(overrides)
@@ -1487,7 +1491,7 @@ class TestLeases:
     async def test_an_unauthenticated_caller_cannot_take_a_lease(self, client):
         response = await client.post(
             "/internal/observations/leases",
-            json={"resource_type": "cluster_health", "resource_id": "c1"},
+            json={"resource_type": "cluster_health", "resource_id": self.cluster_id},
         )
 
         assert response.status_code == 401
@@ -1535,7 +1539,7 @@ class TestLeases:
             "/internal/observations/leases/release",
             json={
                 "resource_type": "cluster_health",
-                "resource_id": "c1",
+                "resource_id": self.cluster_id,
                 "instance_id": "pod-b",
                 "fence_token": token,
             },
@@ -1553,7 +1557,7 @@ class TestLeases:
             "/internal/observations/leases/release",
             json={
                 "resource_type": "cluster_health",
-                "resource_id": "c1",
+                "resource_id": self.cluster_id,
                 "instance_id": "pod-a",
                 "fence_token": current.json()["fence_token"] - 1,
             },
@@ -1569,7 +1573,7 @@ class TestLeases:
             "/internal/observations/leases/release",
             json={
                 "resource_type": "cluster_health",
-                "resource_id": "c1",
+                "resource_id": self.cluster_id,
                 "instance_id": "pod-a",
                 "fence_token": granted.json()["fence_token"],
             },
@@ -1587,7 +1591,7 @@ class TestLeases:
             "/internal/observations/leases/release",
             json={
                 "resource_type": "cluster_health",
-                "resource_id": "c1",
+                "resource_id": self.cluster_id,
                 "instance_id": "pod-a",
                 "fence_token": granted.json()["fence_token"],
             },
@@ -1598,13 +1602,43 @@ class TestLeases:
 
         assert reacquired.json()["fence_token"] > granted.json()["fence_token"]
         async with async_session_test() as session:
-            row = await session.get(ObservationLease, "cluster_health/c1")
+            row = await session.get(
+                ObservationLease, f"cluster_health/{self.cluster_id}"
+            )
         assert row is not None
 
-    async def test_a_lease_scope_need_not_be_a_cluster(self, client):
+    async def test_a_lease_scope_need_not_be_a_cluster(self, client, monkeypatch):
         """The budget monitor holds ("budget_monitor", "global"), which has no row."""
+        entries = json.loads(settings.observation_submitters)
+        entries[0]["lease_scopes"] = ["budget_monitor/global"]
+        monkeypatch.setattr(settings, "observation_submitters", json.dumps(entries))
         response = await self._acquire(
             client, resource_type="budget_monitor", resource_id="global"
         )
 
         assert response.status_code == 200
+
+
+async def test_only_configured_controller_identity_advances_heartbeat(client, monkeypatch):
+    from dataclasses import replace
+
+    controller_credential = "test-controller-credential"
+    controller_key = b"test-controller-signing-key"
+    entries = json.loads(settings.observation_submitters)
+    entries.append({"submitter_id": "controller-1", "credential": controller_credential, "signing_key": controller_key.decode(), "workspaces": [_WS_OWNED]})
+    monkeypatch.setattr(settings, "observation_submitters", json.dumps(entries))
+    monkeypatch.setattr(settings, "controller_observation_submitter_id", "controller-1")
+    cluster_id = await _seed_cluster()
+    # An authenticated monitor claiming to be the controller is still a monitor.
+    spoof = replace(_observation(cluster_id), reporter="controller-1")
+    assert (await _submit(client, spoof)).status_code == 202
+    async with async_session_test() as session:
+        cluster = await session.get(Cluster, cluster_id)
+        assert cluster.last_heartbeat is None
+        monitor_at = cluster.last_reconciled_at
+    genuine = replace(_observation(cluster_id), reporter="arbitrary-payload-label")
+    assert (await _submit(client, genuine, controller_credential, controller_key)).status_code == 202
+    async with async_session_test() as session:
+        cluster = await session.get(Cluster, cluster_id)
+        assert cluster.last_heartbeat.replace(tzinfo=UTC) == genuine.reported_at
+        assert cluster.last_reconciled_at == monitor_at

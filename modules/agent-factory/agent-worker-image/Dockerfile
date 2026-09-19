@@ -25,7 +25,19 @@ COPY modules/agent-factory/agent/src/ ./src/
 RUN npx tsc --project tsconfig.json
 
 # -----------------------------------------------------------------------------
-# Stage 2: Stage personas and skills
+# Stage 2: Build the Codex SDK execution adapter
+# -----------------------------------------------------------------------------
+FROM public.ecr.aws/docker/library/node:24-bookworm-slim AS codex-builder
+
+WORKDIR /build
+COPY modules/agent-factory/codex-reviewer/package.json modules/agent-factory/codex-reviewer/package-lock.json ./
+RUN npm ci
+COPY modules/agent-factory/codex-reviewer/tsconfig.json ./
+COPY modules/agent-factory/codex-reviewer/src/ ./src/
+RUN npm run build && npm prune --omit=dev
+
+# -----------------------------------------------------------------------------
+# Stage 3: Stage personas and skills
 # -----------------------------------------------------------------------------
 FROM public.ecr.aws/docker/library/debian:trixie-slim AS stager
 
@@ -44,7 +56,7 @@ COPY modules/domain-apps/ /source/domain-apps/
 RUN /stage/stage-personas.sh /source /stage
 
 # -----------------------------------------------------------------------------
-# Stage 3: Final runtime image
+# Stage 4: Final runtime image
 # -----------------------------------------------------------------------------
 # python:3.13-slim-bookworm includes Python 3.13 + pip, based on Debian 12.
 # Uses deb.debian.org (Fastly CDN) for apt — far more reliable than
@@ -177,6 +189,7 @@ RUN pip3 install --no-cache-dir --break-system-packages uv poetry ruff
 #   boto3             — Secrets Manager, STS, DynamoDB clients (vault_client, sts_assume)
 #   PyJWT[crypto]     — GitHub App installation-token JWT minting (github_token)
 #   requests          — HTTPS calls to GitHub API (github_token)
+#   cryptography      — Ed25519 verification of gateway model-policy decisions
 #   bedrock-agentcore — AgentCore Browser client (generate_ws_headers for
 #                       SigV4-signed CDP WebSocket) used by the url-analysis skill
 #   playwright        — Chromium automation over CDP for url-analysis
@@ -186,6 +199,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     'boto3>=1.34' \
     'PyJWT[crypto]>=2.9' \
     'requests>=2.31' \
+    'cryptography>=42.0' \
     'bedrock-agentcore>=0.1' \
     'playwright>=1.45' \
     'pydantic>=2.0' \
@@ -210,6 +224,13 @@ RUN chmod +x /usr/local/bin/git-askpass-helper /usr/local/bin/gh && \
 # Copy pre-built agent runtime from builder stage
 COPY --from=builder --chown=agent:agent /build/dist/ /app/dist/
 COPY --from=builder --chown=agent:agent /build/prod_modules/ /app/node_modules/
+
+# Codex is an execution engine inside the same worker image. Keep its dependency
+# tree isolated so SDK versions cannot perturb the Claude worker runtime.
+COPY --from=codex-builder --chown=agent:agent /build/dist/ /app/codex-reviewer/dist/
+COPY --from=codex-builder --chown=agent:agent /build/node_modules/ /app/codex-reviewer/node_modules/
+COPY --from=codex-builder --chown=agent:agent /build/package.json /app/codex-reviewer/package.json
+COPY --chown=agent:agent modules/agent-factory/codex-reviewer/prompts/ /app/codex-reviewer/prompts/
 
 # Copy staged personas and skills
 COPY --from=stager --chown=agent:agent /stage/personas/ /app/personas/

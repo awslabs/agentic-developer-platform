@@ -22,7 +22,7 @@ from src.shared.database import get_db
 
 router = APIRouter(prefix="/internal/v1/persona-model-probes", tags=["internal-model-probes"])
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
-PROBE_WORKER_ID = "scaledjob-worker"
+PROBE_WORKER_ID = "persona-model-probe"
 
 
 class StrictBody(BaseModel):
@@ -85,7 +85,7 @@ async def verify_model_probe_irsa(
     request: Request,
     x_caller_identity: str | None = Header(default=None),
 ) -> None:
-    """Require the canonical scaledjob IRSA identity; shared secrets are forbidden."""
+    """Require the dedicated probe IRSA identity; shared worker identities are forbidden."""
     if not x_caller_identity:
         raise HTTPException(status_code=403, detail={"error": "irsa_required", "message": "Probe routes require IRSA"})
     await verify_internal_or_irsa(
@@ -94,7 +94,17 @@ async def verify_model_probe_irsa(
         x_caller_identity=x_caller_identity,
     )
     context = getattr(request.state, "token_context", None)
-    if context is None or context.user_id != PROBE_WORKER_ID:
+    if (
+        context is None
+        # The IAM adapter's compatibility ``user_id`` is Agent Registry
+        # ``agent_name``: mutable and non-unique.  Bind this credential-bearing
+        # route to the immutable seeded primary key as well as its fixed
+        # platform metadata so a tenant-created lookalike name fails closed.
+        or getattr(context, "agent_registry_id", "") != PROBE_WORKER_ID
+        or context.user_id != PROBE_WORKER_ID
+        or context.org_id != "__platform__"
+        or context.scope != "internal"
+    ):
         raise HTTPException(
             status_code=403,
             detail={"error": "probe_worker_required", "message": "Caller is not the registered probe worker"},

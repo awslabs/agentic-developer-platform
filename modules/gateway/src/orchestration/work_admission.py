@@ -19,6 +19,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 
+from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY
+
 from .models import ClaimState, OrchestrationWorkClaim
 from .work_claims import (
     ClaimBinding,
@@ -35,6 +37,14 @@ from .work_claims import (
 
 logger = logging.getLogger(__name__)
 ENABLED_ENV = "ADP_WORK_CLAIMS_ENABLED"
+
+# Which authority kind files a claim under which owner (#4529). A mapping rather than a
+# conditional so an unlisted kind has no owner to fall back to — see the check site.
+_CLAIM_OWNER_KINDS: dict[str, OwnerKind] = {
+    AUTHORITY_GATE_DECISION: OwnerKind.ENGINE_FLOW,
+    AUTHORITY_GITHUB_EVENT: OwnerKind.DIRECT_DISPATCH,
+    AUTHORITY_SERVICE_POLICY: OwnerKind.DIRECT_DISPATCH,
+}
 
 
 def enabled() -> bool:
@@ -150,8 +160,23 @@ async def admit_pending(store, invocation_id: str, *, session=None, allow_defer:
         )
         return result
 
-    no_issue = issue == 0 and grant.authority.kind == "service_policy"
-    owner = ClaimOwner(OwnerKind.ENGINE_FLOW if grant.authority.kind == "gate_decision" else OwnerKind.DIRECT_DISPATCH, grant.flow_id)
+    no_issue = issue == 0 and grant.authority.kind == AUTHORITY_SERVICE_POLICY
+    # Recognized-authority handling (#4529). The owner line below used to read
+    # `ENGINE_FLOW if kind == "gate_decision" else DIRECT_DISPATCH`, so every kind
+    # this function had never considered silently claimed work as a direct dispatch.
+    # That matters because `owner_kind` decides how a stuck claim is *reconciled*: an
+    # engine-owned claim is resolved against the graph, a direct one only against the
+    # ingress ledger. A misfiled claim is therefore one nothing can correctly clean up.
+    #
+    # `replan_request` is refused rather than mapped to an owner, and the reason is a
+    # behavioural one, not bookkeeping: a work claim is an *exclusivity* lease on an
+    # issue, and the flow's intent issue is where the flow's real work runs. An
+    # authoring run taking that lease would block or displace the very plan it was
+    # asked to propose a change to. It needs no lease — it reads a bounded request and
+    # files a draft — so the honest answer is that it claims nothing.
+    if grant.authority.kind not in _CLAIM_OWNER_KINDS:
+        raise WorkClaimError("authority_kind_not_recognized", "This authority kind does not claim work.")
+    owner = ClaimOwner(_CLAIM_OWNER_KINDS[grant.authority.kind], grant.flow_id)
 
     async def reserve(active_session):
         try:
@@ -249,6 +274,8 @@ async def maintain_worker_claim(
     if row.active_run_id != invocation_id or row.state != ClaimState.HELD.value:
         raise WorkClaimError("claim_not_owned", "This invocation no longer owns the work.")
     if terminal:
+        # Process status is advisory. The locked release primitive preserves a
+        # current continuation without rejecting a valid terminal status report.
         await release_work(
             session,
             org_id=org_id,

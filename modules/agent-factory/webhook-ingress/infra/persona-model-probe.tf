@@ -11,6 +11,97 @@
 # addition, the Gateway defaults to disabled, zero slots and zero budget.  All
 # three controls must be changed by PMM-09 after explicit account/spend approval.
 
+# The probe receives short-lived credentials for the Gateway-selected Bedrock
+# destination after durable admission. It therefore MUST NOT share the ordinary
+# agent worker identity: that role is used by every hosted chat and webhook pod.
+# Keep this role, service account, and registry row one-to-one so only this
+# suspended CronJob can authenticate as persona-model-probe.
+resource "aws_iam_role" "persona_model_probe" {
+  name = "${local.name_prefix}-persona-model-probe-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = local.oidc_provider_arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:adp-agents:persona-model-probe-sa"
+          "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+
+  tags = {
+    Name      = "${local.name_prefix}-persona-model-probe-role"
+    Component = "persona-model-probe"
+  }
+}
+
+resource "aws_iam_role_policy" "persona_model_probe" {
+  name = "persona-model-probe-gateway-only"
+  role = aws_iam_role.persona_model_probe.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "ProbeGatewayOnly"
+      Effect = "Allow"
+      Action = ["execute-api:Invoke"]
+      Resource = [
+        "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/persona-model-probes/claim",
+        "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/persona-model-probes/*/start",
+        "arn:aws:execute-api:${var.aws_region}:${local.account_id}:*/*/POST/internal/v1/persona-model-probes/*/complete",
+      ]
+    }]
+  })
+}
+
+resource "kubernetes_service_account" "persona_model_probe" {
+  metadata {
+    name      = "persona-model-probe-sa"
+    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.persona_model_probe.arn
+    }
+
+    labels = {
+      "app.kubernetes.io/name"       = "persona-model-probe"
+      "app.kubernetes.io/part-of"    = "adp-agent-factory"
+      "app.kubernetes.io/managed-by" = "terraform"
+    }
+  }
+}
+
+data "aws_ssm_parameter" "persona_model_probe_agent_registry" {
+  name = "/adp/${var.environment}/gateway/agent-registry-table"
+}
+
+# This internal-scope row cannot be created through the public registry API and
+# is managed with the role it authenticates, preventing a user-selected role or
+# ordinary worker alias from becoming the credential-bearing probe principal.
+resource "aws_dynamodb_table_item" "persona_model_probe_agent_registry" {
+  table_name = data.aws_ssm_parameter.persona_model_probe_agent_registry.value
+  hash_key   = "agent_id"
+  item = jsonencode({
+    agent_id              = { S = "persona-model-probe" }
+    role_arn              = { S = aws_iam_role.persona_model_probe.arn }
+    agent_name            = { S = "persona-model-probe" }
+    org_id                = { S = "__platform__" }
+    team_id               = { S = "__agents__" }
+    owner                 = { S = "platform" }
+    scope                 = { S = "internal" }
+    requires_run_identity = { BOOL = false }
+    status                = { S = "active" }
+    allowed_models        = { SS = ["*"] }
+    budget_config_id      = { S = "" }
+    description           = { S = "Dedicated faithful persona/model invocability probe" }
+  })
+}
+
 resource "kubernetes_cron_job_v1" "persona_model_probe" {
   metadata {
     name      = "persona-model-invocability-probe"
@@ -59,7 +150,7 @@ resource "kubernetes_cron_job_v1" "persona_model_probe" {
           }
 
           spec {
-            service_account_name = kubernetes_service_account.agent_scaledjob_sa.metadata[0].name
+            service_account_name = kubernetes_service_account.persona_model_probe.metadata[0].name
             restart_policy       = "Never"
 
             security_context {
@@ -132,4 +223,6 @@ resource "kubernetes_cron_job_v1" "persona_model_probe" {
       }
     }
   }
+
+  depends_on = [aws_dynamodb_table_item.persona_model_probe_agent_registry]
 }

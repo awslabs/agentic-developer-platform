@@ -1,4 +1,4 @@
-"""AIDLC gate answers are new work; completed queue deliveries are not."""
+"""New triggers are new work; completed queue deliveries are not."""
 
 from __future__ import annotations
 
@@ -107,6 +107,21 @@ def test_legacy_completion_and_existing_outcome_are_preserved(delivery):
     assert completion.is_delivery_completed(envelope) is True
     assert row(client, envelope)["status"] == {"S": "complete"}
     assert row(client, envelope)["summary"] == {"S": "existing outcome"}
+
+
+def test_legacy_aidlc_receipt_is_promoted_to_generic_completion(delivery):
+    client, envelope = delivery
+    client.update_item(
+        TableName="adp-test-webhook-events",
+        Key={
+            "event_id": {"S": envelope["message_id"]},
+            "arrived_at": {"S": envelope["arrived_at"]},
+        },
+        UpdateExpression="SET aidlc_delivery_completed = :done",
+        ExpressionAttributeValues={":done": {"BOOL": True}},
+    )
+    assert completion.is_delivery_completed(envelope) is True
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
 
 
 def test_receipt_survives_later_dashboard_status_updates(delivery):
@@ -226,7 +241,7 @@ def worker(delivery, monkeypatch, tmp_path):
             executions.append(envelope["message_id"])
             return MagicMock(returncode=exit_codes[-1], stdout="", stderr="")
         return MagicMock(
-            returncode=1 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
+            returncode=2 if command[:2] == ["git", "ls-remote"] else 0, stdout="", stderr=""
         )
 
     monkeypatch.setattr(entrypoint.subprocess, "run", run)
@@ -251,7 +266,7 @@ def test_main_completed_message_runs_once_and_new_answer_runs(worker):
     client, envelope, executions, _, ack, merged = worker
 
     def verify_receipt(*args):
-        assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": True}
+        assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
 
     ack.side_effect = verify_receipt
     assert entrypoint.main() == 0
@@ -262,6 +277,25 @@ def test_main_completed_message_runs_once_and_new_answer_runs(worker):
     seed(client, envelope)
     assert entrypoint.main() == 0
     assert executions == ["gate-answer-1", "gate-answer-2"]
+    merged.assert_not_called()
+
+
+def test_codex_issue_review_redelivery_runs_adapter_once(worker):
+    client, envelope, executions, _, ack, merged = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["payload"] = {
+        "issue": {"number": 42, "title": "Review this"},
+        "comment": {"body": "@agent-codex-reviewer review this issue"},
+    }
+    seed(client, envelope)
+
+    ack.side_effect = [RuntimeError("SQS unavailable"), None]
+    with pytest.raises(RuntimeError, match="SQS unavailable"):
+        entrypoint.main()
+    assert entrypoint.main() == 0
+
+    assert executions == ["gate-answer-1"]
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
     merged.assert_not_called()
 
 
@@ -291,11 +325,11 @@ def test_retryable_exit_preserves_message_then_retries(worker):
     exit_codes.append(entrypoint.AGENT_EXIT_RETRYABLE)
     assert entrypoint.main() == entrypoint.AGENT_EXIT_RETRYABLE
     ack.assert_not_called()
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": False}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": False}
     exit_codes.append(0)
     assert entrypoint.main() == 0
     assert len(executions) == 2
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": True}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
 
 
 def test_storage_read_failure_runs_and_acknowledges_nothing(worker, monkeypatch):
@@ -326,10 +360,10 @@ def test_interrupted_execution_can_retry(worker, monkeypatch):
     with pytest.raises(RuntimeError, match="worker interrupted"):
         entrypoint.main()
     ack.assert_not_called()
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": False}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": False}
     assert entrypoint.main() == 0
     assert len(executions) == 2
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": True}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
 
 
 def test_reported_terminal_failure_is_consumed_once(worker):
@@ -337,7 +371,7 @@ def test_reported_terminal_failure_is_consumed_once(worker):
     exit_codes.append(1)
     assert entrypoint.main() == 1
     ack.assert_called_once()
-    assert row(client, envelope)["aidlc_delivery_completed"] == {"BOOL": True}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
     assert entrypoint.main() == 0
     assert len(executions) == 1
     assert row(client, envelope)["status"] == {"S": "failed"}
@@ -374,3 +408,87 @@ def test_receipt_write_failure_does_not_ack(worker, monkeypatch):
     # The durable legacy status still avoids re-execution on redelivery.
     assert entrypoint.main() == 0
     assert len(executions) == 1
+
+
+@pytest.mark.parametrize("sha_length", [40, 64])
+@pytest.mark.parametrize("ack_fails", [False, True])
+def test_stale_pr_review_releases_queue_before_current_review(
+    worker, monkeypatch, sha_length, ack_fails
+):
+    client, envelope, executions, _, ack, _ = worker
+    expected, current = "a" * sha_length, "b" * sha_length
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha=expected)
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
+    attempts = 0
+
+    def verify_obsolete_receipt(*_args):
+        nonlocal attempts
+        attempts += 1
+        persisted = row(client, envelope)
+        assert persisted["status"] == {"S": "skipped"}
+        assert persisted["skip_reason"] == {"S": "stale_review_head"}
+        assert json.loads(persisted["summary"]["S"]) == {
+            "status": "stale",
+            "expected": expected,
+            "actual": current,
+        }
+        assert executions == []
+        if ack_fails and attempts == 1:
+            raise RuntimeError("SQS unavailable")
+
+    ack.side_effect = verify_obsolete_receipt
+    if ack_fails:
+        with pytest.raises(RuntimeError, match="SQS unavailable"):
+            entrypoint.main()
+    assert entrypoint.main() == 0
+    assert ack.call_count == 1 + int(ack_fails)
+    ack.assert_called_with(os.environ["QUEUE_URL"], "us-east-1", "receipt")
+    entrypoint.create_check_run.assert_not_called()
+    entrypoint._start_sigv4_proxy.assert_not_called()
+
+    # A new event for the actual head must still reach the review adapter.
+    ack.side_effect = None
+    envelope["message_id"] = "current-review"
+    envelope["source_ref"]["sha"] = current
+    seed(client, envelope)
+    assert entrypoint.main() == 0
+    assert executions == ["current-review"]
+    assert row(client, envelope)["status"] == {"S": "complete"}
+
+
+@pytest.mark.parametrize(
+    "expected,current", [("", "b" * 40), ("bad-sha", "b" * 40), ("a" * 40, "")]
+)
+def test_unverifiable_pr_head_does_not_acknowledge(worker, monkeypatch, expected, current):
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha=expected)
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint, "_checkout_existing_work_branch", MagicMock())
+    monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout=current)))
+    with pytest.raises(RuntimeError, match="review head changed before checkout"):
+        entrypoint.main()
+    ack.assert_not_called()
+    assert executions == []
+
+
+def test_pr_checkout_transport_failure_remains_retryable(worker, monkeypatch):
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["source_ref"].update(pr=42, sha="a" * 40)
+    envelope["payload"] = {"pull_request": {"number": 42, "head": {"ref": "agent/issue-42"}}}
+    seed(client, envelope)
+    monkeypatch.setattr(
+        entrypoint,
+        "_checkout_existing_work_branch",
+        MagicMock(side_effect=RuntimeError("fetch unavailable")),
+    )
+    with pytest.raises(RuntimeError, match="fetch unavailable"):
+        entrypoint.main()
+    ack.assert_not_called()
+    assert executions == []

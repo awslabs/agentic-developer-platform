@@ -12,10 +12,10 @@ from src.agentauth.model_policy import (
     ModelPolicySnapshot,
     canonical_json,
     policy_digest,
-    protected_usage_attribution,
 )
 from src.shared.models.usage import UsageLog
 from src.shared.schemas.auth import TokenContext
+from src.usage.model_policy_evidence import protected_usage_attribution
 from src.usage.persona_attribution import PersonaUsageAttribution
 from src.usage.service import UsageService
 
@@ -64,6 +64,9 @@ def _attribution(**overrides):
 
 def _decision(**overrides):
     fields = dict(
+        confidence="verified",
+        estimate_reasons=(),
+        to_dict=lambda: {"confidence": "verified"},
         source_kind="database",
         generation_id=12,
         pointer_revision=7,
@@ -167,6 +170,9 @@ def test_bundled_pricing_tuple_is_distinct_from_not_captured():
         )
     )
     assert result == {
+        "pricing_confidence": "verified",
+        "pricing_estimate_reasons": "[]",
+        "pricing_decision": {"confidence": "verified"},
         "pricing_source_kind": "bundled_snapshot",
         "pricing_generation_id": None,
         "pricing_pointer_revision": None,
@@ -190,7 +196,7 @@ def test_incomplete_pricing_decision_never_writes_a_partial_tuple(decision):
     assert set(UsageService._pricing_revision_for(decision).values()) == {None}
 
 
-def test_projection_reads_only_the_protected_snapshot():
+def protected_fixture():
     now = datetime.now(UTC)
     snapshot = ModelPolicySnapshot(
         schema_version=1,
@@ -241,15 +247,20 @@ def test_projection_reads_only_the_protected_snapshot():
         current_credential_epoch=1,
         min_acceptable_credential_epoch=1,
     )
-    result = protected_usage_attribution(store=Store(), record=record)
+    return Store(), record
+
+
+def test_projection_reads_only_the_protected_snapshot():
+    store, record = protected_fixture()
+    result = protected_usage_attribution(store=store, record=record)
     assert result is not None
     assert result.persona_key == "architect"
     assert result.chain_id == "protected-chain"
     assert result.principal_kind == "human"
     assert result.principal_id == "canonical-human-1"
-    assert result.resolved_model_id == "global.anthropic.claude-sonnet-4-6"
-    assert result.resolution_source == "principal-mapping"
-    assert result.runtime_posture == "report_only"
+    assert result.resolved_model_id is None  # no issued launch decision was supplied
+    assert result.resolution_source is None
+    assert result.runtime_posture is None
 
 
 def test_partial_report_only_proposal_is_withheld_atomically():
@@ -264,3 +275,107 @@ def test_partial_report_only_proposal_is_withheld_atomically():
         evidence["runtime_posture"],
         evidence["posture_revision"],
     } == {None}
+
+
+@pytest.fixture
+def issued_fixture():
+    import json
+    from unittest.mock import MagicMock
+
+    from src.usage.model_policy_evidence import record_model_evidence
+
+    base, record = protected_fixture()
+    execution = base._read(f"TENANT#{TENANT}", f"EXEC#{RUN}")
+    items = {}
+
+    def put(**kwargs):
+        item = kwargs["Item"]
+        key = (item["pk"]["S"], item["sk"]["S"])
+        assert kwargs["ConditionExpression"] == "attribute_not_exists(pk)"
+        if key in items:
+            raise RuntimeError("conditional conflict")
+        items[key] = item
+
+    store = SimpleNamespace(table="protected", client=SimpleNamespace(put_item=MagicMock(side_effect=put)))
+    store._read = lambda pk, sk: execution if (pk, sk) == (f"TENANT#{TENANT}", f"EXEC#{RUN}") else items.get((pk, sk))
+    decision = dict(
+        tenant_id=TENANT,
+        invocation_id=RUN,
+        persona="architect",
+        snapshot_digest=execution["model_policy_snapshot_digest"]["S"],
+        requested_model_id="sonnet46",
+        resolved_model_id="issued-original",
+        resolution_source="principal-mapping",
+        runtime_posture="report_only",
+        posture_revision=2,
+    )
+    result = dict(tenant_id=TENANT, invocation_id=RUN, attempt=1, nonce="a" * 64, model_policy=dict(posture_verified=True, decision=decision))
+    record_model_evidence(store=store, record=record, result=result)
+    assert json.loads(next(iter(items.values()))["result"]["S"]) == result
+    return store, record, result, items
+
+
+def test_usage_consumes_original_launch_and_keeps_concurrent_launches_separate(issued_fixture):
+    import copy
+    import json
+
+    from src.usage.model_policy_evidence import record_model_evidence
+
+    store, record, original, _ = issued_fixture
+    second = copy.deepcopy(original)
+    second["nonce"] = "b" * 64
+    second["model_policy"]["decision"].update(resolved_model_id="later-model", posture_revision=9)
+    record_model_evidence(store=store, record=record, result=second)
+    duplicate = copy.deepcopy(second)
+    duplicate["nonce"] = original["nonce"]
+    record_model_evidence(store=store, record=record, result=duplicate)
+    first = protected_usage_attribution(store=store, record=record, decision_id=original["nonce"], approving_human_id="approver")
+    later = protected_usage_attribution(store=store, record=record, decision_id=second["nonce"])
+    assert first.resolved_model_id == "issued-original" and first.posture_revision == 2
+    assert later.resolved_model_id == "later-model" and later.posture_revision == 9
+    assert json.loads(first.model_decision_json) == original
+    assert first.approving_human_id == "approver"
+    assert first.principal_id == "canonical-human-1"
+
+
+@pytest.mark.parametrize("field,value", [("tenant_id", "other"), ("invocation_id", "other"), ("attempt", 2), ("nonce", "b" * 64)])
+def test_issued_response_identity_mismatch_cannot_relabel_usage(issued_fixture, field, value):
+    import json
+
+    store, record, result, items = issued_fixture
+    result[field] = value
+    next(iter(items.values()))["result"]["S"] = json.dumps(result)
+    evidence = protected_usage_attribution(store=store, record=record, decision_id="a" * 64)
+    assert evidence.persona_key == "architect"
+    assert evidence.model_decision_id is None and evidence.resolved_model_id is None
+
+
+@pytest.mark.parametrize("field,value", [("snapshot_digest", "other"), ("persona", "other"), ("tenant_id", "other"), ("invocation_id", "other")])
+def test_candidate_binding_mismatch_cannot_relabel_usage(issued_fixture, field, value):
+    import json
+
+    store, record, result, items = issued_fixture
+    result["model_policy"]["decision"][field] = value
+    next(iter(items.values()))["result"]["S"] = json.dumps(result)
+    evidence = protected_usage_attribution(store=store, record=record, decision_id="a" * 64)
+    assert evidence.model_decision_id is None and evidence.resolved_model_id is None
+
+
+def test_prior_attempt_nonce_is_not_read_in_current_attempt(issued_fixture):
+    from dataclasses import replace
+
+    store, record, _, _ = issued_fixture
+    evidence = protected_usage_attribution(store=store, record=replace(record, current_attempt=2), decision_id="a" * 64)
+    assert evidence.model_decision_id is None and evidence.resolved_model_id is None
+
+
+def test_verified_unavailable_response_retains_original_evidence(issued_fixture):
+    import json
+
+    store, record, result, items = issued_fixture
+    result["model_policy"]["decision"] = None
+    result["model_policy"]["reason"] = "catalogue_unavailable"
+    next(iter(items.values()))["result"]["S"] = json.dumps(result)
+    evidence = protected_usage_attribution(store=store, record=record, decision_id="a" * 64)
+    assert evidence.resolved_model_id is None
+    assert json.loads(evidence.model_decision_json) == result

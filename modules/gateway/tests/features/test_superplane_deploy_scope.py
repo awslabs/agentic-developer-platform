@@ -62,7 +62,13 @@ case "$1 $2" in
   "dynamodb describe-table") echo '{"Table":{}}' ;;
   "eks describe-cluster") echo "ACTIVE" ;;
   "eks update-kubeconfig") exit 0 ;;
-  "ssm get-parameter") echo "None" ;;
+  "ssm get-parameter")
+    case "$*" in
+      *model-root-bindings*|*arc-model-bindings*) echo '[]' ;;
+      *chat-authority-worker-images*) echo "" ;;
+      *) echo "None" ;;
+    esac ;;
+
   # Numeric answer: deploy-all.sh compares this with `-eq`, so an empty string aborts
   # the run with "integer expression expected" before the phase under test is reached.
   "codebuild batch-get-projects") echo "1" ;;
@@ -178,8 +184,16 @@ def harness(tmp_path):
 
     # Copy the real local helpers so the scope checks exercise the shared resolver.
     # External tools remain stubbed; these helpers only run against the temp tree.
-    for name in ("terraform-update.sh", "upgrade-scope.sh", "gateway-alb-vars.sh", "prepare-backends.py"):
+    for name in ("terraform-update.sh", "upgrade-scope.sh", "gateway-alb-vars.sh", "prepare-backends.py", "render-model-root-config.py"):
         _write_exec(root / "platform" / "scripts" / name, (_DEPLOY_ALL.parent / name).read_text())
+
+    # deploy-all invokes this validator with python3 before continuing the
+    # gateway phase.  Keep the offline scope harness self-contained: the
+    # validator's own behavior is covered by platform/scripts/tests.
+    _write_exec(
+        root / "platform" / "scripts" / "validate-model-allowlist-config.py",
+        '#!/usr/bin/env python3\nprint("STUB-MODEL-ALLOWLIST-VALIDATOR")\n',
+    )
 
     # load-deploy-config.sh is *sourced*, so it must define what the script reads.
     _write_exec(

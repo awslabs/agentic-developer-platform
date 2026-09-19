@@ -19,7 +19,8 @@
 
 import { PersonalContextIdentity, getPersonalContextHeaders } from './personal-context-headers';
 import { validateBaseUrl } from '../lib/url-guard';
-import { getDoorAuthHeaders } from '../lib/doorAuth';
+import { getDoorBaseUrl, getDoorHeaders } from '../lib/doorAuth';
+import { isProtectedKnowledgeRun } from '../lib/knowledgeBridge';
 
 /**
  * Feature flag: enable recall-at-task-start. Default off until validated.
@@ -106,7 +107,7 @@ export async function recallAtTaskStart(
   }
 
   // Gate: identity required for recall
-  if (!identity) {
+  if (!identity && !isProtectedKnowledgeRun()) {
     return {
       attempted: false,
       learnings: [],
@@ -115,7 +116,7 @@ export async function recallAtTaskStart(
     };
   }
 
-  const headers = getPersonalContextHeaders(identity);
+  const headers = isProtectedKnowledgeRun() ? { 'X-Owner-Sub': '', 'X-Tenant-Id': '' } : getPersonalContextHeaders(identity);
   if (!headers) {
     return {
       attempted: false,
@@ -166,15 +167,14 @@ export async function callRecall(
 
   try {
     // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — CONTEXT_MCP_URL is a module constant validated once via validateBaseUrl() at load (blocks loopback/metadata/link-local); only the static /tools/call path is interpolated
-    const response = await fetch(`${CONTEXT_MCP_URL}/tools/call`, {
+    const url = isProtectedKnowledgeRun() ? `${getDoorBaseUrl(CONTEXT_MCP_URL)}/call` : `${CONTEXT_MCP_URL}/tools/call`;
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         // Authenticate to the Door before it will honour the identity headers
         // below (#4073 finding #8). Missing key => 401 => recall returns nothing.
-        ...getDoorAuthHeaders(),
-        'X-Owner-Sub': headers['X-Owner-Sub'],
-        'X-Tenant-Id': headers['X-Tenant-Id'],
+        ...getDoorHeaders(headers),
       },
       body: JSON.stringify({
         name: 'experience',

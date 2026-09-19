@@ -1,5 +1,11 @@
 # Bedrock Gateway CLI Tools
 
+For the user guide and complete command reference, start at
+**[docs/adp-cli/](../../../docs/adp-cli/README.md)**. It covers installation,
+every command group, administrator and user workflows, scripting, and the
+availability of environment switching. The details below also cover the
+underlying compatibility scripts.
+
 CLI tools for authenticating with the Bedrock Gateway and configuring Claude Code
 or Codex.
 
@@ -11,6 +17,7 @@ or Codex.
 | `install.sh` | Installer for `adp` — one line, run via `curl … \| sh` from your gateway |
 | `bg-cognito-auth.sh` | Cognito authentication core (login, import, refresh, token, serve). `adp` delegates every auth verb to it |
 | `bg-gateway-proxy.py` | Localhost auth proxy started by `serve` — zero-touch auth for Codex (stdlib python3, no pip installs) |
+| `adp_deployments.py` | Named deployments and the one selection rule, shared by the bash and python halves (stdlib Python 3) |
 | `adp-bedrock.py` | Bedrock account connection and routing, used by `adp admin bedrock connect` (stdlib Python 3) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
@@ -20,7 +27,10 @@ or Codex.
 
 ### Prerequisites
 
-- `curl`, `jq`
+- `curl`, `jq`, `python3`
+- `ps` (the `procps` package) — only for named deployments, and only on a slim
+  Linux image that ships without it. It is already present on macOS and on any
+  normal Linux install, and `/proc` is used in preference where available.
 - A Cognito user account (ask your platform admin) — GitHub sign-in counts
 - Claude Code (`npm install -g @anthropic-ai/claude-code`) or the Codex CLI
 
@@ -38,12 +48,24 @@ adp claude setup   # or: adp codex setup
 claude             # or: adp codex
 ```
 
-The installer puts `adp`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`, `adp_common.py`, `adp-admin.py` and `adp-bedrock.py` side by
+The installer puts `adp`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`, `adp_common.py`, `adp_deployments.py`, `adp-admin.py` and `adp-bedrock.py` side by
 side in `~/.adp/bin` (override with `--prefix`), adds that directory to your PATH,
 and remembers the gateway URL in `~/.bedrock-gateway/config.json` — which is why
 no later command needs a flag. `adp update` re-pulls from the same gateway;
 `adp update --rollback` undoes it. `sh install.sh --uninstall` removes the files
 and leaves your session alone.
+
+`adp status --json` reports the selected deployment, gateway, selection source
+and local session metadata in the shared JSON envelope. It never refreshes or
+contacts the gateway: `configured` means a cached session exists, including an
+expired access token that can refresh on use; `unavailable` exits 1 when no
+session exists. Credential values are excluded. The `aws_profile` field identifies
+the AWS profile shared by every alias of the selected deployment. Named profiles
+use `adp-deployment-<stable-id>`; older `bedrock-gateway-<name>` profiles are retired
+on login, refresh or logout, so scripts should use the reported profile name.
+
+Reinstalling against a different gateway refuses before changing binaries or
+session files. Use `adp deployment add <name> --url <gateway>` to add that gateway.
 
 **One login is shared by every tool.** `adp login` seeds `~/.bedrock-gateway/`
 once; both `setup` verbs only write config and never authenticate, so adding a
@@ -56,13 +78,86 @@ providers survive — and re-running them changes nothing.
 > Prefer to read what you run? `curl -fsSL https://<CLOUDFRONT_DOMAIN>/api/cli/install.sh -o install.sh`,
 > read it, then `sh install.sh --gateway-url https://<CLOUDFRONT_DOMAIN>/api`.
 
+## Several deployments at once
+
+One installed CLI serves any number of ADP deployments — development,
+integration, pre-production — each with its own login, its own tool config and
+its own agent sessions. Register them once:
+
+```bash
+adp deployment add dev         --url https://<dev-host>
+adp deployment add integration --url https://<integration-host>
+adp deployment add preprod     --url https://<preprod-host>
+adp deployment list            # which are registered, and which one is selected
+```
+
+Then give each terminal its own target and sign in there:
+
+```bash
+export ADP_DEPLOYMENT=integration   # this terminal, for as long as it lives
+adp login
+adp codex                           # or: adp claude
+```
+
+Which deployment a command uses, **first match winning**:
+
+| Selection | Scope |
+|---|---|
+| `adp --deployment <name> <verb> …` | this one command (before the verb) |
+| `ADP_DEPLOYMENT=<name>` | this terminal |
+| `adp deployment use <name>` | the saved default, for new terminals |
+
+An unknown name **fails**; it is never quietly swapped for another deployment.
+`adp deployment use` changes only the saved default — terminals that named their
+own deployment are unaffected, and so is anything already running. `adp logout`
+signs out of the selected deployment only.
+
+`adp deployment add` registers locally and makes no request, so a deployment can
+be registered long before you sign in to it. `adp deployment remove` forgets one
+locally: it never touches the cloud, and it refuses to remove the saved default
+or a deployment with a running command, proxy, or installed daemon. Removing the
+last alias deletes that deployment's private local session and state. The original
+legacy store is retained.
+
+`adp --deployment dev claude setup` pins bare `claude` to dev, including its token
+helper. Changing the saved default does not change that setup. Use
+`adp --deployment integration claude` to launch against integration with temporary
+settings; the saved Claude configuration stays intact. Custom tool arguments are
+forwarded, but overrides of ADP's endpoint or authentication settings are refused.
+
+Named `codex setup` reserves a stable local proxy port. On macOS, run
+`adp --deployment dev daemon install` for bare Codex; each deployment has a separate
+daemon pinned to its own session and port. Setup determines which deployment bare
+Codex uses. Use `adp --deployment <name> codex` for simultaneous terminals.
+
+Each deployment keeps its session, state, logs and Codex proxy under
+`~/.adp/deployments/<id>/`, and gets its own AWS profile
+(`bedrock-gateway-<name>`) so three deployments do not overwrite each other's
+credentials. Two names for the same URL are one deployment under two labels — one
+session, not two. Do not set `ADP_PROXY_PORT` when running concurrent sessions: it
+pins a single port.
+
+If you already had a single-deployment setup, it keeps working untouched and
+appears in `adp deployment list` as `default`. Nothing is moved and you do not
+need to sign in again.
+
+> **Rolling back past this release.** `adp update --rollback` restores the
+> previous CLI executables and deliberately leaves your deployments and sessions
+> alone. An `adp` from before named-deployment support has no `deployment` verb,
+> so while rolled back it uses the original single-deployment store and ignores
+> the registry. Your deployments are not deleted — they reappear unchanged when
+> you `adp update` forward again.
+
+Design and rationale: [multiple deployments design
+note](../../../docs/design-notes/5413-cli-multiple-deployments.md).
+
 ## Connect an AWS account for Bedrock
 
 After `adp update` and `adp login`, one command creates the role, verifies it and
 assigns the organization's routing rule:
 
 ```bash
-adp admin bedrock connect --account 123456789012 --org SOPHOS-IT --profile sophos
+adp admin bedrock connect --account 123456789012 --org example-org --profile aws-admin
 ```
 
 The role name is generated automatically. Add `--team Engineering` to route one
@@ -75,14 +170,14 @@ If an AWS administrator needs to create the role, download the same template and
 parameters used by the UI:
 
 ```bash
-adp admin bedrock connect --account 123456789012 --org SOPHOS-IT --download ./sophos-role
+adp admin bedrock connect --account 123456789012 --org example-org --download ./example-role
 ```
 
 Give `template.yaml`, `parameters.json` and `README.md` to the AWS administrator.
 Keep the directory, including `destination.json`. Once the role is created:
 
 ```bash
-adp admin bedrock connect --resume ./sophos-role
+adp admin bedrock connect --resume ./example-role
 ```
 
 Resume verifies the saved account and role and applies the saved organization,

@@ -1,15 +1,11 @@
-"""Per-persona cost attribution over the usage ledger (#5426).
+"""Preference-owner ledger totals with explicit pricing and coverage uncertainty."""
 
-This view is internally consistent with ``usage_logs``; it is not an invoice
-reconciliation and does not read ``budget_usage``.  One usage row is one model
-call at one hop, so grouping the ledger directly cannot double-count a chain.
-"""
-
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.usage import UsageLog
@@ -21,18 +17,34 @@ PRINCIPAL_DIMENSION = "preference_owner"
 class PersonaCostStatus(StrEnum):
     KNOWN = "known"
     NONE_INCURRED = "none_incurred"
+    ESTIMATED = "estimated"
+    PARTIAL = "partial"
     UNKNOWN = "unknown"
+
+
+def _status(calls: int, unpriced: int, estimated: int, amount: Decimal) -> PersonaCostStatus:
+    if calls == 0 or unpriced == calls:
+        return PersonaCostStatus.UNKNOWN
+    if unpriced:
+        return PersonaCostStatus.PARTIAL
+    if estimated:
+        return PersonaCostStatus.ESTIMATED
+    return PersonaCostStatus.NONE_INCURRED if amount == 0 else PersonaCostStatus.KNOWN
 
 
 @dataclass(frozen=True)
 class PersonaModelCost:
     persona_key: str
     model_id: str
-    amount_usd: Decimal
+    amount_usd: Decimal | None
     input_tokens: int
     output_tokens: int
     call_count: int
     unpriced_call_count: int
+    estimated_call_count: int
+    status: PersonaCostStatus
+    partial: bool
+    estimate_reasons: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -44,28 +56,27 @@ class PersonaCostReport:
     amount_usd: Decimal | None
     call_count: int
     unpriced_call_count: int
+    estimated_call_count: int
     partial: bool
     entries: tuple[PersonaModelCost, ...]
+    estimate_reasons: tuple[str, ...]
+    preferences: list[dict] = field(default_factory=list)
     principal_dimension: str = PRINCIPAL_DIMENSION
     scope: str = COST_SCOPE
     caveat: str = "Internal usage-ledger consistency only; provider invoice reconciliation is not established."
 
 
 async def get_persona_cost_report(
-    db: AsyncSession,
-    *,
-    org_id: str,
-    principal_kind: str,
-    principal_id: str,
-    chain_id: str | None = None,
+    db: AsyncSession, *, org_id: str, principal_kind: str, principal_id: str, chain_id: str | None = None
 ) -> PersonaCostReport:
-    """Return one tenant/principal report using one grouped Postgres query.
+    """Group ledger facts without repricing, re-resolving, or inventing absent cost.
 
-    ``org_id`` is the billing tenant already persisted by the usage writer, not
-    the caller's authorization tenant.  Authorization must happen before this
-    service is called.  The principal dimension is separately and explicitly
-    the PMM preference owner; approving-human audit identity is never used.
+    Authorization precedes this service. Both billing tenant and canonical
+    preference owner scope the SQL query. The existing preference projection
+    supplies class defaults even when there are no recorded calls.
     """
+    from src.admin.persona_models.service import build_preference_list
+
     conditions = [
         UsageLog.org_id == org_id,
         UsageLog.preference_owner_kind == principal_kind,
@@ -74,50 +85,77 @@ async def get_persona_cost_report(
     ]
     if chain_id is not None:
         conditions.append(UsageLog.chain_id == chain_id)
-
-    query = (
-        select(
-            UsageLog.persona_key,
-            UsageLog.model,
-            func.sum(UsageLog.cost_usd).label("amount_usd"),
-            func.sum(UsageLog.input_tokens).label("input_tokens"),
-            func.sum(UsageLog.output_tokens).label("output_tokens"),
-            func.count(UsageLog.id).label("call_count"),
-            func.sum(case((UsageLog.pricing_source_kind.is_(None), 1), else_=0)).label("unpriced_call_count"),
+    rows = (
+        await db.execute(
+            select(
+                UsageLog.persona_key,
+                UsageLog.model,
+                UsageLog.pricing_confidence,
+                UsageLog.pricing_estimate_reasons,
+                func.sum(UsageLog.cost_usd).label("amount"),
+                func.sum(UsageLog.input_tokens).label("inputs"),
+                func.sum(UsageLog.output_tokens).label("outputs"),
+                func.count(UsageLog.id).label("calls"),
+            )
+            .where(*conditions)
+            .group_by(UsageLog.persona_key, UsageLog.model, UsageLog.pricing_confidence, UsageLog.pricing_estimate_reasons)
         )
-        .where(*conditions)
-        .group_by(UsageLog.persona_key, UsageLog.model)
-        .order_by(UsageLog.persona_key, UsageLog.model)
-    )
-    rows = (await db.execute(query)).all()
-    entries = tuple(
-        PersonaModelCost(
-            persona_key=row.persona_key,
-            model_id=row.model,
-            amount_usd=Decimal(row.amount_usd or 0),
-            input_tokens=int(row.input_tokens or 0),
-            output_tokens=int(row.output_tokens or 0),
-            call_count=int(row.call_count or 0),
-            unpriced_call_count=int(row.unpriced_call_count or 0),
+    ).all()
+    buckets: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        bucket = buckets.setdefault(
+            (row.persona_key, row.model), dict(amount=Decimal(0), inputs=0, outputs=0, calls=0, unpriced=0, estimated=0, reasons=set())
         )
-        for row in rows
-    )
-    call_count = sum(entry.call_count for entry in entries)
+        bucket["inputs"] += int(row.inputs or 0)
+        bucket["outputs"] += int(row.outputs or 0)
+        bucket["calls"] += row.calls
+        if row.pricing_confidence not in {"verified", "estimated"}:
+            bucket["unpriced"] += row.calls
+            continue
+        bucket["amount"] += Decimal(row.amount or 0)
+        if row.pricing_confidence == "estimated":
+            bucket["estimated"] += row.calls
+            try:
+                reasons = json.loads(row.pricing_estimate_reasons or "[]")
+                if not isinstance(reasons, list) or any(not isinstance(reason, str) for reason in reasons):
+                    raise ValueError("invalid pricing reasons")
+                bucket["reasons"].update(reasons or ["unspecified_estimate"])
+            except (TypeError, ValueError):
+                bucket["reasons"].add("estimate_reason_unavailable")
+    entries = []
+    for (persona, model), bucket in sorted(buckets.items()):
+        status = _status(bucket["calls"], bucket["unpriced"], bucket["estimated"], bucket["amount"])
+        entries.append(
+            PersonaModelCost(
+                persona,
+                model,
+                None if status is PersonaCostStatus.UNKNOWN else bucket["amount"],
+                bucket["inputs"],
+                bucket["outputs"],
+                bucket["calls"],
+                bucket["unpriced"],
+                bucket["estimated"],
+                status,
+                bool(bucket["unpriced"] or bucket["estimated"]),
+                tuple(sorted(bucket["reasons"])),
+            )
+        )
+    calls = sum(entry.call_count for entry in entries)
     unpriced = sum(entry.unpriced_call_count for entry in entries)
-    if call_count == 0 or unpriced == call_count:
-        status = PersonaCostStatus.UNKNOWN
-        amount = None
-    else:
-        amount = sum((entry.amount_usd for entry in entries), Decimal(0))
-        status = PersonaCostStatus.NONE_INCURRED if amount == 0 else PersonaCostStatus.KNOWN
+    estimated = sum(entry.estimated_call_count for entry in entries)
+    amount = sum((entry.amount_usd or Decimal(0) for entry in entries), Decimal(0))
+    status = _status(calls, unpriced, estimated, amount)
     return PersonaCostReport(
         principal_kind=principal_kind,
         principal_id=principal_id,
         chain_id=chain_id,
         status=status,
-        amount_usd=amount,
-        call_count=call_count,
+        amount_usd=None if status is PersonaCostStatus.UNKNOWN else amount,
+        call_count=calls,
         unpriced_call_count=unpriced,
-        partial=unpriced > 0,
-        entries=entries,
+        estimated_call_count=estimated,
+        partial=bool(unpriced or estimated),
+        entries=tuple(entries),
+        estimate_reasons=tuple(sorted({reason for entry in entries for reason in entry.estimate_reasons})),
+        preferences=await build_preference_list(db, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id),
     )

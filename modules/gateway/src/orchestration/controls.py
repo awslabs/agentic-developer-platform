@@ -69,12 +69,15 @@ seam).
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi.responses import JSONResponse
+from httpx import HTTPError
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.activity.control_schemas import ControlPingResponse, ControlStateResponse
@@ -82,12 +85,15 @@ from src.activity.control_service import ControlError, ControlService, validate_
 from src.admin.access_control import AccessControl
 from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
+from src.budget.run_binding import RunBindingResolver
 from src.shared.database import get_db
 from src.shared.identity import resolve_canonical_user_id
 from src.shared.models.base import utcnow
 from src.shared.schemas.auth import TokenContext
 
 from .adapters.github_comments import GateAnswerStatus, InputPath, apply_gate_answer_for_context
+from .execution_state import BlockCode, BlockRecord
+from .handoff import outstanding_block
 from .models import DecisionKind, OrchestrationNode
 from .repository import OrchestrationRepository
 from .state import ActorKind, NodeState, transition
@@ -119,6 +125,268 @@ _RESUMABLE_STATES: dict[str, DecisionKind] = {
 }
 
 
+async def get_run_binding_resolver() -> RunBindingResolver:
+    """The `webhook-events` row resolver that establishes whether a run has exited.
+
+    A FastAPI dependency rather than a module global for the same reason as in
+    `draft_routes.py`: a test injects a stub table instead of patching boto3. It
+    matters more here, because this resolver is the *only* positive evidence
+    `work_claims.force_handover` will accept that a legacy owner is gone — a
+    resolver that could be replaced by a default would be a way to assert an exit
+    nobody observed.
+    """
+    from src.shared.config import get_settings
+
+    settings = get_settings()
+    return RunBindingResolver(
+        table_name=settings.webhook_events_table,
+        aws_region=settings.aws_region,
+        redis_url=settings.redis_url,
+    )
+
+
+async def _adopt_lane_for_resume(
+    db: AsyncSession,
+    *,
+    node: OrchestrationNode,
+    org_id: str,
+    resolver: RunBindingResolver,
+    reconciled: bool,
+    actor_id: str,
+    actor_role: str,
+) -> BlockRecord | None:
+    """Adopt the legacy lane holding this story, or return the block that refused it.
+
+    This is the production caller of :func:`handoff.adopt_legacy_lane` (#5144). It
+    hangs off resume rather than off a tick for a reason the issue states directly:
+    adoption "is explicit and requires reconciliation", and the only actor who can
+    attest that a prior owner's branches, comments and credentials were reconciled
+    is the human already standing in front of this control. A scheduled pass has
+    nobody to attest, so an engine-initiated adoption would have to either invent
+    the attestation or default it true — and defaulting it true is exactly the
+    weakening `force_handover`'s guards exist to prevent.
+
+    Returns:
+        `None` when there is nothing to adopt (the ordinary case: no legacy owner,
+        or work claims disabled) **or** when the transfer succeeded. A
+        `BlockRecord` when a lane was found and the transfer was refused — the
+        caller persists it and does not report the story resumed. A refusal is
+        never converted into "resumed anyway": that is the shape of the original
+        defect, where unfinished work was reported as done.
+    """
+    from .handoff import AdoptionRefusedError, adopt_legacy_lane, adoption_enabled
+    from .models import ClaimState, OrchestrationWorkClaim
+    from .policy_admission import load_in_force_policy
+    from .work_admission import enabled as work_claims_enabled
+    from .work_claims import OwnerKind, WorkClaimError
+
+    if not work_claims_enabled() or not adoption_enabled():
+        # Both flags off is the deployed default. Read per call, so neither a test
+        # nor a rollback depends on import order.
+        return None
+
+    issue = _issue_number(node.issue_ref)
+    if issue is None:
+        return None
+
+    # The lane is found by the story's own issue and tenant, never by anything the
+    # request supplies: a caller must not be able to name which claim gets taken
+    # away. `DIRECT_DISPATCH` is the filter that makes this adoption of a *legacy*
+    # lane — an `ENGINE_FLOW` claim is already the engine's and needs no transfer,
+    # and taking one would let this control steal a live engine lane.
+    candidates = (
+        select(OrchestrationWorkClaim)
+        .where(
+            OrchestrationWorkClaim.org_id == org_id,
+            OrchestrationWorkClaim.issue_number == issue,
+            OrchestrationWorkClaim.owner_kind == OwnerKind.DIRECT_DISPATCH.value,
+            OrchestrationWorkClaim.state == ClaimState.HELD.value,
+        )
+        .execution_options(populate_existing=True)
+    )
+    if await db.scalar(candidates.with_only_columns(OrchestrationWorkClaim.id).limit(1)) is None:
+        return None
+
+    # Claims are unique per repository, not per tenant-wide issue number. Use
+    # the same trusted configured repository and tenant installation as dispatch.
+    from .dispatch_pass import DispatchPassConfig, resolve_installation_id
+    from .work_admission import resolve_repository_id
+
+    try:
+        repository = DispatchPassConfig.from_env().repo
+        installation = await resolve_installation_id(db, org_id=org_id)
+        if not repository or installation is None:
+            raise WorkClaimError("repository_unresolved", "No trusted repository/installation binding is available.")
+        repository_id = await resolve_repository_id(org_id=org_id, installation_id=installation, repo=repository)
+    except (WorkClaimError, ValueError, HTTPError) as exc:
+        return outstanding_block(
+            BlockCode.AUTHORITY_UNVERIFIABLE,
+            owner="platform-operator",
+            required_input="resolve this tenant's configured repository identity before adopting its lane",
+            detail=f"repository identity unavailable ({exc.code if isinstance(exc, WorkClaimError) else type(exc).__name__})",
+        )
+    claim = await db.scalar(candidates.where(OrchestrationWorkClaim.provider_repository_id == repository_id).with_for_update())
+    if claim is None:
+        return None
+
+    # Server-resolved, both of them. `accepted_plan_version` comes from the plan in
+    # force for this flow and `decision_id` from the latest approval on it, because
+    # adoption is only legitimate under policy a human already accepted. Taking
+    # either from the request body would let a caller manufacture the authority
+    # that makes the transfer legal.
+    inputs = await load_in_force_policy(db, org_id=org_id, flow_id=node.flow_id)
+    if inputs.refusal is not None:
+        # A policy exists and could not be read. Distinguished from absence for the
+        # same reason as in `dispatch_pass`: falling through to a legacy-style
+        # transfer on an unreadable policy is how policy-bound work loses its
+        # restrictions.
+        return outstanding_block(
+            BlockCode.AUTHORITY_UNVERIFIABLE,
+            owner="platform-operator",
+            required_input="resolve the in-force execution policy for this flow before adopting its lane",
+            detail=f"in-force policy could not be resolved: {inputs.refusal}",
+        )
+
+    if inputs.policy is None or not inputs.policy.policy_id or not inputs.policy.policy_hash:
+        return outstanding_block(
+            BlockCode.AUTHORITY_UNVERIFIABLE,
+            owner="plan-owner",
+            required_input="accept an execution policy before adopting this legacy lane",
+            detail="an accepted plan alone does not authorize autonomous lane adoption",
+        )
+
+    decision_id = await _latest_approval_decision_id(db, org_id=org_id, flow_id=node.flow_id)
+    if decision_id is None:
+        return outstanding_block(
+            BlockCode.AUTHORITY_UNVERIFIABLE,
+            owner="platform-operator",
+            required_input="accept a plan for this flow before adopting its legacy lane",
+            detail="no approval decision authorizes a handover on this flow",
+        )
+
+    try:
+        receipt = await adopt_legacy_lane(
+            db,
+            org_id=org_id,
+            claim_id=claim.id,
+            decision_id=decision_id,
+            resolver=resolver,
+            # The human's explicit attestation, required by the request model and
+            # never defaulted. `force_handover` re-checks both.
+            effects_reconciled=reconciled,
+            credentials_reconciled=reconciled,
+            accepted_plan_version=inputs.plan_version,
+        )
+    except AdoptionRefusedError as exc:
+        # Every refusal arm lands here, including the two the issue names
+        # explicitly: a prior owner still `live`, and one whose exit is
+        # `unverifiable`. Mapped to a typed block naming a resolvable condition,
+        # not prose — and emphatically not to a successful resume.
+        logger.warning(
+            "orchestration resume: refusing to adopt legacy lane %s for node %s: %s",
+            claim.id,
+            node.id,
+            exc.code,
+        )
+        return outstanding_block(
+            _ADOPTION_BLOCK_CODES.get(exc.code, BlockCode.AUTHORITY_UNVERIFIABLE),
+            owner="platform-operator",
+            required_input="confirm the prior owner has exited and its effects and credentials are reconciled",
+            detail=f"legacy lane adoption refused ({exc.code}): {exc.message}",
+        )
+
+    logger.info(
+        "orchestration resume: adopted legacy lane %s for node %s at generation %s by %s (%s)",
+        claim.id,
+        node.id,
+        receipt.generation,
+        actor_id,
+        actor_role,
+    )
+    return None
+
+
+# Which typed block a refusal reason routes to. `OWNERSHIP_LOST` for the liveness
+# arms specifically: "the prior owner is still there" is an ownership fact an
+# operator resolves differently from an unreadable policy, and collapsing the two
+# into `AUTHORITY_UNVERIFIABLE` would send both to the same wrong runbook.
+_ADOPTION_BLOCK_CODES: dict[str, BlockCode] = {
+    "run_live": BlockCode.OWNERSHIP_LOST,
+    "run_unverifiable": BlockCode.OWNERSHIP_LOST,
+    "liveness_unavailable": BlockCode.PROVIDER_UNAVAILABLE,
+    "liveness_unknown": BlockCode.OWNERSHIP_LOST,
+    "claim_not_held": BlockCode.OWNERSHIP_LOST,
+    "credentials_not_reconciled": BlockCode.CREDENTIAL_UNAVAILABLE,
+}
+
+
+def _issue_number(issue_ref: str | None) -> int | None:
+    """The positive issue number `issue_ref` denotes, or None.
+
+    Reuses `dispatch_pass`'s parser rather than re-deriving it, so the lane this
+    control looks up is keyed exactly the way the producer keyed it when it claimed
+    the issue. A second parser that disagreed on, say, a `#`-prefixed value would
+    silently look up a different lane — or none.
+    """
+    from .dispatch_pass import issue_number_for_dispatch
+
+    return issue_number_for_dispatch(issue_ref)
+
+
+async def _latest_approval_decision_id(db: AsyncSession, *, org_id: str, flow_id: str) -> str | None:
+    """The most recent approval decision on this flow, via `dispatch_pass`'s reader."""
+    from .dispatch_pass import _latest_approval_decision_id as reader
+
+    return await reader(db, org_id=org_id, flow_id=flow_id)
+
+
+async def _record_adoption_block(
+    repo: OrchestrationRepository,
+    *,
+    org_id: str,
+    node: OrchestrationNode,
+    block: BlockRecord,
+    observed_state: str,
+    actor_id: str,
+    actor_role: str,
+    reason: str | None,
+) -> None:
+    """Persist a refused adoption as attributed, queryable evidence (#5144).
+
+    ``TRANSITION_REJECTED`` and a structured ``rejection_reason``, matching
+    ``dispatch_pass._record_admission_refusal`` field for field — an operator
+    filtering for #5144 blocks must find the dispatch-side and the resume-side
+    refusals with one query, and two different shapes would mean whichever one the
+    reader did not know about stays invisible.
+
+    ``to_state`` is NULL: the node went nowhere. Recording ``ready`` here would read
+    as a resume that happened and was then undone.
+    """
+    await repo.append_decision(
+        org_id=org_id,
+        flow_id=node.flow_id,
+        node_id=node.id,
+        kind=DecisionKind.TRANSITION_REJECTED.value,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        # The human really did request this; the refusal is the engine's, but the
+        # act being recorded is theirs, and `SERVICE` here would lose who asked.
+        actor_kind=ActorKind.HUMAN.value,
+        reason=reason,
+        rejection_reason=json.dumps(
+            {
+                "issue": "5144",
+                "block_code": block.code.value,
+                "owner": block.owner,
+                "required_input": block.required_input,
+                "detail": block.detail,
+            }
+        ),
+        from_state=observed_state,
+        to_state=None,
+    )
+
+
 class GateDecisionRequest(BaseModel):
     """The body of an approve or reject.
 
@@ -140,11 +408,24 @@ class ResumeRequest(BaseModel):
     honoured. Forbidding the field is strictly stronger than ignoring it: an
     ignored field looks accepted to the caller, and a caller who believes they set
     the actor kind has been told something false.
+
+    ``reconciled`` is the human's explicit attestation that a prior owner's
+    outstanding effects **and** credentials have been accounted for (#5144). It
+    defaults to ``False`` and is the one thing on this body that is read, because
+    nothing on the server can observe it: a database fence cannot revoke a GitHub
+    installation token that has already been issued, so the only honest source is
+    the operator who checked. A default of ``True`` would hand every resume the
+    attestation that makes a lane transfer legal, which is precisely the guard
+    ``work_claims.force_handover`` exists to hold.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     reason: str | None = Field(default=None, max_length=2000)
+    reconciled: bool = Field(
+        default=False,
+        description="Attest that a prior owner's outstanding effects and credentials are reconciled. Required to adopt a legacy lane.",
+    )
 
 
 class GateDecisionResponse(BaseModel):
@@ -336,6 +617,7 @@ async def resume_node(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     access: Annotated[AccessControl, Depends(get_access_control)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    run_bindings: Annotated[RunBindingResolver, Depends(get_run_binding_resolver)],
 ) -> ResumeResponse:
     """Resume a stalled or halted node: ``failed -> ready`` / ``halted -> ready`` (AC-9).
 
@@ -350,6 +632,17 @@ async def resume_node(
     auditor can find bound overrides without inferring them from ``from_state``.
 
     A node id in another tenant returns **404**.
+
+    **Adopting a legacy lane (#5144).** A story held in ``awaiting_merge`` because
+    its worker exited without committing a durable continuation receipt may still
+    be owned by a pre-engine, directly-dispatched lane. Resuming such a story is
+    the one moment adoption is both necessary and attributable, so this route is
+    where :func:`handoff.adopt_legacy_lane` is actually called from. If the
+    transfer is refused — the prior owner is still ``live``, its exit is
+    ``unverifiable``, or the operator has not attested reconciliation — a typed
+    block is persisted and the resume answers **409**. It does not resume the node
+    anyway: reporting work resumed while its owner may still be running is the
+    same class of lie as a worker exiting 0 with review outstanding.
     """
     await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
 
@@ -388,6 +681,34 @@ async def resume_node(
         )
         await db.commit()
         raise HTTPException(status_code=409, detail=rejection_reason)
+
+    # #5144: before promoting the node, make sure this engine actually owns the
+    # lane. Placed *before* `transition()` for the same reason policy admission sits
+    # before `dispatch_node`: a refusal must leave the node exactly where it was,
+    # with nothing promoted. Running it after the UPDATE would mean a story reported
+    # ready while a legacy owner might still be working it.
+    block = await _adopt_lane_for_resume(
+        db,
+        node=node,
+        org_id=org_id,
+        resolver=run_bindings,
+        reconciled=body.reconciled,
+        actor_id=current_user.user_id,
+        actor_role=actor_role,
+    )
+    if block is not None:
+        await _record_adoption_block(
+            repo,
+            org_id=org_id,
+            node=node,
+            block=block,
+            observed_state=observed_state,
+            actor_id=current_user.user_id,
+            actor_role=actor_role,
+            reason=body.reason,
+        )
+        await db.commit()
+        raise HTTPException(status_code=409, detail=block.required_input)
 
     result = transition(
         observed_state,
@@ -576,7 +897,7 @@ async def _run_control_identity(current_user: TokenContext, db: AsyncSession) ->
     `attributed_org_id` instead would let a caller nominate the tenant whose runs
     they may control.
     """
-    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id)
+    canonical_user_id = await resolve_canonical_user_id(db, current_user.user_id, org_id=current_user.org_id)
     return canonical_user_id, current_user.org_id
 
 
@@ -587,7 +908,7 @@ async def _run_control(
     current_user: TokenContext,
     db: AsyncSession,
     request: Request,
-) -> None:
+) -> JSONResponse:
     """Validate the body, apply the shared authorization gate, report the status.
 
     One helper for all four verbs so no verb can accidentally acquire a weaker
@@ -611,16 +932,19 @@ async def _run_control(
     except ControlError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+
     user_id, tenant_id = await _run_control_identity(current_user, db)
     try:
         control.authorize_command(run_id, action, user_id=user_id, tenant_id=tenant_id)
+        session = await authorize_human_session(current_user, db)
+        result, status = await control.command(run_id, action, request_body=await request.body(), session=session)
+        return JSONResponse(result.model_dump(), status_code=status, headers={"Cache-Control": "no-store"})
+    except BootstrapRefusedError:
+        raise HTTPException(status_code=404, detail="run not found") from None
     except ControlError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-
-    # Unreachable while no verb is supported: the gate raises 501 first. Kept as
-    # the declared success seam so the implementing story wires its behaviour
-    # here instead of inventing a second response contract.
-    raise HTTPException(status_code=501, detail=f"{action} is not implemented in this deployment")
 
 
 @router.post("/runs/{run_id}/pause")
@@ -630,9 +954,9 @@ async def pause_run(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     control: Annotated[ControlService, Depends(get_run_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
-    """Pause a live run — authorized here, not yet implemented (501)."""
-    await _run_control(run_id, "pause", control, current_user, db, request)
+) -> JSONResponse:
+    """Pause a live run through the shared signed human control path."""
+    return await _run_control(run_id, "pause", control, current_user, db, request)
 
 
 @router.post("/runs/{run_id}/resume")
@@ -642,8 +966,8 @@ async def resume_run(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     control: Annotated[ControlService, Depends(get_run_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
-    """Resume a paused run — authorized here, not yet implemented (501).
+) -> JSONResponse:
+    """Resume a paused run through the shared signed human control path.
 
     New in #3960: the original seam declared pause/steer/abort but not resume,
     which would have left the two adapters offering different verb sets. Note
@@ -652,7 +976,7 @@ async def resume_run(
     human-only for reasons documented there. This one releases a live pod's pause
     barrier.
     """
-    await _run_control(run_id, "resume", control, current_user, db, request)
+    return await _run_control(run_id, "resume", control, current_user, db, request)
 
 
 @router.post("/runs/{run_id}/steer")
@@ -662,9 +986,9 @@ async def steer_run(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     control: Annotated[ControlService, Depends(get_run_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
+) -> JSONResponse:
     """Steer a live run — authorized here, not yet implemented (501)."""
-    await _run_control(run_id, "steer", control, current_user, db, request)
+    return await _run_control(run_id, "steer", control, current_user, db, request)
 
 
 @router.post("/runs/{run_id}/abort")
@@ -674,9 +998,9 @@ async def abort_run(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     control: Annotated[ControlService, Depends(get_run_control_service)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> None:
+) -> JSONResponse:
     """Abort a live run — authorized here, not yet implemented (501)."""
-    await _run_control(run_id, "abort", control, current_user, db, request)
+    return await _run_control(run_id, "abort", control, current_user, db, request)
 
 
 @router.get("/runs/{run_id}/ping", response_model=ControlPingResponse)

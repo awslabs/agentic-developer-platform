@@ -65,12 +65,19 @@ _CLI_DIR = _GATEWAY_ROOT / "cli"
 # user. It carries no secret — provider values are prompted for at runtime and
 # POSTed straight to the vault API, never written into the script.
 #
+# `adp_deployments.py` owns named deployments and the selection rule (Issue
+# #5413). It is not optional: `adp` resolves which deployment a command runs
+# against by invoking it at entry, so an install missing this file has no working
+# verbs at all. It holds no secret — only names, canonical gateway URLs and
+# storage paths.
+#
 # Deliberately absent:
 #   bg-auth.sh   — legacy SigV4 helper, deprecated (cli/README.md)
 #   bg-auth.ps1  — never existed in the repo; PowerShell parity is a non-goal
 ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp": (_CLI_DIR / "adp").resolve(),
     "adp_common.py": (_CLI_DIR / "adp_common.py").resolve(),
+    "adp_deployments.py": (_CLI_DIR / "adp_deployments.py").resolve(),
     "adp-admin.py": (_CLI_DIR / "adp-admin.py").resolve(),
     "install.sh": (_CLI_DIR / "install.sh").resolve(),
     "bg-cognito-auth.sh": (_CLI_DIR / "bg-cognito-auth.sh").resolve(),
@@ -80,6 +87,7 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-github.py": (_CLI_DIR / "adp-github.py").resolve(),
     "adp-github-admin.py": (_CLI_DIR / "adp-github-admin.py").resolve(),
     "adp-superplane.py": (_CLI_DIR / "adp-superplane.py").resolve(),
+    "adp-models.py": (_CLI_DIR / "adp-models.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -90,6 +98,7 @@ PYTHON_SCRIPT_MEDIA_TYPE = "text/x-python"
 SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp": SHELL_SCRIPT_MEDIA_TYPE,
     "adp_common.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp_deployments.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "install.sh": SHELL_SCRIPT_MEDIA_TYPE,
     "bg-cognito-auth.sh": SHELL_SCRIPT_MEDIA_TYPE,
@@ -99,6 +108,7 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-github.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-github-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-superplane.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-models.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 

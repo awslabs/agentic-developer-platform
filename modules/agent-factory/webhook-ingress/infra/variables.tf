@@ -39,23 +39,11 @@ variable "sqs_message_retention" {
 }
 
 # -----------------------------------------------------------------------------
-# Independent Codex SDK pull-request reviewer
+# Codex SDK pull-request reviewer in the shared worker
 # -----------------------------------------------------------------------------
 
-variable "codex_reviewer_enabled" {
-  description = "Route eligible pull_request events to the independent Codex SDK reviewer queue."
-  type        = bool
-  default     = false
-}
-
-variable "codex_reviewer_image" {
-  description = "Standalone agent-codex-reviewer image. Empty selects adp-codex-reviewer:latest in this account."
-  type        = string
-  default     = ""
-}
-
 variable "codex_reviewer_model" {
-  description = "Gateway model identifier used by the independent Codex reviewer."
+  description = "Gateway model identifier used by the Codex reviewer adapter in the shared worker image."
   type        = string
   default     = "openai.gpt-5.6-sol"
 }
@@ -69,7 +57,7 @@ variable "codex_reviewer_apply_fixes" {
 variable "codex_reviewer_merge_enabled" {
   description = "Allow the deterministic Codex reviewer controller to merge a current, approved, green PR."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "rate_limit_per_window" {
@@ -242,7 +230,7 @@ variable "require_signed_provenance" {
 variable "eks_cluster_name" {
   description = "EKS cluster name for deploying the agent ScaledJob. The OIDC provider, issuer, and KEDA operator role are discovered from the cluster — no remote-state reads needed."
   type        = string
-  default     = "adp-dev-eks-cluster"
+  default     = null
 }
 
 # keda_operator_role_name removed — KEDA operator role is now owned by this
@@ -520,6 +508,9 @@ variable "agent_control_enabled" {
   default     = false
 }
 
+# #5222: pause/resume require this protected path and configured signing keys.
+# Keep activation explicit; distributing control keys must not bypass the
+# worker isolation/readiness gates in #5195/#5210.
 variable "agent_authority_enabled" {
   description = "Enable protected dispatch and mandatory pre-repository pod bootstrap. Keep off until the delegated-authority acceptance and writer migration are complete."
   type        = bool

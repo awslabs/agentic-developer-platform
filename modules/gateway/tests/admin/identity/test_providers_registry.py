@@ -14,13 +14,14 @@ class TestProviderRegistry:
 
     def test_supported_providers_contains_required(self):
         """All required providers are in the set."""
-        required = {"cognito", "github", "slack", "teams", "discord", "email", "whatsapp", "directory"}
+        required = {"cognito", "github", "gitlab", "slack", "teams", "discord", "email", "whatsapp", "directory"}
         assert required == SUPPORTED_PROVIDERS
 
     def test_identity_provider_enum_values(self):
         """IdentityProvider enum has all expected members."""
         assert IdentityProvider.cognito == "cognito"
         assert IdentityProvider.github == "github"
+        assert IdentityProvider.gitlab == "gitlab"
         assert IdentityProvider.slack == "slack"
         assert IdentityProvider.teams == "teams"
         assert IdentityProvider.discord == "discord"

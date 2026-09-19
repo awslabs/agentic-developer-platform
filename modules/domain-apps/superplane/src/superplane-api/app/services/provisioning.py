@@ -44,17 +44,31 @@ appears). Fail-closed with an honest error is the outcome; a fabricated
 ## Why the contract's values are mirrored here rather than imported
 
 ``superplane_contracts`` is standard-library-only and lives one directory above
-this component. The API's image is built with a context pinned to
-``src/superplane-api`` (enforced by ``releases/build-image.sh``), so that package
-is genuinely not importable at API runtime, and widening the build context is the
-release story's (#5327), not this one's.
+this component, outside the Docker build context that ``releases/build-image.sh``
+pins to ``src/superplane-api``.
 
-So the action names, states and forbidden-key set are mirrored as plain values and
-``tests/test_workspaces.py`` asserts they agree with ``superplane_contracts``.
-This is the arrangement the contract itself uses for ``REQUIRED_PERMISSION``, and
-its comment gives the reason: CI puts the two packages on ``sys.path``
-independently, so an import would couple them, whereas a drifting duplicate is
-caught by a test that fails.
+An earlier version of this section said that made the package "genuinely not
+importable at API runtime". That was **not accurate**, and the correction matters
+because the inaccuracy was load-bearing: three modules in this same tree already
+imported it at runtime (``app/routers/heartbeat.py``, ``app/services/leases.py``,
+``app/services/observations.py``), and issue #5053 added ``app/main.py``. The
+package was not unimportable — it was *unstaged*, which is a build defect rather
+than a property of the architecture. Measured: with the auth package staged and
+this one absent, ``import app.main`` raises ``ModuleNotFoundError`` at
+``app/main.py:11``, so the image would have failed at startup rather than
+degrading.
+
+``scripts/stage-domain-auth.sh`` now stages this package into the build context
+alongside ``superplane_auth``, and the Dockerfile fails the build by name if
+either is missing. Widening the build context to the module root — the durable fix
+that would make staging unnecessary — remains release-owned (#5327).
+
+The mirroring below is therefore kept for the reason the contract itself gives for
+``REQUIRED_PERMISSION``, and **not** for the import-availability reason: CI puts
+the two packages on ``sys.path`` independently, so an import would couple this
+module's test lane to the contract's, whereas a drifting duplicate is caught by a
+test that fails. ``tests/test_workspaces.py`` asserts the action names, states and
+forbidden-key set agree with ``superplane_contracts``.
 """
 
 from __future__ import annotations

@@ -12,6 +12,9 @@ from src.usage.service import UsageService
 
 def _decision():
     return SimpleNamespace(
+        confidence="verified",
+        estimate_reasons=(),
+        to_dict=lambda: {"confidence": "verified"},
         source_kind="database",
         generation_id=2,
         pointer_revision=3,
@@ -110,6 +113,9 @@ async def test_no_rows_is_unknown_not_free(db_session):
     assert report.status is PersonaCostStatus.UNKNOWN
     assert report.amount_usd is None
     assert report.call_count == 0
+    assert report.preferences
+    assert all(entry["compatibility_class"] and entry["source"] == "system-default" for entry in report.preferences)
+    assert all("class_default_status" in entry for entry in report.preferences)
 
 
 async def test_missing_pricing_revision_marks_lower_bound_partial(db_session):

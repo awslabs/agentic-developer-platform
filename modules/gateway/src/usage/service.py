@@ -1,5 +1,6 @@
 """Usage service implementing IUsageService interface."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -59,6 +60,8 @@ class UsageService(IUsageService):
         cache_creation_input_tokens: int | None = None,
         client_tool: str | None = None,
         pricing_decision: "PricingDecision | None" = None,
+        provider_request_id: str | None = None,
+        destination_region: str | None = None,
     ) -> None:
         """
         Log a Bedrock API request.
@@ -106,6 +109,8 @@ class UsageService(IUsageService):
             latency_ms=latency_ms,
             status_code=status_code,
             request_id=request_id,
+            provider_request_id=provider_request_id,
+            destination_region=destination_region,
             bedrock_account_id=bedrock_account_id,
             agent_run_id=agent_run_id,
             cache_read_input_tokens=cache_read_input_tokens,
@@ -131,6 +136,9 @@ class UsageService(IUsageService):
         would silently drop metered spend.
         """
         names = {
+            "model_decision": None,
+            "model_decision_id": None,
+            "approving_human_id": None,
             "persona_key": None,
             "compatibility_class": None,
             "harness_contract_revision": None,
@@ -171,19 +179,19 @@ class UsageService(IUsageService):
                 "runtime_posture": None,
                 "posture_revision": None,
             } and not (
-                (
-                    attribution.requested_model_id is None
-                    or (isinstance(attribution.requested_model_id, str) and bool(attribution.requested_model_id))
-                )
+                (attribution.requested_model_id is None or (isinstance(attribution.requested_model_id, str) and bool(attribution.requested_model_id)))
                 and isinstance(attribution.resolved_model_id, str)
                 and bool(attribution.resolved_model_id)
                 and attribution.resolution_source in {"explicit-direct", "principal-mapping", "system-default"}
-                and attribution.runtime_posture == "report_only"
+                and attribution.runtime_posture in {"disabled", "report_only", "enforcing"}
                 and type(attribution.posture_revision) is int
                 and attribution.posture_revision >= 1
             ):
                 proposal = {key: None for key in proposal}
             return {
+                "model_decision": json.loads(attribution.model_decision_json) if attribution.model_decision_json else None,
+                "model_decision_id": attribution.model_decision_id,
+                "approving_human_id": attribution.approving_human_id,
                 "persona_key": attribution.persona_key,
                 "compatibility_class": attribution.compatibility_class,
                 "harness_contract_revision": attribution.harness_contract_revision,
@@ -209,6 +217,9 @@ class UsageService(IUsageService):
         that the active pricing revision applied when none was captured.
         """
         empty: dict[str, str | int | None] = {
+            "pricing_confidence": None,
+            "pricing_estimate_reasons": None,
+            "pricing_decision": None,
             "pricing_source_kind": None,
             "pricing_generation_id": None,
             "pricing_pointer_revision": None,
@@ -216,6 +227,8 @@ class UsageService(IUsageService):
             "pricing_policy_version": None,
         }
         try:
+            if decision.confidence not in {"verified", "estimated"}:
+                return empty
             source = decision.source_kind
             generation = decision.generation_id
             pointer = decision.pointer_revision
@@ -232,6 +245,9 @@ class UsageService(IUsageService):
             else:
                 return empty
             return {
+                "pricing_confidence": decision.confidence,
+                "pricing_estimate_reasons": json.dumps(list(decision.estimate_reasons)),
+                "pricing_decision": decision.to_dict(),
                 "pricing_source_kind": source,
                 "pricing_generation_id": generation,
                 "pricing_pointer_revision": pointer,

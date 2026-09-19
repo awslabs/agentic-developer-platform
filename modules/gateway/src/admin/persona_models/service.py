@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,7 @@ from src.shared.models.persona_models import (
 )
 
 from . import catalogue_service
+from .catalogue import persona_compatibility_class, persona_harness_contract_revision
 
 logger = logging.getLogger("bedrockgateway.persona_models")
 
@@ -50,6 +51,8 @@ INTERIM_PERSONA_CATALOGUE: list[dict] = [
         "key": row.key,
         "display_name": row.display_name,
         "configurable": row.configurable,
+        "compatibility_class": row.compatibility_class,
+        "harness_contract_revision": persona_harness_contract_revision(row.key),
     }
     for row in catalogue_service.build_persona_catalogue()
 ]
@@ -215,6 +218,8 @@ async def validate_model_for_persona(
     account_id: str | None = None,
     region: str | None = None,
     principal_status: str | None = None,
+    service_restriction_pattern_sets: list[list[str]] | None = None,
+    policy_unavailable_reason: str | None = None,
 ) -> str:
     """Validate that ``model`` is selectable for this persona and principal.
 
@@ -246,6 +251,8 @@ async def validate_model_for_persona(
         account_id=account_id,
         region=region,
         principal_status=principal_status,
+        service_restriction_pattern_sets=service_restriction_pattern_sets,
+        policy_unavailable_reason=policy_unavailable_reason,
     )
     if isinstance(result, catalogue_service.SelectionRejection):
         raise PreferenceRejectedError(result.reason, result.message)
@@ -255,9 +262,38 @@ async def validate_model_for_persona(
 # ── Read operations ──────────────────────────────────────────────────────────
 
 
-async def get_platform_default(db: AsyncSession) -> PersonaModelPolicySetting | None:
-    """Load the Claude-class platform default settings record."""
-    return await db.scalar(select(PersonaModelPolicySetting).where(PersonaModelPolicySetting.compatibility_class == "claude-agent-sdk"))
+async def get_class_default(db: AsyncSession, compatibility_class: str) -> PersonaModelPolicySetting | None:
+    """Load the server-owned default record for exactly one compatibility class."""
+    return await db.get(PersonaModelPolicySetting, compatibility_class)
+
+
+def project_class_default(setting: PersonaModelPolicySetting | None) -> tuple[str | None, str | None]:
+    """Return the effective class default and its proof state.
+
+    An active value has crossed PMM-09's real-harness proof gate.  A candidate
+    is visible in report-only operation but must never be described as proven.
+    No record/value remains an explicit absence rather than borrowing another
+    compatibility class's default.
+    """
+    if setting is None:
+        return None, None
+    if setting.active_default_model_id:
+        return setting.active_default_model_id, "proven"
+    if setting.candidate_default_model_id:
+        return setting.candidate_default_model_id, "candidate"
+    return None, None
+
+
+async def get_persona_class_default(
+    db: AsyncSession,
+    persona_key: str,
+) -> tuple[str, str | None, str | None]:
+    """Resolve a persona's authoritative class and that class's default state."""
+    compatibility_class = persona_compatibility_class(persona_key)
+    if compatibility_class is None:
+        raise PreferenceRejectedError("unknown_persona", f"Unknown persona key '{persona_key}'.")
+    default_model_id, class_default_status = project_class_default(await get_class_default(db, compatibility_class))
+    return compatibility_class, default_model_id, class_default_status
 
 
 async def list_preferences(
@@ -308,13 +344,23 @@ async def build_preference_list(
     saved = await list_preferences(db, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id)
     saved_by_key = {p.persona_key: p for p in saved}
 
-    platform_default = await get_platform_default(db)
-    default_model_id = platform_default.active_default_model_id if platform_default else None
+    compatibility_classes = {
+        compatibility_class
+        for persona in INTERIM_PERSONA_CATALOGUE
+        if (compatibility_class := persona_compatibility_class(persona["key"])) is not None
+    }
+    default_rows = await db.scalars(select(PersonaModelPolicySetting).where(PersonaModelPolicySetting.compatibility_class.in_(compatibility_classes)))
+    defaults_by_class = {row.compatibility_class: row for row in default_rows}
 
     entries = []
     for persona in INTERIM_PERSONA_CATALOGUE:
         key = persona["key"]
         pref = saved_by_key.get(key)
+        compatibility_class = persona["compatibility_class"]
+        if compatibility_class is None:
+            raise PreferenceRejectedError("unknown_persona", f"Unknown persona key '{key}'.")
+        harness_contract_revision = persona["harness_contract_revision"]
+        default_model_id, class_default_status = project_class_default(defaults_by_class.get(compatibility_class))
 
         if pref is not None:
             entries.append(
@@ -322,13 +368,19 @@ async def build_preference_list(
                     "persona_key": key,
                     "persona_display_name": persona["display_name"],
                     "configurable": persona["configurable"],
+                    "compatibility_class": compatibility_class,
+                    "harness_contract_revision": harness_contract_revision,
                     "effective_model_id": pref.canonical_model_id,
+                    "effective_is_candidate": False,
                     "source": "principal-mapping",
                     "status": "configured",
                     "saved_model_id": pref.canonical_model_id,
                     "requested_alias": pref.requested_alias,
                     "revision": pref.revision,
                     "updated_at": pref.updated_at,
+                    # The saved mapping is effective, so the default's proof
+                    # state must not be mistaken for the mapping's state.
+                    "class_default_status": None,
                 }
             )
         else:
@@ -337,13 +389,19 @@ async def build_preference_list(
                     "persona_key": key,
                     "persona_display_name": persona["display_name"],
                     "configurable": persona["configurable"],
+                    "compatibility_class": compatibility_class,
+                    "harness_contract_revision": harness_contract_revision,
                     "effective_model_id": default_model_id,
+                    "effective_is_candidate": class_default_status == "candidate",
                     "source": "system-default",
                     "status": "not-configured",
+                    "class_default_status": class_default_status,
                 }
             )
 
-    return entries
+    from .explanation import annotate_preferences
+
+    return await annotate_preferences(db, entries, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id)
 
 
 async def build_explain(
@@ -358,32 +416,10 @@ async def build_explain(
     if persona_key not in PERSONA_KEYS:
         raise PreferenceRejectedError("unknown_persona", f"Unknown persona key '{persona_key}'.")
 
-    pref = await get_preference(db, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id, persona_key=persona_key)
-    platform_default = await get_platform_default(db)
-    default_model_id = platform_default.active_default_model_id if platform_default else None
-
-    if pref is not None:
-        return {
-            "persona_key": persona_key,
-            "effective_model_id": pref.canonical_model_id,
-            "source": "principal-mapping",
-            "status": "configured",
-            "saved_model_id": pref.canonical_model_id,
-            "requested_alias": pref.requested_alias,
-            "revision": pref.revision,
-            "updated_at": pref.updated_at,
-            "default_model_id": default_model_id,
-            "default_source": "claude-agent-sdk",
-        }
-
-    return {
-        "persona_key": persona_key,
-        "effective_model_id": default_model_id,
-        "source": "system-default",
-        "status": "not-configured",
-        "default_model_id": default_model_id,
-        "default_source": "claude-agent-sdk",
-    }
+    entries = await build_preference_list(db, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id)
+    entry = next(row for row in entries if row["persona_key"] == persona_key)
+    compatibility_class, default_model_id, class_default_status = await get_persona_class_default(db, persona_key)
+    return {**entry, "default_model_id": default_model_id, "default_source": compatibility_class, "class_default_status": class_default_status}
 
 
 # ── Write operations ─────────────────────────────────────────────────────────
@@ -404,6 +440,8 @@ async def set_preference(
     validation_account_id: str | None = None,
     validation_region: str | None = None,
     validation_principal_status: str | None = None,
+    validation_service_restriction_pattern_sets: list[list[str]] | None = None,
+    validation_policy_unavailable_reason: str | None = None,
 ) -> PersonaModelPreference:
     """Create or update a preference row with atomic optimistic concurrency.
 
@@ -434,6 +472,8 @@ async def set_preference(
         account_id=validation_account_id,
         region=validation_region,
         principal_status=validation_principal_status,
+        service_restriction_pattern_sets=validation_service_restriction_pattern_sets,
+        policy_unavailable_reason=validation_policy_unavailable_reason,
     )
 
     # Enforce one-kind-per-canonical-ID in the service layer.
@@ -551,15 +591,45 @@ async def reset_preference(
     principal_kind: str,
     principal_id: str,
     persona_key: str,
+    expected_revision: int | None,
 ) -> bool:
-    """Remove a saved preference so the default becomes effective.
+    """Atomically remove a saved preference so the default becomes effective.
 
-    Returns True if a row was removed, False if nothing was stored.
+    Returns True if this call removed a row and False when no row is stored.
+    A present row is never deleted without a matching revision.  The compare
+    and delete happen in one SQL statement so a writer cannot change the row
+    between a client or service-layer read and the destructive operation.
     """
     existing = await get_preference(db, org_id=org_id, principal_kind=principal_kind, principal_id=principal_id, persona_key=persona_key)
     if existing is None:
         return False
-    await db.delete(existing)
+
+    if expected_revision is None or existing.revision != expected_revision:
+        raise PreferenceConflictError(existing)
+
+    result = await db.execute(
+        delete(PersonaModelPreference).where(
+            PersonaModelPreference.id == existing.id,
+            PersonaModelPreference.revision == expected_revision,
+        )
+    )
+    if result.rowcount == 0:
+        # A concurrent reset already achieved the requested state and is an
+        # idempotent success.  A concurrent update is a real stale-write
+        # conflict and must expose its current safe row.
+        current = await db.scalar(
+            select(PersonaModelPreference)
+            .where(
+                PersonaModelPreference.org_id == org_id,
+                PersonaModelPreference.principal_kind == principal_kind,
+                PersonaModelPreference.principal_id == principal_id,
+                PersonaModelPreference.persona_key == persona_key,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if current is None:
+            return False
+        raise PreferenceConflictError(current)
     return True
 
 

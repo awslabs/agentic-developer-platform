@@ -519,6 +519,25 @@ def _reset_github_app_provider():
     _reset_provider_for_testing(None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_runtime_posture_cache():
+    """Clear the process-wide posture cache between tests.
+
+    PMM-07's bounded posture cache is deliberately process-wide and expires by
+    elapsed time, because that is the only mechanism that also works across
+    separate gateway instances. In a test process that makes it shared mutable
+    state: one test seeding ``enforcing`` would otherwise leak into an unrelated
+    test that seeded nothing, and — worse for diagnosis — a test asserting a
+    refusal could pass for the wrong reason. Autouse rather than opt-in, since a
+    test does not have to touch the posture surface to be affected by it.
+    """
+    from src.agentauth.runtime_posture import reset_posture_cache
+
+    reset_posture_cache()
+    yield
+    reset_posture_cache()
+
+
 @pytest.fixture
 async def cleanup_after_test(db_session: AsyncSession):
     """Clean up database after each test.

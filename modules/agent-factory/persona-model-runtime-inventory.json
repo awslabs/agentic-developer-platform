@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "scope": "persona execution defaults plus adjacent model literals",
+  "model_aliases_table_disposition": "legacy_unused_not_a_selection_authority",
+  "invocation_paths": {
+    "github_webhook": {
+      "state": "wired_report_only",
+      "entrypoint": "modules/agent-factory/webhook-ingress/lambda/github/handler.py",
+      "authority": "spawn_persona -> protected work admission -> gateway bootstrap"
+    },
+    "agent_to_agent": {
+      "state": "wired_report_only",
+      "entrypoint": "modules/agent-factory/webhook-ingress/lambda/github/agent_trigger.py",
+      "authority": "spawn_persona -> inherited protected snapshot -> gateway bootstrap"
+    },
+    "eventbridge": {
+      "state": "wired_report_only",
+      "entrypoint": "modules/agent-factory/webhook-ingress/lambda/eventbridge/handler.py",
+      "authority": "spawn_persona -> registered service authority -> gateway bootstrap"
+    },
+    "orchestration": {
+      "state": "wired_report_only",
+      "entrypoint": "modules/gateway/src/orchestration/dispatch_pass.py",
+      "authority": "run_dispatch_pass -> tick commit -> prepare_pending (EngineAuthorityWriter.provision + ensure_snapshot_for_admission) -> publish_pending -> gateway bootstrap",
+      "verified_by": "modules/gateway/tests/orchestration/test_tick_dispatch_preparation.py"
+    },
+    "gitlab": {
+      "state": "wired_report_only",
+      "entrypoint": "modules/agent-factory/webhook-ingress/lambda/gitlab/handler.py",
+      "authority": "registered project secret + immutable user -> protected root admission -> acknowledgement/branch spike (no model invocation)",
+      "verified_by": "modules/gateway/tests/agentauth/test_external_roots.py",
+      "rollout": "explicit operator opt-in; defaults false; not deployed by this PR",
+      "execution_kind": "acknowledgement_and_branch_only_no_inference"
+    },
+    "chat": {
+      "state": "wired_report_only",
+      "entrypoint": "modules/agent-factory/gateway/lambdas/ingest/handler.py",
+      "authority": "authenticated ingest -> protected root before SQS -> TokenReview-bound chat decision -> fresh SDK admission",
+      "verified_by": "modules/gateway/tests/agentauth/test_chat_model.py",
+      "rollout": "explicit operator opt-in; defaults false; not deployed by this PR"
+    },
+    "arc_github_actions": {
+      "state": "wired_report_only",
+      "entrypoint": ".github/workflows/agent-developer.yml",
+      "authority": "registered IRSA runner + verified GitHub OIDC human/service -> protected root -> signed preflight and every SDK launch",
+      "verified_by": "modules/gateway/tests/agentauth/test_arc_model.py",
+      "rollout": "explicit operator opt-in; defaults false; not deployed by this PR"
+    }
+  },
+  "literal_files": {
+    "persona_execution_legacy": [
+      ".github/workflows/agent-architect.yml",
+      ".github/workflows/agent-developer.yml",
+      ".github/workflows/agent-operations.yml",
+      ".github/workflows/agent-pm.yml",
+      ".github/workflows/agent-product.yml",
+      ".github/workflows/agent-pt-superpower.yml",
+      ".github/workflows/agent-reviewer.yml",
+      ".github/workflows/malware-analysis-agent.yml",
+      ".github/workflows/skill-agent.yml",
+      "modules/agent-factory/agent-worker-image/entrypoint.py",
+      "modules/agent-factory/agent/k8s/chat-scaledjob.yaml",
+      "modules/agent-factory/agent/src/agent-pm.ts",
+      "modules/agent-factory/agent/src/agent-superpower.ts",
+      "modules/agent-factory/agent/src/agent-worker.ts",
+      "modules/agent-factory/agent/src/complex-task-chat/run-query.ts",
+      "modules/agent-factory/agent/src/components/CodeGenerationAgent.ts",
+      "modules/agent-factory/agent/src/components/ConfigLoader.ts",
+      "modules/agent-factory/agent/src/components/FixOrchestrator.ts",
+      "modules/agent-factory/agent/src/components/MCPOnboardPlanningAgent.ts",
+      "modules/agent-factory/agent/src/components/PlanningAgent.ts",
+      "modules/agent-factory/agent/src/mcp-onboard.ts",
+      "modules/agent-factory/agent/src/monitoring.ts",
+      "modules/agent-factory/agent/src/skill-agent.ts",
+      "modules/agent-factory/gateway/app/sqs_consumer.py",
+      "modules/agent-factory/infra/gateway-main.tf",
+      "modules/agent-factory/rules/workflows/agent-template.yml",
+      "modules/agent-factory/runner-infra/scripts/full-onboard-repo.sh",
+      "modules/agent-factory/runner-infra/workflow-example.yml"
+    ],
+    "non_persona_or_generated": [
+      "modules/agent-factory/agent/src/complex-task-chat/context/lcm/config.ts",
+      "modules/agent-factory/agent/src/complex-task-chat/context/summarize/bedrock-summarizer.ts",
+      "modules/agent-factory/agent/src/invocability-probe/generate-manifest.ts",
+      "modules/agent-factory/agent/src/invocability-probe/request-shape-manifest.json",
+      "modules/agent-factory/gateway/lambdas/ingest/classifier.py",
+      "modules/agent-factory/infra/modules/lambda-gateway/variables.tf",
+      "modules/agent-factory/scripts/deepwiki-smoke-test.sh",
+      "modules/agent-factory/scripts/verify-e2e.sh",
+      "modules/agent-factory/webhook-ingress/lambda/common/model_validate.py",
+      "modules/agent-factory/webhook-ingress/lambda/common/persona_model_catalogue.json",
+      "platform/scripts/bedrock-routing-validate.sh"
+    ]
+  },
+  "legacy_python_chat": {
+    "entrypoint": "modules/agent-factory/gateway/app/sqs_consumer.py",
+    "execution_kind": "superseded_raw_anthropic_and_boto3_not_claude_agent_sdk",
+    "authority": "gateway committed-posture preflight before each API call; enforcing refuses unsupported harness",
+    "verified_by": "modules/agent-factory/tests/unit/test_legacy_model_guard.py",
+    "rollout": "same chat flag; ingress no longer publishes to its standard queue"
+  }
+}

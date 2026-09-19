@@ -33,6 +33,22 @@ itself says which contract it was dispatched under: `dispatch_pass` stamps
 Reading the marker off the decision rather than comparing timestamps is what makes
 the boundary deterministic and testable: a dispatch's own record states its
 contract, so no wall-clock or deploy-time reasoning is involved.
+
+## A merged PR is not the end of delivery (#5144)
+
+Merge evidence answers "did this code land". It says nothing about the review,
+deployment and evaluation a worker's clean exit can leave outstanding — the worker
+process exits 0, the PR is merged, and nothing durable records what is still owed.
+
+So a dispatch marked `handoff_required` must ALSO carry a durable continuation
+receipt before it may pass, and a missing or unattributable one holds the node
+rather than completing it. The check sits after the merge evidence deliberately: an
+unmarked legacy dispatch reaches exactly the code it reached before, and the marked
+case pays one extra read only on the path that was about to pass anyway.
+
+The receipt is read, never created. Manufacturing an execution row to hang a receipt
+on would fabricate the evidence being checked for, so an absent receipt is a hold and
+an unverifiable one is treated as absent.
 """
 
 from __future__ import annotations
@@ -42,7 +58,7 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
@@ -52,6 +68,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.models.base import utcnow
 
 from .dispatch_pass import attempt_run_id, resolve_installation_id
+from .execution_state import TERMINAL_EXECUTION_STATUSES, BlockCode, ExecutionIdentity, ExecutionStatus, OutcomeKind, PhaseAdvance
+from .execution_store import advance_execution, load_execution
+from .handoff import current_identity, handoff_required, missing_receipt_hold, outstanding_block, receipt_for
 from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
 from .pr_bindings import (
     BindingError,
@@ -306,8 +325,106 @@ async def _story_evidence(
     if url:
         if observation is not None:
             observation["merge_receipt"] = asdict(provider_evidence)
+        # #5144: provider evidence about the PR is necessary but not sufficient. A run
+        # dispatched under the handoff contract must also have committed a durable
+        # continuation receipt, because a merged PR says nothing about the review,
+        # deployment and evaluation the worker's clean exit left outstanding.
+        #
+        # Checked AFTER the merge evidence rather than before it, so an unmarked legacy
+        # dispatch reaches exactly the code it reached before and the marked case pays
+        # one extra read only on the path that was about to pass.
+        if handoff_required(dispatch):
+            receipt = await _delivery_receipt(session, node=node)
+            if receipt is None:
+                # Absent OR unattributable. Fail closed: a receipt this attempt cannot
+                # be shown to own is not evidence about this attempt.
+                return None, missing_receipt_hold()
+            if observation is not None:
+                observation["handoff_receipt_ref"] = receipt
         return url, ""
     return None, hold_explanation(refusal) if refusal else _LEGACY_WAIT
+
+
+async def _delivery_receipt(session: AsyncSession, *, node: OrchestrationNode, lock: bool = False) -> str | None:
+    """This node's durable continuation receipt, or ``None`` when there is none.
+
+    A read only. The absence of a receipt leaves the node held by the caller — nothing
+    is created, advanced or repaired here, because inventing an execution row to hang a
+    receipt on would manufacture the very evidence being checked for.
+
+    ``lock=True`` for the commit-time revalidation (#5144 F2): the receipt's authority
+    is re-derived under the execution store's lock order rather than trusted from the
+    earlier lock-free snapshot. Both the identity and the receipt are resolved again,
+    because a handover advances the claim generation on the *identity*, and re-checking
+    only the stored string would compare a fresh receipt against stale fences.
+    """
+    identity = await current_identity(session, org_id=node.org_id, node_id=node.id)
+    if identity is None:
+        # Marked as requiring a receipt but carrying no execution row. Fail closed: the
+        # caller holds, rather than passing work whose continuation cannot be verified.
+        return None
+    return await receipt_for(session, identity=identity, lock=lock)
+
+
+async def _persist_missing_handoff_block(
+    session: AsyncSession, *, node: OrchestrationNode, identity: ExecutionIdentity | None, detail: str
+) -> dict[str, Any]:
+    """Record the hold without borrowing a replacement owner's authority.
+
+    The snapshot was resolved before external observations. The store rechecks it
+    under its normal locks. A missing execution or displaced claim cannot authorize
+    a ledger write, so its typed refusal stays in the node's existing decision log.
+    """
+    block = outstanding_block(
+        BlockCode.AUTHORITY_UNVERIFIABLE,
+        owner="platform-operator",
+        required_input="reconcile this attempt's ownership and obtain its committed continuation receipt",
+        detail=detail,
+    )
+    record = None
+    refusal = "execution_missing"
+    recorded_in = "decision"
+    if identity is not None and identity.cycle == node.attempts:
+        outcome = await load_execution(session, identity=identity, for_update=True)
+        record = outcome.record if outcome is not None else None
+        refusal = outcome.reason if outcome is not None else "execution_missing"
+        if outcome is not None and outcome.kind is OutcomeKind.APPLIED and record is not None:
+            if record.status not in TERMINAL_EXECUTION_STATUSES:
+                # Do not replace an existing budget, human or other recovery gate.
+                if record.block is None:
+                    outcome = await advance_execution(
+                        session,
+                        identity=identity,
+                        advance=PhaseAdvance(
+                            phase=record.phase,
+                            status=ExecutionStatus.BLOCKED,
+                            expected_revision=record.revision,
+                            next_check_at=record.next_check_at or utcnow() + timedelta(seconds=300),
+                        ),
+                        block=block,
+                        pending_action_key=record.pending_action_key,
+                    )
+                    if outcome.kind is not OutcomeKind.BLOCKED:
+                        raise RuntimeError("handoff block could not be persisted under its locked authority")
+                    recorded_in = "execution"
+                elif record.block.code == block.code and record.block.required_input == block.required_input:
+                    recorded_in = "execution"
+    elif identity is not None:
+        refusal = "execution_cycle_mismatch"
+    if refusal and ("claim" in refusal or "owner" in refusal):
+        block = outstanding_block(BlockCode.OWNERSHIP_LOST, owner=block.owner, required_input=block.required_input, detail=detail)
+    return {
+        "issue": "5144",
+        "block_code": block.code.value,
+        "owner": block.owner,
+        "required_input": block.required_input,
+        "remaining_gates": list(block.remaining_gates),
+        "detail": block.detail,
+        "identity": asdict(identity) if identity is not None else {"org_id": node.org_id, "node_id": node.id, "cycle": node.attempts},
+        "execution_id": record.id if record is not None else None,
+        "recorded_in": recorded_in,
+        "authority_refusal": refusal,
+    }
 
 
 async def observe_results(session: AsyncSession, *, run_store: Any | None = None, evidence: Any | None = None) -> ResultReport:
@@ -412,6 +529,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     raise ValueError("run record does not match node/tenant/attempt")
                 status = row.get("status")
                 observation: dict = {}
+                receipt_identity = None
                 if recovered_without_run_record:
                     observation["recovered_without_run_record"] = True
                 if recovered_from_skipped_run:
@@ -438,6 +556,8 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         if installation_id is None:
                             raise ValueError("GitHub installation is unresolved")
                         source = evidence if evidence is not None else GitHubEvidenceSource()
+                        if handoff_required(dispatch):
+                            receipt_identity = await current_identity(session, org_id=node.org_id, node_id=node.id)
                         url, hold = await _story_evidence(
                             session,
                             node=node,
@@ -488,6 +608,23 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             or (target == NodeState.PASSED and not binding_scope_matches(current, node))
                         )
                     ) or (snapshot is None and current is not None)
+                    # The node lock precedes the store's flow/claim/plan/execution
+                    # locks, as in the worker write path. Missing receipts need the
+                    # same guarded, durable block on holds as on attempted completion.
+                    if handoff_required(dispatch):
+                        revalidated = await _delivery_receipt(session, node=locked, lock=True)
+                        receipt_changed = target == NodeState.PASSED and revalidated != observation.get("handoff_receipt_ref")
+                        if revalidated is None or receipt_changed:
+                            block_detail = missing_receipt_hold(
+                                "the continuation receipt's authority changed during verification" if receipt_changed else ""
+                            )
+                            if target == NodeState.PASSED:
+                                target, detail = NodeState.AWAITING_MERGE, block_detail
+                            observation.pop("merge_receipt", None)
+                            observation.pop("handoff_receipt_ref", None)
+                            observation["handoff_block"] = await _persist_missing_handoff_block(
+                                session, node=locked, identity=receipt_identity, detail=block_detail
+                            )
                     if changed:
                         target = NodeState.AWAITING_MERGE
                         detail = "The implementation binding changed during verification; its current head and scope will be verified again."
@@ -520,6 +657,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                                 from_state=node.state,
                                 to_state=node.state,
                                 reason=json.dumps(payload),
+                                rejection_reason=json.dumps(observation["handoff_block"]) if "handoff_block" in observation else None,
                             )
                         )
                         await session.flush()
@@ -554,6 +692,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             from_state=observed_state,
                             to_state=target.value,
                             reason=json.dumps(payload),
+                            rejection_reason=json.dumps(observation["handoff_block"]) if "handoff_block" in observation else None,
                         )
                     )
                     await session.flush()

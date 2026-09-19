@@ -93,6 +93,10 @@ class TestCliScriptDownload:
             HELPER_SCRIPT,
             PROXY_SCRIPT,
             "adp_common.py",
+            # Issue #5413: `adp` resolves the selected deployment through this at
+            # entry, so an install without it has no working verbs. Names, URLs
+            # and paths only — no secret to expose on an unauthenticated route.
+            "adp_deployments.py",
             "adp-admin.py",
             "adp-bedrock.py",
             "adp-aws.py",
@@ -104,6 +108,7 @@ class TestCliScriptDownload:
             # session the existing `adp login` already wrote, which is the whole
             # point of the story, so publishing it exposes nothing.
             "adp-superplane.py",
+            "adp-models.py",
         }
 
     def test_install_script_is_fetchable_the_way_curl_pipes_it(self):

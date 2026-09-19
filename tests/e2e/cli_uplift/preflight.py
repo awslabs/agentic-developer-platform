@@ -322,13 +322,98 @@ def check_cognito(pool, client, cfg, record):
     return True
 
 
-def evaluate_fixtures(cfg, *, github_available=None, hosted_available=None):
+def check_deployment_bindings(cfg, record, *, fetch=None):
+    """#5413: prove each configured deployment is its own live ADP gateway.
+
+    Read-only, and it is what turns three configured URLs into a usable fixture.
+    Each one must serve the CLI's own unauthenticated discovery document, because
+    that is the first thing `adp login` fetches — an unreachable or non-ADP URL
+    would otherwise surface as an unexplained login failure inside the journey,
+    attributed to the product rather than to the binding.
+
+    The Cognito pools are recorded and compared, not required to differ: three
+    deployments MAY share an identity provider. What must differ is the gateway,
+    and `config.validate()` has already refused a binding set that reuses a URL.
+
+    Returns False rather than raising: an absent or broken deployment fixture
+    blocks E16/E17 and leaves the rest of the matrix to run, exactly as a missing
+    GitHub App does. A wrong TARGET aborts; a missing FIXTURE blocks.
+
+    `fetch` is injectable for the same reason `check_served_cli_hashes` takes one:
+    the production stage reads through the run's own HTTP transport, which refuses
+    redirects before anything is sent, instead of a second urllib path here.
+    """
+    read = fetch or (lambda url: http_json(url, expect=200))
+    bindings = cfg.get("deployments") or []
+    if len(bindings) < config.REQUIRED_DEPLOYMENTS:
+        record["deployments"] = {
+            "configured": len(bindings),
+            "required": config.REQUIRED_DEPLOYMENTS,
+            "reachable": [],
+        }
+        return False
+    reachable, problems = [], {}
+    for entry in bindings:
+        name = str(entry.get("name") or "")
+        url = str(entry.get("gateway_url") or "").rstrip("/")
+        try:
+            discovery = read(url + DISCOVERY_PATH)
+        except PreflightError as exc:
+            problems[name] = str(exc)
+            continue
+        if not isinstance(discovery, dict) or [
+            key for key in DISCOVERY_POPULATED if not str(discovery.get(key) or "")
+        ]:
+            problems[name] = (
+                "served no usable Cognito discovery document, so `adp login` "
+                "against this deployment could not work"
+            )
+            continue
+        reachable.append(
+            {
+                "name": name,
+                # Not secret: the pool and client id ship to every browser.
+                "user_pool_id": discovery["user_pool_id"],
+                "region": discovery["region"],
+            }
+        )
+    record["deployments"] = {
+        "configured": len(bindings),
+        "required": config.REQUIRED_DEPLOYMENTS,
+        "reachable": reachable,
+        "problems": problems,
+        # Evidence that these are three gateways and not three names for one.
+        "distinct_pools": len({entry["user_pool_id"] for entry in reachable}),
+    }
+    return len(reachable) >= config.REQUIRED_DEPLOYMENTS
+
+
+def evaluate_fixtures(
+    cfg, *, github_available=None, hosted_available=None, deployments_available=None
+):
     """Decide which fixture classes are genuinely usable for this run.
 
-    Config alone gives the candidate set; the caller passes live results for the
+    Config alone gives the candidate set; the caller passes live RESULTS for the
     classes that need proving. `None` means "not proven", which is treated as
     unavailable — an unproven fixture must block its cases, never be assumed.
+
+    Results, not probes: `live.py` hands these out as callables and `stages.py`
+    calls them, so passing the callable itself is an easy mistake — and every
+    function object is truthy, so it would mark the fixture AVAILABLE on the
+    strength of never having been run. That is the one direction this function
+    must never fail in, so it is refused outright rather than trusted.
     """
+    for label, value in (
+        ("github_available", github_available),
+        ("hosted_available", hosted_available),
+        ("deployments_available", deployments_available),
+    ):
+        if callable(value):
+            raise PreflightError(
+                f"{label} was given a probe rather than its result; call it first. "
+                "A callable is truthy, so this would have reported the fixture as "
+                "available without ever checking it"
+            )
     available = config.fixture_classes(cfg)
     if cases.GITHUB_APP in available and not github_available:
         available.discard(cases.GITHUB_APP)
@@ -337,6 +422,11 @@ def evaluate_fixtures(cfg, *, github_available=None, hosted_available=None):
         available.discard(cases.GITHUB_REPO)
     if cases.HOSTED in available and not hosted_available:
         available.discard(cases.HOSTED)
+    # #5413: configured is not reachable. Three URLs in a config prove nothing
+    # until each one answers as an ADP gateway, so an unproven binding set blocks
+    # E16/E17 rather than letting them fail inside the journey.
+    if cases.THREE_DEPLOYMENTS in available and not deployments_available:
+        available.discard(cases.THREE_DEPLOYMENTS)
     return available
 
 
@@ -352,6 +442,17 @@ def missing_fixture_report(cfg, available):
         cases.GITHUB_REPO: "a dedicated evaluation repository (config github.repo)",
         cases.SECOND_DESTINATION: "a second destination AWS account (config second_destination_account)",
         cases.HOSTED: "hosted dispatch configuration (config websocket_url + hosted_tasks_queue_url)",
+        cases.THREE_DEPLOYMENTS: (
+            "three separately reachable ADP deployments, each with its own sign-in "
+            "fixture (config deployments: three entries with distinct name, "
+            "gateway_url and credential_secret_name — never one URL under three "
+            "names, which the CLI treats as aliases of a single deployment)"
+        ),
+        cases.MULTI_DEPLOYMENT_MODEL_LIMITS: (
+            "implementation of hard Codex output limits (at most 256 tokens per "
+            "request) and an aggregate 48-request ceiling before inference; "
+            "E16/E17 model execution is disabled until these limits are enforced"
+        ),
     }
     absent = {}
     for fixture, description in names.items():

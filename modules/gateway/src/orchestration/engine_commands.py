@@ -96,10 +96,25 @@ What each verb does in v1
     recorded as ``NODE_STALLED`` / ``HALT_OVERRIDDEN`` exactly as the resume
     control records them.
 ``replan: <text>``
-    **Records and notifies only.** One ``REPLAN_REQUESTED`` row with
-    ``to_state = NULL``, so the row is structurally incapable of moving anything.
-    Turning the request into an amended plan is the authoring loop, a separate
-    story; recording it is what stops the request being lost in a comment thread.
+    **Records the request and assigns one author. Changes no plan.** One
+    ``REPLAN_REQUESTED`` row with ``to_state = NULL``, so the row is structurally
+    incapable of moving anything, plus a durable request row and exactly one queued
+    AI-DLC authoring job to answer it (#4529 — before that the request was recorded
+    and nothing ever authored an amendment, so the reply described work nobody was
+    doing). The request is **not** an approval: ``REPLAN_REQUESTED`` stays absent from
+    ``genesis.APPROVAL_DECISION_KINDS``, the authoring grant carries no ``DISPATCH``,
+    and the amendment the author files is inert until a human accepts it by name. Both
+    writes land in this pass's transaction; the envelope is published by the caller's
+    flush afterwards, so an authoring run cannot exist before the request that
+    authorizes it.
+``accept amendment <draft-id>``
+    Applies one **named** pending amendment authored by that loop, as the resolved
+    human, through `pending_amendments.accept_amendment` — which is `amend_plan` with
+    the human's context, not a second amendment implementation. Additive: plain
+    ``accept`` still answers a gate and can never select an amendment, and there is no
+    "latest" selector, because an unnamed accept would let a mistyped command apply a
+    plan nobody read. Checked before ``accept`` for the same reason the parser orders
+    its patterns that way.
 
 --------------------------------------------------------------------------------
 Ordering: commit, then consume, then acknowledge
@@ -128,10 +143,12 @@ that is broken.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -159,6 +176,7 @@ from .adapters.github_comments import (
     _resolve_platform_identity,
     apply_gate_answer_for_context,
 )
+from .amend import AmendmentContext, FlowNotFoundError
 
 # Issue #4539's verifier. Same package, so this IS an ordinary import — unlike the
 # signer, which lives in the webhook-ingress Lambda zip and cannot be imported from
@@ -170,8 +188,20 @@ from .command_attribution import (
     VerifiedCommand,
     verify_row,
 )
+from .compile import ProposalRejectedError
 from .dispatch_pass import resolve_installation_id
-from .models import DecisionKind, NodeKind, OrchestrationFlow, OrchestrationNode
+from .models import AmendmentRequestState, DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
+
+# Issue #4529's store. The command pass is one of its two callers and holds no
+# amendment logic of its own: `accept_amendment` owns tenant/flow scope, the pending
+# check, the base version+hash comparison and the delegation to `amend_plan`.
+from .pending_amendments import (
+    AmendmentAcceptResult,
+    AmendmentConflictError,
+    AmendmentDraftNotFoundError,
+    accept_amendment,
+    record_replan_request,
+)
 from .repository import OrchestrationRepository
 from .state import ActorKind, NodeState, transition
 
@@ -221,6 +251,14 @@ ENGINE_COMMAND_INDEX = "engine-command-index"
 # read (`activity/service.py`), because it is the same table — a second var could
 # point the bridge at a different one from the UI that renders its rows.
 TABLE_ENV = "WEBHOOK_EVENTS_TABLE"
+
+# Issue #4529: the repository an authoring run works in. The SAME variable
+# `dispatch_pass` reads (`DispatchPassConfig.repo`), deliberately re-declared rather
+# than imported: an authoring run is engine work and must land where the engine
+# dispatches, and a second variable could point replan authoring at a repository the
+# engine cannot otherwise reach. Unset means no authoring job can be addressed, which
+# is reported to the commenter as retryable rather than as a successful replan.
+REPO_ENV = "BG_ORCH_DISPATCH_REPO"
 
 # Per-pass cap. A bound on how much a single wake will do, so a burst of comments
 # (or a stuck marker) cannot turn one tick into an unbounded run of GitHub API
@@ -430,7 +468,36 @@ class EngineCommandReport:
     # path is visible as disabled rather than looking like a pass that found
     # nothing.
     enabled: bool = True
+    # Issue #4529: authoring assignments that were recorded but whose envelope could
+    # not be published. Its own counter because the failure is invisible in every
+    # other number: the command applied, the human was told an author was assigned,
+    # and no author is running. The request stays `QUEUED` and is retryable, so this
+    # is recoverable — but it must force a non-success report rather than looking like
+    # a clean pass.
+    authoring_publish_failed: int = 0
+    #: Issue #4529: authoring assignments published to the queue. The field an
+    #: operator reads to confirm replan actually summons an author.
+    authoring_published: int = 0
+    #: Issue #4529: assignments rebuilt from durable `QUEUED` requests whose earlier
+    #: publish did not land. Deliberately NOT a failure counter — recovery working is
+    #: the system repairing itself — but visible, because a number that stays above
+    #: zero across many ticks means requests are being rebuilt and failing again, and
+    #: that is a different problem from one transient send failure.
+    authoring_recovered: int = 0
+    #: Issue #4529: `request_id -> event_id`, for the replan assignments this pass built
+    #: from a comment. The link between an assignment and the acknowledgement that will
+    #: be posted for it, so that a publish which does not land can correct its OWN reply
+    #: rather than a reply for some other command. Populated in `_handle_row`, where the
+    #: correlation is exact — recovered assignments are absent from it by construction,
+    #: because their comment was answered on an earlier pass and there is nothing left
+    #: to correct.
+    authoring_ack_events: dict[str, str] = field(default_factory=dict)
     pending: list[PendingEngineAck] = field(default_factory=list)
+    #: Issue #4529: committed authoring assignments awaiting publication, flushed
+    #: after the caller's commit. Separate from `pending` (which carries GitHub acks)
+    #: because the two are different kinds of post-commit work with different failure
+    #: modes — an unsent ack loses a reply, an unsent assignment loses the work.
+    pending_authoring: list[Any] = field(default_factory=list)
     #: Issue #4539: rows to seal off during the flush. Separate from `pending` so
     #: that the ack loop cannot reach them — see :class:`QuarantinedRow`.
     quarantined: list[QuarantinedRow] = field(default_factory=list)
@@ -451,7 +518,15 @@ class EngineCommandReport:
         told. That is the invisible outcome this story exists to remove, so it
         forces a non-success report rather than being a footnote.
         """
-        return self.errors == 0 and self.consumes_failed == 0 and self.acks_failed == 0 and self.quarantines_failed == 0
+        return (
+            self.errors == 0
+            and self.consumes_failed == 0
+            and self.acks_failed == 0
+            and self.quarantines_failed == 0
+            # Issue #4529: a recorded replan whose author was never summoned. The
+            # human was told an author is coming, so this must not read as success.
+            and self.authoring_publish_failed == 0
+        )
 
     def _org(self, org_id: str) -> dict[str, int]:
         """Per-org counters, seeded with this report's own key set.
@@ -471,6 +546,9 @@ class EngineCommandReport:
                 "quarantines_failed": 0,
                 "acks_posted": 0,
                 "acks_failed": 0,
+                "authoring_published": 0,
+                "authoring_publish_failed": 0,
+                "authoring_recovered": 0,
                 "errors": 0,
             },
         )
@@ -735,6 +813,113 @@ async def _bulk_transition(
     return moved
 
 
+def _amendment_accepted_reply(outcome: AmendmentAcceptResult) -> str:
+    """What the commenter is told after an amendment lands.
+
+    The gate diff is named explicitly, because gate placement is the part of an
+    amendment whose consequences are not visible from a plan version number: a plan
+    that quietly dropped a gate reads exactly like one that did not, and the human who
+    accepted it is the last person who can notice.
+
+    A replay says so rather than reporting a fresh version, so a human who re-sent the
+    comment does not believe they amended the plan twice.
+    """
+    if outcome.replayed:
+        return f"amendment `{outcome.draft_id}` was already accepted; plan version {outcome.plan_version} is in force. Nothing further was applied."
+
+    parts = [f"amendment `{outcome.draft_id}` accepted."]
+    if outcome.superseded_version is not None:
+        parts.append(f"Plan version {outcome.superseded_version} superseded by version {outcome.plan_version}.")
+    else:
+        parts.append(f"Plan version {outcome.plan_version} is now in force.")
+
+    diff = outcome.gate_diff
+    if diff.changes_gating:
+        if diff.added:
+            parts.append(f"Gates added: {', '.join(f'`{address}`' for address in diff.added)}.")
+        if diff.removed:
+            # Said out loud and second-to-last, because a removed gate is a removed
+            # human decision point — the one change here that reduces oversight.
+            parts.append(f"Gates REMOVED: {', '.join(f'`{address}`' for address in diff.removed)}.")
+    else:
+        parts.append("Gate placement is unchanged.")
+
+    if outcome.superseded_draft_ids:
+        parts.append(f"{len(outcome.superseded_draft_ids)} other pending amendment(s) on this plan were superseded.")
+
+    return " ".join(parts)
+
+
+#: The reply to a replan that produced an authoring assignment. A promise about what
+#: the platform is now doing, and deliberately NOT a claim that the plan changed:
+#: acceptance is still a separate human act on a named draft.
+_REPLAN_QUEUED_REPLY = (
+    "re-plan requested. An AI-DLC author has been assigned to propose an amendment against the current plan. "
+    "The plan is unchanged until you accept the amendment it files — you will get a draft id to accept by name."
+)
+
+#: The reply to a replan that was recorded but could not be queued. Visibly
+#: retryable, and never worded as a success: the request row is durable and still
+#: `QUEUED`, so the honest report is "recorded, not yet assigned".
+_REPLAN_UNQUEUED_REPLY = (
+    "re-plan **recorded but not yet assigned** to an author — the engine could not queue the authoring job. "
+    "Your request is saved and will be picked up automatically; comment `@agent-engine replan: <what should change>` "
+    "again if nothing happens. The plan is unchanged."
+)
+
+
+async def _queue_authoring(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    request: Any,
+    source: tuple[str, int, int] | None,
+) -> Any | None:
+    """Build the authoring assignment for a recorded request, or None.
+
+    Separated from the replan branch so the branch reads as "record, then assign" and
+    so every reason an assignment cannot be built is handled in one place. Returns
+    None — never raises — for each of them, because the request row is already durable
+    and the correct outcome is a retryable reply rather than a rolled-back decision:
+
+    * no `source` (the caller could not resolve repo/issue/installation),
+    * dispatch is unconfigured (no repository configured for the engine),
+    * an author is already bound (a duplicated delivery — one human ask, one author).
+
+    An unexpected failure is also None-and-logged, for the same reason: a bug here
+    must not discard a human's recorded request.
+    """
+    if source is None:
+        return None
+    repo, issue, installation_id = source
+    if not repo:
+        logger.warning(
+            "orchestration engine commands: %s is unset; replan request %s recorded but not assigned",
+            REPO_ENV,
+            request.id,
+        )
+        return None
+    try:
+        from .authoring_dispatch import build_authoring_assignment
+
+        return await build_authoring_assignment(
+            session,
+            org_id=org_id,
+            request=request,
+            repo=repo,
+            issue=issue,
+            installation_id=installation_id,
+        )
+    except Exception:
+        # Contained deliberately. The decision and the request row stay committed and
+        # `QUEUED`, so the assignment is still owed and a later pass can build it.
+        logger.exception(
+            "orchestration engine commands: could not build an authoring assignment for request %s — it remains queued",
+            request.id,
+        )
+        return None
+
+
 async def _apply_command(
     session: AsyncSession,
     *,
@@ -743,14 +928,30 @@ async def _apply_command(
     flow_id: str,
     context: TokenContext,
     access: AccessControl,
+    source: tuple[str, int, int] | None = None,
+    publishes: list[Any] | None = None,
+    command_id: str | None = None,
 ) -> tuple[bool, str]:
     """Apply one authorized command. Returns `(applied, message_for_the_commenter)`.
 
     The permission check happens here, once, for every verb — including `replan`,
-    which writes no state. A request to re-plan is a statement about promotion
-    state that a human will act on, and letting anyone record one would make the
-    decisions table forgeable by comment.
+    which writes no promotion state. A request to re-plan is a statement about
+    promotion state that a human will act on, and letting anyone record one would make
+    the decisions table forgeable by comment.
+
+    Args:
+        source: `(repo, issue, installation_id)` for the delivery this command arrived
+            on, resolved by the caller while the session is open. Used only by
+            `replan`, to address the authoring run it queues. None means an assignment
+            cannot be built, which is reported as retryable rather than failing the
+            command — see `_queue_authoring`.
+        command_id: Verified provider delivery ID; stable across webhook redelivery.
+        publishes: Accumulator the caller flushes **after** its commit. `replan`
+            appends at most one `PendingAuthoring` to it. Nothing is sent from inside
+            this function: publishing before the commit would manufacture an authoring
+            run the platform has no record of commissioning.
     """
+    publishes = publishes if publishes is not None else []
     actor_role = _COMMAND_ACTOR_ROLE_FALLBACK
     try:
         actor_role = (await access.get_user_role(context))[0].value
@@ -777,6 +978,64 @@ async def _apply_command(
             command.verb.value,
         )
         return False, _UNIFORM_REFUSAL
+
+    if command.verb is CommandVerb.ACCEPT_AMENDMENT:
+        # Checked BEFORE the `ACCEPT` branch, mirroring the parser's pattern order.
+        # `accept amendment <id>` and `accept` are different acts on the same plan —
+        # one replaces the plan, the other answers a gate on the plan being replaced —
+        # and there must be exactly one place where that distinction is decided.
+        if command.draft_ref is None:
+            # A recognised shape with nothing named. Refused rather than resolved:
+            # picking "the latest pending amendment" would make a mistyped id apply a
+            # plan the human never read, and this path is reachable by comment.
+            return False, (
+                "name the amendment to accept: `@agent-engine accept amendment <draft-id>`. "
+                "The draft id is in the comment the authoring agent posted."
+            )
+
+        actor = AmendmentContext(
+            org_id=org_id,
+            actor_id=context.user_id,
+            actor_role=actor_role,
+            # `actor_kind` is left at its HUMAN default. Correct here for the reason
+            # the module docstring gives: the acting identity was resolved from a
+            # linked account and `PLAN_APPROVE` was checked against it above. The
+            # engine is the transport, not the actor.
+            reason="accepted via @agent-engine comment",
+        )
+        try:
+            # `flow_id` is passed, so a draft belonging to another flow in the same
+            # tenant cannot be applied to the flow the human was commenting on.
+            outcome = await accept_amendment(session, draft_id=command.draft_ref, actor=actor, flow_id=flow_id)
+        except AmendmentDraftNotFoundError:
+            # Scoped to this tenant AND this flow before the lookup ran, so naming the
+            # id back leaks nothing an authorized approver on this plan could not
+            # already enumerate — and a uniform "cannot be applied by this account"
+            # would tell a human who mistyped a draft id that they lack permission.
+            return False, f"no pending amendment `{command.draft_ref}` on this plan."
+        except AmendmentConflictError as exc:
+            # Stale base, or already rejected/superseded. Nothing was written; the
+            # store's own wording carries the remediation.
+            return False, exc.message
+        except FlowNotFoundError:
+            return False, _UNIFORM_REFUSAL
+        except ProposalRejectedError as exc:
+            # Includes `TenantMismatchError`. The stored document no longer passes
+            # authoritative validation, so it is not acceptable — reported as a
+            # refusal rather than raised, so the row is still acked and consumed
+            # instead of being retried against the same document every wake.
+            logger.warning(
+                "orchestration engine commands: amendment %s on flow %s failed validation: %s",
+                command.draft_ref,
+                flow_id,
+                exc,
+            )
+            return False, (
+                f"amendment `{command.draft_ref}` no longer passes plan validation and cannot be accepted. "
+                "Comment `@agent-engine replan: <what should change>` to have it re-authored."
+            )
+
+        return True, _amendment_accepted_reply(outcome)
 
     if command.verb in (CommandVerb.ACCEPT, CommandVerb.APPROVE_GATE):
         gate = await _resolve_gate(session, org_id=org_id, flow_id=flow_id, gate_ref=command.gate_ref)
@@ -832,19 +1091,93 @@ async def _apply_command(
             return False, "nothing on this plan is halted or failed, so there is nothing to resume."
         return True, f"resumed {moved} node(s) on this plan."
 
-    # REPLAN. Recorded, never acted on: `to_state=None` and no `node_id`, so the
-    # row cannot express a promotion and is not attributed to a node nobody named.
-    repo = OrchestrationRepository(session)
-    await repo.append_decision(
+    # REPLAN. The decision row is unchanged: `to_state=None` and no `node_id`, so it
+    # still cannot express a promotion and is not attributed to a node nobody named.
+    # `REPLAN_REQUESTED` remains absent from `genesis.APPROVAL_DECISION_KINDS`, so
+    # nothing here roots executing graph work — a request is not an approval.
+    #
+    # What #4529 adds is what happens *after* the row: the request is recorded as a
+    # durable assignment and one AI-DLC authoring job is queued to answer it. Both
+    # land in THIS transaction, before anything is published, so a crash between them
+    # is impossible — see `authoring_dispatch`'s module docstring on why the ordering
+    # is the design rather than an implementation detail.
+    if not command_id:
+        return False, "replan requires a verified delivery identity."
+    # The signed provider delivery survives concurrent ticks and webhook retries.
+    # Serialize its SQL decision/request on the flow, before any external publish.
+    locked_flow = await session.scalar(
+        select(OrchestrationFlow.id).where(OrchestrationFlow.org_id == org_id, OrchestrationFlow.id == flow_id).with_for_update()
+    )
+    if locked_flow is None:
+        return False, _UNIFORM_REFUSAL
+    decision_id = str(uuid5(NAMESPACE_URL, json.dumps(["adp:replan", org_id, command_id], separators=(",", ":"))))
+    decision = await session.scalar(
+        select(OrchestrationDecision).where(OrchestrationDecision.org_id == org_id, OrchestrationDecision.id == decision_id)
+    )
+    if decision is not None:
+        if (
+            decision.flow_id != flow_id
+            or decision.actor_id != context.user_id
+            or decision.reason != (command.text or "no detail given")
+            or decision.kind != DecisionKind.REPLAN_REQUESTED.value
+            or decision.actor_kind != ActorKind.HUMAN.value
+        ):
+            return False, _UNIFORM_REFUSAL
+    else:
+        decision = await OrchestrationRepository(session).append_decision(
+            org_id=org_id,
+            flow_id=flow_id,
+            decision_id=decision_id,
+            kind=DecisionKind.REPLAN_REQUESTED.value,
+            actor_id=context.user_id,
+            actor_role=actor_role,
+            actor_kind=ActorKind.HUMAN.value,
+            reason=command.text or "no detail given",
+        )
+
+    request = await record_replan_request(
+        session,
         org_id=org_id,
         flow_id=flow_id,
-        kind=DecisionKind.REPLAN_REQUESTED.value,
-        actor_id=context.user_id,
-        actor_role=actor_role,
-        actor_kind=ActorKind.HUMAN.value,
-        reason=command.text or "no detail given",
+        replan_decision_id=decision.id,
+        requested_by=context.user_id,
+        # The human's words, stored verbatim as DATA. Bounded by the parser.
+        request_text=command.text or "no detail given",
     )
-    return True, "re-plan requested and recorded. The plan is unchanged until someone authors an amendment."
+
+    assignment = await _queue_authoring(
+        session,
+        org_id=org_id,
+        request=request,
+        source=source,
+    )
+    if assignment is not None and not any(item.request_id == assignment.request_id for item in publishes):
+        publishes.append(assignment)
+
+    if assignment is None and request.state == AmendmentRequestState.DISPATCHED.value:
+        # This request's envelope was already published by an earlier pass — a
+        # duplicated delivery, or a re-pass after an ack the platform did not record.
+        # One human ask, one author: the reply is what it was the first time, because
+        # from the human's point of view nothing new has happened and nothing is
+        # owed twice.
+        return True, _REPLAN_QUEUED_REPLY
+
+    if assignment is None:
+        # Nothing could be queued — no dispatch configuration, or no resolvable
+        # installation. The request row IS durable and still `QUEUED`, so this is
+        # retryable rather than lost, and the reply says so instead of claiming a
+        # replan that no author will answer. That distinction is the whole point:
+        # a misleadingly successful replan is worse than a visible failure, because
+        # the human waits for work nobody is doing.
+        logger.warning(
+            "orchestration engine commands: replan recorded but no authoring job could be queued org=%s flow=%s request=%s",
+            org_id,
+            flow_id,
+            request.id,
+        )
+        return True, _REPLAN_UNQUEUED_REPLY
+
+    return True, _REPLAN_QUEUED_REPLY
 
 
 async def _handle_row(
@@ -1016,10 +1349,28 @@ async def _handle_row(
         flow_id=flow_id,
         context=context,
         access=access,
+        # Resolved above from SIGNED values and from the org record — never from the
+        # row's mutable copies. `repo` is the engine's configured dispatch repository
+        # rather than the comment's, because an authoring run works where the engine
+        # dispatches, not wherever a comment happened to be written.
+        source=((os.environ.get(REPO_ENV) or "").strip(), issue_number, installation_id),
+        publishes=report.pending_authoring,
+        command_id=verified.delivery_id,
     )
 
     report.record(org_id, "commands_applied" if applied else "commands_refused")
     _queue(message, installation_id=installation_id)
+
+    # Issue #4529: remember which acknowledgement belongs to which assignment, while the
+    # correlation is exact. The reply above is composed BEFORE the publish is attempted —
+    # it has to be, because publishing is post-commit — so on this path alone the reply
+    # can be optimistic. Recording the link lets `_publish_authoring` correct precisely
+    # this comment's reply if the send does not land, instead of the human being told an
+    # author was assigned when none was.
+    for assignment in report.pending_authoring:
+        request_id = getattr(assignment, "request_id", None)
+        if request_id and request_id not in report.authoring_ack_events:
+            report.authoring_ack_events[request_id] = event_id
 
 
 def _quarantine(row: dict[str, Any], report: EngineCommandReport, *, reason: str) -> None:
@@ -1233,7 +1584,50 @@ async def run_engine_command_pass(
             logger.exception("orchestration engine commands: failed to handle event %r", row.get("event_id"))
             report.record(str(row.get("tenant_id") or ""), "errors")
 
+    # Issue #4529: and then finish the authoring work this engine already accepted.
+    #
+    # Deliberately AFTER the rows and OUTSIDE the loop, and deliberately not gated on
+    # there being any rows at all. The publish for a replan happens in the post-commit
+    # flush, which also consumes the comment marker that caused it — so a publish that
+    # did not land leaves a durable `QUEUED` request with no marker left to re-read.
+    # Every later pass then found nothing and rebuilt nothing, while the human had
+    # already been told an author was assigned. This call is what makes the reply true:
+    # the pass is no longer only a reaction to new comments, it also finishes owed work.
+    await _recover_authoring(session, report)
+
     return report
+
+
+async def _recover_authoring(session: AsyncSession, report: EngineCommandReport) -> None:
+    """Rebuild the assignments for requests still owed an author. Never raises.
+
+    Appends to the same `pending_authoring` accumulator the replan branch uses, so
+    recovered assignments are published by the same post-commit flush under the same
+    commit-then-publish ordering — there is deliberately no second publish path.
+
+    Contained absolutely: recovery is a repair pass, and an unforeseen failure in it must
+    not cost this tick the commands it correctly applied above. A failure leaves every
+    row `QUEUED`, which is exactly the state that brings them back next wake.
+    """
+    try:
+        from .authoring_dispatch import recover_owed_authoring
+
+        # Requests this pass already built an assignment for, above. Recovery reads the
+        # database inside this same uncommitted transaction, so it can SEE a request the
+        # replan branch just wrote — and rebuilding that one would put two assignments for
+        # one request into the same flush. The grace boundary in `recover_owed_authoring`
+        # already excludes a request that young, so this is a second, exact guard rather
+        # than the only one: the boundary is a time heuristic and this is an identity
+        # check, and the invariant ("one human ask, one author") is worth both.
+        already = {getattr(a, "request_id", None) for a in report.pending_authoring}
+
+        for assignment in await recover_owed_authoring(session):
+            if assignment.request_id in already:
+                continue
+            report.pending_authoring.append(assignment)
+            report.record(assignment.org_id, "authoring_recovered")
+    except Exception:
+        logger.exception("orchestration engine commands: authoring recovery failed; owed requests remain queued")
 
 
 def _consume(table, ack: PendingEngineAck) -> bool:
@@ -1288,6 +1682,79 @@ async def _post_ack(ack: PendingEngineAck) -> None:
         await client.aclose()
 
 
+async def _publish_authoring(report: EngineCommandReport) -> None:
+    """Publish the committed authoring assignments. **Post-commit only.**
+
+    Never raises: an assignment that cannot be published is counted, which forces a
+    non-success report, and the request row stays `QUEUED` so a later pass re-publishes
+    it under the same deduplication id. The message the human already received says the
+    request is saved, so a retry is honest rather than surprising.
+
+    `report.pending_authoring` is cleared either way, so a caller that flushes twice
+    cannot send an assignment twice — and the SQS deduplication id means even that
+    would collapse to one message.
+    """
+    if not report.pending_authoring:
+        return
+
+    from src.shared.database import get_session_factory
+
+    from .authoring_dispatch import publish_authoring
+
+    assignments = list(report.pending_authoring)
+    report.pending_authoring = []
+    for assignment in assignments:
+        try:
+            published = await publish_authoring(assignment, session_factory=get_session_factory())
+        except Exception:
+            # `publish_authoring` is written not to raise; guarded anyway, because an
+            # unforeseen raise here would abandon the remaining assignments and skip
+            # the marker/ack loops entirely.
+            logger.exception(
+                "orchestration engine commands: unexpected failure publishing authoring assignment request=%s",
+                getattr(assignment, "request_id", ""),
+            )
+            published = False
+        report.record(assignment.org_id, "authoring_published" if published else "authoring_publish_failed")
+        if not published:
+            _correct_optimistic_reply(report, assignment)
+
+
+def _correct_optimistic_reply(report: EngineCommandReport, assignment: Any) -> None:
+    """Downgrade this assignment's not-yet-posted reply from "assigned" to "retryable".
+
+    The one thing the counters could not fix. `_apply_command` composes the replan reply
+    before anything is published, because publishing is post-commit — so the reply says
+    "an AI-DLC author has been assigned" while the send has not been attempted yet. When
+    the send then fails the request is genuinely retryable, and the human must be told
+    that rather than being left waiting for an author nobody commissioned.
+
+    Safe by construction, because this runs FIRST in the flush — before the ack loop
+    posts anything — so the correction always reaches the comment rather than arriving
+    after it. A recovered assignment has no entry here (its comment was answered on an
+    earlier pass), so nothing is rewritten for it: there is no stale reply to correct,
+    and editing an old thread on every failed retry would be noise rather than news.
+
+    Only rewrites an ack still carrying the optimistic success text, so a reply that was
+    already something else — a refusal, or a deliberately silent consume — is untouched.
+    """
+    event_id = report.authoring_ack_events.get(getattr(assignment, "request_id", "") or "")
+    if not event_id:
+        return
+
+    for index, ack in enumerate(report.pending):
+        if ack.event_id == event_id and ack.message == _REPLAN_QUEUED_REPLY:
+            # `PendingEngineAck` is frozen, deliberately — the routing fields must not be
+            # mutable after they were resolved from signed values. So the entry is
+            # replaced with the same routing and a truthful message.
+            report.pending[index] = replace(ack, message=_REPLAN_UNQUEUED_REPLY)
+            logger.warning(
+                "orchestration engine commands: replan reply for event %s downgraded to retryable — no author was queued",
+                event_id,
+            )
+            return
+
+
 async def flush_engine_commands(report: EngineCommandReport, config: EngineCommandConfig | None = None, *, table: Any | None = None) -> None:
     """Consume the markers and post the acks. **Call after the caller's commit.**
 
@@ -1307,6 +1774,12 @@ async def flush_engine_commands(report: EngineCommandReport, config: EngineComma
     GitHub outage stalling the ack loop cannot leave unverifiable rows `pending` and
     being re-verified every wake.
     """
+    # Issue #4529: the authoring assignments first, before the markers and the acks.
+    # Ordered first deliberately: this is the only post-commit step whose failure means
+    # work was *lost* rather than a message delayed, and it must not be able to be
+    # starved by a GitHub outage stalling the ack loop below.
+    await _publish_authoring(report)
+
     if not report.pending and not report.quarantined:
         return
 

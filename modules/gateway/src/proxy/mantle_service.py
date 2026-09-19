@@ -137,9 +137,10 @@ class MantleUpstreamError(Exception):
 class _CapturedUsage(dict):
     """Usage remains a mapping; routing evidence is server metadata, not tokens."""
 
-    def __init__(self, usage, routing):
+    def __init__(self, usage, routing, provider_request_id=None):
         super().__init__(usage)
         self.routing = routing
+        self.provider_request_id = provider_request_id
 
 
 class _StreamUsageSniffer:
@@ -425,11 +426,12 @@ class MantlePassthroughService:
         try:
             resp = await client.post(routed.upstream_url, content=body, headers=headers)
             status_code = resp.status_code
+            metadata["provider_request_id"] = resp.headers.get("x-amzn-requestid") or resp.headers.get("x-request-id")
             content = resp.content
             # Only extract usage on success bodies; upstream errors pass through untouched.
             if 200 <= status_code < 300:
                 usage = self._extract_usage(content)
-                metadata = self._response_metadata_from_bytes(content)
+                metadata.update(self._response_metadata_from_bytes(content))
             return MantleResponse(
                 status_code=status_code,
                 content=content,
@@ -519,6 +521,7 @@ class MantlePassthroughService:
 
         async def _passthrough() -> AsyncIterator[bytes]:
             sniffer = _StreamUsageSniffer()
+            sniffer.metadata["provider_request_id"] = resp.headers.get("x-amzn-requestid") or resp.headers.get("x-request-id")
             boundary = SSEBoundary()
             outcome = "interrupted"
             result_status = 502
@@ -686,7 +689,7 @@ class MantlePassthroughService:
             requested_service_tier=requested_tier if isinstance(requested_tier, str) else None,
             served_service_tier_raw=metadata.get("service_tier"),
         )
-        return _CapturedUsage(usage, evidence)
+        return _CapturedUsage(usage, evidence, metadata.get("provider_request_id"))
 
     # ------------------------------------------------------------------
     # Metering
@@ -874,6 +877,8 @@ class MantlePassthroughService:
                     client_tool=_current_client_tool.get(),
                     bedrock_account_id=routing_decision.target.account_id if routing_decision and routing_decision.target else None,
                     pricing_decision=decision,
+                    provider_request_id=getattr(usage, "provider_request_id", None),
+                    destination_region=evidence.endpoint_region if evidence else None,
                 )
         except Exception as exc:  # noqa: BLE001 - metering must not break the proxy
             logger.warning("Failed to write mantle usage_logs row", extra={"error": str(exc), "model": model})

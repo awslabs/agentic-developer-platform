@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, Numeric, String, text
+from sqlalchemy import JSON, BigInteger, DateTime, Index, Integer, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TenantMixin, new_uuid, utcnow
@@ -68,6 +68,14 @@ class UsageLog(Base, TenantMixin):
     resolution_source: Mapped[str | None] = mapped_column(String(32))
     runtime_posture: Mapped[str | None] = mapped_column(String(32))
     posture_revision: Mapped[int | None] = mapped_column(Integer)
+    pricing_confidence: Mapped[str | None] = mapped_column(String(32))
+    pricing_estimate_reasons: Mapped[str | None] = mapped_column(Text)
+    pricing_decision: Mapped[dict | None] = mapped_column(JSON)
+    model_decision: Mapped[dict | None] = mapped_column(JSON)
+    model_decision_id: Mapped[str | None] = mapped_column(String(64))
+    approving_human_id: Mapped[str | None] = mapped_column(String(255))
+    destination_region: Mapped[str | None] = mapped_column(String(64))
+    provider_request_id: Mapped[str | None] = mapped_column(String(255))
     # The complete pricing-decision identity. A partial tuple is never written:
     # NULL across all five means the decision was not captured, not "current".
     pricing_source_kind: Mapped[str | None] = mapped_column(String(32))

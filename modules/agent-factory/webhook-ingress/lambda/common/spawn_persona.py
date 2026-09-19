@@ -78,6 +78,7 @@ def spawn_persona(
     intent_label: str | None = None,
     model_requested: str | None = None,
     model_resolved: str | None = None,
+    model_canonical: str | None = None,
     aws_label: str | None = None,
     token_source: str | None = None,
     trusted_human_event=None,
@@ -105,7 +106,12 @@ def spawn_persona(
         intent_trigger: Trigger string (e.g. "mentioned", "issue_labeled").
         intent_label: Optional label that triggered this (for issues.labeled).
         model_requested: Raw alias the user typed in /model directive (issue #2279).
-        model_resolved: Validated Bedrock model ID, or None if rejected/absent.
+        model_resolved: LEGACY assignment -- the Bedrock model ID this run
+            actually executes, or None if rejected/absent. Unchanged by PMM-07
+            so ``report_only`` cannot alter live behaviour.
+        model_canonical: The strict published (PMM-07 *proposed*) resolution of
+            the same directive, or None when the authority never published it.
+            Recorded as protected proposal metadata only; never executed.
         aws_label: Validated AWS credential label from /aws-label directive
             (issue #3574).
         token_source: Issue #3385 (C3) — "pat" when the tenant's identity-index
@@ -211,6 +217,7 @@ def spawn_persona(
         intent_label=intent_label,
         model_requested=model_requested,
         model_resolved=model_resolved,
+        model_canonical=model_canonical,
         aws_label=aws_label,
         token_source=token_source,
     )
@@ -537,6 +544,7 @@ def _build_envelope(
     intent_label: str | None,
     model_requested: str | None = None,
     model_resolved: str | None = None,
+    model_canonical: str | None = None,
     aws_label: str | None = None,
     token_source: str | None = None,
 ) -> dict:
@@ -593,10 +601,15 @@ def _build_envelope(
     # model_requested = raw alias the user typed; model_resolved = validated
     # Bedrock model ID (or None if rejected). Worker reads model_resolved to
     # override ANTHROPIC_MODEL; uses model_requested for the warning message.
+    # ``model_canonical`` is the PMM-07 *proposed* resolution and is deliberately
+    # a separate key: the worker keys execution off ``model_resolved`` alone, so
+    # adding the proposal cannot change which model runs.
     if model_requested is not None:
         envelope["model_requested"] = model_requested
     if model_resolved is not None:
         envelope["model_resolved"] = model_resolved
+    if model_canonical is not None:
+        envelope["model_canonical"] = model_canonical
     # Issue #3574: Thread /aws-label through the envelope. The worker uses this
     # to pass label= to the gateway's assume-role endpoint, selecting a specific
     # linked account within the authorized user's vault.

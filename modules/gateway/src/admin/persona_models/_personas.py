@@ -25,6 +25,7 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-aidlc": "aidlc",
     "@agent-architect": "architect",
     "@agent-codex": "codex",
+    "@agent-codex-reviewer": "agent-codex-reviewer",
     "@agent-developer": "developer",
     "@agent-malware-analysis-agent": "malware-analysis-agent",
     "@agent-operations": "operations",
@@ -36,5 +37,32 @@ MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-superpower": "pt-superpower",
 }
 
-# The canonical set of all valid personas — union of all mapping targets.
-VALID_PERSONAS: set[str] = set(MENTION_TO_PERSONA.values()) | set(LABEL_TO_PERSONA.values())
+AUTOMATIC_PERSONAS: set[str] = {
+    "agent-codex-reviewer",
+    "intent-refinement",
+}
+
+PERSONA_COMPATIBILITY_CLASS: dict[str, str] = {
+    "agent-codex-reviewer": "codex-sdk",
+    "aidlc": "claude-agent-sdk",
+    "architect": "claude-agent-sdk",
+    "codex": "claude-agent-sdk",
+    "developer": "claude-agent-sdk",
+    "intent-refinement": "claude-agent-sdk",
+    "malware-analysis-agent": "claude-agent-sdk",
+    "operations": "claude-agent-sdk",
+    "pm": "claude-agent-sdk",
+    "product": "claude-agent-sdk",
+    "pt-superpower": "claude-agent-sdk",
+    "reviewer": "claude-agent-sdk",
+    "superplane-operator": "claude-agent-sdk",
+    "superplane-researcher": "claude-agent-sdk",
+}
+
+COMPATIBILITY_CLASS_HARNESS_CONTRACT_REVISION: dict[str, str] = {
+    "claude-agent-sdk": "0.3.220",
+    "codex-sdk": "0.155.1",
+}
+
+# The canonical set of all valid personas — union of all mapping targets and automatic personas.
+VALID_PERSONAS: set[str] = set(MENTION_TO_PERSONA.values()) | set(LABEL_TO_PERSONA.values()) | AUTOMATIC_PERSONAS

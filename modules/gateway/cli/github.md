@@ -4,8 +4,8 @@ Connect a repository you already have access to on GitHub, so ADP agents can
 work in it:
 
 ```sh
-adp github connect --repo SOPHOS-IT/project
-adp github status --repo SOPHOS-IT/project
+adp github connect --repo example-org/project
+adp github status --repo example-org/project
 ```
 
 You supply no GitHub secrets. These commands use the GitHub App your ADP
@@ -25,8 +25,8 @@ owns that choice, and ADP cannot make it for you. So `--repo` is the repository
 you are *asking* for; it is not proof you selected it, and it grants nothing on
 its own. After the installation exists, the CLI checks GitHub for access to that
 exact repository. A different repository in the same installation does not
-satisfy the request — if you asked for `SOPHOS-IT/project` and selected
-`SOPHOS-IT/other`, you are not connected to `project`.
+satisfy the request — if you asked for `example-org/project` and selected
+`example-org/other`, you are not connected to `project`.
 
 Naming an organization or repository you do not have access to cannot give you
 access to it. Authorization is decided by the server from your ADP membership
@@ -42,9 +42,9 @@ reports `pending` with exit code 4, names who must act, and remembers what you
 asked for:
 
 ```sh
-adp github connect --repo SOPHOS-IT/project    # pending: awaiting org approval
-# ... an owner of SOPHOS-IT approves ...
-adp github connect --repo SOPHOS-IT/project    # resumes; no second installation
+adp github connect --repo example-org/project    # pending: awaiting org approval
+# ... an owner of example-org approves ...
+adp github connect --repo example-org/project    # resumes; no second installation
 ```
 
 Rerunning is always safe. If an installation already covers the repository, it is
@@ -106,7 +106,7 @@ appears under Settings → Connections, and one connected there is visible to
 ## If your deployment has no GitHub App yet
 
 ```
-$ adp github connect --repo SOPHOS-IT/project
+$ adp github connect --repo example-org/project
 This ADP deployment has no GitHub App yet. An ADP platform administrator must
 set one up (Settings > Connections, or adp admin github). Ordinary users cannot
 and should not create it — it needs the platform's own app credentials.

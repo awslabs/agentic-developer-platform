@@ -88,6 +88,7 @@ describe('AI-DLC presentation delivered to hosted workers', () => {
     expect(tableHeaders(loop)).toEqual([
       ['Wave / capability', 'Story issues', 'Orchestrator / evaluation drafts', 'Planned checks', 'Remaining holds'],
       ['Target environment', 'AWS account ID', 'Region', 'adp-cred label', 'Selection status'],
+      ['Wave', 'Gate proposed?', 'Why (consequence if wrong)', 'Gate node address'],
       ['Emission rule', 'Result', 'Evidence / remaining action'],
     ]);
     const currentRules = [...emitter.matchAll(/^\*\*Rule (\d+) — /gm)].map(match => match[1]);

@@ -3,7 +3,7 @@
 The values in this object are reporting evidence, not authorization.  They are
 nevertheless security-sensitive: accepting them from a request header would let
 the billed worker relabel its own spend.  The only production constructor lives
-in :mod:`src.agentauth.model_policy` and reads the protected execution snapshot.
+in :mod:`src.usage.model_policy_evidence` and reads the protected execution snapshot.
 The object is then attached to ``TokenContext`` as a pydantic ``PrivateAttr``.
 """
 
@@ -35,5 +35,8 @@ class PersonaUsageAttribution:
     requested_model_id: str | None = None
     resolved_model_id: str | None = None
     resolution_source: Literal["explicit-direct", "principal-mapping", "system-default"] | None = None
-    runtime_posture: Literal["report_only"] | None = None
+    runtime_posture: Literal["disabled", "report_only", "enforcing"] | None = None
     posture_revision: int | None = None
+    model_decision_json: str | None = None
+    model_decision_id: str | None = None
+    approving_human_id: str | None = None

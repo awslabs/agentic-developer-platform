@@ -297,6 +297,13 @@ data:
   BG_MODEL_PROBE_MAX_BUDGET_USD_PER_ATTEMPT: "0"
   BG_PLATFORM_BEDROCK_ACCOUNT_ID: "__PLATFORM_BEDROCK_ACCOUNT_ID__"
 
+  # PMM-03 / D3: active organization/team model-access constraints.  JSON is
+  # keyed by org ID or "org_id:team_id"; the team key wins.  Empty JSON means
+  # no explicit tenant policy and therefore the versioned platform baseline.
+  # A configured scope with [] is an intentional deny-all policy.
+  BG_MODEL_ALLOWED_MODELS_CONFIG: >-
+    __MODEL_ALLOWED_MODELS_CONFIG__
+
   # Saved Bedrock account mappings are always enforced. There is no rollout toggle.
 
   # =============================================================================
@@ -402,3 +409,11 @@ data:
   AGENT_TASK_SOURCE_ROLE_ARN: "__AGENT_TASK_SOURCE_ROLE_ARN__"
   AGENT_TASK_SOURCE_EKS_CLUSTER: "__AGENT_TASK_SOURCE_EKS_CLUSTER__"
   AGENT_TASK_SOURCE_ISOLATION_CONFIRMED: "__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__"
+
+  # PMM-07 producer and ARC registrations are operator-owned deployment data.
+  # Empty registrations refuse these paths; rollout does not activate defaults.
+  ADP_MODEL_ROOT_BINDINGS: "__ADP_MODEL_ROOT_BINDINGS__"
+  ADP_ARC_MODEL_BINDINGS: "__ADP_ARC_MODEL_BINDINGS__"
+  ADP_CHAT_WORKER_IMAGE_DIGESTS: "__ADP_CHAT_WORKER_IMAGE_DIGESTS__"
+  ADP_CHAT_WORKER_NAMESPACE: "adp-gateway-agents"
+  ADP_CHAT_WORKER_SERVICE_ACCOUNT: "adp-agent"

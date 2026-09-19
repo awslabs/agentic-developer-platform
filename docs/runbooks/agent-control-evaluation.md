@@ -158,7 +158,10 @@ generation and digests with your fixture's actual ones.
     "aborted_counters": "artifacts/aborted_counters.json",
     "vocabulary_parity": "artifacts/vocabulary_parity.json",
     "stats_schema_keys": "artifacts/stats_schema_keys.json",
-    "neutral_contract": "artifacts/neutral_contract.json"
+    "neutral_contract": "artifacts/neutral_contract.json",
+    "pause_boundary": "artifacts/pause_boundary.json",
+    "pause_resume": "artifacts/pause_resume.json",
+    "pause_expiry": "artifacts/pause_expiry.json"
   },
 
   "cleanup_items": [
@@ -237,6 +240,9 @@ Required keys per artifact:
 | `journal_tests` | W1-09 | `replay_same_id`, `content_conflict`, `bounds_enforced`, `expiry_is_unknown`, `assistant_turns` |
 | `negative_tests` | W1-10 | `wrong_account`, `missing_isolation`, `wrong_key`, `absent_required_check`, `unknown_check_id`, `failed_cleanup` |
 | `neutral_contract` | W2-02 | `protocol_version`, `adapter_id`, `sdk_version`, `sdk_matches_lockfile`, `adapters`, `second_adapter`, `no_provider_types_in_shared_contract`, `capability_intersection_proven`, `normalized_input_kinds_proven`, `authorization_at_handoff`, `unknown_outcome_supported`, `opaque_attempt_replacement`, `stale_events_rejected`, `disposed_once`, `fresh_private_input_per_attempt`, `session_and_no_option_behavior_preserved`, `cancel_prevents_new_query`, `forced_retry_exercised` |
+| `pause_boundary` | W2-03 | `adapter_id`, `sdk_version`, `permission_mode`, `spill_hooks_composed`, `requested`, `held_interval`, `tool_coverage`, `confirmed`, `degraded` |
+| `pause_resume` | W2-04 | `released_count`, `session_id_before`, `session_id_after`, `attempt_id_before`, `attempt_id_after`, `interrupt_called`, `initial_prompt_replayed`, `prior_history_preserved`, `task_completed`, `held_tools_admitted_after_resume`, `races` |
+| `pause_expiry` | W2-05 | `auto_resumed`, `annotation_count`, `extra_assistant_turn`, `neutral_annotation`, `resolved_before_release`, `pod_killed`, `idle_retry_fired`, `exit_watchdog_fired`, `heartbeats_during_pause`, `paused_distinguishable_from_stalled`, `spill_output_preserved`, `held_hook_timeout`, `deadline_clamp`, `cancellation` |
 
 For `token_lifecycle`, use the expiry produced by the real registration writer
 and propagated to the listener as `ADP_CONTROL_TOKEN_EXPIRES_AT`. Record an

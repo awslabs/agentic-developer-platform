@@ -13,26 +13,73 @@ from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy import select
 
 from src.agentauth.bootstrap import BootstrapRefusedError, BootstrapStore, _iso, _key
-from src.agentauth.grants import AgentAction, AuthorityReference, DelegatedGrant, TargetRelationship
+from src.agentauth.grants import (
+    AUTHORITY_GATE_DECISION,
+    AUTHORITY_REPLAN_REQUEST,
+    AgentAction,
+    AuthorityReference,
+    DelegatedGrant,
+    TargetRelationship,
+)
 from src.orchestration.dispatch import GraphAttribution, graph_address
 from src.orchestration.genesis import EngineGenesis, resolve_engine_genesis
-from src.orchestration.models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
+from src.orchestration.models import (
+    AmendmentRequestState,
+    DecisionKind,
+    NodeKind,
+    OrchestrationAmendmentRequest,
+    OrchestrationDecision,
+    OrchestrationFlow,
+    OrchestrationNode,
+)
 from src.orchestration.run_store import EngineRunStore
 from src.orchestration.state import NodeState
 
+#: How long a minted authority record stays usable. Shared by both kinds so an
+#: authoring authority cannot outlive a gate-rooted one.
+_AUTHORITY_TTL = timedelta(days=7)
 
-def ensure_engine_authority(*, store: BootstrapStore, genesis: EngineGenesis, now: datetime) -> tuple[datetime, str]:
-    pk, sk = f"TENANT#{genesis.org_id}", f"AUTHORITY#{genesis.decision_id}"
+#: The execution attribute carrying the amendment request an authoring run answers.
+#: Server-written at provisioning time and read back by `validate_authoring_authority`
+#: on every call, so the run cannot name a different assignment later.
+AUTHORING_REQUEST_ATTRIBUTE = "orchestration_amendment_request_id"
+
+#: The only persona an authoring assignment may be issued to. AI-DLC authoring is
+#: `aidlc`'s job; a `developer` run under this kind would be an execution persona
+#: holding a non-executing authority, which is a shape nothing should produce.
+AUTHORING_PERSONA = "aidlc"
+
+
+def _ensure_authority(
+    *,
+    store: BootstrapStore,
+    org_id: str,
+    decision_id: str,
+    human_id: str,
+    flow_id: str,
+    kind: str,
+    now: datetime,
+) -> tuple[datetime, str]:
+    """Write-once the authority record one grant derives from, then re-read it.
+
+    Shared by the gate-rooted and authoring paths so there is exactly one writer of
+    `AUTHORITY#` records and exactly one place that decides what a live one looks
+    like. `kind` is recorded on the row AND re-read from it, which is what makes
+    `bootstrap.live_grant`'s cross-check meaningful: the grant's kind and the
+    authority's kind are written from one value here, so a later disagreement
+    between them is a real inconsistency rather than a provisioning artefact.
+    """
+    pk, sk = f"TENANT#{org_id}", f"AUTHORITY#{decision_id}"
     authority = store._read(pk, sk)
     if authority is None:
         item = {
             **_key(pk, sk),
             "status": {"S": "active"},
-            "authority_kind": {"S": "gate_decision"},
-            "human_id": {"S": genesis.root_human_id},
-            "flow_id": {"S": genesis.flow_id},
+            "authority_kind": {"S": kind},
+            "human_id": {"S": human_id},
+            "flow_id": {"S": flow_id},
             "created_at": {"S": _iso(now)},
-            "expires_at": {"S": _iso(now + timedelta(days=7))},
+            "expires_at": {"S": _iso(now + _AUTHORITY_TTL)},
         }
         try:
             store.client.put_item(TableName=store.table, Item=item, ConditionExpression="attribute_not_exists(pk)")
@@ -41,10 +88,14 @@ def ensure_engine_authority(*, store: BootstrapStore, genesis: EngineGenesis, no
         authority = store._read(pk, sk)
     if (
         not authority
-        or authority.get("human_id") != {"S": genesis.root_human_id}
-        or authority.get("flow_id") != {"S": genesis.flow_id}
+        or authority.get("human_id") != {"S": human_id}
+        or authority.get("flow_id") != {"S": flow_id}
         or authority.get("status") != {"S": "active"}
-        or authority.get("authority_kind") != {"S": "gate_decision"}
+        # Compared, not defaulted. An existing record for this decision under a
+        # DIFFERENT kind must refuse rather than be reused: that is the only thing
+        # stopping one recorded human act from being re-read as a stronger kind of
+        # authority than the one it was minted under.
+        or authority.get("authority_kind") != {"S": kind}
     ):
         raise BootstrapRefusedError("engine authority refused")
     try:
@@ -56,6 +107,19 @@ def ensure_engine_authority(*, store: BootstrapStore, genesis: EngineGenesis, no
     if expiry <= now:
         raise BootstrapRefusedError("engine authority expired")
     return expiry, created_at
+
+
+def ensure_engine_authority(*, store: BootstrapStore, genesis: EngineGenesis, now: datetime) -> tuple[datetime, str]:
+    """The gate-rooted authority record. Unchanged behaviour; see `_ensure_authority`."""
+    return _ensure_authority(
+        store=store,
+        org_id=genesis.org_id,
+        decision_id=genesis.decision_id,
+        human_id=genesis.root_human_id,
+        flow_id=genesis.flow_id,
+        kind=AUTHORITY_GATE_DECISION,
+        now=now,
+    )
 
 
 class EngineAuthorityWriter:
@@ -127,6 +191,142 @@ class EngineAuthorityWriter:
                 **({"provider_repository_id": {"N": str(source["provider_repository_id"])}} if "provider_repository_id" in source else {}),
             },
             grant_metadata=metadata,
+            events_table=self.events_table,
+            event_item={key: serializer.serialize(value) for key, value in event.items()},
+        )
+        return envelope
+
+    def provision_authoring(self, pending) -> dict:
+        """Mint the bounded authority for ONE AI-DLC amendment-authoring run (#4529).
+
+        A sibling of :meth:`provision` rather than a mode of it, because the two
+        differ in what they are rooted in and in what they may do, and collapsing
+        them would mean relaxing checks that must keep holding for executing
+        dispatch. `provision` demands a graph node and an attempt number and grants
+        `DISPATCH` to a developer; an authoring run has no node — it reads a request
+        and files a proposal — so reusing that path would have required making
+        `node_id`/`attempt` optional on the one function that roots real plan
+        execution.
+
+        **What this grants.** `MONITOR` only, on `SELF` only, scoped to the
+        assignment's tenant and flow. Deliberately:
+
+        * no `DISPATCH`, so an authoring assignment cannot spawn executing work —
+          an amendment that could dispatch would be a proposal applying itself.
+          `dispatch.py` refuses this kind a second time, independently, so neither
+          fence alone is load-bearing.
+        * no `DESCENDANT` relationship, because with no dispatch there are no
+          descendants, and a relationship that can never resolve is authority
+          waiting to be misread.
+        * nothing delegable, for the same reason.
+
+        **What roots it.** The committed `REPLAN_REQUESTED` decision, carried as
+        `pending.replan_decision_id` and recorded as the authority reference. That
+        decision is deliberately absent from `genesis.APPROVAL_DECISION_KINDS`, so
+        this kind cannot root executing graph work no matter what reads it later —
+        the exclusion is enforced where approvals are resolved, not here.
+
+        **Why the request id is written onto the execution.** `validate_flow` must
+        re-prove on every call that the assignment is still open, still this run's,
+        and still at the base revision the human asked against. It reads the request
+        id from the execution record the server wrote, never from the request — so a
+        run cannot present a different assignment after the fact.
+
+        Args:
+            pending: A committed :class:`~src.orchestration.authoring_dispatch.PendingAuthoring`.
+                Only the post-commit publisher supplies this, and only after the
+                request row and its decision are durable.
+
+        Returns:
+            The envelope to publish, unchanged.
+
+        Raises:
+            BootstrapRefusedError: The assignment's identity does not hold together,
+                or the persona is not the authoring one.
+        """
+        if (
+            not pending.request_id
+            or not pending.replan_decision_id
+            or not pending.flow_id
+            or not pending.requested_by
+            or not pending.org_id
+            or pending.envelope.get("tenant_id") != pending.org_id
+            or not self.events_table
+        ):
+            raise BootstrapRefusedError("verified authoring assignment required")
+
+        envelope = dict(pending.envelope)
+        invocation = envelope.get("message_id")
+        assignment = envelope.get("orchestration", {})
+        # The envelope is rebuilt from the request row by the producer, so these
+        # must already agree. Checked rather than assumed: this is the last point
+        # before a credential-bearing execution row exists, and an envelope whose
+        # assignment disagrees with the row it came from is the one shape that could
+        # bind a run to a flow the human never named.
+        if (
+            not invocation
+            or invocation != pending.author_run_id
+            or assignment.get("flow_id") != pending.flow_id
+            or assignment.get("request_id") != pending.request_id
+            or assignment.get("root_decision_id") != pending.replan_decision_id
+            or assignment.get("base_plan_version") != pending.base_plan_version
+        ):
+            raise BootstrapRefusedError("authoring assignment identity mismatch")
+        if envelope.get("persona") != AUTHORING_PERSONA:
+            raise BootstrapRefusedError("unsupported authoring persona")
+
+        now = datetime.now(UTC)
+        expiry, _ = _ensure_authority(
+            store=self.store,
+            org_id=pending.org_id,
+            decision_id=pending.replan_decision_id,
+            human_id=pending.requested_by,
+            flow_id=pending.flow_id,
+            kind=AUTHORITY_REPLAN_REQUEST,
+            now=now,
+        )
+        source = envelope["source_ref"]
+        grant = DelegatedGrant(
+            grant_id=f"grant:{invocation}:1",
+            tenant_id=pending.org_id,
+            principal=f"{invocation}#1",
+            authority=AuthorityReference(
+                AUTHORITY_REPLAN_REQUEST,
+                pending.replan_decision_id,
+                pending.requested_by,
+                pending.org_id,
+            ),
+            # MONITOR only. See the docstring: the omissions are the point.
+            allowed_actions=frozenset({AgentAction.MONITOR}),
+            delegable_actions=frozenset(),
+            target_relationships=frozenset({TargetRelationship.SELF}),
+            flow_id=pending.flow_id,
+            repo_scope=frozenset({source["repo"]}),
+            expires_at=expiry,
+            max_dispatch_concurrency=0,
+            max_chain_depth=0,
+        )
+        # `build_authoring_item`, not `build_item`: this envelope carries no
+        # `graph_address`/`node_id`/`attempt`, and that absence is the point — see
+        # that method's docstring.
+        event = EngineRunStore.build_authoring_item(envelope)
+        event.update(actor_kind="service", actor_user_id="system:orchestration-replan")
+        serializer = TypeSerializer()
+        self.store.provision_pending(
+            envelope=envelope,
+            grant=grant,
+            now=now,
+            execution_metadata={
+                "issue_number": {"N": str(source["issue"])},
+                "installation_id": {"N": str(source["installation_id"])},
+                "chain_depth": {"N": "0"},
+                # The assignment this run answers, server-written. Re-read on every
+                # call by `validate_authoring_authority`.
+                AUTHORING_REQUEST_ATTRIBUTE: {"S": pending.request_id},
+            },
+            # No `dispatch_personas` and no `max_total_dispatches`: there is nothing
+            # to cap because there is no DISPATCH to spend.
+            grant_metadata={"work_item_issue": {"N": str(source["issue"])}},
             events_table=self.events_table,
             event_item={key: serializer.serialize(value) for key, value in event.items()},
         )
@@ -261,3 +461,92 @@ async def validate_engine_authority(*, session, execution: dict, grant: Delegate
         raise
     except Exception:
         raise BootstrapRefusedError("engine authority unavailable") from None
+
+
+async def validate_authoring_authority(*, session, execution: dict, grant: DelegatedGrant) -> None:
+    """Re-prove one amendment-authoring assignment against live state (#4529).
+
+    The `replan_request` counterpart of :func:`validate_engine_authority`, and it
+    returns None rather than a :class:`GraphAttribution` because there is genuinely
+    no owning node: an authoring run reads a request and files a proposal, so there
+    is nothing to charge its model spend to. That is an answer, not a gap — charging
+    an authoring run to a node it did not execute would misattribute the cost.
+
+    Every check reads the database now rather than trusting the grant, because the
+    grant was minted when the assignment was created and a lot can change before the
+    run calls: the request may have been answered, the flow deleted, or the plan
+    amended by someone else. The four properties re-proved:
+
+    * **Tenant.** The request is loaded with the grant's tenant in the WHERE clause,
+      so a cross-tenant request id is indistinguishable from an absent one.
+    * **Flow.** The request's flow must equal the grant's flow. A grant naming one
+      flow and an assignment naming another is refused rather than reconciled.
+    * **Run.** The request's `author_run_id` must be the run this grant was issued
+      to. This is what makes a *stolen* or replayed assignment id useless: the id is
+      not secret, but the server wrote which run may answer it.
+    * **Base revision.** The plan in force must still be the version and hash the
+      request recorded. An authoring run whose base moved is refused here, before it
+      can spend anything producing a proposal that `accept_amendment` would refuse
+      as a conflict anyway.
+
+    The request id comes from the *execution record* the server wrote at
+    provisioning, never from the caller, so a run cannot re-point itself at a
+    different assignment.
+
+    Raises:
+        BootstrapRefusedError: Any of the above does not hold, or the state needed to
+            decide is unavailable. Deliberately one message for all of them: a
+            caller must not be able to tell "no such request" from "not your
+            request" from "your base moved".
+    """
+    from src.orchestration.pending_amendments import in_force_plan
+
+    try:
+        request_id = execution.get(AUTHORING_REQUEST_ATTRIBUTE, {}).get("S", "")
+        if not request_id:
+            # No server-written assignment on this execution. The missing-request
+            # case, and it must refuse: an authoring grant with nothing to author
+            # against is an authority with unbounded scope.
+            raise BootstrapRefusedError("authoring assignment is no longer authorized")
+        request = (
+            await session.execute(
+                select(OrchestrationAmendmentRequest)
+                .where(
+                    OrchestrationAmendmentRequest.id == request_id,
+                    OrchestrationAmendmentRequest.org_id == grant.tenant_id,
+                )
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if (
+            request is None
+            or request.flow_id != grant.flow_id
+            or request.author_run_id != grant.principal.rsplit("#", 1)[0]
+            or request.replan_decision_id != grant.authority.reference_id
+            or request.requested_by != grant.authority.human_id
+            or request.state not in {AmendmentRequestState.QUEUED.value, AmendmentRequestState.DISPATCHED.value}
+        ):
+            raise BootstrapRefusedError("authoring assignment is no longer authorized")
+
+        flow = (
+            await session.execute(
+                select(OrchestrationFlow)
+                .where(OrchestrationFlow.id == grant.flow_id, OrchestrationFlow.org_id == grant.tenant_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if flow is None:
+            raise BootstrapRefusedError("authoring assignment is no longer authorized")
+
+        # The base revision, compared exactly. Both-NULL is legitimate (a flow with
+        # no accepted plan yet) and compares equal, so a first-plan authoring run is
+        # not refused for having no base.
+        in_force = await in_force_plan(session, org_id=grant.tenant_id, flow_id=grant.flow_id)
+        current_version = in_force.version if in_force is not None else None
+        current_hash = in_force.plan_hash if in_force is not None else None
+        if current_version != request.base_plan_version or current_hash != request.base_plan_hash:
+            raise BootstrapRefusedError("authoring assignment is no longer authorized")
+    except BootstrapRefusedError:
+        raise
+    except Exception:
+        raise BootstrapRefusedError("authoring authority unavailable") from None

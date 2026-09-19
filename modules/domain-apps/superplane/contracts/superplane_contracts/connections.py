@@ -402,9 +402,9 @@ def authorize_delegation(
 
     Both conditions are required and neither implies the other:
 
-    * the vault must record `principal` as the credential's **owner** — delegating
-      a credential one merely has access to is the "delegates a credential they
-      were never authorized to use or share" failure;
+    * the vault must record `principal` as owner or an explicit owner delegation
+      to the exact target workspace. A grant or registry listing alone does not
+      confer authority over the credential;
     * the principal must hold `workspace:renew_credential` on the target
       workspace, which is U9's server-held grant, not a claim in the request.
 
@@ -423,7 +423,13 @@ def authorize_delegation(
         # Otherwise a caller could pair their own credential's ownership record
         # with a reference to someone else's.
         return Decision(allowed=False, reason=_NOT_AUTHORIZED_TO_DELEGATE)
-    if not ownership.is_owned_by(principal):
+    if not principal or not (
+        ownership.is_owned_by(principal)
+        or (
+            isinstance(ownership.delegated_to_workspaces, (set, frozenset))
+            and workspace_id in ownership.delegated_to_workspaces
+        )
+    ):
         return Decision(allowed=False, reason=_NOT_AUTHORIZED_TO_DELEGATE)
     if not workspace_id or not workspace_id.strip():
         return Decision(allowed=False, reason=_NOT_AUTHORIZED_TO_DELEGATE)

@@ -251,6 +251,26 @@ export function readsSpilledFile(toolInput: unknown): boolean {
   return isSpillDirPath(input.file_path) || isSpillDirPath(input.path);
 }
 
+/**
+ * Native SDK tools validate replacements against their own output schemas.
+ * A string replacing a Read/Bash object is rejected and the CLI silently keeps
+ * the original large output. Keep metadata (especially background/exit state)
+ * and replace only known textual fields. Unknown/binary shapes pass through.
+ */
+function replacementFor(toolName: string, response: unknown, standIn: string): unknown | undefined {
+  if (typeof response === 'string') return standIn;
+  if (response === null || typeof response !== 'object' || Array.isArray(response)) return undefined;
+  const fields = response as Record<string, unknown>;
+  if (toolName === 'Bash' && typeof fields.stdout === 'string' && typeof fields.stderr === 'string' && fields.isImage !== true) {
+    return { ...fields, stdout: standIn, stderr: '' };
+  }
+  if (toolName === 'Read' && fields.type === 'text' && fields.file && typeof fields.file === 'object') {
+    const file = fields.file as Record<string, unknown>;
+    if (typeof file.content === 'string') return { ...fields, file: { ...file, content: standIn, numLines: standIn.split('\n').length } };
+  }
+  return undefined;
+}
+
 export interface SpillHookOptions {
   /** Where oversized payloads are persisted. */
   store: SpillStore;
@@ -298,6 +318,10 @@ export function createSpillHookCallback(opts: SpillHookOptions) {
       if (sizeBytes <= thresholdBytes) return {};
 
       const toolName = hookInput.tool_name ?? 'tool';
+      if (replacementFor(toolName, hookInput.tool_response, '') === undefined) {
+        log(`[spill] ${toolName} output shape is not supported; keeping original output`);
+        return {};
+      }
       const key = buildSpillKey(toolName, hookInput.tool_use_id);
       const locator = await opts.store.spill(key, payload);
 
@@ -318,7 +342,7 @@ export function createSpillHookCallback(opts: SpillHookOptions) {
       return {
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
-          updatedToolOutput: standIn,
+          updatedToolOutput: replacementFor(toolName, hookInput.tool_response, standIn),
         },
       };
     } catch (err) {

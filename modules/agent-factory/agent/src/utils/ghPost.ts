@@ -1,3 +1,4 @@
+import { protectedArtifactRun, uploadRunArtifact } from '../lib/artifactGateway';
 import { workerAwsCredentials, workerAwsRegion } from '../lib/runIdentity';
 /**
  * Shared GitHub posting utility with token refresh and S3 fallback.
@@ -98,6 +99,10 @@ export async function refreshGitHubToken(): Promise<void> {
  * Save content to S3 as fallback when GitHub API fails.
  */
 export async function saveToS3Fallback(issueNumber: string | number, label: string, content: string): Promise<string | null> {
+  if (protectedArtifactRun()) {
+    try { return (await uploadRunArtifact('comment', content)).uri; }
+    catch { console.error('Own-run comment archive unavailable'); return null; }
+  }
   // Issue #4184: bucket from config only — no hardcoded default. Unset →
   // one ERROR + explicit skip rather than a PutObject that IAM will deny.
   const bucket = resolveFallbackBucket(msg => console.error(`[ERROR] ${msg}`));

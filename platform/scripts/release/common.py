@@ -17,7 +17,6 @@ TERRAFORM_MODULES = ('platform/infra', 'modules/gateway/infra', 'modules/agent-f
 IMAGES = {
     'gateway': ('adp-gateway', 'gateway-build', ''),
     'agent-runtime': ('adp-agent-runtime', 'agent-runtime', ''),
-    'codex-reviewer': ('adp-codex-reviewer', 'codex-reviewer', ''),
     'agent-gateway': ('adp-agent-gateway', 'agent-gateway', ''),
     'chat-agent': ('adp-agent-gateway', 'chat-agent', '-chat'),
 }

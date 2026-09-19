@@ -5,6 +5,7 @@ on:
     paths:
       - 'modules/gateway/src/**'
       - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
       # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
       # from a generated staged copy of the webhook-ingress source. Registering a
       # persona at the source must re-run the Lint job's sync_personas.py --check,
@@ -12,6 +13,8 @@ on:
       # unconfigurable. Same lockstep pattern as #4029/#4539.
       - 'modules/gateway/scripts/sync_personas.py'
       - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/codex-reviewer/package.json'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
       - '.github/workflows/run-gateway-migrations.yml'
@@ -84,6 +87,7 @@ on:
     paths:
       - 'modules/gateway/src/**'
       - 'modules/gateway/scripts/pricing-rollout.py'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
       # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
       # from a generated staged copy of the webhook-ingress source. Registering a
       # persona at the source must re-run the Lint job's sync_personas.py --check,
@@ -91,6 +95,8 @@ on:
       # unconfigurable. Same lockstep pattern as #4029/#4539.
       - 'modules/gateway/scripts/sync_personas.py'
       - 'modules/agent-factory/webhook-ingress/lambda/common/personas.py'
+      - 'modules/agent-factory/agent/package.json'
+      - 'modules/agent-factory/codex-reviewer/package.json'
       - 'modules/gateway/scripts/build-budget-lambda-archives.py'
       - '.github/workflows/pricing-finalize.yml'
       - '.github/workflows/run-gateway-migrations.yml'
@@ -187,10 +193,44 @@ jobs:
           fi
           echo "Loop-proposal validator required --authored for the unresolved-tenant fixture as expected."
 
-  test:
-    name: Test
+  # Sharded across runners AND parallelised within each runner. This suite is
+  # ~13.9k tests; run serially in one job it took ~45min, which is most of the
+  # wall clock of every gateway PR. Measured on one machine over a 4.2k-test
+  # slice: serial 477s -> -n 4 205s -> -n 8 138s. Scaling is sublinear, so
+  # -n alone plateaus around 8min for the full suite — sharding across runners
+  # is what gets it to minutes. One shard measured 89s at -n 4, 77s at -n 8.
+  #
+  # That 12s gap is why -n stays at 4 and the runner's cpu limit is NOT raised.
+  # Once the suite is sharded each shard is small enough that per-worker startup
+  # dominates, so extra workers buy almost nothing while multiplying the
+  # oversubscription risk: arc-runner/main.tf documents a 2026-08-30 incident
+  # where packed runners hit 104% node CPU and a job died with "runner lost
+  # communication ... starves it for CPU/Memory". 4 shards x -n 4 stays inside
+  # the existing 4-CPU limit and needs no infrastructure change at all.
+  #
+  # Runner capacity is not the constraint and never was: the scale set allows 20
+  # runners, queue time was measured at 0min on every run, and we were using
+  # one. 4 shards is spending capacity that already sits idle.
+  #
+  # Coverage is main-only: --cov measured +58% wall clock (138s -> 218s on the
+  # same slice). Nothing gates on the number, so PRs don't pay for it.
+  #
+  # Known imbalance: pytest-split partitions by test COUNT, not duration, so the
+  # shard holding the slow tests/cli files runs ~5min while others finish in
+  # 40-150s. Wall clock is therefore the slowest shard, not the average. Storing
+  # a durations file (`pytest --store-durations`, committed, which switches
+  # pytest-split to duration-based balancing) would even these out to ~2.5min;
+  # deliberately left as a follow-up so this change stays reviewable.
+  test-shard:
+    name: Test shard ${{ matrix.shard }}
     runs-on: arc-runner-org
     needs: lint
+    strategy:
+      # Every shard reports independently — one shard failing must not cancel
+      # the others, or a single failure hides the state of 10k other tests.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
@@ -207,28 +247,69 @@ jobs:
 
       - name: Run Tests
         working-directory: modules/gateway
+        env:
+          # pytest-split partitions the collected list deterministically, so the
+          # 4 shards are disjoint and together cover every test exactly once
+          # (verified: 3475+3475+3475+3474 = 13899).
+          SHARD_ARGS: --splits 4 --group ${{ matrix.shard }}
+          # -n 4 is pinned to the runner's 4-CPU limit (arc-runner/main.tf). Do
+          # NOT use `-n auto`: nproc inside the pod reports the NODE's 32 cores,
+          # not the cgroup limit, so auto would spawn 32 workers on 4 CPUs and
+          # run SLOWER than this. If that limit changes, change this with it.
+          #
+          # `--dist loadfile` is REQUIRED, not a tuning choice. It keeps every
+          # test in a file on one worker. Parts of tests/cli depend on state that
+          # earlier tests in the directory establish -- notably
+          # tests/cli/test_provider_transport.py, which drives a real http.server
+          # through the real transport on purpose (#5039) and fails with
+          # `gateway_unavailable` when its ordering is disturbed. Measured on
+          # tests/cli at -n 4: default dist = 9 failures, loadfile = 6 (the same
+          # 6 that fail serially, i.e. no parallelism-induced failures).
+          # Removing loadfile silently reintroduces ~9 phantom failures.
+          XDIST_ARGS: -n 4 --dist loadfile
+          COV_ARGS: ${{ github.ref == 'refs/heads/main' && '--cov=src --cov-report=xml' || '' }}
         run: |
-          # Exercise the real migration subprocess and merge graph first, so a
-          # runner/dependency problem fails before the longer application suite.
-          pytest tests/migrations/ -v --tb=short \
+          # -q, not -v: at 13.9k tests, per-test output was ~14k log lines per
+          # run and made failures harder to find, not easier. --tb=short still
+          # prints a traceback for anything that fails.
+          pytest tests/ -q --tb=short \
             -m "not live_only" \
             --timeout=60 \
-            --cov=src --cov-report=
-          pytest tests/ --ignore=tests/migrations -v --tb=short \
-            -m "not live_only" \
-            --timeout=60 \
-            --cov=src --cov-append --cov-report=xml
+            $SHARD_ARGS $XDIST_ARGS $COV_ARGS
 
       - name: Upload Coverage
         # Coverage upload is informational — it must never fail the Test gate.
         # GitHub artifact-storage quota exhaustion (recalculated every 6-12h)
         # was failing this step and dragging the whole Test job to red even
         # when all tests passed, blocking merges across every PR.
+        # Per-shard artifact: each shard measures only the code its own slice
+        # touched, so these are partial by construction and must be combined
+        # (coverage combine) before the total means anything.
+        if: github.ref == 'refs/heads/main'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-report
+          name: coverage-report-shard-${{ matrix.shard }}
           path: modules/gateway/coverage.xml
+
+  # Aggregate gate. Exists so there is a single stable check named "Test"
+  # covering all shards — matrix jobs report under per-shard names, and any
+  # branch protection or required-check config referencing "Test" would
+  # otherwise silently stop gating the moment the job was sharded.
+  test:
+    name: Test
+    runs-on: arc-runner-org
+    needs: test-shard
+    if: always()
+    steps:
+      - name: Verify every shard passed
+        run: |
+          result='${{ needs.test-shard.result }}'
+          echo "aggregate result of all test shards: $result"
+          if [ "$result" != "success" ]; then
+            echo "::error::One or more gateway test shards did not pass ($result)."
+            exit 1
+          fi
 
   frontend-test:
     name: Frontend Unit Tests

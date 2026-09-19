@@ -935,6 +935,24 @@ resource "aws_ssm_parameter" "budget_fail_mode" {
   }
 }
 
+# PMM-03 / D3: production organization/team model-access policy consumed by
+# both proxy admission and the gateway-signed per-hop model decision.  The
+# value is a JSON object: {"org-id":["canonical.model.*"],
+# "org-id:team-id":["canonical.model.id"]}.  Terraform creates the safe
+# no-explicit-policy baseline and never overwrites an operator-authored value.
+resource "aws_ssm_parameter" "model_allowed_models_config" {
+  name        = "/adp/${var.environment}/gateway/model-allowed-models-config"
+  description = "JSON organization/team model allowlists for gateway admission. PMM-03 D3."
+  type        = "String"
+  value       = "{}"
+
+  tags = local.common_tags
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # NOTE: EKS→RDS (5432) and EKS→Redis (6379) security group rules are owned by
 # platform infra (platform/infra/main.tf) — do NOT duplicate them here.
 # See: https://github.com/aws-e/adp/issues/2590
@@ -1124,8 +1142,8 @@ module "orchestration_tick" {
   # transport, no new route, no credential added to the webhook Lambda. The queue
   # belongs to the webhook-ingress Terraform state, so it is referenced by
   # ARN/URL variables rather than by a resource address.
-  agent_submit_queue_arn = var.orchestration_dispatch_queue_arn
-  agent_submit_queue_url = var.orchestration_dispatch_queue_url
+  agent_submit_queue_arn = var.orchestration_agent_authority_enabled ? local.worker_queue_arn : var.orchestration_dispatch_queue_arn
+  agent_submit_queue_url = var.orchestration_agent_authority_enabled ? local.worker_queue_url : var.orchestration_dispatch_queue_url
   dispatch_repo          = var.orchestration_dispatch_repo
   dispatch_max_per_tick  = var.orchestration_dispatch_max_per_tick
 
@@ -1137,10 +1155,15 @@ module "orchestration_tick" {
   #
   # All four default to empty/false, which leaves the bridge inert: the pass reads
   # nothing and reports `commands_enabled=false`.
-  engine_enabled                = var.orchestration_engine_enabled
-  agent_authority_enabled       = var.orchestration_agent_authority_enabled
-  webhook_events_table_name     = var.orchestration_webhook_events_table
-  webhook_events_kms_key_arn    = var.orchestration_webhook_events_kms_key_arn
+  engine_enabled           = var.orchestration_engine_enabled
+  agent_authority_enabled  = var.orchestration_agent_authority_enabled
+  agent_authority_prepared = var.orchestration_agent_authority_prepared && local.worker_events_table != "" && local.worker_events_key != ""
+  agent_authority_resources = {
+    webhook_events_table_name  = local.worker_events_table
+    webhook_events_kms_key_arn = local.worker_events_key
+  }
+  webhook_events_table_name     = var.orchestration_agent_authority_enabled ? local.worker_events_table : var.orchestration_webhook_events_table
+  webhook_events_kms_key_arn    = var.orchestration_agent_authority_enabled ? local.worker_events_key : var.orchestration_webhook_events_kms_key_arn
   github_app_secret_arn_pattern = var.orchestration_github_app_secret_arn_pattern
 
   # Issue #4539: command attribution. The tick verifies the signature the webhook

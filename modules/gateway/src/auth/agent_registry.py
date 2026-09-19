@@ -275,4 +275,12 @@ def agent_entry_to_token_context(entry: AgentRegistryEntry) -> TokenContext:
         # enforcement change is a separate, follow-on PR that must not land until
         # the registry rows are seeded and verified.
         credential_scopes=list(entry.get("credential_scopes", [])),
+        # Issue #5420 (PMM-03 / locked D3): carry the real registry-owned
+        # service-principal model restriction into the authenticated context.
+        # It used to stop at DynamoDB and was therefore an inert setting.
+        registered_allowed_models=list(entry.get("allowed_models", [])),
+        # ``agent_name`` is mutable and non-unique.  Preserve the registry's
+        # immutable primary key so privileged internal routes can authenticate
+        # the exact seeded principal instead of trusting a display name.
+        agent_registry_id=entry.get("agent_id", ""),
     )

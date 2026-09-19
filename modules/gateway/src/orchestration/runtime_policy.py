@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, or_, select
 
 from src.agentauth.github_operations import MEDIATED_GITHUB_OPERATION_PATH
-from src.agentauth.grants import DelegatedGrant
+from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY, DelegatedGrant
 from src.shared.identity.resolver import UnresolvableUserEntityError, resolve_root_user_entity_id
 from src.shared.models.base import utcnow
 
@@ -141,8 +141,25 @@ async def authorize_worker_credential(
     accept user credentials with their configured provider permissions/lifetime.
     The GitHub broker still must mint only for the authenticated repository.
     """
-    if grant.authority.kind != "gate_decision":
+    # Recognized-authority handling (#4529). This was `!= "gate_decision" -> permit`,
+    # which read "not the engine kind, therefore legacy, therefore unrestricted" and
+    # so treated an *unrecognized* authority as an unpoliced one — at the function
+    # that fronts GitHub installation-token minting and model credentials. The three
+    # kinds below keep exactly their current behaviour; anything else is denied.
+    #
+    # `replan_request` is denied here rather than permitted-and-bounded, deliberately.
+    # An authoring run's job is to read a bounded request and file a proposed
+    # amendment through the gateway's own protected route; it needs no provider token
+    # and no worker credential to do that. So the honest answer for it at a
+    # *credential* boundary is refusal, not a narrower grant — and that refusal is
+    # what stops an authoring assignment from reaching installation-token minting.
+    if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY}:
         return Decision.permit("no accepted engine policy binding")
+    if grant.authority.kind != AUTHORITY_GATE_DECISION:
+        return Decision.block(
+            DenyReason.AUTHORITY_KIND_NOT_RECOGNIZED,
+            "authority kind is not recognized at the worker credential boundary",
+        )
     inputs = inputs or await load_in_force_policy(session, org_id=grant.tenant_id, flow_id=grant.flow_id)
     if inputs.refusal is not None:
         return inputs.refusal

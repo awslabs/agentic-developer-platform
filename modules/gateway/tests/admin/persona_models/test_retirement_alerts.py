@@ -123,3 +123,23 @@ async def test_new_model_transition_rearms_and_tenants_remain_separate(db_sessio
     assert again.delivered == 1
     assert sent[-1].org_id == "tenant-a"
     assert sent[-1].detail["canonical_model_id"] == second.canonical_model_id
+
+
+async def test_re_retirement_has_a_new_outbox_identity(db_session_factory, monkeypatch):
+    model = replace(catalogue.PLATFORM_MODEL_CATALOGUE[0], lifecycle="retired", lifecycle_version=2)
+    monkeypatch.setattr(catalogue, "PLATFORM_MODEL_CATALOGUE", (model,))
+    async with db_session_factory() as session:
+        session.add(_preference(model_id=model.canonical_model_id))
+        await session.commit()
+    sent = []
+
+    def notify(message):
+        sent.append(message)
+        return "delivered"
+
+    assert (await run_retirement_alert_pass(db_session_factory, notify_fn=notify)).delivered == 1
+    monkeypatch.setattr(catalogue, "PLATFORM_MODEL_CATALOGUE", (replace(model, lifecycle="active", lifecycle_version=3),))
+    assert (await run_retirement_alert_pass(db_session_factory, notify_fn=notify)).delivered == 0
+    monkeypatch.setattr(catalogue, "PLATFORM_MODEL_CATALOGUE", (replace(model, lifecycle_version=4),))
+    assert (await run_retirement_alert_pass(db_session_factory, notify_fn=notify)).delivered == 1
+    assert len(sent) == 2

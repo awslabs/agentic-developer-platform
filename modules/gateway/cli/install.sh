@@ -28,7 +28,7 @@
 #   ./install.sh --prefix /path/to/bin                  # custom install dir
 #   ./install.sh --uninstall
 #
-# Requirements: curl, jq. Deliberately NOT the aws CLI — ordinary gateway users
+# Requirements: curl, jq, python3. Deliberately NOT the aws CLI — ordinary gateway users
 # hold no AWS credentials, and the point of the gateway-routed refresh (#4846) is
 # that they need none. The previous version of this script installed the
 # deprecated bg-auth.sh and hard-required `aws`.
@@ -42,9 +42,17 @@ DEFAULT_INSTALL_DIR="${HOME}/.adp/bin"
 ADP_SCRIPT="adp"
 CORE_SCRIPT="bg-cognito-auth.sh"
 PROXY_SCRIPT="bg-gateway-proxy.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-models.py"
 
-CONFIG_DIR="${HOME}/.bedrock-gateway"
+# The auth store this install writes its gateway URL into.
+#
+# BG_CONFIG_DIR is honoured because `adp update` runs this script as a child and
+# exports the SELECTED deployment's pin (Issue #5413). Without that, an
+# `adp --deployment prod update` rewrote the LEGACY store's gateway_url to prod's
+# URL while leaving the legacy refresh token in place beside it — so the next
+# refresh sent one deployment's credential to another deployment's gateway. A
+# standalone `curl | sh` install has no pin and keeps the original default.
+CONFIG_DIR="${BG_CONFIG_DIR:-${HOME}/.bedrock-gateway}"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 
 # Issue #5039: the version this install is PINNED to. When set, the CLI version
@@ -119,6 +127,7 @@ check_dependencies() {
     missing=""
     command -v curl >/dev/null 2>&1 || missing="curl"
     command -v jq >/dev/null 2>&1 || missing="${missing:+${missing} }jq"
+    command -v python3 >/dev/null 2>&1 || missing="${missing:+${missing} }python3"
     if [ -n "${missing}" ]; then
         log_error "Missing required dependencies: ${missing}"
         log_info "Install them with your package manager (e.g. 'brew install ${missing}' or 'sudo apt install ${missing}')."
@@ -171,6 +180,39 @@ require_gateway_url() {
     log_info "Re-run with your gateway's URL — the /setup page shows this line with it filled in:"
     printf '\n    curl -fsSL https://<gateway>/api/cli/install.sh | sh -s -- --gateway-url https://<gateway>\n\n' >&2
     exit 1
+}
+
+# Check before staging binaries: a reinstall may refresh an existing binding,
+# but must never place an old deployment's credentials beside a new endpoint.
+check_existing_binding() {
+    [ -e "${CONFIG_FILE}" ] || [ -e "${CONFIG_DIR}/tokens.json" ] || return 0
+    if ! python3 - "${CONFIG_FILE}" "${GATEWAY_URL}" <<'PY'
+import json, sys
+from urllib.parse import urlsplit
+
+def canonical(value):
+    url = urlsplit(value)
+    if not url.hostname or url.scheme not in ("https", "http") or url.username or url.password or url.query or url.fragment:
+        raise ValueError("invalid binding")
+    port = url.port or (443 if url.scheme == "https" else 80)
+    path = url.path.rstrip("/")
+    if not path.endswith("/api"):
+        path += "/api"
+    return url.scheme.lower(), url.hostname.lower(), port, path
+
+try:
+    with open(sys.argv[1]) as config:
+        existing = json.load(config)["gateway_url"]
+    if canonical(existing) != canonical(sys.argv[2]):
+        raise ValueError("different binding")
+except (OSError, ValueError, KeyError, TypeError):
+    sys.exit(1)
+PY
+    then
+        log_error "Existing deployment state cannot be rebound by the installer. Nothing was installed."
+        log_info "Use 'adp deployment add <name> --url <gateway>' for a different deployment."
+        exit 1
+    fi
 }
 
 # Persist the URL under the key bg-cognito-auth.sh already reads, so a first
@@ -290,6 +332,7 @@ write_manifest() {
 do_install() {
     resolve_gateway_url
     require_gateway_url
+    check_existing_binding
 
     mkdir -p "${INSTALL_DIR}"
 
