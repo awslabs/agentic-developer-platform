@@ -87,6 +87,7 @@ vi.mock('@/pages/BudgetSpend', () => ({
 }));
 vi.mock('@/pages/ModelAccess', () => page('page-model-access'));
 vi.mock('@/pages/settings/Connections', () => page('page-connections'));
+vi.mock('@/pages/settings/AgentModels', () => page('page-agent-models'));
 vi.mock('@/pages/NotFound', () => page('page-not-found'));
 vi.mock('@/components/RoleBasedRedirect', () => ({
   RoleBasedRedirect: () => <div data-testid="page-home">page-home</div>,
@@ -106,8 +107,8 @@ vi.mock('@/pages/next/NextNotFound', () => page('page-next-404'));
 
 // ---------------------------------------------------------------- harness
 
-function renderApp(path: string, opts: { authenticated?: boolean; newUi?: boolean; pendingFeatures?: boolean } = {}) {
-  const { authenticated = true, newUi = true } = opts;
+function renderApp(path: string, opts: { authenticated?: boolean; newUi?: boolean; agentModels?: boolean; pendingFeatures?: boolean } = {}) {
+  const { authenticated = true, newUi = true, agentModels = false } = opts;
 
   mockUseAuth.mockReturnValue({
     isAuthenticated: authenticated,
@@ -119,7 +120,7 @@ function renderApp(path: string, opts: { authenticated?: boolean; newUi?: boolea
   mockUseAccessStatus.mockReturnValue({ status: 'registered', isLoading: false });
   fetchFeatures.mockImplementation(() => opts.pendingFeatures
     ? previewPage.pending
-    : Promise.resolve({ ...ALL_FEATURES_ENABLED, new_ui: newUi }));
+    : Promise.resolve({ ...ALL_FEATURES_ENABLED, new_ui: newUi, agent_models: agentModels }));
 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -251,6 +252,19 @@ describe('App.tsx production routing for /next — Issue #5079', () => {
     it('an unknown non-preview path still reaches the app-level 404', async () => {
       renderApp('/no-such-page');
       expect(await screen.findByTestId('page-not-found')).toBeInTheDocument();
+    });
+  });
+
+  describe('Agent Models current-UI route — Issue #5422', () => {
+    it('renders the page for an ordinary authenticated user when enabled', async () => {
+      renderApp('/settings/agent-models', { agentModels: true });
+      expect(await screen.findByTestId('page-agent-models')).toBeInTheDocument();
+    });
+
+    it('redirects the deep link when the rollout flag is off', async () => {
+      renderApp('/settings/agent-models', { agentModels: false });
+      expect(await screen.findByTestId('page-home')).toBeInTheDocument();
+      expect(screen.queryByTestId('page-agent-models')).not.toBeInTheDocument();
     });
   });
 });

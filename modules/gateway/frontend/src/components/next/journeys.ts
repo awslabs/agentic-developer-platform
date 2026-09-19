@@ -291,6 +291,15 @@ function buildUseAdp(features: FeatureFlags, perms: JourneyPermissions): Journey
       currentUi: true,
     });
   }
+  if (features.agent_models) {
+    setup.push({
+      id: 'agent-models',
+      to: '/settings/agent-models',
+      label: 'Agent Models',
+      description: 'Choose the certified model each agent persona uses.',
+      currentUi: true,
+    });
+  }
   if (features.gitlab) {
     setup.push({
       id: 'gitlab',

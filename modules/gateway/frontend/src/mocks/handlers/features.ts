@@ -30,6 +30,7 @@ export const featuresHandlers = [
         // the flags above — the infrastructure behind it belongs to later units, so a
         // test seeing `true` would exercise a route with nothing behind it.
         superplane: false,
+        agent_models: false,
       },
     });
   }),

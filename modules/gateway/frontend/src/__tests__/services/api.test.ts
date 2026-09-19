@@ -74,6 +74,27 @@ describe('ApiClient', () => {
     });
   });
 
+  describe('DELETE requests', () => {
+    it('serializes a JSON body with its content type', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ status: 'not-configured' })),
+      });
+
+      const body = { expected_revision: 9 };
+      await client.delete('/persona-models/developer', body);
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/api/persona-models/developer',
+        expect.objectContaining({
+          method: 'DELETE',
+          body: JSON.stringify(body),
+          headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+        })
+      );
+    });
+  });
+
   describe('Error handling', () => {
     it('throws error for non-ok responses', async () => {
       mockFetch.mockResolvedValueOnce({
