@@ -13,7 +13,7 @@ test("extracts the story from an agent branch", () => {
   assert.equal(issueFromAgentBranch("agent/issue-5460/other"), null);
 });
 
-test("rejects an envelope whose story and branch disagree", () => {
+test("rejects a non-standard dedicated reviewer envelope", () => {
   const envelope = {
     version: "1.0",
     kind: "codex_pr_review",
@@ -31,7 +31,39 @@ test("rejects an envelope whose story and branch disagree", () => {
       html_url: "https://github.com/aws-e/adp/pull/5460",
     },
   };
-  assert.throws(() => parseEnvelope(JSON.stringify(envelope)), /does not match/);
+  assert.throws(() => parseEnvelope(JSON.stringify(envelope)), /unsupported/);
+});
+
+test("accepts the standard worker envelope selected by persona name", () => {
+  const envelope = {
+    version: "1.0",
+    channel: "github",
+    message_id: "m-2",
+    arrived_at: "2026-09-18T00:00:00Z",
+    tenant_id: "tenant",
+    persona: "agent-codex-reviewer",
+    source_ref: {
+      installation_id: 10,
+      repo: "aws-e/adp",
+      // The standard envelope keeps its existing PR-event semantics: issue is
+      // the PR number. The adapter derives the driving story from head.ref.
+      issue: 5460,
+      pr: 5460,
+      sha: "a".repeat(40),
+    },
+    payload: {
+      pull_request: {
+        number: 5460,
+        head: { ref: "agent/issue-5054", sha: "a".repeat(40) },
+        base: { ref: "main" },
+        html_url: "https://github.com/aws-e/adp/pull/5460",
+      },
+    },
+  };
+  const parsed = parseEnvelope(JSON.stringify(envelope));
+  assert.equal(parsed.repository, "aws-e/adp");
+  assert.equal(parsed.installation_id, 10);
+  assert.equal(parsed.pull_request.number, 5460);
 });
 
 test("a blocking finding always forces request_changes", () => {

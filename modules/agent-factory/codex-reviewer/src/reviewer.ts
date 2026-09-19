@@ -1,6 +1,5 @@
 import { Codex } from "@openai/codex-sdk";
-import { readFile, rm, mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   parseVerdict,
@@ -16,8 +15,6 @@ import {
   GitHubClient,
 } from "./github.js";
 import { run } from "./process.js";
-import { startGatewayProxy } from "./proxy.js";
-import { TokenBroker } from "./token-broker.js";
 
 const SDK_VERSION = "0.155.1";
 const FORBIDDEN_AUTOFIX_PATHS = [
@@ -31,9 +28,17 @@ const FORBIDDEN_AUTOFIX_PATHS = [
 export type ReviewRunResult =
   | { status: "stale"; expected: string; actual: string }
   | { status: "changes_requested"; blockers: number }
-  | { status: "fixes_pushed"; sha: string }
   | { status: "approved"; sha: string }
   | { status: "merged"; sha: string; mergeSha: string };
+
+export interface ReviewRuntime {
+  /** Existing checkout prepared by the shared worker entrypoint. */
+  workspace: string;
+  /** Default/developer installation token prepared by the shared worker entrypoint. */
+  githubToken: string;
+  /** Existing gateway-only loopback proxy, ending in /openai/v1. */
+  proxyBaseUrl: string;
+}
 
 function reviewerPrompt(
   persona: string,
@@ -87,31 +92,6 @@ async function remoteHead(
     { cwd: workspace, env },
   );
   return result.stdout.trim().split(/\s+/)[0] ?? "";
-}
-
-async function checkout(
-  workspace: string,
-  repository: string,
-  baseRef: string,
-  headRef: string,
-  env: NodeJS.ProcessEnv,
-): Promise<void> {
-  await run("git", ["init", "--initial-branch=review"], { cwd: workspace, env });
-  await run("git", ["remote", "add", "origin", repositoryUrl(repository)], { cwd: workspace, env });
-  await run(
-    "git",
-    [
-      "fetch",
-      "--no-tags",
-      "origin",
-      `+refs/heads/${baseRef}:refs/remotes/origin/${baseRef}`,
-      `+refs/heads/${headRef}:refs/remotes/origin/${headRef}`,
-    ],
-    { cwd: workspace, env },
-  );
-  await run("git", ["checkout", "-B", headRef, `refs/remotes/origin/${headRef}`], { cwd: workspace, env });
-  await run("git", ["config", "user.name", "agent-codex-reviewer"], { cwd: workspace, env });
-  await run("git", ["config", "user.email", "agent-codex-reviewer@users.noreply.github.com"], { cwd: workspace, env });
 }
 
 async function codexVerdict(
@@ -225,19 +205,15 @@ async function publishVerdict(
   await github.comment(prNumber, body);
 }
 
-export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRunResult> {
-  const gatewayEndpoint = process.env.ADP_GATEWAY_ENDPOINT;
-  const proxyTarget = process.env.SIGV4_PROXY_TARGET;
-  if (!gatewayEndpoint || !proxyTarget) throw new Error("ADP_GATEWAY_ENDPOINT and SIGV4_PROXY_TARGET are required");
-  const region = process.env.AWS_REGION ?? "us-east-1";
-  const broker = new TokenBroker(
-    gatewayEndpoint,
-    region,
-    envelope.installation_id,
-    envelope.repository,
-    envelope.message_id,
-  );
-  const github = new GitHubClient(envelope.repository, () => broker.getToken());
+export async function runReview(
+  envelope: CodexReviewEnvelope,
+  runtime: ReviewRuntime,
+): Promise<ReviewRunResult> {
+  if (!runtime.workspace || !runtime.githubToken || !runtime.proxyBaseUrl) {
+    throw new Error("Codex review requires the shared worker workspace, GitHub token, and gateway proxy");
+  }
+  const tokenProvider = async () => runtime.githubToken;
+  const github = new GitHubClient(envelope.repository, tokenProvider);
   const expected = envelope.pull_request.expected_head_sha;
   const initialPr = await github.getPullRequest(envelope.pull_request.number);
   if (initialPr.state !== "open") return { status: "stale", expected, actual: initialPr.head.sha };
@@ -249,23 +225,10 @@ export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRu
     return { status: "stale", expected, actual: initialPr.head.sha };
   }
 
-  const token = await broker.getToken();
+  const token = await tokenProvider();
   const gitEnv = gitEnvironment(token);
-  const workspace = await mkdtemp(join(tmpdir(), "agent-codex-reviewer-"));
-  const proxy = await startGatewayProxy({
-    target: proxyTarget,
-    region,
-    tenantId: envelope.tenant_id,
-    invocationId: envelope.message_id,
-  });
-  try {
-    await checkout(
-      workspace,
-      envelope.repository,
-      envelope.pull_request.base_ref,
-      envelope.pull_request.head_ref,
-      gitEnv,
-    );
+  const workspace = runtime.workspace;
+  {
     const checkedOutSha = (
       await run("git", ["rev-parse", "HEAD"], { cwd: workspace })
     ).stdout.trim();
@@ -288,7 +251,7 @@ export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRu
       readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8"),
     ]);
     const codex = new Codex({
-      baseUrl: proxy.baseUrl,
+      baseUrl: runtime.proxyBaseUrl,
       apiKey: "sigv4-proxy-placeholder",
       env: childEnvironment(),
     });
@@ -372,11 +335,32 @@ export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRu
         ],
         { cwd: workspace, env: gitEnv },
       );
+      const pushedHead = await remoteHead(
+        workspace,
+        envelope.repository,
+        envelope.pull_request.head_ref,
+        gitEnv,
+      );
+      if (pushedHead !== newSha) {
+        return { status: "stale", expected: newSha, actual: pushedHead };
+      }
       await github.comment(
         envelope.pull_request.number,
-        `${formatFixesPushedComment(verdict, newSha, `Codex SDK ${SDK_VERSION}`)}\nMechanical fixes were pushed directly to \`${envelope.pull_request.head_ref}\`. This run will not merge; the resulting synchronize event must receive a fresh current-head review.`,
+        `${formatFixesPushedComment(verdict, newSha, `Codex SDK ${SDK_VERSION}`)}\nMechanical fixes were pushed directly to \`${envelope.pull_request.head_ref}\` after the repaired tree passed a fresh Codex review.`,
       );
-      return { status: "fixes_pushed", sha: newSha };
+      await waitForChecks(github, envelope.pull_request.number, newSha);
+      const repairedPr = await github.getPullRequest(envelope.pull_request.number);
+      if (repairedPr.head.sha !== newSha) {
+        return { status: "stale", expected: newSha, actual: repairedPr.head.sha };
+      }
+      if (repairedPr.draft) {
+        throw new Error("approved PR is still a draft; refusing to merge");
+      }
+      if ((process.env.CODEX_REVIEWER_MERGE_ENABLED ?? "false") !== "true") {
+        return { status: "approved", sha: newSha };
+      }
+      const mergeSha = await github.merge(envelope.pull_request.number, newSha);
+      return { status: "merged", sha: newSha, mergeSha };
     }
 
     if (requiresChanges(verdict)) {
@@ -406,8 +390,5 @@ export async function runReview(envelope: CodexReviewEnvelope): Promise<ReviewRu
     }
     const mergeSha = await github.merge(envelope.pull_request.number, expected);
     return { status: "merged", sha: expected, mergeSha };
-  } finally {
-    await proxy.close().catch(() => undefined);
-    await rm(workspace, { recursive: true, force: true });
   }
 }

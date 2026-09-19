@@ -63,6 +63,8 @@ WORK_DIR = Path("/work/repo")
 PERSONAS_DIR = Path("/app/personas")
 SKILLS_DIR = Path("/app/skills")
 AGENT_BINARY = "/app/dist/agent-worker.js"
+CODEX_REVIEWER_BINARY = "/app/codex-reviewer/dist/index.js"
+CODEX_PERSONA_PREFIX = "agent-codex-"
 PERSONAS_NEEDING_AWS = frozenset({"operations", "agent-operations"})
 
 # Retired ADP_BEDROCK_VIA values, mapped to the error shown when one is set.
@@ -122,6 +124,26 @@ PERSONAS_REGISTERING_DRAFTS = frozenset({"aidlc"})
 # task ID shape `<owner>/<repo>#<issue>` contains '#' which fails validation.
 # Replace any character outside the allowed set with '_'.
 _STS_TAG_FORBIDDEN = re.compile(r"[^A-Za-z0-9_.:/=+\-@]")
+
+
+def persona_runtime(persona: str) -> str:
+    """Select the model runtime from the trusted persona name only."""
+    if persona.startswith(CODEX_PERSONA_PREFIX) and len(persona) > len(CODEX_PERSONA_PREFIX):
+        return "codex"
+    return "claude"
+
+
+def worker_command(persona: str) -> list[str]:
+    """Return the packaged adapter command for a persona.
+
+    New Codex personas extend this one allow-list without changing the queue
+    contract, KEDA resources, or container image.
+    """
+    if persona_runtime(persona) == "claude":
+        return ["node", AGENT_BINARY]
+    if persona == "agent-codex-reviewer":
+        return ["node", CODEX_REVIEWER_BINARY, "--embedded"]
+    raise ValueError(f"Codex persona is not packaged yet: {persona}")
 
 
 def _sanitize_for_sts_tag(value: str) -> str:
@@ -1179,6 +1201,8 @@ def main() -> int:
         raise
     tenant_id = envelope["tenant_id"]
     persona = envelope["persona"]
+    runtime = persona_runtime(persona)
+    is_codex_review = persona == "agent-codex-reviewer"
     source = envelope["source_ref"]
     installation_id = source["installation_id"]
     repo = source["repo"]
@@ -1533,7 +1557,8 @@ def main() -> int:
     # the gateway's admission, never from the message. Same reasoning as the
     # aidlc/authority carve-out at the completion receipt above.
     if (
-        persona not in PERSONAS_EXTENDING_BRANCH
+        not is_codex_review
+        and persona not in PERSONAS_EXTENDING_BRANCH
         and not _invocation_identity_decides_replay(envelope)
         and _already_completed(repo, issue, token, mediated=_mediated_run)
     ):
@@ -1820,7 +1845,11 @@ def main() -> int:
     bootstrap_log.step_success(6, "git_config")
 
     # Step 6b: Create or reset the agent branch + WIP commit BEFORE exec
-    bootstrap_log.step_start(7, "wip_branch", branch=f"agent/issue-{issue}")
+    review_head_ref = (
+        ((envelope.get("payload") or {}).get("pull_request") or {}).get("head") or {}
+    ).get("ref")
+    branch_name = review_head_ref if is_codex_review else f"agent/issue-{issue}"
+    bootstrap_log.step_start(7, "wip_branch", branch=branch_name)
     # Create or reset the agent branch + WIP commit BEFORE exec so that:
     #   1. The Check Run attaches to the branch SHA (not default-branch HEAD).
     #   2. Users see a "WIP" commit immediately on the branch.
@@ -1843,10 +1872,28 @@ def main() -> int:
     #
     # SQS FIFO MessageGroupId=tenant#repo#issue serializes runs on the same
     # issue, so concurrent-run race conditions don't apply here.
-    branch_name = f"agent/issue-{issue}"
     wip_sha: str = ""
     work_branch_ready = False
-    if _mediated_run:
+    if is_codex_review:
+        if _mediated_run:
+            raise RuntimeError(
+                "agent-codex-reviewer requires the default GitHub token; "
+                "mediated comment/push support is not configured"
+            )
+        if not isinstance(branch_name, str) or not branch_name:
+            raise RuntimeError("agent-codex-reviewer envelope has no PR head branch")
+        expected_review_sha = str(source.get("sha") or "")
+        _checkout_existing_work_branch(branch_name)
+        actual_review_sha = run_cmd(["git", "rev-parse", "HEAD"], cwd=WORK_DIR).stdout.strip()
+        if actual_review_sha != expected_review_sha:
+            raise RuntimeError(
+                f"review head changed before checkout: expected {expected_review_sha}, "
+                f"found {actual_review_sha}"
+            )
+        work_branch_ready = True
+        wip_sha = actual_review_sha
+        bootstrap_log.step_success(7, "review_branch", sha=wip_sha[:7])
+    elif _mediated_run:
         # Issue #5223: every provider step below — `ls-remote`, `gh pr list`,
         # `push --delete`, `push -u` — authenticates with the installation token a
         # mediated run does not have. None of them is needed here:
@@ -1996,7 +2043,7 @@ def main() -> int:
             "Mediated mode: no GitHub check run is created (no checks:write credential); "
             "run status is reported through the authority transport instead"
         )
-    elif wip_sha:
+    elif wip_sha and not is_codex_review:
         try:
             cr = create_check_run(
                 repo=repo,
@@ -2076,14 +2123,15 @@ def main() -> int:
                 raise
             logger.warning("AWS role assumption failed (non-fatal): %s", exc)
 
-    # Step 8: Remove trigger label
-    try:
-        run_cmd(
-            ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
-            env={**os.environ},
-        )
-    except subprocess.CalledProcessError:
-        logger.warning("Failed to remove label (non-fatal)")
+    # Step 8: Remove trigger label. PR-opened Codex reviews have no trigger label.
+    if not is_codex_review:
+        try:
+            run_cmd(
+                ["gh", "issue", "edit", str(issue), "--remove-label", persona, "-R", repo],
+                env={**os.environ},
+            )
+        except subprocess.CalledProcessError:
+            logger.warning("Failed to remove label (non-fatal)")
 
     # Step 9: Post "started" comment (idempotent via message_id)
     started_marker = f"<!-- adp-run:{message_id} -->"
@@ -2113,7 +2161,7 @@ def main() -> int:
             ],
             env={**os.environ},
         )
-        if not existing.stdout.strip():
+        if not is_codex_review and not existing.stdout.strip():
             run_cmd(
                 ["gh", "issue", "comment", str(issue), "--body", started_body, "-R", repo],
                 env={**os.environ},
@@ -2263,13 +2311,19 @@ def main() -> int:
     heartbeat = VisibilityHeartbeat(queue_url, region, receipt_handle)
     heartbeat.start()
 
-    logger.info("Execing agent-worker.js with persona=%s branch=%s", persona, branch_name)
+    command = worker_command(persona)
+    logger.info(
+        "Execing runtime=%s command=%s persona=%s branch=%s",
+        runtime,
+        command,
+        persona,
+        branch_name,
+    )
     try:
-        result = subprocess.run(
-            ["node", AGENT_BINARY],
-            cwd=WORK_DIR,
-            env=agent_env,
-        )
+        run_options = {"cwd": WORK_DIR, "env": agent_env}
+        if is_codex_review:
+            run_options.update({"input": raw_message, "text": True, "capture_output": True})
+        result = subprocess.run(command, **run_options)
     finally:
         if task_config_path:
             Path(task_config_path).unlink(missing_ok=True)
@@ -2287,6 +2341,19 @@ def main() -> int:
     # that can take seconds or fail, and the window where a token remains valid
     # for a pod whose agent has already exited should be as short as possible.
     _teardown_agent_control(message_id, arrived_at, control_registered)
+
+    if is_codex_review:
+        output_lines = (result.stdout or "").strip().splitlines()
+        summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
+        if result.returncode == 0:
+            update_invocation_status(message_id, arrived_at, "complete", summary=summary)
+            _delete_message(queue_url, region, receipt_handle)
+            logger.info("Codex review completed and shared queue message was acknowledged")
+            return 0
+        error = (result.stderr or summary or "Codex review failed")[-1024:]
+        update_invocation_status(message_id, arrived_at, "failed", error_message=error)
+        logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
+        return result.returncode or 1
 
     # Issue #4186 (Phase 1): persist the SDK session id the Node worker
     # captured, so the identifier outlives the process that created it.

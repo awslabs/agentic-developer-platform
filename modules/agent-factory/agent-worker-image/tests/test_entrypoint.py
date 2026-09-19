@@ -132,6 +132,31 @@ class TestParseEnvelope:
             parse_envelope("not json")
 
 
+class TestPersonaRuntimeRouting:
+    def test_existing_personas_keep_the_claude_worker(self):
+        from entrypoint import AGENT_BINARY, persona_runtime, worker_command
+
+        assert persona_runtime("reviewer") == "claude"
+        assert worker_command("architect") == ["node", AGENT_BINARY]
+
+    def test_codex_reviewer_uses_the_embedded_adapter(self):
+        from entrypoint import CODEX_REVIEWER_BINARY, persona_runtime, worker_command
+
+        assert persona_runtime("agent-codex-reviewer") == "codex"
+        assert worker_command("agent-codex-reviewer") == [
+            "node",
+            CODEX_REVIEWER_BINARY,
+            "--embedded",
+        ]
+
+    def test_future_codex_personas_are_explicitly_fail_closed(self):
+        from entrypoint import persona_runtime, worker_command
+
+        assert persona_runtime("agent-codex-architect") == "codex"
+        with pytest.raises(ValueError, match="not packaged yet"):
+            worker_command("agent-codex-architect")
+
+
 # --- Test: vault_client ---
 
 

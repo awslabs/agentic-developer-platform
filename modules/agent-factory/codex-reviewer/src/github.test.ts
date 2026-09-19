@@ -17,13 +17,13 @@ test("review comments identify the exact reviewed head and engine", () => {
   assert.match(body, /Blockers:\*\* 0/);
 });
 
-test("a repair push is not represented as final approval", () => {
+test("a repair push identifies the repaired tree as reviewed and approved", () => {
   const body = formatFixesPushedComment(
     { verdict: "approve", summary: "Local repair review passed.", findings: [], validationGaps: [] },
     "b".repeat(40),
     "Codex SDK 0.155.1",
   );
-  assert.match(body, /FIXES PUSHED; FRESH REVIEW REQUIRED/);
+  assert.match(body, /FIXES PUSHED AND APPROVED/);
   assert.doesNotMatch(body, /— APPROVE/);
 });
 

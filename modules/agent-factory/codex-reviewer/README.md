@@ -1,53 +1,44 @@
 # agent-codex-reviewer
 
-`agent-codex-reviewer` is a standalone pull-request review runtime built with
-the [OpenAI Codex SDK](https://developers.openai.com/codex/sdk/). It does not
-import, invoke, enqueue to, or finalize through the Claude Agent SDK worker.
+`agent-codex-reviewer` is a Codex SDK execution adapter packaged inside the
+standard `adp-agent-runtime` image. It has no image, queue, KEDA job, service
+account, or IAM role of its own.
 
-## Runtime boundary
+The shared worker consumes the normal agent envelope and selects this adapter
+from the persona name. Existing personas continue through the Claude worker;
+names under `agent-codex-*` select a packaged Codex adapter. The reviewer is the
+first implementation of that convention.
 
 ```text
 authenticated GitHub webhook
-  -> dedicated codex-review FIFO
-  -> dedicated KEDA ScaledJob and IRSA role
-  -> this container / Codex SDK
-  -> deterministic GitHub controller
+  -> agent-submit FIFO
+  -> agent-scaledjob / adp-agent-runtime
+  -> Python entrypoint persona router
+  -> agent-codex-reviewer / Codex SDK
 ```
 
-The only shared services are model-neutral platform boundaries: authenticated
-webhook ingress, the GitHub installation-token broker, the ADP model gateway,
-and the invocation activity table.
+The shared entrypoint owns SQS acknowledgement, visibility heartbeats, tenant
+GitHub authentication, checkout, status reporting, and the gateway proxy. The
+adapter receives the prepared checkout and tenant default/developer GitHub
+token. It publishes verdict comments, can push bounded mechanical fixes, and
+can optionally merge. It does not attempt formal self-approval.
 
-The controller fetches and verifies the exact PR head SHA before review. Codex
-starts in `read-only`; a separate `workspace-write` turn is allowed only for
-bounded findings classified as mechanical. Codex never receives GitHub
-credentials and never commits, pushes, comments, approves, or merges. The
-controller performs those operations with stale-head checks and
-`--force-with-lease`.
+## Gateway-only model access
 
-A mechanical-fix run pushes to the existing developer PR branch and stops. The
-resulting `pull_request.synchronize` event must complete a new current-head
-review before approval or merge.
-
-The controller uses the tenant's existing default/developer GitHub App identity
-to publish verdict comments, push bounded fixes, and optionally merge. An
-approval verdict is deliberately a PR comment rather than a formal GitHub
-approval because an identity cannot independently approve its own work.
+Codex uses the same loopback SigV4 proxy as every other hosted agent. Its SDK
+base URL is `http://127.0.0.1:9090/openai/v1`; the proxy signs and forwards
+`POST /openai/v1/responses` to the ADP gateway `/agent` route. The shared
+entrypoint rejects any `ADP_BEDROCK_VIA` value other than `gateway`, so this
+adapter has no direct-Bedrock fallback.
 
 ## Feature controls
 
-- `CODEX_REVIEWER_ENABLED` routes eligible PR events to this runtime.
-- `CODEX_REVIEWER_APPLY_FIXES` allows bounded mechanical repairs.
-- `CODEX_REVIEWER_MERGE_ENABLED` allows the controller to squash-merge only
-  after a current-head review and successful checks.
-
-All flags default off at the Terraform boundary except mechanical repair, which
-has no effect until the reviewer itself is enabled.
-
-Delegated agent authority does not route this runtime through the hosted worker.
-The gateway has a dedicated Codex reviewer adapter that binds its authenticated
-IRSA identity to the ingress-owned pull-request activity row. The runtime never
-receives or reuses the Claude worker's run credential or workload bootstrap.
+- Pull-request events select `agent-codex-reviewer` through the existing persona
+  intent mapping; there is no separate reviewer routing flag.
+- `CODEX_REVIEWER_APPLY_FIXES` enables bounded mechanical repairs.
+- `CODEX_REVIEWER_MERGE_ENABLED` enables squash merge after a current-head
+  review and successful checks.
+- `CODEX_REVIEWER_MODEL` selects the gateway model identifier.
 
 ## Local verification
 

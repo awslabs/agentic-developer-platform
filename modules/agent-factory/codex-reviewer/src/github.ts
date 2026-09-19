@@ -20,7 +20,7 @@ export function formatFixesPushedComment(
 ): string {
   return formatReviewComment(verdict, sha, engine).replace(
     "## agent-codex-reviewer — APPROVE",
-    "## agent-codex-reviewer — FIXES PUSHED; FRESH REVIEW REQUIRED",
+    "## agent-codex-reviewer — FIXES PUSHED AND APPROVED",
   );
 }
 

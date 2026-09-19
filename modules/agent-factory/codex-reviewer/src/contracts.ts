@@ -77,24 +77,29 @@ function requiredPositiveInteger(value: unknown, name: string): number {
 
 export function parseEnvelope(raw: string): CodexReviewEnvelope {
   const value = JSON.parse(raw) as Record<string, unknown>;
-  if (value.version !== "1.0" || value.kind !== "codex_pr_review") {
+  if (value.version !== "1.0" || value.persona !== "agent-codex-reviewer") {
     throw new Error("unsupported codex reviewer envelope");
   }
-  const pr = value.pull_request as Record<string, unknown> | undefined;
+  const payload = value.payload as Record<string, unknown> | undefined;
+  const pr = payload?.pull_request as Record<string, unknown> | undefined;
   if (!pr) throw new Error("pull_request is required");
 
-  const repository = requiredString(value.repository, "repository");
-  if (!REPO_RE.test(repository)) throw new Error("repository is invalid");
-  const headRef = requiredString(pr.head_ref, "pull_request.head_ref");
-  const issueNumber = requiredPositiveInteger(
-    pr.issue_number,
-    "pull_request.issue_number",
+  const sourceRef = value.source_ref as Record<string, unknown> | undefined;
+  const head = pr.head as Record<string, unknown> | undefined;
+  const base = pr.base as Record<string, unknown> | undefined;
+  const repository = requiredString(
+    sourceRef?.repo,
+    "repository",
   );
-  if (issueFromAgentBranch(headRef) !== issueNumber) {
-    throw new Error("issue_number does not match the PR head branch");
-  }
+  if (!REPO_RE.test(repository)) throw new Error("repository is invalid");
+  const headRef = requiredString(
+    head?.ref,
+    "pull_request.head_ref",
+  );
+  const branchIssue = issueFromAgentBranch(headRef);
+  if (branchIssue === null) throw new Error("pull_request head is not an agent issue branch");
   const expectedSha = requiredString(
-    pr.expected_head_sha,
+    head?.sha,
     "pull_request.expected_head_sha",
   );
   if (!SHA_RE.test(expectedSha)) throw new Error("expected_head_sha is invalid");
@@ -106,15 +111,21 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
     arrived_at: requiredString(value.arrived_at, "arrived_at"),
     tenant_id: requiredString(value.tenant_id, "tenant_id"),
     installation_id: requiredPositiveInteger(
-      value.installation_id,
+      sourceRef?.installation_id,
       "installation_id",
     ),
     repository,
     pull_request: {
-      number: requiredPositiveInteger(pr.number, "pull_request.number"),
-      issue_number: issueNumber,
+      number: requiredPositiveInteger(
+        sourceRef?.pr,
+        "pull_request.number",
+      ),
+      issue_number: branchIssue,
       head_ref: headRef,
-      base_ref: requiredString(pr.base_ref, "pull_request.base_ref"),
+      base_ref: requiredString(
+        base?.ref,
+        "pull_request.base_ref",
+      ),
       expected_head_sha: expectedSha,
       html_url: requiredString(pr.html_url, "pull_request.html_url"),
     },

@@ -17,6 +17,11 @@ LABEL_TO_PERSONA: dict[str, str] = {
     "superpower": "pt-superpower",
 }
 
+# Personas selected by platform events rather than by a label or mention. They
+# use the same envelope and queue as every other persona; the worker entrypoint
+# selects the packaged runtime from the persona name.
+AUTOMATIC_PERSONAS: set[str] = {"agent-codex-reviewer"}
+
 # @-mention patterns in issue/PR comments that trigger personas.
 MENTION_TO_PERSONA: dict[str, str] = {
     "@agent-developer": "developer",
@@ -61,4 +66,4 @@ MENTION_TO_PERSONA: dict[str, str] = {
 # Used by spawn_persona() to reject unknown persona values before any work.
 VALID_PERSONAS: set[str] = set(MENTION_TO_PERSONA.values()) | set(
     LABEL_TO_PERSONA.values()
-)
+) | AUTOMATIC_PERSONAS

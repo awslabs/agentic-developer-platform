@@ -417,7 +417,7 @@ def _handle_pr_event(payload: dict, action: str, sender: dict) -> tuple[Intent |
         )
         return None, skip_reasons.BOT_SYNCHRONIZE_DEDUP
 
-    return Intent(persona="reviewer", trigger=f"pr_{action}", label=None), None
+    return Intent(persona="agent-codex-reviewer", trigger=f"pr_{action}", label=None), None
 
 
 def _handle_issue_comment(

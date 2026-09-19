@@ -253,7 +253,7 @@ class TestPullRequestEvents:
         payload = load_fixture("pr_opened.json")
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.trigger == "pr_opened"
         assert result.label is None
 
@@ -261,7 +261,7 @@ class TestPullRequestEvents:
         payload = load_fixture("pr_synchronize.json")
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
         assert result.trigger == "pr_synchronize"
 
     def test_pr_closed_no_intent(self):
@@ -288,7 +288,7 @@ class TestPullRequestEvents:
         payload["sender"] = {"login": "dependabot[bot]", "id": 777, "type": "Bot"}
         result = extract_intent("pull_request", payload)
         assert result is not None
-        assert result.persona == "reviewer"
+        assert result.persona == "agent-codex-reviewer"
 
     def test_pr_opened_by_bot_on_non_agent_branch_ignored(self):
         """Bot PR on a non-agent branch is still blocked by the branch filter."""

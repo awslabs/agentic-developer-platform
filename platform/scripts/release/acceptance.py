@@ -42,7 +42,6 @@ def check(directory, environment, upgrade_directory):
     require(gateway['spec']['template']['spec']['containers'][0]['image'] == image_uri(manifest, 'gateway', account), 'Gateway image differs from release')
     checks.append('gateway_ready_at_release_digest')
     for name, namespace, image in [('agent-scaledjob', 'adp-agents', 'agent-runtime'),
-                                   ('agent-codex-reviewer', 'adp-agents', 'codex-reviewer'),
                                    ('agent-gateway-worker', 'adp-gateway-agents', 'agent-gateway'),
                                    ('chat-agent-worker', 'adp-gateway-agents', 'chat-agent')]:
         scaled = kube('scaledjob', name, namespace)

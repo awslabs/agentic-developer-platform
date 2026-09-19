@@ -262,7 +262,7 @@ class TestTriggeringPathUnaffected:
         assert result["statusCode"] == 202
         publish.assert_called_once()
         assert publish.call_args.args[0]["persona"] == (
-            "reviewer" if event_type == "pull_request" else "developer"
+            "agent-codex-reviewer" if event_type == "pull_request" else "developer"
         )
         # The no-op capture (the only path that sets skip_reason) never ran.
         mock_noop_capture.assert_not_called()
