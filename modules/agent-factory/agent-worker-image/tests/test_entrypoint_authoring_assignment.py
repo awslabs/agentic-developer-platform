@@ -141,8 +141,16 @@ def run_worker(monkeypatch, tmp_path):
     envelope parsing and the export block under test run for real.
     """
 
-    def _run(envelope: dict) -> int:
-        for var in (FLOW_ID_ENV, AMENDMENT_REQUEST_ENV, "ADP_TENANT_ID"):
+    def _run(envelope: dict, *, clear_assignment: bool = True) -> int:
+        # `clear_assignment=False` is for the tests that plant a value and require the
+        # export block itself to deal with it. Clearing unconditionally here is what
+        # made `test_a_dispatch_assignment_overwrites_a_preset_environment_value`
+        # unable to fail: the planted values were gone before the code under test ran,
+        # so it passed identically whether the export assigned or merely defaulted.
+        to_clear = ["ADP_TENANT_ID"]
+        if clear_assignment:
+            to_clear += [FLOW_ID_ENV, AMENDMENT_REQUEST_ENV]
+        for var in to_clear:
             monkeypatch.delenv(var, raising=False)
 
         monkeypatch.setenv("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/q")
@@ -334,11 +342,63 @@ class TestTheAgentCannotNameItsOwnAssignment:
     def test_a_dispatch_assignment_overwrites_a_preset_environment_value(self, run_worker, monkeypatch):
         """Set, not defaulted-into. A value already in the environment — planted by an
         earlier step, a leaked pod spec, or a stale process — must lose to the envelope,
-        which is the only authority for what this run was commissioned to do."""
-        run_worker(AUTHORING_ENVELOPE)  # establishes the env, then:
+        which is the only authority for what this run was commissioned to do.
+
+        `clear_assignment=False` is essential: the fixture's default wipe would remove
+        the planted values before the export block ran, and this test would then pass
+        against a `setdefault` regression, which is the exact thing it exists to catch.
+        """
         monkeypatch.setenv(FLOW_ID_ENV, "flow-victim")
         monkeypatch.setenv(AMENDMENT_REQUEST_ENV, "req-victim")
-        run_worker(AUTHORING_ENVELOPE)
+
+        run_worker(AUTHORING_ENVELOPE, clear_assignment=False)
+
         assert_reached_the_export_block(AUTHORING_ENVELOPE)
         assert os.environ.get(FLOW_ID_ENV) == FLOW_ID
         assert os.environ.get(AMENDMENT_REQUEST_ENV) == REQUEST_ID
+
+    @pytest.mark.parametrize(
+        "envelope,kind",
+        [
+            (WEBHOOK_ENVELOPE, "webhook trigger"),
+            (NODE_DISPATCH_ENVELOPE, "node dispatch"),
+        ],
+    )
+    def test_a_run_with_no_assignment_clears_a_planted_one(self, run_worker, monkeypatch, envelope, kind):
+        """A stale assignment must not be inherited by a run that was never given one.
+
+        The registration client reads these two names and has no envelope of its own to
+        cross-check against, so a value surviving in the environment IS an assignment as
+        far as it is concerned. A webhook trigger or a node dispatch that inherited one
+        would file an amendment against a flow nobody commissioned it to touch.
+
+        This is the question the broken overwrite test hid: it cleared the environment
+        itself, so no test observed what an unassigned run does with a planted pair.
+        """
+        monkeypatch.setenv(FLOW_ID_ENV, "flow-victim")
+        monkeypatch.setenv(AMENDMENT_REQUEST_ENV, "req-victim")
+
+        run_worker(envelope, clear_assignment=False)
+
+        assert_reached_the_export_block(envelope)
+        assert FLOW_ID_ENV not in os.environ, f"a {kind} inherited a planted flow id"
+        assert AMENDMENT_REQUEST_ENV not in os.environ, f"a {kind} inherited a planted request id"
+
+    @pytest.mark.parametrize("dropped", ["flow_id", "request_id"])
+    def test_half_an_assignment_clears_a_planted_pair(self, run_worker, monkeypatch, dropped):
+        """A malformed assignment falls back to no-assignment, not to the planted pair.
+
+        Half a block is the case where "leave the environment alone" is most tempting
+        and most wrong: the run has something that looks like an assignment, so a
+        planted value would be silently completing it.
+        """
+        envelope = json.loads(json.dumps(AUTHORING_ENVELOPE))
+        del envelope["orchestration"][dropped]
+        monkeypatch.setenv(FLOW_ID_ENV, "flow-victim")
+        monkeypatch.setenv(AMENDMENT_REQUEST_ENV, "req-victim")
+
+        run_worker(envelope, clear_assignment=False)
+
+        assert_reached_the_export_block(envelope)
+        assert FLOW_ID_ENV not in os.environ
+        assert AMENDMENT_REQUEST_ENV not in os.environ

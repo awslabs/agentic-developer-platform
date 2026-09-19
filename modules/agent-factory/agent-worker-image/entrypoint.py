@@ -1363,17 +1363,30 @@ def main() -> int:
     # Both or neither, and absent for every other kind of run: a webhook trigger, a
     # code-story dispatch and a new-flow authoring run all carry no `request_id` in
     # that block, and their behaviour must stay byte-identical to before.
+    #
+    # The `else` branch DELETES rather than leaving alone. A run the engine did not
+    # commission to amend anything must not be able to present an assignment, and
+    # "was it in the environment already?" is not a question this process can answer
+    # safely: an assignment left by an earlier step, a pod spec, or a reused process
+    # would otherwise be inherited by a run that was never bound to it, and the
+    # registration client reads exactly these names with no envelope of its own to
+    # cross-check against. Deleting makes the envelope the *only* source in both
+    # directions — present when it says so, gone when it does not.
     orchestration_ctx = envelope.get("orchestration") or {}
+    amend_flow_id = amend_request_id = ""
     if isinstance(orchestration_ctx, dict):
         amend_flow_id = str(orchestration_ctx.get("flow_id") or "").strip()
         amend_request_id = str(orchestration_ctx.get("request_id") or "").strip()
-        # A node dispatch also has an `orchestration` block, with `node_id`/`attempt`
-        # and no `request_id` — hence the pair test rather than a `flow_id` test, which
-        # would export a flow for runs that were commissioned to amend nothing.
-        if amend_flow_id and amend_request_id:
-            os.environ[FLOW_ID_ENV] = amend_flow_id
-            os.environ[AMENDMENT_REQUEST_ENV] = amend_request_id
-            logger.info("Authoring assignment: flow=%s request=%s", amend_flow_id, amend_request_id)
+    # A node dispatch also has an `orchestration` block, with `node_id`/`attempt`
+    # and no `request_id` — hence the pair test rather than a `flow_id` test, which
+    # would export a flow for runs that were commissioned to amend nothing.
+    if amend_flow_id and amend_request_id:
+        os.environ[FLOW_ID_ENV] = amend_flow_id
+        os.environ[AMENDMENT_REQUEST_ENV] = amend_request_id
+        logger.info("Authoring assignment: flow=%s request=%s", amend_flow_id, amend_request_id)
+    else:
+        for stale in (FLOW_ID_ENV, AMENDMENT_REQUEST_ENV):
+            os.environ.pop(stale, None)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
