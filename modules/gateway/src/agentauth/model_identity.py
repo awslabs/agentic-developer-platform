@@ -94,6 +94,8 @@ class AgentModelIdentityMiddleware:
 
                         execution = await run_in_threadpool(runtime.store._read, f"TENANT#{caller.tenant_id}", f"EXEC#{caller.invocation_id}")
                         inputs = await load_in_force_policy(session, org_id=caller.tenant_id, flow_id=grant.flow_id)
+                        if inputs.refusal is not None:
+                            raise ModelPolicyRefusedError(inputs.refusal)
                         # An authoring run has no graph node, so the assignment-level
                         # check below does not apply to it and `authorize_worker_credential`
                         # refuses its kind outright. Metering still must: the ruling is
@@ -172,6 +174,14 @@ class AgentModelIdentityMiddleware:
                         decision = await authorize_worker_credential(session, execution=execution or {}, grant=grant, broker_path="model")
                         if not decision.permitted:
                             raise ModelPolicyRefusedError(decision)
+                    elif grant.authority.kind == AUTHORITY_REPLAN_REQUEST:
+                        current_inputs = await load_in_force_policy(session, org_id=caller.tenant_id, flow_id=grant.flow_id)
+                        if current_inputs.refusal is not None:
+                            raise ModelPolicyRefusedError(current_inputs.refusal)
+                        if current_inputs.plan_version != inputs.plan_version or current_inputs.policy != inputs.policy:
+                            raise BootstrapRefusedError("authoring model policy changed during upload")
+                        if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
+                            raise AuthorityStoreError("policy budget enforcement unavailable")
                 # The quote is evidence about specific bytes priced at a specific
                 # published revision. Re-verify that binding here — after upload
                 # and reauthentication, immediately before the reservation — so a
