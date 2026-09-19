@@ -37,7 +37,12 @@ from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
 from lib.correlation_store import channel_key, write_pointer
-from lib.engine_registration import draft_registration_note
+from lib.engine_registration import (
+    AMENDMENT_REQUEST_ENV,
+    FLOW_ID_ENV,
+    amendment_registration_note,
+    draft_registration_note,
+)
 from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
 from lib.pr_binding import binding_note as pr_binding_note
 from lib.invocation_completion import (
@@ -1343,6 +1348,32 @@ def main() -> int:
     # trigger, or a legacy dispatch) must keep its existing behaviour exactly.
     if envelope.get("pr_binding_required") is True:
         os.environ[PR_BINDING_REQUIRED_ENV] = "true"
+
+    # Issue #4529: an authoring assignment. When the engine commissions a run to amend
+    # a plan (a verified human commented `replan:`), `authoring_dispatch._build_envelope`
+    # writes an `orchestration` block naming the flow and the request; export both so
+    # the finish path can file the amendment against the assignment it was given.
+    #
+    # Read from the dispatch envelope ONLY. These two ids are the authorization for the
+    # amendment route, not parameters to it — the server refuses unless the presented
+    # run id equals the `author_run_id` it bound to this request — so taking them from
+    # anywhere the model can reach (the issue body, a tool result, the repo) would be
+    # handing the agent the ability to name its own assignment.
+    #
+    # Both or neither, and absent for every other kind of run: a webhook trigger, a
+    # code-story dispatch and a new-flow authoring run all carry no `request_id` in
+    # that block, and their behaviour must stay byte-identical to before.
+    orchestration_ctx = envelope.get("orchestration") or {}
+    if isinstance(orchestration_ctx, dict):
+        amend_flow_id = str(orchestration_ctx.get("flow_id") or "").strip()
+        amend_request_id = str(orchestration_ctx.get("request_id") or "").strip()
+        # A node dispatch also has an `orchestration` block, with `node_id`/`attempt`
+        # and no `request_id` — hence the pair test rather than a `flow_id` test, which
+        # would export a flow for runs that were commissioned to amend nothing.
+        if amend_flow_id and amend_request_id:
+            os.environ[FLOW_ID_ENV] = amend_flow_id
+            os.environ[AMENDMENT_REQUEST_ENV] = amend_request_id
+            logger.info("Authoring assignment: flow=%s request=%s", amend_flow_id, amend_request_id)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
@@ -3123,6 +3154,27 @@ def _register_authored_draft(persona: str, issue: int) -> str:
     return draft_registration_note(work_dir=WORK_DIR, issue=issue)
 
 
+def _register_authored_amendment(persona: str) -> str:
+    """File the run's authored plan amendment with the engine; return a comment section.
+
+    Issue #4529, the amendment counterpart of `_register_authored_draft`, and separate
+    from it because the two are not alternatives: a new-flow proposal and an amendment
+    are different artifacts on different routes with different authorization, and a run
+    commissioned to amend emits the amendment while emitting no `proposal.json` at all.
+
+    Gated on the same persona set and ordered after the branch push for the same reason.
+    Takes no ids: `amendment_registration_note` reads the assignment from the env the
+    bootstrap exported out of the dispatch envelope, so this path cannot aim a
+    registration at a flow the server did not commission it for.
+
+    Fail-soft with no error handling here — the note never raises and returns "" when
+    this run was not commissioned to amend anything, which is every other run.
+    """
+    if persona not in PERSONAS_REGISTERING_DRAFTS:
+        return ""
+    return amendment_registration_note(work_dir=WORK_DIR)
+
+
 def _join_notes(summary: str, *notes: str) -> str:
     """Append whichever fail-soft notes were produced to the closing comment.
 
@@ -3229,6 +3281,12 @@ def _handle_success(
             # entrypoint finds nothing left to push. Registration therefore has to
             # be wired here too, not only on the PR-creating path below.
             draft_note = _register_authored_draft(persona, issue)
+            # #4529: and the amendment, if the engine commissioned this run for one.
+            # Exactly one of these two notes is non-empty on any real run — a new-flow
+            # proposal and an amendment are different artifacts — but both are called
+            # unconditionally so neither path can be the one that silently stops
+            # reporting, which is the drift `_join_notes` exists to prevent.
+            amendment_note = _register_authored_amendment(persona)
             # #5301: the agent opened its own PR during the run, so this is where that
             # PR gets bound to its story. Registering only on the entrypoint-creates-PR
             # path below would miss the common case entirely — the same gap #1723 had
@@ -3244,7 +3302,7 @@ def _handle_success(
                 issue,
                 message_id,
                 "completed",
-                _join_notes(summary, draft_note, binding_note),
+                _join_notes(summary, draft_note, amendment_note, binding_note),
                 check_run_url,
             )
             update_invocation_status(
@@ -3330,6 +3388,9 @@ def _handle_success(
             # edit the PR body to prepend the marker if it isn't already there.
             _ensure_pr_body_marker(repo, existing_pr_number, branch)
         draft_note = _register_authored_draft(persona, issue)
+        # #4529: and the amendment, if the engine commissioned this run for one. See the
+        # note on the other finish path above: both are called on both paths.
+        amendment_note = _register_authored_amendment(persona)
         # #5301: bind whichever PR carries this story's work. `transcript_only` pushes
         # review transcripts and opens no PR, so there is nothing to bind; otherwise the
         # PR is either the agent's own or the one just created on `branch`.
@@ -3347,7 +3408,7 @@ def _handle_success(
             issue,
             message_id,
             "completed",
-            _join_notes(summary, draft_note, binding_note),
+            _join_notes(summary, draft_note, amendment_note, binding_note),
             check_run_url,
         )
         update_invocation_status(

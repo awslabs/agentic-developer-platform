@@ -74,15 +74,23 @@ import os
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AMENDMENT_ARTIFACT_TEMPLATE",
+    "AMENDMENT_REQUEST_ENV",
     "DISABLED_ENV",
     "EngineRegistrationError",
+    "FLOW_ID_ENV",
+    "amendment_artifact_path",
+    "amendment_registration_note",
+    "authoring_assignment",
     "draft_registration_note",
     "proposal_artifact_path",
+    "register_amendment_proposal",
     "register_loop_proposal",
     "registration_disabled",
 ]
@@ -107,6 +115,56 @@ _DRAFT_PATH = "/agent/orchestration/flows/drafts"
 
 _TIMEOUT_SECONDS = 30
 
+# ---------------------------------------------------------------------------------
+# The amendment half (#4529)
+# ---------------------------------------------------------------------------------
+#
+# An *amendment* is not a new flow. The route, the artifact and the authorization
+# are all different, which is why they get their own names rather than a flag on the
+# ones above:
+#
+#   new flow    POST /agent/orchestration/flows/drafts
+#               authorized by holding PLAN_DRAFT; the author chooses the flow slug.
+#
+#   amendment   POST /agent/orchestration/flows/{flow_id}/amendments/drafts?request_id=...
+#               authorized by the server having COMMISSIONED this run for this
+#               request. `resolve_authoring_request` refuses unless the presented
+#               `X-Agent-RunId` equals the `author_run_id` the server wrote onto the
+#               assignment when a verified human commented `replan:`. Holding the
+#               route's permission is not sufficient.
+#
+# So the two ids below are not decoration and are not caller-chosen: they are the
+# server's own record of what this run was summoned to do, read from the dispatch
+# envelope during bootstrap and never from the model's output. An authoring run
+# cannot amend a plan nobody asked it to touch, because it cannot name an assignment
+# it was not given — the request id is not secret, but the binding to this run is.
+
+#: The assignment this run was commissioned for, exported by the entrypoint from the
+#: envelope's server-written `orchestration.request_id`. Absent for every run that is
+#: not an amendment-authoring run, which is what keeps this module inert by default.
+AMENDMENT_REQUEST_ENV = "ADP_AMENDMENT_REQUEST_ID"
+
+#: The flow being amended, from the envelope's `orchestration.flow_id`. Sent in the
+#: path, where the server treats it as a CHECK against the assignment's own flow
+#: rather than as the target — a mismatch is refused, not reconciled.
+FLOW_ID_ENV = "ADP_FLOW_ID"
+
+#: Where an authoring run writes the amended plan. Keyed on the request id, not the
+#: issue: one issue can carry several `replan:` asks over a flow's life, and a path
+#: keyed on the issue would make the second one overwrite the first — then register
+#: whichever file happened to be on disk against whichever assignment was live.
+AMENDMENT_ARTIFACT_TEMPLATE = "aidlc/spaces/amendments/{request_id}/proposal.json"
+
+#: Composed rather than a constant because the flow and the request are both
+#: per-assignment. `{request_id}` goes in the query string because that is where the
+#: route declares it (`Query(min_length=1)`), and it is required: there is no
+#: "amend the flow" form without an assignment.
+_AMENDMENT_PATH_TEMPLATE = "/agent/orchestration/flows/{flow_id}/amendments/drafts"
+
+#: What the route reports for every successful registration, unconditionally. Pinned
+#: here so the worker's own note cannot claim anything stronger than the server said.
+_PENDING_HUMAN_ACCEPT = "pending_human_accept"
+
 
 class EngineRegistrationError(RuntimeError):
     """Registration did not happen. Always caught before it reaches the run."""
@@ -126,6 +184,36 @@ def registration_disabled() -> bool:
 def proposal_artifact_path(work_dir: Path, issue: int) -> Path:
     """The path the AIDLC skill emits its `proposal.json` to."""
     return work_dir / _ARTIFACT_TEMPLATE.format(issue=issue)
+
+
+def amendment_artifact_path(work_dir: Path, request_id: str) -> Path:
+    """Where an authoring run writes the amended plan for one assignment.
+
+    Keyed on the request id for the reason given at `AMENDMENT_ARTIFACT_TEMPLATE`:
+    two `replan:` asks on one issue must not share a file.
+    """
+    return work_dir / AMENDMENT_ARTIFACT_TEMPLATE.format(request_id=request_id)
+
+
+def authoring_assignment() -> tuple[str, str] | None:
+    """This run's `(flow_id, request_id)`, or None if it was not commissioned to amend.
+
+    Both or neither. A half-present pair means the envelope carried an `orchestration`
+    block the entrypoint exported incompletely, and the honest response is to treat
+    the run as not-an-amendment rather than to guess the missing half: with no
+    `request_id` there is no assignment to authorize against, and with no `flow_id`
+    there is no path to send it to. Either way the request would be refused by the
+    server — reporting "not an amendment run" here is the same outcome without a
+    pointless round trip and without a warning that names the wrong cause.
+
+    Returns None rather than raising because "this is not an amendment run" is the
+    normal case for every other persona and every webhook trigger.
+    """
+    flow_id = os.environ.get(FLOW_ID_ENV, "").strip()
+    request_id = os.environ.get(AMENDMENT_REQUEST_ENV, "").strip()
+    if not flow_id or not request_id:
+        return None
+    return flow_id, request_id
 
 
 def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None) -> dict:
@@ -153,8 +241,14 @@ def _sigv4_sign_request(method: str, url: str, headers: dict, data: bytes | None
     return dict(aws_request.headers)
 
 
-def _load_document(path: Path, *, tenant_id: str, intent_ref: str) -> dict[str, Any]:
-    """Read the emitted artifact and apply the two server-owned fields.
+def _load_document(path: Path, *, tenant_id: str, intent_ref: str | None) -> dict[str, Any]:
+    """Read the emitted artifact and apply the server-owned fields.
+
+    `intent_ref=None` means "this path has no fallback to offer" (the amendment
+    case), which is distinct from `""`: the field is `str | None` on the wire with no
+    `min_length`, so writing an empty string would store a present-but-blank intent
+    where the schema's own way of saying "unknown" is absence. An author-declared
+    value is kept either way.
 
     Raises:
         EngineRegistrationError: The artifact is missing, unreadable, not JSON, or
@@ -179,7 +273,7 @@ def _load_document(path: Path, *, tenant_id: str, intent_ref: str) -> dict[str, 
     # conversation this plan came out of. An author who named it keeps their value;
     # the run's issue is the fallback, not an override, because a proposal may
     # legitimately be authored on one issue for an intent tracked on another.
-    if not document.get("intent_ref"):
+    if intent_ref and not document.get("intent_ref"):
         document["intent_ref"] = intent_ref
 
     return document
@@ -201,35 +295,8 @@ def register_loop_proposal(*, work_dir: Path, issue: int, timeout: int = _TIMEOU
         EngineRegistrationError: On any failure. Callers use
             `draft_registration_note`, which turns this into a comment.
     """
-    endpoint_base = os.environ.get("ADP_GATEWAY_ENDPOINT", "").rstrip("/")
-    if not endpoint_base:
-        raise EngineRegistrationError("ADP_GATEWAY_ENDPOINT is not set; no gateway to register with")
-
-    tenant_id = os.environ.get("ADP_TENANT_ID", "").strip()
-    if not tenant_id:
-        # Better to report than to send a blank org the gateway must reject: a 422
-        # from the engine would name the document, not the missing envelope field.
-        raise EngineRegistrationError("no ADP_TENANT_ID in env; refusing to register a plan with no tenant")
-
-    # Issue #4597: the run this registration is on behalf of. `ADP_MESSAGE_ID` is the
-    # envelope `message_id` (exported during bootstrap, long before this runs), which
-    # is the `event_id` partition key of the run's own `webhook-events` row — the row
-    # the gateway reads the owning tenant off. NOT the SQS MessageId and not the KEDA
-    # pod name, both of which are also called some spelling of "run id" and neither of
-    # which the gateway can resolve.
-    run_id = os.environ.get("ADP_MESSAGE_ID", "").strip()
-    if not run_id:
-        # Reported here rather than sent blank, for the same reason as the tenant
-        # above: the gateway's refusal would name the header, and an operator reading
-        # the closing comment needs to know the *pod* had nothing to send.
-        raise EngineRegistrationError("no ADP_MESSAGE_ID in env; refusing to register a plan with no run to bind it to")
-
+    endpoint_base, tenant_id, run_id = _run_context()
     document = _load_document(proposal_artifact_path(work_dir, issue), tenant_id=tenant_id, intent_ref=str(issue))
-
-    url = f"{endpoint_base}{_DRAFT_PATH}"
-    data = json.dumps(document).encode("utf-8")
-    # Inside the signed header set, deliberately — see the module docstring.
-    headers = _sigv4_sign_request("POST", url, {"Content-Type": "application/json", "X-Agent-RunId": run_id}, data)
 
     logger.info(
         "Registering draft plan: flow=%s nodes=%s edges=%s intent=%s",
@@ -238,6 +305,47 @@ def register_loop_proposal(*, work_dir: Path, issue: int, timeout: int = _TIMEOU
         len(document.get("edges") or []),
         document.get("intent_ref"),
     )
+    return _post_document(f"{endpoint_base}{_DRAFT_PATH}", document, run_id=run_id, endpoint_base=endpoint_base, timeout=timeout)
+
+
+def _run_context() -> tuple[str, str, str]:
+    """The three server-owned values every registration needs: endpoint, tenant, run.
+
+    Extracted so the amendment path cannot drift from the new-flow path on any of
+    them. Each is reported as a missing *envelope/deployment* field rather than sent
+    blank, because the gateway's refusal would name the document or the header and an
+    operator reading the closing comment needs to know the pod had nothing to send.
+    """
+    endpoint_base = os.environ.get("ADP_GATEWAY_ENDPOINT", "").rstrip("/")
+    if not endpoint_base:
+        raise EngineRegistrationError("ADP_GATEWAY_ENDPOINT is not set; no gateway to register with")
+
+    tenant_id = os.environ.get("ADP_TENANT_ID", "").strip()
+    if not tenant_id:
+        raise EngineRegistrationError("no ADP_TENANT_ID in env; refusing to register a plan with no tenant")
+
+    # Issue #4597: the run this registration is on behalf of. `ADP_MESSAGE_ID` is the
+    # envelope `message_id` (exported during bootstrap, long before this runs), which
+    # is the `event_id` partition key of the run's own `webhook-events` row — the row
+    # the gateway reads the owning tenant off. NOT the SQS MessageId and not the KEDA
+    # pod name, both of which are also called some spelling of "run id" and neither of
+    # which the gateway can resolve.
+    #
+    # For an amendment (#4529) it carries a second, heavier meaning: it is the
+    # `author_run_id` the server wrote onto the assignment, and the route refuses
+    # unless the two are equal. So this is the *binding*, not just attribution.
+    run_id = os.environ.get("ADP_MESSAGE_ID", "").strip()
+    if not run_id:
+        raise EngineRegistrationError("no ADP_MESSAGE_ID in env; refusing to register a plan with no run to bind it to")
+
+    return endpoint_base, tenant_id, run_id
+
+
+def _post_document(url: str, document: dict[str, Any], *, run_id: str, endpoint_base: str, timeout: int) -> dict[str, Any]:
+    """Sign, POST, and parse. The one transport both registration paths share."""
+    data = json.dumps(document).encode("utf-8")
+    # Inside the signed header set, deliberately — see the module docstring.
+    headers = _sigv4_sign_request("POST", url, {"Content-Type": "application/json", "X-Agent-RunId": run_id}, data)
 
     request = Request(url, data=data, headers=headers, method="POST")
     try:
@@ -258,6 +366,43 @@ def register_loop_proposal(*, work_dir: Path, issue: int, timeout: int = _TIMEOU
         raise EngineRegistrationError(f"gateway response must be a JSON object, got {type(parsed).__name__}")
 
     return parsed
+
+
+def register_amendment_proposal(*, work_dir: Path, flow_id: str, request_id: str, timeout: int = _TIMEOUT_SECONDS) -> dict[str, Any]:
+    """POST the authored amendment as a pending draft and return the parsed response.
+
+    The amendment counterpart of `register_loop_proposal`. Three things differ, and
+    all three are the authorization rather than the payload: the flow is in the path,
+    the assignment is in the query string, and the run id header must equal the
+    `author_run_id` the server bound to that assignment.
+
+    `intent_ref` is deliberately NOT supplied here. On the new-flow path it tells the
+    engine which conversation to report into; an amendment already belongs to a flow
+    that has one, and the request row records the human who asked. Inventing one from
+    this run's issue would attribute the amendment to whatever issue the authoring
+    run happened to execute on.
+
+    Raises:
+        EngineRegistrationError: On any failure, including a missing artifact.
+            Callers use `amendment_registration_note`.
+    """
+    endpoint_base, tenant_id, run_id = _run_context()
+    # `None`, not `""` — see `_load_document`. An author-declared intent survives; an
+    # absent one stays absent rather than becoming a blank string.
+    document = _load_document(amendment_artifact_path(work_dir, request_id), tenant_id=tenant_id, intent_ref=None)
+
+    path = _AMENDMENT_PATH_TEMPLATE.format(flow_id=quote(flow_id, safe=""))
+    url = f"{endpoint_base}{path}?request_id={quote(request_id, safe='')}"
+
+    logger.info(
+        "Registering amended plan: flow=%s request=%s nodes=%s edges=%s gates=%s",
+        flow_id,
+        request_id,
+        len(document.get("nodes") or []),
+        len(document.get("edges") or []),
+        sum(1 for node in (document.get("nodes") or []) if isinstance(node, dict) and node.get("kind") == "gate"),
+    )
+    return _post_document(url, document, run_id=run_id, endpoint_base=endpoint_base, timeout=timeout)
 
 
 def _success_note(result: dict[str, Any]) -> str:
@@ -333,6 +478,175 @@ def _warning_note(reason: str) -> str:
             "the source of truth. Nothing was lost, and nothing is executing.",
         ]
     )
+
+
+def _gate_diff_line(gate_diff: Any) -> str:
+    """One line describing what the amendment does to the plan's gates.
+
+    The gate diff is the whole point of the amendment for the human reading this:
+    `replan:` asks are overwhelmingly "put a gate before the deploy wave", and
+    `changes_gating` is the server's own answer to "does accepting this change where
+    humans get asked". It is read rather than recomputed — the worker has the
+    proposal, but the *diff* is against the in-force plan, which only the server has.
+
+    Degrades to a plain statement when the server sends no diff, rather than
+    asserting "no gate changes": absent data must not read as a measured zero.
+    """
+    if not isinstance(gate_diff, dict):
+        return "**Gates**: not reported by the engine."
+
+    added = gate_diff.get("added") or []
+    removed = gate_diff.get("removed") or []
+    unchanged = gate_diff.get("unchanged") or []
+    parts = [f"+{len(added)} added", f"-{len(removed)} removed", f"{len(unchanged)} unchanged"]
+    line = f"**Gates**: {', '.join(parts)}"
+
+    if gate_diff.get("changes_gating"):
+        line += " — **this changes where humans are asked to approve**"
+    else:
+        line += " — no change to where humans are asked to approve"
+
+    listed = [str(address) for address in added][:5]
+    if listed:
+        line += "\n" + "\n".join(f"  - added: `{address}`" for address in listed)
+        if len(added) > len(listed):
+            line += f"\n  - …and {len(added) - len(listed)} more"
+    return line
+
+
+def _amendment_success_note(result: dict[str, Any]) -> str:
+    """The closing-comment section for a registered amendment.
+
+    Three properties this note must have, all of them about not overstating:
+
+    1. **It never says the amendment is applied.** `status` is printed from the
+       server's own field and compared against the one value the route can return;
+       anything else prints verbatim with no reassuring gloss. The worker holds no
+       `PLAN_APPROVE` and the route writes no node, edge or plan version, so a
+       comment implying the plan changed would send an operator to look at a graph
+       that still shows the old gates.
+    2. **It reports the base revision.** An amendment is authored against one plan
+       version; if the plan moved while the author worked, accepting this draft is a
+       decision about a stale base and the human needs to see which one it was.
+    3. **The accept command is quoted from the server** (`accept_command`), fenced
+       for the #4599 reason — an inline `@agent-engine accept amendment <id>` in a
+       bot comment is parsed by the tick as a live command and refused, making every
+       success message trigger a failure reply. The fallback spells the draft id in
+       because a bare `@agent-engine accept` would answer the *acceptance gate*
+       instead, which is a different and much larger action.
+    """
+    draft_id = result.get("draft_id")
+    status = result.get("status")
+    flow_id = result.get("flow_id")
+    flow_url = result.get("flow_url")
+    flow_ref = f"[`{flow_id}`]({flow_url})" if flow_url else f"`{flow_id}`"
+
+    accept_command = result.get("accept_command") or f"@agent-engine accept amendment {draft_id}"
+
+    if status == _PENDING_HUMAN_ACCEPT:
+        state_line = "**State**: `pending_human_accept` — nothing has been applied. The in-force plan is unchanged and still executing."
+    else:
+        # Not normalised to the expected value: if the server ever reports something
+        # else, the operator must see what it actually said.
+        state_line = f"**State**: `{status}` — reported by the engine. Nothing in this run applied it."
+
+    lines = [
+        "### Plan amendment proposed for your approval",
+        "",
+        f"**Flow**: {flow_ref}",
+        f"**Draft**: `{draft_id}`",
+        f"**Authored against**: plan v{result.get('base_plan_version')}",
+        state_line,
+        _gate_diff_line(result.get("gate_diff")),
+        "",
+        "Reply with the following to apply it:",
+        "",
+        "```",
+        accept_command,
+        "```",
+    ]
+    if result.get("already_registered"):
+        lines.extend(["", "_This amendment was already on file; the existing draft is unchanged._"])
+    return "\n".join(lines)
+
+
+def _amendment_warning_note(reason: str) -> str:
+    """The closing-comment section for an amendment that was not filed.
+
+    Says what the operator has to do next, which is the difference that matters
+    between this and `_warning_note`: an unregistered *new* plan leaves committed
+    artifacts that are themselves the deliverable, but an unfiled amendment leaves a
+    human's `replan:` ask unanswered in the graph. Nothing is damaged — the in-force
+    plan is untouched and still executing — but somebody is waiting.
+    """
+    return "\n".join(
+        [
+            "### ⚠️ Plan amendment not filed with the orchestration engine",
+            "",
+            f"Registration was skipped: {reason}",
+            "",
+            "The in-force plan is unchanged and still executing — nothing was applied and nothing was lost. "
+            "The replan request that commissioned this run is still open, so it can be retried.",
+        ]
+    )
+
+
+def amendment_registration_note(*, work_dir: Path) -> str:
+    """File this run's authored amendment and return a closing-comment section.
+
+    The amendment counterpart of `draft_registration_note`, and **it never raises**
+    for the same reason: by the time this runs the authored artifacts are already
+    committed to the branch, so a failure here must cost the run nothing.
+
+    Takes no `flow_id`/`request_id` arguments — it reads them from the env via
+    `authoring_assignment()`, deliberately. The caller is the entrypoint's finish
+    path, which knows what persona ran but has no business deciding which assignment
+    a registration is authorized against; sourcing them from the server-written
+    envelope export in one place means there is no parameter for a caller to pass a
+    different flow into.
+
+    Returns:
+        Markdown to append to the closing comment, or `""` when amendment
+        registration does not apply: the kill switch is set, this run was not
+        commissioned to amend anything, or it was but emitted no amended plan.
+    """
+    if registration_disabled():
+        logger.info("%s is set — skipping amendment registration", DISABLED_ENV)
+        return ""
+
+    assignment = authoring_assignment()
+    if assignment is None:
+        # The normal case for every run that is not an amendment-authoring run.
+        return ""
+    flow_id, request_id = assignment
+
+    artifact = amendment_artifact_path(work_dir, request_id)
+    if not artifact.exists():
+        # A commissioned run that produced no amended plan is a real, reportable
+        # outcome — unlike the new-flow path, where silence is correct. A human asked
+        # for a replan and is waiting on an answer, so "the author concluded without
+        # proposing anything" must reach them rather than being logged and dropped.
+        logger.warning("Commissioned to amend %s but no artifact at %s", flow_id, artifact)
+        return _amendment_warning_note(f"no amended plan was emitted at `{AMENDMENT_ARTIFACT_TEMPLATE.format(request_id=request_id)}`")
+
+    try:
+        result = register_amendment_proposal(work_dir=work_dir, flow_id=flow_id, request_id=request_id)
+    except EngineRegistrationError as exc:
+        logger.warning("Amendment registration failed (non-fatal): %s", exc)
+        return _amendment_warning_note(str(exc))
+    except Exception as exc:  # noqa: BLE001 - see the module docstring: the run must survive anything
+        logger.warning("Amendment registration failed unexpectedly (non-fatal): %s", exc)
+        return _amendment_warning_note(f"unexpected error: {exc}")
+
+    logger.info(
+        "Amendment draft filed: draft=%s flow=%s base=v%s status=%s already=%s",
+        result.get("draft_id"),
+        result.get("flow_id"),
+        result.get("base_plan_version"),
+        result.get("status"),
+        result.get("already_registered"),
+    )
+    return _amendment_success_note(result)
 
 
 def draft_registration_note(*, work_dir: Path, issue: int) -> str:
