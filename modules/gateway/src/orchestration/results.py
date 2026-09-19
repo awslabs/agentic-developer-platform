@@ -58,10 +58,10 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
-import httpx
+import httpx  # noqa: F401 - retained legacy monkeypatch/import compatibility
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,6 +71,7 @@ from .dispatch_pass import attempt_run_id, resolve_installation_id
 from .execution_state import TERMINAL_EXECUTION_STATUSES, BlockCode, ExecutionIdentity, ExecutionStatus, OutcomeKind, PhaseAdvance
 from .execution_store import advance_execution, load_execution
 from .handoff import current_identity, handoff_required, missing_receipt_hold, outstanding_block, receipt_for
+from .merge_evidence import GitHubEvidenceSource
 from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
 from .pr_bindings import (
     BindingError,
@@ -96,147 +97,6 @@ class ResultReport:
     errors: int = 0
     waiting: int = 0
     reasons: dict[str, str] = field(default_factory=dict)
-
-
-class GitHubEvidenceSource:
-    async def bound_pull_request(
-        self,
-        *,
-        org_id: str,
-        installation_id: int,
-        repo: str,
-        pr_number: int,
-    ) -> MergeEvidence | None:
-        """Provider truth about one specific pull request (#5301).
-
-        Asks about the *pull request*, not the issue's closure timeline, which is
-        what makes the U11 shape observable: a merged PR is merged whether or not it
-        ever closed an issue.
-
-        Returns `None` when the provider cannot answer (the PR is absent, or the
-        query failed), which reconciliation treats as "no evidence yet" rather than
-        as a pass — `evidence_for_binding` has no arm that turns an absent answer
-        into completion.
-
-        Three things are read beyond merge state, each because a binding must be
-        *falsifiable*:
-
-        * `headRefOid` — the PR's current head. Compared against the bound head, so
-          commits pushed after registration invalidate the eligibility the previous
-          head earned.
-        * `statusCheckRollup` on the head commit — required checks.
-        * each reviewer's latest opinion, matched to the current head and excluding
-          the PR author. A withdrawn approval, incomplete review requirement, or
-          missing required check holds completion. This is the arm U11 fails: its PR was
-          merged by the reviewer bot after GitHub refused its formal self-approval,
-          so it carries no independent approval of any head.
-        """
-        from src.admin.connections.github_client import GitHubAppClient
-        from src.knowledge.github_app_service import resolve_tenant_app_credentials
-
-        owner, name = repo.split("/", 1)
-        app_id, private_key = await resolve_tenant_app_credentials(org_id)
-        app = GitHubAppClient(app_id, private_key)
-        try:
-            token = await app.get_installation_token(installation_id)
-            query = """query($owner:String!,$name:String!,$pr:Int!) {
-              repository(owner:$owner,name:$name) { databaseId pullRequest(number:$pr) {
-                id url merged mergedAt headRefOid reviewDecision mergeCommit { oid }
-                author { login }
-                commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
-                reviews(last:100) { pageInfo { hasPreviousPage } nodes { state submittedAt commit { oid } author { login } } }
-              } }
-            }"""
-            async with httpx.AsyncClient(timeout=15) as client:
-                response = await client.post(
-                    "https://api.github.com/graphql",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={"query": query, "variables": {"owner": owner, "name": name, "pr": pr_number}},
-                )
-                response.raise_for_status()
-                payload = response.json()
-            if payload.get("errors"):
-                raise RuntimeError("GitHub could not verify bound pull-request evidence")
-            record = (payload.get("data", {}).get("repository") or {}).get("pullRequest") or {}
-            if not record:
-                return None
-            head = record.get("headRefOid") or ""
-            commits = (record.get("commits") or {}).get("nodes", [])
-            rollup = ((commits[-1].get("commit") or {}).get("statusCheckRollup") or {}) if commits else {}
-            pr_author = ((record.get("author") or {}).get("login") or "").lower()
-            reviews = record.get("reviews") or {}
-            latest: dict[str, str] = {}
-            for review in sorted(reviews.get("nodes", []), key=lambda item: item.get("submittedAt") or ""):
-                author = ((review.get("author") or {}).get("login") or "").lower()
-                state = review.get("state")
-                if author not in {"", pr_author} and state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
-                    # A later contrary opinion withdraws an earlier approval,
-                    # including when the later review describes another head.
-                    latest[author] = state if ((review.get("commit") or {}).get("oid") or "") == head else "STALE"
-            approved_by_non_author = (
-                not (reviews.get("pageInfo") or {}).get("hasPreviousPage", False)
-                and "APPROVED" in latest.values()
-                and "CHANGES_REQUESTED" not in latest.values()
-                and record.get("reviewDecision") not in {"CHANGES_REQUESTED", "REVIEW_REQUIRED"}
-            )
-            return MergeEvidence(
-                merged=bool(record.get("merged")),
-                head_sha=head,
-                checks_successful=rollup.get("state") == "SUCCESS",
-                approved_by_non_author=approved_by_non_author,
-                merge_commit_sha=(record.get("mergeCommit") or {}).get("oid"),
-                merged_at=record.get("mergedAt"),
-                url=record.get("url"),
-                provider_repository_id=(payload.get("data", {}).get("repository") or {}).get("databaseId"),
-                provider_pr_node_id=record.get("id"),
-            )
-        finally:
-            await app.aclose()
-
-    async def merged_story(self, *, org_id: str, installation_id: int, repo: str, issue: int, since: str) -> str | None:
-        from src.admin.connections.github_client import GitHubAppClient
-        from src.knowledge.github_app_service import resolve_tenant_app_credentials
-
-        owner, name = repo.split("/", 1)
-        app_id, private_key = await resolve_tenant_app_credentials(org_id)
-        app = GitHubAppClient(app_id, private_key)
-        try:
-            token = await app.get_installation_token(installation_id)
-            query = """query($owner:String!,$name:String!,$issue:Int!) {
-              repository(owner:$owner,name:$name) { issue(number:$issue) {
-                state stateReason timelineItems(last:10,itemTypes:[CLOSED_EVENT]) { nodes {
-                  ... on ClosedEvent { closer { __typename ... on PullRequest {
-                    url merged mergedAt commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
-                  } } }
-                } }
-              } }
-            }"""
-            async with httpx.AsyncClient(timeout=15) as client:
-                response = await client.post(
-                    "https://api.github.com/graphql",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={"query": query, "variables": {"owner": owner, "name": name, "issue": issue}},
-                )
-                response.raise_for_status()
-                payload = response.json()
-            if payload.get("errors"):
-                raise RuntimeError("GitHub could not verify merged-story evidence")
-            record = (payload.get("data", {}).get("repository") or {}).get("issue") or {}
-            if record.get("state") != "CLOSED" or record.get("stateReason") != "COMPLETED":
-                return None
-            events = (record.get("timelineItems") or {}).get("nodes", [])
-            # The last closure is decisive; an older merged PR cannot justify a
-            # later manual close or a retry whose work never landed.
-            closer = (events[-1].get("closer") or {}) if events else {}
-            if closer.get("__typename") != "PullRequest" or not closer.get("merged"):
-                return None
-            if datetime.fromisoformat(closer["mergedAt"].replace("Z", "+00:00")) < datetime.fromisoformat(since.replace("Z", "+00:00")):
-                return None
-            commits = (closer.get("commits") or {}).get("nodes", [])
-            rollup = ((commits[-1].get("commit") or {}).get("statusCheckRollup") or {}) if commits else {}
-            return closer["url"] if rollup.get("state") == "SUCCESS" else None
-        finally:
-            await app.aclose()
 
 
 # The legacy hold text, kept verbatim for dispatches that predate PR binding so

@@ -1,0 +1,9 @@
+{
+  "source": "repos/aws-e/adp/branches/main/protection",
+  "captured_at": "2026-09-19T22:36:36.454981+00:00",
+  "response": {
+    "message": "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+    "documentation_url": "https://docs.github.com/rest/branches/branch-protection#get-branch-protection",
+    "status": "403"
+  }
+}
