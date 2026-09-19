@@ -37,6 +37,7 @@ UNIT_MODULES = [
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
+    "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
     "src.agentauth.work_routes",  # Producer signature and protected invocation; no worker-selected ownership.
     # #5028 (AC4): the worker's own status/registration writes, moved off the
@@ -127,6 +128,10 @@ UNIT_MODULES = [
     # checks ORG_UPDATE as its first statement.
     "src.admin.persona_models.self_routes",
     "src.admin.persona_models.routes",
+    # Issue #5420 (PMM-03): read-only persona/model catalogue on the same
+    # /me/persona-models namespace. Kept in a separate module so catalogue
+    # policy/evidence logic does not broaden either PMM-02 write surface.
+    "src.admin.persona_models.catalogue_routes",
     "src.ratelimit.routes",
     "src.usage.routes",
     "src.activity.routes",  # Issue #1456: Agent Activity read API (/me + /admin)
@@ -175,6 +180,7 @@ async def lifespan(app: FastAPI):
             import src.shared.models.bedrock_routing  # noqa: F401  # Issue #4743
             import src.shared.models.budget  # noqa: F401
             import src.shared.models.organization  # noqa: F401
+            import src.shared.models.persona_model_catalogue  # noqa: F401  # Issue #5420
             import src.shared.models.persona_models  # noqa: F401  # Issue #5419
             import src.shared.models.usage  # noqa: F401
             import src.shared.models.vault  # noqa: F401  # Issue #135

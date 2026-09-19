@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any
 
 from pydantic import Field, model_validator
@@ -269,6 +270,19 @@ class Settings(BaseSettings):
     # was fine for a static 2-account pool and is a memory-growth problem the
     # moment the key space is principal-dependent.
     bedrock_routing_credential_cache_size: int = 256
+
+    # PMM-03: paid harness probes are admitted only when all four controls are
+    # explicitly non-zero/configured.  These defaults make a fresh deployment
+    # incapable of reserving a slot or releasing destination credentials.
+    model_probe_enabled: bool = False
+    # Keep this aligned with the worker's independent 100-claim hard stop.
+    model_probe_max_slots_per_cycle: int = Field(default=0, ge=0, le=100)
+    model_probe_budget_usd_per_cycle: Decimal = Field(default=Decimal("0"), ge=0)
+    model_probe_max_budget_usd_per_attempt: Decimal = Field(default=Decimal("0"), ge=0)
+    model_probe_slot_ttl_seconds: int = Field(default=120, ge=10, le=900)
+    model_probe_cycle_ttl_hours: int = Field(default=24, ge=1, le=168)
+    model_probe_evidence_ttl_hours: int = Field(default=24, ge=1, le=720)
+    model_probe_timeout_seconds: int = Field(default=30, ge=1, le=300)
 
     @model_validator(mode="before")
     @classmethod

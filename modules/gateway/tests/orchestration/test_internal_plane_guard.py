@@ -45,6 +45,10 @@ INTERNAL_ROUTE_MODULES = (
     "src.internal.provenance_routes",
     "src.internal.status_callback_routes",
     "src.internal.admin_routes",
+    # PMM-03 bounded-probe admission and result recording only. Reviewed at
+    # 46b62cf8: it imports no orchestration package/model/table and cannot read
+    # or mutate release-promotion state.
+    "src.internal.persona_model_probe_routes",
 )
 
 # The full internal-plane surface as of this change, as (path, method) pairs.
@@ -65,6 +69,9 @@ EXPECTED_INTERNAL_ROUTES = {
     ("/internal/v1/knowledge-assets/status-callback", "POST"),
     ("/internal/v1/admin/tenant-config/{tenant}", "GET"),
     ("/internal/v1/admin/audit-entries", "GET"),
+    ("/internal/v1/persona-model-probes/claim", "POST"),
+    ("/internal/v1/persona-model-probes/{slot_id}/start", "POST"),
+    ("/internal/v1/persona-model-probes/{slot_id}/complete", "POST"),
 }
 
 # Promotion state: the tables and models this guard protects. A reference to any

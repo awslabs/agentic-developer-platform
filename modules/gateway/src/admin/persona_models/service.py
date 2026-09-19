@@ -39,44 +39,19 @@ from src.shared.models.persona_models import (
     ServicePrincipalAlias,
 )
 
+from . import catalogue_service
+
 logger = logging.getLogger("bedrockgateway.persona_models")
 
-# ── Interim persona catalogue (mirror; PMM-03 replaces it) ──────────────────
-#
-# The authority is ``VALID_PERSONAS`` in
-# ``modules/agent-factory/webhook-ingress/lambda/common/personas.py``, mirrored
-# in ``docs/agent-catalogue.md`` ("the authoritative list of every agent persona
-# ADP ships") and pinned by that Lambda's ``test_persona_catalogue_parity.py``.
-#
-# That module lives in a different runtime (the webhook-ingress Lambda) and is
-# not importable from the gateway today, so this is a hand-kept mirror of all
-# twelve keys.  ``test_persona_catalogue_mirrors_authority`` re-derives the
-# authority by parsing ``docs/agent-catalogue.md`` and fails on any drift, so
-# this list cannot silently diverge the way its predecessor did.
-#
-# PMM-03 (#5420) replaces this with a catalogue derived at request time; design
-# note 5420 is explicit that any second hand-maintained list "fails AC-01 by
-# construction".  Delete this block when that endpoint lands — do not extend it.
-#
-# An earlier revision of this file invented four keys that exist nowhere in the
-# platform (``planner``, ``evaluator``, ``researcher``, ``chat``) and omitted six
-# real ones.  Inventing a key is the more harmful direction: a person could save
-# a preference against a persona that will never run, which is the inert-config
-# class this story exists to prevent.
+# PMM-03 owns the authoritative gateway-side persona catalogue. Preference CRUD
+# derives from it so a newly synced persona cannot be omitted by a second list.
 INTERIM_PERSONA_CATALOGUE: list[dict] = [
-    {"key": "aidlc", "display_name": "AIDLC", "configurable": True},
-    {"key": "architect", "display_name": "Architect", "configurable": True},
-    {"key": "codex", "display_name": "Codex", "configurable": True},
-    {"key": "developer", "display_name": "Developer", "configurable": True},
-    {"key": "malware-analysis-agent", "display_name": "Malware Analysis Agent", "configurable": True},
-    {"key": "operations", "display_name": "Operations", "configurable": True},
-    {"key": "pm", "display_name": "PM", "configurable": True},
-    {"key": "product", "display_name": "Product", "configurable": True},
-    # Not configurable: blocked on #4037.  Design note 5420 §2.3.
-    {"key": "pt-superpower", "display_name": "PT Superpower", "configurable": False},
-    {"key": "reviewer", "display_name": "Reviewer", "configurable": True},
-    {"key": "superplane-operator", "display_name": "Superplane Operator", "configurable": True},
-    {"key": "superplane-researcher", "display_name": "Superplane Researcher", "configurable": True},
+    {
+        "key": row.key,
+        "display_name": row.display_name,
+        "configurable": row.configurable,
+    }
+    for row in catalogue_service.build_persona_catalogue()
 ]
 
 # The unique index that makes the create path race-safe; see
@@ -237,16 +212,16 @@ async def validate_model_for_persona(
     canonical_principal_id: str,
     persona_key: str,
     model: str,
+    account_id: str | None = None,
+    region: str | None = None,
+    principal_status: str | None = None,
+    service_restriction_pattern_sets: list[list[str]] | None = None,
+    policy_unavailable_reason: str | None = None,
 ) -> str:
     """Validate that ``model`` is selectable for this persona and principal.
 
-    **FAIL-CLOSED** until PMM-03 (#5420) ships.  Every write is refused with
-    ``probing_disabled`` — no preference row can be stored through this stub.
-    AC-07 is explicitly unmet until the real validator is integrated.
-
-    The real PMM-03 ``validate_selection`` returns a ``Selection`` with the
-    canonical model ID, compatibility class, and evidence row — or a
-    ``Rejection`` with reason and message.  This stub rejects unconditionally.
+    PMM-03's validator is the single definition of selectable. It succeeds only
+    for a canonical model backed by fresh exact-key destination evidence.
     """
     if not model or not model.strip():
         raise PreferenceRejectedError(
@@ -263,14 +238,22 @@ async def validate_model_for_persona(
             "persona_not_configurable",
             f"Persona '{persona_key}' is not configurable.",
         )
-    # Fail-closed: refuse all writes until PMM-03 provides real validation.
-    raise PreferenceRejectedError(
-        "probing_disabled",
-        "Model selection validation is not yet available. "
-        "Preference writes are disabled until the persona catalogue "
-        "and invocability probing service (PMM-03) is integrated. "
-        f"Requested model: {model.strip()}",
+    result = await catalogue_service.validate_selection(
+        db,
+        org_id=org_id,
+        principal_kind=principal_kind,  # type: ignore[arg-type]
+        canonical_principal_id=canonical_principal_id,
+        persona_key=persona_key,
+        model=model,
+        account_id=account_id,
+        region=region,
+        principal_status=principal_status,
+        service_restriction_pattern_sets=service_restriction_pattern_sets,
+        policy_unavailable_reason=policy_unavailable_reason,
     )
+    if isinstance(result, catalogue_service.SelectionRejection):
+        raise PreferenceRejectedError(result.reason, result.message)
+    return result.canonical_model_id
 
 
 # ── Read operations ──────────────────────────────────────────────────────────
@@ -422,6 +405,11 @@ async def set_preference(
     expected_revision: int | None,
     actor_id: str,
     actor_source: str,
+    validation_account_id: str | None = None,
+    validation_region: str | None = None,
+    validation_principal_status: str | None = None,
+    validation_service_restriction_pattern_sets: list[list[str]] | None = None,
+    validation_policy_unavailable_reason: str | None = None,
 ) -> PersonaModelPreference:
     """Create or update a preference row with atomic optimistic concurrency.
 
@@ -449,6 +437,11 @@ async def set_preference(
         canonical_principal_id=principal_id,
         persona_key=persona_key,
         model=model,
+        account_id=validation_account_id,
+        region=validation_region,
+        principal_status=validation_principal_status,
+        service_restriction_pattern_sets=validation_service_restriction_pattern_sets,
+        policy_unavailable_reason=validation_policy_unavailable_reason,
     )
 
     # Enforce one-kind-per-canonical-ID in the service layer.
@@ -726,7 +719,7 @@ async def list_manageable_service_principals(
 
         result.append(
             {
-                "canonical_principal_id": sp.canonical_service_principal_id,
+                "canonical_service_principal_id": sp.canonical_service_principal_id,
                 "principal_kind": "service_account",
                 "display_name": sp.display_name,
                 "tenant_label": sp.org_id,

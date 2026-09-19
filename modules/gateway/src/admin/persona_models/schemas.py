@@ -101,7 +101,7 @@ ManageableSourceLabel = Literal[
 class ManageableServicePrincipal(BaseModel):
     """One service principal the caller may administer."""
 
-    canonical_principal_id: str
+    canonical_service_principal_id: str
     principal_kind: Literal["service_account"] = "service_account"
     display_name: str
     tenant_label: str
@@ -153,7 +153,7 @@ class RegisterServicePrincipalRequest(BaseModel):
 class RegisterServicePrincipalResponse(BaseModel):
     """Response after registering a new service principal."""
 
-    canonical_principal_id: str
+    canonical_service_principal_id: str
     display_name: str
     alias_source: str
     alias_id: str
@@ -176,7 +176,7 @@ class StatusTransitionRequest(BaseModel):
 class StatusTransitionResponse(BaseModel):
     """Response after a lifecycle status transition."""
 
-    canonical_principal_id: str
+    canonical_service_principal_id: str
     display_name: str
     previous_status: str
     status: str
@@ -187,6 +187,6 @@ class AliasResponse(BaseModel):
 
     alias_id: str
     alias_source: str
-    canonical_principal_id: str
+    canonical_service_principal_id: str
     is_active: bool
     registered_by: str
