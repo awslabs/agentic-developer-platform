@@ -70,9 +70,16 @@ class MergeReceipt(BaseModel):
     def chronological(self):
         if any(moment.tzinfo is None for moment in (self.eligibility_observed_at, self.merged_at, self.observed_at)):
             raise ValueError("merge receipt timestamps must be timezone-aware")
-        if not self.eligibility_observed_at <= self.merged_at <= self.observed_at:
+        if not evidence_precedes_merge(self.eligibility_observed_at, self.merged_at) or self.merged_at > self.observed_at:
             raise ValueError("merge receipt evidence is not chronological")
         return self
+
+
+def evidence_precedes_merge(observed, merged):
+    # GitHub reports merged_at at second precision. A subsecond eligibility
+    # observation in that same second still precedes an engine merge. Retain
+    # the provider timestamp verbatim and reject evidence in any later second.
+    return observed <= merged or (merged.microsecond == 0 and observed < merged + timedelta(seconds=1))
 
 
 def encode(value):
@@ -104,7 +111,7 @@ class MergeServices:
             )
             .execution_options(populate_existing=True)
         )
-        if node is None or node.attempts != context.identity.cycle or node.state not in {"running", "awaiting_merge"}:
+        if node is None or node.kind != "story" or node.attempts != context.identity.cycle or node.state not in {"running", "awaiting_merge"}:
             raise CycleBlockedError("merge_outer_gate_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
         flow = await session.get(OrchestrationFlow, node.flow_id)
         if flow is None or flow.state != "running":
@@ -126,7 +133,9 @@ class MergeServices:
 
     async def eligibility(self, session, context, node, binding, run_id, provider_state):
         raw = await self.authority.protected(node.org_id, run_id)
-        if not raw or raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
+        if not raw or raw.get("status", {}).get("S") in {"revoked", "cancelled"}:
+            raise CycleBlockedError("reviewer_authority_revoked", BlockCode.AUTHORITY_UNVERIFIABLE)
+        if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
             raise CycleBlockedError("reviewer_still_active")
         review = await load_merge_review(
             session,
@@ -242,10 +251,11 @@ class MergeServices:
         before = datetime.fromisoformat(eligibility["observed_at"])
         merged = datetime.fromisoformat(state.merged_at.replace("Z", "+00:00"))
         if (
-            eligibility.get("state") != "eligible"
+            action.status not in {"prepared", "unknown", "succeeded"}
+            or eligibility.get("state") != "eligible"
             or eligibility.get("reasons") != []
             or before.tzinfo is None
-            or before > merged
+            or not evidence_precedes_merge(before, merged)
             or hashlib.sha256(encode(eligibility).encode()).hexdigest() != data.get("eligibility_digest")
         ):
             raise CycleBlockedError("historical_merge_requirements_unverifiable")
@@ -270,6 +280,40 @@ class MergeServices:
             adopted=action.status != "succeeded",
         )
 
+    async def persist_authorization(self, context, operation_key, fresh):
+        """Commit the final pre-merge decisions, releasing all locks before I/O."""
+        async with self.factory() as session:
+            loaded = await load_execution(session, identity=context.identity, for_update=True)
+            if (
+                loaded is None
+                or loaded.kind is not OutcomeKind.APPLIED
+                or loaded.record is None
+                or loaded.record.revision != context.execution.revision
+                or loaded.record.pending_action_key != operation_key
+            ):
+                raise CycleBlockedError("merge_intent_superseded", BlockCode.OWNERSHIP_LOST)
+            node, binding, _ = await self.state(session, context)
+            if (
+                binding.id != fresh["binding_id"]
+                or binding.revision != fresh["binding_revision"]
+                or binding.accepted_scope != fresh["accepted_scope"]
+            ):
+                raise CycleBlockedError("merge_scope_changed_before_mutation")
+            action = await session.scalar(
+                select(OrchestrationAction)
+                .where(
+                    OrchestrationAction.org_id == node.org_id,
+                    OrchestrationAction.execution_id == context.execution.id,
+                    OrchestrationAction.operation_key == operation_key,
+                    OrchestrationAction.kind == MERGE_KIND,
+                )
+                .with_for_update()
+            )
+            if action is None or action.status not in {"prepared", "unknown"}:
+                raise CycleBlockedError("merge_intent_already_settled")
+            action.detail = {**(action.detail or {}), **fresh}
+            await session.commit()
+
     async def perform(self, context, effect):
         expected = effect.intent.detail
         try:
@@ -289,8 +333,9 @@ class MergeServices:
                     if not eligibility.eligible:
                         raise CycleBlockedError("merge_eligibility_withdrawn", BlockCode.AUTHORITY_UNVERIFIABLE)
                     fresh = self.snapshot(current_binding, current, eligibility, review, expected["sequence"])
-                    if fresh["method"] != expected["method"] or fresh["review_ref"] != expected["review_ref"]:
+                    if any(fresh[name] != expected[name] for name in ("method", "review_ref", "head_sha", "base_sha")):
                         raise CycleBlockedError("merge_requirements_changed")
+                    await self.persist_authorization(context, effect.intent.operation_key, fresh)
 
                 result = await self.provider.perform(
                     binding, state, method=expected["method"], operation_key=effect.intent.operation_key, reauthorize=reauthorize
@@ -366,7 +411,17 @@ class MergeController:
                     return MergeObservation(ObservationKind.READY, snapshot={"repair_conflict": f"provider:{state.head_sha}:{state.base_sha}"})
                 if eligibility.state is EligibilityState.WAITING:
                     return MergeObservation(ObservationKind.WAITING, detail="Waiting for current repository checks and mergeability.")
-                raise CycleBlockedError("merge_ineligible:" + ",".join(reason.value for reason in eligibility.reasons))
+                reason = eligibility.authority_reason or ""
+                code = BlockCode.DEPENDENCY_UNSATISFIED
+                if "attempt" in reason or "wall_clock" in reason:
+                    code = BlockCode.ATTEMPTS_EXHAUSTED
+                elif "spend" in reason or "budget" in reason:
+                    code = BlockCode.BUDGET_EXHAUSTED
+                elif "human_gate" in reason:
+                    code = BlockCode.HUMAN_GATE_REQUIRED
+                elif any(value in eligibility.reasons for value in (EligibilityReason.AUTHORITY_DENIED, EligibilityReason.AUTHORITY_UNAVAILABLE)):
+                    code = BlockCode.AUTHORITY_UNVERIFIABLE
+                raise CycleBlockedError("merge_ineligible:" + ",".join(value.value for value in eligibility.reasons), code)
             snapshot = self.services.snapshot(binding, state, eligibility, review, len(rows) + 1)
             if latest is not None and latest.status in {"prepared", "unknown"} and latest.detail.get("base_sha") == state.base_sha:
                 snapshot = dict(latest.detail)
@@ -456,6 +511,7 @@ async def settle_merge(session, context, receipt, snapshot):
     binding = await active_binding_for_node(session, org_id=context.identity.org_id, node_id=context.identity.node_id, attempt=context.identity.cycle)
     if (
         node is None
+        or node.kind != "story"
         or node.attempts != context.identity.cycle
         or node.state not in {"running", "awaiting_merge"}
         or binding is None

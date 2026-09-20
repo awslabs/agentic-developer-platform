@@ -97,13 +97,15 @@ async def merge(cycle, monkeypatch):  # noqa: F811
 
     ctx.merge_remote = merge_remote
 
-    def respond(request):
+    async def respond(request):
         assert request.headers["Authorization"] == "Bearer scoped-test-token"
         calls.append((request.method, request.url.path))
         if ctx.unavailable:
             raise httpx.ReadTimeout("test outage")
         path = request.url.path
         if path.endswith("/merge"):
+            if getattr(ctx, "on_mutation", None):
+                await ctx.on_mutation()
             mutations.append(json.loads(request.content))
             assert json.loads(request.content)["sha"] == ctx.head
             if ctx.conflict:
@@ -186,7 +188,7 @@ async def merge_actions(ctx):
 async def test_engine_expected_head_merge_then_verified_code_completion(merge):
     ctx = merge
     first = await tick(ctx)
-    assert first.effects_succeeded == 1, first
+    assert first.effects_succeeded == 1, (first, [(row.detail or {}).get("observation") for row in await merge_actions(ctx)])
     assert (await state(ctx))[2].state == "running"
     assert len(ctx.mutations) == 1
     second = await tick(ctx)
@@ -292,3 +294,251 @@ async def test_merge_observer_resolves_authenticated_evidence(merge):
         record = (await load_execution(db, identity=merge.identity)).record
     observed = await MergeController(merge.factory, merge.merge_services)._observe(RunnerContext(merge.identity, record, datetime.now(UTC)))
     assert observed.kind.value == "ready", observed
+
+
+async def test_crash_after_intent_reuses_one_merge_identity(merge):
+    async def crash(stage, context):
+        if stage == "after_intent":
+            raise RuntimeError("simulated controller loss")
+
+    first = await tick(merge, crash)
+    assert first.errors == 1 and merge.mutations == []
+    before = (await merge_actions(merge))[0].operation_key
+    await tick(merge)
+    await tick(merge)
+    assert (await state(merge))[2].state == "passed"
+    assert [row.operation_key for row in await merge_actions(merge)] == [before]
+    assert len(merge.mutations) == 1
+
+
+async def test_crash_after_remote_success_adopts_only_verified_historical_evidence(merge):
+    async def crash(stage, context):
+        if stage == "after_effect":
+            raise RuntimeError("simulated lost local receipt")
+
+    await tick(merge, crash)
+    await tick(merge)
+    receipt = MergeReceipt.model_validate((await merge_actions(merge))[0].detail["merge_receipt"])
+    assert receipt.adopted and (await state(merge))[2].state == "passed"
+    assert len(merge.mutations) == 1
+
+
+async def test_unknown_outcome_keeps_claim_and_pending_action(merge):
+    async def crash(stage, context):
+        if stage == "after_intent":
+            raise RuntimeError("stop before provider")
+
+    await tick(merge, crash)
+    before = (await merge_actions(merge))[0].operation_key
+    merge.unavailable = True
+    await tick(merge)
+    execution, claim, node, _ = await state(merge)
+    assert execution.status == "awaiting_external" and execution.pending_action_key == before
+    assert claim.state == "held" and node.state == "running"
+    assert merge.mutations == []
+
+
+async def test_head_change_after_intent_prevents_mutation(merge):
+    async def change(stage, context):
+        if stage == "after_intent":
+            merge.remote["pr"]["head"]["sha"] = "d" * 40
+            merge.remote["graphql"]["data"]["repository"]["pullRequest"]["headRefOid"] = "d" * 40
+
+    await tick(merge, change)
+    assert merge.mutations == []
+    await tick(merge)
+    assert (await state(merge))[0].phase == "awaiting_review"
+
+
+async def test_concurrent_ticks_mutate_once(merge):
+    import asyncio
+
+    results = await asyncio.gather(tick(merge), tick(merge))
+    assert sum(report.effects_succeeded for report in results) <= 1
+    assert len(merge.mutations) == 1
+    await tick(merge)
+    assert (await state(merge))[2].state == "passed"
+
+
+async def test_code_dependencies_release_but_human_and_deployment_gates_remain(merge):
+    from src.orchestration.models import OrchestrationEdge
+    from src.orchestration.tick import run_tick
+    from src.shared.models.base import Base
+
+    async with merge.factory() as db:
+        conn = await db.connection()
+        await conn.run_sync(lambda connection: Base.metadata.create_all(connection, tables=[OrchestrationEdge.__table__]))
+        children = {}
+        for name, kind, status in (
+            ("code", "story", "pending"),
+            ("human", "gate", "pending"),
+            ("deploy", "gate", "awaiting_gate"),
+            ("after-deploy", "story", "pending"),
+        ):
+            child = OrchestrationNode(
+                org_id=merge.node.org_id, flow_id=merge.node.flow_id, epic_ref="E1", wave_ref="W1", node_ref=name, kind=kind, state=status, title=name
+            )
+            db.add(child)
+            children[name] = child
+        await db.flush()
+        for name in ("code", "human"):
+            db.add(OrchestrationEdge(org_id=merge.node.org_id, flow_id=merge.node.flow_id, from_node_id=merge.node.id, to_node_id=children[name].id))
+        db.add(
+            OrchestrationEdge(
+                org_id=merge.node.org_id, flow_id=merge.node.flow_id, from_node_id=children["deploy"].id, to_node_id=children["after-deploy"].id
+            )
+        )
+        await db.commit()
+    await tick(merge)
+    await tick(merge)
+    async with merge.factory() as db:
+        report = await run_tick(db)
+        assert report.success, report
+        await db.commit()
+        states = {name: (await db.get(OrchestrationNode, child.id)).state for name, child in children.items()}
+    assert states == {"code": "ready", "human": "awaiting_gate", "deploy": "awaiting_gate", "after-deploy": "pending"}
+
+
+async def test_expanded_scope_or_halted_flow_after_intent_cannot_merge(merge):
+    from src.orchestration.models import OrchestrationFlow
+
+    async def halt(stage, context):
+        if stage == "after_intent":
+            async with merge.factory() as db:
+                flow = await db.get(OrchestrationFlow, merge.node.flow_id)
+                flow.state = "halted"
+                await db.commit()
+
+    await tick(merge, halt)
+    assert merge.mutations == []
+    assert (await state(merge))[2].state == "running"
+
+
+async def test_live_grant_refusal_is_preserved_as_a_block(merge):
+    _, claim, _, _ = await state(merge)
+    raw = merge.store._read(f"TENANT#{merge.node.org_id}", f"EXEC#{claim.active_run_id}")
+    raw["status"] = {"S": "revoked"}
+    merge.store.client.put_item(TableName=merge.store.table, Item=raw)
+    result = await tick(merge)
+    execution, _, _, _ = await state(merge)
+    assert result.blocked == 1 and execution.block_code == "authority_unverifiable"
+    assert merge.mutations == []
+
+
+@pytest.mark.parametrize("attempts,allowed", [(7, True), (8, False)])
+async def test_last_remaining_attempt_is_usable_but_never_reset(merge, attempts, allowed):
+    from src.orchestration.models import OrchestrationExecution
+
+    async with merge.factory() as db:
+        execution = await db.get(OrchestrationExecution, merge.execution.id)
+        execution.attempts = attempts
+        await db.commit()
+    result = await tick(merge)
+    assert len(merge.mutations) == int(allowed), result
+    execution, claim, _, _ = await state(merge)
+    if allowed:
+        assert execution.attempts == 8
+        await tick(merge)
+        assert (await state(merge))[2].state == "passed"
+    else:
+        assert execution.block_code == "attempts_exhausted"
+    assert claim.generation == 5
+
+
+async def test_current_authorization_is_committed_and_locks_released_before_provider_write(merge):
+    from src.orchestration.models import OrchestrationExecution, OrchestrationFlow, OrchestrationWorkClaim
+
+    seen = []
+
+    async def inspect():
+        async with merge.factory() as db:
+            for model, identity in (
+                (OrchestrationFlow, merge.node.flow_id),
+                (OrchestrationExecution, merge.execution.id),
+                (OrchestrationWorkClaim, merge.identity.claim_id),
+            ):
+                await db.scalar(select(model).where(model.id == identity).with_for_update(nowait=True))
+            actions = list((await db.scalars(select(OrchestrationAction).where(OrchestrationAction.kind == MERGE_KIND))).all())
+            assert len(actions) == 1 and actions[0].status == "prepared"
+            assert actions[0].detail["eligibility"]["state"] == "eligible"
+            assert actions[0].detail["eligibility"]["requirements"]["required_approvals"] == 1
+            seen.append(actions[0].operation_key)
+
+    merge.on_mutation = inspect
+    result = await tick(merge)
+    assert result.effects_succeeded == 1 and len(seen) == 1, result
+
+
+async def test_failed_intent_cannot_justify_later_manual_merge(merge):
+    merge.conflict = True
+    await tick(merge)
+    merge.merge_remote()
+    result = await tick(merge)
+    assert result.blocked == 1
+    assert (await state(merge))[2].state == "running"
+
+
+async def test_non_story_cannot_receive_code_acceptance(merge):
+    async with merge.factory() as db:
+        node = await db.get(OrchestrationNode, merge.node.id)
+        node.kind = "eval"
+        await db.commit()
+    result = await tick(merge)
+    assert result.blocked == 1 and merge.mutations == []
+
+
+@pytest.mark.parametrize("failure", ["provider_identity", "write_credential", "rules_withdrawn"])
+async def test_final_provider_preconditions_refuse_mutation(merge, failure):
+    original = merge.mint.return_value
+
+    async def mint(*args, **kwargs):
+        if kwargs["permissions"]["contents"] == "write":
+            if failure == "write_credential":
+                raise RuntimeError("scoped credential unavailable")
+            if failure == "rules_withdrawn":
+                merge.remote["rules"][1]["parameters"]["required_approving_review_count"] = 2
+        return original
+
+    merge.mint.side_effect = mint
+
+    async def change_identity(stage, context):
+        if stage == "after_intent" and failure == "provider_identity":
+            merge.remote["pr"]["base"]["repo"]["id"] = 999
+
+    await tick(merge, change_identity)
+    assert merge.mutations == []
+    execution, claim, node, _ = await state(merge)
+    assert node.state == "running" and claim.state == "held"
+    assert execution.phase == "merge_ready"
+
+
+async def test_artifact_from_another_run_namespace_cannot_authorize_merge(merge):
+    async with merge.factory() as db:
+        row = await db.scalar(select(OrchestrationAction).where(OrchestrationAction.kind == "review_evidence"))
+        row.artifact_ref = row.artifact_ref.replace("/review-result/", "/another-run/review-result/")
+        await db.commit()
+    result = await tick(merge)
+    assert result.blocked == 1 and merge.mutations == []
+    assert "namespace" in (await state(merge))[0].block_detail
+
+
+async def test_eligibility_conflict_dispatches_repair_without_merge(merge):
+    merge.remote["pr"].update(mergeable=False, mergeable_state="dirty")
+    await tick(merge)
+    assert (await state(merge))[0].phase == "repairing"
+    result = await review_tick(merge)
+    assert result.effects_succeeded == 1 and merge.mutations == []
+    assert merge.calls[-1]["persona"] == "developer"
+
+
+async def test_github_second_precision_merge_timestamp_remains_verifiable(merge):
+    await tick(merge)
+    action = (await merge_actions(merge))[0]
+    when = datetime.fromisoformat(action.detail["eligibility"]["observed_at"]).replace(microsecond=0)
+    merge.remote["pr"]["merged_at"] = when.isoformat()
+    result = await tick(merge)
+    assert (await state(merge))[2].state == "passed", result
+    receipt = MergeReceipt.model_validate((await merge_actions(merge))[0].detail["merge_receipt"])
+    assert receipt.merged_at == when
+    with pytest.raises(ValueError, match="chronological"):
+        MergeReceipt.model_validate({**receipt.model_dump(), "eligibility_observed_at": when + timedelta(seconds=1)})
