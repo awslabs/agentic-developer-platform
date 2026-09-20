@@ -388,6 +388,411 @@ but that narrower observation does not prove CLI-only triggering. Wait for a
 qualifying authorized change; do not manufacture a commit/deployment to pass this
 test. This follow-up's merge also does not itself satisfy the live criterion.
 
+## U12: real baseline and serving capture
+
+`test_u12_live.py` implements the two R17 criteria #5067 defers for #5040, tracked
+by follow-up #5289. The merged `spike/` harness derives its fixtures from upstream
+source, so it establishes neither of them: it has never reached a provider, a
+cluster or an API server. This check observes a real selected baseline instead.
+It is the **capture** path only. It performs no provider operation, no cluster
+mutation and no deployment — `BaselineObserver` has no launch, stop, down, purge,
+delete, drain or apply method. Any provisioning or cancellation needed to produce
+something to observe is the operator's separately authorized action, taken before
+this runs, under its own spend limit, deadline and cleanup owner.
+
+The two criteria are reported **separately**, because a batch result cannot
+establish endpoint reachability, unauthenticated refusal or owning-controller
+teardown:
+
+| Criterion | Covers |
+|---|---|
+| **U12-L1** | Provider selection and provisioning, EKS node registration and readiness, Kubernetes scheduling, status and logs, cancellation and controller lifecycle, cost observation, provider-verified cleanup |
+| **U12-L2** | Serving endpoint reachability, authenticated and unauthorized behavior, status, owning-controller stop and cleanup |
+
+### The observer ships; the target registry is what is empty
+
+These are two different things, and keeping them apart is what makes the check
+runnable.
+
+The **observer is client code and it ships**:
+`superplane_acceptance/live_observer.py`. It reads the baseline through two
+allow-listed read-only transports — `SkyPilotReads` (exactly `GET /api/health`,
+`POST /status`, `GET /enabled_clouds`, the read subset of the maintained client in
+`src/superplane-controller/skypilot/client.go`) and `KubectlReads` (a fixed tuple
+of `kubectl get` invocations). `/launch` and `/down` are not reachable from
+either: the allow-list is consulted before the URL is built, so no argument makes
+this observer launch or tear down anything. Alongside those it has one read-only
+provider instance-describe client, and a read-only ingestion path for the retained
+records of the authorized operation (both below). Its reads and mappings are
+regressed offline in `tests/test_u12_live_observer.py` against the response shapes
+the maintained Go client's own tests pin.
+
+**The reviewed target registry (`BASELINE_TARGETS`) is empty**, because that is
+authorization, not code. No baseline Superplane environment has been reviewed and
+mapped, and the selection remains the EPIC A supervisor's decision, so this check
+fails `BLOCKED` rather than observing an invented target. Registering one is its
+own reviewed, authorized change supplying that environment's
+provider/cluster configuration, its SkyPilot API and runtime, its onboarding entry
+points, its state stores and its controller name.
+
+Being the reviewed observer is necessary but not sufficient to publish: `capture`
+requires the class to be registered in `LIVE_OBSERVERS` **by exact type** *and*
+that instance to report live transports. A fake that merely satisfies the observer
+contract stays `SOURCE_FIXTURE`, and the reviewed observer driven by an offline
+transport does too.
+
+Run from the ADP repository root with explicit inputs:
+
+```sh
+# Selection and provenance.
+export SUPERPLANE_LIVE_BASELINE_ENVIRONMENT='<registered baseline environment>'
+export SUPERPLANE_LIVE_BASELINE_REVISION='<exact 40-hex commit deployed in it>'
+export SUPERPLANE_LIVE_BASELINE_SOURCE_REVISION='<this checkout's git sha>'
+export SUPERPLANE_LIVE_BASELINE_SCENARIOS='<comma-separated scenario IDs below>'
+export SUPERPLANE_LIVE_BASELINE_AUTHORIZATION='<retained access/spend/deadline/cleanup reference>'
+export SUPERPLANE_LIVE_BASELINE_WINDOW_START='<ISO-8601 instant with UTC offset>'
+export SUPERPLANE_LIVE_BASELINE_EVIDENCE_FILE='/absolute/new/path/u12-baseline-evidence.json'
+# Retained records of the authorized operation (see "Retained records" below).
+# Optional: without it the checks only a record can settle stay unsatisfied and
+# the run blocks naming each missing record.
+export SUPERPLANE_LIVE_BASELINE_RECEIPTS_DIR='/absolute/path/to/retained-records'
+# Only if the executing checkout has uncommitted changes. Default is refusal: a
+# dirty tree means SOURCE_REVISION does not describe the code that observed.
+export SUPERPLANE_LIVE_BASELINE_ALLOW_DIRTY_SOURCE='true'
+# Read-only access. Never echo or commit these values.
+export SUPERPLANE_LIVE_SKYPILOT_TOKEN='<existing read token for the baseline's SkyPilot API>'
+export SUPERPLANE_LIVE_KUBECONFIG='/absolute/path/to/kubeconfig'   # selected workspace cluster
+export SUPERPLANE_LIVE_SUPERPLANE_NAMESPACE='superplane'           # optional, this default
+export SUPERPLANE_LIVE_SKYPILOT_NAMESPACE='skypilot'               # optional, this default
+# Only needed with RECEIPTS_DIR, to read the producing lane's own record of what it
+# published. Without it retained records stay unauthenticated diagnostics.
+export SUPERPLANE_LIVE_PRODUCER_TOKEN='<existing read token for the execution lane>'
+# Where the lane's downloaded evidence archive is, so its bytes can be checked
+# against the digest GitHub recorded for it (see "The producer's artifact
+# contract"). Only needed when a producer client is registered.
+export SUPERPLANE_LIVE_BASELINE_EVIDENCE_ARCHIVE_DIR='/absolute/path/to/downloaded-artifacts'
+python3 -m pytest modules/domain-apps/superplane/tests/acceptance/test_u12_live.py -q --tb=short
+```
+
+The seven selection-and-provenance `SUPERPLANE_LIVE_BASELINE_*` inputs are
+required. Any missing one fails `BLOCKED`, naming what is absent; the test does not
+skip. `RECEIPTS_DIR` and `ALLOW_DIRTY_SOURCE` are the two optional ones — absent
+records block precisely the checks that need them rather than the whole run, which
+is what keeps a partial capture readable. The access variables are read at the
+credential boundary only and never reach the config or the evidence artifact.
+
+`REVISION` must be the revision actually deployed in the baseline, not a branch
+name, and an **exact 40-hex commit** rather than an abbreviation: it is compared
+whole against the commit an independent producer reports the evidence-producing
+attempt executed, for the same reason the registered cluster must be a full ARN. A
+prefix comparison would admit a different commit sharing the prefix, and an
+abbreviation compared whole would reject every genuine producer record.
+`SOURCE_REVISION` is the maintained-source revision this capture ran from.
+They are different provenance facts and a reader needs both to reproduce a
+finding. `SOURCE_REVISION` is **verified against the checkout actually executing**
+rather than accepted as typed — a capture is supposed to be reproducible from the
+revision it names, so a disagreement is refused. Uncommitted changes are refused
+too unless `ALLOW_DIRTY_SOURCE=true` records the gap explicitly.
+`AUTHORIZATION` must be a readable reference to the retained spend limit,
+deadline and cleanup owner — a pasted credential is refused rather than retained.
+`WINDOW_START` is the authorized execution window the observed operations ran in,
+required as an input because the operator knows it and this check cannot infer it.
+Evidence for an already-finished operation (a cancellation, a teardown, a provider
+confirming absence) is necessarily observed *before* the capture runs, so the
+window cannot start at the capture itself; it is bounded to 24h so a receipt
+replayed from an earlier session is still rejected. Use an existing output
+directory and a new evidence filename. The kubeconfig must resolve to the selected
+workspace cluster — reading the right fields from the wrong cluster is refused.
+
+Raw observations are retained privately in `<evidence file>.raw/` at mode `0700`,
+each file `0600`. The published artifact carries each observation's **reference and
+sha256**, not its body, so a finding stays re-derivable without republishing
+output that may contain addresses, annotations or credentials.
+
+### What an observation must say
+
+An observation records an `outcome`, not merely that a look happened:
+
+| Outcome | Meaning | Effect on its check |
+|---|---|---|
+| `satisfied` | The expected behavior was observed to happen | passes |
+| `refuted` | The expected behavior was observed **not** to happen | fails, and is retained as a live refutation — never collapsed into "not run" |
+| `indeterminate` | Looked at, could not be established either way | fails |
+
+A check with no observation at all is `not_run` and fails. Contradictory
+observations for one check fail: a refutation outranks a neighbouring success.
+
+Several checks cannot be settled by a steady-state read after the fact — provider
+ordering at launch time, launch-failure fallback, the progress stream and its
+terminal event, cancellation, controller restart, state-store survival, teardown.
+These are settled from the **retained records** of the authorized operation
+(below). Without those records the observer reports them `indeterminate` **naming
+the exact missing record** rather than fabricating a pass, so a run blocks on a
+precise list.
+
+Provider-side absence is deliberately **not** settleable from a retained record at
+all. Whether a rented machine stopped existing is the one fact an operator's own
+file must not assert, so it is read live from a registered read-only provider
+instance-describe client (`PROVIDER_READERS`). One reviewed reader ships, for AWS
+EC2 instance ids; it answers only for `i-...` handles, because an `mi-...` SSM
+activation being deregistered means the node left the control plane, **not** that
+the rented machine stopped billing. A provider with no reviewed reader cannot
+confirm an absence and the check names that gap.
+
+### Retained records of the authorized operation
+
+`RECEIPTS_DIR` points at files the separately authorized operation left behind:
+the provider options the controller was offered at launch, the streamed progress
+and its terminal event, what a cancellation did, what a teardown called, and the
+authoritative `sky serve status` listing. Reading them is how a criterion whose
+evidence is gone by capture time can still be established. Nothing here operates —
+files are opened read-only, with a bounded file count and bounded sizes, and there
+is no network or subprocess path in the ingestion module at all.
+
+A record supplies **observations**; the outcome is derived from them here. A record
+declaring its own verdict is refused, because a check that trusts a verdict written
+next to the evidence is not checking anything.
+
+#### The shape: a body, and a pointer to it
+
+Each record is **two files**. The `.body` file is the evidence, and everything a
+verdict depends on lives inside it. The `.json` file beside it is only a pointer:
+
+```jsonc
+// launch.json — the submission. These four keys and no others.
+{
+  "record_kind": "check_evidence",        // or "service_inventory"
+  "body": "launch.body",                  // a plain filename beside this one
+  "body_sha256": "<sha256 of that file>",
+  "producer": "<execution lane that published the evidence>"
+}
+```
+
+```jsonc
+// launch.body — the evidence. Hashed, and attested as a set (below).
+{
+  "environment": "<the selected baseline environment>",
+  "deployed_revision": "<the revision deployed in it>",
+  "authority": "controller.launch-decision",
+  "check_id": "provider.ordering-cheapest-first",
+  "observed_at": "<ISO-8601 instant with UTC offset>",
+  "run_id": "<the lane's run id>",
+  "attempt": 1,
+  "resource": {"skypilot_cluster": "sky-baseline-1"},
+  "observations": {"offered_options": [{"provider": "nebius", "hourly_price": 1.5}]}
+}
+```
+
+A `service_inventory` body carries `services` instead of `check_id`, `resource` and
+`observations`.
+
+**This split is the whole point, so it is worth saying why.** An earlier version
+accepted a hand-written `facts` object *beside* the pointer, and read only that.
+The digest therefore covered bytes nobody consulted: supplying an arbitrary body,
+labelling the submission `controller.launch-decision` and writing prices into
+`facts` produced a verdict that flipped from satisfied to refuted by editing those
+prices, **while the reported evidence digest stayed byte-identical**. Every value
+an outcome depends on now lives in the hashed bytes, so editing an observation to
+change an outcome changes the digest. A submission still carrying `facts`,
+`check_id`, `authority`, `resource`, `environment`, `deployed_revision`,
+`observed_at`, `run_id`, `attempt` or `services` at the top level is **refused by
+name** rather than ignored — silently dropping it would leave you believing your
+hand-written values were honoured.
+
+#### Authentication: who vouches for the bytes
+
+A digest attests to something only if it comes from somewhere other than the
+material it describes. Recomputing a digest the same local file declared proves
+only that a file agrees with itself. So `producer` names the execution lane that
+published the evidence, and a **registered read-only producer client** for that
+lane is asked, through the lane's own API, what digest it recorded for that run and
+attempt.
+
+The lane vouches for the **whole retained set**, not each file: the set's digest is
+the sha256 over its sorted `submission-name:body-digest` lines. Per-file
+attestation would leave the directory's *composition* unattested — a forged empty
+`sky serve status` listing could be added beside genuine records, or the record
+that would have refuted a check withheld, and every remaining file would still
+verify. Adding, removing or substituting a record is therefore itself a change to
+the one value the lane vouched for.
+
+Three outcomes:
+
+| Producer answer | Result |
+|---|---|
+| No registered client for the lane, or the lane published nothing for that attempt | **Unauthenticated.** Read and retained as diagnostics; every check it touches is reported `indeterminate` with the reason. It cannot satisfy a check and cannot establish an absence. |
+| Agrees with the retained set | **Authenticated.** Only now may a check be satisfied from a record. |
+| Disagrees | **Refused.** Two sources contradicting each other is not a gap, so the capture blocks rather than downgrading quietly. |
+
+`EVIDENCE_PRODUCERS` **ships empty**, for the same reason `BASELINE_TARGETS` does:
+shipping a reviewed client is engineering, whereas deciding which execution lane is
+authoritative for a baseline is authorization. Until a supervisor registers one,
+every retained record is unauthenticated diagnostics. Reading a lane's published
+record needs an existing token in `SUPERPLANE_LIVE_PRODUCER_TOKEN`; it is read at
+the credential boundary only and never reaches the config or the evidence artifact.
+
+All records in one directory must name **one** producer lane and **one** run
+attempt: mixing them would let whoever assembled the directory pick, per record,
+whichever attempt the lane happened to have a convenient digest for.
+
+##### The producer's artifact contract
+
+A lane can only be asked to vouch for something if the contract states exactly what
+it publishes, so:
+
+| Property | Requirement |
+|---|---|
+| Count | Exactly **one** artifact per attempt, named `superplane-baseline-evidence`. Two matching artifacts is ambiguity, and ambiguity is refused rather than resolved by picking one |
+| Members | Exactly the evidence **body** files the retained submissions' `body` fields name — byte-for-byte those bodies, flat, no directories. Not the `.json` submission pointers, and nothing else |
+| Member names | Screened by the same rule that validates a submission's `body`, so the two sets are comparable by name. Absolute paths, traversal, nested paths, directories, symlinks and duplicate names are refused, and member count and uncompressed size are bounded |
+| Publishing step | The reviewed workflow, job and upload step must all have concluded `success` on **that** attempt. A run that failed before uploading has *failed to publish*, which is not the same fact as "published nothing" |
+
+The read chains two authorities in one direction only:
+
+1. **GitHub authenticates the archive.** The digest GitHub records for an artifact
+   covers the uploaded **ZIP's bytes**, so the archive the operator holds is hashed
+   and compared against that record first.
+2. **The archive yields the expected set digest.** Only then is it opened and its
+   members read, and the same `submission-name:body-digest` function the retained
+   set is hashed with is applied to them.
+
+Comparing GitHub's archive digest *directly* against the set digest cannot ever
+succeed, because the two cover different byte sequences — and an authentication
+path that fails for honest evidence is indistinguishable from not having one. The
+expected value is never taken from a caller's claim, and never derived by stripping
+the algorithm prefix off GitHub's.
+
+Which attempt published the artifact is established from fields GitHub actually
+sends. The artifacts API returns **no `run_attempt`**, so the attempt comes from the
+per-attempt record — the commit it executed, the reviewed workflow, the repository,
+a `success` conclusion and the interval it ran in — and an artifact is credited to
+it only when GitHub's own `created_at` falls inside that interval. Attempts are
+consecutive, so an earlier failed attempt's artifact precedes the later attempt's
+start and is refused. Requiring an artifact `run_attempt` field would admit only
+fabricated records.
+
+The archive itself is not downloaded by this capture: it reads
+`superplane-baseline-evidence.zip` from
+`SUPERPLANE_LIVE_BASELINE_EVIDENCE_ARCHIVE_DIR`, which keeps the read surface to
+allow-listed `GET`s of metadata and means a redirected artifact download can never
+be followed with the token attached. A missing or unreadable archive is `BLOCKED`,
+naming the path — not treated as "the lane published nothing".
+
+#### The screens each record still survives
+
+| Screen | What it closes |
+|---|---|
+| Authentication | An independent lane's record of what it published, matched to the retained set. Without it nothing is established |
+| Hash | The declared sha256 is recomputed from the body on disk, so a body edited after the fact is refused |
+| Time | `observed_at` must fall inside the authorized window, so an earlier session's records cannot be replayed into this one |
+| Target and revision | The record's environment and deployed revision must be the selected ones |
+| Run identity | `run_id` and `attempt` are required even with no producer registered: evidence that cannot say which run it came from is unauthenticatable by anyone |
+| Resource | The record's handles must intersect a machine this capture observed for itself |
+| Authority | Each check names which authority may speak for it, so the tool that performed an operation cannot answer for that operation's effect on the provider |
+
+Serving absence is the claim an unvouched file most wants to make, and gets special
+treatment: serving has no controller-side inventory for the capture to observe
+independently, so the listing is the only authority on which services exist. An
+**unauthenticated empty** listing therefore cannot establish that this baseline
+runs no service — the capture blocks. A listing naming services is still recorded,
+because a service being there to find corroborates it; an empty one is corroborated
+by nothing.
+
+A retained teardown record establishes that teardown was *called*; the provider
+establishes what happened to the machine. When a record claims a release and the
+provider still reports the instance, the check is **refuted** — which is precisely
+the case a teardown's own success hides.
+
+### Coverage and identity are enforced
+
+- **Scenario coverage.** A check may only be satisfied if one of its baseline
+  scenarios (from `ParityCheck.baseline_scenarios`) was selected. Evidence for an
+  unselected scenario is refused, and a partial selection is reported as
+  incomplete coverage that cannot satisfy a criterion. `scenario_coverage` in the
+  record shows this per scenario.
+- **Resource identity.** Provider, region, cluster, controller, SkyPilot runtime
+  and deployed revision are each **observed from authoritative metadata and then
+  compared** to the selected target's recorded configuration — the configured
+  values are what the operator typed, the observed ones are what answered, and a
+  disagreement in any of them refuses the capture. Copying an expectation into an
+  observed field and comparing it back to itself would check nothing, so the
+  observed identity is built only from what the transports returned. The cluster is
+  compared as a **whole EKS ARN** (account, region and name together) against the
+  kubeconfig's current context and the API endpoint it resolves to: a prefix, a
+  suffix and a lookalike name are all simply different strings, which is what stops
+  a neighbouring cluster's node facts from being labelled as the selected one's.
+  One handle may not denote two different machines, and a machine observed joining,
+  running a workload or being cleaned up must be a machine this capture also saw
+  provisioned.
+- **Serving branches on authoritative inventory.** With services present, the full
+  serving lifecycle must be evidenced. Absence rests on the retained authoritative
+  service listing (`sky serve status` or a proven equivalent), because serving is
+  an inventory ordinary cluster status does not enumerate — a live service can be
+  entirely invisible to it, so its silence proves nothing and an empty listing has
+  to be read from the source that actually knows. Absence also counts only if the
+  serving scenario was selected, so "we never looked at serving" cannot pass as
+  "serving is absent". Serving facts arriving alongside an empty listing are
+  rejected as contradictory.
+- **Existing state for U19.** All five recorded state classes must be resolved
+  explicitly, and each lands in exactly one of three results: enumerated handles, a
+  verified-empty finding, or unresolved with the reason named. Hybrid nodes are
+  correlated across SSM, the provider and SkyPilot so an unrelated managed node
+  cannot be counted as one of this baseline's; durable backing stores are captured
+  with identity and kind (external database, node-bound volume or scratch that a
+  redeploy loses), because what survives a redeploy is the point of the question;
+  and in-flight jobs and requests are included, since state that is currently
+  moving is exactly what an adopt decision would collide with. Every decision is
+  left `undecided`: U19 #5061 owns the adopt / drain-relaunch / no-existing-state
+  decision and this capture only records its inputs.
+
+### Expected evidence, scenario by scenario
+
+Scenario IDs come from U12's recorded inventory (`spike/baseline_inventory.py`);
+the machine-readable form of this table is `EXPECTED_EVIDENCE` in
+`superplane_acceptance/live_baseline.py`, and a regression fails if an inventory
+scenario has no mapping.
+
+| Scenario ID | Expected evidence |
+|---|---|
+| `provider-selection-cheapest-first` | The provider option actually chosen, its cost, and the order offered |
+| `skypilot-launch-and-stream` | The launch request as sent, streamed progress lines in arrival order, and the terminal event that ended the stream |
+| `autostop-and-spot-defaults` | Effective idle-autostop and disk defaults observed on the running cluster, not read from source |
+| `eks-join-via-onboarding-scripts` | A Kubernetes Node reaching `NodeReady=True`, correlated to the provider instance; allocatable `nvidia.com/gpu` matching the request; no SSM activation id or code in any captured output |
+| `node-health-monitoring` | The node record's resolved Kubernetes node name, or its absence |
+| `cost-aggregation-per-nodepool` | The hourly and daily figures the baseline reported, labelled estimate |
+| `teardown-via-down-then-purge` | The teardown calls issued, and **separately** the provider reporting no running instance afterwards |
+| `serving-via-sky-serve-yaml` | The authoritative service listing, with the actual service handles it named, establishing presence or absence; an authorized request answered on the declared port; an unauthenticated request refused; exactly one owning controller, and teardown removing every replica with provider-side confirmation |
+
+Every check needs a `satisfied` outcome, and two carry a further rule on top.
+**Cleanup** requires independent provider confirmation that the instance is gone —
+a successful `down` or `purge` only means SkyPilot dropped its local handle,
+whatever the provider did. **Cost** records a missing figure as unknown, which is
+explicitly not zero spend, and leaves the check unsatisfied.
+
+An operator selecting an empty scenario list is a statement of intent and is
+refused — the baseline's SkyServe specs are operator-run CLI artifacts with no
+owning controller, so a running service would appear in no CR listing at all, and
+"nothing selected" must never read as "nothing exists".
+
+Evidence for another environment, another deployed revision, a check outside the
+dimension it was offered for, or an instant outside the window is rejected rather
+than averaged in. Where the baseline genuinely does not do something, that is
+recorded as not run and kept; it is never inferred from a neighbouring success. On
+success the record is published once, atomically, to the new path with private
+permissions, after every assertion passes — so a failed run leaves no file that
+could later read as a pass. It contains no credentials, tokens or raw response
+bodies.
+
+The record also captures the baseline's live clusters, node CRs, API-server state,
+correlated hybrid nodes, durable backing stores with their kind, in-flight jobs and
+requests, and the authoritative SkyServe listing — the inputs to U19 #5061's later
+adopt / drain-relaunch / no-existing-state decision, with every decision left
+`undecided`. This check does not execute that handover.
+
+Merging #5289 produces no live evidence. U12-L1, U12-L2, #5067 and EPIC
+acceptance remain open until an authorized operator runs this command against a
+registered environment and the resulting evidence is reviewed.
+
 ## Offline CI
 
 Routine checks use:
@@ -435,7 +840,44 @@ transports produce `offline-fixture`/`matched` results, not `live`/`passed` evid
 pytest command fails, without skipping, before any network or AWS access when its
 inputs are absent.
 
-U12's real baseline acceptance remains a separate prerequisite tracked by #5067.
-Offline authoring of these checks closes none of the live criteria: the API
+U12's offline regressions (`tests/test_u12_live_baseline.py` for the capture and
+record rules, `tests/test_u12_live_observer.py` for the observer itself) are
+intentionally **not** marked, so this lane runs them. They drive the whole capture
+flow with fakes and assert the outcome: every result stays `SOURCE_FIXTURE`, both
+criteria stay unsatisfied, and the live publisher refuses the record. The observer
+regressions additionally pin its read allow-list, its refusal of `/launch` and
+`/down`, its mapping of the maintained wire shapes, each of the five record screens
+refusing a record that fails it, the refusal of a record that declares its own
+verdict, the observed-identity comparison refusing prefix, suffix and lookalike
+clusters, the exclusion of an unrelated managed node from the correlated hybrid
+set, the `indeterminate` outcomes it reports where no authoritative input exists,
+and its handling of malformed or hostile responses — all against fixtures, so the
+reviewed observer driven offline is still `SOURCE_FIXTURE`.
+
+The evidence-producer read has its own **positive control**, which drives the real
+`WorkflowRunReads` — its transport, parsers and archive reader — over sanitized
+copies of the documented REST shapes and a real in-memory ZIP whose independently
+computed hash matches its metadata, asserts the value returned is the canonical set
+digest ingestion computes from the same bodies, and asserts the exact URLs
+requested (including that the non-existent per-attempt artifacts path is not among
+them). Two further controls register that real client as the producer and drive the
+whole chain into `load_ledger`: genuine evidence authenticates, and one body edited
+after publication contradicts. This matters because a producer fake that returns
+the expected digest directly cannot test this integration at all — that is how two
+mismatched contracts survived a green suite. Its negative controls break one thing
+each: an archive whose bytes do not match GitHub's recorded digest, an added or
+withheld member, an unsafe member name, a non-ZIP body, a missing archive, an
+artifact stamped before or after the attempt's interval, a foreign head, workflow
+or repository, a failed or skipped publishing job/step, two matching artifacts, a
+malformed or absent digest, and a redirect away from the endpoint. A fully green offline run therefore establishes
+no live evidence, which is the intended result rather than a gap to work around. A
+subprocess regression verifies the explicit U12 live command fails `BLOCKED`
+instead of skipping when its inputs are absent.
+
+U12's real baseline acceptance remains a separate prerequisite tracked by #5067,
+and offline authoring of these checks closes none of the live criteria: the API
 observation, the U1-L1 teardown observation and the U6 check must each actually be
-executed against the real boundary by someone authorized to do so.
+executed against the real boundary by someone authorized to do so. U12's baseline
+and serving criteria now have an implemented check (above), but it has not been
+run: capture requires a registered environment and authorized access, which remain
+open.

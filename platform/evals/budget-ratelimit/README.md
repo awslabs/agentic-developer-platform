@@ -242,10 +242,11 @@ against a `service_account` budget config.
 
 ## Running it
 
-The live run is `workflow_dispatch` only. Unlike the CLI-onboarding eval there is
-**no cron**: this eval writes spend controls in a shared account, and a nightly
-that mutates them unattended is the wrong default. Harness test 5 asserts no
-`schedule:` reappears.
+The live suite is called by the [combined nightly regression](../../../docs/runbooks/nightly-cli-regression.md)
+after onboarding has restored the approval flag. It still supports standalone
+`workflow_dispatch` for diagnosis. The only cron belongs to the parent workflow;
+this reusable child does not schedule itself. All live CLI suites share one lock,
+and budget writes remain restricted to run-tagged fixtures with mandatory cleanup.
 
 ```bash
 # Full run (needs IRSA + kubeconfig for the target env)

@@ -14,7 +14,7 @@
  * information, and the operator acts through the gate controls.
  */
 
-import type { EvaluationEvidenceSummary, ExecutionSummary } from '@/types/orchestration';
+import type { EvaluationCorrectionSummary, EvaluationEvidenceSummary, ExecutionSummary } from '@/types/orchestration';
 import {
   absentExecutionNote,
   executionPresentation,
@@ -82,6 +82,12 @@ export function ExecutionProgress({
     action.kind === 'evaluation_evidence' && action.status === 'succeeded' &&
     action.evidence_summary && Array.isArray(action.evidence_summary.criteria) &&
     typeof action.evidence_summary.mandatory_passed === 'boolean'
+  );
+  const corrections = execution.actions.filter((action) =>
+    ['evaluation_correction_issue', 'evaluation_context'].includes(action.kind) &&
+    action.evidence_summary && 'evaluation_cycle' in action.evidence_summary && 'stage' in action.evidence_summary &&
+    typeof action.evidence_summary.evaluation_cycle === 'number' &&
+    ['creation_pending', 'creation_unresolved', 'delivery_pending', 'retest_requested'].includes(String(action.evidence_summary.stage))
   );
 
   return (
@@ -173,6 +179,23 @@ export function ExecutionProgress({
                 <li key={criterion.criterion_id}>{criterion.criterion_id}: {criterion.outcome}</li>
               ))}
             </ul>
+          </div>
+        );
+      })}
+
+      {corrections.map((action) => {
+        const correction = action.evidence_summary as unknown as EvaluationCorrectionSummary;
+        return (
+          <div key={action.id} className="mt-2 text-xs" aria-label="Evaluation correction">
+            <p>{correction.issue_number ? `Correction issue #${correction.issue_number}` : 'Correction issue pending'}</p>
+            <p>{correction.stage === 'retest_requested'
+              ? `Fresh evaluation requested: cycle ${correction.retest_cycle}`
+              : correction.stage === 'delivery_pending'
+                ? 'Correction admitted; review, merge and verified deployment are required before retest.'
+                : correction.stage === 'creation_unresolved'
+                  ? 'Issue creation is unresolved; checking for the existing issue.'
+                  : 'Preparing the correction issue.'}</p>
+            <p>Correction allowance remaining after this cycle: {correction.remaining_corrections - 1}</p>
           </div>
         );
       })}

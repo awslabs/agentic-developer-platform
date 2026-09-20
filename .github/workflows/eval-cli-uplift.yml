@@ -94,15 +94,15 @@ on:
     branches:
       - main
 
-# Deliberately no `schedule`. Scheduled scans are paused, and an unattended run
-# of this evaluation both spends money and mutates the dev account.
+# The single schedule lives in nightly-cli-regression.yml, which calls this
+# workflow with suites=full and a verified deployed revision. No separate cron.
 
 # One live run at a time: two would each create instances tagged for this
 # evaluation and contend for the same Cognito pool and destination account.
 # cancel-in-progress stays false — cancelling mid-journey is exactly the case
 # where resources leak, so a run is always allowed to reach its cleanup.
 concurrency:
-  group: eval-cli-uplift-${{ inputs.environment || 'dev' }}
+  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.environment || 'dev') }}
   cancel-in-progress: false
 
 permissions:

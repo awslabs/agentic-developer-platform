@@ -2,6 +2,10 @@
 
 Story #5199 · PR #5221 · workflow `.github/workflows/eval-cli-uplift.yml`.
 
+The [combined nightly regression](nightly-cli-regression.md) invokes this suite
+with `full` after onboarding and budget enforcement. The instructions below are
+for standalone diagnosis; the `login` default is not used by the nightly.
+
 Start with **login**, the default: Actions launches disposable EC2, transfers the
 checked-in scripts through S3/SSM, installs the served ADP CLI, performs native
 Cognito admin login and refresh, collects evidence, and cleans up. Every product
@@ -113,7 +117,9 @@ and release files before EC2 launch. Login does not assume a destination role.
 
 ### Full run
 
-Only request this after the remaining scenarios and fixtures are ready:
+The nightly requests this complete matrix. Missing fixtures are recorded as
+blocked and prevent full acceptance; they do not silently narrow the selection.
+To run the same suite independently:
 
 ```bash
 gh workflow run eval-cli-uplift.yml --repo aws-e/adp --ref main \
@@ -264,4 +270,5 @@ Bedrock path. Do not expand the framework or claim the full epic has passed.
 
 The first checkpoint is progress only. Closing the full evaluation still requires
 two fresh full runs against the same deployed revision, plus interruption/resume,
-repeat cleanup, and failure-injection evidence. Scans remain paused.
+repeat cleanup, and failure-injection evidence. The shared nightly workflow now
+schedules the full evaluation; blocked cases still prevent acceptance.

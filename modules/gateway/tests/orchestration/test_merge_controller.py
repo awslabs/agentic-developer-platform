@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -31,16 +32,22 @@ from tests.orchestration.test_review_evidence import APPROVE, _all_refs
 
 @pytest.fixture
 async def merge(cycle, monkeypatch):  # noqa: F811
-    ctx = cycle
-    assert (await review_tick(ctx)).effects_succeeded == 1
+    async with prepared_merge(cycle, monkeypatch) as ctx:
+        yield ctx
+
+
+@asynccontextmanager
+async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40):
+    result = await review_tick(ctx)
+    assert result.effects_succeeded == 1, ((await state(ctx))[0].block_detail, result)
     execution, claim, node, actions = await state(ctx)
     reviewer = claim.active_run_id
     await ctx.finish(reviewer)
     doc = json.loads(json.dumps(deepcopy(APPROVE)).replace(APPROVE["subject"]["reviewed_head_sha"], ctx.head))
-    doc["scope"].update(org_id=node.org_id, flow_id=node.flow_id, node_id=node.id, execution_id=execution.id, cycle=1)
-    doc["authority"].update(accepted_plan_version=1, claim_id=ctx.identity.claim_id, claim_generation=5)
+    doc["scope"].update(org_id=node.org_id, flow_id=node.flow_id, node_id=node.id, execution_id=execution.id, cycle=ctx.identity.cycle)
+    doc["authority"].update(accepted_plan_version=1, claim_id=ctx.identity.claim_id, claim_generation=ctx.identity.claim_generation)
     doc["repository"].update(repo=ctx.binding.repo, provider_repository_id=123)
-    doc["subject"].update(pr_number=77, provider_pr_node_id="PR_cycle", reviewed_head_sha=ctx.head)
+    doc["subject"].update(pr_number=ctx.binding.pr_number, provider_pr_node_id=ctx.binding.provider_pr_node_id, reviewed_head_sha=ctx.head)
     doc["lineage"].update(author_run_id=ctx.root, reviewer_run_id=reviewer)
     doc["observed_at"] = datetime.now(UTC).isoformat()
     payload = json.dumps(doc).encode()
@@ -74,7 +81,7 @@ async def merge(cycle, monkeypatch):  # noqa: F811
     await review_tick(ctx)
     assert (await state(ctx))[0].phase == "merge_ready"
     data = provider_data()
-    data["pr"].update(number=77, node_id="PR_cycle", merged=False, merged_at=None)
+    data["pr"].update(number=ctx.binding.pr_number, node_id=ctx.binding.provider_pr_node_id, merged=False, merged_at=None)
     data["pr"]["head"].update(sha=ctx.head, ref="agent/issue-43", repo={"id": 123, "full_name": ctx.binding.repo})
     data["pr"]["base"].update(sha="b" * 40, ref="main", repo={"id": 123, "full_name": ctx.binding.repo})
     data["repository"].update(id=123, full_name=ctx.binding.repo)
@@ -83,7 +90,7 @@ async def merge(cycle, monkeypatch):  # noqa: F811
     data["reviews"][0]["commit_id"] = ctx.head
     data["graphql"]["data"]["repository"].update(databaseId=123)
     data["graphql"]["data"]["repository"]["pullRequest"].update(
-        id="PR_cycle", headRefOid=ctx.head, baseRefOid="b" * 40, merged=False, mergeQueueEntry=None
+        id=ctx.binding.provider_pr_node_id, headRefOid=ctx.head, baseRefOid="b" * 40, merged=False, mergeQueueEntry=None
     )
     calls, mutations = [], []
     ctx.remote, ctx.mutations, ctx.http_calls = data, mutations, calls
@@ -92,7 +99,7 @@ async def merge(cycle, monkeypatch):  # noqa: F811
     ctx.conflict = False
 
     def merge_remote():
-        data["pr"].update(merged=True, state="closed", merge_commit_sha="c" * 40, merged_at=datetime.now(UTC).isoformat())
+        data["pr"].update(merged=True, state="closed", merge_commit_sha=merge_sha, merged_at=datetime.now(UTC).isoformat())
         data["graphql"]["data"]["repository"]["pullRequest"].update(merged=True, mergeQueueEntry=None)
 
     ctx.merge_remote = merge_remote
@@ -113,7 +120,7 @@ async def merge(cycle, monkeypatch):  # noqa: F811
             merge_remote()
             if ctx.timeout_after_merge:
                 raise httpx.ReadTimeout("response lost after merge")
-            return httpx.Response(200, json={"merged": True, "sha": "c" * 40})
+            return httpx.Response(200, json={"merged": True, "sha": merge_sha})
         if path == "/graphql":
             body = json.loads(request.content)
             if body["query"].startswith("mutation"):
@@ -134,7 +141,7 @@ async def merge(cycle, monkeypatch):  # noqa: F811
             key = "statuses"
         elif path.endswith("/reviews"):
             key = "reviews"
-        elif path.endswith("/pulls/77"):
+        elif path.endswith(f"/pulls/{ctx.binding.pr_number}"):
             key = "pr"
         elif path == f"/repos/{ctx.binding.repo}":
             key = "repository"

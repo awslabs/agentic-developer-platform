@@ -127,7 +127,12 @@ The harness is in early development:
 
 - **Contracts:** 11 planned, **1 written** — [`hitl-ticket` v1](../../contracts/hitl-ticket/v1/) (validator + golden fixture + CI, #4178). The rest land incrementally as each surface is built.
 - **MCP Hub:** Requirements and design complete. No running service yet.
-- **Other surfaces (Jobs, Events, Artifacts):** Not yet started.
+- **Jobs:** the durable operation store and transactional dispatch outbox are written and
+  tested against real PostgreSQL ([`jobs/`](jobs/README.md), #5525). It is a library, not
+  a running service: it opens no connection, reads no DSN and holds no credential, so
+  "deployed" means a composer installed it and applied its schema. Nothing has done that
+  yet — #5535 composes it into the Superplane API.
+- **Other surfaces (Events, Artifacts):** Not yet started.
 - **HITL:** contract written, no implementation. The payload shape is settled; the surface that serves it is not. ADP's durable AIDLC gate is the working mechanism the contract describes, and it is unchanged.
 
 Remaining contract ordering, most likely:

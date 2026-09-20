@@ -764,10 +764,15 @@ set_ratelimit() {
 # Codex path:       /openai/v1/responses, Responses body shape.
 laptop_call() {
   local wire="$1" who="$2" out_local="$3"
-  local pod_body="${POD_WORKDIR}/${who}.body.json"
-  local pod_out="${POD_WORKDIR}/${who}.out.json"
+  # Case 10 issues concurrent requests for one identity. Sharing its body/output
+  # paths lets one request's 200 body overwrite another request's 429 evidence.
+  local request_dir request_id
+  request_dir="$(mktemp -d "$WORKDIR/request.XXXXXX")" || return 1
+  request_id="$(basename "$request_dir")"
+  local pod_body="${POD_WORKDIR}/${request_id}/body.json"
+  local pod_out="${POD_WORKDIR}/${request_id}/out.json"
   local pod_cfg="${POD_WORKDIR}/${who}.curlrc"
-  local body_local="$WORKDIR/${who}.body.json" url status
+  local body_local="$request_dir/body.json" url status
 
   case "$wire" in
     claude) anthropic_body "$body_local" "reply with OK"; url="${API}/v1/messages" ;;
@@ -1372,6 +1377,7 @@ phase_h() {
 # config into a shared dev account.
 run_cleanup() {
   local rc=$?
+  trap - EXIT
   CURRENT_PHASE="cleanup"
   trace "phase:cleanup"
   echo ""
@@ -1395,22 +1401,26 @@ run_cleanup() {
   local sub
   sub="$(state_get ADMIN_SUB)"
   if [ -n "$sub" ]; then
-    h_psql -c "DELETE FROM tenant_memberships WHERE user_id='${sub}';" >/dev/null 2>&1 || true
-    h_psql -c "DELETE FROM users WHERE cognito_sub='${sub}';" >/dev/null 2>&1 || true
+    h_psql -c "DELETE FROM tenant_memberships WHERE user_id='${sub}';" >/dev/null 2>&1 || fail "cleanup could not delete seeded tenant memberships"
+    h_psql -c "DELETE FROM users WHERE cognito_sub='${sub}';" >/dev/null 2>&1 || fail "cleanup could not delete seeded admin row"
   fi
 
   # Tag-scoped, so this cannot touch a real tenant even if state was lost. The
   # budget_usage rows are the only trace a billable case leaves behind.
-  h_psql -c "DELETE FROM budget_usage    WHERE org_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || true
-  h_psql -c "DELETE FROM budget_configs  WHERE org_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || true
-  h_psql -c "DELETE FROM rate_limit_configs WHERE org_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || true
-  h_psql -c "DELETE FROM organizations   WHERE id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || true
+  h_psql -c "DELETE FROM budget_usage    WHERE org_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || fail "cleanup could not delete tagged budget usage"
+  h_psql -c "DELETE FROM budget_configs  WHERE org_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || fail "cleanup could not delete tagged budget configs"
+  h_psql -c "DELETE FROM rate_limit_configs WHERE org_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || fail "cleanup could not delete tagged rate-limit configs"
+  h_psql -c "DELETE FROM organizations   WHERE id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || fail "cleanup could not delete tagged organizations"
   log "swept tag-scoped rows for ${EVAL_USER_PREFIX}-*"
 
-  laptop_pod_delete
-  log "deleted the clean-room pod"
+  if laptop_pod_delete; then
+    log "deleted the clean-room pod"
+  else
+    fail "cleanup could not delete the clean-room pod"
+  fi
 
   write_summary
+  if [ "$FAILURES" -gt 0 ]; then rc=1; fi
   exit "$rc"
 }
 

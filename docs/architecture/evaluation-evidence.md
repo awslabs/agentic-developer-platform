@@ -119,7 +119,7 @@ authority, then rereads authenticated deployment artifacts and actual runtime.
 It refreshes authority again after that bounded read. Evidence, the attributed
 decision and satisfied dependency releases commit together under the K1 flow
 lock. Concurrent observers cannot commit a second decision. A failed required
-criterion records its evidence once and remains blocked for E3; runtime or
+criterion records its evidence once and enters E3 correction admission; runtime or
 authority refusal records a block without an acceptance decision. Human suites
 use the existing approval controls. Rejected, halted and failed nodes do not
 restart automatically, and passed predecessors never reopen.
@@ -129,3 +129,30 @@ references. Its summary requires an actual recorded decision and complete requir
 criterion metadata. The existing execution panel displays those fields without
 clearing outstanding human gates. Existing flow rollup remains incomplete while
 any mandatory node is queued, running, stalled or awaiting a human.
+
+## E3 correction and retest (#5155)
+
+A current required failure admits one correlated defect issue under the same
+accepted policy and flow allowance. Issue creation uses tenant-scoped GitHub
+issues permission and a durable K1 operation. Once creation starts, an unknown
+remote outcome is observed by correlation and never triggers a second POST.
+Failure before creation can resume the same operation after authority recovers.
+
+The linked child is a story in the existing graph, without a new dependency edge.
+Its first worker is authorized as repair and inherits the source grant's expiry,
+revocation chain and depth limit. Existing R2 review, M2 merge and D3 deployment
+handlers own its delivery. Missing or changed issue scope, revoked authority,
+unknown spend, exhausted limits and human refusal prevent dispatch. Scope or
+dependency changes still require accepted amendment.
+
+A final verified correction deployment opens a new evaluation execution and
+request under the child's held claim. The previous failed receipt remains intact;
+passed predecessors stay passed. The retest keeps the original suite, predecessor
+references and flow allowance. Only fresh E1 evidence plus E2's current runtime
+check can accept it. Another required failure consumes the next bounded correction
+cycle; a human gate is never cleared by the correction.
+
+K4 shows the correction issue, remaining correction allowance and retest cycle.
+Protected grant, claim and accepted-scope data stay out of its summary. The
+evaluation request is still exported and run through the reviewed manual workflow
+above. This change enables no paid harness dispatch or qualification by itself.
