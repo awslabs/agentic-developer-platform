@@ -512,3 +512,51 @@ async def test_policy_developer_cannot_dispatch_competing_review(cycle):
     grant = cycle.store.live_grant(invocation_id=cycle.root, tenant_id=ORG, attempt=1, now=datetime.now(UTC))
     assert grant.allowed_actions == frozenset({AgentAction.MONITOR})
     assert AgentAction.MONITOR in grant.delegable_actions
+
+
+async def test_repair_does_not_restart_attempt_allowance(cycle):
+    async with cycle.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, cycle.plan.id)
+        document = json.loads(json.dumps(plan.plan_document))
+        document["execution_policy"]["limits"]["max_attempts_per_node"] = 3
+        plan.plan_document = document
+        await db.commit()
+    assert (await tick(cycle)).effects_succeeded == 1
+    await review(cycle, findings=[{"finding_id": "F1", "summary": "Correction required"}])
+    assert (await tick(cycle)).effects_succeeded == 1
+    await cycle.finish(cycle.calls[-1]["message_id"])
+    cycle.head = "b" * 40
+    result = await tick(cycle)
+    assert result.blocked == 1, result
+    execution, claim, node, actions = await state(cycle)
+    assert execution.block_detail == "continuation_attempts_exhausted"
+    assert len(cycle.calls) == 2 and len(actions) == 2
+    assert claim.generation == 5 and node.attempts == 1
+
+
+async def test_result_adapter_cannot_pass_policy_story_from_worker_or_merge(cycle, monkeypatch):
+    from src.orchestration.results import observe_results
+
+    async with cycle.factory() as db:
+        db.add(
+            OrchestrationDecision(
+                org_id=ORG,
+                flow_id=cycle.flow.id,
+                node_id=cycle.node.id,
+                kind="node_dispatched",
+                actor_id="system:orchestration-dispatch",
+                actor_kind="service",
+                actor_role="engine",
+                reason=json.dumps({"attempt": 1, "run_id": cycle.root, "arrived_at": "2026-09-20T00:00:00Z"}),
+            )
+        )
+        await db.commit()
+    run_store = SimpleNamespace(get=lambda *args: {"tenant_id": ORG, "engine_node_id": cycle.node.id, "engine_attempt": 1, "status": "complete"})
+    merged = AsyncMock(return_value=("https://github.com/org/repo/pull/77", ""))
+    monkeypatch.setattr("src.orchestration.results._story_evidence", merged)
+    async with cycle.factory() as db:
+        result = await observe_results(db, run_store=run_store)
+        await db.commit()
+    assert result.waiting == 1 and result.advanced == 0
+    assert not merged.called
+    assert (await state(cycle))[2].state == "running"
