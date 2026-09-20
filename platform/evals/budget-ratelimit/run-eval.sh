@@ -764,10 +764,15 @@ set_ratelimit() {
 # Codex path:       /openai/v1/responses, Responses body shape.
 laptop_call() {
   local wire="$1" who="$2" out_local="$3"
-  local pod_body="${POD_WORKDIR}/${who}.body.json"
-  local pod_out="${POD_WORKDIR}/${who}.out.json"
+  # Case 10 issues concurrent requests for one identity. Sharing its body/output
+  # paths lets one request's 200 body overwrite another request's 429 evidence.
+  local request_dir request_id
+  request_dir="$(mktemp -d "$WORKDIR/request.XXXXXX")" || return 1
+  request_id="$(basename "$request_dir")"
+  local pod_body="${POD_WORKDIR}/${request_id}/body.json"
+  local pod_out="${POD_WORKDIR}/${request_id}/out.json"
   local pod_cfg="${POD_WORKDIR}/${who}.curlrc"
-  local body_local="$WORKDIR/${who}.body.json" url status
+  local body_local="$request_dir/body.json" url status
 
   case "$wire" in
     claude) anthropic_body "$body_local" "reply with OK"; url="${API}/v1/messages" ;;

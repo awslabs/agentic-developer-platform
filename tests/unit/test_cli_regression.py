@@ -283,3 +283,49 @@ def test_codex_receives_valid_config_without_the_unsupported_search_tool(tmp_pat
     assert provider["base_url"] == "http://127.0.0.1:54321/openai/v1"
     assert provider["wire_api"] == "responses"
     assert provider["env_key"] == "ADP_GATEWAY_DUMMY"
+
+
+def test_concurrent_budget_requests_keep_their_own_response_bodies(tmp_path):
+    source = (ROOT / "platform/evals/budget-ratelimit/run-eval.sh").read_text()
+    function = re.search(r"^laptop_call\(\) \{\n.*?^\}", source, re.M | re.S).group()
+    setup = r"""
+set -euo pipefail
+WORKDIR="$1"
+POD_WORKDIR="$WORKDIR/pod"
+API=https://gateway.example.test/api
+mkdir -p "$POD_WORKDIR"
+anthropic_body() { echo '{}' > "$1"; }
+laptop_put_file() { mkdir -p "$(dirname "$2")"; cp "$1" "$2"; }
+laptop_get_file() { cp "$1" "$2"; }
+laptop_http_post_json() {
+  # Each transport receives its own response. Both writes complete before either
+  # caller reads back, exposing any shared pod response filename deterministically.
+  printf '%s' "$out_local" > "$4"
+  touch "$out_local.ready"
+  local n
+  for n in $(seq 1 100); do
+    if [ -f "$WORKDIR/one.json.ready" ] && [ -f "$WORKDIR/two.json.ready" ]; then
+      printf '200'
+      return 0
+    fi
+    sleep 0.01
+  done
+  return 1
+}
+"""
+    invoke = r"""
+laptop_call claude U2 "$WORKDIR/one.json" >/dev/null & first=$!
+laptop_call claude U2 "$WORKDIR/two.json" >/dev/null & second=$!
+wait "$first"
+wait "$second"
+"""
+    subprocess.run(
+        ["bash", "-c", setup + function + invoke, "_", str(tmp_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    for name in ("one.json", "two.json"):
+        target = tmp_path / name
+        assert target.read_text() == str(target)

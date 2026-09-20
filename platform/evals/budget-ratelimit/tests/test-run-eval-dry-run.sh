@@ -547,6 +547,11 @@ fi
 # is true today, and a red run for known behaviour would train people to ignore
 # it. Four findings and still exit 0 is the property.
 assert_eq "$RUN_RC" "0" "a run that emits findings still exits 0"
+if [ "$RUN_RC" -ne 0 ]; then
+  # Dry-run output contains only test fixtures. Preserve the failed assertion's
+  # context in CI instead of reporting an unexplained exit code.
+  printf '%s\n' "$OUT"
+fi
 
 # -----------------------------------------------------------------------------
 name "--cleanup-only is standalone and idempotent"
