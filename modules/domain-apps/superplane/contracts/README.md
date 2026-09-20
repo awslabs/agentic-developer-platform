@@ -7,9 +7,11 @@ Versioned contracts for the Superplane domain app under EPIC #4910.
 | U8 (#5043) | R11 | Observations: `WIRE-SCHEMA.md` |
 | U7 (#5047) | R7 | Connections and bindings: `CONNECTION-CONTRACT.md` |
 | U11 (#5049) | R15 | Durable handles, reconciliation and provider-truth reporting |
+| w6-01 (#5524) | Wave 6 | Production ports, admission ordering, startup composition: `INTEGRATION-CONTRACT.md` (+ `REQUIREMENTS-MATRIX.md`) |
 
 Everything below the layout section describes the observation contracts unless it
-says otherwise; the connection contract's rules live in `CONNECTION-CONTRACT.md`.
+says otherwise; the connection contract's rules live in `CONNECTION-CONTRACT.md`,
+and Wave 6's integration boundary in `INTEGRATION-CONTRACT.md`.
 
 ## Observation contracts — the problem this exists to fix
 
@@ -30,6 +32,11 @@ untouched here — the receiver, the route and the cutover are U15's, upstream.
 contracts/
   WIRE-SCHEMA.md              <- normative (U8): fields, headers, versioning rules
   CONNECTION-CONTRACT.md      <- normative (U7): references, the two checks, rotation
+  INTEGRATION-CONTRACT.md     <- normative (w6-01): the 11 production ports, their
+                                 owners/principals/unknown answers, reserve ->
+                                 confirm -> durable enqueue, startup composition
+  REQUIREMENTS-MATRIX.md      <- w6-01 AC-02: capability -> producing Wave 6 story
+                                 -> named live verifier (#5540). No row ends at a mock
   superplane_contracts/       <- import this
     version.py                <- version discipline (header + payload must agree)
     health.py                 <- CheckStatus, CheckResult, severity, aggregation
@@ -46,6 +53,11 @@ contracts/
     accounting.py             <- U11: no release/cost clearance while unresolved
     provider_truth.py         <- U11: teardown reports with a non-zero result
     adapter.py                <- U11: the record-then-call ordering, in one place
+    integration.py            <- w6-01: the port map as data, with `path:line`
+                                 evidence tests re-resolve. Confers nothing
+    conformance.py            <- w6-01: unauthorized-by-construction probes an
+                                 adapter must refuse, and reports that cannot
+                                 overstate what they establish
 ```
 
 The thin vault HTTP client that pairs with `connections.py` is **not** here — it

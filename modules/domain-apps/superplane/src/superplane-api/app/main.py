@@ -63,9 +63,13 @@ async def lifespan(app: FastAPI):
     # Reapply if the server or an embedding host replaced handlers after import.
     configure_log_redaction()
     if os.environ.get("SUPERPLANE_INSTALLATION_REQUIRED") == "true":
-        from app.installation import capabilities
+        from app.installation import capabilities_async
 
-        if not all(capabilities().values()):
+        # `capabilities_async`, not `capabilities`: this runs inside the lifespan's
+        # event loop, and each capability is now established by calling the adapter
+        # and requiring it to refuse an unauthorized probe rather than by testing
+        # that the name is bound. Same refusal, better evidenced.
+        if not all((await capabilities_async()).values()):
             raise RuntimeError("Production Superplane trust adapters are not composed in this image")
     logger.info("Starting VaultSyncReconciler background task")
     await vault_sync_reconciler.start()

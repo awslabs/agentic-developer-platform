@@ -422,6 +422,64 @@ migration, and deferred to U7. The `012` revision refuses rather than assuming i
 deployed database still holding secret ARNs stops the migration instead of silently losing
 the pointer; `releases/superplane.lock.yaml` records that as a live gate.
 
+#### w6-01 (#5524) — the capability check exercises the adapter, not its existence
+
+A production-behavior divergence, recorded for the same reason U14's is: a reviewer diffing
+the maintained tree against the pinned reference will now get a non-empty result for these
+paths and should find the reason stated rather than have to infer it.
+
+`app/installation.py`'s `capabilities()` answered four `is not None` tests. That asks whether
+a name is bound, not whether anything is behind it — an object that exists, implements none
+of its port's calls, or approves everything it is asked all passed. Three consumers treat
+passing it as evidence the image is composed for production: the image-local preflight
+(`installation/runner.py:274-299`, run `--network=none`), the FastAPI boot gate, and the
+post-rollout recheck (`runner.py:1168-1190`). A check that cannot distinguish a real adapter
+from a placeholder manufactures confidence, which is worse than having no check.
+
+| Path | Change |
+|------|--------|
+| `superplane-api/app/capability_probes.py` | New. Establishes each capability by *calling* the configured adapter with sentinel values from `superplane_contracts.conformance` and requiring it to refuse. `probe_all()` runs the four concurrently under a 5s per-probe timeout. |
+| `superplane-api/app/installation.py` | `capabilities()` is now a fold over probe reports. Adds `capability_details()` / `capabilities_from()` / `capabilities_async()`. The `capabilities` CLI action keeps its exact output shape and its 0/2 exit, and gains an additive `probes` block. |
+| `superplane-api/app/main.py` | The boot gate awaits `capabilities_async()`; same `RuntimeError`, same refusal. |
+| `superplane-api/app/routers/installation.py` | Awaits `capabilities_async()`. Still exactly the four booleans — probe detail is deliberately withheld from this tenant-facing response. |
+| `superplane-api/tests/test_capability_probes.py` | New. Pins the defect (a placeholder that satisfies `is not None` is refused), the leniency boundary, and probe safety. |
+
+Four properties are worth recording, because each is a place a later edit would quietly
+restore the defect:
+
+**The probe input is unauthorized by construction, not by the adapter's good behaviour.** A
+workspace no grant covers, an operation nobody issued, an authority never minted. No correct
+implementation has a code path that acts on them, which is what makes the probe safe to run
+on every boot; a probe built from plausible-looking values would depend on the adapter
+choosing to refuse.
+
+**All four probes are reads, and the facade is probed with `report_progress`, never
+`open_operation`.** Opening an operation on every boot is precisely the mutation this check
+must not perform. `tests/test_capability_probes.py::TestProbesAreSafeToRunOnEveryBoot` pins
+it by asserting the facade is never asked to open one.
+
+**The gate's boolean is narrower than `ConformanceReport.conformant`, deliberately.** A
+capability is false only when a probe was *admitted* or the call was *not implemented*.
+`conformant` stays strict — it is the bar the sixteen Wave 6 adapters are held to — but the
+preflight runs with no network, and a correct adapter whose vault is unreachable commonly
+lets the connection error propagate where its contract says return `None`. Failing the
+boolean on that would make the offline preflight reject genuinely composed images, and a gate
+that fails on correct images gets weakened or skipped. `NotImplementedError` is excluded from
+that leniency because it is the placeholder's signature, and
+`test_notimplementederror_is_not_given_that_leniency` fails if it is ever folded in.
+
+**An absent method is detected as absent, not by catching the `AttributeError` its call would
+raise.** An `AttributeError` from *inside* a real implementation is a bug in that
+implementation, and reporting it as "not implemented" would send the implementer looking for
+a method that is right there.
+
+What this does **not** establish: that any adapter is composed in this repository today. All
+four are unbound, so the honest readout is four `False` and the boot gate refuses — which is
+the correct state until the Wave 6 stories land their adapters. Nor does it establish
+conformance against a live vault or provider: the probe runs offline, and every report
+carries `CONFORMANCE_LIMITATION` saying so. The live verifier for each port is named by the
+requirements matrix under `modules/domain-apps/superplane/contracts/`.
+
 Superplane domain maintainers own this manually maintained inventory. Any further change
 from the adopted revision must be recorded here; the historical reference is deliberately
 not made available to CI as a build or comparison input.

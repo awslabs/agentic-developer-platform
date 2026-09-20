@@ -13,22 +13,62 @@ import os
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.capability_probes import probe_all
 from app.config import settings
 from app.database import engine
 from app.schema_boundary import connect_args, schema_name
-from app.services.credential_evidence import get_credential_evidence_reader
-from app.services.provider_authority import get_provider_authority_validator
-from app.services.provider_inventory import get_allocation_inventory_reader
-from app.services.provisioning import get_operation_facade
+
+
+async def capability_details() -> dict[str, dict]:
+    """Per-port probe reports: what each configured adapter actually refused.
+
+    The richer form, for the readout an operator reads. Each entry carries the
+    gate's verdict (``composed``), the contract suite's stricter one
+    (``conformant``), the probe verdicts observed, and the offline-only limitation
+    that travels with every conformance report.
+    """
+    return await probe_all()
+
+
+def capabilities_from(details: dict[str, dict]) -> dict[str, bool]:
+    """Fold probe reports into the four booleans the existing consumers read.
+
+    ``.get("composed") is True`` rather than a truthiness test: a report missing
+    the key is a bug in the probe layer, and the safe reading of "I could not tell"
+    is False. Defaulting a missing key to True is how a gate silently stops gating.
+    """
+    return {name: report.get("composed") is True for name, report in details.items()}
+
+
+async def capabilities_async() -> dict[str, bool]:
+    """The capability booleans, for callers already inside an event loop.
+
+    Two of the four consumers — the FastAPI boot gate and the ``/internal/installation``
+    router — run in a running loop, where ``asyncio.run`` raises. They call this;
+    the CLI calls the sync wrapper below.
+    """
+    return capabilities_from(await capability_details())
 
 
 def capabilities() -> dict[str, bool]:
-    return {
-        "credential_evidence": get_credential_evidence_reader() is not None,
-        "provider_authority": get_provider_authority_validator() is not None,
-        "allocation_inventory": get_allocation_inventory_reader() is not None,
-        "operation_facade": get_operation_facade() is not None,
-    }
+    """The capability booleans, for synchronous callers (the CLI).
+
+    Same four keys and same fail-closed direction as the ``is not None`` check this
+    replaces — but each boolean is now established by calling the adapter and
+    requiring it to refuse an unauthorized probe, so an object that merely exists
+    no longer answers True. See ``app/capability_probes.py`` for why an
+    unauthorized read is the safe question to ask on every boot.
+
+    Refuses to run inside an existing loop rather than silently returning something
+    wrong: ``asyncio.run`` would raise a confusing "cannot be called from a running
+    event loop" from deep in the call, and the correct fix is always to await
+    ``capabilities_async`` instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(capabilities_async())
+    raise RuntimeError("capabilities() is synchronous; await capabilities_async()")
 
 
 async def database_check(
@@ -156,8 +196,13 @@ def main(argv=None) -> int:
             print(json.dumps(result.json()))
             return 0
         if args.action == "capabilities":
-            result = capabilities()
-            print(json.dumps({"capabilities": result}))
+            details = asyncio.run(capability_details())
+            result = capabilities_from(details)
+            # `capabilities` keeps the exact shape the installer's preflight parses
+            # (`runner.py:288`). `probes` is additive, so a refusal says which probe
+            # failed instead of only that something did — the old output left an
+            # operator with four booleans and no next step.
+            print(json.dumps({"capabilities": result, "probes": details}))
             return 0 if all(result.values()) else 2
         result = asyncio.run(
             database_check(migrating=args.action == "migrate", verify_role_default=True)
