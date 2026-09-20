@@ -26,6 +26,7 @@ resource "aws_lambda_function" "ingest" {
       ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.model_policy_enabled)
       PERSONA_MODEL_MAPPING_ENABLED = tostring(var.persona_model_mapping_enabled)
       ADP_AGENT_CONTROL_ENDPOINT    = var.model_control_endpoint
+      WEBHOOK_EVENTS_TABLE          = var.webhook_events_table_name
       INPUT_QUEUE_URL               = var.input_queue_url
       RESPONSE_QUEUE_URL            = var.response_queue_url
       SESSIONS_TABLE_NAME           = var.sessions_table_name
@@ -456,4 +457,18 @@ resource "aws_iam_role_policy" "ingest_persona_model_selection" {
       error_message = "Configure the exact gateway endpoint before enabling saved persona models."
     }
   }
+}
+
+resource "aws_iam_role_policy" "ingest_run_registration" {
+  count = var.webhook_events_table_arn != "" ? 1 : 0
+  name  = "chat-run-registration"
+  role  = aws_iam_role.ingest.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      { Effect = "Allow", Action = ["dynamodb:PutItem"], Resource = [var.webhook_events_table_arn] }
+      ], var.webhook_events_kms_key_arn == "" ? [] : [
+      { Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey"], Resource = [var.webhook_events_kms_key_arn], Condition = { StringEquals = { "kms:ViaService" = "dynamodb.${var.aws_region}.amazonaws.com" } } }
+    ])
+  })
 }

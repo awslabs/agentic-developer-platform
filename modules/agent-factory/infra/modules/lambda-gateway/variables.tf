@@ -151,3 +151,16 @@ variable "persona_model_mapping_enabled" {
   type        = bool
   default     = false
 }
+
+variable "webhook_events_table_name" {
+  type    = string
+  default = ""
+}
+variable "webhook_events_table_arn" {
+  type    = string
+  default = ""
+}
+variable "webhook_events_kms_key_arn" {
+  type    = string
+  default = ""
+}
