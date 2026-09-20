@@ -117,6 +117,7 @@ class ExecutionPhase(StrEnum):
     REPAIRING = "repairing"  # Responding to review or a failed check
     MERGE_READY = "merge_ready"  # Reviewed current head; merge is a separate effect
     DEPLOYMENT_PENDING = "deployment_pending"  # Code merged; deployment remains separately observable
+    AWAITING_RUNTIME_VERIFICATION = "awaiting_runtime_verification"  # Workflow completed; runtime acceptance still required
     SETTLING = "settling"  # Evidence observed; recording the terminal result
     CONCLUDED = "concluded"  # Nothing further for this execution to do
 

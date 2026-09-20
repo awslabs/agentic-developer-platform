@@ -43,7 +43,7 @@ REPO = "org/repo"
 
 
 @pytest.fixture
-async def cycle(pg_url, store, monkeypatch):  # noqa: F811
+async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
     engine = create_async_engine(to_async_url(pg_url))
     models = [
         OrchestrationFlow,
@@ -59,13 +59,25 @@ async def cycle(pg_url, store, monkeypatch):  # noqa: F811
         await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=[model.__table__ for model in models]))
     factory = async_sessionmaker(engine, expire_on_commit=False)
     now = datetime.now(UTC)
+    delivery = getattr(request, "param", {}).get("delivery", False)
     policy = ExecutionPolicy(
+        schema_version=2 if delivery else 1,
+        user_credentials={
+            "permission_mode": "user_configured",
+            "lifetime": "provider_managed",
+            "vault_credential_ids": ["delivery-connection"],
+            "aws_role_arns": ["arn:aws:iam::123456789012:role/test"],
+            "actions": [Action.DEPLOY],
+        }
+        if delivery
+        else None,
         org_id=ORG,
         principal_id="human",
         policy_id="policy",
         policy_hash="b" * 64,
         repository_ids=[REPO],
-        allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE],
+        allowed_actions=[Action.DEVELOP, Action.REVIEW, Action.REPAIR, Action.MERGE] + ([Action.DEPLOY] if delivery else []),
+        environment_connection_ids=["delivery-connection"] if delivery else [],
         expires_at=now + timedelta(days=1),
         limits=PolicyLimits(max_wall_clock_seconds=3600, max_spend_usd=Decimal(25), max_attempts_per_node=8, max_concurrent_actions=1),
     )

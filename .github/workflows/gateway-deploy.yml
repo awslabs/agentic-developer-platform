@@ -1,5 +1,7 @@
 name: Gateway Deploy
 
+run-name: ${{ inputs.adp_correlation && format('ADP deployment {0}', inputs.adp_correlation) || '' }}
+
 on:
   push:
     paths:
@@ -30,6 +32,21 @@ on:
       - main
   workflow_dispatch:
     inputs:
+      adp_correlation:
+        description: 'Engine delivery correlation; empty preserves manual operation.'
+        required: false
+        type: string
+        default: ''
+      adp_source_revision:
+        description: 'Engine-approved immutable source commit.'
+        required: false
+        type: string
+        default: ''
+      adp_definition_revision:
+        description: 'Expected workflow revision; checked before deployment.'
+        required: false
+        type: string
+        default: ''
       account_id:
         description: 'Target AWS account (12 digits). Empty = use platform IRSA / config file.'
         required: false
@@ -75,8 +92,23 @@ jobs:
       migrations: ${{ steps.filter.outputs.migrations }}
       budget_lambdas: ${{ steps.filter.outputs.budget_lambdas }}
     steps:
+      - name: Guard engine delivery revisions
+        env:
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
+          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
+            [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
+            [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test "$ACTUAL_DEFINITION" = "$ADP_DEFINITION"
+          fi
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
           fetch-depth: 2
       - id: filter
         run: |
@@ -132,7 +164,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.backend == 'true'
     outputs:
-      release_image: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ github.sha }}
+      release_image: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
     # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
     permissions:
       contents: read
@@ -140,6 +172,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -149,6 +183,27 @@ jobs:
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Record deployment workflow context
+        env:
+          CONTEXT_WORKFLOW: .github/workflows/gateway-deploy.yml
+          CONTEXT_REVISION: ${{ github.workflow_sha }}
+          CONTEXT_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
+          CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
+          INPUT_ACCOUNT_ID: ${{ inputs.account_id || '' }}
+          INPUT_CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id || '' }}
+          INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
+          INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+        run: python3 modules/gateway/scripts/deployment-workflow-context.py
+      - name: Upload deployment workflow context
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-deployment-context-gateway-deploy.yml-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Deploy budget tracker and pricing code
         if: needs.changes.outputs.budget_lambdas == 'true'
@@ -196,11 +251,11 @@ jobs:
             "name=REGISTRY,value=${{ steps.vars.outputs.registry }}"
             "name=STATE_BUCKET,value=${{ env.STATE_BUCKET }}"
             "name=EKS_CLUSTER,value=${{ env.EKS_CLUSTER }}"
-            "name=IMAGE_TAG,value=${{ github.sha }}"
+            "name=IMAGE_TAG,value=${{ inputs.adp_source_revision || github.sha }}"
           poll_interval: '10'
 
       - name: Export image tag
-        run: echo "IMAGE_TAG=${{ github.sha }}" >> $GITHUB_ENV
+        run: echo "IMAGE_TAG=${{ inputs.adp_source_revision || github.sha }}" >> $GITHUB_ENV
 
       - name: Upload CFN templates to S3
         # Issue #562: the AWS connect flow pre-signs a GET URL on these objects.
@@ -561,15 +616,15 @@ jobs:
           # A bounded lock/index failure leaves the previous release serving.
           python3 modules/gateway/scripts/migrate-before-rollout.py \
             --manifest "$RENDERED_DEPLOYMENT" \
-            --image "${REGISTRY}/adp-gateway:${{ github.sha }}" \
+            --image "${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}" \
             --namespace "${{ env.NAMESPACE }}"
-          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${{ github.sha }}|g" \
+          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}|g" \
             "$RENDERED_DEPLOYMENT" | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
           # Stamp the image tag for this build. The manifest has a generic
           # placeholder; this line pins to the commit SHA for audit.
           kubectl set image deployment/bedrockgateway \
-            bedrockgateway=${REGISTRY}/adp-gateway:${{ github.sha }} \
+            bedrockgateway=${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }} \
             -n ${{ env.NAMESPACE }}
 
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
@@ -578,7 +633,7 @@ jobs:
         # The engine runs in Lambda using this same image. An EKS rollout alone
         # leaves ticks on the previous digest indefinitely (#4575).
         env:
-          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ github.sha }}
+          ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
           ENGINE_FUNCTION="arn:aws:lambda:${AWS_REGION}:${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}:function:adp-${ENVIRONMENT}-orchestration-tick"
@@ -592,7 +647,7 @@ jobs:
             exit 1
           fi
           ENGINE_DIGEST=$(aws ecr describe-images --repository-name adp-gateway \
-            --image-ids imageTag="${{ github.sha }}" --query 'imageDetails[0].imageDigest' --output text)
+            --image-ids imageTag="${{ inputs.adp_source_revision || github.sha }}" --query 'imageDetails[0].imageDigest' --output text)
           ENGINE_PINNED_IMAGE="${ENGINE_IMAGE%:*}@${ENGINE_DIGEST}"
           aws lambda update-function-code --function-name "$ENGINE_FUNCTION" \
             --image-uri "$ENGINE_PINNED_IMAGE" --query '{FunctionName:FunctionName,LastUpdateStatus:LastUpdateStatus}'
@@ -763,6 +818,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -772,6 +829,29 @@ jobs:
           customer_account_id: ${{ inputs.customer_account_id }}
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
+
+      - name: Record deployment workflow context
+        if: needs.deploy-backend.result == 'skipped'
+        env:
+          CONTEXT_WORKFLOW: .github/workflows/gateway-deploy.yml
+          CONTEXT_REVISION: ${{ github.workflow_sha }}
+          CONTEXT_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
+          CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
+          INPUT_ACCOUNT_ID: ${{ inputs.account_id || '' }}
+          INPUT_CUSTOMER_ACCOUNT_ID: ${{ inputs.customer_account_id || '' }}
+          INPUT_CUSTOMER_AWS_LABEL: ${{ inputs.customer_aws_label || '' }}
+          INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id || '' }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+        run: python3 modules/gateway/scripts/deployment-workflow-context.py
+      - name: Upload deployment workflow context
+        if: needs.deploy-backend.result == 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-deployment-context-gateway-deploy.yml-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -851,6 +931,9 @@ jobs:
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
     uses: ./.github/workflows/run-gateway-migrations.yml
     with:
+      adp_correlation: ${{ inputs.adp_correlation || '' }}
+      adp_source_revision: ${{ inputs.adp_source_revision || '' }}
+      adp_definition_revision: ${{ inputs.adp_definition_revision || '' }}
       expected_image: ${{ needs.deploy-backend.outputs.release_image }}
       account_id: ${{ inputs.account_id || '' }}
       environment: ${{ inputs.environment || 'dev' }}
@@ -865,6 +948,8 @@ jobs:
     runs-on: arc-runner-org
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision || github.sha }}
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:

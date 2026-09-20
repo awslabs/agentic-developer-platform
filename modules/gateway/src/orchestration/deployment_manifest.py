@@ -222,8 +222,13 @@ class WorkflowRef:
     path: str
     definition_revision: str
     allowed_inputs: dict[str, frozenset[str]] = field(default_factory=dict)
+    correlation_input: str | None = None
 
     def __post_init__(self) -> None:
+        if self.correlation_input is not None and self.correlation_input != "adp_correlation":
+            raise ManifestError("invalid_workflow_correlation", "Only the engine-owned adp_correlation transport field is supported.")
+        if {"adp_correlation", "adp_source_revision", "adp_definition_revision"}.intersection(self.allowed_inputs):
+            raise ManifestError("invalid_workflow_correlation", "Correlation is derived from the durable action, never selected as a business input.")
         if not _WORKFLOW_PATH.match(str(self.path or "")):
             raise ManifestError(
                 "invalid_workflow_path",
@@ -900,7 +905,7 @@ _ENTRY_KEYS = frozenset(
     }
 )
 
-_WORKFLOW_KEYS = frozenset({"path", "definition_revision", "allowed_inputs"})
+_WORKFLOW_KEYS = frozenset({"path", "definition_revision", "allowed_inputs", "correlation_input"})
 
 
 def _parse_entry(raw: object) -> ManifestEntry:
@@ -975,6 +980,7 @@ def _parse_workflow(raw: object) -> WorkflowRef | None:
         path=str(raw.get("path") or ""),
         definition_revision=str(raw.get("definition_revision") or ""),
         allowed_inputs=allowed,
+        correlation_input=raw.get("correlation_input"),
     )
 
 

@@ -92,6 +92,7 @@ from sqlalchemy.orm import aliased
 
 from src.shared.logging import get_logger
 
+from .deployment_workflows import bounded_workflow_summary
 from .execution_state import (
     ActionStatus,
     BlockCode,
@@ -416,6 +417,8 @@ def _action_view(row: OrchestrationAction) -> ActionView | None:
             if row.kind == "merge_eligibility"
             else bounded_receipt_summary(row.detail)
             if row.kind == "merge_pull_request"
+            else bounded_workflow_summary(row.detail)
+            if row.kind == "deployment_workflow"
             else None
         ),
     )

@@ -141,7 +141,7 @@ class ReviewCycleServices:
     async def protected(self, org_id, run_id):
         return await asyncio.to_thread(self.writer.store._read, f"TENANT#{org_id}", f"EXEC#{run_id}")
 
-    async def authority_context(self, session, context, node, binding, run_id, action):
+    async def authority_context(self, session, context, node, binding, run_id, action, *, delivery=False):
         if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
             raise CycleBlockedError("protected_authority_required", BlockCode.AUTHORITY_UNVERIFIABLE)
         claim = await session.scalar(
@@ -172,7 +172,11 @@ class ReviewCycleServices:
                 attempt=int(raw["current_attempt"]["N"]),
                 now=datetime.now(UTC),
             )
-            await validate_engine_authority(session=session, execution=raw, grant=grant, store=self.writer.store)
+            if delivery and action is not Action.DEPLOY:
+                raise BootstrapRefusedError("delivery continuation is reserved for engine deployment")
+            await validate_engine_authority(
+                session=session, execution=raw, grant=grant, store=self.writer.store, delivery_identity=context.identity if delivery else None
+            )
         except BootstrapRefusedError:
             raise CycleBlockedError("grant_revoked_or_unverifiable", BlockCode.AUTHORITY_UNVERIFIABLE) from None
         inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
