@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -182,6 +182,12 @@ class WorkflowServices:
             )
             facts = await self.authority.authority_context(session, effective, node, binding, run_id, Action.DEPLOY, delivery=True)
             policy, principal, auth = facts[2].policy, facts[3], facts[-1]
+            from .runtime_policy import flow_started_at
+
+            started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)
+            if started is None:
+                raise CycleBlockedError("deployment_start_time_unverifiable")
+            observation_deadline = min(policy.expires_at, started + timedelta(seconds=policy.limits.max_wall_clock_seconds))
             manifest = self.manifest_loader()
             paths = await self.provider.changed_files(binding)
             components = components_for_paths(paths)
@@ -266,6 +272,7 @@ class WorkflowServices:
                 components=[c for c in components if entry.covers(c)],
                 remaining_entry_ids=[other.entry_id for other in remaining[1:]],
                 policy_hash=policy.policy_hash,
+                observation_deadline=observation_deadline.isoformat(),
                 target=asdict(resolved.physical),
                 inputs=inputs,
                 definition=asdict(definition),
@@ -413,6 +420,8 @@ class DeploymentWorkflows:
         self.factory, self.services = factory, services or WorkflowServices(factory)
 
     async def observe(self, context):
+        snapshot = None
+        latest = None
         try:
             snapshot, binding, workflow, definition, target, latest = await self.services.snapshot(context, reconcile=True)
             if snapshot.get("handoff_reason"):
@@ -431,6 +440,8 @@ class DeploymentWorkflows:
                 correlation=snapshot["correlation"],
                 run_id=((latest.detail or {}).get("workflow_run") or {}).get("run_id") if latest else None,
             )
+            if (run is None or run.status != "completed") and datetime.now(UTC) >= datetime.fromisoformat(snapshot["observation_deadline"]):
+                raise CycleBlockedError("deployment_observation_deadline_reached", BlockCode.ATTEMPTS_EXHAUSTED)
             if latest is None:
                 if incomplete:
                     return WorkflowObservation(ObservationKind.WAITING, detail="Matching automatic workflow has not published target evidence yet.")
@@ -451,6 +462,16 @@ class DeploymentWorkflows:
             )
         except CycleBlockedError as exc:
             return WorkflowObservation(ObservationKind.BLOCKED, block=block(exc.reason, exc.code))
+        except httpx.HTTPError as exc:
+            transient = not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code == 429 or exc.response.status_code >= 500
+            deadline = datetime.fromisoformat(snapshot["observation_deadline"]) if snapshot else None
+            if transient and deadline is not None and datetime.now(UTC) < deadline:
+                return WorkflowObservation(
+                    ObservationKind.UNCERTAIN if latest else ObservationKind.WAITING,
+                    snapshot=snapshot,
+                    detail="Deployment provider temporarily unavailable; retry within the original observation deadline.",
+                )
+            return WorkflowObservation(ObservationKind.BLOCKED, block=block("deployment_evidence_unavailable", BlockCode.PROVIDER_UNAVAILABLE))
         except Exception:
             return WorkflowObservation(ObservationKind.BLOCKED, block=block("deployment_evidence_unavailable", BlockCode.PROVIDER_UNAVAILABLE))
 
@@ -535,7 +556,7 @@ class DeploymentWorkflows:
                         artifact_id=run.artifact_id,
                         artifact_digest=run.artifact_digest,
                         target=data["target"],
-                        inputs=data["inputs"],
+                        inputs=run.context.inputs,
                         lease_id=leased.lease.id,
                         lease_revision=leased.lease.revision,
                         lease_holder_action_id=action.id,

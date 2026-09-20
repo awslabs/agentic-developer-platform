@@ -16,7 +16,7 @@ from src.orchestration.deployment_target import ResolvedTarget
 from src.orchestration.deployment_workflow_provider import WorkflowContext, WorkflowDefinition, WorkflowRun
 from src.orchestration.deployment_workflows import PHASES, WORKFLOW_KIND, DeploymentWorkflows, WorkflowReceipt, WorkflowServices
 from src.orchestration.execution_runner import RunnerConfig, run_execution_runner
-from src.orchestration.execution_state import PhaseAdvance
+from src.orchestration.execution_state import ExecutionPhase, ExecutionStatus, PhaseAdvance
 from src.orchestration.execution_store import advance_execution, load_execution
 from src.orchestration.models import OrchestrationAction, OrchestrationEnvironmentLease, OrchestrationExecution, OrchestrationWorkClaim
 from src.shared.models.base import Base
@@ -292,3 +292,83 @@ async def test_workflow_receipt_projection_is_bounded(deployment):
     assert summary["run_id"] == 42 and summary["conclusion"] == "success"
     assert "inputs" not in summary and "target" not in summary
     assert bounded_workflow_summary({"workflow_receipt": {"run_url": "x" * 10000}}) is None
+
+
+async def test_selected_entries_wait_for_d3_and_adopt_existing_migration_run(deployment):
+    from src.orchestration.environment_leases import LeaseHolder, ReleaseReason, release_lease
+
+    ctx = deployment
+    migration = replace(
+        ctx.entry,
+        entry_id="migrations",
+        component_selectors=("gateway-migrations",),
+        workflow=replace(ctx.entry.workflow, path=".github/workflows/run-gateway-migrations.yml"),
+    )
+    ctx.workflow_services.manifest_loader = lambda: DeploymentManifest(1, (ctx.entry, migration))
+    ctx.provider.changed_files.return_value = ("modules/gateway/src/example.py", "modules/gateway/alembic/versions/060_example.py")
+    await tick(ctx)
+    await tick(ctx)
+    first = await action(ctx)
+    assert first.detail["workflow_receipt"]["remaining_entry_ids"] == ["migrations"]
+    # The receipt is D3's boundary; another D2 tick cannot advance it itself.
+    await tick(ctx)
+    assert len(ctx.dispatches) == 1
+
+    async with ctx.factory() as db:
+        row = await db.get(OrchestrationAction, first.id)
+        row.detail = {**row.detail, "runtime_verified": True}
+        released = await release_lease(
+            db,
+            canonical_target_key=ctx.target.canonical_key,
+            holder=LeaseHolder(ctx.identity.org_id, row.id, ctx.identity.claim_generation),
+            reason=ReleaseReason.COMPLETED,
+            terminal_evidence="test D3 runtime evidence",
+        )
+        assert released.applied
+        record = (await load_execution(db, identity=ctx.identity)).record
+        await advance_execution(
+            db,
+            identity=ctx.identity,
+            advance=PhaseAdvance(
+                phase=ExecutionPhase.DEPLOYMENT_PENDING,
+                status=ExecutionStatus.RUNNABLE,
+                expected_revision=record.revision,
+                next_check_at=datetime.now(UTC),
+            ),
+        )
+        await db.commit()
+    ctx.runs[0] = replace(ctx.runs[0], context=ctx.runs[0].context.model_copy(update={"workflow_path": migration.workflow.path}))
+    await tick(ctx)
+    await tick(ctx)
+    assert len(ctx.dispatches) == 1
+    async with ctx.factory() as db:
+        rows = list((await db.scalars(select(OrchestrationAction).where(OrchestrationAction.kind == WORKFLOW_KIND))).all())
+        assert {row.detail["manifest_entry_id"] for row in rows} == {"gateway", "migrations"}
+        assert all(row.detail["workflow_receipt"]["run_id"] == 42 for row in rows)
+
+
+async def test_transient_observation_retains_original_deadline_and_lease(deployment):
+    ctx = deployment
+    await tick(ctx)
+    ctx.provider.observe.side_effect = httpx.ReadTimeout("temporary outage")
+    await tick(ctx)
+    assert (await state(ctx))[0].status == "awaiting_external"
+    async with ctx.factory() as db:
+        row = await db.get(OrchestrationAction, (await action(ctx)).id)
+        row.detail = {**row.detail, "observation_deadline": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}
+        await db.commit()
+    await tick(ctx)
+    assert (await state(ctx))[0].status == "blocked"
+    assert len(ctx.dispatches) == 1
+    async with ctx.factory() as db:
+        assert await db.scalar(select(OrchestrationEnvironmentLease)) is not None
+
+
+async def test_receipt_keeps_actual_automatic_inputs(deployment):
+    ctx = deployment
+    automatic = ctx.make_run()
+    actual = {**automatic.context.inputs, "customer_account_id": ""}
+    ctx.runs.append(replace(automatic, context=automatic.context.model_copy(update={"inputs": actual})))
+    await tick(ctx)
+    await tick(ctx)
+    assert WorkflowReceipt.model_validate((await action(ctx)).detail["workflow_receipt"]).inputs == actual
