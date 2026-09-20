@@ -92,10 +92,18 @@ async def move(session, node, target, *, reason):
 
 
 class EvaluationServices:
-    def __init__(self, factory, *, runtime=None, provider=None):
+    def __init__(self, factory, *, runtime=None, provider=None, corrections=None):
         self.factory = factory
         self.runtime = runtime or EvaluationRuntime(factory)
         self.provider = provider or EvaluationProvider()
+        self.corrections = corrections
+
+    def correction_service(self):
+        if self.corrections is None:
+            from .evaluation_corrections import EvaluationCorrections
+
+            self.corrections = EvaluationCorrections(self)
+        return self.corrections
 
     async def node(self, session, context):
         loaded = await load_execution(session, identity=context.identity)
@@ -288,7 +296,7 @@ class EvaluationServices:
                 .limit(1)
             )
             if failed is not None and (failed.detail or {}).get("required_failures"):
-                raise CycleBlockedError("evaluation_failed_awaiting_correction", BlockCode.HUMAN_INPUT_REQUIRED)
+                return await self.correction_service().observe(context)
             if spec.acceptance_mode != "machine":
                 return EvaluationObservation(ObservationKind.READY, stage="human")
             expected, binding = await self.expectation(session, context)
@@ -461,20 +469,29 @@ class EvaluationController:
         except Exception:
             return EvaluationObservation(ObservationKind.BLOCKED, block=block("evaluation_evidence_unverifiable", BlockCode.PROVIDER_UNAVAILABLE))
 
+    async def perform(self, context, effect):
+        from .evaluation_correction_state import CORRECTION_KIND
+
+        require(effect.intent.kind == CORRECTION_KIND, "evaluation_effect_unsupported")
+        return await self.services.correction_service().perform(context, effect)
+
     def decide(self, context, observation):
+        stage = getattr(observation, "stage", "wait")
+        if stage.startswith("correction_"):
+            return self.services.correction_service().decide(context, observation)
         if observation.kind is ObservationKind.BLOCKED:
             return HandlerDecision(DecisionKind.BLOCK, block=observation.block)
-        if observation.stage == "done":
+        if stage == "done":
             return HandlerDecision(
                 DecisionKind.CONCLUDE, progress_note="Delivery/evaluation handoff complete; explicit human gates remain authoritative."
             )
-        if observation.stage == "admit":
+        if stage == "admit":
 
             async def admit(session, current):
                 await self.services.admit(session, current, observation.snapshot)
 
             return HandlerDecision(DecisionKind.WAIT, settlement=admit, next_check_at=context.now + timedelta(seconds=30))
-        if observation.stage == "accept":
+        if stage == "accept":
 
             async def settle(session, current):
                 try:

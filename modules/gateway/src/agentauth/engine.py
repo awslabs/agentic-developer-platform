@@ -175,6 +175,40 @@ class EngineAuthorityWriter:
             max_dispatch_concurrency=1,
             max_chain_depth=8,
         )
+        chain_depth = 0
+        correction_metadata = {}
+        correction = graph.get("correction")
+        if correction is not None:
+            from src.orchestration.review_cycle_dispatch import ReviewCycleServices
+
+            try:
+                raw_parent = self.store._read(f"TENANT#{genesis.org_id}", f"EXEC#{correction['parent_run_id']}")
+                parent = self.store.live_grant(
+                    invocation_id=correction["parent_run_id"], tenant_id=genesis.org_id, attempt=int(raw_parent["current_attempt"]["N"]), now=now
+                )
+                chain_depth = int(raw_parent.get("chain_depth", {}).get("N", "0")) + 1
+                if (
+                    pending.node_kind != "story"
+                    or persona != "developer"
+                    or envelope.get("handoff_required") is not True
+                    or parent.authority.reference_id != genesis.decision_id
+                    or parent.flow_id != genesis.flow_id
+                    or source["repo"] not in parent.repo_scope
+                    or parent.principal != correction["parent_principal"]
+                    or parent.grant_id != correction["parent_grant_id"]
+                    or parent.revocation_epoch != correction["parent_grant_epoch"]
+                    or chain_depth != correction["chain_depth"]
+                    or chain_depth > parent.max_chain_depth
+                ):
+                    raise ValueError("lineage changed")
+                grant = ReviewCycleServices.child_grant(parent, invocation, source["repo"])
+                correction_metadata = {
+                    "orchestration_correction_receipt": {"S": correction["receipt_id"]},
+                    "parent_grant_id": {"S": parent.grant_id},
+                    "parent_grant_epoch": {"N": str(parent.revocation_epoch)},
+                }
+            except Exception:
+                raise BootstrapRefusedError("evaluation correction lineage unavailable") from None
         metadata = {"work_item_issue": {"N": str(source["issue"])}, "max_total_dispatches": {"N": "1"}}
         if worker_dispatch:
             metadata["dispatch_personas"] = {"SS": ["reviewer"]}
@@ -188,7 +222,8 @@ class EngineAuthorityWriter:
             execution_metadata={
                 "issue_number": {"N": str(source["issue"])},
                 "installation_id": {"N": str(source["installation_id"])},
-                "chain_depth": {"N": "0"},
+                "chain_depth": {"N": str(chain_depth)},
+                **correction_metadata,
                 "orchestration_node_id": {"S": pending.node_id},
                 "orchestration_node_attempt": {"N": str(pending.node_attempt)},
                 **({"provider_repository_id": {"N": str(source["provider_repository_id"])}} if "provider_repository_id" in source else {}),
@@ -420,6 +455,15 @@ async def validate_engine_authority(
         ).scalar_one_or_none()
         if node is None or node.attempts != attempt:
             raise BootstrapRefusedError("engine node is no longer authorized")
+        from src.orchestration.evaluation_correction_state import link_id, validate_correction
+
+        correction = await validate_correction(session, node)
+        correction_receipt = execution.get("orchestration_correction_receipt", {}).get("S")
+        if correction is not None:
+            if not execution.get("orchestration_continuation_receipt") and correction_receipt != link_id(node.id):
+                raise BootstrapRefusedError("evaluation correction assignment missing")
+        elif correction_receipt:
+            raise BootstrapRefusedError("evaluation correction assignment unavailable")
         if node.state != NodeState.RUNNING.value:
             if delivery_identity is None:
                 raise BootstrapRefusedError("engine node is no longer authorized")
