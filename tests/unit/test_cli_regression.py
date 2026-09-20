@@ -541,3 +541,92 @@ fail() { echo "$*" >&2; }
         timeout=10,
     )
     assert probe.returncode == 0, probe.stderr
+
+
+@pytest.mark.parametrize(
+    "kind, value, username, allowed",
+    [
+        (
+            "user",
+            "7498f4d8-60e1-70b1-426a-c85d0325eaa9",
+            "eval-bgt-current-u1@example.test",
+            True,
+        ),
+        (
+            "user",
+            "00000000-0000-0000-0000-000000000000",
+            "eval-bgt-current-u1@example.test",
+            False,
+        ),
+        (
+            "user",
+            "7498f4d8-60e1-70b1-426a-c85d0325eaa9",
+            "eval-bgt-previous-u1@example.test",
+            False,
+        ),
+        (
+            "user",
+            "7498f4d8-60e1-70b1-426a-c85d0325eaa9",
+            "real-user@example.test",
+            False,
+        ),
+        (
+            "user",
+            "eval-bgt-current-unseeded",
+            "eval-bgt-current-u1@example.test",
+            False,
+        ),
+        ("user", "", "eval-bgt-current-u1@example.test", False),
+        ("team", "eval-bgt-current-team", "", True),
+        ("team", "production-team", "", False),
+    ],
+)
+def test_budget_mutation_ownership_accepts_only_this_runs_seeded_users(
+    kind, value, username, allowed
+):
+    source = (ROOT / "platform/evals/budget-ratelimit/run-eval.sh").read_text()
+    functions = "\n".join(
+        re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.M | re.S).group()
+        for name in ("assert_tagged", "assert_owned_entity")
+    )
+    setup = r"""
+set -euo pipefail
+EVAL_TAG=eval-bgt-current
+U1=eval-bgt-current-u1@example.test U2=eval-bgt-current-u2@example.test
+U3=eval-bgt-current-u3@example.test X1=eval-bgt-current-x1@example.test A1=eval-bgt-current-a1@example.test
+die() { echo "$*" >&2; exit 1; }
+state_get() {
+  case "$1" in
+    U1_SUB) echo 7498f4d8-60e1-70b1-426a-c85d0325eaa9 ;;
+    U1_USERNAME) echo "$TEST_USERNAME" ;;
+    *) echo '' ;;
+  esac
+}
+"""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            setup + functions + '\nassert_owned_entity "budget entity" "$1" "$2"',
+            "_",
+            kind,
+            value,
+        ],
+        env={**os.environ, "TEST_USERNAME": username},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert (result.returncode == 0) is allowed, result.stdout + result.stderr
+    if not allowed:
+        assert "REFUSING" in result.stderr
+
+
+def test_both_budget_writers_check_entity_ownership_and_org_tag_before_posting():
+    source = (ROOT / "platform/evals/budget-ratelimit/run-eval.sh").read_text()
+    for name in ("set_budget", "set_ratelimit"):
+        function = re.search(
+            r"^" + name + r"\(\) \{\n.*?^\}", source, re.M | re.S
+        ).group()
+        assert function.index("assert_owned_entity") < function.index("http_post_json")
+        assert function.index("assert_tagged") < function.index("http_post_json")
