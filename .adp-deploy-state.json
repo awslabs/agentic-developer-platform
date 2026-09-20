@@ -32,21 +32,23 @@
     },
     "protected_worker_cutover": {
       "status": "running",
-      "admission_paused": false,
-      "active_legacy_workers": 0,
+      "admission_paused": true,
+      "active_legacy_workers": 2,
       "live_queue_messages": 0,
       "preserved_dead_letter_messages": 103,
-      "reason": "New unrelated AI-DLC jobs 5526 and 5532 preserved and allowed to drain on legacy workers; no authentication/key switch applied"
+      "reason": "Drain the two already-running legacy AI-DLC jobs without admitting new work during final cutover preparation",
+      "orchestration_tick_schedule_paused": true
     },
     "pmm_live_acceptance": {
       "status": "running",
       "model_spend_ceiling_usd": 10,
       "budget_authorization": "User approved $10 total for live tests; recurring paid schedules excluded",
-      "started_probe_slots": 3,
+      "started_probe_slots": 6,
       "confirmed_local_shape_refusals": 2,
       "unresolved_stopped_slots": 1,
       "probe_admission_restored_disabled": true,
-      "provider_successes": 0
+      "provider_successes": 3,
+      "conservative_reserved_usd": 4
     },
     "pmm_enforcement": {
       "status": "pending"
@@ -71,17 +73,25 @@
       "resources_added": 2,
       "destination_id": "316dd12b-70c0-4f00-9efc-e55a7a91e5d4",
       "routing_verification": "real gateway STS and malformed-request IAM probe; no paid invocation"
+    },
+    "isolated_protected_runtime_canary": {
+      "status": "running",
+      "gateway_deployment": "pmm-authority-canary-20260920",
+      "api_stage": "pmm-canary-20260920",
+      "production_authority_changed": false,
+      "first_empty_task_test": "refused_before_model_call; diagnosing",
+      "temporary_resources_require_cleanup": true
     }
   },
   "outputs": {
-    "candidate_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:be2a7be8bb21022973ca6fbd9f653dc0cf9c46342a24eb20cc2d55145db9f133",
-    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:5e33b0df222d808421a9b4cfe26e847ff8d71d08"
+    "candidate_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:0431437032bb5f3e7e80a7da607d8fd862395b4687c4b3acf630d89dde263a7e",
+    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:642a77226330c1cfeeaa31b628bc7a4c3ef66985"
   },
   "validation": {
     "gateway_tests": 110,
     "network_policy_tests": 11,
     "terraform_rollout_tests": 12,
-    "live_model_invocations": 0,
+    "live_model_invocations": 3,
     "seven_day_soak_claimed": false,
     "probe_admission_checks_succeeded": 2,
     "probe_admission_result": "disabled",
@@ -96,8 +106,8 @@
     "published_cli_matches_source": true,
     "frontend_feedback_verified": true,
     "final_api_authentication_status": 200,
-    "final_default_revision": 1,
-    "final_active_default_model_id": null,
+    "final_default_revision": 2,
+    "final_active_default_model_id": "us.anthropic.claude-sonnet-4-6",
     "final_runtime_posture": "report_only",
     "final_posture_revision": 1,
     "agent_models_ui_enabled": false,
@@ -109,6 +119,9 @@
       "iam",
       "eks"
     ],
-    "protected_worker_logging_write_and_readback": true
+    "protected_worker_logging_write_and_readback": true,
+    "saved_mapping_roundtrip": "passed",
+    "saved_mapping_conflicting_create_status": 409,
+    "exact_runner_fake_provider_models": 3
   }
 }

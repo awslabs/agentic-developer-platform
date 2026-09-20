@@ -140,3 +140,62 @@ Authority, run tasks, source-isolation assertions and PMM enforcement remain off
   admitted budget unchanged; provider max_tokens and thinking limits remain
   fingerprinted. Captured $0.01 and $1 requests now match. Local shape refusal
   also aborts the SDK immediately instead of waiting for its timeout.
+
+
+## Real SDK qualification and saved-mapping acceptance
+
+Worker build `35513638857` and gateway deployment `35513639201` succeeded from
+`642a77226330c1cfeeaa31b628bc7a4c3ef66985`. The exact production probe runner
+first matched all three request shapes against a loopback fake provider. That
+preflight wrote no gateway evidence and made no paid calls. The subsequent finite
+three-slot Job completed with **three proven invocations and no errors**:
+
+| Model | Real provider request ID |
+| --- | --- |
+| `global.anthropic.claude-sonnet-4-6` | `4de5eea6-d6c7-4661-b740-6e344958a742` |
+| `global.anthropic.claude-haiku-4-5-20251001-v1:0` | `6bff8dcc-7c40-45c8-bad9-3f24bc9d20e4` |
+| `us.anthropic.claude-sonnet-4-6` | `91cc993a-2fde-4a8b-9ff7-652c77abbdbc` |
+
+The evidence is scoped to account `879318057152`, region `us-east-1`, the pinned
+SDK contract `0.3.220` and v3 request shapes. It expires on 2026-09-21 at roughly
+13:41 UTC. This is real model qualification, not end-to-end persona execution.
+The private ledger retains $4 conservatively against the $10 ceiling, including
+the unresolved $1 from the earlier stopped attempt. Probe admission/budgets were
+restored to disabled/zero; the recurring CronJob stayed suspended. No ongoing paid
+refresh schedule is authorized by the test budget.
+
+The authenticated, audited default API promoted `us.anthropic.claude-sonnet-4-6`
+at revision 2. The test administrator initially had an empty workspace claim;
+the normal workspace-selection API selected its existing `adp-platform` membership
+and a fresh login resolved its canonical human identity. No membership or tenant
+was invented for the test. All 14 persona settings loaded. Saving developer→Haiku,
+reading it back, refusing a concurrent create with 409, and resetting to the proven
+Sonnet default all passed. The temporary saved mapping was removed by the normal
+revision-checked API.
+
+Current v3 source checks: 39 worker probe tests, TypeScript, 43 gateway probe/default
+tests, Ruff and 45 producer tests passed. The authenticated live checks above are
+separate from the deployment workflow's bundled smoke job.
+
+## Isolated protected-runtime canary in progress
+
+The two unrelated legacy Jobs for issues 5526 and 5532 remained active. The tick
+schedule and KEDA admissions remain paused while they finish; neither Job was
+terminated. Production authority, task services, source isolation, legacy IAM
+retirement, PMM enforcement and the user-facing feature flag remain unchanged.
+
+A temporary gateway Deployment uses the same immutable source with authority and
+run services enabled against a separate empty test queue. It runs without startup
+background tasks. Its independent temporary marker key does not replace the live
+webhook placeholder. A temporary queue-scoped gateway IAM policy and Service are
+recorded for cleanup. The separate API stage `pmm-canary-20260920` uses the actual
+AWS_IAM integration and a header-selected internal ALB target; the existing `dev`
+stage's deployment is unchanged and the editable API integration was restored
+immediately after creating the canary snapshot.
+
+The first actual-entrypoint protected worker was refused at task pickup, before
+any model call. A separately instrumented protocol canary is diagnosing this
+using the actual protected role and projected Kubernetes token. Neither this
+setup nor the earlier IAM-denial canary establishes complete runtime acceptance.
+All temporary canary resources must be removed after retaining receipts. General
+PMM activation remains pending successful protected runtime verification.
