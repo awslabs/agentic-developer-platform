@@ -242,9 +242,22 @@ def test_contract_selfcheck_runs_from_staged_artifact_without_repo(tmp_path):
     for name in ("evaluation_contract.py", "evaluation_contract_selfcheck.py"):
         shutil.copyfile(ROOT / "modules/gateway/src/orchestration" / name, package / name)
     shutil.copytree(ROOT / "contracts/orchestration-evaluation", stage / "contracts/orchestration-evaluation")
-    env = {key: value for key, value in os.environ.items() if key in {"PATH", "HOME", "LANG", "TMPDIR"}}
+    # setup-python's Linux interpreter needs its native extension library path.
+    # Keep interpreter configuration while excluding repository imports and AWS
+    # credentials; neither is required to validate a staged artifact.
+    env = {key: value for key, value in os.environ.items() if key in {"PATH", "HOME", "LANG", "TMPDIR", "LD_LIBRARY_PATH"}}
     env["PYTHONPATH"] = str(stage)
-    command = [sys.executable, "-m", "src.orchestration.evaluation_contract_selfcheck"]
+    command = [
+        sys.executable,
+        "-c",
+        "import runpy, traceback\n"
+        "try:\n"
+        "    runpy.run_module('src.orchestration.evaluation_contract_selfcheck', run_name='__main__')\n"
+        "except Exception as error:\n"
+        "    if error.__context__ is not None:\n"
+        "        traceback.print_exception(error.__context__)\n"
+        "    raise\n",
+    ]
     result = subprocess.run(command, cwd=stage, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     (stage / "contracts/orchestration-evaluation/v1/models.py").unlink()
