@@ -1,0 +1,175 @@
+# Example Account Factory request — Issue #5530 (w6-07), EPIC #4910.
+#
+# EVERY VALUE HERE IS A PLACEHOLDER AND NONE IS A DEFAULT.
+#
+# This file is documentation, not configuration. Nothing reads it at run time. The legacy
+# `config.env` was the opposite: it was sourced by every script and shipped working values
+# for a real management account, a real cluster and a named individual's email address, so a
+# run that supplied nothing still acted on a specific target that was not ADP's. Every
+# identity below must be supplied explicitly per request; `modes.py` defaults none of them
+# and refuses the legacy values by value.
+#
+# The live target — which organization, which management account, which cluster, and what
+# spend limits apply — is NOT settled. It is the EPIC A supervisor's to resolve before any
+# live operation. `dependencies.lock.yaml` records that as `target: status: unresolved`.
+# Filling this file in does not authorize provisioning.
+#
+# Usage (offline, no credentials, nothing is applied):
+#
+#   python3 -m account_factory.cli render --config my-request.yaml
+#   python3 -m account_factory.cli validate --config my-request.yaml
+#   python3 -m account_factory.cli cleanup-plan --config my-request.yaml
+#
+# ─────────────────────────────────────────────────────────────────────────────────────
+# MODE 1: new-account-managed — ADP vends a new AWS account and builds everything in it.
+# ─────────────────────────────────────────────────────────────────────────────────────
+#
+# ADP owns the account, the VPC, the cluster and the workspace. This is the only mode that
+# can ever reach an account-closure request, and even then closure must be asked for by name,
+# with the irreversible 90-day consequence acknowledged, AND must name the one account a
+# provisioned-account record says ADP opened for this workspace (see `cleanup.py`).
+#
+# This mode renders TWO independent root objects and applies them in ORDER:
+#
+#   stage 0  the workspace Namespace
+#   stage 1  AccountOwnership       — the AWS account and the role that reaches into it
+#   stage 2  WorkspaceInfrastructure — the VPC and the cluster, wired together
+#            precondition: stage 1 is Ready with a non-empty status.accountId, and that id
+#                          is recorded as this workspace's provisioned account
+#
+# Two roots rather than one `FullAccountInfrastructure`, because one object owning both the
+# account and the infrastructure has no safe teardown: deleting it closes the AWS account,
+# and retaining it retains the VPC/cluster DECLARATION, which a controller then rebuilds.
+# `render --format yaml` prints the stages and their preconditions; nothing is applied.
+
+mode: new-account-managed
+
+# Organization ownership — which AWS Organization this acts in.
+organization_id: o-EXAMPLE1234
+
+# Management-cluster ownership — the account and cluster whose controllers do the acting.
+# Distinct from the target: the controllers run HERE and act THERE.
+management_account_id: "000000000000"
+management_cluster: EXAMPLE-management-cluster
+region: us-west-2
+
+# Workspace ownership — which Superplane workspace the result serves. Becomes the namespace
+# and the custom-resource name, so it must be a valid Kubernetes object name, and it may not
+# be a core ADP namespace.
+workspace_id: ws-example
+
+# Required in this mode only: AWS Organizations requires a unique address per account.
+# Use an address your organization controls and that is not a personal mailbox.
+account_email: adp-ws-example@example.invalid
+
+# Cluster inputs, required when the request creates a cluster.
+vpc_cidr: 10.64.0.0/16
+availability_zones:
+  # A list, never a comma-joined string — `us-west-2a,us-west-2b` read as one zone is a
+  # zone that does not exist. The legacy config.env stored it as a joined string.
+  - us-west-2a
+  - us-west-2b
+cluster_version: "1.31"
+node_instance_type: m6i.large
+
+# Deliberately absent in this mode:
+#   target_account_id      — the account does not exist yet, so any id names another account
+#   existing_cluster_name  — the cluster is created by this request
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# MODE 2: existing-account-managed — the account exists; ADP builds the network + cluster.
+# ─────────────────────────────────────────────────────────────────────────────────────
+#
+# ADP owns the VPC, the cluster and the workspace, but NOT the account. Cleanup removes what
+# ADP created and retains the account: ADP does not close an account it did not open.
+#
+# One stage, not two: the account already exists, so it is reached through an IAMRoleSelector
+# built from `target_account_id` below rather than waiting on another object's status. The VPC
+# and cluster still come as a single `WorkspaceInfrastructure`, because the cluster's required
+# subnetIds and securityGroupIds are OUTPUTS of the network — two separate top-level objects
+# cannot pass one's output into the other's input.
+#
+# mode: existing-account-managed
+# organization_id: o-EXAMPLE1234
+# management_account_id: "000000000000"
+# management_cluster: EXAMPLE-management-cluster
+# region: us-west-2
+# workspace_id: ws-example
+# target_account_id: "000000000000"   # required: the adopted account must be named
+# vpc_cidr: 10.65.0.0/16
+# availability_zones:
+#   - us-west-2a
+#   - us-west-2b
+# cluster_version: "1.31"
+# node_instance_type: m6i.large
+#
+# Deliberately absent: account_email (the account exists; its address is not ours to set),
+# existing_cluster_name (the cluster is created by this request).
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# MODE 3: bring-existing-cluster — ADP adopts an existing cluster and creates no AWS
+#                                  infrastructure at all.
+# ─────────────────────────────────────────────────────────────────────────────────────
+#
+# ADP owns only the workspace. No AccountOwnership, no WorkspaceInfrastructure and no AWS
+# infrastructure of any kind is rendered — only an IAMRoleSelector and an adoption ConfigMap —
+# and cleanup deletes only those two namespaced records, never the cluster.
+#
+# The legacy flow had no way to express this, so attaching a workspace to an existing cluster
+# meant letting FullAccountInfrastructure try to create one and fail partway.
+#
+# mode: bring-existing-cluster
+# organization_id: o-EXAMPLE1234
+# management_account_id: "000000000000"
+# management_cluster: EXAMPLE-management-cluster
+# region: us-west-2
+# workspace_id: ws-example
+# target_account_id: "000000000000"        # required: the account the cluster lives in
+# existing_cluster_name: EXAMPLE-cluster   # required: the cluster being adopted
+#
+# Deliberately absent, and REFUSED rather than ignored if supplied: account_email,
+# vpc_cidr, availability_zones, cluster_version, node_instance_type. None of them can take
+# effect here, and a value that is silently dropped is a value whose author was wrong about
+# what this request does.
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# AUTHORIZATION IS NOT IN THIS FILE
+# ─────────────────────────────────────────────────────────────────────────────────────
+#
+# What this file states is what a run is ASKING for. What a run is ALLOWED to do is separate,
+# and deliberately not co-located: a request that carried its own authorization would be a
+# caller authorizing itself.
+#
+# In service use, authorization comes from a binding's resolved principal
+# (`ValidationAuthorization.from_operation_binding`) — the workspace and organization a run may
+# act on are resolved by the authority, never named by the caller. See
+# `contracts/superplane_contracts/provisioning.py`.
+#
+# For offline operator use the CLI has no facade to resolve a principal from, so it takes them
+# as explicit flags:
+#
+#   python3 -m account_factory.cli validate --config my-request.yaml \
+#     --authorized-workspace ws-example \
+#     --authorized-organization o-EXAMPLE1234 \
+#     --authorized-management-account 000000000000 \
+#     --authorized-management-cluster EXAMPLE-management-cluster \
+#     --authorized-target-account 000000000000 \
+#     --permit-mode new-account-managed
+#
+# Every flag omitted is a comparison NOT MADE, and the run says so on stderr ("NOT VERIFIED")
+# rather than reporting it as a pass. "The workspace was not verified" and "the workspace
+# matched" must not look alike in a report.
+#
+# ─────────────────────────────────────────────────────────────────────────────────────
+# WHAT IS NEVER IN THIS FILE
+# ─────────────────────────────────────────────────────────────────────────────────────
+#
+# No credential, of any kind. Not an access key, not a secret key, not a session token, not
+# a private key, not a password. This module renders identity references — an IAMRoleSelector
+# naming a role ARN — and never a credential. Rendered output and even refusal messages are
+# reviewed, logged and committed to CI artifacts, so a secret placed here would be disclosed
+# by the review process itself. `render.py` refuses to render anything secret-shaped, and
+# `tests/test_no_legacy_targets.py` scans the module for secret literals.
+#
+# Credentials for a live operation are supplied by the execution environment's role, never by
+# configuration, and are out of scope for this offline module.

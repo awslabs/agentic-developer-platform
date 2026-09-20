@@ -1,0 +1,104 @@
+# ADP-maintained ResourceGraphDefinition: account ownership — Issue #5530 (w6-07).
+#
+# MAINTAINED BY ADP. This is not a vendored file: it is reviewed in the diff like any other
+# source, which is why it carries no upstream provenance block and no recorded checksum (see
+# `dependencies.py`'s `maintained_resource_graph_definitions` note for that distinction).
+#
+# ── Why this graph exists separately from the infrastructure graph ───────────────────────
+#
+# The vendored `03-full-account-infrastructure.yaml` makes the AWS `Account` a CHILD of the
+# same graph instance that owns the VPC and the cluster. That single fact is what made the
+# legacy teardown unsafe in both directions:
+#
+#   * deleting the parent to remove the infrastructure also deleted the `Account`, closing
+#     the AWS account into an irreversible 90-day suspension (the defect `cleanup.py`
+#     documents); and
+#   * retaining the parent to protect the account also retains the DECLARATION of the VPC
+#     and cluster — so a controller reconciling that declaration rebuilds whatever a
+#     teardown just deleted. A cleanup plan that deletes children while keeping their parent
+#     cannot converge, and re-creates spend after reporting success.
+#
+# Those two are not independently fixable while one object owns both concerns: protecting
+# the account and removing the infrastructure are the same edit with opposite requirements.
+# So ownership is split. This graph owns ONLY the account and the cross-account role
+# reference that depends on it. `adp-workspace-infrastructure.yaml` owns the VPC and the
+# cluster, as a separate root object with its own lifecycle.
+#
+# The consequence is the property cleanup needs: infrastructure can be deleted and STAY
+# deleted, because nothing retained still declares it, while the account is retained because
+# it is a different object that the cleanup plan does not touch at all.
+#
+# ── Ordering ─────────────────────────────────────────────────────────────────────────────
+#
+# `iamRoleSelector` reads `${account.status.accountID}`, so kro cannot create it until the
+# account reports an id. That is a real dependency expressed as a reference, not the
+# advisory `app.kubernetes.io/depends-on-iam-role-selector` LABEL the vendored graph used —
+# a label carries no ordering, so upstream's comment claiming it did was describing an
+# intent the manifest did not implement.
+#
+# Because the infrastructure graph is a separate root, the ordering BETWEEN the two is not
+# expressible inside either one. It is therefore explicit in the rendered plan instead:
+# `render.py` emits ordered stages, and stage 2 states that stage 1 must report Ready first.
+# That is the staged/resumable boundary rather than a hidden assumption.
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: adp-account-ownership
+  labels:
+    app.kubernetes.io/managed-by: adp-superplane-account-factory
+    adp.aws.dev/issue: '5530'
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: AccountOwnership
+    spec:
+      # Required inputs carry no `default=`, which is how `dependencies.py` tells a required
+      # input from an optional one when it checks that every rendered object satisfies its
+      # graph. Nothing here is defaulted to a target: the legacy `config.env` defaulted the
+      # account and that is how a run acted on an account nobody chose.
+      accountName: string
+      accountEmail: string
+      region: string
+      accountRoleName: string | default="OrganizationAccountAccessRole"
+    status:
+      # Surfaced so a later stage and a closure record can read WHICH account was created.
+      # `cleanup.py` requires a recorded account id before it will build a closure request,
+      # and this is where that id comes from.
+      accountId: ${account.status.accountID}
+      accountArn: ${account.status.ackResourceMetadata.arn}
+  resources:
+    - id: account
+      template:
+        apiVersion: organizations.services.k8s.aws/v1alpha1
+        kind: Account
+        metadata:
+          name: ${schema.spec.accountName}
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app.kubernetes.io/managed-by: adp-superplane-account-factory
+            adp.aws.dev/workspace: ${schema.metadata.name}
+        spec:
+          name: ${schema.spec.accountName}
+          email: ${schema.spec.accountEmail}
+          roleName: ${schema.spec.accountRoleName}
+
+    - id: iamRoleSelector
+      template:
+        apiVersion: services.k8s.aws/v1alpha1
+        kind: IAMRoleSelector
+        metadata:
+          name: ${schema.spec.accountName}
+          # Explicit, unlike the vendored graph's IAMRoleSelector which omitted
+          # `metadata.namespace` entirely and would land wherever the applying context
+          # pointed.
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app.kubernetes.io/managed-by: adp-superplane-account-factory
+            adp.aws.dev/workspace: ${schema.metadata.name}
+        spec:
+          # An identity reference, not a credential. This is how ACK reaches the target
+          # account, and it is why no Secret appears anywhere in a rendered set.
+          arn: arn:aws:iam::${account.status.accountID}:role/${schema.spec.accountRoleName}
+          namespaceSelector:
+            names:
+              - ${schema.metadata.namespace}
