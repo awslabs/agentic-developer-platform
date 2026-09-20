@@ -73,6 +73,7 @@ const PHASE_LABELS: Record<ExecutionPhase, string> = {
   awaiting_review: 'Awaiting review',
   repairing: 'Repairing',
   merge_ready: 'Ready to merge',
+  deployment_pending: 'Code merged; deployment pending',
   settling: 'Settling',
   concluded: 'Concluded',
 };

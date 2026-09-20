@@ -525,6 +525,7 @@ export type ExecutionPhase =
   | 'awaiting_review'
   | 'repairing'
   | 'merge_ready'
+  | 'deployment_pending'
   | 'settling'
   | 'concluded';
 

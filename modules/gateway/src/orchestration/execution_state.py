@@ -116,6 +116,7 @@ class ExecutionPhase(StrEnum):
     AWAITING_REVIEW = "awaiting_review"  # Published; waiting on review/check evidence
     REPAIRING = "repairing"  # Responding to review or a failed check
     MERGE_READY = "merge_ready"  # Reviewed current head; merge is a separate effect
+    DEPLOYMENT_PENDING = "deployment_pending"  # Code merged; deployment remains separately observable
     SETTLING = "settling"  # Evidence observed; recording the terminal result
     CONCLUDED = "concluded"  # Nothing further for this execution to do
 

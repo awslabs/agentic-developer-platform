@@ -98,7 +98,7 @@ class ReviewCycleHandler:
                         .where(
                             OrchestrationAction.org_id == node.org_id,
                             OrchestrationAction.execution_id == context.execution.id,
-                            OrchestrationAction.kind.in_([DISPATCH_KIND, "review_evidence"]),
+                            OrchestrationAction.kind.in_([DISPATCH_KIND, "review_evidence", "merge_repair_request"]),
                         )
                         .order_by(OrchestrationAction.created_at, OrchestrationAction.id)
                         .limit(MAX_HISTORY + 1)
@@ -133,7 +133,16 @@ class ReviewCycleHandler:
                 "sequence": len(dispatches) + 1,
             }
             latest = dispatches[-1] if dispatches else None
-            if latest is None or latest.detail.get("action") == Action.REPAIR.value:
+            repairs = [row for row in rows if row.kind == "merge_repair_request" and row.status == "succeeded"]
+            repair_request = repairs[-1] if repairs else None
+            if repair_request is not None and (latest is None or repair_request.created_at > latest.created_at):
+                snapshot.update(
+                    next_action=Action.REPAIR.value,
+                    findings=[{"summary": repair_request.detail["reason"], "source": "merge-controller"}],
+                    review_artifact=repair_request.receipt_ref,
+                    author_run_id=latest.detail["author_run_id"] if latest else facts["active_run_id"],
+                )
+            elif latest is None or latest.detail.get("action") == Action.REPAIR.value:
                 snapshot["next_action"] = Action.REVIEW.value
                 snapshot["author_run_id"] = facts["active_run_id"]
             else:

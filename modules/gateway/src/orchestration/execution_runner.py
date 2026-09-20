@@ -1202,9 +1202,10 @@ async def run_execution_runner(
         return report
 
     if handlers is None:
+        from .merge_controller import handlers as merge_handlers
         from .review_cycle import handlers as review_cycle_handlers
 
-        handlers = {**review_cycle_handlers(factory), **registered_execution_handlers()}
+        handlers = {**review_cycle_handlers(factory), **merge_handlers(factory), **registered_execution_handlers()}
     clock = clock or SystemClock()
     if not handlers:
         return report
