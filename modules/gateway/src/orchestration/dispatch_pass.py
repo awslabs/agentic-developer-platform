@@ -810,6 +810,32 @@ async def _dispatch_one_unclaimed(
     user_id = await resolve_root_user_entity_id(session, org_id, genesis.root_human_id)
     cognito_sub = await resolve_user_entity_id(session, org_id, user_id)
 
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from .evaluation_correction_state import link_id, validate_correction
+    from .evaluation_issue_provider import EvaluationIssueProvider
+    from .execution_policy import Action
+    from .review_cycle import CycleBlockedError
+
+    try:
+        correction = await validate_correction(session, node)
+        if correction is not None:
+            detail = correction.detail
+            if (config.repo, repository_id, installation_id) != (detail["repo"], detail["provider_repository_id"], detail["installation_id"]):
+                raise CycleBlockedError("evaluation_correction_repository_changed")
+            issue_state = await EvaluationIssueProvider().find(
+                SimpleNamespace(org_id=org_id, repo=config.repo, provider_repository_id=repository_id, installation_id=installation_id),
+                detail["content"],
+                since=datetime.fromisoformat(detail["since"]),
+                issue_number=detail["issue"]["number"],
+            )
+            if issue_state is None or issue_state.state != "open":
+                raise CycleBlockedError("evaluation_correction_human_refusal")
+    except (CycleBlockedError, ValueError, KeyError, TypeError):
+        report.record(org_id, "policy_blocked")
+        return
+
     # --- Policy admission (#5128): the last check before the node commits to
     # running. Placed here deliberately, after genesis and before `dispatch_node`:
     # a refusal must leave the node in `ready` with nothing published, exactly like
@@ -828,6 +854,7 @@ async def _dispatch_one_unclaimed(
         installation_resolved=True,
         provider_repository_id=repository_id,
         expected_invocation_id=attempt_run_id(node.id, node.attempts + 1),
+        action_override=Action.REPAIR if correction is not None else None,
     )
     if not admission.permitted:
         # `reason` is a typed `DenyReason` (#5122 renders these), so it is logged as
@@ -876,6 +903,13 @@ async def _dispatch_one_unclaimed(
         user_id=user_id,
         cognito_sub=cognito_sub,
     )
+    if correction is not None:
+        detail = correction.detail
+        envelope["orchestration"]["correction"] = {
+            "receipt_id": link_id(node.id),
+            **{key: detail[key] for key in ("parent_run_id", "parent_principal", "parent_grant_id", "parent_grant_epoch", "chain_depth")},
+        }
+        envelope["correlation"].update(parent_principal=detail["parent_principal"], chain_depth=detail["chain_depth"])
     if repository_id is not None:
         envelope["source_ref"]["provider_repository_id"] = repository_id
     if work_claim_required:

@@ -366,3 +366,25 @@ describe('evaluation decision evidence', () => {
     expect(screen.getByTestId(`execution-progress-${NODE_REF}`)).toHaveAttribute('data-tone', 'attention');
   });
 });
+
+
+describe('evaluation correction progress', () => {
+  it.each([
+    ['creation_unresolved', 'Issue creation is unresolved'],
+    ['delivery_pending', 'review, merge and verified deployment'],
+    ['retest_requested', 'Fresh evaluation requested: cycle 2'],
+  ])('renders %s without treating issue creation as acceptance', (stage, expected) => {
+    renderPanel({ nodeAccepted: false, execution: execution({
+      phase: 'evaluation_pending', status: 'waiting',
+      actions: [action({ kind: stage === 'retest_requested' ? 'evaluation_context' : 'evaluation_correction_issue', evidence_summary: {
+        evaluation_cycle: 1, remaining_corrections: 7, issue_number: 71,
+        child_node_id: '11111111-1111-1111-1111-111111111111', retest_cycle: stage === 'retest_requested' ? 2 : null, stage,
+      } })],
+    }) });
+    const summary = screen.getByLabelText('Evaluation correction');
+    expect(summary).toHaveTextContent('Correction issue #71');
+    expect(summary).toHaveTextContent(expected);
+    expect(summary).toHaveTextContent('allowance remaining after this cycle: 6');
+    expect(summary).not.toHaveTextContent('Required criteria passed');
+  });
+});

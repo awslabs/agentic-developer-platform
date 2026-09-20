@@ -63,6 +63,8 @@ async def evaluation(runtime):  # noqa: F811
         plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
         policy = ctx.policy.model_dump(mode="json")
         policy["allowed_actions"].append(Action.EVALUATE.value)
+        # E2-only fixtures leave corrective effects to the E3 suite.
+        policy["allowed_actions"] = [action for action in policy["allowed_actions"] if action != Action.REPAIR.value]
         policy["user_credentials"]["actions"].append(Action.EVALUATE.value)
         policy["evaluation_acceptance"] = {ctx.eval_address: "machine"}
         node = OrchestrationNode(

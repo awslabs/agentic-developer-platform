@@ -314,10 +314,24 @@ async def _accepted_scope(session: AsyncSession, node: OrchestrationNode, decisi
         proposed = next((item for item in plan.plan_document.get("nodes", []) if item["address"].endswith(suffix)), None)
         if proposed is not None:
             definition = {key: proposed.get(key) for key in definition}
+    from .evaluation_correction_state import correction_link
+
+    correction = await correction_link(session, node)
+    correction_scope = (
+        {}
+        if correction is None
+        else {
+            "evaluation_correction": {
+                key: correction.detail[key]
+                for key in ("parent_node_id", "evaluation_cycle", "failed_evidence_key", "source_scope", "source_revision")
+            }
+        }
+    )
     dispatch = json.loads(decision.reason or "{}") if decision else {}
     return json.dumps(
         {
             "node": definition,
+            **correction_scope,
             "dispatch_decision_id": decision.id if decision else None,
             "root_decision_id": dispatch.get("root_decision_id"),
             "accepted_plan_id": plan.id if plan else None,

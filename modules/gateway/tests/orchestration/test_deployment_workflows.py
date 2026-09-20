@@ -31,7 +31,10 @@ PATH = ".github/workflows/gateway-deploy.yml"
 
 @pytest.fixture
 async def deployment(merge):  # noqa: F811
-    ctx = merge
+    return await prepare_deployment(merge)
+
+
+async def prepare_deployment(ctx, *, source=SOURCE):
     assert (await merge_tick(ctx)).effects_succeeded == 1
     await merge_tick(ctx)
     assert (await state(ctx))[0].phase == "deployment_pending"
@@ -43,7 +46,7 @@ async def deployment(merge):  # noqa: F811
         "aws", "123456789012", "us-east-1", "eks-namespace", "cluster/namespace", TargetEvidence("test-sts", datetime.now(UTC).isoformat())
     )
     inputs = {"environment": "dev", "customer_account_id": ctx.target.account_id, "customer_user_id": "human", "customer_aws_label": "test-role"}
-    workflow = WorkflowRef(PATH, SOURCE, {k: frozenset({v}) for k, v in inputs.items()}, "adp_correlation")
+    workflow = WorkflowRef(PATH, source, {k: frozenset({v}) for k, v in inputs.items()}, "adp_correlation")
     ctx.entry = ManifestEntry(
         entry_id="gateway",
         status=EntryStatus.ENABLED,
@@ -52,10 +55,10 @@ async def deployment(merge):  # noqa: F811
         workflow=workflow,
         resource_kind=ctx.target.resource_kind,
         resource_id=ctx.target.resource_id,
-        artifact_revision=SOURCE,
+        artifact_revision=source,
         verification_adapter="gateway",
     )
-    definition = WorkflowDefinition(SOURCE, SOURCE, "d" * 40, inputs, True, "main", SOURCE)
+    definition = WorkflowDefinition(source, source, "d" * 40, inputs, True, "main", source)
     ctx.definition = definition
     ctx.runs, ctx.dispatches = [], []
     ctx.timeout_after_dispatch = False
@@ -71,8 +74,8 @@ async def deployment(merge):  # noqa: F811
             run_id=42,
             run_attempt=1,
             workflow_path=PATH,
-            workflow_revision=SOURCE,
-            source_revision=SOURCE,
+            workflow_revision=source,
+            source_revision=source,
             account_id=ctx.target.account_id,
             region=ctx.target.region,
             resource_kind=ctx.target.resource_kind,

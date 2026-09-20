@@ -123,6 +123,8 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
         # persona the engine never assigns as a coordinator is a mismatch, and
         # returning `None` refuses it rather than guessing which field to trust.
         return Action.COORDINATE if persona in {"operations", "aidlc"} else None
+    if execution.get("orchestration_correction_receipt"):
+        return Action.REPAIR if node.kind == NodeKind.STORY.value and persona == "developer" else None
     if node.kind == NodeKind.EVAL.value and persona == "operations":
         return Action.EVALUATE
     if node.kind == NodeKind.STORY.value:

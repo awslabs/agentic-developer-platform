@@ -92,10 +92,18 @@ async def move(session, node, target, *, reason):
 
 
 class EvaluationServices:
-    def __init__(self, factory, *, runtime=None, provider=None):
+    def __init__(self, factory, *, runtime=None, provider=None, corrections=None):
         self.factory = factory
         self.runtime = runtime or EvaluationRuntime(factory)
         self.provider = provider or EvaluationProvider()
+        self.corrections = corrections
+
+    def correction_service(self):
+        if self.corrections is None:
+            from .evaluation_corrections import EvaluationCorrections
+
+            self.corrections = EvaluationCorrections(self)
+        return self.corrections
 
     async def node(self, session, context):
         loaded = await load_execution(session, identity=context.identity)
@@ -144,7 +152,14 @@ class EvaluationServices:
         deployments = await predecessor_deployments(session, node, plan.version, now=datetime.now(UTC))
         require(deployments is not None, "evaluation_predecessor_not_complete")
         require(deployment_keys(deployments) == [tuple(item) for item in request.detail["deployments"]], "evaluation_deployment_changed")
-        anchor, _, deployment = anchor_for(deployments)
+        if request.detail.get("correction_operation_key"):
+            from .evaluation_correction_state import retest_deployment
+
+            corrected = await retest_deployment(session, node, request, plan.version)
+            deployments.append(corrected)
+            anchor, _, deployment = corrected
+        else:
+            anchor, _, deployment = anchor_for(deployments)
         require(asdict(anchor.identity) == request.detail["anchor_identity"], "evaluation_anchor_changed")
         return node, plan, spec, address, request, deployments, anchor, deployment
 
@@ -154,6 +169,16 @@ class EvaluationServices:
             require(node.state == "passed", "evaluation_code_not_complete")
             own = await current_deployment(session, node, context.identity.accepted_plan_version, now=context.now)
             require(own is not None and own[0].execution.id == context.execution.id, "evaluation_final_deployment_missing")
+            from .evaluation_correction_state import correction_link
+
+            correction = await correction_link(session, node)
+            if correction is not None:
+                parent = await session.get(OrchestrationNode, correction.detail["parent_node_id"], populate_existing=True)
+                require(parent is not None and parent.org_id == node.org_id, "evaluation_correction_parent_missing")
+                if parent.state == "passed" or parent.attempts > correction.detail["evaluation_cycle"] + 1:
+                    return EvaluationObservation(ObservationKind.SUCCEEDED, stage="done")
+                require(parent.state == "running", "evaluation_correction_parent_not_active")
+                return EvaluationObservation(ObservationKind.WAITING, detail="Corrected deployment is retained for the parent's current evaluation.")
             successors = list(
                 (
                     await session.scalars(
@@ -288,7 +313,7 @@ class EvaluationServices:
                 .limit(1)
             )
             if failed is not None and (failed.detail or {}).get("required_failures"):
-                raise CycleBlockedError("evaluation_failed_awaiting_correction", BlockCode.HUMAN_INPUT_REQUIRED)
+                return await self.correction_service().observe(context)
             if spec.acceptance_mode != "machine":
                 return EvaluationObservation(ObservationKind.READY, stage="human")
             expected, binding = await self.expectation(session, context)
@@ -461,20 +486,29 @@ class EvaluationController:
         except Exception:
             return EvaluationObservation(ObservationKind.BLOCKED, block=block("evaluation_evidence_unverifiable", BlockCode.PROVIDER_UNAVAILABLE))
 
+    async def perform(self, context, effect):
+        from .evaluation_correction_state import CORRECTION_KIND
+
+        require(effect.intent.kind == CORRECTION_KIND, "evaluation_effect_unsupported")
+        return await self.services.correction_service().perform(context, effect)
+
     def decide(self, context, observation):
+        stage = getattr(observation, "stage", "wait")
+        if stage.startswith("correction_"):
+            return self.services.correction_service().decide(context, observation)
         if observation.kind is ObservationKind.BLOCKED:
             return HandlerDecision(DecisionKind.BLOCK, block=observation.block)
-        if observation.stage == "done":
+        if stage == "done":
             return HandlerDecision(
                 DecisionKind.CONCLUDE, progress_note="Delivery/evaluation handoff complete; explicit human gates remain authoritative."
             )
-        if observation.stage == "admit":
+        if stage == "admit":
 
             async def admit(session, current):
                 await self.services.admit(session, current, observation.snapshot)
 
             return HandlerDecision(DecisionKind.WAIT, settlement=admit, next_check_at=context.now + timedelta(seconds=30))
-        if observation.stage == "accept":
+        if stage == "accept":
 
             async def settle(session, current):
                 try:
