@@ -7349,8 +7349,8 @@ def test_this_suite_contains_no_conditional_skips():
         )
 
 
-def test_workflow_offers_dispatch_and_call_but_never_schedules():
-    """A scheduled run would spend money and mutate dev unattended."""
+def test_workflow_offers_dispatch_and_call_without_a_duplicate_schedule():
+    """The single schedule is owned by nightly-cli-regression.yml."""
     _, triggers = workflow()
     assert "workflow_dispatch" in triggers
     assert "workflow_call" in triggers
@@ -7750,8 +7750,8 @@ def test_an_incomplete_state_sweep_fails_the_recovery_gate():
     assert "::warning::" not in sweep["run"]
 
 
-def test_workflow_still_pauses_scheduled_scans():
-    """Scans stay paused: no schedule may be introduced by the recovery work."""
+def test_reusable_workflow_has_no_independent_schedule():
+    """Evaluation and recovery run under the parent, never on separate crons."""
     document, triggers = workflow()
     assert "schedule" not in triggers
     assert "schedule" not in json.dumps(document.get("jobs", {}))

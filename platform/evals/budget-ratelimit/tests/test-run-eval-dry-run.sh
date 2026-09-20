@@ -278,10 +278,10 @@ if [ -f "$WORKFLOW" ]; then
   assert_not_contains "$WF_CODE" "container:" \
     "the eval job does NOT use container: — ARC runners have no Docker daemon"
   # This eval writes budget and rate-limit config to a shared dev account, so it
-  # must never fire from an untrusted PR and never on a schedule the operator did
-  # not ask for. #4163 specifies workflow_dispatch only.
+  # must never fire from an untrusted PR. Its schedule belongs to the combined
+  # nightly parent; standalone dispatch remains available for diagnosis.
   assert_not_contains "$WF_CODE" "schedule:" \
-    "the workflow has no cron — a live run must be dispatched deliberately"
+    "the reusable child has no cron — the nightly parent owns scheduling"
   assert_not_contains "$WF_CODE" "cron:" "no cron expression is configured"
   assert_contains "$WF" "workflow_dispatch:" "the workflow is dispatch-driven"
   assert_contains "$WF" "eval-pod leftover check" \
@@ -547,6 +547,11 @@ fi
 # is true today, and a red run for known behaviour would train people to ignore
 # it. Four findings and still exit 0 is the property.
 assert_eq "$RUN_RC" "0" "a run that emits findings still exits 0"
+if [ "$RUN_RC" -ne 0 ]; then
+  # Dry-run output contains only test fixtures. Preserve the failed assertion's
+  # context in CI instead of reporting an unexplained exit code.
+  printf '%s\n' "$OUT"
+fi
 
 # -----------------------------------------------------------------------------
 name "--cleanup-only is standalone and idempotent"
