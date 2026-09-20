@@ -237,6 +237,16 @@ The backend-served `agent_models` feature flag is strict and defaults false in
 the backend, frontend fallback, Kubernetes manifest and deployment workflow.
 PMM-09 enables it only after enforcement readiness. A deep link is also gated.
 
+The ordinary user flow is choose a model, save, and trigger the persona normally.
+Signed decisions, policy snapshots, harness versions, probe evidence and rollout
+postures are platform implementation details. They must not add user setup steps
+or appear in the normal settings page or human-readable CLI output. Keep their
+structured fields available to operators through APIs and CLI JSON. Show model
+names, prices, saved/default selection, availability and actionable errors in
+plain language; never hide a refusal or claim an unavailable model is ready.
+Changes apply to new root runs and their descendants; running chains retain their
+existing settings. Operators own readiness and model-availability maintenance.
+
 ### 5.3 CLI
 
 The supported surface is:
