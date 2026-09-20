@@ -1004,7 +1004,14 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
     except Exception:
         set_thread_processing(session_id, thread_id, None)
         logger.exception("Chat dispatch failed before acknowledgement")
-        return {"statusCode": 503, "body": json.dumps({"error": "Could not register and dispatch this run. Please retry."})}
+        failure = {"type": "response", "status": "failed", "session_id": session_id,
+                   "error": "Could not start this persona. Please retry.",
+                   "content": "Could not start this persona. Please retry."}
+        if connection_id:
+            # WebSocket integrations discard HTTP response bodies. Show a
+            # refused selection immediately instead of leaving the UI spinning.
+            _send_ws_response(connection_id, "", failure)
+        return {"statusCode": 503, "body": json.dumps(failure)}
 
     # Always send an acknowledgement. The classifier prompt asks for
     # escalation_note on non-direct paths, but LLMs occasionally omit it —

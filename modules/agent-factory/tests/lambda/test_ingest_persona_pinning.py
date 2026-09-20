@@ -118,7 +118,7 @@ def _send(handler, text="I want a nightly cost report", session_id="sess-pin", p
         route_key="$default",
         body=body,
         connection_id="conn-pin",
-        authorizer_claims={"sub": "user-pin", "email": "pin@example.com", "custom:tenant_id": "test-tenant"},
+        authorizer_claims={"sub": "user-pin", "email": "pin@example.com", "custom:tenant_id": "test-tenant", "custom:account_type": "user"},
     )
     return handler.lambda_handler(event, None)
 
@@ -519,11 +519,14 @@ def test_saved_persona_model_is_selected_for_authenticated_chat_owner(mocked_aws
 
     monkeypatch.setattr(persona_model_client, "select_persona_model", select)
     handler = _import_handler(mock_bedrock=MagicMock())
+    handler._send_ws_response = MagicMock()
     result = _send(handler, persona="intent-refinement")
     tasks = _drain_queue(mocked_aws_services["sqs"])
     if unavailable:
         assert result["statusCode"] == 503
         assert not tasks
+        assert handler._send_ws_response.call_args.args[2]["status"] == "failed"
     else:
         assert result["statusCode"] == 200
         assert tasks[0]["model_resolved"] == "saved-model"
+        assert tasks[0]["account_type"] == "human"
