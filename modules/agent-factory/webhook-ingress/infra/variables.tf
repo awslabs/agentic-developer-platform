@@ -579,7 +579,7 @@ variable "engine_command_verifier_role_arn" {
 variable "persona_model_mapping_enabled" {
   description = "Resolve saved persona models before dispatch, independently of worker authority."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "persona_model_additional_producer_roles" {

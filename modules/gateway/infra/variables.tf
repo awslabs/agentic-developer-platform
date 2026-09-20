@@ -800,5 +800,5 @@ variable "user_identity_index_v2_read" {
 variable "persona_model_mapping_enabled" {
   description = "Use saved persona models at dispatch without changing worker authority."
   type        = bool
-  default     = false
+  default     = true
 }

@@ -25,6 +25,10 @@ repo root.
 
 ---
 
+Persona model mapping is enabled by default in full deployments. See
+[model mapping deployment and verification](./persona-model-mapping.md) for
+model availability, environment overrides and acceptance checks.
+
 ## The shape of a deploy
 
 A deploy is a sequence of **stage-by-stage scripts** (each idempotent, each one

@@ -1,6 +1,10 @@
-"""Agent Models stays fail-closed across both gateway deployment paths (#5422)."""
+"""Agent Models follows portable deployment configuration in both renderers."""
 
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from src.features.routes import get_features
 
@@ -43,14 +47,52 @@ def test_manifest_uses_a_rendered_value_not_a_cross_environment_literal():
     assert active[index + 1] == f'value: "{PLACEHOLDER}"'
 
 
-def test_ci_deploy_reads_and_substitutes_the_default_off_parameter():
+def test_ci_deploy_defaults_to_mapping_configuration_and_preserves_ui_override():
     source = WORKFLOW.read_text()
-    assert f'get_ssm "{SSM_PARAMETER}" "false"' in source
+    assert 'get_ssm "/adp/${ENVIRONMENT}/gateway/persona-model-mapping-enabled" "true"' in source
+    assert f'get_ssm "{SSM_PARAMETER}" "$PERSONA_MODEL_MAPPING_ENABLED"' in source
     assert f"s|{PLACEHOLDER}|${{{FLAG_ENV}}}|g" in source
     assert f'[ "${FLAG_ENV}" = "None" ]' in source
 
 
 def test_self_managed_deploy_reads_and_substitutes_the_same_parameter():
     source = DEPLOY_ALL.read_text()
-    assert f'_get_ssm "{SSM_PARAMETER}" "false"' in source
+    assert '_get_ssm "/adp/${ENVIRONMENT}/gateway/persona-model-mapping-enabled" "true"' in source
+    assert f'_get_ssm "{SSM_PARAMETER}" "$PERSONA_MODEL_MAPPING_ENABLED"' in source
     assert f"s|{PLACEHOLDER}|${{{FLAG_ENV}}}|g" in source
+
+
+@pytest.mark.parametrize("renderer", [WORKFLOW, DEPLOY_ALL])
+@pytest.mark.parametrize(
+    "mapping,ui,expected",
+    [("", "", "true true"), ("false", "", "false false"), ("true", "false", "true false"), ("false", "true", "false true")],
+)
+def test_fresh_environment_and_explicit_overrides_execute_identically(renderer, mapping, ui, expected):
+    """Run the actual renderer assignments for an environment with no dev overlay."""
+    lines = renderer.read_text().splitlines()
+    assignments = []
+    for variable in ("PERSONA_MODEL_MAPPING_ENABLED", FLAG_ENV):
+        matches = [line.strip() for line in lines if line.strip().startswith(f"{variable}=$(")]
+        assert matches
+        assignments.append(matches[-1])
+    script = """
+set -eu
+ENVIRONMENT=integration
+get_ssm() {
+  case "$1" in
+    /adp/integration/gateway/persona-model-mapping-enabled) value="$TEST_MAPPING" ;;
+    /adp/integration/gateway/feature-agent-models) value="$TEST_UI" ;;
+    *) exit 9 ;;
+  esac
+  printf '%s' "${value:-$2}"
+}
+_get_ssm() { get_ssm "$@"; }
+"""
+    result = subprocess.run(
+        ["bash", "-c", script + "\n".join(assignments) + '\nprintf "%s %s" "$PERSONA_MODEL_MAPPING_ENABLED" "$FEATURE_AGENT_MODELS_ENABLED"'],
+        env={**os.environ, "TEST_MAPPING": mapping, "TEST_UI": ui},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected

@@ -6,6 +6,7 @@ correctly identifies which patterns match canonical IDs and which match nothing.
 
 from __future__ import annotations
 
+from src.admin.persona_models.catalogue import PLATFORM_MODEL_CATALOGUE
 from src.admin.persona_models.catalogue_service import report_allowlist_coverage
 
 
@@ -37,7 +38,7 @@ class TestAllowlistReport:
         report = report_allowlist_coverage(["*"])
         assert len(report) == 1
         assert report[0]["empty"] is False
-        assert len(report[0]["matched_ids"]) == 9  # All catalogue entries
+        assert set(report[0]["matched_ids"]) == {model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE}
 
     def test_inert_seeded_patterns_reported(self):
         """The actual seeded patterns from lambda-authorizer are all empty."""

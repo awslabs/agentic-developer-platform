@@ -50,16 +50,17 @@ DEFAULT_ALLOWED_PATTERNS: list[str] = [
 # Must stay in sync with model_resolver.py's short aliases.
 LEGACY_MODEL_ALIASES: dict[str, str] = {
     # Version-pinned aliases: <family><major><minor>, compact, no separators.
-    # Each maps to an invocable inference-profile ID (global. prefix) — verified
-    # ACTIVE via `aws bedrock list-inference-profiles` AND verified to invoke
-    # via bedrock-runtime invoke-model (issue #2300). Bare/ambiguous aliases
-    # (opus/sonnet/haiku) were removed in favour of explicit versions so a
+    # Each maps to an ACTIVE inference-profile ID (global. prefix). The original
+    # set was direct-invoke checked (#2300); Sonnet 5 has account availability
+    # metadata and local SDK request capture, not a paid invoke receipt.
+    # Bare/ambiguous aliases (opus/sonnet/haiku) were removed so a
     # /model choice can't silently drift to a different model over time.
     "opus5": "global.anthropic.claude-opus-5",
     "opus48": "global.anthropic.claude-opus-4-8",
     "opus47": "global.anthropic.claude-opus-4-7",
     "opus46": "global.anthropic.claude-opus-4-6-v1",
     "opus45": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "sonnet5": "global.anthropic.claude-sonnet-5",
     "sonnet46": "global.anthropic.claude-sonnet-4-6",
     "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",

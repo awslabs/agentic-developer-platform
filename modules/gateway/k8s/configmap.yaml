@@ -301,6 +301,7 @@ data:
   # keyed by org ID or "org_id:team_id"; the team key wins.  Empty JSON means
   # no explicit tenant policy and therefore the versioned platform baseline.
   # A configured scope with [] is an intentional deny-all policy.
+  PERSONA_MODEL_MAPPING_ENABLED: "__PERSONA_MODEL_MAPPING_ENABLED__"
   BG_MODEL_ALLOWED_MODELS_CONFIG: >-
     __MODEL_ALLOWED_MODELS_CONFIG__
 

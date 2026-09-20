@@ -86,7 +86,8 @@ async def test_invalid_identity_persona_or_explicit_choice_never_falls_back(mapp
         await dispatch_selection.apply_dispatch_selection(mapped, {**envelope(), **change})
 
 
-async def test_saving_and_catalogue_do_not_need_daily_paid_probes(mapped):
+@pytest.mark.parametrize("selected_model", [HAIKU, "global.anthropic.claude-sonnet-5"])
+async def test_saving_and_catalogue_do_not_need_daily_paid_probes(mapped, selected_model):
     row = await service.set_preference(
         mapped,
         org_id="tenant-a",
@@ -94,16 +95,19 @@ async def test_saving_and_catalogue_do_not_need_daily_paid_probes(mapped):
         principal_source="self",
         principal_id="human-root",
         persona_key="reviewer",
-        model=HAIKU,
+        model=selected_model,
         expected_revision=None,
         actor_id="human-root",
         actor_source="self",
     )
-    assert row.canonical_model_id == HAIKU
+    assert row.canonical_model_id == selected_model
+    await mapped.commit()
+    selected = await dispatch_selection.apply_dispatch_selection(mapped, envelope("reviewer"))
+    assert selected["model_resolved"] == selected_model
     models = await catalogue_service.build_model_catalogue(
         mapped, persona_key="developer", canonical_principal_id="human-root", require_evidence=False
     )
-    choice = next(m for m in models if m.canonical_model_id == HAIKU)
+    choice = next(m for m in models if m.canonical_model_id == selected_model)
     assert choice.selectable and choice.invocable is None and choice.evidence is None
     denied = await catalogue_service.validate_selection(
         mapped,
@@ -111,7 +115,7 @@ async def test_saving_and_catalogue_do_not_need_daily_paid_probes(mapped):
         principal_kind="human",
         canonical_principal_id="human-root",
         persona_key="developer",
-        model=HAIKU,
+        model=selected_model,
         tenant_allowed_patterns=[],
         require_evidence=False,
     )

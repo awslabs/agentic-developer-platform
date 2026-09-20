@@ -36,7 +36,7 @@ module "gateway_sessions" {
 module "gateway_lambda" {
   source                        = "./modules/lambda-gateway"
   model_policy_enabled          = var.chat_model_policy_enabled
-  persona_model_mapping_enabled = var.persona_model_mapping_enabled
+  persona_model_mapping_enabled = var.persona_model_mapping_enabled && var.gateway_deployed
   model_control_endpoint        = local.persona_model_control_endpoint
   model_root_admission_arn      = local.persona_model_root_admission_arn
 

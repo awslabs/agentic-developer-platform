@@ -26,6 +26,7 @@ DEFAULT_MODEL_ALIASES: dict[str, str] = {
     "opus47": "global.anthropic.claude-opus-4-7",
     "opus46": "global.anthropic.claude-opus-4-6-v1",
     "opus45": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "sonnet5": "global.anthropic.claude-sonnet-5",
     "sonnet46": "global.anthropic.claude-sonnet-4-6",
     "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",

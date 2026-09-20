@@ -33,7 +33,9 @@ describe('Claude invocability probe', () => {
 
   it('pins a generated digest for every Claude catalogue model', () => {
     expect(manifest.probe_prompt_sha256).toBe(PROBE_PROMPT_SHA256);
-    expect(Object.keys(manifest.models)).toHaveLength(9);
+    expect(manifest.models['global.anthropic.claude-sonnet-5']).toBe(
+      'a7a0a805caa8a89201a73dddf8ec17b4ee6b8b19668500184bbd19a7d9142254',
+    );
     for (const [model, digest] of Object.entries(manifest.models)) {
       expect(digest).toMatch(/^[0-9a-f]{64}$/);
       expect(expectedRequestShape(model)).toBe(digest);

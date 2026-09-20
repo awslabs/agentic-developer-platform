@@ -4,7 +4,7 @@ This module is the single source for:
   - The compatibility-class vocabulary (R2).
   - The persona-to-class registry staged from the execution source of truth.
   - The platform-supported model catalogue (seeded from the Lambda's curated
-    invocability-verified list plus the D4 Claude-class candidate).
+    model list and extended with account-available Claude models).
 
 Persona rows are derived from ``personas.py`` at request time — never copied
 into a second list.  A persona added or removed in ``personas.py`` flows
@@ -114,9 +114,11 @@ def persona_not_configurable_reason(persona_key: str) -> str | None:
 # That curation came from direct bedrock-runtime invoke-model calls. Direct
 # invocation is NOT proof of the Claude Agent SDK harness request shape, so it
 # does not establish invocability for this story's compatibility class. Seeding
-# decides catalogue MEMBERSHIP only; selectability requires a durable
-# exact-harness evidence row (§4.1). Empty evidence means nothing here is
-# selectable yet — that is the intended fail-closed state, not a gap.
+# decides catalogue MEMBERSHIP only. Protected enforcement requires durable
+# exact-harness evidence (§4.1). Basic mapping admits active, compatible,
+# permitted models without recurring paid probes; provider access is enforced
+# on invocation. Sonnet 5 adds verified availability metadata and local SDK
+# request capture, not a live provider-invocation receipt.
 #
 # This is a NEW versioned artifact, not either alias map (design §3.3).
 # The gateway alias map (model_resolver.py) is wider and contains known
@@ -197,6 +199,14 @@ PLATFORM_MODEL_CATALOGUE: tuple[CatalogueModel, ...] = (
         harness_contract_revision=HARNESS_CONTRACT_REVISION,
     ),
     # --- Sonnet family ---
+    # Bedrock catalogue, profile and account availability checked 2026-09-20.
+    CatalogueModel(
+        canonical_model_id="global.anthropic.claude-sonnet-5",
+        model_family="Sonnet",
+        canonical_version="5",
+        compatibility_class=COMPATIBILITY_CLASS_CLAUDE,
+        harness_contract_revision=HARNESS_CONTRACT_REVISION,
+    ),
     CatalogueModel(
         canonical_model_id="global.anthropic.claude-sonnet-4-6",
         model_family="Sonnet",
@@ -259,6 +269,7 @@ PERSONA_MODEL_ALIASES: dict[str, str] = {
     "opus47": "global.anthropic.claude-opus-4-7",
     "opus46": "global.anthropic.claude-opus-4-6-v1",
     "opus45": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+    "sonnet5": "global.anthropic.claude-sonnet-5",
     "sonnet46": "global.anthropic.claude-sonnet-4-6",
     "sonnet45": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "haiku45": "global.anthropic.claude-haiku-4-5-20251001-v1:0",

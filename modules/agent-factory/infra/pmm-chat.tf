@@ -21,5 +21,5 @@ variable "chat_model_root_admission_arn" {
 variable "persona_model_mapping_enabled" {
   description = "Use saved persona models at dispatch without changing worker authority."
   type        = bool
-  default     = false
+  default     = true
 }

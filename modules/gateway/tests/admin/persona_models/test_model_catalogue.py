@@ -74,9 +74,12 @@ class TestAliasResolution:
 class TestModelCatalogue:
     """Model catalogue structure and content tests."""
 
-    def test_catalogue_has_9_entries(self):
-        """Platform catalogue has 9 entries (8 from Lambda + D4 candidate)."""
-        assert len(PLATFORM_MODEL_CATALOGUE) == 9
+    def test_sonnet5_is_published_with_a_pinned_alias(self):
+        entry = catalogue_lookup("global.anthropic.claude-sonnet-5")
+        assert entry is not None
+        assert entry.model_family == "Sonnet"
+        assert entry.canonical_version == "5"
+        assert resolve_alias("sonnet5") == entry.canonical_model_id
 
     def test_all_entries_are_claude_class(self):
         """All current catalogue entries are claude-agent-sdk."""

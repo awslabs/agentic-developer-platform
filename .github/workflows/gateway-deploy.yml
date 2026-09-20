@@ -394,6 +394,7 @@ jobs:
           # PMM-03 / D3: production org/team model allowlists. Canonicalize and
           # validate before rendering so malformed policy fails deployment
           # instead of silently widening admission to the platform default.
+          PERSONA_MODEL_MAPPING_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/persona-model-mapping-enabled" "true")
           MODEL_ALLOWED_MODELS_CONFIG_RAW=$(get_ssm "/adp/${ENVIRONMENT}/gateway/model-allowed-models-config" "__ADP_SSM_UNAVAILABLE__")
           MODEL_ALLOWED_MODELS_CONFIG=$(printf '%s' "$MODEL_ALLOWED_MODELS_CONFIG_RAW" | python3 platform/scripts/validate-model-allowlist-config.py)
           MODEL_ALLOWED_MODELS_CONFIG_SED=${MODEL_ALLOWED_MODELS_CONFIG//\\/\\\\}
@@ -464,6 +465,7 @@ jobs:
               -e "s|__VAULT_ENFORCE_CREDENTIAL_HOST_BINDING__|${VAULT_ENFORCE_CREDENTIAL_HOST_BINDING}|g" \
               -e "s|__BEDROCK_ROUTING_SHADOW_MODE__|${BEDROCK_ROUTING_SHADOW_MODE}|g" \
               -e "s|__PLATFORM_BEDROCK_ACCOUNT_ID__|${EFFECTIVE_ACCOUNT}|g" \
+              -e "s|__PERSONA_MODEL_MAPPING_ENABLED__|${PERSONA_MODEL_MAPPING_ENABLED}|g" \
               -e "s|__MODEL_ALLOWED_MODELS_CONFIG__|${MODEL_ALLOWED_MODELS_CONFIG_SED}|g" \
               -e "s|__AGENT_CONTROL_CLUSTER_POD_CIDRS__|${AGENT_CONTROL_CLUSTER_POD_CIDRS}|g" \
               -e "s|__AGENT_AUTHORITY_ENABLED__|${AGENT_AUTHORITY_ENABLED}|g" \
@@ -596,11 +598,12 @@ jobs:
           fi
           echo "new UI shell for ${ENVIRONMENT}: ${FEATURE_NEW_UI_ENABLED}"
 
-          # Issue #5422: Agent Models stays fail-closed until PMM-09 enables the
-          # environment after certification and enforcement readiness.
-          FEATURE_AGENT_MODELS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-models" "false")
+          # Basic saved mappings ship enabled. An explicit environment UI
+          # override remains authoritative; protected worker activation is separate.
+          PERSONA_MODEL_MAPPING_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/persona-model-mapping-enabled" "true")
+          FEATURE_AGENT_MODELS_ENABLED=$(get_ssm "/adp/${ENVIRONMENT}/gateway/feature-agent-models" "$PERSONA_MODEL_MAPPING_ENABLED")
           if [ -z "$FEATURE_AGENT_MODELS_ENABLED" ] || [ "$FEATURE_AGENT_MODELS_ENABLED" = "None" ]; then
-            FEATURE_AGENT_MODELS_ENABLED="false"
+            FEATURE_AGENT_MODELS_ENABLED="$PERSONA_MODEL_MAPPING_ENABLED"
           fi
           echo "Agent Models for ${ENVIRONMENT}: ${FEATURE_AGENT_MODELS_ENABLED}"
 

@@ -13,6 +13,7 @@
     "global.anthropic.claude-sonnet-4-6": "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b",
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0": "b2c824366a0b62b7a55c33e6547708eb03d05fb50bf5c74bfe4852ea45108234",
     "global.anthropic.claude-haiku-4-5-20251001-v1:0": "e5fcc766e28403a773c53b482e533b23f9a44a1aec3fb2568743863a5820b19d",
-    "us.anthropic.claude-sonnet-4-6": "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b"
+    "us.anthropic.claude-sonnet-4-6": "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b",
+    "global.anthropic.claude-sonnet-5": "a7a0a805caa8a89201a73dddf8ec17b4ee6b8b19668500184bbd19a7d9142254"
   }
 }

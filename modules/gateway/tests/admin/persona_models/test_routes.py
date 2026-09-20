@@ -64,7 +64,8 @@ class TestModelCatalogueEndpoint:
             assert "models" in body
             assert body["persona_key"] == "developer"
             assert body["compatibility_class"] == "claude-agent-sdk"
-            assert len(body["models"]) == 9
+            sonnet5 = next(model for model in body["models"] if model["canonical_model_id"] == "global.anthropic.claude-sonnet-5")
+            assert sonnet5["aliases"] == ["sonnet5"]
 
     @pytest.mark.asyncio
     async def test_codex_reviewer_never_receives_claude_catalogue_fallback(self, session):
