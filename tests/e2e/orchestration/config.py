@@ -45,9 +45,13 @@ _SECRET_REF = re.compile(r"^(secretsmanager|ssm|env):[A-Za-z0-9_./-]{1,256}$")
 # A pinned version is an exact semver or a 40-character commit SHA. Floating
 # refs are rejected by name below so the error says why.
 _PINNED_VERSION = re.compile(r"^(?:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?|[0-9a-f]{40})$")
-_FLOATING_VERSIONS = frozenset({"latest", "main", "master", "head", "stable", "edge", "*", ""})
+_FLOATING_VERSIONS = frozenset(
+    {"latest", "main", "master", "head", "stable", "edge", "*", ""}
+)
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+_REPOSITORY = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
+)
 _SCENARIO_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # An AWS account id is exactly 12 digits. Declared in the config so the harness
 # can compare it against the account the credentials ACTUALLY resolve to.
@@ -83,6 +87,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "artifacts",
         "secret_refs",
         "scenarios",
+        "scenario_manifest",
     }
 )
 _REQUIRED_TOP_LEVEL = (
@@ -101,14 +106,19 @@ _SECTION_KEYS: dict[str, tuple[frozenset[str], tuple[str, ...]]] = {
     # the real identity against, and reporting whichever account the credentials
     # happen to reach is not target verification.
     "connection": (
-        frozenset({"connection_ref", "repository", "expected_account_id", "expected_org"}),
+        frozenset(
+            {"connection_ref", "repository", "expected_account_id", "expected_org"}
+        ),
         ("connection_ref", "repository", "expected_account_id", "expected_org"),
     ),
     "identity": (
         frozenset({"org_ref", "team_ref", "identity_ref"}),
         ("org_ref", "team_ref", "identity_ref"),
     ),
-    "versions": (frozenset({"engine", "worker", "harness"}), ("engine", "worker", "harness")),
+    "versions": (
+        frozenset({"engine", "worker", "harness"}),
+        ("engine", "worker", "harness"),
+    ),
     "bounds": (
         frozenset(BOUND_CEILINGS),
         ("max_resources", "max_runs", "max_usd", "max_duration_seconds"),
@@ -147,6 +157,7 @@ class QualificationConfig:
     secret_refs: dict[str, str] = field(default_factory=dict)
     scenarios: tuple[str, ...] = ()
     source: str | None = None
+    scenario_manifest: str | None = None
 
     @property
     def max_resources(self) -> int:
@@ -222,6 +233,7 @@ def load_config(path: str | Path) -> QualificationConfig:
         secret_refs=dict(document.get("secret_refs") or {}),
         scenarios=tuple(document.get("scenarios") or ()),
         source=str(source),
+        scenario_manifest=document.get("scenario_manifest"),
     )
     return config
 
@@ -236,7 +248,9 @@ def _check_embedded_secrets(document: dict[str, Any], problems: list[str]) -> No
                 # `secret_refs` is the one place a secret-like NAME is expected,
                 # including the section key itself; its values are still checked
                 # for credential shapes below.
-                in_secret_refs = child == "secret_refs" or child.startswith("secret_refs.")
+                in_secret_refs = child == "secret_refs" or child.startswith(
+                    "secret_refs."
+                )
                 if not in_secret_refs and _SECRET_LIKE_KEY.search(str(key)):
                     problems.append(
                         f"{child}: secret-like key is not allowed in a config file; "
@@ -251,7 +265,9 @@ def _check_embedded_secrets(document: dict[str, Any], problems: list[str]) -> No
             for pattern, label in _EMBEDDED_SECRET_VALUES:
                 if pattern.search(node):
                     # Never echo the matched value.
-                    problems.append(f"{trail}: value looks like an embedded {label}; use a secret reference")
+                    problems.append(
+                        f"{trail}: value looks like an embedded {label}; use a secret reference"
+                    )
                     break
 
     walk(document, "")
@@ -267,7 +283,9 @@ def _check_shape(document: dict[str, Any], problems: list[str]) -> None:
             problems.append(f"missing required key: {key}")
 
     if document.get("config_version") != CONFIG_VERSION:
-        problems.append(f"config_version must be {CONFIG_VERSION}, got {document.get('config_version')!r}")
+        problems.append(
+            f"config_version must be {CONFIG_VERSION}, got {document.get('config_version')!r}"
+        )
 
     _check_environment(document.get("environment"), problems)
 
@@ -287,12 +305,20 @@ def _check_shape(document: dict[str, Any], problems: list[str]) -> None:
 
     connection = document.get("connection")
     if isinstance(connection, dict):
-        _check_ref(connection.get("connection_ref"), "connection.connection_ref", problems)
+        _check_ref(
+            connection.get("connection_ref"), "connection.connection_ref", problems
+        )
         repository = connection.get("repository")
-        if repository is not None and not (isinstance(repository, str) and _REPOSITORY.match(repository)):
-            problems.append(f"connection.repository must be 'owner/repo', got {repository!r}")
+        if repository is not None and not (
+            isinstance(repository, str) and _REPOSITORY.match(repository)
+        ):
+            problems.append(
+                f"connection.repository must be 'owner/repo', got {repository!r}"
+            )
         account = connection.get("expected_account_id")
-        if account is not None and not (isinstance(account, str) and _ACCOUNT_ID.match(account)):
+        if account is not None and not (
+            isinstance(account, str) and _ACCOUNT_ID.match(account)
+        ):
             # A string, not an int: a 12-digit account id with a leading zero
             # loses it in JSON number form.
             problems.append(
@@ -300,7 +326,9 @@ def _check_shape(document: dict[str, Any], problems: list[str]) -> None:
             )
         org = connection.get("expected_org")
         if org is not None and not (isinstance(org, str) and _ORG.match(org)):
-            problems.append(f"connection.expected_org must be a GitHub org name, got {org!r}")
+            problems.append(
+                f"connection.expected_org must be a GitHub org name, got {org!r}"
+            )
 
     identity = document.get("identity")
     if isinstance(identity, dict):
@@ -312,6 +340,16 @@ def _check_shape(document: dict[str, Any], problems: list[str]) -> None:
     _check_artifacts(document.get("artifacts"), problems)
     _check_secret_refs(document.get("secret_refs"), problems)
     _check_scenarios(document.get("scenarios"), problems)
+    manifest = document.get("scenario_manifest")
+    if manifest is not None and (
+        not isinstance(manifest, str)
+        or not manifest
+        or Path(manifest).is_absolute()
+        or ".." in Path(manifest).parts
+    ):
+        problems.append(
+            "scenario_manifest must be a nonempty repository-relative path without '..'"
+        )
 
 
 def _check_environment(environment: Any, problems: list[str]) -> None:
@@ -336,7 +374,9 @@ def _check_ref(value: Any, label: str, problems: list[str]) -> None:
     if value is None:
         return
     if not isinstance(value, str) or not _REF.match(value):
-        problems.append(f"{label} must be a reference matching {_REF.pattern}, got {value!r}")
+        problems.append(
+            f"{label} must be a reference matching {_REF.pattern}, got {value!r}"
+        )
 
 
 def _check_versions(versions: Any, problems: list[str]) -> None:
@@ -386,7 +426,9 @@ def _check_bounds(bounds: Any, problems: list[str]) -> None:
             problems.append(f"bounds.{key} must be a whole number, got {value!r}")
             continue
         if value > ceiling:
-            problems.append(f"bounds.{key}={value} exceeds the harness ceiling of {ceiling}")
+            problems.append(
+                f"bounds.{key}={value} exceeds the harness ceiling of {ceiling}"
+            )
 
 
 def _check_artifacts(artifacts: Any, problems: list[str]) -> None:
@@ -399,7 +441,9 @@ def _check_artifacts(artifacts: Any, problems: list[str]) -> None:
         problems.append("artifacts.directory must be a non-empty path")
         return
     if ".." in Path(directory).parts:
-        problems.append(f"artifacts.directory must not contain '..' segments, got {directory!r}")
+        problems.append(
+            f"artifacts.directory must not contain '..' segments, got {directory!r}"
+        )
 
 
 def _check_secret_refs(secret_refs: Any, problems: list[str]) -> None:
@@ -425,7 +469,9 @@ def _check_scenarios(scenarios: Any, problems: list[str]) -> None:
         return
     for index, value in enumerate(scenarios):
         if not isinstance(value, str) or not _SCENARIO_ID.match(value):
-            problems.append(f"scenarios[{index}] must be a scenario adapter id matching {_SCENARIO_ID.pattern}")
+            problems.append(
+                f"scenarios[{index}] must be a scenario adapter id matching {_SCENARIO_ID.pattern}"
+            )
 
 
 def resolve_secret_ref(reference: str) -> str:
@@ -445,7 +491,9 @@ def resolve_secret_ref(reference: str) -> str:
         try:
             return os.environ[name]
         except KeyError:
-            raise ConfigError([f"secret reference {reference!r} is not set in the environment"]) from None
+            raise ConfigError(
+                [f"secret reference {reference!r} is not set in the environment"]
+            ) from None
 
     import boto3  # imported lazily: the offline test path must not need boto3
 
@@ -753,7 +801,9 @@ def _resolve_connection(
     # `isinstance` before the regex: a registry handing back a JSON number would
     # otherwise raise TypeError out of a path whose whole job is to refuse
     # cleanly, and a crash inside the gate is not a refusal.
-    if not isinstance(resolved.account_id, str) or not _ACCOUNT_ID.match(resolved.account_id):
+    if not isinstance(resolved.account_id, str) or not _ACCOUNT_ID.match(
+        resolved.account_id
+    ):
         return resolved, (
             f"connection {connection_ref!r} resolved to {resolved.account_id!r}, which is not a "
             f"12-digit AWS account id as a string; the target cannot be confirmed"

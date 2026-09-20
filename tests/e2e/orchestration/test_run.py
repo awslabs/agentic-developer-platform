@@ -58,7 +58,13 @@ def stub_identity(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_caller_identity",
-        lambda: ({"account": "111122223333", "arn": "arn:aws:sts::111122223333:assumed-role/qual"}, None),
+        lambda: (
+            {
+                "account": "111122223333",
+                "arn": "arn:aws:sts::111122223333:assumed-role/qual",
+            },
+            None,
+        ),
     )
 
 
@@ -68,7 +74,13 @@ def stub_wrong_account(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_caller_identity",
-        lambda: ({"account": "999988887777", "arn": "arn:aws:sts::999988887777:assumed-role/other"}, None),
+        lambda: (
+            {
+                "account": "999988887777",
+                "arn": "arn:aws:sts::999988887777:assumed-role/other",
+            },
+            None,
+        ),
     )
 
 
@@ -211,22 +223,37 @@ class TestCliModes:
 
     def test_each_mode_parses_alone(self):
         parser = build_parser()
-        assert parser.parse_args(["--config", "c.json", "--preflight"]).preflight is True
+        assert (
+            parser.parse_args(["--config", "c.json", "--preflight"]).preflight is True
+        )
         assert parser.parse_args(["--config", "c.json", "--run"]).run is True
-        assert parser.parse_args(["--config", "c.json", "--resume", QUAL_ID]).resume == QUAL_ID
-        assert parser.parse_args(["--config", "c.json", "--cleanup", QUAL_ID]).cleanup == QUAL_ID
+        assert (
+            parser.parse_args(["--config", "c.json", "--resume", QUAL_ID]).resume
+            == QUAL_ID
+        )
+        assert (
+            parser.parse_args(["--config", "c.json", "--cleanup", QUAL_ID]).cleanup
+            == QUAL_ID
+        )
 
     def test_invalid_config_exits_with_the_config_code(self, write_config, capsys):
-        code = main(["--config", str(write_config({"environment": "prod"})), "--preflight"])
+        code = main(
+            ["--config", str(write_config({"environment": "prod"})), "--preflight"]
+        )
         assert code == EXIT_CONFIG_INVALID
         assert "not authorized against production" in capsys.readouterr().err
 
     def test_missing_config_file_exits_with_the_config_code(self, tmp_path):
-        assert main(["--config", str(tmp_path / "absent.json"), "--preflight"]) == EXIT_CONFIG_INVALID
+        assert (
+            main(["--config", str(tmp_path / "absent.json"), "--preflight"])
+            == EXIT_CONFIG_INVALID
+        )
 
 
 class TestPreflightIsReadOnly:
-    def test_preflight_makes_no_mutation(self, valid_config, stub_identity, register_scenarios, artifact_dir):
+    def test_preflight_makes_no_mutation(
+        self, valid_config, stub_identity, register_scenarios, artifact_dir
+    ):
         """The dry-run must create no inventory and no resource."""
         adapter = StubAdapter()
         register_scenarios({"bounded": adapter})
@@ -238,7 +265,9 @@ class TestPreflightIsReadOnly:
         assert outcome.report["mutations"] == []
         assert adapter.provider.create_calls == []
         assert adapter.executions == 0
-        assert list(artifact_dir.iterdir()) == [], "preflight must not write an inventory"
+        assert list(artifact_dir.iterdir()) == [], (
+            "preflight must not write an inventory"
+        )
 
     def test_preflight_reports_the_resources_a_run_would_create(
         self, valid_config, stub_identity, register_scenarios
@@ -249,16 +278,23 @@ class TestPreflightIsReadOnly:
             {"scenario": "bounded", "fixture_id": "org", "kind": "organization"}
         ]
 
-    def test_preflight_reports_the_verified_account(self, valid_config, stub_identity, register_scenarios):
+    def test_preflight_reports_the_verified_account(
+        self, valid_config, stub_identity, register_scenarios
+    ):
         """It checks the ACTUAL target, not what the config claims."""
         register_scenarios({"bounded": StubAdapter()})
-        assert preflight(valid_config).report["caller_identity"]["account"] == "111122223333"
+        assert (
+            preflight(valid_config).report["caller_identity"]["account"]
+            == "111122223333"
+        )
 
     def test_preflight_fails_when_authorization_cannot_be_verified(
         self, valid_config, register_scenarios, monkeypatch
     ):
         """An unverifiable target blocks the effect; it is never assumed."""
-        monkeypatch.setattr(runner, "_caller_identity", lambda: (None, "no credentials"))
+        monkeypatch.setattr(
+            runner, "_caller_identity", lambda: (None, "no credentials")
+        )
         register_scenarios({"bounded": StubAdapter()})
 
         outcome = preflight(valid_config)
@@ -267,20 +303,24 @@ class TestPreflightIsReadOnly:
         assert outcome.exit_code == EXIT_TARGET_UNVERIFIED
         assert "could not be verified" in outcome.report["detail"]
 
-    def test_preflight_never_exposes_a_secret_value(self, valid_config, stub_identity, register_scenarios):
+    def test_preflight_never_exposes_a_secret_value(
+        self, valid_config, stub_identity, register_scenarios
+    ):
         """Only reference NAMES are reported, and nothing is resolved."""
         register_scenarios({"bounded": StubAdapter()})
         report = preflight(valid_config).report
         assert report["secret_refs"] == ["github_app_key"]
 
-    def test_preflight_with_no_adapters_is_not_a_pass(self, valid_config, stub_identity, stub_resolver):
+    def test_preflight_with_no_adapters_is_not_a_pass(
+        self, valid_config, stub_identity, stub_resolver
+    ):
         outcome = preflight(valid_config)
         assert outcome.status == STATUS_INCOMPLETE
         assert outcome.exit_code == EXIT_NO_SCENARIOS
 
 
 class TestEmptyRegistryCannotPass:
-    def test_run_with_no_adapters_reports_incomplete(self, valid_config):
+    def test_run_with_no_adapters_reports_incomplete(self, valid_config, stub_resolver):
         """The central guarantee: nothing executed is never a PASS."""
         outcome = runner.run(valid_config)
 
@@ -290,23 +330,31 @@ class TestEmptyRegistryCannotPass:
         assert outcome.report["scenarios_executed"] == 0
         assert "NOT a pass" in outcome.report["detail"]
 
-    def test_run_with_no_adapters_creates_no_inventory(self, valid_config, artifact_dir):
+    def test_run_with_no_adapters_creates_no_inventory(
+        self, valid_config, artifact_dir, stub_resolver
+    ):
         runner.run(valid_config)
         assert list(artifact_dir.iterdir()) == []
 
-    def test_cli_exit_code_distinguishes_nothing_ran_from_success(self, write_config):
+    def test_cli_exit_code_distinguishes_nothing_ran_from_success(
+        self, write_config, stub_resolver
+    ):
         """CI can tell a vacuous run from a real pass by the exit code alone."""
         code = main(["--config", str(write_config()), "--run"])
         assert code == EXIT_NO_SCENARIOS
         assert code != EXIT_OK
 
-    def test_cli_prints_the_incomplete_status(self, write_config, capsys):
+    def test_cli_prints_the_incomplete_status(
+        self, write_config, capsys, stub_resolver
+    ):
         main(["--config", str(write_config()), "--run"])
         captured = capsys.readouterr()
         assert json.loads(captured.out)["status"] == STATUS_INCOMPLETE
         assert "status=incomplete" in captured.err
 
-    def test_registry_that_is_not_a_dict_is_treated_as_empty(self, valid_config, register_scenarios):
+    def test_registry_that_is_not_a_dict_is_treated_as_empty(
+        self, valid_config, register_scenarios
+    ):
         register_scenarios(["not", "a", "dict"])  # type: ignore[arg-type]
         assert runner.run(valid_config).status == STATUS_INCOMPLETE
 
@@ -315,13 +363,15 @@ class TestEmptyRegistryCannotPass:
     ):
         """A missing adapter must not silently shrink the run."""
         register_scenarios({"bounded": StubAdapter()})
-        code = main(["--config", str(write_config({"scenarios": ["does-not-exist"]})), "--run"])
+        code = main(
+            ["--config", str(write_config({"scenarios": ["does-not-exist"]})), "--run"]
+        )
         assert code == EXIT_CONFIG_INVALID
         assert "no registered adapter" in capsys.readouterr().err
 
 
 class TestRun:
-    def test_successful_run_passes_and_records_the_inventory(
+    def test_adapter_without_evidence_is_incomplete_and_records_inventory(
         self, valid_config, register_scenarios, stub_identity
     ):
         adapter = StubAdapter()
@@ -329,8 +379,8 @@ class TestRun:
 
         outcome = runner.run(valid_config)
 
-        assert outcome.status == STATUS_PASS
-        assert outcome.exit_code == EXIT_OK
+        assert outcome.status == STATUS_INCOMPLETE
+        assert outcome.exit_code == EXIT_INCOMPLETE
         assert outcome.report["scenarios_executed"] == 1
         assert outcome.report["live_resources"] == 1
         assert adapter.executions == 1
@@ -348,7 +398,9 @@ class TestRun:
         assert outcome.report["failures"][0]["scenario"] == "bounded"
         assert "retained for --resume or --cleanup" in outcome.report["detail"]
 
-    def test_max_runs_bound_stops_further_scenarios(self, write_config, register_scenarios, stub_identity):
+    def test_max_runs_bound_stops_further_scenarios(
+        self, write_config, register_scenarios, stub_identity
+    ):
         """The run cap is enforced across scenarios, not just within one."""
         from tests.e2e.orchestration.config import load_config
 
@@ -398,7 +450,9 @@ class TestAttemptsCountAgainstMaxRuns:
         outcome = runner.run(self._config(write_config, 1))
 
         assert adapters["a_first"].executions == 1
-        assert adapters["b_second"].executions == 0, "a failed attempt must still consume the run budget"
+        assert adapters["b_second"].executions == 0, (
+            "a failed attempt must still consume the run budget"
+        )
         assert adapters["c_third"].executions == 0
         assert outcome.report["attempts"] == 1
         assert outcome.report["scenarios_executed"] == 0
@@ -469,7 +523,9 @@ class TestTargetVerificationGatesMutations:
         assert adapter.executions == 0
         assert adapter.provider.create_calls == []
         assert "target mismatch" in outcome.report["detail"]
-        assert list(artifact_dir.iterdir()) == [], "a refused run must not write an inventory"
+        assert list(artifact_dir.iterdir()) == [], (
+            "a refused run must not write an inventory"
+        )
 
     def test_run_refuses_when_the_identity_cannot_be_read(
         self, valid_config, register_scenarios, stub_no_identity, artifact_dir
@@ -506,16 +562,26 @@ class TestTargetVerificationGatesMutations:
         monkeypatch.setattr(
             runner,
             "_caller_identity",
-            lambda: ({"account": "999988887777", "arn": "arn:aws:sts::999988887777:role/other"}, None),
+            lambda: (
+                {
+                    "account": "999988887777",
+                    "arn": "arn:aws:sts::999988887777:role/other",
+                },
+                None,
+            ),
         )
         outcome = cleanup_qualification(valid_config, QUAL_ID)
 
         assert outcome.status == STATUS_REFUSED
         assert outcome.exit_code == EXIT_TARGET_UNVERIFIED
         assert adapter.provider.delete_calls == []
-        assert adapter.provider.resources != {}, "the fixture must survive a refused cleanup"
+        assert adapter.provider.resources != {}, (
+            "the fixture must survive a refused cleanup"
+        )
 
-    def test_resume_refuses_a_mismatched_account(self, valid_config, register_scenarios, stub_wrong_account):
+    def test_resume_refuses_a_mismatched_account(
+        self, valid_config, register_scenarios, stub_wrong_account
+    ):
         register_scenarios({"bounded": StubAdapter()})
         outcome = resume_qualification(valid_config, QUAL_ID)
         assert outcome.status == STATUS_REFUSED
@@ -540,7 +606,9 @@ class TestTargetVerificationGatesMutations:
         """
         from tests.e2e.orchestration.config import load_config
 
-        config = load_config(write_config({"connection": {"repository": "someone-else/adp"}}))
+        config = load_config(
+            write_config({"connection": {"repository": "someone-else/adp"}})
+        )
         register_scenarios({"bounded": StubAdapter()})
 
         outcome = runner.run(config)
@@ -549,17 +617,22 @@ class TestTargetVerificationGatesMutations:
         assert "someone-else" in outcome.report["detail"]
         assert "belongs to 'aws-e'" in outcome.report["detail"]
 
-    def test_a_verified_target_allows_the_run(self, valid_config, register_scenarios, stub_identity):
+    def test_a_verified_target_allows_the_run(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         """The gate must not be so strict that a correct config cannot run."""
         register_scenarios({"bounded": StubAdapter()})
         outcome = runner.run(valid_config)
-        assert outcome.status == STATUS_PASS
+        assert (
+            outcome.status == STATUS_INCOMPLETE
+        )  # Adapter ran, but supplied no criterion evidence.
+        assert outcome.report["scenarios_executed"] == 1
         assert outcome.report["target"]["verified"] is True
 
     def test_cli_exit_code_distinguishes_a_refusal_from_a_failure(
         self, write_config, register_scenarios, stub_wrong_account
     ):
-        """"We refused to touch this account" is a different action from "it failed"."""
+        """ "We refused to touch this account" is a different action from "it failed"."""
         register_scenarios({"bounded": StubAdapter()})
         code = main(["--config", str(write_config()), "--run"])
         assert code == EXIT_TARGET_UNVERIFIED
@@ -591,7 +664,9 @@ class TestConnectionMustBeRegistered:
         """
         config = self._config(write_config, "unregistered-review-probe")
         adapter = StubAdapter()
-        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(known=False))
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(known=False)
+        )
 
         outcome = runner.run(config)
 
@@ -617,10 +692,14 @@ class TestConnectionMustBeRegistered:
 
         assert resolver.calls == ["adp-dev-embark1"]
 
-    def test_a_revoked_connection_is_refused(self, valid_config, register_scenarios, stub_identity):
+    def test_a_revoked_connection_is_refused(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         """Registered once is not authorized now."""
         adapter = StubAdapter()
-        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(active=False))
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(active=False)
+        )
 
         outcome = runner.run(valid_config)
 
@@ -631,11 +710,13 @@ class TestConnectionMustBeRegistered:
     def test_an_unreadable_registry_refuses_rather_than_trusting_the_config(
         self, valid_config, register_scenarios, stub_identity
     ):
-        """"Could not determine" must not fall back to the config's own claim."""
+        """ "Could not determine" must not fall back to the config's own claim."""
         adapter = StubAdapter()
         register_scenarios(
             {"bounded": adapter},
-            resolver=StubConnectionResolver(raises=ConnectionResolutionError("registry unreachable")),
+            resolver=StubConnectionResolver(
+                raises=ConnectionResolutionError("registry unreachable")
+            ),
         )
 
         outcome = runner.run(valid_config)
@@ -651,7 +732,8 @@ class TestConnectionMustBeRegistered:
         """A registry is third-party code; any failure leaves the target unknown."""
         adapter = StubAdapter()
         register_scenarios(
-            {"bounded": adapter}, resolver=StubConnectionResolver(raises=TimeoutError("timed out"))
+            {"bounded": adapter},
+            resolver=StubConnectionResolver(raises=TimeoutError("timed out")),
         )
 
         outcome = runner.run(valid_config)
@@ -660,7 +742,9 @@ class TestConnectionMustBeRegistered:
         assert "TimeoutError" in outcome.report["detail"]
         assert adapter.provider.create_calls == []
 
-    def test_no_resolver_at_all_is_a_refusal(self, valid_config, register_scenarios, stub_identity):
+    def test_no_resolver_at_all_is_a_refusal(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         """Fail-closed: absent authority is not implicit permission."""
         adapter = StubAdapter()
         register_scenarios({"bounded": adapter}, resolver=None)
@@ -681,7 +765,8 @@ class TestConnectionMustBeRegistered:
         """
         adapter = StubAdapter()
         register_scenarios(
-            {"bounded": adapter}, resolver=StubConnectionResolver(account_id="555566667777")
+            {"bounded": adapter},
+            resolver=StubConnectionResolver(account_id="555566667777"),
         )
 
         outcome = runner.run(valid_config)
@@ -695,7 +780,9 @@ class TestConnectionMustBeRegistered:
         self, valid_config, register_scenarios, stub_identity
     ):
         adapter = StubAdapter()
-        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(org="other-org"))
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(org="other-org")
+        )
 
         outcome = runner.run(valid_config)
 
@@ -718,7 +805,9 @@ class TestConnectionMustBeRegistered:
 
         assert outcome.status == STATUS_REFUSED
         assert "registered connection" in outcome.report["detail"]
-        assert "999988887777" in outcome.report["detail"], "must report the observed account"
+        assert "999988887777" in outcome.report["detail"], (
+            "must report the observed account"
+        )
         assert adapter.provider.create_calls == []
 
     def test_a_resolver_answering_about_another_connection_is_refused(
@@ -727,7 +816,8 @@ class TestConnectionMustBeRegistered:
         """A wiring bug that would otherwise verify the wrong target entirely."""
         adapter = StubAdapter()
         register_scenarios(
-            {"bounded": adapter}, resolver=StubConnectionResolver(answer_ref="some-other-connection")
+            {"bounded": adapter},
+            resolver=StubConnectionResolver(answer_ref="some-other-connection"),
         )
 
         outcome = runner.run(valid_config)
@@ -736,7 +826,9 @@ class TestConnectionMustBeRegistered:
         assert "answered for" in outcome.report["detail"]
         assert adapter.provider.create_calls == []
 
-    def test_a_malformed_resolution_is_refused(self, valid_config, register_scenarios, stub_identity):
+    def test_a_malformed_resolution_is_refused(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         """A resolver returning the wrong type must not be trusted."""
         adapter = StubAdapter()
         register_scenarios(
@@ -754,7 +846,9 @@ class TestConnectionMustBeRegistered:
         self, valid_config, register_scenarios, stub_identity
     ):
         adapter = StubAdapter()
-        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(account_id="nope"))
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(account_id="nope")
+        )
 
         outcome = runner.run(valid_config)
 
@@ -788,7 +882,9 @@ class TestConnectionMustBeRegistered:
         self, valid_config, register_scenarios, stub_identity
     ):
         adapter = StubAdapter()
-        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(org=None))
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(org=None)
+        )
 
         outcome = runner.run(valid_config)
 
@@ -800,7 +896,9 @@ class TestConnectionMustBeRegistered:
         self, valid_config, register_scenarios, stub_identity
     ):
         """The gate precedes the load, so the reported cause is the real one."""
-        register_scenarios({"bounded": StubAdapter()}, resolver=StubConnectionResolver(known=False))
+        register_scenarios(
+            {"bounded": StubAdapter()}, resolver=StubConnectionResolver(known=False)
+        )
 
         outcome = resume_qualification(valid_config, "q-neverexisted01")
 
@@ -815,10 +913,14 @@ class TestConnectionMustBeRegistered:
         register_scenarios({"bounded": adapter})
         inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
         provision(inventory, valid_config, adapter.provider, ORG)
-        assert adapter.provider.resources, "the fixture must exist before cleanup is attempted"
+        assert adapter.provider.resources, (
+            "the fixture must exist before cleanup is attempted"
+        )
 
         # Same config and same inventory; only the registry's answer changes.
-        register_scenarios({"bounded": adapter}, resolver=StubConnectionResolver(known=False))
+        register_scenarios(
+            {"bounded": adapter}, resolver=StubConnectionResolver(known=False)
+        )
         outcome = cleanup_qualification(valid_config, QUAL_ID)
 
         assert outcome.status == STATUS_REFUSED
@@ -834,7 +936,7 @@ class TestConnectionMustBeRegistered:
 
         outcome = runner.run(valid_config)
 
-        assert outcome.status == STATUS_PASS
+        assert outcome.status == STATUS_INCOMPLETE
         resolved = outcome.report["target"]["resolved_connection"]
         assert resolved == {
             "connection_ref": "adp-dev-embark1",
@@ -845,7 +947,9 @@ class TestConnectionMustBeRegistered:
 
 
 class TestResumeMode:
-    def test_resume_reconciles_and_reports_ready(self, valid_config, register_scenarios, stub_identity):
+    def test_resume_reconciles_and_reports_ready(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         adapter = StubAdapter()
         register_scenarios({"bounded": adapter})
         inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
@@ -919,7 +1023,9 @@ class TestCleanupMode:
         register_scenarios({"bounded": adapter})
         inventory = Inventory.create(valid_config.artifact_directory, QUAL_ID, "dev")
         provision(inventory, valid_config, adapter.provider, ORG)
-        adapter.provider.resources["organization-1"]["adp:qualification-id"] = "q-somebodyelse00"
+        adapter.provider.resources["organization-1"]["adp:qualification-id"] = (
+            "q-somebodyelse00"
+        )
 
         outcome = cleanup_qualification(valid_config, QUAL_ID)
 
@@ -928,7 +1034,9 @@ class TestCleanupMode:
         assert outcome.report["deleted"] == []
         assert adapter.provider.delete_calls == []
 
-    def test_cleanup_retains_sanitized_evidence(self, valid_config, register_scenarios, stub_identity):
+    def test_cleanup_retains_sanitized_evidence(
+        self, valid_config, register_scenarios, stub_identity
+    ):
         """Evidence survives cleanup, minus the provider dedupe key."""
         adapter = StubAdapter()
         register_scenarios({"bounded": adapter})

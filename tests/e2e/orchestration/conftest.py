@@ -16,10 +16,23 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+import socket
 
 from tests.e2e.orchestration.config import load_config
 
 PACKAGE = Path(__file__).resolve().parent
+
+
+@pytest.fixture(autouse=True)
+def refuse_network(monkeypatch):
+    """A newly registered live adapter must not turn an offline test into a probe."""
+
+    def refused(*args, **kwargs):
+        raise AssertionError("network access attempted in offline qualification tests")
+
+    monkeypatch.setattr(socket.socket, "connect", refused)
+    monkeypatch.setattr(socket.socket, "connect_ex", refused)
+
 
 # A config that passes every validation rule. Individual tests copy this and
 # break one field, so the assertion is always "this one change is what was
@@ -81,7 +94,8 @@ def pytest_collection_modifyitems(config, items):
         inherited = [
             marker
             for marker in item.own_markers
-            if marker.name == "skip" and "E2E_CHAT_ENABLED" in str(marker.kwargs.get("reason", ""))
+            if marker.name == "skip"
+            and "E2E_CHAT_ENABLED" in str(marker.kwargs.get("reason", ""))
         ]
         for marker in inherited:
             item.own_markers.remove(marker)
