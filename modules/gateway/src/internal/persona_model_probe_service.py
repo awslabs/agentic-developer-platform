@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -82,6 +83,8 @@ def _configuration_reason(settings: Settings) -> str | None:
         return "zero_slots"
     if settings.model_probe_budget_usd_per_cycle <= 0 or settings.model_probe_max_budget_usd_per_attempt <= 0:
         return "zero_budget"
+    if not re.fullmatch(r"[0-9]{12}", settings.platform_bedrock_account_id):
+        return "platform_account_unconfigured"
     return None
 
 
@@ -178,6 +181,12 @@ async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled") -> Cl
             .where(
                 BedrockDestinationRegistry.routing_capable.is_(True),
                 BedrockDestinationRegistry.verified_at.is_not(None),
+                # Customer probing needs its own consent contract. This rollout
+                # may qualify only the operator's configured platform account.
+                BedrockDestinationRegistry.account_id == settings.platform_bedrock_account_id,
+                BedrockDestinationRegistry.is_platform_registered.is_(True),
+                BedrockDestinationRegistry.owner_org_id.is_(None),
+                BedrockDestinationRegistry.credential_id.is_(None),
             )
             .order_by(BedrockDestinationRegistry.account_id, BedrockDestinationRegistry.region, BedrockDestinationRegistry.id)
         )
@@ -291,6 +300,24 @@ async def start_probe(
     _verify_lease_token(slot, lease_token)
     if slot.status != "reserved":
         raise ProbeConflictError("slot_not_reserved", f"Probe slot is {slot.status}, not reserved")
+    settings = get_settings()
+    if reason := _configuration_reason(settings):
+        raise ProbeConflictError(reason, "Probe admission is currently unavailable")
+    destination = await db.get(BedrockDestinationRegistry, slot.destination_id)
+    if (
+        destination is None
+        or slot.account_id != settings.platform_bedrock_account_id
+        or destination.account_id != slot.account_id
+        or destination.region != slot.region
+        or not destination.is_platform_registered
+        or destination.owner_org_id is not None
+        or destination.credential_id is not None
+        or not destination.routing_capable
+        or destination.verified_at is None
+    ):
+        raise ProbeConflictError("probe_destination_not_permitted", "Probe destination is not an admitted platform destination")
+    if not re.fullmatch(r"[a-z0-9-]+", slot.region):
+        raise ProbeConflictError("probe_region_invalid", "Probe region is malformed")
     if _utc(slot.lease_expires_at) <= now:
         slot.status = "expired"
         slot.updated_at = now
