@@ -1050,7 +1050,7 @@ Process this GitHub issue and complete the assigned work.${mainIssueInfo}
 ### Issue #${issue.number}: ${issue.title}
 
 ${wrapUntrusted(issue.body)}
-${reviewCyclePrompt(process.env.ADP_REVIEW_CYCLE_INPUT)}
+${reviewCyclePrompt(process.env.ADP_REVIEW_CYCLE_INPUT, process.env.ADP_HANDOFF_REQUIRED === 'true')}
 ${memoryCtx ? `
 ---
 

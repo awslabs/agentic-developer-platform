@@ -142,6 +142,7 @@ async def cycle(pg_url, store, monkeypatch):  # noqa: F811
         node=node, genesis=genesis, graph_address="cycle/E1/W1/N1", installation_id=42, issue=43, config=config, user_id="human", cognito_sub="sub"
     )
     envelope["source_ref"]["provider_repository_id"] = 123
+    envelope["handoff_required"] = True
     writer.provision(
         PendingPublish(node_id=node.id, org_id=ORG, envelope=envelope, group_id="cycle", deduplication_id=root, genesis=genesis, node_attempt=1)
     )
@@ -503,3 +504,11 @@ async def test_concurrent_ticks_admit_one_successor(cycle):
     assert len(actions) == 1 and len({message["message_id"] for message in cycle.calls}) == 1
     assert claim.generation == 5 and node.attempts == 1
     assert claim.active_run_id == continuation_run_id(actions[0].operation_key)
+
+
+async def test_policy_developer_cannot_dispatch_competing_review(cycle):
+    from src.agentauth.grants import AgentAction
+
+    grant = cycle.store.live_grant(invocation_id=cycle.root, tenant_id=ORG, attempt=1, now=datetime.now(UTC))
+    assert grant.allowed_actions == frozenset({AgentAction.MONITOR})
+    assert AgentAction.MONITOR in grant.delegable_actions

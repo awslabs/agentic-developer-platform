@@ -1,6 +1,8 @@
 /** The bootstrap exports this invocation's protected, bounded assignment. */
-export function reviewCyclePrompt(raw: string | undefined): string {
-  if (!raw) return '';
+export function reviewCyclePrompt(raw: string | undefined, engineOwnsContinuation = false): string {
+  if (!raw) return engineOwnsContinuation
+    ? '\nThe engine owns continuation after development. Deliver and register the existing implementation PR, then commit the required handoff. Do not dispatch a reviewer, merge, deploy or accept delivery; the engine schedules the next phase.\n'
+    : '';
   if (Buffer.byteLength(raw, 'utf8') > 32768) throw new Error('Review-cycle input exceeds its bound');
   const value = JSON.parse(raw);
   if (!value || !['review', 'repair'].includes(value.action) || !value.operation_key || !value.accepted_scope

@@ -18,7 +18,7 @@ test('the actual agent prompt includes the persisted assignment', () => {
   expect(prompt).toContain('"head_sha":"' + 'a'.repeat(40));
   expect(prompt.match(/<\/review-cycle-data>/g)).toHaveLength(1);
   const worker = fs.readFileSync(path.join(__dirname, 'agent-worker.ts'), 'utf8');
-  expect(worker).toContain('${reviewCyclePrompt(process.env.ADP_REVIEW_CYCLE_INPUT)}');
+  expect(worker).toContain("${reviewCyclePrompt(process.env.ADP_REVIEW_CYCLE_INPUT, process.env.ADP_HANDOFF_REQUIRED === 'true')}");
 });
 
 test('legacy runs keep their prompt and invalid input fails', () => {
@@ -26,4 +26,9 @@ test('legacy runs keep their prompt and invalid input fails', () => {
   expect(() => reviewCyclePrompt('{')).toThrow();
   expect(() => reviewCyclePrompt(JSON.stringify({ ...assignment, action: 'merge' }))).toThrow();
   expect(() => reviewCyclePrompt('x'.repeat(32769))).toThrow();
+});
+
+test('initial policy development hands continuation to the engine', () => {
+  expect(reviewCyclePrompt(undefined, true)).toContain('Do not dispatch a reviewer');
+  expect(reviewCyclePrompt(undefined, false)).toBe('');
 });

@@ -157,7 +157,10 @@ class EngineAuthorityWriter:
         now = datetime.now(UTC)
         expiry, _ = ensure_engine_authority(store=self.store, genesis=genesis, now=now)
         source = envelope["source_ref"]
-        actions = {AgentAction.MONITOR, AgentAction.DISPATCH} if persona == "developer" else {AgentAction.MONITOR}
+        # Policy handoff assigns continuation to K2. The developer must not
+        # create a competing reviewer while the durable controller does the same.
+        worker_dispatch = persona == "developer" and envelope.get("handoff_required") is not True
+        actions = {AgentAction.MONITOR, AgentAction.DISPATCH} if worker_dispatch else {AgentAction.MONITOR}
         grant = DelegatedGrant(
             grant_id=f"grant:{invocation}:1",
             tenant_id=genesis.org_id,
@@ -173,7 +176,7 @@ class EngineAuthorityWriter:
             max_chain_depth=8,
         )
         metadata = {"work_item_issue": {"N": str(source["issue"])}, "max_total_dispatches": {"N": "1"}}
-        if persona == "developer":
+        if worker_dispatch:
             metadata["dispatch_personas"] = {"SS": ["reviewer"]}
         event = EngineRunStore.build_item(envelope)
         event.update(actor_kind="service", actor_user_id="system:orchestration-dispatch")
