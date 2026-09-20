@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 
@@ -19,17 +20,28 @@ def snapshot(cfg, aws, http):
     return revision, evidence["revision_source"]
 
 
-def main():
-    cfg = config.load(config.EXAMPLE_PATH)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ec2", action="store_true")
+    args = parser.parse_args(argv)
+    cfg = (
+        config.from_environment(os.environ)
+        if args.ec2
+        else config.load(config.EXAMPLE_PATH)
+    )
     transport = ports.default_ports(cfg)
     revision, source = snapshot(cfg, transport["aws"], transport["http"])
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         output.write(f"revision={revision}\n")
+    if args.ec2:
+        with Path(os.environ["GITHUB_ENV"]).open("a") as environment:
+            environment.write(f"CLI_UPLIFT_EVAL_EXPECTED_REVISION={revision}\n")
+    label = "EC2 suite" if args.ec2 else "onboarding start"
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
         summary.write(
             f"## Nightly CLI regression — dev\n\n"
-            f"Revision under test: `{revision}` (source: `{source}`).\n\n"
-            "Onboarding → budgets/rate limits → complete EC2 suite.\n"
+            f"Revision at {label}: `{revision}` (source: `{source}`).\n\n"
+            "Onboarding → budgets/rate limits → EC2 regression.\n"
         )
     return 0
 

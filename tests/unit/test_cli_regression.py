@@ -1,6 +1,9 @@
 """Nightly execution, revision binding and failure-propagation contracts."""
 
 import json
+import os
+import sqlite3
+import sys
 import re
 import subprocess
 import tomllib
@@ -31,7 +34,7 @@ def outcomes(**overrides):
 
 
 def test_complete_success_requires_a_bound_revision():
-    text, code = report.render(outcomes(), SHA)
+    text, code = report.render(outcomes(), SHA, SHA)
     assert code == 0
     assert "**PASS**" in text
     assert SHA in text
@@ -40,7 +43,7 @@ def test_complete_success_requires_a_bound_revision():
 @pytest.mark.parametrize("job", report.REQUIRED)
 @pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", "unknown"])
 def test_one_incomplete_job_cannot_be_hidden_by_other_successes(job, result):
-    text, code = report.render(outcomes(**{job: result}), SHA)
+    text, code = report.render(outcomes(**{job: result}), SHA, SHA)
     assert code == 1
     assert "FAIL / INCOMPLETE" in text
     assert "**PASS**" not in text
@@ -49,14 +52,14 @@ def test_one_incomplete_job_cannot_be_hidden_by_other_successes(job, result):
 def test_missing_suite_cannot_pass():
     jobs = outcomes()
     del jobs["ec2"]
-    text, code = report.render(jobs, SHA)
+    text, code = report.render(jobs, SHA, SHA)
     assert code == 1
     assert "missing" in text
 
 
 @pytest.mark.parametrize("revision", ["", "main", "a" * 7, "a" * 40 + "\n", None])
 def test_unbound_revision_cannot_pass(revision):
-    text, code = report.render(outcomes(), revision)
+    text, code = report.render(outcomes(), revision, SHA)
     assert code == 1
     assert "unverified" in text
 
@@ -159,7 +162,8 @@ def test_suites_are_serial_but_failure_does_not_skip_later_suites():
         assert "!cancelled()" in job["if"]
         assert "needs.prepare.result == 'success'" in job["if"]
         assert "continue-on-error" not in job
-    assert jobs["ec2"]["with"]["suites"] == "full"
+    assert jobs["ec2"]["with"]["suites"] == "${{ inputs.ec2_scope || 'login' }}"
+    assert jobs["ec2"]["with"]["resolve_revision"] is True
     assert "needs.onboarding.outputs.cleanup_ok == 'true'" in jobs["budgets"]["if"]
     assert "needs.budgets.outputs.cleanup_ok == 'true'" in jobs["ec2"]["if"]
     assert jobs["ec2"]["with"]["expected_revision"] == (
@@ -203,6 +207,8 @@ def test_only_non_secret_job_outcomes_are_sent_to_combined_summary():
     assert step["env"] == {
         "CLI_REGRESSION_JOBS": "${{ toJSON(needs) }}",
         "CLI_REGRESSION_REVISION": "${{ needs.prepare.outputs.revision }}",
+        "CLI_REGRESSION_EC2_REVISION": "${{ needs.ec2.outputs.revision }}",
+        "CLI_REGRESSION_EC2_SCOPE": "${{ inputs.ec2_scope || 'login' }}",
     }
     assert "python -m tests.e2e.cli_regression.report" in step["run"]
 
@@ -225,7 +231,7 @@ def test_budget_cleanup_keeps_sweeping_after_database_failure(tmp_path):
     assert "SUMMARY" in result.stdout
 
 
-def run_cleanup(tmp_path, suite, *, pod_exit=0, db_exit=0):
+def run_cleanup(tmp_path, suite, *, pod_exit=0, db_exit=0, prior_exit=0):
     source = (ROOT / "platform/evals" / suite / "run-eval.sh").read_text()
     function = re.search(r"^run_cleanup\(\) \{\n.*?^\}", source, re.M | re.S).group()
     # Exercise the real EXIT/cleanup function with transport-only substitutes.
@@ -248,7 +254,13 @@ delete_seeded_user() {{ echo "DELETE_USER $*"; }}
 h_psql() {{ return {db_exit}; }}
 """
     return subprocess.run(
-        ["bash", "-c", setup + function + "\ntrue\nrun_cleanup\n", "_", str(tmp_path)],
+        [
+            "bash",
+            "-c",
+            setup + function + f"\n(exit {prior_exit})\nrun_cleanup\n",
+            "_",
+            str(tmp_path),
+        ],
         capture_output=True,
         text=True,
         timeout=10,
@@ -329,3 +341,203 @@ wait "$second"
     for name in ("one.json", "two.json"):
         target = tmp_path / name
         assert target.read_text() == str(target)
+
+
+@pytest.mark.parametrize("revision", ["", "main", "a" * 7, None])
+def test_ec2_must_publish_its_own_verified_revision(revision):
+    text, code = report.render(outcomes(), SHA, revision)
+    assert code == 1
+    assert "EC2 pinned revision: `unverified`" in text
+
+
+def test_key_scenarios_pass_without_claiming_full_acceptance():
+    text, code = report.render(outcomes(), SHA, "b" * 40)
+    assert code == 0
+    assert "E02–E17 are outside this nightly gate" in text
+    assert "not a single-revision acceptance run" in text
+    assert "Full CLI acceptance is not established" in text
+
+
+def test_unknown_scope_cannot_go_green():
+    assert report.render(outcomes(), SHA, SHA, "bogus")[1] == 1
+
+
+def test_full_scope_still_requires_every_child_to_pass():
+    text, code = report.render(outcomes(ec2="failure"), SHA, SHA, "full")
+    assert code == 1
+    assert "outside this nightly gate" not in text
+
+
+def test_ec2_snapshot_runs_before_config_and_recovery_uses_its_revision():
+    doc, triggers = workflow("eval-cli-uplift.yml")
+    steps = doc["jobs"]["evaluate"]["steps"]
+    pin = next(i for i, s in enumerate(steps) if s.get("id") == "revision")
+    build = next(i for i, s in enumerate(steps) if "--check-ready" in s.get("run", ""))
+    assert pin < build
+    assert steps[pin]["if"] == "inputs.resolve_revision"
+    assert "--ec2" in steps[pin]["run"]
+    assert triggers["workflow_call"]["inputs"]["resolve_revision"]["default"] is False
+    assert triggers["workflow_call"]["outputs"]["revision"]["value"] == (
+        "${{ jobs.evaluate.outputs.revision }}"
+    )
+    assert doc["jobs"]["recover"]["env"]["CLI_UPLIFT_EVAL_EXPECTED_REVISION"] == (
+        "${{ needs.evaluate.outputs.revision || inputs.expected_revision }}"
+    )
+
+
+def test_ec2_snapshot_replaces_only_the_revision_and_publishes_it(
+    tmp_path, monkeypatch
+):
+    for key in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"):
+        monkeypatch.setenv(key, str(tmp_path / key))
+    monkeypatch.setenv("CLI_UPLIFT_EVAL_EXPECTED_REVISION", "c" * 40)
+    monkeypatch.setattr(
+        ports, "default_ports", lambda cfg: {"aws": Aws(), "http": Http()}
+    )
+    assert prepare.main(["--ec2"]) == 0
+    assert (
+        tmp_path / "GITHUB_ENV"
+    ).read_text() == f"CLI_UPLIFT_EVAL_EXPECTED_REVISION={SHA}\n"
+    assert (tmp_path / "GITHUB_OUTPUT").read_text() == f"revision={SHA}\n"
+    assert "EC2 suite" in (tmp_path / "GITHUB_STEP_SUMMARY").read_text()
+
+
+def test_fatal_budget_setup_cannot_print_a_passing_cleanup_summary(tmp_path):
+    result = run_cleanup(tmp_path, "budget-ratelimit", prior_exit=1)
+    assert result.returncode == 1
+    assert "aborted before completing" in result.stdout
+    assert "SUMMARY failures=1" in result.stdout
+
+
+def test_budget_seed_supplies_required_json_defaults_to_real_sql(tmp_path):
+    # Raw SQL does not apply SQLAlchemy's Python defaults. Execute the actual
+    # seeder against NOT NULL constraints, which the old transport stub missed.
+    database = tmp_path / "seed.db"
+    with sqlite3.connect(database) as db:
+        db.executescript("""
+        CREATE TABLE organizations (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+          aws_accounts JSON NOT NULL, role_mappings JSON NOT NULL, settings JSON NOT NULL,
+          github_installation_ids JSON NOT NULL, cognito_client_ids JSON NOT NULL,
+          created_via TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE users (id TEXT PRIMARY KEY, org_id TEXT, team_id TEXT, email TEXT,
+          name TEXT, cognito_sub TEXT, created_at TEXT);
+        CREATE TABLE tenant_memberships (id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT,
+          role TEXT, is_active BOOLEAN, created_at TEXT, UNIQUE(user_id, tenant_id));
+        """)
+    transport = tmp_path / "psql.py"
+    transport.write_text("""import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute(sys.argv[2].replace('now()', 'CURRENT_TIMESTAMP'))
+""")
+    source = (ROOT / "platform/evals/budget-ratelimit/run-eval.sh").read_text()
+    function = re.search(
+        r"^seed_admin_identity\(\) \{\n.*?^\}", source, re.M | re.S
+    ).group()
+    setup = """
+set -euo pipefail
+ORG_A=eval-bgt-test-orga EVAL_TAG=eval-bgt-test TEAM_1=eval-bgt-test-team A1=test@example.test
+state_get() { echo eval-bgt-test-admin; }
+state_set() { :; }
+assert_tagged() { :; }
+pass() { :; }
+die() { echo "$*" >&2; exit 1; }
+h_psql() { "$1_python"; }
+""".replace(
+        'h_psql() { "$1_python"; }',
+        'h_psql() { "'
+        + sys.executable
+        + '" "$TEST_TRANSPORT" "$TEST_DATABASE" "$2"; }',
+    )
+    result = subprocess.run(
+        ["bash", "-c", setup + function + "\nseed_admin_identity\n"],
+        env={
+            **os.environ,
+            "TEST_TRANSPORT": str(transport),
+            "TEST_DATABASE": str(database),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    with sqlite3.connect(database) as db:
+        row = db.execute(
+            "SELECT aws_accounts, role_mappings, settings, created_via FROM organizations"
+        ).fetchone()
+        assert row == ("[]", "{}", "{}", "operator")
+        assert db.execute(
+            "SELECT role, is_active FROM tenant_memberships"
+        ).fetchone() == ("org_admin", 1)
+
+
+def test_onboarding_uses_the_installer_and_gets_proxy_dependencies(tmp_path):
+    source = (ROOT / "platform/evals/cli-onboarding/run-eval.sh").read_text()
+    function = re.search(
+        r"^install_cli_bundle\(\) \{\n.*?^\}", source, re.M | re.S
+    ).group()
+    # Exercise the production installer with only its download transport replaced.
+    # No product command can reach the network or inherit the operator's HOME.
+    fake_bin = tmp_path / "transport"
+    fake_bin.mkdir()
+    curl = fake_bin / "curl"
+    curl.write_text(
+        f"#!{sys.executable}\n"
+        + """import os, pathlib, shutil, sys
+args=sys.argv[1:]
+url=next(a for a in args if a.startswith('https://'))
+assert url.startswith('https://gateway.example.test/api/cli/')
+shutil.copyfile(pathlib.Path(os.environ['TEST_CLI_FILES']) / url.rsplit('/',1)[1],
+                args[args.index('-o')+1])
+"""
+    )
+    curl.chmod(0o755)
+    home = tmp_path / "home"
+    (home / "bin").mkdir(parents=True)
+    setup = """
+set -euo pipefail
+WORKDIR="$HOME"
+POD_WORKDIR="$HOME"
+POD_HOME="$HOME"
+GATEWAY_URL=https://gateway.example.test/api
+laptop() { "$@"; }
+pass() { echo "$*"; }
+fail() { echo "$*" >&2; }
+"""
+    result = subprocess.run(
+        ["bash", "-c", setup + function + "\ninstall_cli_bundle\n"],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+            "TEST_CLI_FILES": str(ROOT / "modules/gateway/cli"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        result.stdout + result.stderr + (home / "install.log").read_text()
+    )
+    for name in (
+        "adp",
+        "bg-cognito-auth.sh",
+        "bg-gateway-proxy.py",
+        "adp_deployments.py",
+        "adp_common.py",
+    ):
+        assert (home / "bin" / name).is_file(), name
+    probe = subprocess.run(
+        [
+            sys.executable,
+            str(home / "bin/adp_deployments.py"),
+            "proxy-owner",
+            str(home / "runtime"),
+            "",
+            "https://gateway.example.test/api",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert probe.returncode == 0, probe.stderr

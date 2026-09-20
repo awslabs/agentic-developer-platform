@@ -662,8 +662,9 @@ seed_admin_identity() {
   state_set ADMIN_ORG "$ORG_A"
   state_set ADMIN_SUB "$sub"
 
-  h_psql -c "INSERT INTO organizations (id, name, created_at)
-             VALUES ('${ORG_A}', '${EVAL_TAG}', now())
+  h_psql -c "INSERT INTO organizations (id, name, aws_accounts, role_mappings, settings,
+                                        github_installation_ids, cognito_client_ids, created_via, created_at)
+             VALUES ('${ORG_A}', '${EVAL_TAG}', '[]', '{}', '{}', '[]', '[]', 'operator', now())
              ON CONFLICT (id) DO NOTHING;" >/dev/null \
     || die "could not insert the throwaway organizations row"
 
@@ -1419,6 +1420,11 @@ run_cleanup() {
     fail "cleanup could not delete the clean-room pod"
   fi
 
+  # A fatal setup error can exit before an assertion records a failure.
+  # Preserve it in the summary as well as in the process exit status.
+  if [ "$rc" -ne 0 ] && [ "$FAILURES" -eq 0 ]; then
+    fail "eval aborted before completing its scenarios (exit $rc); see the preceding error"
+  fi
   write_summary
   if [ "$FAILURES" -gt 0 ]; then rc=1; fi
   exit "$rc"
