@@ -164,7 +164,7 @@ class ReviewCycleHandler:
                         await self.services.recheck(session, context, node, binding, facts)
                         return CycleObservation(
                             ObservationKind.SUCCEEDED,
-                            snapshot={"merge_ready": True},
+                            snapshot={**snapshot, "merge_ready": True},
                             receipt_ref=review.receipt_ref,
                             detail="Exact-head review is complete; merge eligibility remains a separate gate.",
                         )
@@ -187,9 +187,26 @@ class ReviewCycleHandler:
             return HandlerDecision(DecisionKind.BLOCK, block=observation.block)
         snapshot = dict(getattr(observation, "snapshot", None) or {})
         if snapshot.get("merge_ready"):
+
+            async def settle(session, current):
+                # The next handler compares R1's reviewed head with the binding.
+                # Refresh only this already-verified PR pointer, atomically with
+                # merge_ready; never rebind the work or reset its accepted scope.
+                from .pr_bindings import refresh_reviewed_head
+
+                await refresh_reviewed_head(
+                    session,
+                    identity=current.identity,
+                    binding_id=snapshot["binding_id"],
+                    revision=snapshot["binding_revision"],
+                    accepted_scope=snapshot["accepted_scope"],
+                    head_sha=snapshot["head_sha"],
+                )
+
             return HandlerDecision(
                 DecisionKind.ADVANCE,
                 phase=ExecutionPhase.MERGE_READY,
+                settlement=settle,
                 progress_note="Current head reviewed. Ready for the separately authorized merge phase.",
             )
         if "replay" in snapshot:

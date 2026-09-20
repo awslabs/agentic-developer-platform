@@ -323,6 +323,9 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     assert len(ctx.calls) == 3
     async with ctx.factory() as db:
         assert await current_author_run(db, node=node, default=ctx.root) == repair["message_id"]
+        binding = await db.get(OrchestrationPullRequestBinding, ctx.binding.id)
+        assert binding.head_sha == ctx.head and binding.revision == 2
+        assert binding.run_id == ctx.root and binding.accepted_scope == ctx.binding.accepted_scope
 
 
 @pytest.mark.parametrize("gate", ["failed", "halted", "rejected", "awaiting_gate"])
