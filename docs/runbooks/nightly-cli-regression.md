@@ -102,3 +102,8 @@ its sibling modules (including `adp_deployments.py`). Missing proxy downloads fa
 live runs. Budget seed SQL supplies the required JSON defaults explicitly, since
 raw SQL does not invoke ORM defaults. A fatal seed failure is reported as a failure,
 even when the subsequent cleanup succeeds; it never establishes budget coverage.
+
+Budget and rate-limit writes guard organizations/teams/departments by the run tag.
+User IDs are Cognito UUIDs: the guard requires an exact match to both the sub and
+username recorded when this run seeded the identity. Merely being a UUID or carrying
+a test-looking prefix is insufficient. Offline fixtures use UUID-shaped subs too.

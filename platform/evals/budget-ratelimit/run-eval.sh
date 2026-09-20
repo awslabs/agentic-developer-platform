@@ -301,7 +301,8 @@ case "$*" in
   *"cognito-idp admin-get-user"*)
     u=""
     for a in "$@"; do case "$prev" in --username) u="$a" ;; esac; prev="$a"; done
-    printf 'sub-%s' "$(printf '%s' "$u" | tr -c 'a-zA-Z0-9' '-')" ;;
+    # Real Cognito subs are UUIDs, not strings containing our username/run tag.
+    python3 -c 'import sys,uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, sys.argv[1]))' "$u" ;;
   *"cognito-idp initiate-auth"*)              echo '{"AuthenticationResult":{"AccessToken":"stub.access.token","RefreshToken":"stub-refresh-token"}}' ;;
   # Phase H: one human-rooted lineage item, so H1-H5 exercise the real join.
   *"dynamodb scan"*)
@@ -547,8 +548,9 @@ maybe_fail_phase() {
 # =============================================================================
 # The tag guard
 # =============================================================================
-# EVERY admin write this eval makes is scoped to an entity whose id contains the
-# run tag. This function is called immediately before each one, and it dies
+# Organizational IDs carry the run tag. User IDs are Cognito UUIDs and must
+# match the recorded sub AND username of a user seeded by this run (below).
+# Every admin write checks ownership immediately before it runs, and dies
 # rather than records: a write that escaped the tag would be a mutation to a real
 # tenant's budget or rate limit in a shared dev account, so there is no
 # "continue and report it" option. The guard is cheap and unconditional.
@@ -558,6 +560,25 @@ assert_tagged() {
     *"${EVAL_TAG}"*) return 0 ;;
     *) die "REFUSING to write ${what}='${value}' — it does not carry the run tag ${EVAL_TAG}. This guard exists so the eval can never mutate a real tenant's config." ;;
   esac
+}
+
+# Cognito owns the UUID format; accepting arbitrary UUIDs would remove the
+# mutation boundary. Match both pieces of the seeding receipt to this run.
+assert_owned_entity() {
+  local what="$1" entity_type="$2" value="$3" who username
+  if [ "$entity_type" != user ]; then
+    assert_tagged "$what" "$value"
+    return
+  fi
+  for who in U1 U2 U3 X1 A1; do
+    username="$(state_get "${who}_USERNAME")"
+    if [ -n "$value" ] && [ "$value" = "$(state_get "${who}_SUB")" ] \
+       && [ "$username" = "${!who}" ]; then
+      assert_tagged "$what seeded username" "$username"
+      return 0
+    fi
+  done
+  die "REFUSING to write ${what}='${value}' — not a Cognito user seeded by this run"
 }
 
 # =============================================================================
@@ -698,7 +719,7 @@ set_budget() {
   local entity_type="$1" entity_id="$2" amount="$3" period="${4:-daily}" org="${5:-$ORG_A}"
   local body="$WORKDIR/req.json" out="$WORKDIR/resp.json" status
 
-  assert_tagged "budget entity_id" "$entity_id"
+  assert_owned_entity "budget entity_id" "$entity_type" "$entity_id"
   assert_tagged "budget org_id" "$org"
 
   jq -n --arg t "$entity_type" --arg i "$entity_id" --arg p "$period" --arg a "$amount" \
@@ -731,7 +752,7 @@ set_ratelimit() {
   local entity_type="$1" entity_id="$2" rpm="$3" tpm="${4:-}" concurrent="${5:-}" org="${6:-$ORG_A}"
   local body="$WORKDIR/req.json" out="$WORKDIR/resp.json" status
 
-  assert_tagged "ratelimit entity_id" "$entity_id"
+  assert_owned_entity "ratelimit entity_id" "$entity_type" "$entity_id"
   assert_tagged "ratelimit org_id" "$org"
 
   jq -n --arg t "$entity_type" --arg i "$entity_id" \
