@@ -42,7 +42,7 @@ jobs:
       - run: |
           ruff check tests/e2e/cli_regression tests/unit/test_cli_regression.py
           ruff format --check tests/e2e/cli_regression tests/unit/test_cli_regression.py
-          pytest tests/unit/test_cli_regression.py -q --timeout=60 --disable-socket
+          python -m pytest tests/unit/test_cli_regression.py -q --timeout=60 --disable-socket
 
   prepare:
     name: Resolve the deployed dev revision
