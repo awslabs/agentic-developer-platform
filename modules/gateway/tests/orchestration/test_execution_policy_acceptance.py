@@ -223,6 +223,10 @@ class TestMissingPolicyPreservesLegacySemantics:
         """
         proposal = valid_proposal()
         legacy_document = {k: v for k, v in proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS).items() if k != "execution_policy"}
+        # E1 adds another optional field after this historical schema. A
+        # pre-#5128 document contains neither policy nor evaluation declarations.
+        for node in legacy_document["nodes"]:
+            node.pop("evaluation", None)
         legacy_hash = hashlib.sha256(json.dumps(legacy_document, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         assert plan_hash(proposal) == legacy_hash
 
