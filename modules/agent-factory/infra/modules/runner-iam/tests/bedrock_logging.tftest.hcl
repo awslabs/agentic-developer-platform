@@ -77,3 +77,26 @@ run "runner_can_manage_logging_within_its_boundary" {
     error_message = "Terraform must be able to manage the ACL-disabled S3 logging destination."
   }
 }
+
+run "runner_can_prepare_and_verify_default_model_access" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for action in [
+        "bedrock:GetInferenceProfile",
+        "bedrock:GetUseCaseForModelAccess",
+        "bedrock:PutUseCaseForModelAccess",
+        "bedrock:GetFoundationModelAvailability",
+        "bedrock:ListFoundationModelAgreementOffers",
+        "bedrock:CreateFoundationModelAgreement",
+        "aws-marketplace:Subscribe",
+        "aws-marketplace:ViewSubscriptions",
+      ] : (
+        contains(jsondecode(aws_iam_policy.runner_boundary.policy).Statement[0].Action, action) &&
+        contains(one([for s in jsondecode(aws_iam_policy.runner_services.policy).Statement : s if s.Sid == "BedrockModelAccessEnablement"]).Action, action)
+      )
+    ])
+    error_message = "Both the deployment role and its boundary must allow first-use registration, Marketplace access and profile readiness checks."
+  }
+}

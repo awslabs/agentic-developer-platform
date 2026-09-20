@@ -24,7 +24,7 @@ READY = {
     "regionAvailability": "AVAILABLE",
     "agreementAvailability": {"status": "AVAILABLE"},
 }
-MODEL = "global.anthropic.claude-opus-5"
+MODEL = "global.anthropic.claude-sonnet-5"
 
 
 class Cloud:
@@ -103,7 +103,7 @@ def operations(cloud):
 
 
 def test_defaults_follow_execution_sources(tmp_path):
-    assert access.runtime_models() == [MODEL, "global.anthropic.claude-sonnet-4-6"]
+    assert access.runtime_models() == [MODEL]
     for relative in [
         "modules/agent-factory/agent-worker-image/entrypoint.py",
         "modules/agent-factory/agent/k8s/chat-scaledjob.yaml",
@@ -111,9 +111,9 @@ def test_defaults_follow_execution_sources(tmp_path):
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            (ROOT / relative).read_text().replace("claude-opus-5", "claude-opus-99")
+            (ROOT / relative).read_text().replace("claude-sonnet-5", "claude-sonnet-99")
         )
-    assert access.runtime_models(tmp_path)[0] == "global.anthropic.claude-opus-99"
+    assert access.runtime_models(tmp_path)[0] == "global.anthropic.claude-sonnet-99"
     (tmp_path / "modules/agent-factory/agent/k8s/chat-scaledjob.yaml").write_text("")
     with pytest.raises(access.AccessError, match="Cannot identify"):
         access.runtime_models(tmp_path)
@@ -210,6 +210,66 @@ def test_verify_is_bounded_and_does_not_change_access(monkeypatch):
     assert not any(op.startswith(("put-", "create-")) for op in operations(cloud))
 
 
+def test_prepare_and_verify_blocks_rollout_on_invocation_denial(monkeypatch):
+    cloud = Cloud()
+    original = cloud.call
+
+    def call(service, operation, *args):
+        if operation == "invoke-model":
+            raise access.AccessError("invoke-model: AccessDeniedException")
+        return original(service, operation, *args)
+
+    cloud.call = call
+    monkeypatch.setattr(access, "AWS", lambda region: cloud)
+    with pytest.raises(access.AccessError, match="AccessDeniedException"):
+        access.main(["--prepare-and-verify", "--wait-seconds", "0"])
+    assert "get-inference-profile" in operations(cloud)
+
+
+def test_prepare_and_verify_registers_before_invoking(monkeypatch, form):
+    cloud = Cloud({**READY, "authorizationStatus": "NOT_AUTHORIZED"})
+    monkeypatch.setattr(access, "AWS", lambda region: cloud)
+    access.main(
+        ["--prepare-and-verify", "--use-case-file", str(form), "--wait-seconds", "0"]
+    )
+    ops = operations(cloud)
+    assert ops.index("put-use-case-for-model-access") < ops.index("invoke-model")
+    assert ops.count("invoke-model") == len(access.runtime_models())
+
+
+def test_chat_rollout_stops_before_terraform_or_kubernetes_on_model_denial(tmp_path):
+    relative = "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
+    script = tmp_path / relative
+    script.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / relative, script)
+    helper = tmp_path / "platform/scripts/enable-bedrock-models.sh"
+    helper.parent.mkdir(parents=True)
+    helper.write_text(
+        '#!/bin/bash\n[ "$1" = --prepare-and-verify ] || exit 9\necho "model denied" >&2\nexit 1\n'
+    )
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    for name in ["terraform", "kubectl", "aws"]:
+        path = binary / name
+        path.write_text('#!/bin/bash\necho "unexpected deployment call" >&2\nexit 9\n')
+        path.chmod(0o700)
+    result = subprocess.run(
+        ["bash", str(script)],
+        env={
+            **os.environ,
+            "ENVIRONMENT": "test",
+            "AGENT_IMAGE": "test:sha",
+            "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "model denied" in result.stderr
+    assert "unexpected deployment call" not in result.stderr
+    assert "Reading Terraform outputs" not in result.stdout
+
+
 @pytest.mark.parametrize(
     "reply", [{}, {"type": "error"}, {"type": "message", "content": []}]
 )
@@ -267,8 +327,8 @@ def test_explicit_models_are_additional_required_not_replacements(monkeypatch):
     monkeypatch.setattr(
         access, "check_required", lambda aws, models, wait: seen.extend(models)
     )
-    access.main(["--check", "global.anthropic.claude-sonnet-5"])
-    assert seen == access.runtime_models() + ["global.anthropic.claude-sonnet-5"]
+    access.main(["--check", "global.anthropic.claude-opus-5"])
+    assert seen == access.runtime_models() + ["global.anthropic.claude-opus-5"]
 
 
 @pytest.mark.parametrize(

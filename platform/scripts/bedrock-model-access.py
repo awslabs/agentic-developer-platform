@@ -358,6 +358,11 @@ def main(argv=None):
     parser.add_argument("--wait-seconds", type=int, default=180)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
+        "--prepare-and-verify",
+        action="store_true",
+        help="Prepare account access and verify a bounded invocation before deploying runtimes",
+    )
+    mode.add_argument(
         "--verify",
         action="store_true",
         help="Check defaults and invoke each once; no registration/subscription changes",
@@ -388,6 +393,8 @@ def main(argv=None):
             verify_invocations(aws, required)
     else:
         prepare(aws, required, requested, args.use_case_file, args.wait_seconds)
+        if args.prepare_and_verify:
+            verify_invocations(aws, required)
     return 0
 
 

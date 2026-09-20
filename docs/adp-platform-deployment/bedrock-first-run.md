@@ -5,8 +5,8 @@
 `deploy-all.sh` and the platform infrastructure workflow. There is no list of
 all models to maintain: optional models are discovered from Bedrock, and
 required defaults are read from the Python worker entrypoint and the chat
-ConfigMap (including its summarization model). Today these are global Opus 5
-and global Sonnet 4.6. Changing either execution source changes the checks.
+ConfigMap (including its summarization model). The shipped Claude default is global Sonnet 5
+for agent runs, chat and summarization. Changing either execution source changes the checks.
 
 ## First-use registration
 
@@ -57,7 +57,12 @@ Before reporting a
 successful deployment, `deploy.sh` runs one direct Bedrock invocation for each
 distinct default, capped at eight output tokens per request. `deploy-all.sh`
 does the same when run directly; the wrapper defers that check until after its
-agent phase, avoiding duplicate verification. There are no automatic inference
+agent phase, avoiding duplicate final verification. Access preparation now also
+verifies invocation before deploying runtime changes. Standalone webhook/chat
+rollouts and runtime image publication use the same check before changing the
+default used by new runs. A failed Marketplace or invocation check stops that
+rollout; existing running jobs keep their selected model. Each rollout gate
+can make its own short verification call. There are no automatic inference
 retries, tool loops or recurring probes. These small calls incur normal model
 usage charges and use the deployment identity. They establish model invocation,
 not end-to-end worker, gateway, GitHub or AI-DLC acceptance.
@@ -76,6 +81,9 @@ bash platform/scripts/enable-bedrock-models.sh --verify
 
 # Prepare account access, using a form only if registration is needed.
 bash platform/scripts/enable-bedrock-models.sh --use-case-file /secure/path/form.json
+
+# Prepare access and verify invocation before rolling out runtime changes.
+bash platform/scripts/enable-bedrock-models.sh --prepare-and-verify
 ```
 
 Readiness checks run against the active AWS profile and selected region. A new

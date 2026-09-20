@@ -101,8 +101,11 @@ resource "aws_iam_policy" "runner_boundary" {
           # them regardless of the services policy.
           "bedrock:ListFoundationModels", "bedrock:GetFoundationModel",
           "bedrock:GetFoundationModelAvailability",
+          "bedrock:GetInferenceProfile",
+          "bedrock:GetUseCaseForModelAccess", "bedrock:PutUseCaseForModelAccess",
           "bedrock:ListFoundationModelAgreementOffers",
           "bedrock:CreateFoundationModelAgreement",
+          "aws-marketplace:Subscribe", "aws-marketplace:ViewSubscriptions",
           "events:*", "stepfunctions:*",
           "cognito-idp:*", "cognito-identity:*",
           "elasticache:*", "eks:*",
@@ -599,8 +602,13 @@ resource "aws_iam_policy" "runner_services" {
           "bedrock:ListFoundationModels",
           "bedrock:GetFoundationModel",
           "bedrock:GetFoundationModelAvailability",
+          "bedrock:GetInferenceProfile",
+          "bedrock:GetUseCaseForModelAccess",
+          "bedrock:PutUseCaseForModelAccess",
           "bedrock:ListFoundationModelAgreementOffers",
-          "bedrock:CreateFoundationModelAgreement"
+          "bedrock:CreateFoundationModelAgreement",
+          "aws-marketplace:Subscribe",
+          "aws-marketplace:ViewSubscriptions"
         ]
         Resource = ["*"]
       },

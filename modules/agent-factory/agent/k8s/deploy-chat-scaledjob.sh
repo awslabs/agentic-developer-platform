@@ -25,6 +25,10 @@ MANIFEST="${SCRIPT_DIR}/chat-scaledjob.yaml"
 PREPULL_MANIFEST="${SCRIPT_DIR}/image-prepull-daemonset.yaml"
 INFRA_DIR="${SCRIPT_DIR}/../../infra"
 
+# Check account access before changing the ConfigMap or admitting new chat jobs.
+bash "${SCRIPT_DIR}/../../../../platform/scripts/enable-bedrock-models.sh" \
+  --prepare-and-verify --region "$AWS_REGION"
+
 echo "[deploy-chat] Reading Terraform outputs from ${INFRA_DIR}"
 pushd "${INFRA_DIR}" > /dev/null
 

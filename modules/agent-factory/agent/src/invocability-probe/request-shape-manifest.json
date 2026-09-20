@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "request_shape_normalization": "claude-code-probe-context-v3",
+  "request_shape_normalization": "claude-code-probe-context-v4",
   "compatibility_class": "claude-agent-sdk",
   "harness_contract_revision": "0.3.220",
   "probe_prompt_sha256": "9e1fdea65b5ba7339557628bf074553ed86cc65ed9de38a3e870a33817b949e0",
@@ -10,10 +10,10 @@
     "global.anthropic.claude-opus-4-7": "778cdfb7ab1fd4467ae5a3a4bcf2de4beb60afc4ef67bc3a7eae84423edcf9c8",
     "global.anthropic.claude-opus-4-6-v1": "e06ba0d8485b2d69a962db9a14ae17f683f11cdb12d879891e842967bda7bd1d",
     "global.anthropic.claude-opus-4-5-20251101-v1:0": "ec4e1a8e8e4e499edc494cce2cb427535a0f30c341fff9c046982f1a5ad99a01",
+    "global.anthropic.claude-sonnet-5": "b2e952e66f69e827bee940b1f895c82746b5d2ef989b036eebbd9c8290e228c9",
     "global.anthropic.claude-sonnet-4-6": "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b",
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0": "b2c824366a0b62b7a55c33e6547708eb03d05fb50bf5c74bfe4852ea45108234",
     "global.anthropic.claude-haiku-4-5-20251001-v1:0": "e5fcc766e28403a773c53b482e533b23f9a44a1aec3fb2568743863a5820b19d",
-    "us.anthropic.claude-sonnet-4-6": "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b",
-    "global.anthropic.claude-sonnet-5": "a7a0a805caa8a89201a73dddf8ec17b4ee6b8b19668500184bbd19a7d9142254"
+    "us.anthropic.claude-sonnet-4-6": "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b"
   }
 }

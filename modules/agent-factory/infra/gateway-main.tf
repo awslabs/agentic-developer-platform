@@ -474,17 +474,9 @@ resource "kubernetes_config_map" "agent_gateway_config" {
     AGENT_DIR                     = "/app/agent"
     ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.chat_model_policy_enabled)
     ADP_AGENT_CONTROL_ENDPOINT    = var.chat_model_control_endpoint
-    # Use the `us.` cross-region inference profile (NOT `global.`): the `us.`
-    # profile is available in every account we deploy to, whereas `global.` is
-    # not enabled on all accounts (e.g. test account 919157478356 returns
-    # "invalid model identifier" for global.* and AccessDenied until the
-    # Marketplace subscription lands). `us.` works on both 919 and embark1.
-    # Default is Sonnet 4.6 (cheaper/faster than Opus, no Marketplace agreement
-    # required — the `us.` profile is invokable out-of-the-box on tested accounts
-    # incl. 261421447505). Override to an Opus profile (e.g.
-    # us.anthropic.claude-opus-4-6-v1) via TF_VAR / this env for capability-heavy
-    # workloads that need it.
-    ANTHROPIC_MODEL = "us.anthropic.claude-sonnet-4-6"
+    # Account authorization, Marketplace entitlement and invocation are checked
+    # by the deployment helper before rolling out this default.
+    ANTHROPIC_MODEL = "global.anthropic.claude-sonnet-5"
     # Phase 3 gateway routing (issue #748)
     ADP_BEDROCK_VIA            = "gateway"
     SIGV4_PROXY_TARGET         = var.gateway_deployed ? "${data.aws_ssm_parameter.gateway_apigw_invoke_url[0].value}/agent" : ""

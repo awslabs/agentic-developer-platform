@@ -93,6 +93,12 @@ fi
 echo "deploy-webhook-ingress: env=$ENVIRONMENT region=$AWS_REGION account=$ACCOUNT_ID bucket=$STATE_BUCKET"
 [ "$DRY_RUN" = true ] && warn "DRY RUN — no changes will be made"
 
+if [ "$DRY_RUN" = false ] && { [ "$SKIP_IMAGE" = false ] || [ "$SKIP_TF" = false ]; }; then
+  step "Verify Bedrock access before deploying agent runtimes"
+  bash "$REPO_ROOT/platform/scripts/enable-bedrock-models.sh" \
+    --prepare-and-verify --region "$AWS_REGION"
+fi
+
 # ---------------------------------------------------------------------------
 # Helper: codebuild-run.sh path (implements source-SHA contract)
 # ---------------------------------------------------------------------------

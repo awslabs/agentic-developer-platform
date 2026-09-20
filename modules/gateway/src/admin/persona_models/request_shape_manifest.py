@@ -21,7 +21,7 @@ def request_shape_manifest() -> dict[str, str]:
     prompt_digest = raw.get("probe_prompt_sha256")
     if (
         raw.get("schema_version") != 2
-        or raw.get("request_shape_normalization") != "claude-code-probe-context-v3"
+        or raw.get("request_shape_normalization") != "claude-code-probe-context-v4"
         or raw.get("compatibility_class") != COMPATIBILITY_CLASS_CLAUDE
         or raw.get("harness_contract_revision") != HARNESS_CONTRACT_REVISION
         or not isinstance(prompt_digest, str)

@@ -65,6 +65,41 @@ const body = (changes = {}, request = {}) => JSON.stringify({
   max_tokens: 32000, tools: [{ name: 'Read' }], ...request,
 });
 
+describe('Sonnet 5 initial system budget reminder', () => {
+  const request = (budget: string, remaining = budget, spent = '0', prefix = 'SDK tool declarations\n\n', max_tokens = 64000) => JSON.stringify({
+    anthropic_beta: ['mid-conversation-system-2026-04-07'],
+    messages: [
+      { role: 'user', content: [{ text: 'Reply ADP_PROBE_OK.' }] },
+      { role: 'system', content: [{ text: `${prefix}<system-reminder>\nUSD budget: $${spent}/$${budget}; $${remaining} remaining\n</system-reminder>` }] },
+    ],
+    max_tokens, tools: [{ name: 'Read' }],
+  });
+  it('keeps a stable fingerprint across operator budgets', () => {
+    const reference = requestShapeSha256(request('0.01'));
+    expect(requestShapeSha256(request('0.25'))).toBe(reference);
+    expect(requestShapeSha256(request('1'))).toBe(reference);
+  });
+  it('retains spend, tool context and provider limits', () => {
+    const reference = requestShapeSha256(request('0.01'));
+    for (const changed of [request('1', '0.5'), request('1', '1', '0.1'), request('0'),
+      request('1', '1', '0', 'different tool context\n\n'), request('1', '1', '0', 'SDK tool declarations\n\n', 1)]) {
+      expect(requestShapeSha256(changed)).not.toBe(reference);
+    }
+  });
+  it('does not normalize user text, later messages or an unknown beta contract', () => {
+    for (const mutate of [
+      (body: any) => { body.messages[1].role = 'user'; },
+      (body: any) => { body.messages.splice(1, 0, { role: 'assistant', content: [] }); },
+      (body: any) => { body.anthropic_beta = []; },
+    ]) {
+      const low = JSON.parse(request('0.01'));
+      const high = JSON.parse(request('1'));
+      mutate(low); mutate(high);
+      expect(requestShapeSha256(JSON.stringify(low))).not.toBe(requestShapeSha256(JSON.stringify(high)));
+    }
+  });
+});
+
 it('keeps a stable fingerprint across fresh anonymous probe containers', () => {
   expect(requestShapeSha256(body())).toBe(requestShapeSha256(body({ device_id: 'b'.repeat(64) })));
 });

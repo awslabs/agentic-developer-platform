@@ -113,6 +113,10 @@ jobs:
           fi
           aws --version
 
+      # Publishing :latest can affect unpinned workers on their next start.
+      - name: Verify default model access before publishing the runtime
+        run: bash platform/scripts/enable-bedrock-models.sh --prepare-and-verify
+
       - name: Verify CodeBuild project exists
         run: |
           EXISTS=$(aws codebuild batch-get-projects \

@@ -3,6 +3,7 @@
 # ACTIVE Anthropic models, and accept missing Marketplace agreements.
 # ADP_BEDROCK_USE_CASE_FILE supplies real first-use registration details when needed.
 # --verify checks access and invokes each default once (at most 8 output tokens).
+# --prepare-and-verify also prepares access before a runtime rollout.
 # --check performs read-only access checks; --dry-run makes no AWS calls.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -147,7 +147,7 @@ export async function runQuery(input: RunQueryInput): Promise<RunQueryResult> {
     userMessage,
     tools: customTools = [],
     toolSanitizers,
-    model = process.env.ANTHROPIC_MODEL ?? 'global.anthropic.claude-sonnet-4-6',
+    model = process.env.ANTHROPIC_MODEL ?? 'global.anthropic.claude-sonnet-5',
     cwd = '/tmp/workspace',
     maxTurns = 50,
     effort,

@@ -81,7 +81,7 @@ os.environ.setdefault("AWS_REGION", "us-east-1")
 # The pod-level default, i.e. what the worker would run with no directive at
 # all. Deliberately different from every model requested below so a
 # substitution cannot hide behind a coincidental match.
-POD_DEFAULT_MODEL = "global.anthropic.claude-opus-5"
+POD_DEFAULT_MODEL = "global.anthropic.claude-sonnet-5"
 
 # What a verified gateway decision resolves to in the enforcing tests below.
 # Distinct from both the pod default and every requested model, so "the decision

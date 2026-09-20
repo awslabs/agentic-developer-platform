@@ -1,8 +1,41 @@
 import { createHash } from 'node:crypto';
 
-export const REQUEST_SHAPE_NORMALIZATION = 'claude-code-probe-context-v3';
+export const REQUEST_SHAPE_NORMALIZATION = 'claude-code-probe-context-v4';
 const SDK_DATE_REMINDER = /# currentDate\nToday's date is (\d{4}-\d{2}-\d{2})\./g;
 const SDK_INITIAL_BUDGET_REMINDER = /^<system-reminder>\nUSD budget: \$0\/\$(\d+(?:\.\d+)?); \$\1 remaining\n<\/system-reminder>\n$/;
+const SDK_SYSTEM_BUDGET_REMINDER = /<system-reminder>\nUSD budget: \$0\/\$(\d+(?:\.\d+)?); \$\1 remaining\n<\/system-reminder>$/;
+
+/**
+ * Sonnet 5 places the initial reminder at the end of its first mid-conversation
+ * system message. Normalize that non-semantic reminder in the fingerprint only.
+ * The actual SDK budget and reserved amount are unchanged. Never normalize subsequent spend updates,
+ * unequal remaining amounts, provider limits, tool declarations or identities.
+ */
+function normalizeInitialSystemBudget(value: unknown): unknown {
+  const root = value as { messages?: unknown; anthropic_beta?: unknown };
+  if (!root || typeof root !== 'object' || !Array.isArray(root.messages)
+      || !Array.isArray(root.anthropic_beta)
+      || !root.anthropic_beta.includes('mid-conversation-system-2026-04-07')) return value;
+  const first = root.messages[0] as { role?: unknown } | undefined;
+  const system = root.messages[1] as { role?: unknown; content?: unknown } | undefined;
+  if (first?.role !== 'user' || system?.role !== 'system' || !Array.isArray(system.content)) return value;
+  const candidates = system.content.filter((block) => {
+    const text = (block as { text?: unknown })?.text;
+    if (typeof text !== 'string' || text.split('USD budget:').length !== 2) return false;
+    const match = text.match(SDK_SYSTEM_BUDGET_REMINDER);
+    return match !== null && Number.isFinite(Number(match[1])) && Number(match[1]) > 0;
+  });
+  if (candidates.length !== 1) return value;
+  const content = system.content.map((block) => block === candidates[0]
+    ? { ...(block as Record<string, unknown>), text: (block as { text: string }).text.replace(
+      SDK_SYSTEM_BUDGET_REMINDER,
+      () => '<system-reminder>\nUSD budget: $0/$<ADP_PROBE_BUDGET>; $<ADP_PROBE_BUDGET> remaining\n</system-reminder>',
+    ) }
+    : block);
+  const messages = [...root.messages];
+  messages[1] = { ...system, content };
+  return { ...(value as Record<string, unknown>), messages };
+}
 
 /** Normalize only the SDK's per-installation identifier, never account/session identity. */
 function normalizeProbeDevice(value: unknown): unknown {
@@ -38,6 +71,7 @@ function normalizeProbeDevice(value: unknown): unknown {
  */
 export function normalizeRequestShape(value: unknown): unknown {
   value = normalizeProbeDevice(value);
+  value = normalizeInitialSystemBudget(value);
   const root = value as { messages?: unknown };
   if (!root || typeof root !== 'object' || !Array.isArray(root.messages)) return value;
   const first = root.messages[0] as { content?: unknown } | undefined;

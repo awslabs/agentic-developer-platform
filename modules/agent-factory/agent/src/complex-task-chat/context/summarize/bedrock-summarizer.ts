@@ -24,7 +24,7 @@ export class BedrockSummarizer implements Summarizer {
   private readonly client: BedrockRuntimeClient;
 
   constructor(
-    private readonly model: string = 'global.anthropic.claude-sonnet-4-6',
+    private readonly model: string = 'global.anthropic.claude-sonnet-5',
     region: string = 'us-east-1',
   ) {
     const endpoint = process.env.ANTHROPIC_BEDROCK_BASE_URL;

@@ -29,7 +29,7 @@ describe('ConfigLoader model assignment boundary (PMM-07)', () => {
 
     const config = await loader.load();
 
-    expect(config.bedrockModel).toBe('global.anthropic.claude-opus-5');
-    expect(process.env.ANTHROPIC_MODEL).toBe('global.anthropic.claude-opus-5');
+    expect(config.bedrockModel).toBe('global.anthropic.claude-sonnet-5');
+    expect(process.env.ANTHROPIC_MODEL).toBe('global.anthropic.claude-sonnet-5');
   });
 });

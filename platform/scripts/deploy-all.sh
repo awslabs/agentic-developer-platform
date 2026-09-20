@@ -204,7 +204,7 @@ ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
 # skipped merely because an earlier version was already deployed.
 if [ "$CI_MODE" = false ] && [ "$DESTROY" = false ]; then
   step "Bedrock model access and first-use registration"
-  bash "$SCRIPT_DIR/enable-bedrock-models.sh" || fail "Required Bedrock model access is not ready."
+  bash "$SCRIPT_DIR/enable-bedrock-models.sh" --prepare-and-verify || fail "Required Bedrock model access is not ready; runtime deployment has not started."
 fi
 
 # ---------------------------------------------------------------------------

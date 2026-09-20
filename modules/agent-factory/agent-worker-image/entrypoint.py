@@ -1901,7 +1901,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # /model directive: explicit /model > pod ANTHROPIC_MODEL default.
     model_resolved = envelope.get("model_resolved")
     effective_model = model_resolved or os.environ.get(
-        "ANTHROPIC_MODEL", "global.anthropic.claude-opus-5"
+        "ANTHROPIC_MODEL", "global.anthropic.claude-sonnet-5"
     )
 
     # PMM-07: under a verified ``enforcing`` posture the gateway's decision — not
