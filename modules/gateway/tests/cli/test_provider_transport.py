@@ -125,6 +125,8 @@ def gateway(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    # Each test models a fresh CLI process with its own deployment selection.
+    monkeypatch.setattr(cli.common, "_deployment", cli.common._UNRESOLVED)
     # The session token is the ONLY credential path; stubbing its retrieval keeps
     # these tests offline without introducing a second credential store.
     monkeypatch.setattr(cli.common, "access_token", lambda: "synthetic-session-token")

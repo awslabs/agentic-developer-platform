@@ -1201,7 +1201,10 @@ async def run_execution_runner(
     if not config.enabled:
         return report
 
-    handlers = registered_execution_handlers() if handlers is None else handlers
+    if handlers is None:
+        from .review_cycle import handlers as review_cycle_handlers
+
+        handlers = {**review_cycle_handlers(factory), **registered_execution_handlers()}
     clock = clock or SystemClock()
     if not handlers:
         return report

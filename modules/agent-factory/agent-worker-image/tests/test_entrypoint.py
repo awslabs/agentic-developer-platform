@@ -4666,14 +4666,21 @@ class TestMediatedIdempotencyGuard:
 
 
 @pytest.mark.parametrize("agent_exit", [0, 1])
-@pytest.mark.parametrize("mediated", [False, True])
-def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, tmp_path, agent_exit, mediated):
+@pytest.mark.parametrize("mediated, engine_cycle", [(False, False), (True, False), (False, True)])
+def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, tmp_path, agent_exit, mediated, engine_cycle):
     import entrypoint
     from lib import status_gateway_client
     from tests.test_review_delivery import EXPECT, HEAD
     import hashlib
 
     envelope = {**SAMPLE_ENVELOPE, "persona": "reviewer", "review_expect": EXPECT}
+    if engine_cycle:
+        envelope["intent"] = {"trigger": "engine_review_cycle"}
+        envelope["review_cycle_input"] = {
+            "action": "review", "repo": envelope["source_ref"]["repo"], "pr_number": 77,
+            "head_sha": HEAD, "accepted_scope": '{"node":{"title":"Bound task"}}',
+            "findings": [], "remaining_attempts": 2, "remaining_spend_usd": "4.00", "operation_key": "cycle:test",
+        }
     monkeypatch.setattr(entrypoint, "prepend_correlation_marker", lambda body: body)
     if mediated:
         from lib import mediated_github
@@ -4703,7 +4710,10 @@ def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, t
     monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
     monkeypatch.setattr(entrypoint, "run_cmd", MagicMock(return_value=MagicMock(stdout="", returncode=0)))
     def command(cmd, **kwargs):
-        return MagicMock(stdout=HEAD if cmd[:3] == ["git", "rev-parse", "HEAD"] else "", returncode=0)
+        output = HEAD if cmd[:3] == ["git", "rev-parse", "HEAD"] else ""
+        if cmd == ["git", "branch", "--show-current"]:
+            output = "bound-pr-branch"
+        return MagicMock(stdout=output, returncode=0)
     monkeypatch.setattr(entrypoint, "run_cmd", command)
     events = []
     def agent(cmd, **kwargs):
@@ -4714,6 +4724,10 @@ def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, t
         assert cmd[0] == "node"
         env = kwargs["env"]
         assert json.loads(env["ADP_REVIEW_EXPECT"]) == EXPECT
+        if engine_cycle:
+            assert json.loads(env["ADP_REVIEW_CYCLE_INPUT"]) == envelope["review_cycle_input"]
+        else:
+            assert "ADP_REVIEW_CYCLE_INPUT" not in env
         Path(env["ADP_REVIEW_REPORT_PATH"]).write_text(json.dumps({
             "stages": {"functional": "completed"}, "verdict": "request-changes",
             "findings": [{"finding_id": "F1", "stage": "functional", "severity": "blocking",

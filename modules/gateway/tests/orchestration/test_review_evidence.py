@@ -868,6 +868,7 @@ class TestPersistenceCarriesReferencesOnly:
             "publication",
             "complete_review",
             "publication_outstanding",
+            "cycle_input",
         }
         assert all(isinstance(value, str) for value in intent.detail.values())
 

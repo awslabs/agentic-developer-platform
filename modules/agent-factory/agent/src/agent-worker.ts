@@ -1,3 +1,4 @@
+import { reviewCyclePrompt } from './review-cycle-input';
 import { protectedArtifactRun, uploadRunArtifact } from './lib/artifactGateway';
 import { archiveProtectedGitChanges } from './lib/gitArchiveGateway';
 import { saveToS3Fallback } from './utils/ghPost';
@@ -1049,6 +1050,7 @@ Process this GitHub issue and complete the assigned work.${mainIssueInfo}
 ### Issue #${issue.number}: ${issue.title}
 
 ${wrapUntrusted(issue.body)}
+${reviewCyclePrompt(process.env.ADP_REVIEW_CYCLE_INPUT, process.env.ADP_HANDOFF_REQUIRED === 'true')}
 ${memoryCtx ? `
 ---
 

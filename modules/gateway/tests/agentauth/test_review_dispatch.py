@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from src.orchestration.dispatch_pass import attempt_run_id
 from src.orchestration.execution_state import ExecutionIdentity
 from src.orchestration.execution_store import create_execution
-from src.orchestration.models import OrchestrationExecution, OrchestrationPullRequestBinding, OrchestrationWorkClaim
+from src.orchestration.models import OrchestrationAction, OrchestrationExecution, OrchestrationPullRequestBinding, OrchestrationWorkClaim
 from src.orchestration.pr_bindings import PullRequestIdentity
 from src.orchestration.pr_identity import PrIdentityError
 from tests.agentauth import test_graph_dispatch as graph_tests
@@ -53,6 +53,7 @@ async def engine(pg_url):  # noqa: F811
         graph_tests.OrchestrationAcceptedPlan,
         OrchestrationWorkClaim,
         OrchestrationExecution,
+        OrchestrationAction,
         OrchestrationPullRequestBinding,
     )
     async with database.begin() as connection:

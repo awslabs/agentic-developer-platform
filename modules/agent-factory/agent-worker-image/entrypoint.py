@@ -1635,6 +1635,8 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             os.environ[HANDOFF_EXPECT_ENV] = json.dumps(expect, sort_keys=True)
 
     review_delivery = prepare_review_delivery(envelope)
+    from lib.review_cycle_input import prepare_cycle_input, checkout_cycle_input
+    cycle_input = prepare_cycle_input(envelope)
 
     # Issue #1591: Expose GitHub login for knowledge-layer code-verb ACL.
     # Code verbs (search/understand/impact/browse) filter by X-GitHub-Login;
@@ -2249,7 +2251,13 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # The reset uses an exact lease: FIFO does not fence other GitHub writers.
     wip_sha: str = ""
     work_branch_ready = False
-    if is_codex_review:
+    if cycle_input is not None:
+        if _mediated_run:
+            raise RuntimeError("Review-cycle checkout requires scoped GitHub credentials")
+        branch_name, wip_sha = checkout_cycle_input(cycle_input, run=run_cmd, cwd=WORK_DIR)
+        work_branch_ready = True
+        bootstrap_log.step_success(7, "review_cycle_branch", sha=wip_sha[:7])
+    elif is_codex_review:
         if _mediated_run:
             raise RuntimeError(
                 "agent-codex-reviewer requires the default GitHub token; "

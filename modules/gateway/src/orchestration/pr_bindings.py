@@ -969,3 +969,32 @@ def binding_summary(binding: OrchestrationPullRequestBinding) -> dict[str, objec
         "role": binding.role,
         "state": binding.state,
     }
+
+
+async def refresh_reviewed_head(session, *, identity, binding_id, revision, accepted_scope, head_sha):
+    """Refresh the same PR after an R1-verified review, inside K2 settlement.
+
+    This trusted adapter receives the provider head already checked before the
+    phase decision. It changes no scope, run provenance or PR identity. The
+    existing revision history records the new pointer for the merge observer.
+    """
+    binding = await active_binding_for_node(session, org_id=identity.org_id, node_id=identity.node_id, attempt=identity.cycle)
+    if (
+        binding is None
+        or binding.id != binding_id
+        or binding.role != BindingRole.IMPLEMENTATION.value
+        or binding.revision != revision
+        or binding.accepted_scope != accepted_scope
+    ):
+        raise BindingError(BindingRefusal.STALE_RUN, "The reviewed PR binding changed before phase settlement.")
+    # Binding writers serialize on this pointer. There is no provider I/O in the
+    # settlement, and a conflicting revision rolls back the phase transition.
+    await session.refresh(binding, with_for_update=True)
+    if binding.revision != revision or binding.state != BindingState.ACTIVE.value or binding.accepted_scope != accepted_scope:
+        raise BindingError(BindingRefusal.STALE_RUN, "The reviewed PR binding changed before phase settlement.")
+    if binding.head_sha != head_sha:
+        binding.head_sha = head_sha
+        binding.revision += 1
+        binding.updated_at = utcnow()
+        _record_revision(session, binding, actor_id="system:review-cycle", actor_kind=ActorKind.SERVICE)
+        await session.flush()

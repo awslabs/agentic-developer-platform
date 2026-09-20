@@ -793,8 +793,26 @@ def evidence_action_intent(evidence: ReviewEvidence) -> ActionIntent:
             # Without this the row shows an incomplete review and an operator cannot
             # tell "retry the publication" from "the reviewer found a problem".
             "publication_outstanding": "true" if evidence.publication_is_outstanding else "false",
+            # Only the authenticated, fully validated ingestion path writes this
+            # compact continuation input. Oversized findings stay blocked; they
+            # are never silently truncated into an apparently complete repair.
+            "cycle_input": cycle_input(evidence),
         },
     )
+
+
+def cycle_input(evidence: ReviewEvidence) -> str:
+    import json
+
+    result = evidence.result
+    payload = {
+        "author_run_id": result.lineage.author_run_id,
+        "reviewer_run_id": result.lineage.reviewer_run_id,
+        "findings": [finding.model_dump(mode="json") for finding in result.blocking_findings],
+        "observed_at": result.observed_at.isoformat(),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return encoded if len(encoded.encode()) <= 16384 else json.dumps({"blocked": "review_input_too_large"})
 
 
 def evidence_observation(evidence: ReviewEvidence) -> Observation:

@@ -110,6 +110,13 @@ def runtime_action(execution: dict, node: OrchestrationNode) -> Action | None:
     an accepted coordination scope grants nothing.
     """
     persona = execution.get("persona", {}).get("S")
+    if execution.get("orchestration_continuation_receipt"):
+        action = execution.get("orchestration_continuation_action", {}).get("S")
+        if action == Action.REPAIR.value and persona == "developer":
+            return Action.REPAIR
+        if action == Action.REVIEW.value and persona == "reviewer":
+            return Action.REVIEW
+        return None
     if execution.get("wave_coordinator") == {"BOOL": True} and execution.get("coordinator_flow_id", {}).get("S"):
         # Engine-written metadata, corroborated by the coordinator personas the
         # dispatch path admits. An execution carrying coordinator metadata but a

@@ -24,6 +24,7 @@ from src.agentauth.workload import VerifiedPod
 from src.orchestration.models import (
     DecisionKind,
     OrchestrationAcceptedPlan,
+    OrchestrationAction,
     OrchestrationDecision,
     OrchestrationEdge,
     OrchestrationExecution,
@@ -82,6 +83,7 @@ if os.environ.get("ADP_GRAPH_TEST_DATABASE_URL"):
             OrchestrationAcceptedPlan.__table__,
             OrchestrationWorkClaim.__table__,
             OrchestrationExecution.__table__,
+            OrchestrationAction.__table__,
             OrchestrationPullRequestBinding.__table__,
         ]
         async with database.begin() as connection:

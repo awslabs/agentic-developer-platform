@@ -150,6 +150,10 @@ class BootstrapStore:
             # re-pointing itself at a different assignment. Additive: the gate-rooted
             # dispatch path never sets it.
             "orchestration_amendment_request_id",
+            "orchestration_continuation_receipt",
+            "orchestration_continuation_action",
+            "parent_grant_id",
+            "parent_grant_epoch",
         }:
             raise BootstrapRefusedError("invalid dispatch metadata")
         if set(grant_metadata) - {"dispatch_personas", "max_total_dispatches", "work_item_issue"}:

@@ -58,6 +58,8 @@ def private_home(tmp_path, monkeypatch):
     """Redirect $HOME so nothing touches the developer's own dotfiles."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Each test models a fresh CLI process with its own deployment selection.
+    monkeypatch.setattr(cli.common, "_deployment", cli.common._UNRESOLVED)
     return tmp_path
 
 

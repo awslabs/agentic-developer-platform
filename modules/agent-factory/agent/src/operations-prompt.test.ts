@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as ts from 'typescript';
 import { loadHumanCommunication } from './human-communication';
 import { developerCheckpointGuidance } from './developer-checkpoints';
+import { reviewCyclePrompt } from './review-cycle-input';
 import { MEDIATED_GITHUB_PROMPT } from './mediated-github-config';
 import { wrapUntrusted } from './utils/trust-boundary';
 
@@ -53,7 +54,7 @@ describe('hosted operations delivery instructions', () => {
       MEDIATED_GITHUB_ENABLED: mediated, MEDIATED_GITHUB_PROMPT,
       issue: { number: 42, title: 'Drive a delivery wave', body: 'Review and accept both stories.' },
       ISSUE_NUMBER: '42', mainIssueInfo: '', memoryCtx: '', commentsContext: '', beadsPrimeContext: '',
-      wrapUntrusted, developerCheckpointGuidance,
+      wrapUntrusted, developerCheckpointGuidance, reviewCyclePrompt, process: { env: {} },
     });
   }
 

@@ -388,6 +388,16 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 if row.get("tenant_id") != node.org_id or row.get("engine_node_id") != node.id or row.get("engine_attempt") != node.attempts:
                     raise ValueError("run record does not match node/tenant/attempt")
                 status = row.get("status")
+                if node.kind == NodeKind.STORY.value:
+                    from .policy_admission import load_in_force_policy
+
+                    policy = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
+                    if policy.policy is not None or policy.refusal is not None:
+                        # The durable handler owns policy-enabled delivery. Neither
+                        # worker exit nor a merged PR may bypass review/repair and
+                        # the later merge/deployment/evaluation phase handlers.
+                        report.waiting += 1
+                        continue
                 observation: dict = {}
                 receipt_identity = None
                 if recovered_without_run_record:
