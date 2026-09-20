@@ -594,4 +594,3 @@ variable "gateway_authority_managed_policies" {
   type        = bool
   default     = false
 }
-

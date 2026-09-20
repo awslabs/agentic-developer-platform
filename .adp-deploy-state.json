@@ -7,7 +7,8 @@
   "phases": {
     "gateway_backend": {
       "status": "complete",
-      "verification": "Replan and readiness fixes deployed; public API healthy"
+      "verification": "Saved-mapping release deployed; three ready replicas, authenticated feature and preference APIs and public UI healthy",
+      "deployment_run": 35518132421
     },
     "worker_preparation": {
       "status": "complete",
@@ -31,16 +32,13 @@
       "deployment_run": 35506167046
     },
     "protected_worker_cutover": {
-      "status": "running",
+      "status": "skipped",
+      "reason": "Deferred separate worker-security migration; basic PMM is live without it",
       "admission_paused": false,
-      "active_legacy_workers": 2,
-      "live_queue_messages": 0,
-      "preserved_dead_letter_messages": 103,
-      "reason": "Two active unrelated legacy jobs; protected coding/credential acceptance and coordinated migration remain. Normal processing enabled.",
       "orchestration_tick_schedule_paused": false
     },
     "pmm_live_acceptance": {
-      "status": "running",
+      "status": "complete",
       "model_spend_ceiling_usd": 10,
       "budget_authorization": "User approved $10 total for live tests; recurring paid schedules excluded",
       "started_probe_slots": 6,
@@ -48,10 +46,20 @@
       "unresolved_stopped_slots": 1,
       "probe_admission_restored_disabled": true,
       "provider_successes": 3,
-      "conservative_reserved_usd": 4
+      "conservative_reserved_usd": 4,
+      "live_chat_completed": true,
+      "live_chat_invocation_id": "0ed70fc1-918b-4cea-91fc-fb5969549721",
+      "live_chat_persona": "intent-refinement",
+      "live_chat_model": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "live_chat_provider_successes": 2,
+      "live_chat_settled_cost_usd": 0.029384,
+      "reservation_plus_live_chat_usd": 4.029384,
+      "direct_delegation_aidlc_replan_verification": "automated adapter tests; not separately live invoked"
     },
     "pmm_enforcement": {
-      "status": "pending"
+      "status": "skipped",
+      "reason": "Advanced protected enforcement is separate; basic saved mapping selects the actual model before dispatch",
+      "protected_posture": "report_only"
     },
     "tick_authority_preparation": {
       "status": "complete",
@@ -59,8 +67,8 @@
       "authority_enabled": false
     },
     "marker_signing_initialization": {
-      "status": "pending",
-      "reason": "Existing value is a placeholder; initialize after legacy drain and reconciliation"
+      "status": "skipped",
+      "reason": "Deferred with separate worker-security migration; not needed for basic PMM"
     },
     "user_feedback_release": {
       "status": "complete",
@@ -87,17 +95,33 @@
       "protocol_checks": "passed; signed saved mapping, task heartbeat/ack, marker, archive readback, Door, negative identity cases, credential refresh",
       "temporary_resources_removed": true,
       "normal_coding_or_ingress_acceptance": false
+    },
+    "persona_model_mapping": {
+      "status": "complete",
+      "pull_request": 5584,
+      "worker_security_required": false,
+      "producer_flags_enabled": [
+        "webhook",
+        "chat-ingest",
+        "orchestration-tick"
+      ],
+      "gateway_flag_enabled": true,
+      "ui_flag_enabled": true,
+      "feature_flag_ssm": "/adp/dev/gateway/feature-agent-models",
+      "verified_at": "2026-09-20T15:30:00Z"
     }
   },
   "outputs": {
-    "candidate_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:d48c6dd28213962693145e13022416688dda7f8ad07d98a50a3c2f647aca5c58",
-    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:642a77226330c1cfeeaa31b628bc7a4c3ef66985"
+    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:54037213846dea7db40be8626cfca54dc3ea4fe5",
+    "deployed_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:b0ce9e397658e2c40e1d7ccc440f056f7f0b0a330550aab1a0ccaca33d608a42",
+    "deployed_chat_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
+    "agent_models_url": "https://d1g6cal2ts4iis.cloudfront.net/settings/agent-models"
   },
   "validation": {
     "gateway_tests": 110,
     "network_policy_tests": 11,
     "terraform_rollout_tests": 12,
-    "live_model_invocations": 3,
+    "live_model_invocations": 5,
     "seven_day_soak_claimed": false,
     "probe_admission_checks_succeeded": 2,
     "probe_admission_result": "disabled",
@@ -116,7 +140,7 @@
     "final_active_default_model_id": "us.anthropic.claude-sonnet-4-6",
     "final_runtime_posture": "report_only",
     "final_posture_revision": 1,
-    "agent_models_ui_enabled": false,
+    "agent_models_ui_enabled": true,
     "fresh_container_manifest_parity_models": 9,
     "protected_worker_direct_aws_denials": [
       "secretsmanager",
@@ -134,6 +158,19 @@
     "protected_credential_refresh": true,
     "latest_worker_normal_empty_poll": true,
     "temporary_saved_mapping_removed": true,
-    "temporary_canary_resources_removed": true
+    "temporary_canary_resources_removed": true,
+    "persona_settings_count": 14,
+    "authenticated_feature_status": 200,
+    "settings_route_status": 200,
+    "pmm_tests": 341,
+    "pmm_environment_skips": 4,
+    "live_chat_completed": true,
+    "live_chat_settled_cost_usd": 0.029384,
+    "visual_browser_check": false,
+    "direct_delegation_aidlc_replan": "automated adapter tests passed",
+    "test_mapping_reset_to_system_default": true,
+    "gateway_temporary_disruption_annotations_remaining": false,
+    "recurring_model_probes_suspended": true,
+    "gitlab_live_fleet": "non-gating shared-fleet acknowledgement timeout; webhook contract passed"
   }
 }

@@ -5,23 +5,65 @@ Target: account `879318057152`, region `us-east-1`, AWS profile `embark1`.
 This supersedes the elapsed-time prerequisite in the earlier dated PMM readiness
 report for this dev rollout. Profiles remain deferred.
 
-Use immediate, bounded live verification of human ownership, per-persona model
-selection, delegation, AI-DLC/replan and rollback before declaring the feature
-live. Preserve accurate telemetry: absent observations remain absent, and the
-credential-binding gate must not report a seven-day soak that did not happen.
-The global credential-binding rollout remains separately tracked by #3186.
+## Current release: saved persona mappings are live
 
-The shortened schedule does not remove runtime requirements. Install compatible
-gateway/worker images and their authenticated authority/signing prerequisites;
-verify actual provider model receipts and rollback. Do not certify success from
-the UI flag alone or from report-only proposals. Keep background probes disabled
-unless separately configured within the agreed test budget. Customer-linked
-accounts are outside this rollout's verification scope.
+The basic release resolves the initiating human's saved persona mapping once
+before dispatch. Users can open Settings → Agent Models and save a compatible
+model for any of the 14 personas. Direct/delegated, chat, AI-DLC and replan
+adapters use the same preference. Worker-security migration, role retirement,
+protected policy enforcement and profiles are separate work, not prerequisites.
 
-The user authorized deployment and approved a $10 total model-test ceiling.
-Count failed and indeterminate paid attempts and any automatically dispatched
-fleet tests against that ceiling. Keep recurring paid schedules suspended.
-A private ledger records reservations and receipts before each paid attempt.
+Live settings: <https://d1g6cal2ts4iis.cloudfront.net/settings/agent-models>.
+The authenticated feature endpoint reports `agent_models=true`; the settings
+route and published JavaScript return 200. No visual browser check was available.
+
+At 15:24 UTC, a Cognito-authenticated user saved
+`intent-refinement → global.anthropic.claude-haiku-4-5-20251001-v1:0` and invoked
+that persona through the real WebSocket ingress. The worker used saved Haiku,
+returned `PMM_LIVE_OK`, and emitted `RUN_FINISHED`. Gateway usage records confirm
+two HTTP 200 provider calls under invocation
+`0ed70fc1-918b-4cea-91fc-fb5969549721`, both to Haiku in account `879318057152`.
+Their settled costs were $0.000513 and $0.028871, totaling **$0.029384**.
+Direct/delegation and AI-DLC/replan paths passed automated adapter tests; they
+were not each separately invoked live. Customer-linked accounts remain outside
+this acceptance scope. No seven-day soak is claimed.
+
+The user authorized deployment and a $10 total model-test ceiling. Earlier
+qualification work retains a conservative $4 reservation, distinct from actual
+spend. Including this acceptance receipt, $4.029384 is reserved/accounted for.
+Recurring model probes remain suspended and admission disabled; this release
+does not require daily paid qualification to save or resolve a preference.
+
+Deployment evidence:
+
+- PR #5584 contains the implementation and this release record.
+- Gateway/frontend workflow `35518132421` succeeded from `54037213846dea7db40be8626cfca54dc3ea4fe5`.
+- Worker build `35518134290` and chat build `35518258001` succeeded. Both
+  ScaledJobs use immutable image digests and gradual rollout; unrelated Jobs
+  were preserved.
+- Webhook, ingest, tick and gateway have `PERSONA_MODEL_MAPPING_ENABLED=true`.
+  Producer lookup authenticates STS proofs bound to exact request bytes and
+  allows only the webhook/ingest roles. Existing gateway identity, destination
+  and budget enforcement continue to apply.
+- Chat run registration now discovers the existing event table/KMS wiring,
+  normalizes authenticated humans, and registers its actual IRSA role as
+  `chat-worker`. Failed dispatch sends an explicit WebSocket failure response.
+- SSM `/adp/dev/gateway/feature-agent-models=true` persists UI activation across
+  gateway redeploys. The gateway rollout completed with three ready replicas.
+- `AGENT_AUTHORITY_ENABLED=false`, `ADP_CHAT_MODEL_POLICY_ENABLED=false` and
+  protected PMM posture `report_only` remain. The broad webhook infrastructure
+  deployment hold remains for the separate worker-security migration.
+
+Validation: 341 PMM tests passed with four environment-dependent skips; focused
+chat identity/refusal tests (40), direct/delegated producer tests (32), native
+Codex tests (23), settings UI tests (30), and deployment input tests (23) passed.
+TypeScript and production frontend builds passed. GitLab's deterministic webhook
+contract passed. Its separate, explicitly non-gating Live Fleet diagnostic hit
+the 60-second acknowledgement timeout with work already in flight; it is not
+reported as a successful live check.
+
+The sections below retain earlier verification history. Their then-current
+security-cutover blockers do not block this basic release.
 
 ## Deployment record
 
@@ -177,7 +219,7 @@ Current v3 source checks: 39 worker probe tests, TypeScript, 43 gateway probe/de
 tests, Ruff and 45 producer tests passed. The authenticated live checks above are
 separate from the deployment workflow's bundled smoke job.
 
-## Isolated protected-runtime canary in progress
+## Earlier isolated protected-runtime canary
 
 The two unrelated legacy Jobs for issues 5526 and 5532 remained active. The tick
 schedule and KEDA admissions were restored while isolated verification continued;
@@ -197,8 +239,8 @@ The first actual-entrypoint protected worker was refused at task pickup, before
 any model call. A separately instrumented protocol canary is diagnosing this
 using the actual protected role and projected Kubernetes token. Neither this
 setup nor the earlier IAM-denial canary establishes complete runtime acceptance.
-All temporary canary resources must be removed after retaining receipts. General
-PMM activation remains pending successful protected runtime verification.
+All temporary canary resources must be removed after retaining receipts. At that stage, activation was pending protected runtime verification. The basic
+release above subsequently separated saved mapping from that migration.
 
 ## Protected protocol acceptance completed
 
@@ -249,27 +291,18 @@ removed after retaining receipts. The production API stage still points to
 and API health checks returned 200. The suspended qualification CronJob and
 Terraform-managed authority preparation remain installed.
 
-## Remaining activation blockers
-
-At the latest live check, legacy Jobs for issues 5526 and 5532 were still making
-progress. Their configured maximum lifetime is six hours, not an estimate of
-completion. Changing gateway authentication while they run would interrupt
-their credential access. They have not been cancelled or reported drained.
+## Separate worker-security migration remains deferred
 
 The protocol checks above do not complete #5195. Normal protected coding,
 GitHub renewal, cancellation and selected credential workflows still need live
-acceptance. Production cutover also needs the real marker key, a fresh scoped
+acceptance. That migration also needs the real marker key, a fresh scoped
 Terraform plan, coordinated gateway/worker/producer/tick activation and verified
-legacy IAM/EKS retirement. Human-rooted delegation and AI-DLC/replan acceptance,
-PMM enforcement and user-facing enablement remain outstanding. Production
-posture is still report-only and the feature flag is still off. There is no
-seven-day soak wait and no credential-refresh blocker.
+legacy IAM/EKS retirement. None is required for the basic saved-mapping release.
+The global credential-binding rollout remains separately tracked by #3186.
 
-The successful model evidence expires on 2026-09-21 around 13:41 UTC. Ongoing
-paid refresh remains unconfigured and unauthorized by the finite test budget.
-Opening or merging the remaining worker source PR can launch the repository's
-paid GitLab fleet tests; those side effects also need bounding before that step.
-
+The earlier model qualification evidence expires on 2026-09-21 around 13:41 UTC.
+Protected enforcing mode retains its evidence requirements. Basic preference
+selection does not depend on those paid probe receipts staying fresh.
 
 ## Saved mappings without the worker-security cutover
 
@@ -295,5 +328,5 @@ mode retains its evidence requirements. Profiles are deferred.
 
 Local validation covers direct/delegated and chat adapters, authenticated lookup,
 AI-DLC pre-transition refusal and replan retryability, preference API/catalogue,
-Codex model precedence, and the settings production build. Live activation and
-real user-to-runtime acceptance are still pending for this release.
+Codex model precedence, and the settings production build. Live chat acceptance
+and feature activation are recorded above.
