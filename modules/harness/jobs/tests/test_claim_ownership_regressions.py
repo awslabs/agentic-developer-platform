@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from harness_jobs import DispatchOutbox, OperationState, OperationStore
 
-from .conftest import requires_postgres
+from .conftest import admit_paid, requires_postgres
 from .test_store_postgres import principal, request
 
 pytestmark = requires_postgres
@@ -47,7 +47,7 @@ async def _expire(connection):
 async def test_an_expired_claim_must_not_mark_its_successors_row_delivered(connection):
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=5)
-    await store.admit(connection, principal(), request("f6a"))
+    await admit_paid(store, connection, principal(), request("f6a"))
 
     stale = (await outbox.claim(connection))[0]
     await _expire(connection)
@@ -69,7 +69,7 @@ async def test_an_expired_claim_must_not_mark_its_successors_row_delivered(conne
 async def test_an_expired_claim_must_not_conclude_an_active_operation(connection):
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=5)
-    admitted = await store.admit(connection, principal(), request("f6b"))
+    admitted = await admit_paid(store, connection, principal(), request("f6b"))
 
     stale = (await outbox.claim(connection))[0]
     await _expire(connection)

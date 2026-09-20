@@ -25,6 +25,18 @@ dev = [
     # without it `pip install .[dev]` fails outright on 3.13 instead of falling back to
     # an external database. Same declaration as `modules/gateway/pyproject.toml:85`.
     "pgserver>=0.1.4; python_version < '3.13'",
+    # Needed only to IMPORT the upstream being compared against, not by this package:
+    # `contracts/hitl-ticket/v1/models.py` is a pydantic module, and
+    # `test_approval_contract_agreement.py` reads the four HITL result values off it to
+    # prove this package's copy has not drifted. Without pydantic here those two tests
+    # `importorskip`, so the drift guard skipped in CI -- honest, but it meant the
+    # duplicated vocabulary was checked by nothing anywhere: locally the author may
+    # happen to have pydantic, and in CI nobody did.
+    #
+    # This does NOT put pydantic in the runtime closure. `dependencies` above stays
+    # empty and pydantic is not imported by `harness_jobs`; only the test that reads
+    # the contract needs it. Pinned as `hitl-ticket-contract-tests.yml` pins it.
+    "pydantic>=2,<3",
 ]
 
 [build-system]
