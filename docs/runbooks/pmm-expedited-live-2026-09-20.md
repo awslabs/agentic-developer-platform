@@ -59,10 +59,31 @@ ceiling. Record the ceiling before running the paid canaries.
   existing authorized ARC runner identity. The main cluster's explicit legacy
   worker administrator access entry and IAM AdministratorAccess still need retirement
   after active legacy jobs drain.
-- PR #5576 contains the gateway probe guards, audited proven-default activation
-  API and Door ingress fix. It excludes worker paths that trigger the paid fleet.
-  Its combined gateway checks passed 110 tests locally; live/CI status must still
-  be verified before merging and activation.
+- PR #5576 merged as `3eda9bea0680d5e8988b2c7f50257308b97b6208` after all CI
+  checks passed. Gateway deployment `35506167046` succeeded. Its bundled smoke
+  requests skipped for lack of a usable workflow refresh token; separate actual
+  Cognito-authenticated probes verified auth/me 200, default administration 200,
+  posture 200, unknown-model refusal 422 and an unchanged stored default afterward.
+  All four gateway replicas were updated and available. Default remains NULL at
+  revision 1; posture remains report_only at revision 1.
+- The tick's authority IAM policy was applied through a separate reviewed plan
+  containing exactly one create. Its deployed authority flag remains false.
+- Two admission-only Jobs using the pinned probe image and its actual IRSA service
+  account completed successfully with `claimed=false, reason=disabled`. Neither
+  invoked an SDK or requested destination credentials. Receipts were retained and
+  both temporary Jobs removed. The CronJob remains suspended.
+- The existing marker-signing secret is a placeholder. It must be securely
+  initialized after legacy work is drained/reconciled; no real signing key was
+  replaced or exposed during preparation.
+- PR #5577 merged as `a026371515d53d329ea13cf2e2d079fa7b2d9645` after all CI checks
+  passed. Gateway/frontend deployment `35506917122` succeeded. The downloaded CLI
+  exactly matches reviewed source (SHA-256
+  `277fcd3f4493c15a4aaba687a5ffa8fb3e50e5895b296ea78633c3a0199a661e`), and the published
+  frontend entry `/assets/index-CBP6e30S.js` contains the new model-choice feedback.
+  Thirty UI tests, 52 CLI tests, TypeScript and focused lint passed locally.
+  Authenticated admin reads after this deployment still show NULL default/revision 1
+  and report_only/posture revision 1. The bundled workflow smoke skip described
+  above is not counted as live acceptance; separate actual-login checks are retained.
 
 The default operation is `GET` / `PUT`
 `/api/admin/persona-models/default/claude-agent-sdk`. The PUT accepts

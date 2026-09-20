@@ -25,8 +25,10 @@
       "authenticated_tools_status": 200
     },
     "gateway_readiness_fixes": {
-      "status": "running",
-      "pull_request": 5576
+      "status": "complete",
+      "pull_request": 5576,
+      "merge_commit": "3eda9bea0680d5e8988b2c7f50257308b97b6208",
+      "deployment_run": 35506167046
     },
     "protected_worker_cutover": {
       "status": "pending"
@@ -37,16 +39,50 @@
     },
     "pmm_enforcement": {
       "status": "pending"
+    },
+    "tick_authority_preparation": {
+      "status": "complete",
+      "resources_added": 1,
+      "authority_enabled": false
+    },
+    "marker_signing_initialization": {
+      "status": "pending",
+      "reason": "Existing value is a placeholder; initialize after legacy drain and reconciliation"
+    },
+    "user_feedback_release": {
+      "status": "complete",
+      "pull_request": 5577,
+      "merge_commit": "a026371515d53d329ea13cf2e2d079fa7b2d9645",
+      "deployment_run": 35506917122
     }
   },
   "outputs": {
-    "candidate_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6fb49790e5b5fe4d5b126e30fb2450ac6b8237f0a2beb9162c90a26da7a5897e"
+    "candidate_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6fb49790e5b5fe4d5b126e30fb2450ac6b8237f0a2beb9162c90a26da7a5897e",
+    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:a026371515d53d329ea13cf2e2d079fa7b2d9645"
   },
   "validation": {
     "gateway_tests": 110,
     "network_policy_tests": 11,
     "terraform_rollout_tests": 12,
     "live_model_invocations": 0,
-    "seven_day_soak_claimed": false
+    "seven_day_soak_claimed": false,
+    "probe_admission_checks_succeeded": 2,
+    "probe_admission_result": "disabled",
+    "temporary_probe_jobs_removed": true,
+    "live_admin_read_status": 200,
+    "live_unknown_model_refusal_status": 422,
+    "default_unchanged_after_refusal": true,
+    "bundled_workflow_smoke": "skipped_without_usable_refresh_token",
+    "actual_cognito_authenticated_checks": "passed",
+    "ui_tests": 30,
+    "cli_tests": 52,
+    "published_cli_matches_source": true,
+    "frontend_feedback_verified": true,
+    "final_api_authentication_status": 200,
+    "final_default_revision": 1,
+    "final_active_default_model_id": null,
+    "final_runtime_posture": "report_only",
+    "final_posture_revision": 1,
+    "agent_models_ui_enabled": false
   }
 }
