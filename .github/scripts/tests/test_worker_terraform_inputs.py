@@ -138,12 +138,14 @@ def test_real_terraform_defaults_do_not_leak_dev_settings(deployment, selected):
     result = subprocess.run(
         ["bash", str(scripts / "terraform-webhook.sh"), "plan"],
         env=env,
-        input="jsonencode({reserved=var.enable_lambda_reserved_concurrency, adversarial=var.enable_adversarial_e2e, repo=var.eventbridge_security_agent_repo, environment=var.environment})\n",
+        input="jsonencode({reserved=var.enable_lambda_reserved_concurrency, adversarial=var.enable_adversarial_e2e, repo=var.eventbridge_security_agent_repo, environment=var.environment, persona_mapping=var.persona_model_mapping_enabled})\n",
         text=True,
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr
+    assert result.stdout.lstrip().startswith('"'), result.stdout
     assert json.loads(json.loads(result.stdout)) == {
+        "persona_mapping": selected == "dev",
         "reserved": selected != "dev",
         "adversarial": selected == "dev",
         "repo": "aws-e/adp" if selected == "dev" else "",

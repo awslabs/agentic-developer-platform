@@ -575,3 +575,23 @@ variable "engine_command_verifier_role_arn" {
     error_message = "engine_command_verifier_role_arn must be empty or a full IAM ROLE arn (arn:aws:iam::<account>:role/<name>) — not a user, not an assumed-role session ARN."
   }
 }
+
+variable "persona_model_mapping_enabled" {
+  description = "Resolve saved persona models before dispatch, independently of worker authority."
+  type        = bool
+  default     = false
+}
+
+variable "persona_model_additional_producer_roles" {
+  description = "Other trusted ingress roles allowed to resolve a tenant human's saved model."
+  type        = list(string)
+  default     = []
+}
+
+
+variable "gateway_authority_managed_policies" {
+  description = "Use managed policies for new gateway authority grants when the existing role has exhausted its aggregate inline-policy quota. Enable through a reviewed environment rollout."
+  type        = bool
+  default     = false
+}
+

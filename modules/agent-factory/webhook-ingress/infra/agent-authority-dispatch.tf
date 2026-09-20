@@ -1,10 +1,5 @@
 # Trusted gateway dispatch writes the Activity row atomically with authority
 # and then sends to the existing queue. No worker principal receives these grants.
-variable "gateway_authority_managed_policies" {
-  description = "Use managed policies for new gateway authority grants when the existing role has exhausted its aggregate inline-policy quota. Enable through a reviewed environment rollout."
-  type        = bool
-  default     = false
-}
 
 locals {
   gateway_authorized_dispatch_policy = jsonencode({
