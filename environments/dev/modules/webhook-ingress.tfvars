@@ -21,3 +21,6 @@ eventbridge_security_agent_org  = "aws-e"
 # The existing gateway role has reached AWS's aggregate inline-policy quota.
 # These new authority grants use managed policies with identical permissions.
 gateway_authority_managed_policies = true
+
+# Saved persona preferences resolve before dispatch; worker authority stays independent.
+persona_model_mapping_enabled = true

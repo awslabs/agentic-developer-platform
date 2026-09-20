@@ -45,3 +45,6 @@ seed_agent_registry = false
 # 33305019328) pushed the destroy through and took down the CI listener.
 # Declaring it here makes the pipeline's desired state match reality.
 enable_github_apps = true
+
+# Saved persona preferences resolve before dispatch; worker authority stays independent.
+persona_model_mapping_enabled = true

@@ -132,3 +132,6 @@ orchestration_engine_enabled = true
 # Prepare a Bedrock-only destination for bounded PMM qualification. Paid probe
 # admission and its recurring schedule remain disabled separately.
 persona_model_probe_destination_enabled = true
+
+# Saved persona preferences resolve before dispatch; worker authority stays independent.
+persona_model_mapping_enabled = true
