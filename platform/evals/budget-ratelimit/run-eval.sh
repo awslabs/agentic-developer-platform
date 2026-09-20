@@ -28,17 +28,13 @@
 #         └ org-admin a1                      (does the admin-API writes)
 #   Org B ─ x1                                (isolation control)
 #
-# WHAT THE CASES ASSERT — and four places where the honest answer is a FINDING
-# rather than a pass. All four were verified in the code before this eval was
-# written; see README.md for the full write-up and the file:line citations.
+# WHAT THE CASES ASSERT. TPM and observational agent coverage remain findings;
+# org ledger/RPM regressions are now assertions against the implemented contract.
 #
 #   1  user cap        402, details.entity_type == "user"
 #   2  team cap        402, details.entity_type == "team"
 #   3  dept cap        402, details.entity_type == "department"
-#   4  org cap         402, details.entity_type == "org" + FINDING: the
-#                      accumulated-spend half of org enforcement cannot work,
-#                      because the tracker Lambda writes entity_type
-#                      "organization" while enforcement reads "org"
+#   4  org cap         402, details.entity_type == "org"; other tenant unaffected
 #   5  precedence      most-specific exceeded level wins
 #   6  no-config       200: an unconfigured level must not deny
 #   7  accounting      spend lands on the right entities in budget_usage
@@ -47,9 +43,7 @@
 #                      called with tokens=1, so the TPM bucket is debited one
 #                      token per request regardless of real token usage
 #  10  concurrent=1    429 limit_type "concurrent"
-#  11  org RPM         FINDING: an org-level rate limit created through the
-#                      admin API stores entity_type "org" but the limiter looks
-#                      up "organization", so it can never be found
+#  11  org RPM         429 with the documented shape (the org key is fixed)
 #  12  defaults        the default limits apply with no config present
 #
 #   H  the headline question: does human-triggered agent spend land under the
@@ -362,6 +356,8 @@ case "$sql" in
       *orgb*) echo "0" ;;
       *) if [ -f "$sd/billed" ]; then echo "1"; else echo "0"; fi ;;
     esac ;;
+  *"FROM budget_usage"*"entity_type='org'"*)
+    if [ -f "$sd/billed" ]; then echo "1"; else echo "0"; fi ;;
   *"FROM budget_usage"*) echo "0" ;;
   *"FROM usage_logs"*)
     # Phase H2/H3: the run is billed to the AGENT's name, never the root human —
@@ -472,10 +468,10 @@ case "$url" in
     done
 
     # The rate-limit bucket, same order the limiter uses (rpm then concurrent),
-    # user level only — an org-level config is deliberately NOT consulted, which
-    # is what makes case 11's finding reproduce in the dry run.
+    # checking the user config or the organization config used by case 11.
     sub="$(cat "$sd/subs/${who}" 2>/dev/null || echo "sub-${who}")"
     rl="$sd/ratelimits/user:${sub}"
+    [ -f "$rl" ] || rl="$sd/ratelimits/org:${org}"
     if [ -f "$rl" ]; then
       read -r rpm conc < "$rl"
       cnt_f="$sd/counts/${who}"
@@ -742,8 +738,7 @@ seed_member_identities() {
 # NOTE on entity_type spelling: the budget admin API accepts
 # Literal["org","department","team","user"] (admin/schemas.py:298) and the budget
 # enforcement path reads EntityType.ORGANIZATION == "org", so for BUDGETS the
-# admin spelling and the enforcement spelling agree. They do NOT agree for rate
-# limits — see set_ratelimit().
+# admin spelling and the enforcement spelling agree, as they do for rate limits.
 set_budget() {
   local entity_type="$1" entity_id="$2" amount="$3" period="${4:-daily}" org="${5:-$ORG_A}"
   local body="$WORKDIR/req.json" out="$WORKDIR/resp.json" status
@@ -769,14 +764,8 @@ set_budget() {
 
 # Rate-limit configs go through POST /api/admin/organizations/{org}/ratelimits.
 #
-# THE ORG-LEVEL SPELLING BUG (case 11): this endpoint accepts
-# Literal["org",...] (admin/schemas.py:347) and stores that string verbatim
-# (admin/service.py:2035). But the limiter keys its lookup on
-# EntityType.ORGANIZATION.value == "organization" (ratelimit/models.py:24,
-# service.py:123-125) while loading rows under the raw DB string
-# (service.py:104). So an org-level limit created here is stored as
-# "org:<id>:<org>" and looked up as "organization:<id>:<org>" — it can never
-# match, and the org silently keeps the 60-rpm default. The eval pins that.
+# The current limiter and admin API both use entity_type="org". Case 11 must
+# fail if that configured cap no longer enforces; the old spelling bug is fixed.
 set_ratelimit() {
   local entity_type="$1" entity_id="$2" rpm="$3" tpm="${4:-}" concurrent="${5:-}" org="${6:-$ORG_A}"
   local body="$WORKDIR/req.json" out="$WORKDIR/resp.json" status
@@ -1068,11 +1057,8 @@ case_04() {
     assert_allowed "case 4 Org-B isolation" "$wire" "$status" "$WORKDIR/r.json"
   done
 
-  # The org cap above trips on the flat $0.05 ESTIMATE, which is why case 4
-  # passes. The accumulated-spend half cannot work, and the eval says so rather
-  # than leaving a reader to infer that org budgets are fully functional.
-  finding "org-level budget enforcement works on the pre-request estimate but NOT on accumulated spend: the tracker Lambda writes budget_usage rows with entity_type='organization' (lambda/budget-usage-tracker/handler.py:397) while enforcement reads EntityType.ORGANIZATION=='org' (budget/enforcement_service.py:280), so org usage never joins its own config."
-
+  # This case trips the pre-request estimate; case 7 separately checks the
+  # settled organization ledger. It does not spend through a real dollar cap.
   clear_budgets
 }
 
@@ -1158,6 +1144,19 @@ case_07() {
     pass "case 7: usage recorded for all three period types (daily, weekly, monthly)"
   else
     fail "case 7: expected 3 period_types in budget_usage, found ${periods:-0}"
+  fi
+
+  local org_rows=0
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    org_rows="$(h_psql -t -A -c "SELECT count(*) FROM budget_usage
+                 WHERE org_id='${ORG_A}' AND entity_type='org' AND entity_id='${ORG_A}';" | tr -d '[:space:]')"
+    [ "${org_rows:-0}" -gt 0 ] && break
+    sleep 5
+  done
+  if [ "${org_rows:-0}" -gt 0 ]; then
+    pass "case 7: settled organization usage uses the enforceable 'org' ledger key"
+  else
+    fail "case 7: no settled organization usage under the 'org' ledger key"
   fi
 
   # Isolation on the ledger side, not just the enforcement side: Org A's spend
@@ -1288,13 +1287,10 @@ case_11() {
 
   local n
   if n="$(burst_until_429 U1 claude "$RL_BURST_REQUESTS")"; then
-    # If this ever starts working, the spelling bug was fixed and the eval should
-    # say so loudly rather than quietly keep reporting a stale finding.
-    pass "case 11: org-level rpm=${TRIP_RPM} DID enforce (429 after ${n} requests) — the entity_type spelling mismatch appears to be fixed; update this case and the README"
+    pass "case 11: org-level rpm=${TRIP_RPM} enforced (429 after ${n} requests)"
     assert_rate_limited_shape "case 11 org RPM" "$BURST_BODY" "rpm"
   else
-    skip "case 11: org-level rate limit did not enforce — expected, see the finding"
-    finding "an org-level rate limit created through the admin API can never be enforced: POST /admin/organizations/{org}/ratelimits accepts entity_type='org' (admin/schemas.py:347) and stores it verbatim, and the limiter loads rows keyed by that raw string (ratelimit/service.py:104) but looks them up as EntityType.ORGANIZATION=='organization' (ratelimit/models.py:24, service.py:123-125). The two keys never match, so the org silently keeps the default 60 rpm."
+    fail "case 11: no org RPM denial within ${RL_BURST_REQUESTS} requests at rpm=${TRIP_RPM}"
   fi
   clear_ratelimits
 }
@@ -1330,24 +1326,10 @@ case_12() {
 # =============================================================================
 # Phase H — does human-triggered agent spend land under the human's budget?
 # =============================================================================
-# The headline question, and it is answerable WITHOUT dispatching an agent.
-#
-# The answer is no, and it is decided at auth/agent_registry.py:248-249: an
-# agent request's TokenContext is built with user_id = the agent's REGISTRY NAME,
-# account_type="service", department_id="". Every downstream writer keys off that
-# user_id, so the tracker Lambda records ("user", agent_name) — the triggering
-# human is in none of the rows it writes.
-#
-# root_human_id IS captured elsewhere (the DynamoDB webhook-events item, the
-# root-human-index GSI, the worker's ADP_ROOT_HUMAN_ID env, and the write-only
-# action_provenance table) but appears nowhere in chat_logging/**, usage/service.py,
-# the tracker Lambda, or budget/**, and no migration 001→027 adds it to
-# usage_logs or budget_usage.
-#
-# This phase OBSERVES that on real lineage rather than asserting it from the
-# code: it finds an existing human-rooted agent run, joins it to the usage
-# ledger, and shows which entities were billed. It fabricates nothing, and when
-# dev has no such lineage it reports that honestly instead of inventing it.
+# Read-only observation of existing lineage. Direct usage and human-rooted
+# agent usage have DIFFERENT ledgers ('user' and 'root_user'). An agent's direct
+# billing identity cannot establish whether its root human was also charged.
+# This phase never dispatches a new agent or tests exhaustion of a root-user cap.
 phase_h() {
   phase H "does human-triggered agent spend land under the triggering human's budget?"
   maybe_fail_phase H
@@ -1372,7 +1354,7 @@ phase_h() {
   if [ -z "$event_id" ] || [ -z "$root_human" ]; then
     # Not a failure: a freshly deployed dev may simply never have run an agent.
     skip "phase H: no human-rooted agent run exists in ${table} to observe"
-    finding "phase H found no human-rooted agent lineage in dev, so the attribution question was answered from code review only: agent requests are billed as ('user', <agent registry name>) because auth/agent_registry.py:248-249 sets TokenContext.user_id to the agent's name, and root_human_id is absent from usage_logs and budget_usage in every migration through 027."
+    finding "phase H: no existing human-rooted lineage was available; agent-triggered budget enforcement was not tested"
     return 0
   fi
   pass "phase H1: found a human-rooted agent run (event ${event_id:0:12}…, root human ${root_human:0:8}…)"
@@ -1388,35 +1370,17 @@ phase_h() {
   fi
   pass "phase H2: the run joins to usage_logs via agent_run_id"
 
-  # H3 — the decisive observation: who was billed?
-  if printf '%s\n' "$billed" | grep -qxF "$root_human"; then
-    # If this ever becomes true, attribution was implemented and the follow-up
-    # feature issue should be closed. Report it as the notable event it would be.
-    pass "phase H3: usage_logs for this agent run IS attributed to the triggering human (${root_human:0:8}…) — human attribution appears to be implemented; revisit the follow-up issue"
-  else
-    pass "phase H3: usage_logs for this agent run is billed to '${billed}', NOT to the triggering human (${root_human:0:8}…) — confirming attribution stops at the agent identity"
+  finding "phase H3: this existing run's direct billing identity is '${billed}'. Direct billing alone does not establish root-human budget attribution."
+
+  local root_rows
+  if ! root_rows="$(h_psql -t -A -c "SELECT count(*) FROM budget_usage
+                 WHERE entity_type='root_user' AND entity_id='${root_human}';" | tr -d '[:space:]')"; then
+    fail "phase H4: could not read the root_user ledger"
+    return 1
   fi
+  finding "phase H4: observed ${root_rows:-0} root_user ledger row(s) for this existing root principal. This aggregate is not correlated proof for the selected event."
+  finding "phase H coverage: agent-triggered budget exhaustion is NOT TESTED. A new bounded agent run, its correlated root_user accrual, and the resulting denial are still required; no conclusion about that capability follows from this historical sample."
 
-  # H4 — and the human's ledger did not move. This is the assertion an operator
-  # actually cares about: it is what makes "the human's budget does not restrain
-  # their agents" concrete rather than theoretical.
-  local human_rows
-  human_rows="$(h_psql -t -A -c "SELECT count(*) FROM budget_usage
-                 WHERE entity_type='user' AND entity_id='${root_human}';" 2>/dev/null | tr -d '[:space:]')"
-  if [ "${human_rows:-0}" -eq 0 ]; then
-    pass "phase H4: the triggering human has NO budget_usage rows — agent spend did not advance the human's budget at all"
-  else
-    pass "phase H4: the triggering human has ${human_rows} budget_usage row(s) — these come from their own direct usage, not from this agent run (H3 showed the agent run billed '${billed}')"
-  fi
-
-  # H5 — the one-line answer, recorded as a finding because it is a pinned fact
-  # about today's platform rather than a pass/fail assertion.
-  finding "ANSWER TO THE HEADLINE QUESTION: human-triggered agent spend does NOT land under the triggering human's budget, not even partially. An agent request is billed as ('user', <agent registry name>) because auth/agent_registry.py:248-249 sets TokenContext.user_id to the agent's registry name with account_type='service'. root_human_id is captured in the webhook-events item, the root-human-index GSI, the worker's ADP_ROOT_HUMAN_ID env and the write-only action_provenance table, but is absent from chat_logging/**, usage/service.py, the tracker Lambda and budget/**, and no migration through 027 adds it to usage_logs or budget_usage. Consequence: a per-user budget places no bound on what that user's agents can spend. Implementation is out of scope for #4163; a follow-up feature issue tracks it."
-
-  # Two adjacent defects found while establishing the above. Both are real and
-  # neither is what this eval was asked about, so they are pinned, not asserted.
-  finding "adjacent defect: the ('agent', agent_id) entity branch in the tracker Lambda (lambda/budget-usage-tracker/handler.py:406-408) is dead code — it reads chat_log['agent_id'], but the ChatLog schema (chat_logging/schemas.py:66-91) has no such field, so agent_id is always None and no per-agent budget_usage row is ever written."
-  finding "adjacent defect: agent budget enforcement and agent budget accounting disagree on entity_type — enforcement checks EntityType.SERVICE_ACCOUNT ('service_account') for account_type='service' callers (budget/enforcement_service.py:262-268) while the tracker writes ('user', agent_name) (handler.py:396), so an agent's accumulated usage is never compared against a service_account budget config."
 }
 
 # =============================================================================

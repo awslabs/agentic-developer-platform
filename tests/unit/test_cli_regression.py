@@ -699,3 +699,28 @@ def test_both_budget_writers_check_entity_ownership_and_org_tag_before_posting()
         ).group()
         assert function.index("assert_owned_entity") < function.index("http_post_json")
         assert function.index("assert_tagged") < function.index("http_post_json")
+
+
+def test_missing_org_rate_enforcement_is_a_failure_not_a_finding():
+    source = (ROOT / "platform/evals/budget-ratelimit/run-eval.sh").read_text()
+    function = re.search(r"^case_11\(\) \{\n.*?^\}", source, re.M | re.S).group()
+    setup = """
+FAILURES=0
+ORG_A=eval-test TRIP_RPM=1 RL_BURST_REQUESTS=4
+phase() { :; }
+maybe_fail_phase() { :; }
+set_ratelimit() { :; }
+wait_for_ratelimit_reload() { :; }
+burst_until_429() { return 1; }
+clear_ratelimits() { :; }
+fail() { FAILURES=$((FAILURES + 1)); }
+skip() { :; }
+finding() { :; }
+"""
+    result = subprocess.run(
+        ["bash", "-c", setup + function + '\ncase_11\ntest "$FAILURES" -eq 1'],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

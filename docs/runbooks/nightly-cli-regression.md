@@ -112,3 +112,8 @@ All budget actors also have canonical ADP `users` rows and active tenant
 memberships in the two disposable organizations. The admin budget API resolves
 Cognito subs through those records; claims-only identities cannot receive a user
 budget. Cleanup removes memberships and users before the tagged organizations.
+
+The budget report checks the current `org` ledger and requires org RPM to enforce.
+Phase H reads `root_user` accounting separately from direct billing; it explicitly
+reports that a newly triggered agent exhausting a human cap is not tested here.
+TPM and inconclusive concurrent-limit coverage remain visible in the findings.
