@@ -28,17 +28,13 @@
 #         └ org-admin a1                      (does the admin-API writes)
 #   Org B ─ x1                                (isolation control)
 #
-# WHAT THE CASES ASSERT — and four places where the honest answer is a FINDING
-# rather than a pass. All four were verified in the code before this eval was
-# written; see README.md for the full write-up and the file:line citations.
+# WHAT THE CASES ASSERT. TPM and observational agent coverage remain findings;
+# org ledger/RPM regressions are now assertions against the implemented contract.
 #
 #   1  user cap        402, details.entity_type == "user"
 #   2  team cap        402, details.entity_type == "team"
 #   3  dept cap        402, details.entity_type == "department"
-#   4  org cap         402, details.entity_type == "org" + FINDING: the
-#                      accumulated-spend half of org enforcement cannot work,
-#                      because the tracker Lambda writes entity_type
-#                      "organization" while enforcement reads "org"
+#   4  org cap         402, details.entity_type == "org"; other tenant unaffected
 #   5  precedence      most-specific exceeded level wins
 #   6  no-config       200: an unconfigured level must not deny
 #   7  accounting      spend lands on the right entities in budget_usage
@@ -47,9 +43,7 @@
 #                      called with tokens=1, so the TPM bucket is debited one
 #                      token per request regardless of real token usage
 #  10  concurrent=1    429 limit_type "concurrent"
-#  11  org RPM         FINDING: an org-level rate limit created through the
-#                      admin API stores entity_type "org" but the limiter looks
-#                      up "organization", so it can never be found
+#  11  org RPM         429 with the documented shape (the org key is fixed)
 #  12  defaults        the default limits apply with no config present
 #
 #   H  the headline question: does human-triggered agent spend land under the
@@ -120,11 +114,9 @@ EVAL_TAG="${EVAL_USER_PREFIX}-${EVAL_RUN_ID}"
 EVAL_SEED_NAME="$EVAL_TAG"
 EVAL_SUMMARY_TITLE="Budget + rate-limit eval"
 
-# The seeded world. Org ids are synthetic and need no `organizations` row:
-# budget_configs / rate_limit_configs / budget_usage carry org_id as an indexed
-# column with NO foreign key (shared/models/budget.py, migration 001), so a
-# throwaway org can hold configs without touching the tenant tables. The admin
-# identity DOES need real rows — see seed_admin_identity().
+# The seeded world has real organizations, canonical users and memberships.
+# Budget writes resolve user entities through those rows; Cognito claims alone
+# are insufficient, even though ledger/config org_id columns have no FK.
 ORG_A="${EVAL_TAG}-orga"
 ORG_B="${EVAL_TAG}-orgb"
 DEPT_1="${EVAL_TAG}-d1"
@@ -145,13 +137,13 @@ EVAL_CODEX_MODEL="${EVAL_CODEX_MODEL:-openai.gpt-5.6-sol}"
 # -----------------------------------------------------------------------------
 # The numbers that make this eval deterministic and nearly free
 # -----------------------------------------------------------------------------
-# BUDGET: enforcement adds a FLAT estimate before comparing —
-#   projected = current_spend + _DEFAULT_ESTIMATE_USD($0.05)   [enforcement_middleware.py:38]
-#   deny when projected > cap                                  [enforcement_service.py:409]
-# so a cap of $0.01 denies on the FIRST request, at zero spend, with no token
-# burn and no waiting on the async S3→Lambda ledger. That is what makes cases
-# 1-5 deterministic. TRIP_CAP must stay < $0.05 for this to hold.
-TRIP_CAP="0.01"
+# BUDGET: denial cases seed an already-exhausted settled balance. The gateway
+# estimates from payload size now; a tiny request can cost less than $0.01, so
+# relying on the historical flat $0.05 estimate made valid requests look broken.
+# Config is still written through the real admin API, and live requests must
+# receive a 402 at the right level. Real spend accrual is independently case 7.
+TRIP_CAP="1.00"
+EXHAUSTED_SPEND="1.01"
 # The "not this level" cap: high enough that no level under test is ever the
 # incidental cause of a denial.
 OPEN_CAP="1000.00"
@@ -270,7 +262,7 @@ setup_dry_run_stubs() {
   mkdir -p "$bin"
 
   export EVAL_STUB_STATE_DIR="$WORKDIR/stub-state"
-  mkdir -p "$EVAL_STUB_STATE_DIR/budgets" "$EVAL_STUB_STATE_DIR/ratelimits" "$EVAL_STUB_STATE_DIR/counts"
+  mkdir -p "$EVAL_STUB_STATE_DIR/budgets" "$EVAL_STUB_STATE_DIR/ratelimits" "$EVAL_STUB_STATE_DIR/counts" "$EVAL_STUB_STATE_DIR/spent"
 
   # The stub world needs to know which identity maps to which tenant claims, so
   # the curl stub can walk the same user→team→department→org hierarchy the real
@@ -301,7 +293,8 @@ case "$*" in
   *"cognito-idp admin-get-user"*)
     u=""
     for a in "$@"; do case "$prev" in --username) u="$a" ;; esac; prev="$a"; done
-    printf 'sub-%s' "$(printf '%s' "$u" | tr -c 'a-zA-Z0-9' '-')" ;;
+    # Real Cognito subs are UUIDs, not strings containing our username/run tag.
+    python3 -c 'import sys,uuid; print(uuid.uuid5(uuid.NAMESPACE_DNS, sys.argv[1]))' "$u" ;;
   *"cognito-idp initiate-auth"*)              echo '{"AuthenticationResult":{"AccessToken":"stub.access.token","RefreshToken":"stub-refresh-token"}}' ;;
   # Phase H: one human-rooted lineage item, so H1-H5 exercise the real join.
   *"dynamodb scan"*)
@@ -353,6 +346,10 @@ while [ $# -gt 0 ]; do
 done
 sd="${EVAL_STUB_STATE_DIR:-/tmp}"
 case "$sql" in
+  *"INSERT INTO budget_usage"*)
+    key="$(printf '%s' "$sql" | awk -F "'" '/VALUES/{print $6 ":" $8}')"
+    printf '1.01' > "$sd/spent/$key" ;;
+  *"DELETE FROM budget_usage"*) rm -f "$sd/spent/"* ;;
   *"INSERT INTO"*|*"DELETE FROM"*) : ;;
   *"count(DISTINCT period_type)"*)
     # The tracker writes daily+weekly+monthly per entity.
@@ -363,6 +360,8 @@ case "$sql" in
       *orgb*) echo "0" ;;
       *) if [ -f "$sd/billed" ]; then echo "1"; else echo "0"; fi ;;
     esac ;;
+  *"FROM budget_usage"*"entity_type='org'"*)
+    if [ -f "$sd/billed" ]; then echo "1"; else echo "0"; fi ;;
   *"FROM budget_usage"*) echo "0" ;;
   *"FROM usage_logs"*)
     # Phase H2/H3: the run is billed to the AGENT's name, never the root human —
@@ -375,7 +374,7 @@ STUB
 
   # The curl stub is where the real logic lives. It re-implements:
   #   * the budget cascade: user→team→department→org, first denial wins,
-  #     projected = spend + 0.05 > cap  (so a 0.01 cap denies at zero spend)
+  #     seeded settled spend > cap (independent of the request estimate)
   #   * the rate-limit bucket: capacity = max(1, int(rpm*1.5/60*10)), consumed
   #     per request, rpm checked before concurrent
   # from the recorded config state, so the verdicts are computed and not dictated.
@@ -451,8 +450,8 @@ case "$url" in
     who="$(basename "$cfg" .curlrc)"
     read -r _ org team dept <<< "$(grep "^${who} " "$sd/hierarchy" 2>/dev/null || echo "$who - - -")"
 
-    # The budget cascade, most-specific first. The flat $0.05 estimate is what
-    # makes a $0.01 cap deny at zero spend.
+    # The budget cascade, most-specific first. The exhausted settled balance is what
+    # makes the configured $1 cap deny without relying on a request estimate.
     for lvl in "user:sub-${who}" "team:${team}" "department:${dept}" "org:${org}"; do
       et="${lvl%%:*}"; ei="${lvl#*:}"
       [ "$ei" = "-" ] && continue
@@ -464,19 +463,19 @@ case "$url" in
       f="$sd/budgets/${et}:${ei}"
       [ -f "$f" ] || continue
       cap="$(cat "$f")"
-      # projected = 0 spend + 0.05 estimate
-      if awk -v c="$cap" 'BEGIN{exit !(0.05 > c)}'; then
+      spent="$(cat "$sd/spent/${et}:${ei}" 2>/dev/null || echo 0)"
+      if awk -v c="$cap" -v spent="$spent" 'BEGIN{exit !(spent > c)}'; then
         status=402
-        body="{\"error\":\"budget_exceeded\",\"message\":\"Budget exceeded for ${et} ${ei}\",\"details\":{\"entity_type\":\"${et}\",\"entity_id\":\"${ei}\",\"budget_usd\":${cap},\"spent_usd\":0.0,\"enforcement_mode\":\"hard\"}}"
+        body="{\"error\":\"budget_exceeded\",\"message\":\"Budget exceeded for ${et} ${ei}\",\"details\":{\"entity_type\":\"${et}\",\"entity_id\":\"${ei}\",\"budget_usd\":${cap},\"spent_usd\":${spent},\"enforcement_mode\":\"hard\"}}"
         emit
       fi
     done
 
     # The rate-limit bucket, same order the limiter uses (rpm then concurrent),
-    # user level only — an org-level config is deliberately NOT consulted, which
-    # is what makes case 11's finding reproduce in the dry run.
+    # checking the user config or the organization config used by case 11.
     sub="$(cat "$sd/subs/${who}" 2>/dev/null || echo "sub-${who}")"
     rl="$sd/ratelimits/user:${sub}"
+    [ -f "$rl" ] || rl="$sd/ratelimits/org:${org}"
     if [ -f "$rl" ]; then
       read -r rpm conc < "$rl"
       cnt_f="$sd/counts/${who}"
@@ -547,8 +546,9 @@ maybe_fail_phase() {
 # =============================================================================
 # The tag guard
 # =============================================================================
-# EVERY admin write this eval makes is scoped to an entity whose id contains the
-# run tag. This function is called immediately before each one, and it dies
+# Organizational IDs carry the run tag. User IDs are Cognito UUIDs and must
+# match the recorded sub AND username of a user seeded by this run (below).
+# Every admin write checks ownership immediately before it runs, and dies
 # rather than records: a write that escaped the tag would be a mutation to a real
 # tenant's budget or rate limit in a shared dev account, so there is no
 # "continue and report it" option. The guard is cheap and unconditional.
@@ -558,6 +558,25 @@ assert_tagged() {
     *"${EVAL_TAG}"*) return 0 ;;
     *) die "REFUSING to write ${what}='${value}' — it does not carry the run tag ${EVAL_TAG}. This guard exists so the eval can never mutate a real tenant's config." ;;
   esac
+}
+
+# Cognito owns the UUID format; accepting arbitrary UUIDs would remove the
+# mutation boundary. Match both pieces of the seeding receipt to this run.
+assert_owned_entity() {
+  local what="$1" entity_type="$2" value="$3" who username
+  if [ "$entity_type" != user ]; then
+    assert_tagged "$what" "$value"
+    return
+  fi
+  for who in U1 U2 U3 X1 A1; do
+    username="$(state_get "${who}_USERNAME")"
+    if [ -n "$value" ] && [ "$value" = "$(state_get "${who}_SUB")" ] \
+       && [ "$username" = "${!who}" ]; then
+      assert_tagged "$what seeded username" "$username"
+      return 0
+    fi
+  done
+  die "REFUSING to write ${what}='${value}' — not a Cognito user seeded by this run"
 }
 
 # =============================================================================
@@ -639,6 +658,7 @@ seed_world() {
   fi
 
   seed_admin_identity
+  seed_member_identities
 }
 
 # The admin API's authority model (#3987): the TOKEN establishes identity, the
@@ -662,8 +682,9 @@ seed_admin_identity() {
   state_set ADMIN_ORG "$ORG_A"
   state_set ADMIN_SUB "$sub"
 
-  h_psql -c "INSERT INTO organizations (id, name, created_at)
-             VALUES ('${ORG_A}', '${EVAL_TAG}', now())
+  h_psql -c "INSERT INTO organizations (id, name, aws_accounts, role_mappings, settings,
+                                        github_installation_ids, cognito_client_ids, created_via, created_at)
+             VALUES ('${ORG_A}', '${EVAL_TAG}', '[]', '{}', '{}', '[]', '[]', 'operator', now())
              ON CONFLICT (id) DO NOTHING;" >/dev/null \
     || die "could not insert the throwaway organizations row"
 
@@ -681,6 +702,36 @@ seed_admin_identity() {
   pass "admin identity has an active org_admin tenant_memberships row (authority is DB-resolved, not a token claim)"
 }
 
+# The budget API resolves a user entity through canonical users in its tenant
+# (#4511). A Cognito identity alone can infer, but cannot receive a budget config.
+seed_member_identities() {
+  assert_tagged "isolation org_id" "$ORG_B"
+  h_psql -c "INSERT INTO organizations (id, name, aws_accounts, role_mappings, settings,
+                                        github_installation_ids, cognito_client_ids, created_via, created_at)
+             VALUES ('${ORG_B}', '${ORG_B}', '[]', '{}', '{}', '[]', '[]', 'operator', now())
+             ON CONFLICT (id) DO NOTHING;" >/dev/null \
+    || die "could not insert the isolation organizations row"
+
+  local who sub org team username
+  for who in U1 U2 U3 X1; do
+    sub="$(state_get "${who}_SUB")"
+    username="$(state_get "${who}_USERNAME")"
+    assert_owned_entity "seeded member" user "$sub"
+    org="$ORG_A"; team="$TEAM_1"
+    [ "$who" != U3 ] || team="$TEAM_2"
+    if [ "$who" = X1 ]; then org="$ORG_B"; team=""; fi
+    h_psql -c "INSERT INTO users (id, org_id, team_id, email, name, cognito_sub, created_at)
+               VALUES ('${sub}', '${org}', '${team}', '${username}', '${EVAL_TAG}', '${sub}', now())
+               ON CONFLICT (id) DO NOTHING;" >/dev/null \
+      || die "could not insert canonical user for $who"
+    h_psql -c "INSERT INTO tenant_memberships (id, user_id, tenant_id, role, is_active, created_at)
+               VALUES ('${sub}', '${sub}', '${org}', 'member', true, now())
+               ON CONFLICT (user_id, tenant_id) DO UPDATE SET role='member', is_active=true;" >/dev/null \
+      || die "could not insert tenant membership for $who"
+  done
+  pass "all four budget actors have canonical users and active tenant memberships"
+}
+
 # =============================================================================
 # Admin-API config writers
 # =============================================================================
@@ -691,13 +742,12 @@ seed_admin_identity() {
 # NOTE on entity_type spelling: the budget admin API accepts
 # Literal["org","department","team","user"] (admin/schemas.py:298) and the budget
 # enforcement path reads EntityType.ORGANIZATION == "org", so for BUDGETS the
-# admin spelling and the enforcement spelling agree. They do NOT agree for rate
-# limits — see set_ratelimit().
+# admin spelling and the enforcement spelling agree, as they do for rate limits.
 set_budget() {
   local entity_type="$1" entity_id="$2" amount="$3" period="${4:-daily}" org="${5:-$ORG_A}"
   local body="$WORKDIR/req.json" out="$WORKDIR/resp.json" status
 
-  assert_tagged "budget entity_id" "$entity_id"
+  assert_owned_entity "budget entity_id" "$entity_type" "$entity_id"
   assert_tagged "budget org_id" "$org"
 
   jq -n --arg t "$entity_type" --arg i "$entity_id" --arg p "$period" --arg a "$amount" \
@@ -714,23 +764,37 @@ set_budget() {
     return 1
   fi
   log "budget set: ${entity_type}=${entity_id} ${period} \$${amount}"
+  if [ "$amount" = "$TRIP_CAP" ]; then
+    seed_exhausted_budget "$entity_type" "$entity_id" "$org" "$period"
+  fi
+}
+
+# Only test-owned daily balances may be seeded. The row ID distinguishes this
+# synthetic exhausted balance from actual S3/Lambda accrual, and clear_budgets
+# removes it before case 7, so it cannot satisfy the real accounting assertion.
+seed_exhausted_budget() {
+  local entity_type="$1" entity_id="$2" org="$3" period="$4"
+  assert_owned_entity "settled budget entity" "$entity_type" "$entity_id"
+  assert_tagged "settled budget org" "$org"
+  [ "$period" = daily ] || die "exhausted-budget fixture only supports daily periods"
+  h_psql -c "INSERT INTO budget_usage
+              (id, org_id, entity_type, entity_id, period_type, period_start, total_cost_usd, total_tokens, request_count)
+             VALUES ('${EVAL_TAG}-spent-${entity_type}-${entity_id}', '${org}', '${entity_type}', '${entity_id}', '${period}', (now() AT TIME ZONE 'UTC')::date, ${EXHAUSTED_SPEND}, 0, 0)
+             ON CONFLICT (org_id, entity_type, entity_id, period_start, period_type)
+             DO UPDATE SET total_cost_usd=EXCLUDED.total_cost_usd;" >/dev/null \
+    || die "could not seed the exhausted ${entity_type} budget balance"
+  pass "seeded settled usage \$${EXHAUSTED_SPEND} against the \$${TRIP_CAP} ${entity_type} cap"
 }
 
 # Rate-limit configs go through POST /api/admin/organizations/{org}/ratelimits.
 #
-# THE ORG-LEVEL SPELLING BUG (case 11): this endpoint accepts
-# Literal["org",...] (admin/schemas.py:347) and stores that string verbatim
-# (admin/service.py:2035). But the limiter keys its lookup on
-# EntityType.ORGANIZATION.value == "organization" (ratelimit/models.py:24,
-# service.py:123-125) while loading rows under the raw DB string
-# (service.py:104). So an org-level limit created here is stored as
-# "org:<id>:<org>" and looked up as "organization:<id>:<org>" — it can never
-# match, and the org silently keeps the 60-rpm default. The eval pins that.
+# The current limiter and admin API both use entity_type="org". Case 11 must
+# fail if that configured cap no longer enforces; the old spelling bug is fixed.
 set_ratelimit() {
   local entity_type="$1" entity_id="$2" rpm="$3" tpm="${4:-}" concurrent="${5:-}" org="${6:-$ORG_A}"
   local body="$WORKDIR/req.json" out="$WORKDIR/resp.json" status
 
-  assert_tagged "ratelimit entity_id" "$entity_id"
+  assert_owned_entity "ratelimit entity_id" "$entity_type" "$entity_id"
   assert_tagged "ratelimit org_id" "$org"
 
   jq -n --arg t "$entity_type" --arg i "$entity_id" \
@@ -843,6 +907,13 @@ assert_budget_denied() {
     fi
   done
 
+  if ! jq -e --argjson cap "$TRIP_CAP" --argjson spent "$EXHAUSTED_SPEND" \
+      '.details.budget_usd == $cap and .details.spent_usd >= $spent and .details.enforcement_mode == "hard"' \
+      "$body" >/dev/null; then
+    fail "${label} [${wire}]: denial does not report the configured cap and seeded exhausted balance"
+    return 1
+  fi
+
   pass "${label} [${wire}]: HTTP 402 budget_exceeded at entity_type='${entity}'"
 }
 
@@ -936,6 +1007,8 @@ clear_budgets() {
       "${API}/admin/organizations/${org}/budget/${et}/${ei}/${period}" "$out" >/dev/null || true
   done
   state_set CREATED_BUDGETS ""
+  h_psql -c "DELETE FROM budget_usage WHERE org_id LIKE '${EVAL_TAG}-%' AND id LIKE '${EVAL_TAG}-spent-%';" >/dev/null \
+    || fail "could not remove synthetic exhausted-budget balances"
 }
 
 case_01() {
@@ -1017,11 +1090,8 @@ case_04() {
     assert_allowed "case 4 Org-B isolation" "$wire" "$status" "$WORKDIR/r.json"
   done
 
-  # The org cap above trips on the flat $0.05 ESTIMATE, which is why case 4
-  # passes. The accumulated-spend half cannot work, and the eval says so rather
-  # than leaving a reader to infer that org budgets are fully functional.
-  finding "org-level budget enforcement works on the pre-request estimate but NOT on accumulated spend: the tracker Lambda writes budget_usage rows with entity_type='organization' (lambda/budget-usage-tracker/handler.py:397) while enforcement reads EntityType.ORGANIZATION=='org' (budget/enforcement_service.py:280), so org usage never joins its own config."
-
+  # This case denies an already-exhausted settled balance. Case 7 separately
+  # checks real usage accrual; this does not spend through the dollar cap.
   clear_budgets
 }
 
@@ -1066,8 +1136,8 @@ case_07() {
   phase 7 "accounting integrity — spend lands on the right entities"
   maybe_fail_phase 7
 
-  # Cases 1-5 deliberately avoid the ledger by tripping on the estimate. This
-  # case is the one that exercises it, so it needs a request that actually
+  # Cases 1-5 seed and remove synthetic exhausted balances. This case checks
+  # actual S3/Lambda accrual, so it needs a request that actually
   # SUCCEEDS and produces usage. u3 has no cap, so its call is billed normally.
   local wire status
   for wire in claude codex; do
@@ -1107,6 +1177,19 @@ case_07() {
     pass "case 7: usage recorded for all three period types (daily, weekly, monthly)"
   else
     fail "case 7: expected 3 period_types in budget_usage, found ${periods:-0}"
+  fi
+
+  local org_rows=0
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    org_rows="$(h_psql -t -A -c "SELECT count(*) FROM budget_usage
+                 WHERE org_id='${ORG_A}' AND entity_type='org' AND entity_id='${ORG_A}';" | tr -d '[:space:]')"
+    [ "${org_rows:-0}" -gt 0 ] && break
+    sleep 5
+  done
+  if [ "${org_rows:-0}" -gt 0 ]; then
+    pass "case 7: settled organization usage uses the enforceable 'org' ledger key"
+  else
+    fail "case 7: no settled organization usage under the 'org' ledger key"
   fi
 
   # Isolation on the ledger side, not just the enforcement side: Org A's spend
@@ -1237,13 +1320,10 @@ case_11() {
 
   local n
   if n="$(burst_until_429 U1 claude "$RL_BURST_REQUESTS")"; then
-    # If this ever starts working, the spelling bug was fixed and the eval should
-    # say so loudly rather than quietly keep reporting a stale finding.
-    pass "case 11: org-level rpm=${TRIP_RPM} DID enforce (429 after ${n} requests) — the entity_type spelling mismatch appears to be fixed; update this case and the README"
+    pass "case 11: org-level rpm=${TRIP_RPM} enforced (429 after ${n} requests)"
     assert_rate_limited_shape "case 11 org RPM" "$BURST_BODY" "rpm"
   else
-    skip "case 11: org-level rate limit did not enforce — expected, see the finding"
-    finding "an org-level rate limit created through the admin API can never be enforced: POST /admin/organizations/{org}/ratelimits accepts entity_type='org' (admin/schemas.py:347) and stores it verbatim, and the limiter loads rows keyed by that raw string (ratelimit/service.py:104) but looks them up as EntityType.ORGANIZATION=='organization' (ratelimit/models.py:24, service.py:123-125). The two keys never match, so the org silently keeps the default 60 rpm."
+    fail "case 11: no org RPM denial within ${RL_BURST_REQUESTS} requests at rpm=${TRIP_RPM}"
   fi
   clear_ratelimits
 }
@@ -1279,24 +1359,10 @@ case_12() {
 # =============================================================================
 # Phase H — does human-triggered agent spend land under the human's budget?
 # =============================================================================
-# The headline question, and it is answerable WITHOUT dispatching an agent.
-#
-# The answer is no, and it is decided at auth/agent_registry.py:248-249: an
-# agent request's TokenContext is built with user_id = the agent's REGISTRY NAME,
-# account_type="service", department_id="". Every downstream writer keys off that
-# user_id, so the tracker Lambda records ("user", agent_name) — the triggering
-# human is in none of the rows it writes.
-#
-# root_human_id IS captured elsewhere (the DynamoDB webhook-events item, the
-# root-human-index GSI, the worker's ADP_ROOT_HUMAN_ID env, and the write-only
-# action_provenance table) but appears nowhere in chat_logging/**, usage/service.py,
-# the tracker Lambda, or budget/**, and no migration 001→027 adds it to
-# usage_logs or budget_usage.
-#
-# This phase OBSERVES that on real lineage rather than asserting it from the
-# code: it finds an existing human-rooted agent run, joins it to the usage
-# ledger, and shows which entities were billed. It fabricates nothing, and when
-# dev has no such lineage it reports that honestly instead of inventing it.
+# Read-only observation of existing lineage. Direct usage and human-rooted
+# agent usage have DIFFERENT ledgers ('user' and 'root_user'). An agent's direct
+# billing identity cannot establish whether its root human was also charged.
+# This phase never dispatches a new agent or tests exhaustion of a root-user cap.
 phase_h() {
   phase H "does human-triggered agent spend land under the triggering human's budget?"
   maybe_fail_phase H
@@ -1321,7 +1387,7 @@ phase_h() {
   if [ -z "$event_id" ] || [ -z "$root_human" ]; then
     # Not a failure: a freshly deployed dev may simply never have run an agent.
     skip "phase H: no human-rooted agent run exists in ${table} to observe"
-    finding "phase H found no human-rooted agent lineage in dev, so the attribution question was answered from code review only: agent requests are billed as ('user', <agent registry name>) because auth/agent_registry.py:248-249 sets TokenContext.user_id to the agent's name, and root_human_id is absent from usage_logs and budget_usage in every migration through 027."
+    finding "phase H: no existing human-rooted lineage was available; agent-triggered budget enforcement was not tested"
     return 0
   fi
   pass "phase H1: found a human-rooted agent run (event ${event_id:0:12}…, root human ${root_human:0:8}…)"
@@ -1337,35 +1403,17 @@ phase_h() {
   fi
   pass "phase H2: the run joins to usage_logs via agent_run_id"
 
-  # H3 — the decisive observation: who was billed?
-  if printf '%s\n' "$billed" | grep -qxF "$root_human"; then
-    # If this ever becomes true, attribution was implemented and the follow-up
-    # feature issue should be closed. Report it as the notable event it would be.
-    pass "phase H3: usage_logs for this agent run IS attributed to the triggering human (${root_human:0:8}…) — human attribution appears to be implemented; revisit the follow-up issue"
-  else
-    pass "phase H3: usage_logs for this agent run is billed to '${billed}', NOT to the triggering human (${root_human:0:8}…) — confirming attribution stops at the agent identity"
+  finding "phase H3: this existing run's direct billing identity is '${billed}'. Direct billing alone does not establish root-human budget attribution."
+
+  local root_rows
+  if ! root_rows="$(h_psql -t -A -c "SELECT count(*) FROM budget_usage
+                 WHERE entity_type='root_user' AND entity_id='${root_human}';" | tr -d '[:space:]')"; then
+    fail "phase H4: could not read the root_user ledger"
+    return 1
   fi
+  finding "phase H4: observed ${root_rows:-0} root_user ledger row(s) for this existing root principal. This aggregate is not correlated proof for the selected event."
+  finding "phase H coverage: agent-triggered budget exhaustion is NOT TESTED. A new bounded agent run, its correlated root_user accrual, and the resulting denial are still required; no conclusion about that capability follows from this historical sample."
 
-  # H4 — and the human's ledger did not move. This is the assertion an operator
-  # actually cares about: it is what makes "the human's budget does not restrain
-  # their agents" concrete rather than theoretical.
-  local human_rows
-  human_rows="$(h_psql -t -A -c "SELECT count(*) FROM budget_usage
-                 WHERE entity_type='user' AND entity_id='${root_human}';" 2>/dev/null | tr -d '[:space:]')"
-  if [ "${human_rows:-0}" -eq 0 ]; then
-    pass "phase H4: the triggering human has NO budget_usage rows — agent spend did not advance the human's budget at all"
-  else
-    pass "phase H4: the triggering human has ${human_rows} budget_usage row(s) — these come from their own direct usage, not from this agent run (H3 showed the agent run billed '${billed}')"
-  fi
-
-  # H5 — the one-line answer, recorded as a finding because it is a pinned fact
-  # about today's platform rather than a pass/fail assertion.
-  finding "ANSWER TO THE HEADLINE QUESTION: human-triggered agent spend does NOT land under the triggering human's budget, not even partially. An agent request is billed as ('user', <agent registry name>) because auth/agent_registry.py:248-249 sets TokenContext.user_id to the agent's registry name with account_type='service'. root_human_id is captured in the webhook-events item, the root-human-index GSI, the worker's ADP_ROOT_HUMAN_ID env and the write-only action_provenance table, but is absent from chat_logging/**, usage/service.py, the tracker Lambda and budget/**, and no migration through 027 adds it to usage_logs or budget_usage. Consequence: a per-user budget places no bound on what that user's agents can spend. Implementation is out of scope for #4163; a follow-up feature issue tracks it."
-
-  # Two adjacent defects found while establishing the above. Both are real and
-  # neither is what this eval was asked about, so they are pinned, not asserted.
-  finding "adjacent defect: the ('agent', agent_id) entity branch in the tracker Lambda (lambda/budget-usage-tracker/handler.py:406-408) is dead code — it reads chat_log['agent_id'], but the ChatLog schema (chat_logging/schemas.py:66-91) has no such field, so agent_id is always None and no per-agent budget_usage row is ever written."
-  finding "adjacent defect: agent budget enforcement and agent budget accounting disagree on entity_type — enforcement checks EntityType.SERVICE_ACCOUNT ('service_account') for account_type='service' callers (budget/enforcement_service.py:262-268) while the tracker writes ('user', agent_name) (handler.py:396), so an agent's accumulated usage is never compared against a service_account budget config."
 }
 
 # =============================================================================
@@ -1396,14 +1444,10 @@ run_cleanup() {
     delete_seeded_user "$u"
   done
 
-  # The DB rows seeded for the admin identity. Ordered child→parent:
-  # tenant_memberships FKs users.id and organizations.id.
-  local sub
-  sub="$(state_get ADMIN_SUB)"
-  if [ -n "$sub" ]; then
-    h_psql -c "DELETE FROM tenant_memberships WHERE user_id='${sub}';" >/dev/null 2>&1 || fail "cleanup could not delete seeded tenant memberships"
-    h_psql -c "DELETE FROM users WHERE cognito_sub='${sub}';" >/dev/null 2>&1 || fail "cleanup could not delete seeded admin row"
-  fi
+  # Canonical users and memberships belong to the tagged test tenants. Delete
+  # children first, including a partial seed, before deleting either organization.
+  h_psql -c "DELETE FROM tenant_memberships WHERE tenant_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || fail "cleanup could not delete seeded tenant memberships"
+  h_psql -c "DELETE FROM users WHERE org_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || fail "cleanup could not delete seeded user rows"
 
   # Tag-scoped, so this cannot touch a real tenant even if state was lost. The
   # budget_usage rows are the only trace a billable case leaves behind.
@@ -1419,6 +1463,11 @@ run_cleanup() {
     fail "cleanup could not delete the clean-room pod"
   fi
 
+  # A fatal setup error can exit before an assertion records a failure.
+  # Preserve it in the summary as well as in the process exit status.
+  if [ "$rc" -ne 0 ] && [ "$FAILURES" -eq 0 ]; then
+    fail "eval aborted before completing its scenarios (exit $rc); see the preceding error"
+  fi
   write_summary
   if [ "$FAILURES" -gt 0 ]; then rc=1; fi
   exit "$rc"

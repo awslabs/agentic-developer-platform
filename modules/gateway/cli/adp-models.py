@@ -38,6 +38,19 @@ _CREDENTIAL_OPTION = re.compile(
 )
 
 
+MODEL_MESSAGES = {
+    "probing_disabled": "Model choices are not ready yet. Contact your ADP administrator.",
+    "not_yet_certified": "This model is not ready to use yet. Choose another model.",
+    "evidence_stale": "Model availability needs checking. Try another available model or contact your ADP administrator.",
+    "catalogue_unavailable": "Model choices could not be loaded. Try again shortly.",
+    "not_invocable": "This model is currently unavailable. Choose another model.",
+    "retired": "This model has been retired. Choose another model.",
+    "not_permitted": "Your organization does not allow this model. Choose another model or contact your ADP administrator.",
+    "harness_incompatible": "This persona does not support this model.",
+    "unknown_model": "This model is not listed. Check `adp models catalog --persona ...` for available choices.",
+}
+
+
 class HttpError(CliError):
     """A safely summarized HTTP refusal with its status retained for 409 logic."""
 
@@ -51,8 +64,7 @@ class HttpError(CliError):
         }
         exit_code = 2 if status == 401 else 3 if status == 403 else 4 if reason in WAITABLE_REASONS else 5
         super().__init__(
-            f"ADP returned HTTP {status} ({reason}). "
-            + hints.get(status, "Check status before retrying; an interrupted request may have changed configuration."),
+            MODEL_MESSAGES.get(reason) or hints.get(status, "ADP could not complete the request. Read your settings before retrying; the request may have changed them."),
             reason,
             exit_code,
         )
@@ -232,7 +244,8 @@ def _published_model(client, persona, model, service_principal=None):
     if not row.get("selectable"):
         exit_code = 4 if reason in WAITABLE_REASONS else 5
         raise CliError(
-            f"Model '{model}' is not selectable for persona '{persona}' ({reason or 'not_selectable'}).",
+            f"Model '{model}' cannot be selected for '{persona}'. "
+            + MODEL_MESSAGES.get(reason, "Choose another available model."),
             reason or "not_selectable",
             exit_code,
         )
@@ -331,22 +344,93 @@ def _command_name(args):
     return " ".join(pieces)
 
 
-def emit_result(result, as_json=False):
-    """Use the shared envelope while making mutation scope visible up front."""
-    if as_json or result.get("command") not in {"models mappings set", "models mappings reset"}:
-        return common.emit(result, as_json)
+def _mapping_source(row):
+    if row.get("source") == "principal-mapping":
+        return "Saved choice"
+    if row.get("source") != "system-default":
+        return "Source unavailable"
+    if not row.get("effective_model_id"):
+        return "No default configured for this persona"
+    if row.get("effective_is_candidate") or row.get("class_default_status") == "candidate":
+        return "Default for this persona (not ready)"
+    if row.get("class_default_status") == "proven":
+        return "Default for this persona"
+    return "Default for this persona (availability unconfirmed)"
 
+
+def _print_mapping(row):
+    persona = row.get("persona_display_name") or row.get("persona_key", "Persona")
+    model = row.get("effective_model_id") or "No model configured"
+    print(f"{persona}: {model}")
+    print(f"  {_mapping_source(row)}")
+    reason = row.get("availability_reason") or row.get("reason")
+    if row.get("model_lifecycle") == "retired":
+        reason = "retired"
+    elif row.get("status") == "disallowed" or row.get("availability_status") == "disallowed":
+        reason = "not_permitted"
+    elif row.get("status") == "stale" or row.get("availability_status") == "stale":
+        reason = "evidence_stale"
+    if reason in MODEL_MESSAGES:
+        print(f"  {MODEL_MESSAGES[reason]}")
+    elif row.get("availability_status") in {"unavailable", "unknown"} or row.get("status") == "unavailable":
+        print("  Model availability could not be confirmed. Check the available choices.")
+    for warning in row.get("warnings") or []:
+        print(f"  Warning: {warning}")
+
+
+def emit_result(result, as_json=False):
+    """Summarize choices for people; preserve the full API contract in JSON."""
+    if as_json:
+        return common.emit(result, True)
+    command = result.get("command")
     detail = result.get("detail") or {}
-    tenant_id = _tenant_id(detail)
-    principal_id = _principal_id(detail)
-    caller_mode = detail.get("caller_mode")
-    if caller_mode not in CALLER_MODES or not principal_id:
-        raise CliError(
-            "The mutation result did not name its caller mode and server-resolved canonical principal.",
-            "invalid_response",
-        )
-    print(f"{result['command']}: {result['status']} — caller {caller_mode}; tenant {tenant_id}; principal {principal_id}")
-    print(json.dumps(detail, indent=2))
+    heading = f"{command}: {result['status']}"
+    mutation = command in {"models mappings set", "models mappings reset"}
+    if mutation:
+        tenant_id = _tenant_id(detail)
+        principal_id = _principal_id(detail)
+        caller_mode = detail.get("caller_mode")
+        if caller_mode not in CALLER_MODES or not principal_id:
+            raise CliError(
+                "ADP could not confirm which account these settings belong to. Read your settings before retrying.",
+                "invalid_response",
+            )
+        account_kind = "service account" if detail.get("principal_kind") == "service_account" else "account"
+        heading += f" — {account_kind} {principal_id}; organization {tenant_id}"
+    print(heading)
+    if command == "models catalog":
+        for model in detail.get("models", []):
+            model_id = model.get("canonical_model_id", "Unknown model")
+            name = " ".join(filter(None, (model.get("model_family"), model.get("canonical_version"))))
+            status = "Available" if model.get("selectable") else MODEL_MESSAGES.get(model.get("reason"), "Unavailable")
+            print(f"{name or model_id}: {status}")
+            print(f"  --model {model_id}")
+            price = model.get("price_context") or {}
+            if price.get("input_per_million_tokens") is not None or price.get("output_per_million_tokens") is not None:
+                input_price = price.get("input_per_million_tokens")
+                output_price = price.get("output_per_million_tokens")
+                print(f"  Input: {'unknown' if input_price is None else '$' + str(input_price)}; "
+                      f"output: {'unknown' if output_price is None else '$' + str(output_price)} per 1M tokens")
+        if not detail.get("models"):
+            print("No model choices are available for this persona.")
+    elif command == "models service-principals":
+        for principal in detail.get("principals", []):
+            print(f"{principal.get('display_name') or 'Service account'}: {principal.get('canonical_service_principal_id')}")
+        if not detail.get("principals"):
+            print("No service accounts are available to manage.")
+    elif command == "models mappings list":
+        for row in detail.get("entries", []):
+            _print_mapping(row)
+        if not detail.get("entries"):
+            print("No persona settings are available.")
+    elif detail.get("dry_run"):
+        print(f"Preview: {detail.get('persona_key')} → {detail.get('canonical_model_id')}")
+    elif mutation and result["status"] != "ok":
+        print("The saved state is unknown.")
+    else:
+        _print_mapping(detail)
+        if mutation:
+            print("Saved. Applies to new runs." if detail.get("changed") else "Already saved; no change needed.")
     if result.get("next_action"):
         print(result["next_action"])
     return 4 if result["status"] in {"pending", "unavailable"} else 5 if result["status"] == "failed" else 0
@@ -456,7 +540,7 @@ def run(args, client):
         result["principal_id"] = principal_id
         result["changed"] = False
         return common.envelope("ok", _command_name(args), result)
-    _confirm(args, f"Reset persona '{args.persona}' for principal {principal_id} to its class default.")
+    _confirm(args, f"Reset persona '{args.persona}' for principal {principal_id} to its default model.")
     current = _entry_for(_list(client, target), args.persona)
     if not _same_entry(before, current):
         raise CliError("The mapping changed while this command was preparing. Read it and retry.", "revision_conflict")

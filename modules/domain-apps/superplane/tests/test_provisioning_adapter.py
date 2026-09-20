@@ -799,21 +799,40 @@ class TestTheFacadeIsAMock:
         assert provider.is_mock is True
         assert type(provider).__name__.startswith("Mock")
 
-    def test_no_real_operation_facade_exists_to_integrate_against(self) -> None:
+    def test_no_real_operation_facade_is_composed_into_this_app(self) -> None:
         """The premise of the mock, asserted rather than assumed.
 
-        If B's facade lands, this test fails — which is the correct trigger to
-        revisit whether the mock is still the right double and whether R14
-        acceptance 2 can finally be attempted. A mock whose premise silently
-        expires is how a story stays mocked long after it needed to be.
-        """
-        from pathlib import Path
+        Fires when the real facade becomes *reachable from this app* — the correct
+        trigger to revisit whether the mock is still the right double and whether R14
+        acceptance 2 can be attempted. A mock whose premise silently expires is how a
+        story stays mocked long after it needed to be.
 
-        repo_root = Path(__file__).resolve().parents[4]
-        assert not (repo_root / "modules" / "harness" / "jobs").exists(), (
-            "modules/harness/jobs/ now exists — B's operation facade may be built. "
-            "Re-examine whether MockOperationFacade should be replaced and whether "
-            "R14 acceptance 2 (live) can now be attempted."
+        ## Why this no longer tests for the directory
+
+        It used to assert `modules/harness/jobs/` does not exist. That fired when
+        #5525 (w6-02) landed the shared store, and it was checked as the message
+        asks: the package is built and tested, but **nothing composes it**. It opens
+        no connection and is imported nowhere under `src/` or `contracts/`, so the
+        adapter still runs against a double and every "does not establish" statement
+        in this file's header still holds, unchanged.
+
+        So the directory was the wrong thing to watch. A package existing is not a
+        dependency; being imported is. Retargeted at the boundary that actually
+        changes the meaning of a green run here rather than deleted, because deleting
+        it would remove the trigger for the transition it exists to catch — and
+        left as an existence check it would now fail forever, which trains a reader
+        to ignore it.
+        """
+        import importlib.util
+
+        composed = importlib.util.find_spec("harness_jobs")
+        assert composed is None, (
+            "`harness_jobs` is importable from this app, so B's operation facade may "
+            "now be composed rather than mocked. Re-examine whether "
+            "MockOperationFacade should be replaced and whether R14 acceptance 2 "
+            "(live) can now be attempted. Note that importability is still not "
+            "live evidence: a composed facade needs its schema applied and its "
+            "delivery loop running before any live criterion is closable."
         )
 
     def test_the_mock_implements_exactly_the_consumed_protocol(

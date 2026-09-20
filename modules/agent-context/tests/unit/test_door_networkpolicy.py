@@ -140,6 +140,16 @@ class TestPolicyRestrictsIngress:
             "A literal namespace name breaks any deploy that overrides it."
         )
 
+    def test_run_service_bridge_requires_gateway_namespace_and_pod(self):
+        peers = [
+            peer
+            for rule in _policy_docs()[0]["spec"]["ingress"]
+            for peer in rule["from"]
+            if peer.get("namespaceSelector", {}).get("matchLabels", {}).get("kubernetes.io/metadata.name") == "adp-gateway"
+        ]
+        assert len(peers) == 1
+        assert peers[0]["podSelector"] == {"matchLabels": {"app": "bedrockgateway"}}
+
 
 class TestBothDeliveryPathsApplyIt:
     """A manifest no apply path references is the same as no manifest."""

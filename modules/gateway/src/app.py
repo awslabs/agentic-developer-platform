@@ -145,6 +145,7 @@ UNIT_MODULES = [
     # here is platform-admin-only, asserted against its own source by
     # tests/admin/persona_models/test_posture_authz.py.
     "src.admin.persona_models.posture_routes",
+    "src.admin.persona_models.default_routes",
     # Issue #5420 (PMM-03): read-only persona/model catalogue on the same
     # /me/persona-models namespace. Kept in a separate module so catalogue
     # policy/evidence logic does not broaden either PMM-02 write surface.

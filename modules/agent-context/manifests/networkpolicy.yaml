@@ -57,6 +57,14 @@ spec:
     # namespace here is granting it the ability to reach the verb surface, so it
     # still needs the shared secret to get an answer.
     - from:
+        # Protected workers use the gateway's authenticated run-service bridge.
+        # Both selectors belong to one peer: only gateway pods in this namespace.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: adp-gateway
+          podSelector:
+            matchLabels:
+              app: bedrockgateway
         # Agent workers: the KEDA ScaledJob pods and the warm pool.
         # modules/agent-factory/agent/src/knowledge-layer-config.ts (POST /mcp/),
         # experience-save-hook.ts (POST /call) and
