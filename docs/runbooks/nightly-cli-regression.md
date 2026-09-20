@@ -117,3 +117,9 @@ The budget report checks the current `org` ledger and requires org RPM to enforc
 Phase H reads `root_user` accounting separately from direct billing; it explicitly
 reports that a newly triggered agent exhausting a human cap is not tested here.
 TPM and inconclusive concurrent-limit coverage remain visible in the findings.
+
+Budget denial cases configure a $1 cap through the API and seed $1.01 of settled
+usage in the live test DB before making authenticated requests. This avoids
+assuming a fixed request price. Synthetic balances are removed between cases;
+case 7 independently verifies real model usage accrual. Spending through a cap
+with a newly triggered agent remains outside this key-scenario regression.

@@ -724,3 +724,132 @@ finding() { :; }
         timeout=10,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_exhausted_balances_are_real_sql_and_cannot_satisfy_usage_accrual(tmp_path):
+    database = tmp_path / "ledger.db"
+    with sqlite3.connect(database) as db:
+        db.executescript("""
+        CREATE TABLE budget_usage (id TEXT PRIMARY KEY, org_id TEXT, entity_type TEXT,
+          entity_id TEXT, period_type TEXT, period_start TEXT, total_cost_usd NUMERIC,
+          total_tokens INTEGER, request_count INTEGER,
+          UNIQUE(org_id,entity_type,entity_id,period_start,period_type));
+        INSERT INTO budget_usage (id,org_id,entity_id) VALUES ('real-accrual','eval-bgt-test-orga','another-user');
+        INSERT INTO budget_usage (id,org_id,entity_id) VALUES ('eval-bgt-test-spent-unrelated','real-org','real-user');
+        """)
+    transport = tmp_path / "psql.py"
+    transport.write_text("""import sqlite3, sys
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute(sys.argv[2].replace("(now() AT TIME ZONE 'UTC')::date", "date('now')"))
+""")
+    source = (ROOT / "platform/evals/budget-ratelimit/run-eval.sh").read_text()
+    functions = "\n".join(
+        re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.M | re.S).group()
+        for name in ("set_budget", "seed_exhausted_budget", "clear_budgets")
+    )
+    setup = r"""
+set -euo pipefail
+WORKDIR="$TEST_WORKDIR"
+ORG_A=eval-bgt-test-orga EVAL_TAG=eval-bgt-test TRIP_CAP=1.00 EXHAUSTED_SPEND=1.01
+API=https://gateway.example.test/api
+assert_owned_entity() { :; }
+assert_tagged() { :; }
+state_append() { :; }
+state_set() { :; }
+state_get() { echo 'eval-bgt-test-orga|user|test-user|daily'; }
+log() { :; }
+pass() { :; }
+fail() { echo "$*" >&2; exit 1; }
+die() { fail "$@"; }
+http_post_json() { echo 201; }
+http_delete() { echo 200; }
+h_psql() { "$TEST_PYTHON" "$TEST_TRANSPORT" "$TEST_DATABASE" "$2"; }
+"""
+    env = {
+        **os.environ,
+        "TEST_WORKDIR": str(tmp_path),
+        "TEST_TRANSPORT": str(transport),
+        "TEST_DATABASE": str(database),
+        "TEST_PYTHON": sys.executable,
+    }
+
+    def invoke(command):
+        result = subprocess.run(
+            ["bash", "-c", setup + functions + "\n" + command],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    invoke("set_budget user test-user 1000.00")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM budget_usage").fetchone()[0] == 2
+    invoke("set_budget user test-user 1.00")
+    with sqlite3.connect(database) as db:
+        row = db.execute(
+            "SELECT total_cost_usd,period_start FROM budget_usage WHERE entity_id='test-user'"
+        ).fetchone()
+        assert row[0] == 1.01
+        assert row[1] == db.execute("SELECT date('now')").fetchone()[0]
+    invoke("clear_budgets")
+    with sqlite3.connect(database) as db:
+        assert {r[0] for r in db.execute("SELECT id FROM budget_usage")} == {
+            "real-accrual",
+            "eval-bgt-test-spent-unrelated",
+        }
+
+
+@pytest.mark.parametrize(
+    "cap, spent, mode, allowed",
+    [
+        (1.0, 1.01, "hard", True),
+        (2.0, 1.01, "hard", False),
+        (1.0, 0.0, "hard", False),
+        (1.0, 1.01, "soft", False),
+    ],
+)
+def test_live_budget_denial_must_report_the_seeded_balance(
+    tmp_path, cap, spent, mode, allowed
+):
+    body = tmp_path / "response.json"
+    body.write_text(
+        json.dumps(
+            {
+                "error": "budget_exceeded",
+                "details": {
+                    "entity_type": "user",
+                    "entity_id": "test-user",
+                    "budget_usd": cap,
+                    "spent_usd": spent,
+                    "enforcement_mode": mode,
+                },
+            }
+        )
+    )
+    source = (ROOT / "platform/evals/budget-ratelimit/run-eval.sh").read_text()
+    function = re.search(
+        r"^assert_budget_denied\(\) \{\n.*?^\}", source, re.M | re.S
+    ).group()
+    setup = """
+FAILURES=0
+TRIP_CAP=1.00 EXHAUSTED_SPEND=1.01
+fail() { FAILURES=$((FAILURES + 1)); }
+pass() { :; }
+"""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            setup
+            + function
+            + '\nassert_budget_denied test claude 402 "$1" user; exit "$FAILURES"',
+            "_",
+            str(body),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert (result.returncode == 0) is allowed, result.stdout + result.stderr

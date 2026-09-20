@@ -18,7 +18,7 @@
 #      traffic. This is the single most dangerous failure mode in the file, so it
 #      is tested first and directly.
 #   2. Cleanup runs even when a case explodes. A crashed run must not leave a
-#      $0.01 cap or an rpm=1 limit behind in dev.
+#      $1 cap or an rpm=1 limit behind in dev.
 #   3. The clean-room detector actually trips. If it stopped detecting
 #      contamination, every future run would report green from inside the
 #      agent-worker image — whose baked-in sigv4-proxy makes requests
@@ -321,7 +321,7 @@ assert_eq "$TRACE" "phase:configphase:seedphase:1phase:8phase:cleanup" \
 # -----------------------------------------------------------------------------
 name "cleanup runs when a case explodes mid-run (--fail-phase 3)"
 # -----------------------------------------------------------------------------
-# The guarantee that a crashed run does not leave a $0.01 cap in dev. Cases 1-2
+# The guarantee that a crashed run does not leave a $1 cap in dev. Cases 1-2
 # have already WRITTEN budget config by the time 3 dies, so this is the real
 # scenario, not a no-op teardown.
 run_eval failmid --fail-phase 3; OUT="$RUN_OUT"
