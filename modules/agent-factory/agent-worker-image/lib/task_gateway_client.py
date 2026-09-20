@@ -68,6 +68,12 @@ def _post(action: str) -> dict:
             ) as response:
                 if response.status_code == 409:
                     raise TaskGatewayError("busy")
+                if action == "acquire" and response.status_code == 404:
+                    # The entrypoint can reach the gateway before kubelet has
+                    # published its Running container/image status. TokenReview
+                    # alone is insufficient: the gateway still refuses until
+                    # the live pod also satisfies the workload checks.
+                    raise TaskGatewayError("workload unavailable")
                 if response.status_code != 200:
                     raise TaskGatewayError("task service refused operation")
                 raw = response.raw.read(1024 * 1024 + 1, decode_content=True)
@@ -83,13 +89,15 @@ def _post(action: str) -> dict:
 
 def own_task() -> str | None:
     # A concurrent/lost receive response can leave a short server reservation.
-    # Retry only busy, with a fresh workload proof; never fall back to SQS.
+    # Initial workload publication can lag container startup too. Retry these
+    # refusals within the same bound, with a fresh proof on every attempt. A
+    # permanently invalid workload stays refused; never fall back to SQS.
     for attempt in range(5):
         try:
             result = _post("acquire")
             break
         except TaskGatewayError as error:
-            if str(error) != "busy" or attempt == 4:
+            if str(error) not in {"busy", "workload unavailable"} or attempt == 4:
                 raise
             time.sleep(8)
     if set(result) != {"body"} or (
