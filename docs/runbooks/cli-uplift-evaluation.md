@@ -3,7 +3,8 @@
 Story #5199 · PR #5221 · workflow `.github/workflows/eval-cli-uplift.yml`.
 
 The [combined nightly regression](nightly-cli-regression.md) invokes this suite
-with `full` after onboarding and budget enforcement. The instructions below are
+with `login` after onboarding and budget enforcement; its manual `ec2_scope=full`
+option selects the full acceptance matrix. The instructions below are
 for standalone diagnosis; the `login` default is not used by the nightly.
 
 Start with **login**, the default: Actions launches disposable EC2, transfers the
@@ -271,4 +272,5 @@ Bedrock path. Do not expand the framework or claim the full epic has passed.
 The first checkpoint is progress only. Closing the full evaluation still requires
 two fresh full runs against the same deployed revision, plus interruption/resume,
 repeat cleanup, and failure-injection evidence. The shared nightly workflow now
-schedules the full evaluation; blocked cases still prevent acceptance.
+schedules the key install/login checkpoint; full runs remain manually selectable,
+and blocked cases still prevent full acceptance.

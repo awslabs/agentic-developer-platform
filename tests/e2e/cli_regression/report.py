@@ -13,27 +13,52 @@ REQUIRED = {
     "prepare": "Deployed revision",
     "onboarding": "CLI onboarding and Claude/Codex conversations",
     "budgets": "Budget and rate-limit enforcement",
-    "ec2": "Complete CLI suite on disposable EC2 (including recovery)",
+    "ec2": "CLI suite on disposable EC2 (including recovery)",
 }
 
 
-def render(jobs, revision):
+def render(jobs, revision, ec2_revision="", ec2_scope="login"):
     verified = isinstance(revision, str) and REVISION.fullmatch(revision)
+    ec2_verified = isinstance(ec2_revision, str) and REVISION.fullmatch(ec2_revision)
+    scope_valid = ec2_scope in {"login", "full"}
     lines = [
         "## Nightly CLI regression — combined result",
         "",
-        f"Revision: `{revision if verified else 'unverified'}`",
+        f"Revision at onboarding start: `{revision if verified else 'unverified'}`",
+        f"EC2 pinned revision: `{ec2_revision if ec2_verified else 'unverified'}`",
+        f"EC2 scope: `{ec2_scope if scope_valid else 'invalid'}`",
         "",
         "| Suite | Result |",
         "|---|---|",
     ]
-    passed = bool(verified)
+    passed = bool(verified and ec2_verified and scope_valid)
     for key, label in REQUIRED.items():
         result = (jobs.get(key) or {}).get("result", "missing")
         if result not in {"success", "failure", "cancelled", "skipped"}:
             result = "missing"
         passed = passed and result == "success"
         lines.append(f"| {label} | {result} |")
+    if ec2_scope == "login":
+        lines.extend(
+            [
+                "",
+                "Daily key scenarios: onboarding/Claude/Codex, budgets/rate limits, "
+                "and EC2 E01 install + C01 native login/refresh.",
+                "**Full CLI acceptance is not established by this scope.** "
+                "E02–E17 are outside this nightly gate. The full matrix remains available "
+                "with `ec2_scope=full`; see docs/runbooks/nightly-cli-regression.md "
+                "for missing destination/GitHub/hosted/multi-deployment fixtures and "
+                "the E16/E17 model-limit guard.",
+            ]
+        )
+    if verified and ec2_verified and revision != ec2_revision:
+        lines.extend(
+            [
+                "",
+                "Dev advanced between suites; each revision is reported "
+                "separately. This is not a single-revision acceptance run.",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -49,7 +74,12 @@ def render(jobs, revision):
 
 def main():
     jobs = json.loads(os.environ.get("CLI_REGRESSION_JOBS", "{}"))
-    summary, code = render(jobs, os.environ.get("CLI_REGRESSION_REVISION", ""))
+    summary, code = render(
+        jobs,
+        os.environ.get("CLI_REGRESSION_REVISION", ""),
+        os.environ.get("CLI_REGRESSION_EC2_REVISION", ""),
+        os.environ.get("CLI_REGRESSION_EC2_SCOPE", "login"),
+    )
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
         output.write(summary)
     print(summary)

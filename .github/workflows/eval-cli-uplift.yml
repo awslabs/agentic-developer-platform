@@ -66,7 +66,16 @@ on:
         options: [none, wrong_account, missing_usage, cleanup_failure, expired_token, instance_loss]
         default: none
   workflow_call:
+    outputs:
+      revision:
+        description: 'The exact deployed revision pinned immediately before EC2 evaluation'
+        value: ${{ jobs.evaluate.outputs.revision }}
     inputs:
+      resolve_revision:
+        description: 'Resolve the current deployment when this child starts (nightly only)'
+        required: false
+        type: boolean
+        default: false
       environment:
         required: false
         type: string
@@ -95,7 +104,7 @@ on:
       - main
 
 # The single schedule lives in nightly-cli-regression.yml, which calls this
-# workflow with suites=full and a verified deployed revision. No separate cron.
+# workflow with key scenarios by default; full acceptance remains selectable.
 
 # One live run at a time: two would each create instances tagged for this
 # evaluation and contend for the same Cognito pool and destination account.
@@ -207,6 +216,7 @@ jobs:
     outputs:
       status: ${{ steps.run.outputs.status }}
       evaluation_id: ${{ steps.run.outputs.evaluation_id }}
+      revision: ${{ steps.revision.outputs.revision || inputs.expected_revision }}
     env:
       AWS_REGION: us-east-1
       ENVIRONMENT: ${{ inputs.environment || 'dev' }}
@@ -292,6 +302,13 @@ jobs:
 
       - name: Install runner dependencies
         run: pip install boto3 pytest pytest-timeout
+
+      - name: Pin the deployment for this EC2 suite
+        id: revision
+        if: inputs.resolve_revision
+        # Onboarding and budgets may take 20 minutes while dev advances. Bind
+        # this suite now; its preflight still rejects drift and verifies hashes.
+        run: python -m tests.e2e.cli_regression.prepare --ec2
 
       - name: Validate execution bindings and build the run config
         env:
@@ -549,7 +566,7 @@ jobs:
       # was converted to a warning, and the sweep reported clean while the run's
       # IAM roles, stacks, secrets and Cognito users were still live. Only the
       # instances were ever recovered.
-      CLI_UPLIFT_EVAL_EXPECTED_REVISION: ${{ inputs.expected_revision }}
+      CLI_UPLIFT_EVAL_EXPECTED_REVISION: ${{ needs.evaluate.outputs.revision || inputs.expected_revision }}
       CLI_UPLIFT_EVAL_GITHUB_ORG: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_ORG }}
       CLI_UPLIFT_EVAL_GITHUB_REPO: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_REPO }}
       CLI_UPLIFT_EVAL_GITHUB_APP: ${{ vars.CLI_UPLIFT_EVAL_GITHUB_APP }}
