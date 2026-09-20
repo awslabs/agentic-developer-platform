@@ -56,6 +56,41 @@ def test_work_claims_imports_without_token_secret():
     assert result.returncode == 0, f"work_claims dragged web auth into the tick Lambda:\n{result.stderr}"
 
 
+def test_dispatch_policy_resolves_without_web_session_secret():
+    """Importing the handler passes even when a lazy policy lookup loads web auth.
+
+    Exercise the policy lookup itself for human and service principals, in the
+    Lambda environment that exposed the production failure.
+    """
+    result = _import_in_scrubbed_subprocess("""
+import asyncio
+import sys
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from src.agentauth.model_policy import _resolve_active_allowlist_policy
+from src.shared.config import get_settings
+
+async def check():
+    for kind in ('human', 'service_account'):
+        db = SimpleNamespace(
+            scalar=AsyncMock(return_value=SimpleNamespace(id='user-a', team_id='', status='active')),
+            scalars=AsyncMock(return_value=[]),
+        )
+        result = await _resolve_active_allowlist_policy(
+            db, tenant_id='aws-e', principal_kind=kind, principal_id='user-a',
+            expires_at=datetime.now(UTC) + timedelta(minutes=1), settings=get_settings(),
+        )
+        assert result.context.org_id == 'aws-e'
+        assert result.service_policy_unavailable_reason is None
+    assert 'src.auth.middleware' not in sys.modules
+    assert 'src.admin.persona_models.catalogue_routes' not in sys.modules
+
+asyncio.run(check())
+""")
+    assert result.returncode == 0, f"Engine policy resolution loaded web auth:\n{result.stderr}"
+
+
 def test_admin_lazy_exports_still_resolve():
     """The app-facing surface of `src.admin` must survive the lazy rewrite."""
     import src.admin as admin
@@ -65,6 +100,15 @@ def test_admin_lazy_exports_still_resolve():
     # FastAPI auto-discovery and both router aliases.
     assert admin.router is admin.admin_router
     assert admin.health_router is not None
+
+
+def test_proxy_lazy_exports_still_resolve():
+    import src.proxy as proxy
+    from src.proxy.routes import router
+    from src.proxy.service import ProxyService
+
+    assert proxy.router is router
+    assert proxy.ProxyService is ProxyService
 
 
 def test_admin_unknown_attribute_raises():

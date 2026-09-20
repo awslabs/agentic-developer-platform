@@ -2023,7 +2023,7 @@ async def test_live_bootstrap_refuses_registry_allowed_models_or_disabled_row(
     restriction_patterns,
     policy_unavailable_reason,
 ):
-    from src.admin.persona_models import catalogue_routes
+    from src.admin.persona_models import registry_policy
 
     current = datetime.now(UTC)
     policy = snapshot(
@@ -2054,7 +2054,7 @@ async def test_live_bootstrap_refuses_registry_allowed_models_or_disabled_row(
         return_value=(restriction_patterns, policy_unavailable_reason),
     )
     monkeypatch.setattr(
-        catalogue_routes,
+        registry_policy,
         "resolve_managed_service_restriction_policy",
         restriction_resolver,
     )

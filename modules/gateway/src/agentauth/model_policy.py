@@ -819,7 +819,7 @@ async def _resolve_active_allowlist_policy(
         )
         routing_user_id = ""
 
-    from src.admin.persona_models.catalogue_routes import resolve_managed_service_restriction_policy
+    from src.admin.persona_models.registry_policy import resolve_managed_service_restriction_policy
     from src.proxy.model_resolver import production_model_resolver
 
     try:
