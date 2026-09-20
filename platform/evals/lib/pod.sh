@@ -246,5 +246,5 @@ laptop_provision() {
 # workflow guarantees at most one live run per environment.
 laptop_pod_delete() {
   h_kubectl delete pod -n "$POD_NAMESPACE" \
-    -l "app=${POD_LABEL_APP}" --ignore-not-found --wait=false >/dev/null 2>&1
+    -l "app=${POD_LABEL_APP}" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1
 }

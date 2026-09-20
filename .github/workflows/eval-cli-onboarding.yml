@@ -26,6 +26,7 @@ name: Eval — CLI Onboarding (clean room)
 #     contamination gate runs INSIDE that pod as the first command exec'd there,
 #     before anything is installed. Phase D deletes it, `if: always()`.
 #
+# Scheduled by nightly-cli-regression.yml; no independent cron.
 # See platform/evals/cli-onboarding/README.md for the full split.
 
 on:
@@ -45,13 +46,18 @@ on:
         description: 'Deliberately break the eval to prove it fails loudly (wrong-org)'
         required: false
         type: choice
-        options: ['', 'wrong-org']
-        default: ''
-  schedule:
-    # 05:00 UTC daily — after credential-binding-adversarial-e2e (04:00), before
-    # gateway-live-tests (06:00), so the three nightlies do not contend for the
-    # runner pool or for dev inference capacity.
-    - cron: '0 5 * * *'
+        options: ['none', 'wrong-org']
+        default: 'none'
+  workflow_call:
+    outputs:
+      cleanup_ok:
+        description: 'True only after the cleanup sweep succeeds'
+        value: ${{ jobs.eval.outputs.cleanup_ok }}
+    inputs:
+      environment:
+        required: false
+        type: string
+        default: dev
   pull_request:
     # Lint-only on PRs that touch the eval itself; the live job never runs from a PR.
     paths:
@@ -67,12 +73,11 @@ on:
 # Never two live runs at once: both would fight over the same
 # BG_ENFORCE_ORG_ASSIGNMENT value and each would restore the other's mutation.
 concurrency:
-  group: eval-cli-onboarding-${{ github.event.inputs.environment || 'dev' }}
+  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.environment || 'dev') }}
   cancel-in-progress: false
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   lint:
@@ -110,11 +115,13 @@ jobs:
         run: ./platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
 
   eval:
-    name: Clean-room eval (${{ github.event.inputs.environment || 'dev' }})
+    name: Clean-room eval (${{ inputs.environment || 'dev' }})
     # Skipped on pull_request: the live matrix mutates dev (flag flip, throwaway
     # Cognito user, throwaway users row) and must never run from an untrusted PR.
     if: github.event_name != 'pull_request'
     needs: [lint]
+    outputs:
+      cleanup_ok: ${{ steps.cleanup.outcome == 'success' }}
     runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     timeout-minutes: 45
 
@@ -123,11 +130,21 @@ jobs:
     # in adp-gateway already grants pods create/delete and pods/exec create.
     env:
       AWS_REGION: us-east-1
-      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
       EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       EVAL_WORKDIR: /tmp/cli-onboarding-eval
 
     steps:
+      - name: Refuse an untrusted ref
+        id: trusted
+        env:
+          EVAL_REF: ${{ github.ref }}
+        run: |
+          case "$EVAL_REF" in
+            refs/heads/main|refs/tags/*) ;;
+            *) echo "::error::Live evaluation requires main or a release tag"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v7
 
       - name: Install harness tooling (psql)
@@ -152,12 +169,12 @@ jobs:
       - name: Run the eval matrix
         id: matrix
         env:
-          EVAL_PHASES: ${{ github.event.inputs.phases || 'A,B,C' }}
-          EVAL_INJECT: ${{ github.event.inputs.inject_failure || '' }}
+          EVAL_PHASES: ${{ inputs.phases || 'A,B,C' }}
+          EVAL_INJECT: ${{ inputs.inject_failure || '' }}
         run: |
           set -euo pipefail
           ARGS=(--environment "$ENVIRONMENT" --phases "$EVAL_PHASES")
-          if [ -n "$EVAL_INJECT" ]; then
+          if [ -n "$EVAL_INJECT" ] && [ "$EVAL_INJECT" != none ]; then
             ARGS+=(--inject-failure "$EVAL_INJECT")
           fi
           ./platform/evals/cli-onboarding/run-eval.sh "${ARGS[@]}"
@@ -166,11 +183,12 @@ jobs:
       # EXIT trap, so this is belt-and-braces for the case where the job is
       # cancelled or the runner is killed mid-step and the trap never fires.
       - name: Cleanup sweep (always)
-        if: always()
-        run: ./platform/evals/cli-onboarding/run-eval.sh --environment "$ENVIRONMENT" --cleanup-only || true
+        id: cleanup
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
+        run: ./platform/evals/cli-onboarding/run-eval.sh --environment "$ENVIRONMENT" --cleanup-only
 
       - name: Verify dev was left clean
-        if: always()
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
         run: |
           set -uo pipefail
           echo "### Post-run state" >> "$GITHUB_STEP_SUMMARY"
@@ -193,67 +211,3 @@ jobs:
           if [ "${PODS:-0}" != "0" ]; then
             echo "::warning::${PODS} clean-room pod(s) left behind — sweep: kubectl delete pod -n adp-gateway -l app=eval-cli-onboarding"
           fi
-
-      # Nightly failures UPDATE one tracking issue instead of filing one per
-      # night; a fresh issue every morning trains everyone to ignore the label.
-      - name: File or update the nightly tracking issue
-        if: failure() && github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          LABEL="cli-onboarding-eval-failure"
-          EXISTING=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty' 2>/dev/null || echo "")
-
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "Nightly CLI-onboarding eval failed again on $(date -u +%Y-%m-%d) (\`${ENVIRONMENT}\`).
-
-          **Run:** ${RUN_URL} — see the job summary for the per-phase table."
-            echo "Updated tracking issue #${EXISTING}"
-            exit 0
-          fi
-
-          gh issue create \
-            --title "🔴 Nightly CLI-onboarding eval failing ($(date -u +%Y-%m-%d))" \
-            --label "$LABEL,bug" \
-            --body "## The problem in plain terms
-
-          A new developer following the documented steps to point Claude Code (or Codex) at the gateway
-          may no longer be able to. The nightly clean-room evaluation that walks the whole journey —
-          sign-in identity, admin approval, download the helper, seed the CLI, get a completion — failed
-          on \`${ENVIRONMENT}\`. Until this is green, the approval gate should not be turned on in any
-          environment, because we cannot show that approved users can actually work.
-
-          **The fix in one line:** read the failing phase in the run summary, fix the link it points at, and re-run the eval.
-
-          ## Description
-
-          The nightly \`eval-cli-onboarding.yml\` run failed. It is the regression check for the
-          CLI-onboarding journey (EPIC #4143) and the flag-flip gate for \`BG_ENFORCE_ORG_ASSIGNMENT\`.
-
-          **Run:** ${RUN_URL}
-          **Environment:** \`${ENVIRONMENT}\`
-
-          ## Impact analysis
-
-          - **Who benefits from a fix:** every new developer onboarding onto the gateway via CLI.
-          - **Who's impacted:** the approval-gate rollout is blocked while this is red.
-          - **What breaks if ignored:** an onboarding regression ships and is found by a real user hitting a wall.
-
-          ## Design
-
-          Which phase failed determines the surface. The per-phase table in the run summary names it:
-          Phase A/B = the approval gate; Phase C5-C8 = the download route, discovery doc, or CLI helper;
-          Phase C9/C10 = Claude Code / Codex wiring.
-
-          ## Deployment
-
-          Nothing to deploy — this issue tracks a diagnosis. Any fix follows its own module's deploy path.
-
-          ## Validation
-
-          Re-run: \`gh workflow run eval-cli-onboarding.yml -f environment=${ENVIRONMENT}\` and confirm green.
-
-          ---
-          This issue is UPDATED (not duplicated) on subsequent nightly failures. Close it once the eval is green."

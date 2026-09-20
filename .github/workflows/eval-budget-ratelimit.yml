@@ -26,13 +26,9 @@ name: Eval — Budgets + Rate Limits (clean room)
 #     contamination gate runs INSIDE that pod as the first command exec'd there,
 #     BEFORE the first admin write, so a contaminated run leaves dev untouched.
 #
-# WHY THERE IS NO CRON
-# Unlike eval-cli-onboarding.yml, this eval WRITES budget and rate-limit config
-# for entities in a shared dev account. Every entity it creates carries the run
-# tag `eval-bgt-<run_id>` and an in-script guard dies rather than write anything
-# untagged — but a nightly that mutates spend controls unattended is still the
-# wrong default. #4163 specifies workflow_dispatch, and the dry-run test suite
-# asserts that no `schedule:` reappears here.
+# Scheduled only by nightly-cli-regression.yml, after onboarding has restored
+# the approval flag. The parent and manual calls share the live-evaluation lock.
+# Budget writes remain restricted to run-tagged fixtures; cleanup is required.
 #
 # See platform/evals/budget-ratelimit/README.md for the seeded world, all twelve
 # cases, and the four findings the eval pins rather than passes.
@@ -54,8 +50,18 @@ on:
         description: 'Deliberately break the eval to prove it fails loudly (wrong-entity)'
         required: false
         type: choice
-        options: ['', 'wrong-entity']
-        default: ''
+        options: ['none', 'wrong-entity']
+        default: 'none'
+  workflow_call:
+    outputs:
+      cleanup_ok:
+        description: 'True only after the cleanup sweep succeeds'
+        value: ${{ jobs.eval.outputs.cleanup_ok }}
+    inputs:
+      environment:
+        required: false
+        type: string
+        default: dev
   pull_request:
     # Lint-only on PRs that touch the eval or the shared harness; the live job
     # never runs from a PR.
@@ -73,7 +79,7 @@ on:
 # more importantly, case 8/11's rate-limit assertions read a SHARED token bucket:
 # a second run's traffic would show up as the first run's 429s and vice versa.
 concurrency:
-  group: eval-budget-ratelimit-${{ github.event.inputs.environment || 'dev' }}
+  group: ${{ github.event_name == 'pull_request' && format('cli-eval-pr-{0}-{1}', github.workflow, github.event.number) || format('cli-live-eval-{0}', inputs.environment || 'dev') }}
   cancel-in-progress: false
 
 permissions:
@@ -123,11 +129,13 @@ jobs:
         run: ./platform/evals/cli-onboarding/tests/test-run-eval-dry-run.sh
 
   eval:
-    name: Clean-room eval (${{ github.event.inputs.environment || 'dev' }})
+    name: Clean-room eval (${{ inputs.environment || 'dev' }})
     # Skipped on pull_request: the live run seeds Cognito users and WRITES budget
     # and rate-limit config in dev. It must never run from an untrusted PR.
     if: github.event_name != 'pull_request'
     needs: [lint]
+    outputs:
+      cleanup_ok: ${{ steps.cleanup.outcome == 'success' }}
     runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     # Longer than cli-onboarding's 45: cases 8-11 must each sleep out the
     # limiter's 60s DB config-reload interval (ratelimit/service.py:29), which
@@ -140,11 +148,21 @@ jobs:
     # in adp-gateway already grants pods create/delete and pods/exec create.
     env:
       AWS_REGION: us-east-1
-      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
       EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       EVAL_WORKDIR: /tmp/budget-ratelimit-eval
 
     steps:
+      - name: Refuse an untrusted ref
+        id: trusted
+        env:
+          EVAL_REF: ${{ github.ref }}
+        run: |
+          case "$EVAL_REF" in
+            refs/heads/main|refs/tags/*) ;;
+            *) echo "::error::Live evaluation requires main or a release tag"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@v7
 
       - name: Install harness tooling (psql)
@@ -195,12 +213,12 @@ jobs:
       - name: Run the eval matrix
         id: matrix
         env:
-          EVAL_PHASES: ${{ github.event.inputs.phases || '1,2,3,4,5,6,7,8,9,10,11,12,H' }}
-          EVAL_INJECT: ${{ github.event.inputs.inject_failure || '' }}
+          EVAL_PHASES: ${{ inputs.phases || '1,2,3,4,5,6,7,8,9,10,11,12,H' }}
+          EVAL_INJECT: ${{ inputs.inject_failure || '' }}
         run: |
           set -euo pipefail
           ARGS=(--environment "$ENVIRONMENT" --phases "$EVAL_PHASES")
-          if [ -n "$EVAL_INJECT" ]; then
+          if [ -n "$EVAL_INJECT" ] && [ "$EVAL_INJECT" != none ]; then
             ARGS+=(--inject-failure "$EVAL_INJECT")
           fi
           ./platform/evals/budget-ratelimit/run-eval.sh "${ARGS[@]}"
@@ -210,11 +228,12 @@ jobs:
       # runner is killed mid-step and the trap never fires. Leaving a $0.01 cap or
       # an rpm=1 limit behind in dev is the failure this prevents.
       - name: Cleanup sweep (always)
-        if: always()
-        run: ./platform/evals/budget-ratelimit/run-eval.sh --environment "$ENVIRONMENT" --cleanup-only || true
+        id: cleanup
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
+        run: ./platform/evals/budget-ratelimit/run-eval.sh --environment "$ENVIRONMENT" --cleanup-only
 
       - name: Verify dev was left clean
-        if: always()
+        if: ${{ always() && steps.trusted.outcome == 'success' }}
         run: |
           set -uo pipefail
           echo "### Post-run state" >> "$GITHUB_STEP_SUMMARY"

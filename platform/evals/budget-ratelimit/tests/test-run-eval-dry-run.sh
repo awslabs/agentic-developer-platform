@@ -278,10 +278,10 @@ if [ -f "$WORKFLOW" ]; then
   assert_not_contains "$WF_CODE" "container:" \
     "the eval job does NOT use container: — ARC runners have no Docker daemon"
   # This eval writes budget and rate-limit config to a shared dev account, so it
-  # must never fire from an untrusted PR and never on a schedule the operator did
-  # not ask for. #4163 specifies workflow_dispatch only.
+  # must never fire from an untrusted PR. Its schedule belongs to the combined
+  # nightly parent; standalone dispatch remains available for diagnosis.
   assert_not_contains "$WF_CODE" "schedule:" \
-    "the workflow has no cron — a live run must be dispatched deliberately"
+    "the reusable child has no cron — the nightly parent owns scheduling"
   assert_not_contains "$WF_CODE" "cron:" "no cron expression is configured"
   assert_contains "$WF" "workflow_dispatch:" "the workflow is dispatch-driven"
   assert_contains "$WF" "eval-pod leftover check" \

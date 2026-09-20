@@ -1031,6 +1031,10 @@ run_phase_c() {
   cat > "$WORKDIR/codex-config.toml" <<TOML
 model = "${EVAL_CODEX_MODEL}"
 model_provider = "adp-gateway"
+# This journey checks inference and authentication; the gateway does not offer
+# Codex's default cached web-search tool. See the official configuration reference:
+# https://developers.openai.com/codex/config-reference/#web_search
+web_search = "disabled"
 
 [model_providers.adp-gateway]
 name = "ADP Gateway (local auth proxy)"
@@ -1131,6 +1135,9 @@ run_cleanup() {
   rm -f "$WORKDIR"/*.access "$WORKDIR"/*.refresh "$WORKDIR"/*.curlrc 2>/dev/null || true
 
   write_summary
+  # Cleanup runs after main's verdict, including during --cleanup-only. A failed
+  # restore/delete must therefore affect the exit status here as well.
+  if [ "$FAILURES" -gt 0 ]; then rc=1; fi
   exit "$rc"
 }
 

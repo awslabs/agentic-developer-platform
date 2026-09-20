@@ -2,7 +2,7 @@
 
 End-to-end evaluation of the journey a new developer actually walks: sign in,
 get approved, download the helper, point Claude Code (or Codex) at the gateway,
-get a completion. It runs nightly against dev and can be triggered on demand.
+get a completion. It runs inside the [combined nightly regression](../../../docs/runbooks/nightly-cli-regression.md) against dev and can also be triggered on demand.
 
 Issue #4157 — Story 5 of EPIC #4143. It automates the manual live validation
 performed on 2026-08-26, so the journey shipped by #4144 (approval gate), #4145
@@ -14,7 +14,7 @@ zero-touch proxy) is re-proven continuously instead of once, by hand.
 | Workflow | [`.github/workflows/eval-cli-onboarding.yml`](../../../.github/workflows/eval-cli-onboarding.yml) |
 | Script | [`run-eval.sh`](run-eval.sh) |
 | Harness tests | [`tests/test-run-eval-dry-run.sh`](tests/test-run-eval-dry-run.sh) |
-| Schedule | 05:00 UTC nightly, plus `workflow_dispatch` |
+| Schedule | Parent `nightly-cli-regression.yml`, 05:00 UTC; no separate cron |
 
 ## Why "clean room" is in the name
 
