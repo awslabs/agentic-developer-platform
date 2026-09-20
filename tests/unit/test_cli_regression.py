@@ -423,38 +423,56 @@ def test_budget_seed_supplies_required_json_defaults_to_real_sql(tmp_path):
         CREATE TABLE users (id TEXT PRIMARY KEY, org_id TEXT, team_id TEXT, email TEXT,
           name TEXT, cognito_sub TEXT, created_at TEXT);
         CREATE TABLE tenant_memberships (id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT,
-          role TEXT, is_active BOOLEAN, created_at TEXT, UNIQUE(user_id, tenant_id));
+          role TEXT, is_active BOOLEAN, created_at TEXT, UNIQUE(user_id, tenant_id),
+          FOREIGN KEY(user_id) REFERENCES users(id), FOREIGN KEY(tenant_id) REFERENCES organizations(id));
+        CREATE TABLE budget_usage (org_id TEXT);
+        CREATE TABLE budget_configs (org_id TEXT);
+        CREATE TABLE rate_limit_configs (org_id TEXT);
         """)
     transport = tmp_path / "psql.py"
     transport.write_text("""import sqlite3, sys
 with sqlite3.connect(sys.argv[1]) as db:
+    db.execute('PRAGMA foreign_keys=ON')
     db.execute(sys.argv[2].replace('now()', 'CURRENT_TIMESTAMP'))
 """)
     source = (ROOT / "platform/evals/budget-ratelimit/run-eval.sh").read_text()
-    function = re.search(
-        r"^seed_admin_identity\(\) \{\n.*?^\}", source, re.M | re.S
-    ).group()
-    setup = """
+    function = "\n".join(
+        re.search(r"^" + name + r"\(\) \{\n.*?^\}", source, re.M | re.S).group()
+        for name in (
+            "assert_tagged",
+            "assert_owned_entity",
+            "seed_admin_identity",
+            "seed_member_identities",
+        )
+    )
+    setup = r"""
 set -euo pipefail
-ORG_A=eval-bgt-test-orga EVAL_TAG=eval-bgt-test TEAM_1=eval-bgt-test-team A1=test@example.test
-state_get() { echo eval-bgt-test-admin; }
+ORG_A=eval-bgt-test-orga ORG_B=eval-bgt-test-orgb EVAL_TAG=eval-bgt-test
+TEAM_1=eval-bgt-test-team1 TEAM_2=eval-bgt-test-team2
+U1=eval-bgt-test-u1@example.test U2=eval-bgt-test-u2@example.test U3=eval-bgt-test-u3@example.test
+X1=eval-bgt-test-x1@example.test A1=eval-bgt-test-a1@example.test
+state_get() {
+  case "$1" in
+    *_SUB) echo "id-${1%_SUB}" ;;
+    *_USERNAME) local who="${1%_USERNAME}"; echo "${!who}" ;;
+  esac
+}
 state_set() { :; }
-assert_tagged() { :; }
 pass() { :; }
 die() { echo "$*" >&2; exit 1; }
-h_psql() { "$1_python"; }
-""".replace(
-        'h_psql() { "$1_python"; }',
-        'h_psql() { "'
-        + sys.executable
-        + '" "$TEST_TRANSPORT" "$TEST_DATABASE" "$2"; }',
-    )
+h_psql() { "$TEST_PYTHON" "$TEST_TRANSPORT" "$TEST_DATABASE" "$2"; }
+"""
     result = subprocess.run(
-        ["bash", "-c", setup + function + "\nseed_admin_identity\n"],
+        [
+            "bash",
+            "-c",
+            setup + function + "\nseed_admin_identity\nseed_member_identities\n",
+        ],
         env={
             **os.environ,
             "TEST_TRANSPORT": str(transport),
             "TEST_DATABASE": str(database),
+            "TEST_PYTHON": sys.executable,
         },
         capture_output=True,
         text=True,
@@ -462,13 +480,64 @@ h_psql() { "$1_python"; }
     )
     assert result.returncode == 0, result.stdout + result.stderr
     with sqlite3.connect(database) as db:
-        row = db.execute(
+        rows = db.execute(
             "SELECT aws_accounts, role_mappings, settings, created_via FROM organizations"
-        ).fetchone()
-        assert row == ("[]", "{}", "{}", "operator")
+        ).fetchall()
+        assert rows == [("[]", "{}", "{}", "operator")] * 2
+        # This is the same canonical-user/tenant lookup required by the budget
+        # API; every Cognito actor must resolve in exactly its own tenant.
+        for who in ("U1", "U2", "U3", "X1", "A1"):
+            org = "eval-bgt-test-orgb" if who == "X1" else "eval-bgt-test-orga"
+            assert db.execute(
+                "SELECT id FROM users WHERE org_id=? AND cognito_sub=?",
+                (org, "id-" + who),
+            ).fetchone() == ("id-" + who,)
         assert db.execute(
-            "SELECT role, is_active FROM tenant_memberships"
-        ).fetchone() == ("org_admin", 1)
+            "SELECT role, count(*) FROM tenant_memberships GROUP BY role ORDER BY role"
+        ).fetchall() == [("member", 4), ("org_admin", 1)]
+        # Leave an unrelated real tenant beside the disposable fixtures. Sweep
+        # must respect foreign keys AND preserve those unrelated rows.
+        db.execute(
+            "INSERT INTO organizations SELECT 'real-org', 'Real', aws_accounts, role_mappings, settings, github_installation_ids, cognito_client_ids, created_via, created_at FROM organizations LIMIT 1"
+        )
+        db.execute(
+            "INSERT INTO users (id, org_id, cognito_sub) VALUES ('real-user','real-org','real-sub')"
+        )
+        db.execute(
+            "INSERT INTO tenant_memberships (id,user_id,tenant_id) VALUES ('real-member','real-user','real-org')"
+        )
+    cleanup = re.search(r"^run_cleanup\(\) \{\n.*?^\}", source, re.M | re.S).group()
+    cleanup_setup = r"""
+FAILURES=0
+WORKDIR="$TEST_WORKDIR"
+EVAL_USER_PREFIX=eval-bgt
+trace() { :; }
+log() { :; }
+fail() { echo "$*" >&2; FAILURES=$((FAILURES + 1)); }
+delete_seeded_user() { :; }
+laptop_pod_delete() { :; }
+write_summary() { :; }
+"""
+    result = subprocess.run(
+        ["bash", "-c", setup + cleanup_setup + cleanup + "\ntrue\nrun_cleanup\n"],
+        env={
+            **os.environ,
+            "TEST_DATABASE": str(database),
+            "TEST_PYTHON": sys.executable,
+            "TEST_TRANSPORT": str(transport),
+            "TEST_WORKDIR": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT id FROM organizations").fetchall() == [("real-org",)]
+        assert db.execute("SELECT id FROM users").fetchall() == [("real-user",)]
+        assert db.execute("SELECT id FROM tenant_memberships").fetchall() == [
+            ("real-member",)
+        ]
 
 
 def test_onboarding_uses_the_installer_and_gets_proxy_dependencies(tmp_path):

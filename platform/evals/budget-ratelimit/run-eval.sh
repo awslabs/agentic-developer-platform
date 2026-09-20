@@ -120,11 +120,9 @@ EVAL_TAG="${EVAL_USER_PREFIX}-${EVAL_RUN_ID}"
 EVAL_SEED_NAME="$EVAL_TAG"
 EVAL_SUMMARY_TITLE="Budget + rate-limit eval"
 
-# The seeded world. Org ids are synthetic and need no `organizations` row:
-# budget_configs / rate_limit_configs / budget_usage carry org_id as an indexed
-# column with NO foreign key (shared/models/budget.py, migration 001), so a
-# throwaway org can hold configs without touching the tenant tables. The admin
-# identity DOES need real rows — see seed_admin_identity().
+# The seeded world has real organizations, canonical users and memberships.
+# Budget writes resolve user entities through those rows; Cognito claims alone
+# are insufficient, even though ledger/config org_id columns have no FK.
 ORG_A="${EVAL_TAG}-orga"
 ORG_B="${EVAL_TAG}-orgb"
 DEPT_1="${EVAL_TAG}-d1"
@@ -660,6 +658,7 @@ seed_world() {
   fi
 
   seed_admin_identity
+  seed_member_identities
 }
 
 # The admin API's authority model (#3987): the TOKEN establishes identity, the
@@ -701,6 +700,36 @@ seed_admin_identity() {
     || die "could not insert the throwaway tenant_memberships row"
 
   pass "admin identity has an active org_admin tenant_memberships row (authority is DB-resolved, not a token claim)"
+}
+
+# The budget API resolves a user entity through canonical users in its tenant
+# (#4511). A Cognito identity alone can infer, but cannot receive a budget config.
+seed_member_identities() {
+  assert_tagged "isolation org_id" "$ORG_B"
+  h_psql -c "INSERT INTO organizations (id, name, aws_accounts, role_mappings, settings,
+                                        github_installation_ids, cognito_client_ids, created_via, created_at)
+             VALUES ('${ORG_B}', '${ORG_B}', '[]', '{}', '{}', '[]', '[]', 'operator', now())
+             ON CONFLICT (id) DO NOTHING;" >/dev/null \
+    || die "could not insert the isolation organizations row"
+
+  local who sub org team username
+  for who in U1 U2 U3 X1; do
+    sub="$(state_get "${who}_SUB")"
+    username="$(state_get "${who}_USERNAME")"
+    assert_owned_entity "seeded member" user "$sub"
+    org="$ORG_A"; team="$TEAM_1"
+    [ "$who" != U3 ] || team="$TEAM_2"
+    if [ "$who" = X1 ]; then org="$ORG_B"; team=""; fi
+    h_psql -c "INSERT INTO users (id, org_id, team_id, email, name, cognito_sub, created_at)
+               VALUES ('${sub}', '${org}', '${team}', '${username}', '${EVAL_TAG}', '${sub}', now())
+               ON CONFLICT (id) DO NOTHING;" >/dev/null \
+      || die "could not insert canonical user for $who"
+    h_psql -c "INSERT INTO tenant_memberships (id, user_id, tenant_id, role, is_active, created_at)
+               VALUES ('${sub}', '${sub}', '${org}', 'member', true, now())
+               ON CONFLICT (user_id, tenant_id) DO UPDATE SET role='member', is_active=true;" >/dev/null \
+      || die "could not insert tenant membership for $who"
+  done
+  pass "all four budget actors have canonical users and active tenant memberships"
 }
 
 # =============================================================================
@@ -1418,14 +1447,10 @@ run_cleanup() {
     delete_seeded_user "$u"
   done
 
-  # The DB rows seeded for the admin identity. Ordered child→parent:
-  # tenant_memberships FKs users.id and organizations.id.
-  local sub
-  sub="$(state_get ADMIN_SUB)"
-  if [ -n "$sub" ]; then
-    h_psql -c "DELETE FROM tenant_memberships WHERE user_id='${sub}';" >/dev/null 2>&1 || fail "cleanup could not delete seeded tenant memberships"
-    h_psql -c "DELETE FROM users WHERE cognito_sub='${sub}';" >/dev/null 2>&1 || fail "cleanup could not delete seeded admin row"
-  fi
+  # Canonical users and memberships belong to the tagged test tenants. Delete
+  # children first, including a partial seed, before deleting either organization.
+  h_psql -c "DELETE FROM tenant_memberships WHERE tenant_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || fail "cleanup could not delete seeded tenant memberships"
+  h_psql -c "DELETE FROM users WHERE org_id LIKE '${EVAL_USER_PREFIX}-%';" >/dev/null 2>&1 || fail "cleanup could not delete seeded user rows"
 
   # Tag-scoped, so this cannot touch a real tenant even if state was lost. The
   # budget_usage rows are the only trace a billable case leaves behind.

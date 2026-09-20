@@ -107,3 +107,8 @@ Budget and rate-limit writes guard organizations/teams/departments by the run ta
 User IDs are Cognito UUIDs: the guard requires an exact match to both the sub and
 username recorded when this run seeded the identity. Merely being a UUID or carrying
 a test-looking prefix is insufficient. Offline fixtures use UUID-shaped subs too.
+
+All budget actors also have canonical ADP `users` rows and active tenant
+memberships in the two disposable organizations. The admin budget API resolves
+Cognito subs through those records; claims-only identities cannot receive a user
+budget. Cleanup removes memberships and users before the tagged organizations.
