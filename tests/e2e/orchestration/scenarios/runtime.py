@@ -1,107 +1,115 @@
-"""Read actual revisions through the already-selected registered AWS role."""
+"""Read actual revisions through the registered user's exact AWS session."""
 
-import json
 import re
-import subprocess
+from urllib.parse import quote
 
 from .http import Unsupported
+from .kubernetes import ScopedKubernetes
+
+
+def image_reference(image, account, region, repository):
+    prefix = f"{account}.dkr.ecr.{region}.amazonaws.com/{repository}"
+    if image.startswith(prefix + "@sha256:") and re.fullmatch(
+        r"[0-9a-f]{64}", image[len(prefix) + 8 :]
+    ):
+        return {"imageDigest": image[len(prefix) + 1 :]}
+    if image.startswith(prefix + ":") and re.fullmatch(
+        r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", image[len(prefix) + 1 :]
+    ):
+        return {"imageTag": image[len(prefix) + 1 :]}
+    raise Unsupported(
+        "runtime image must name the exact registered ECR account, region and repository"
+    )
 
 
 def read_runtime(client, target):
-    import boto3
-    from botocore.config import Config
-
-    bounded = Config(
-        connect_timeout=3, read_timeout=10, retries={"total_max_attempts": 1}
-    )
-    session = boto3.Session()
-    identity = session.client("sts", config=bounded).get_caller_identity()
-    rows = client.get("/auth/credentials")
-    row = next((r for r in rows if r["id"] == client.config.connection_ref), None)
-    scopes = (row or {}).get("scopes") or {}
-    role = scopes.get("role_arn", "")
-    match = re.fullmatch(r"arn:aws:iam::([0-9]{12}):role/(.+)", role)
-    if (
-        not match
-        or scopes.get("status") != "verified"
-        or identity["Account"] != client.config.expected_account_id
-        or match[1] != identity["Account"]
-        or not identity["Arn"].startswith(
-            f"arn:aws:sts::{match[1]}:assumed-role/{match[2].split('/')[-1]}/"
+    kube = ScopedKubernetes(client, target.cluster)
+    ecr = kube.session.client("ecr", config=kube.bounded)
+    active, desired = [], 0
+    if target.kind == "scaledjob":
+        workload = kube.get(
+            f"/apis/keda.sh/v1alpha1/namespaces/{target.namespace}/scaledjobs/{target.deployment}"
         )
-    ):
-        raise Unsupported(
-            "runtime reads require the registered role; ambient platform credentials are not a fallback"
+        containers = workload["spec"]["jobTargetRef"]["template"]["spec"]["containers"]
+        image = next(c["image"] for c in containers if c["name"] == target.container)
+        image_id = image_reference(
+            image,
+            kube.identity["Account"],
+            kube.cluster["arn"].split(":")[3],
+            target.ecr_repository,
         )
-    cluster = session.client("eks", config=bounded).describe_cluster(
-        name=target.cluster
-    )["cluster"]
-    context = cluster["arn"]
-    if context.split(":")[4] != identity["Account"]:
-        raise Unsupported("cluster account mismatch")
-
-    def read(*args):
-        try:
-            raw = subprocess.check_output(
-                [
-                    "kubectl",
-                    "--context",
-                    context,
-                    "--request-timeout=15s",
-                    "-n",
-                    target.namespace,
-                    "get",
-                    *args,
-                    "-o",
-                    "json",
-                ],
-                timeout=20,
-                stderr=subprocess.DEVNULL,
+        detail = ecr.describe_images(
+            repositoryName=target.ecr_repository, imageIds=[image_id]
+        )["imageDetails"]
+    else:
+        workload = kube.get(
+            f"/apis/apps/v1/namespaces/{target.namespace}/deployments/{target.deployment}"
+        )
+        selector = workload["spec"]["selector"].get("matchLabels")
+        if not selector:
+            raise Unsupported("runtime selector is unavailable")
+        label_selector = quote(
+            ",".join(f"{k}={v}" for k, v in sorted(selector.items())), safe=""
+        )
+        pods = kube.get(
+            f"/api/v1/namespaces/{target.namespace}/pods?labelSelector={label_selector}"
+        )["items"]
+        active = [p for p in pods if not p["metadata"].get("deletionTimestamp")]
+        if len(active) > 100:
+            raise Unsupported("runtime observation resource bound exceeded")
+        desired = workload["spec"]["replicas"]
+        status = workload["status"]
+        assert (
+            desired > 0
+            and status["observedGeneration"] == workload["metadata"]["generation"]
+        )
+        assert (
+            status.get("updatedReplicas") == status.get("availableReplicas") == desired
+        )
+        assert len(active) >= desired
+        digests, replicasets = set(), {}
+        for pod in active:
+            assert any(
+                c["type"] == "Ready" and c["status"] == "True"
+                for c in pod["status"]["conditions"]
             )
-            return json.loads(raw)
-        except (OSError, subprocess.SubprocessError):
-            raise Unsupported("scoped Kubernetes read unavailable") from None
-
-    deployment = read("deployment", target.deployment)
-    selector = deployment["spec"]["selector"].get("matchLabels")
-    if not selector:
-        raise Unsupported("runtime selector is unavailable")
-    pods = read(
-        "pods", "-l", ",".join(f"{k}={v}" for k, v in sorted(selector.items()))
-    )["items"]
-    active = [p for p in pods if not p["metadata"].get("deletionTimestamp")]
-    desired = deployment["spec"]["replicas"]
-    status = deployment["status"]
-    assert (
-        desired > 0
-        and status["observedGeneration"] == deployment["metadata"]["generation"]
-    )
-    assert status.get("updatedReplicas") == status.get("availableReplicas") == desired
-    assert len(active) >= desired
-    digests = set()
-    for pod in active:
-        assert any(
-            c["type"] == "Ready" and c["status"] == "True"
-            for c in pod["status"]["conditions"]
-        )
-        container = next(
-            c
-            for c in pod["status"]["containerStatuses"]
-            if c["name"] == target.container
-        )
-        assert container["ready"]
-        image = container["imageID"]
-        assert "@sha256:" in image
-        digests.add(image.split("@", 1)[1])
-    assert len(digests) == 1
-    image_digest = next(iter(digests))
-    detail = session.client("ecr", config=bounded).describe_images(
-        repositoryName=target.ecr_repository, imageIds=[{"imageDigest": image_digest}]
-    )["imageDetails"]
+            owner = next(
+                r
+                for r in pod["metadata"]["ownerReferences"]
+                if r.get("controller") and r["kind"] == "ReplicaSet"
+            )
+            if owner["name"] not in replicasets:
+                replicasets[owner["name"]] = kube.get(
+                    f"/apis/apps/v1/namespaces/{target.namespace}/replicasets/{owner['name']}"
+                )
+            rs = replicasets[owner["name"]]["metadata"]
+            assert rs["uid"] == owner["uid"]
+            assert any(
+                r["kind"] == "Deployment" and r["uid"] == workload["metadata"]["uid"]
+                for r in rs["ownerReferences"]
+            )
+            container = next(
+                c
+                for c in pod["status"]["containerStatuses"]
+                if c["name"] == target.container
+            )
+            assert container["ready"] and "@sha256:" in container["imageID"]
+            image_reference(
+                container["imageID"].removeprefix("docker-pullable://"),
+                kube.identity["Account"],
+                kube.cluster["arn"].split(":")[3],
+                target.ecr_repository,
+            )
+            digests.add(container["imageID"].split("@", 1)[1])
+        assert len(digests) == 1
+        detail = ecr.describe_images(
+            repositoryName=target.ecr_repository,
+            imageIds=[{"imageDigest": next(iter(digests))}],
+        )["imageDetails"]
+    assert len(detail) == 1
     revisions = {
         tag
-        for row in detail
-        for tag in row.get("imageTags", [])
+        for tag in detail[0].get("imageTags", [])
         if re.fullmatch(r"[0-9a-f]{40}", tag)
     }
     if len(revisions) != 1:
@@ -110,13 +118,18 @@ def read_runtime(client, target):
         )
     return {
         "actual_revision": next(iter(revisions)),
-        "digest": image_digest,
-        "account_id": identity["Account"],
-        "role_arn": role,
-        "cluster": context,
+        "digest": detail[0]["imageDigest"],
+        "account_id": kube.identity["Account"],
+        "role_arn": kube.role,
+        "cluster": kube.cluster["arn"],
         "namespace": target.namespace,
         "deployment": target.deployment,
-        "generation": deployment["metadata"]["generation"],
+        "kind": target.kind,
+        "generation": workload["metadata"]["generation"],
         "ready_replicas": desired,
         "pods": [p["metadata"]["uid"] for p in active],
+        "pod_names": {p["metadata"]["name"]: p["metadata"]["uid"] for p in active},
+        "scope": "worker template revision"
+        if target.kind == "scaledjob"
+        else "ready deployed replicas",
     }

@@ -16,7 +16,14 @@ from tests.e2e.orchestration.report import (
     ScenarioReport,
     now,
 )
-from .definitions import CRITERIA, DEFINITION_HASH, STORIES, TESTS, definition
+from .definitions import (
+    CRITERIA,
+    DEFINITION_HASH,
+    STORIES,
+    TESTS,
+    definition,
+    fixture_test,
+)
 from .faults import CASES, execute_case, inject
 from .http import Client, Unsupported
 from .manifest import load_manifest, verify_checkout
@@ -179,6 +186,9 @@ class LiveSession:
 
     def start(self):
         from .runtime import read_runtime
+        from .delivery_resources import plan_resources
+
+        plan_resources(self)
 
         for component, target in self.manifest.runtime.items():
             observed = read_runtime(self.client, target)
@@ -265,6 +275,9 @@ class LiveSession:
         if any(row["action_overflow"] for row in executions):
             raise Unsupported("action evidence overflow")
         data["executions"] = executions
+        from .delivery_resources import record_resources
+
+        record_resources(self, data)
         data["observed_at"] = now()
         self.samples.append(data)
         self.evidence.save("snapshot", data, self.manifest.api_origin + path)
@@ -276,6 +289,8 @@ class LiveSession:
             nodes = data["graph"]["nodes"]
             by_ref = {n["node_ref"]: n for n in nodes}
             self.observe_faults(data)
+            self.observe_worker_loss(data)
+            self.observe_wait_and_ci(data)
             from .runtime import read_runtime
             from .parity import observe
 
@@ -296,7 +311,27 @@ class LiveSession:
                 and self.parity_observation is None
             ):
                 try:
+                    runtime = read_runtime(self.client, self.manifest.runtime["engine"])
+                    if (
+                        "first" not in self.runtime_observations
+                        or runtime["actual_revision"]
+                        != self.runtime_observations["first"]["actual_revision"]
+                    ):
+                        raise Unsupported(
+                            "parity target differs from the first story deployment"
+                        )
                     self.parity_observation = observe(self.client, self.flow_id)
+                    after = read_runtime(self.client, self.manifest.runtime["engine"])
+                    if (after["actual_revision"], after["digest"]) != (
+                        runtime["actual_revision"],
+                        runtime["digest"],
+                    ):
+                        self.parity_observation = None
+                        raise Unsupported("runtime changed during UI/API comparison")
+                    self.parity_observation["api"] = {
+                        "runtime": runtime,
+                        "graph": self.parity_observation["api"],
+                    }
                 except (Unsupported, AssertionError, KeyError) as exc:
                     self.observation_errors["parity"] = type(exc).__name__
             cost = data["cost"]
@@ -334,8 +369,9 @@ class LiveSession:
             path = f"/repos/{self.config.repository}/pulls/{number}"
             pr = self.client.get(path, github=True)
             assert binding["head_sha"] == pr["head"]["sha"]
-            test_path = f"qualification/{self.inventory.qualification_id}/" + (
-                "test_pricing.py" if ref == "first" else "test_quote.py"
+            test_path = (
+                f"modules/gateway/tests/qualification/{self.inventory.qualification_id}/"
+                + ("test_pricing.py" if ref == "first" else "test_quote.py")
             )
             content = self.client.get(
                 f"/repos/{self.config.repository}/contents/{test_path}?ref={pr['head']['sha']}",
@@ -356,12 +392,16 @@ class LiveSession:
         return result
 
     def exercise(self, name):
+        from .capabilities import UNAVAILABLE, unavailable
+
         if name == "human-refusal":
             return self.human_refusal()
         if name in self.fault_observations:
             return self.fault_observations[name]
         if name in self.fault_errors:
             raise Unsupported(self.fault_errors[name])
+        if name in UNAVAILABLE:
+            return unavailable(name, self)
         # Named adapters need a disposable provider that can prove the current
         # ownership generation at the native boundary. Never target the shared
         # tick, synthesize a webhook, or turn a missing capability into PASS.
@@ -381,8 +421,13 @@ class LiveSession:
         provider = self.providers[FlowProvider.kind]
         provider.execution_id = execution["id"]
         ready = {
+            "competing-launches": first.get("activity", {}).get("liveness") == "live"
+            if first.get("activity")
+            else False,
             "tick-restart": execution["phase"] == "awaiting_review"
             and execution["status"] == "runnable",
+            "missed-wakeup": execution["phase"] == "awaiting_review"
+            and bool(execution.get("next_check_at")),
             "timeout-after-success": execution["phase"] == "deployment_pending"
             and execution["status"] == "runnable",
             "duplicate-events": any(
@@ -393,6 +438,37 @@ class LiveSession:
             )
             >= 2,
         }
+        for name in ("tick-restart", "missed-wakeup", "timeout-after-success"):
+            if name in self.fault_observations:
+                try:
+                    after = provider.native.request(execution["id"], "read")["after"]
+                    self.fault_observations[name]["after"] = after
+                    if name == "timeout-after-success":
+                        observation = self.fault_observations[name]
+                        remote = observation["injection"].get("remote")
+                        if not remote:
+                            continue
+                        action = next(
+                            a
+                            for a in after["actions"]
+                            if a["operation_key"] == remote["operation_key"]
+                        )
+                        if action.get("correlation") and action.get("workflow_run_id"):
+                            runs = self.client.pages(
+                                f"/repos/{self.config.repository}/actions/runs?head_sha={action['source_revision']}",
+                                key="workflow_runs",
+                            )
+                            observation["remote"] = {
+                                "correlation": action["correlation"],
+                                "runs": [
+                                    r
+                                    for r in runs
+                                    if r["display_title"]
+                                    == "ADP deployment " + action["correlation"]
+                                ],
+                            }
+                except (Unsupported, KeyError, StopIteration):
+                    pass  # The saved injection remains; incomplete reconciliation never passes.
         for name, reached in ready.items():
             if (
                 not reached
@@ -437,6 +513,159 @@ class LiveSession:
                     f"{name}: native injection/recovery unverified ({type(exc).__name__})"
                 )
             break  # one injection per fresh service snapshot
+
+    def observe_worker_loss(self, data):
+        if not (self.manifest.worker_loss and self.manifest.native_faults):
+            return
+        first = next(n for n in data["graph"]["nodes"] if n["node_ref"] == "first")
+        entries = [e for e in data["executions"] if e["node_id"] == first["id"]]
+        if not entries or "worker-loss" in self.fault_errors:
+            return
+        execution = max(entries, key=lambda e: e["cycle"])
+        native = self.providers[FlowProvider.kind].native
+        if "worker-loss" in self.fault_observations:
+            try:
+                self.fault_observations["worker-loss"]["after"] = native.request(
+                    execution["id"], "read"
+                )["after"]
+            except Unsupported:
+                pass  # Keep the original injection receipt; missing recovery cannot pass.
+            return
+        if not first.get("activity") or first["activity"]["liveness"] != "live":
+            return
+        from .workers import WorkerProvider
+
+        provider = WorkerProvider(self)
+        provider.node = first
+        self.providers[provider.kind] = provider
+        try:
+            before = native.request(execution["id"], "read")["after"]
+            record = provision(
+                self.inventory,
+                self.config,
+                provider,
+                FixtureRequest(
+                    "worker-loss",
+                    provider.kind,
+                    self.inventory.qualification_id + "/worker-loss",
+                ),
+            )
+            intent = self.evidence.save(
+                "worker-loss-intent",
+                {"resource_id": record.observed_resource_id},
+                "harness:predeclared-worker-loss",
+            )
+            self.interventions.append(
+                Intervention(
+                    at=intent.observed_at,
+                    actor="qualification-harness",
+                    kind="fault",
+                    target="worker-loss",
+                    evidence=intent,
+                )
+            )
+            result = inject(
+                CASES["A6-3.worker-loss"],
+                fixture_id="worker-loss",
+                inventory=self.inventory,
+                config=self.config,
+                providers=self.providers,
+            )
+            self.fault_observations["worker-loss"] = {
+                "before": before,
+                "injection": result,
+            }
+            self.evidence.save(
+                "worker-loss",
+                result,
+                "registered-role:Kubernetes-delete-with-UID-precondition",
+            )
+        except Exception as exc:
+            self.fault_errors["worker-loss"] = (
+                f"worker loss unavailable or unverified ({type(exc).__name__})"
+            )
+
+    def observe_wait_and_ci(self, data):
+        if not self.manifest.native_faults:
+            return
+        first = next(n for n in data["graph"]["nodes"] if n["node_ref"] == "first")
+        entries = [e for e in data["executions"] if e["node_id"] == first["id"]]
+        if not entries:
+            return
+        execution = max(entries, key=lambda e: e["cycle"])
+        native = self.providers[FlowProvider.kind].native
+        try:
+            if "wait-exit" in self.fault_observations:
+                self.fault_observations["wait-exit"]["after"] = native.request(
+                    execution["id"], "read"
+                )["after"]
+            elif execution["phase"] == "awaiting_review":
+                history = first.get("execution_history") or {}
+                completed = [
+                    r
+                    for r in history.get("runs", [])
+                    if r["persona"] == "developer"
+                    and r["status"] == "complete"
+                    and r["liveness"] == "exited"
+                ]
+                if history.get("history_complete") and completed:
+                    invocation = self.client.get(
+                        "/me/agent-invocations/" + completed[0]["invocation_id"]
+                    )
+                    if (
+                        invocation["correlation_id"] != first["run_id"]
+                        or invocation["repo"] != self.config.repository
+                    ):
+                        raise Unsupported("normal worker exit has a foreign lineage")
+                    before = native.request(execution["id"], "read")["after"]
+                    self.fault_observations["wait-exit"] = {
+                        "before": before,
+                        "injection": invocation,
+                    }
+                    self.evidence.save(
+                        "normal-worker-exit",
+                        invocation,
+                        "gateway:authenticated-invocation-read",
+                    )
+            binding = first.get("bound_pull_request") or {}
+            if (
+                "failed-ci" not in self.fault_observations
+                and binding.get("repo") == self.config.repository
+            ):
+                pr = self.client.get(
+                    f"/repos/{self.config.repository}/pulls/{binding['pr_number']}",
+                    github=True,
+                )
+                checks = self.client.pages(
+                    f"/repos/{self.config.repository}/commits/{pr['head']['sha']}/check-runs",
+                    key="check_runs",
+                )
+                if any(
+                    c["name"] in self.manifest.required_checks
+                    and c["conclusion"] == "failure"
+                    for c in checks
+                ):
+                    current = native.request(execution["id"], "read")["after"]
+                    self.fault_observations["failed-ci"] = {
+                        "injection": {
+                            "head_sha": pr["head"]["sha"],
+                            "source": "pinned real-code fixture CI",
+                        },
+                        "checks": checks,
+                        "required_checks": self.manifest.required_checks,
+                        "after": {
+                            "execution": current,
+                            "pull_request": pr,
+                            "graph": data["graph"],
+                        },
+                    }
+                    self.evidence.save(
+                        "failed-required-ci",
+                        self.fault_observations["failed-ci"],
+                        "github:check-runs/gateway:execution",
+                    )
+        except Unsupported:
+            pass  # Incomplete observations remain NOT_RUN, not an inferred success.
 
     def human_refusal(self):
         """Exercise the real gate API on a disposable graph that dispatches no work."""
@@ -670,7 +899,12 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
             )
         except Unsupported as exc:
             results[criterion_id] = Result(
-                id=criterion_id, status="NOT_RUN", detail=str(exc)
+                id=criterion_id,
+                status="NOT_RUN",
+                detail=str(exc),
+                evidence={"capability": exc.evidence}
+                if hasattr(exc, "evidence")
+                else {},
             )
         except (AssertionError, ValueError, KeyError, StopIteration, TypeError):
             results[criterion_id] = Result(
@@ -694,16 +928,20 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
             nonlocal prs
             prs = session.pull_requests(data)
             for index, row in enumerate(prs):
-                assert row["test_definition"] == TESTS[index]
+                assert row["test_definition"] == fixture_test(
+                    index, inventory.qualification_id
+                )
                 files = {f["filename"] for f in row["files"]}
                 assert (
-                    f"qualification/{inventory.qualification_id}/"
+                    f"modules/gateway/src/qualification/{inventory.qualification_id}/"
                     + ("pricing.py" if index == 0 else "quote.py")
                     in files
                 )
                 assert any(
                     "test" in f
-                    and f.startswith(f"qualification/{inventory.qualification_id}/")
+                    and f.startswith(
+                        f"modules/gateway/tests/qualification/{inventory.qualification_id}/"
+                    )
                     for f in files
                 )
             return {
@@ -815,6 +1053,36 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
             status="NOT_RUN" if isinstance(exc, Unsupported) else "FAIL",
             detail=f"Delivery stopped ({type(exc).__name__}); inventory and evidence retained",
         )
+    interventions_complete = False
+    try:
+        from .audit import collect
+
+        audit = collect(session, prs)
+        interventions_complete = audit["complete"]
+        results["A6-6.interventions"] = Result(
+            id="A6-6.interventions",
+            status="FAIL"
+            if any(
+                i.kind in {"coordinator_retrigger", "unplanned"}
+                for i in session.interventions
+            )
+            else "PASS"
+            if interventions_complete
+            else "NOT_RUN",
+            detail="Authenticated decision, invocation, provider and harness intervention audit",
+            evidence={
+                "interventions": evidence.save(
+                    "intervention-audit", audit, "gateway/github/harness"
+                )
+            },
+            decision_ids=[d["id"] for d in audit["decisions"]],
+        )
+    except (Unsupported, AssertionError, ValueError, KeyError, TypeError):
+        results["A6-6.interventions"] = Result(
+            id="A6-6.interventions",
+            status="NOT_RUN",
+            detail="Complete authenticated intervention history unavailable; retained evidence cannot establish unattended completion",
+        )
     inventory_artifact = evidence.save(
         "inventory",
         [r.to_json() for r in inventory.fixtures],
@@ -844,6 +1112,6 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
         spend_usd=spend,
         cleanup_inventory=[r.to_json() for r in inventory.fixtures],
         interventions=session.interventions,
-        interventions_complete=False,
+        interventions_complete=interventions_complete,
         planned_gates=manifest.planned_gates,
     )

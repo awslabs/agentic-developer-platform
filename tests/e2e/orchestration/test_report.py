@@ -61,7 +61,7 @@ def simulated_report(valid_config):
         cleanup_inventory=[r.to_json() for r in inventory.fixtures],
         interventions=[],
         interventions_complete=True,
-        planned_gates=["release"],
+        planned_gates=["release", "refusal"],
     )
     return report, inventory, valid_config
 
@@ -72,7 +72,7 @@ def problems(ctx):
 
 
 def test_simulation_can_never_qualify(simulated_report):
-    assert problems(simulated_report) == ["non-live simulation"]
+    assert "non-live simulation" in problems(simulated_report)
     report, inventory, config = simulated_report
     written = write_report(report, config=config, inventory=inventory)
     assert written["overall"] == "INCOMPLETE" and written["live"] is False
@@ -181,4 +181,75 @@ def test_machine_and_human_artifacts_are_consistent(simulated_report):
     assert all(
         r["id"] in (inventory.path.parent / "summary.md").read_text()
         for r in stored["results"]
+    )
+
+
+@pytest.fixture
+def bound_provenance(simulated_report, monkeypatch):
+    from types import SimpleNamespace
+    from tests.e2e.orchestration.scenarios import manifest
+    from tests.e2e.orchestration.test_scenarios import reviewed_rows
+
+    report, _, config = simulated_report
+    report.pull_requests = reviewed_rows()
+    manifest_value = SimpleNamespace(
+        required_checks=["fixture-unittests"],
+        deployment_workflows=[".github/workflows/fixture.yml"],
+    )
+    monkeypatch.setattr(
+        manifest, "load_manifest", lambda config: (manifest_value, "a" * 64)
+    )
+    for row in report.pull_requests:
+        row["pr"]["base"] = {"repo": {"full_name": config.repository}}
+        revision = row["pr"]["merge_commit_sha"]
+        report.deployments.append(
+            {
+                "source_revision": revision,
+                "runtime": {
+                    "actual_revision": revision,
+                    "account_id": config.expected_account_id,
+                    "scope": "ready deployed replicas",
+                    "ready_replicas": 1,
+                    "pods": ["observed-pod-uid"],
+                    "digest": "sha256:" + "a" * 64,
+                },
+                "workflows": [
+                    {
+                        "path": ".github/workflows/fixture.yml",
+                        "head_sha": revision,
+                        "conclusion": "success",
+                    }
+                ],
+            }
+        )
+    return simulated_report
+
+
+def test_consistent_provenance_still_does_not_qualify_a_simulation(bound_provenance):
+    assert problems(bound_provenance) == ["non-live simulation"]
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["head", "merge", "runtime", "account", "workflow", "approval", "missing-deploy"],
+)
+def test_report_rejects_inconsistent_delivery_provenance(bound_provenance, attack):
+    report = bound_provenance[0]
+    if attack == "head":
+        report.pull_requests[0]["pr"]["head"]["sha"] = "f" * 40
+    elif attack == "merge":
+        report.pull_requests[0]["pr"]["merge_commit_sha"] = "f" * 40
+    elif attack == "runtime":
+        report.deployments[0]["runtime"]["actual_revision"] = "f" * 40
+    elif attack == "account":
+        report.deployments[0]["runtime"]["account_id"] = "999988887777"
+    elif attack == "workflow":
+        report.deployments[0]["workflows"][0]["conclusion"] = "failure"
+    elif attack == "approval":
+        report.pull_requests[0]["reviews"] = []
+    else:
+        report.deployments.pop()
+    assert (
+        "PR/head/review/merge/deployment provenance incomplete or inconsistent"
+        in problems(bound_provenance)
     )

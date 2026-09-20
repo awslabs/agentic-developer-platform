@@ -35,6 +35,9 @@ def observe(client, flow_id):
             page = context.new_page()
             helpers.inject_tokens_and_navigate(page, tokens, path="/activity")
             identity = _identity(page)
+            owner = client.get("/auth/me")
+            assert identity["sub"] == owner["user_id"] == client.config.identity_ref
+            assert owner["org_id"] == client.config.org_ref
 
             def graph():
                 with page.expect_response(
@@ -79,6 +82,7 @@ def observe(client, flow_id):
                 "current_ui": {
                     "route": "/flows/" + flow_id,
                     "identity": identity,
+                    "authenticated_owner": owner,
                     "graph": current,
                 },
                 "preview_ui": {

@@ -38,7 +38,13 @@ class Intervention(Strict):
     at: str
     actor: str = Field(min_length=1)
     kind: Literal[
-        "planned_gate", "fault", "cleanup", "coordinator_retrigger", "unplanned"
+        "planned_gate",
+        "planned_setup",
+        "required_review",
+        "fault",
+        "cleanup",
+        "coordinator_retrigger",
+        "unplanned",
     ]
     target: str = Field(min_length=1)
     evidence: Artifact
@@ -126,6 +132,38 @@ def assess(report, *, config, inventory, manifest_hash=None):
         errors.append("spend unknown or exceeded")
     if not report.policy_id or not report.policy_hash or not report.plan_version:
         errors.append("actual accepted policy provenance missing")
+    if report.planned_gates != ["release", "refusal"]:
+        errors.append("planned gate inventory changed")
+    try:
+        from .scenarios.delivery import assert_review_repair
+        from .scenarios.manifest import load_manifest
+
+        manifest, _ = load_manifest(config)
+        assert_review_repair(report.pull_requests, manifest.required_checks)
+        assert len(report.deployments) == 2
+        for row, deployment in zip(report.pull_requests, report.deployments):
+            pr = row["pr"]
+            assert pr["base"]["repo"]["full_name"] == config.repository
+            assert deployment["source_revision"] == pr["merge_commit_sha"]
+            runtime = deployment["runtime"]
+            assert runtime["actual_revision"] == pr["merge_commit_sha"]
+            assert runtime["account_id"] == config.expected_account_id
+            assert runtime["scope"] == "ready deployed replicas"
+            assert runtime["ready_replicas"] > 0 and runtime["pods"]
+            assert (
+                runtime["digest"].startswith("sha256:") and len(runtime["digest"]) == 71
+            )
+            assert {r["path"] for r in deployment["workflows"]} == set(
+                manifest.deployment_workflows
+            )
+            assert all(
+                r["head_sha"] == pr["merge_commit_sha"] and r["conclusion"] == "success"
+                for r in deployment["workflows"]
+            )
+    except (AssertionError, ValueError, KeyError, TypeError, OSError):
+        errors.append(
+            "PR/head/review/merge/deployment provenance incomplete or inconsistent"
+        )
     ids = [r.id for r in report.results]
     if len(ids) != len(set(ids)) or set(ids) != {c.id for c in CRITERIA}:
         errors.append("mandatory criterion matrix missing, duplicated or extended")
@@ -177,12 +215,30 @@ def write_report(report, *, config, inventory, manifest_hash=None):
         f"Definition: {report.definition_hash}",
         f"Manifest: {report.manifest_hash}",
         "",
-        "| Criterion | Result | Detail |",
-        "|---|---|---|",
+        f"Versions: {json.dumps(report.versions, sort_keys=True)}",
+        f"Checkout: {report.checkout_revision or 'UNKNOWN'}",
+        f"Policy: {report.policy_id or 'UNKNOWN'} / {report.policy_hash or 'UNKNOWN'}; plan {report.plan_version}",
+        f"Observed: {report.started_at} to {report.completed_at}",
+        "",
+        "| Criterion | Result | Detail | Evidence |",
+        "|---|---|---|---|",
     ]
     lines.extend(
-        f"| {r.id} | {r.status} | {r.detail.replace('|', '/').replace(chr(10), ' ')} |"
+        f"| {r.id} | {r.status} | {r.detail.replace('|', '/').replace(chr(10), ' ')} | "
+        + ", ".join(
+            f"[{kind}]({a.path}) (`{a.sha256}`)" for kind, a in r.evidence.items()
+        )
+        + " |"
         for r in report.results
+    )
+    for row in report.pull_requests:
+        pr = row.get("pr", {})
+        lines.append(
+            f"PR {pr.get('html_url', pr.get('number', 'UNKNOWN'))}: head `{pr.get('head', {}).get('sha')}`; merge `{pr.get('merge_commit_sha')}`"
+        )
+    lines.extend(
+        f"- {i.at}: {i.kind}, {i.actor}, {i.target}; [evidence]({i.evidence.path})"
+        for i in report.interventions
     )
     lines.extend(
         [

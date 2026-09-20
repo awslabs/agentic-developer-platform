@@ -14,7 +14,7 @@ RESOURCE_KINDS = {
     "wait-exit": {"qualification-worker"},
     "worker-loss": {"qualification-worker"},
     "tick-restart": {"qualification-isolated-tick", "qualification-flow"},
-    "missed-wakeup": {"qualification-isolated-tick"},
+    "missed-wakeup": {"qualification-isolated-tick", "qualification-flow"},
     "duplicate-events": {
         "qualification-event-source",
         "qualification-isolated-tick",
@@ -25,7 +25,7 @@ RESOURCE_KINDS = {
         "qualification-isolated-tick",
         "qualification-flow",
     },
-    "competing-launches": {"qualification-event-source"},
+    "competing-launches": {"qualification-event-source", "qualification-flow"},
     "timeout-after-success": {
         "qualification-provider-proxy",
         "qualification-isolated-tick",
@@ -88,6 +88,28 @@ def assert_outcome(name, observed):
     The backend preserves native responses in hashed artifacts and normalizes
     just these facts. Missing keys are failure, not benign default values.
     """
+    if name == "failed-ci":
+        head = observed["injection"]["head_sha"]
+        assert any(
+            c["name"] in observed["required_checks"]
+            and c["head_sha"] == head
+            and c["conclusion"] == "failure"
+            for c in observed["checks"]
+        )
+        after = observed["after"]
+        assert (
+            after["pull_request"]["head"]["sha"] == head
+            and after["pull_request"]["merged"] is False
+        )
+        assert after["execution"]["phase"] in {"awaiting_review", "repairing"}
+        assert after["execution"]["mutating_owner_count"] <= 1
+        assert after["execution"]["coordinator_retriggers"] == 0
+        assert all(
+            n["state"] != "passed"
+            for n in after["graph"]["nodes"]
+            if n["node_ref"] == "first"
+        )
+        return
     if name == "human-refusal":
         decision = observed["decisions"]
         assert decision["actor_kind"] == "human" and decision["kind"] == "gate_rejected"
@@ -109,28 +131,60 @@ def assert_outcome(name, observed):
     assert after["coordinator_retriggers"] == 0
     assert len(after["effect_ids"]) == len(set(after["effect_ids"]))
     if name in {"wait-exit", "worker-loss", "tick-restart", "missed-wakeup"}:
-        assert before["pending_operation"]
+        assert (
+            before["pending_operation"]
+            or (name == "worker-loss" and before.get("active_run_id"))
+            or (name == "wait-exit" and before.get("next_check_at"))
+        )
         assert after["pending_operation"] == before["pending_operation"] or before[
             "pending_operation"
         ] in {a["operation_key"] for a in after.get("actions", [])}
         assert after["progress_revision"] > before["progress_revision"]
         assert after["terminal"] or after["explicit_block"]
         if name == "wait-exit":
-            assert observed["injection"]["exit_code"] == 0
+            assert (
+                observed["injection"]["status"] == "complete"
+                and observed["injection"]["liveness"] == "exited"
+            )
         if name == "tick-restart":
             assert (
                 observed["injection"]["before_process_id"]
                 != observed["injection"]["after_process_id"]
             )
             assert observed["injection"]["isolated"] is True
+        if name == "missed-wakeup":
+            from tests.e2e.orchestration.report import timestamp
+
+            assert observed["injection"]["missed_isolated_poll"] is True
+            assert observed["injection"]["shared_scheduler_unchanged"] is True
+            assert timestamp(observed["injection"]["resumed_at"]) > timestamp(
+                observed["injection"]["scheduled_at"]
+            )
     elif name in {"duplicate-events", "out-of-order", "competing-launches"}:
         assert len(observed["injection"]["delivery_ids"]) >= 2
         assert after["effect_ids"] == before["effect_ids"]
         assert after["progress_revision"] >= before["progress_revision"]
+        if name == "competing-launches":
+            deliveries = observed["injection"]["delivery_ids"]
+            assert {d["lane"] for d in deliveries} == {"engine_flow", "direct_dispatch"}
+            assert all(
+                d["disposition"] in {"duplicate", "conflict", "blocked"}
+                for d in deliveries
+            )
     elif name == "timeout-after-success":
         assert observed["injection"]["transport_outcome"] == "timeout"
-        assert observed["remote"]["effect_id"] in after["effect_ids"]
-        assert after["post_count"] == before["post_count"] == 1
+        remote = observed["remote"]
+        assert len(remote["runs"]) == 1
+        operation = observed["injection"]["remote"]["operation_key"]
+        matching = [a for a in after["actions"] if a["operation_key"] == operation]
+        assert len(matching) == 1 and matching[0]["status"] == "succeeded"
+        assert matching[0]["dispatch_started"] is True
+        assert matching[0]["workflow_run_id"] == remote["runs"][0]["id"]
+        assert (
+            remote["runs"][0]["display_title"]
+            == "ADP deployment " + remote["correlation"]
+        )
+        assert remote["runs"][0]["head_sha"] == matching[0]["source_revision"]
     elif name in {"failed-ci", "stale-image", "failed-deploy"}:
         assert after["explicit_block"] and not after["accepted"]
         if name == "failed-ci":

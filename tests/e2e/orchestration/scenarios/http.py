@@ -4,6 +4,7 @@ import json
 import urllib.error
 import urllib.request
 import time
+from datetime import UTC, datetime
 
 from tests.e2e.orchestration.config import resolve_secret_ref, ResolvedConnection
 
@@ -112,5 +113,10 @@ class Client:
             connection_ref=connection_ref,
             account_id=scopes.get("account_id", ""),
             org=next(iter(orgs)),
-            active=scopes.get("status") == "verified",
+            active=scopes.get("status") == "verified"
+            and (
+                not row.get("expires_at")
+                or datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
+                > datetime.now(UTC)
+            ),
         )

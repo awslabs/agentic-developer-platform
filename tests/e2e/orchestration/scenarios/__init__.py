@@ -5,7 +5,7 @@ class DeliveryAdapter:
     def planned_fixtures(self, config):
         from tests.e2e.orchestration.fixtures import FixtureRequest
 
-        return [
+        base = [
             FixtureRequest(
                 "story-1", "qualification-issue", "<qualification-id>/story-1"
             ),
@@ -14,21 +14,54 @@ class DeliveryAdapter:
             ),
             FixtureRequest("flow", "qualification-flow", "<qualification-id>/flow"),
         ]
+        base.extend(
+            FixtureRequest(
+                f"story-{index}-{kind}",
+                "qualification-" + kind,
+                f"<qualification-id>/story-{index}-{kind}",
+            )
+            for index in (1, 2)
+            for kind in ("pr", "branch")
+        )
+        base.append(
+            FixtureRequest(
+                "refusal", "qualification-flow", "<qualification-id>/refusal"
+            )
+        )
+        base.append(
+            FixtureRequest(
+                "worker-loss", "qualification-worker", "<qualification-id>/worker-loss"
+            )
+        )
+        return base
 
     def fixture_providers(self, config):
         from .delivery import FlowProvider
         from .http import Client
         from .manifest import load_manifest
         from .providers import IssueProvider
+        from .workers import WorkerProvider
+        from .delivery_resources import DeliveryResourceProvider
 
         manifest, _ = load_manifest(config)
         client = Client(config, manifest)
-        return IssueProvider(client), FlowProvider(client)
+        return (
+            IssueProvider(client),
+            FlowProvider(client),
+            WorkerProvider.for_config(config, manifest),
+            DeliveryResourceProvider(client, "qualification-pr"),
+            DeliveryResourceProvider(client, "qualification-branch"),
+        )
 
     def execute(self, *, config, inventory, providers):
         from .delivery import execute
 
         return execute(config, inventory, providers)
+
+    def execute_evaluation(self, *, config, inventory, providers, context):
+        from .release import evaluate_release
+
+        return evaluate_release(config=config, inventory=inventory, context=context)
 
 
 def connection_resolver(config):

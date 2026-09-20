@@ -318,9 +318,19 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
             break
         attempts += 1
         try:
-            observed = adapter.execute(
-                config=config, inventory=inventory, providers=providers
-            )
+            if evaluation_context is not None and callable(
+                getattr(adapter, "execute_evaluation", None)
+            ):
+                observed = adapter.execute_evaluation(
+                    config=config,
+                    inventory=inventory,
+                    providers=providers,
+                    context=evaluation_context,
+                )
+            else:
+                observed = adapter.execute(
+                    config=config, inventory=inventory, providers=providers
+                )
             from tests.e2e.orchestration.report import ScenarioReport, write_report
 
             if isinstance(observed, ScenarioReport):

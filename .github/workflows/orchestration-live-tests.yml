@@ -79,7 +79,7 @@ concurrency:
   # Two qualifications against one environment would provision overlapping
   # fixtures. Queue rather than cancel so a run is never interrupted midway
   # between recording an intent and creating the resource.
-  group: orchestration-live-${{ github.event.inputs.environment }}
+  group: orchestration-live-${{ inputs.evaluation_context && format('evaluation-{0}', fromJSON(inputs.evaluation_context).execution_id) || inputs.environment }}
   cancel-in-progress: false
 
 jobs:
@@ -155,7 +155,9 @@ jobs:
       # boto3 is needed here (unlike the offline job): the live path resolves
       # secret references and verifies the caller identity.
       - name: Install dependencies
-        run: pip install pytest==9.0.3 pydantic==2.12.5 boto3
+        run: |
+          pip install pytest==9.0.3 pydantic==2.12.5 boto3 playwright==1.58.0
+          python -m playwright install --with-deps chromium
 
       # Scoped role, assumed after input validation. This is the only credential
       # in the workflow and it is never written to a file or an input.

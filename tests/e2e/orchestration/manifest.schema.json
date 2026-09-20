@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "RuntimeTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "default": "deployment",
+          "enum": [
+            "deployment",
+            "scaledjob"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "cluster": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$",
+          "title": "Cluster",
+          "type": "string"
+        },
+        "namespace": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+          "title": "Namespace",
+          "type": "string"
+        },
+        "deployment": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+          "title": "Deployment",
+          "type": "string"
+        },
+        "container": {
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+          "title": "Container",
+          "type": "string"
+        },
+        "ecr_repository": {
+          "pattern": "^[a-z0-9][a-z0-9/_-]{0,127}$",
+          "title": "Ecr Repository",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cluster",
+        "namespace",
+        "deployment",
+        "container",
+        "ecr_repository"
+      ],
+      "title": "RuntimeTarget",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "definition_hash": {
+      "title": "Definition Hash",
+      "type": "string"
+    },
+    "api_origin": {
+      "title": "Api Origin",
+      "type": "string"
+    },
+    "execution_policy": {
+      "additionalProperties": true,
+      "title": "Execution Policy",
+      "type": "object"
+    },
+    "evaluation": {
+      "additionalProperties": true,
+      "title": "Evaluation",
+      "type": "object"
+    },
+    "planned_gates": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Planned Gates",
+      "type": "array"
+    },
+    "runtime": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RuntimeTarget"
+      },
+      "title": "Runtime",
+      "type": "object"
+    },
+    "required_checks": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Required Checks",
+      "type": "array"
+    },
+    "deployment_workflows": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Deployment Workflows",
+      "type": "array"
+    },
+    "poll_seconds": {
+      "default": 10,
+      "maximum": 30,
+      "minimum": 1,
+      "title": "Poll Seconds",
+      "type": "integer"
+    },
+    "native_faults": {
+      "default": false,
+      "title": "Native Faults",
+      "type": "boolean"
+    },
+    "worker_loss": {
+      "default": false,
+      "title": "Worker Loss",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "definition_hash",
+    "api_origin",
+    "execution_policy",
+    "evaluation",
+    "planned_gates",
+    "runtime",
+    "required_checks",
+    "deployment_workflows"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

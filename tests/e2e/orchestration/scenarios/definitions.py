@@ -154,6 +154,10 @@ def definition():
     }
 
 
+def fixture_test(index, qualification_id):
+    return TESTS[index].format(qualification_id=qualification_id)
+
+
 def digest(value):
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
@@ -164,27 +168,32 @@ def digest(value):
 # deliberately requires an attributable finding; the harness never posts an
 # approval on a developer's behalf or counts its own test as independent review.
 STORIES = (
-    "Implement integer basis-point discounts in qualification/{qualification_id}/pricing.py. "
+    "Implement integer basis-point discounts in modules/gateway/src/qualification/{qualification_id}/pricing.py. "
     "Expose discounted_cents(cents, basis_points), validate cents >= 0 and 0 <= basis_points <= 10000, "
     "and round half up using integer arithmetic. Add unittest coverage including (5,1000)->5, "
     "(15,1000)->14, (100,10000)->0 and invalid inputs. Required independent review: verify the "
-    "half-cent boundary. A real required correction and repair must be observed before this "
+    "half-cent boundary. For the predeclared failed-CI/review fixture, the first PR head must "
+    "use Python round(cents * (10000 - basis_points) / 10000), with the pinned tests unchanged. "
+    "Keep that deliberately defective head unmerged until the independent reviewer records "
+    "the rounding finding and the repair replaces it with integer half-up arithmetic. A real required correction and repair must be observed before this "
     "qualification can pass; do not fabricate a finding, review, or result. Deploy through the accepted policy.",
     "After the predecessor's deployed evaluation and human gate pass, add quote_total(items, basis_points) "
-    "in qualification/{qualification_id}/quote.py, using pricing.discounted_cents on each item. "
+    "in modules/gateway/src/qualification/{qualification_id}/quote.py, using a relative import of pricing.discounted_cents on each item. "
     "Add unittest coverage: [5,15] at 1000 basis points -> 19; [] -> 0. "
     "Use the existing review, merge, deployment and evaluation path; do not restart a coordinator.",
 )
 
 TESTS = (
-    "import unittest\nfrom pricing import discounted_cents\n\n"
+    "import unittest\nfrom importlib import import_module\n"
+    "discounted_cents = import_module('src.qualification.{qualification_id}.pricing').discounted_cents\n\n"
     "class PricingTest(unittest.TestCase):\n"
     "    def test_half_up(self):\n        self.assertEqual(discounted_cents(5, 1000), 5)\n"
     "        self.assertEqual(discounted_cents(15, 1000), 14)\n"
     "    def test_full_discount(self):\n        self.assertEqual(discounted_cents(100, 10000), 0)\n"
     "    def test_invalid(self):\n        for args in [(-1, 1), (1, -1), (1, 10001)]:\n"
     "            with self.assertRaises(ValueError):\n                discounted_cents(*args)\n",
-    "import unittest\nfrom quote import quote_total\n\n"
+    "import unittest\nfrom importlib import import_module\n"
+    "quote_total = import_module('src.qualification.{qualification_id}.quote').quote_total\n\n"
     "class QuoteTest(unittest.TestCase):\n"
     "    def test_per_item_rounding(self):\n        self.assertEqual(quote_total([5, 15], 1000), 19)\n"
     "    def test_empty(self):\n        self.assertEqual(quote_total([], 1000), 0)\n",

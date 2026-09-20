@@ -3,7 +3,7 @@
 import json
 import re
 
-from .definitions import STORIES, TESTS
+from .definitions import STORIES, fixture_test
 from .http import Unsupported
 
 
@@ -30,11 +30,16 @@ class IssueProvider:
             ownership_tags=ownership_tags,
             correlation=idempotency_token,
         )
+        actor = self.client.get("/user", github=True)
+        metadata["creator_id"] = actor["id"]
         test_file = "test_pricing.py" if index == 0 else "test_quote.py"
         body = (
             STORIES[index].format(qualification_id=qualification_id)
-            + f"\n\nPinned {test_file} (run with unittest discovery in this fixture directory):\n```python\n"
-            + TESTS[index]
+            + f"\n\nUse exactly the branch qualification/{qualification_id}/story-{index + 1}. "
+            "Its PR must stay in the accepted repository; the harness inventories both before dispatch."
+            + f"\n\nPinned modules/gateway/tests/qualification/{qualification_id}/{test_file} "
+            "(run pytest from modules/gateway; these tests must be collected by required CI):\n```python\n"
+            + fixture_test(index, qualification_id)
             + "```\n\n"
             + MARKER
             + json.dumps(metadata, sort_keys=True)
@@ -52,6 +57,10 @@ class IssueProvider:
         if status != 201:
             raise Unsupported(
                 f"issue creation returned HTTP {status}; reconcile before retry"
+            )
+        if issue["user"]["id"] != actor["id"]:
+            raise Unsupported(
+                "created issue author differs from the scoped GitHub actor"
             )
         return str(issue["number"])
 
@@ -76,7 +85,16 @@ class IssueProvider:
         if len(matches) != 1 or "pull_request" in issue:
             return None
         try:
-            return json.loads(matches[0])
+            value = json.loads(matches[0])
+            if (
+                not isinstance(value, dict)
+                or value.get("creator_id") != issue.get("user", {}).get("id")
+                or not isinstance(value.get("identity"), str)
+                or not isinstance(value.get("correlation"), str)
+                or not isinstance(value.get("ownership_tags"), dict)
+            ):
+                return None
+            return value
         except ValueError:
             return None
 

@@ -235,7 +235,7 @@ def recovery_observation():
         "live": False,
         "before": before,
         "after": after,
-        "injection": {"exit_code": 0},
+        "injection": {"status": "complete", "liveness": "exited"},
     }
 
 
@@ -367,6 +367,7 @@ def test_false_review_success_is_refused(attack):
 
 def test_fixture_provider_never_reposts_unknown_creation(valid_config):
     client = Mock(config=valid_config)
+    client.get.return_value = {"id": 1}
     provider = IssueProvider(client)
     client.request.side_effect = TimeoutError("unknown")
     with pytest.raises(TimeoutError):

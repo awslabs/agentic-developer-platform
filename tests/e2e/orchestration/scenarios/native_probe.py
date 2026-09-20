@@ -9,12 +9,15 @@ from datetime import UTC, datetime
 from .definitions import DEFINITION_HASH
 from .http import Unsupported
 from .runtime import read_runtime
+from .kubernetes import ScopedKubernetes
 
 OPERATIONS = {
     "tick-restart": "crash-after-intent",
     "timeout-after-success": "timeout-after-effect",
     "duplicate-events": "duplicate-events",
     "out-of-order": "out-of-order",
+    "competing-launches": "competing-launches",
+    "missed-wakeup": "read",
 }
 
 
@@ -54,41 +57,9 @@ class NativeProbe:
             plan_version=session.accepted["plan_version"],
         )
         source = Path(__file__).with_name("native_process.py").read_text()
-        command = [
-            "kubectl",
-            "--context",
-            runtime["cluster"],
-            "--request-timeout=15s",
-            "-n",
-            target.namespace,
-            "exec",
-            "deployment/" + target.deployment,
-            "-c",
-            target.container,
-            "--",
-            "python",
-            "-c",
-            source,
-            json.dumps(request),
-        ]
-        try:
-            process = subprocess.run(
-                command, capture_output=True, text=True, timeout=70
-            )
-        except (OSError, subprocess.SubprocessError):
-            raise Unsupported(
-                "isolated process outcome unknown; do not repeat injection"
-            ) from None
-        rows = [
-            line.removeprefix("ADP_Q2_RESULT:")
-            for line in process.stdout.splitlines()
-            if line.startswith("ADP_Q2_RESULT:")
-        ]
-        if len(rows) != 1 or process.returncode not in {0, 3, 75}:
-            raise Unsupported("isolated process produced no bounded native receipt")
-        result = json.loads(rows[0])
-        if result.get("status") == "NOT_RUN":
-            raise Unsupported("native operation unavailable: " + result["reason"])
+        result = execute_source(
+            session.client, target, source, request, runtime=runtime
+        )
         self.finished.add(execution_id)
         return result
 
@@ -127,6 +98,40 @@ class NativeProbe:
         if name not in OPERATIONS:
             raise Unsupported("no native adapter for this fault")
         observed = self.request(resource_id, OPERATIONS[name])
+        if name == "missed-wakeup":
+            before = observed["after"]
+            due = before.get("next_check_at")
+            if not due:
+                raise Unsupported("no durable scheduled wake-up to omit")
+            due_at = datetime.fromisoformat(due)
+            while (
+                datetime.now(UTC).timestamp()
+                < due_at.timestamp() + self.session.manifest.poll_seconds
+            ):
+                if (
+                    time.monotonic() + self.session.manifest.poll_seconds
+                    >= self.session.started + self.session.config.max_duration_seconds
+                ):
+                    raise Unsupported(
+                        "missed-wakeup observation exceeds accepted duration"
+                    )
+                time.sleep(self.session.manifest.poll_seconds)
+            current = self.request(resource_id, "read")["after"]
+            if current["progress_revision"] != before["progress_revision"]:
+                raise Unsupported(
+                    "shared scheduler progressed before isolated missed-wakeup probe"
+                )
+            resumed = self.request(resource_id, "once")
+            return {
+                "before": before,
+                "after": resumed["after"],
+                "injection": {
+                    "scheduled_at": due,
+                    "resumed_at": resumed["after"]["observed_at"],
+                    "missed_isolated_poll": True,
+                    "shared_scheduler_unchanged": True,
+                },
+            }
         if name == "tick-restart":
             injection = observed["injection"]
             if injection.get("checkpoint") != "after_intent":
@@ -154,3 +159,62 @@ class NativeProbe:
                 "continuation after isolated exit was not observed within the bound"
             )
         return observed
+
+
+def execute_source(client, target, source, request, *, runtime):
+    """Bounded new interpreter authenticated only by the registered AWS session."""
+    kube = ScopedKubernetes(client, target.cluster)
+    if not runtime.get("pod_names"):
+        raise Unsupported("no verified gateway Pod available for isolated interpreter")
+    pod_name, pod_uid = next(iter(runtime["pod_names"].items()))
+    pod = kube.get(f"/api/v1/namespaces/{target.namespace}/pods/{pod_name}")
+    container = next(
+        c for c in pod["status"]["containerStatuses"] if c["name"] == target.container
+    )
+    if (
+        pod["metadata"]["uid"] != pod_uid
+        or pod["metadata"].get("deletionTimestamp")
+        or not container["ready"]
+        or not container["imageID"].endswith("@" + runtime["digest"])
+    ):
+        raise Unsupported(
+            "verified gateway Pod generation or image changed before native probe"
+        )
+    command = [
+        "kubectl",
+        "--kubeconfig",
+        "/dev/stdin",
+        "--context",
+        "qualification",
+        "--request-timeout=15s",
+        "-n",
+        target.namespace,
+        "exec",
+        "pod/" + pod_name,
+        "-c",
+        target.container,
+        "--",
+        "python",
+        "-c",
+        source,
+        json.dumps(request),
+    ]
+    try:
+        process = subprocess.run(
+            command, input=kube.kubeconfig(), capture_output=True, text=True, timeout=70
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise Unsupported(
+            "isolated process outcome unknown; do not repeat injection"
+        ) from None
+    rows = [
+        line.removeprefix("ADP_Q2_RESULT:")
+        for line in process.stdout.splitlines()
+        if line.startswith("ADP_Q2_RESULT:")
+    ]
+    if len(rows) != 1 or process.returncode not in {0, 3, 75}:
+        raise Unsupported("isolated process produced no bounded native receipt")
+    result = json.loads(rows[0])
+    if result.get("status") == "NOT_RUN":
+        raise Unsupported("native operation unavailable: " + result["reason"])
+    return result

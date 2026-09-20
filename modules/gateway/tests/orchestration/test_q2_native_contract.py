@@ -28,6 +28,8 @@ async def scoped(pg_engine, pg_session_factory, execution, monkeypatch):  # noqa
         flow.slug = "q-contract-0123456789"
         plan = await session.scalar(select(OrchestrationAcceptedPlan).where(OrchestrationAcceptedPlan.flow_id == execution.flow_id))
         plan.plan_document = {"spec_revision": "a" * 64, "execution_policy": {"policy_id": "offline-policy", "policy_hash": "c" * 64}}
+        claim = await session.get(OrchestrationWorkClaim, execution.claim_id)
+        claim.claim_event_id = "offline-original-event"
         await session.commit()
     from src.shared import database
 
@@ -109,3 +111,46 @@ async def test_native_replays_actual_stored_observations_without_new_actions(sco
     assert observed["before"]["effect_ids"] == observed["after"]["effect_ids"]
     async with factory() as session:
         assert len(list((await session.scalars(select(OrchestrationAction))).all())) == 2
+
+
+async def test_competing_native_launch_paths_cannot_admit_an_extra_owner(scoped, monkeypatch):
+    _, _, request = scoped
+    monkeypatch.setenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", "true")
+    request["mode"] = "competing-launches"
+    observed = await native.execute(request)
+    deliveries = {r["lane"]: r["disposition"] for r in observed["injection"]["delivery_ids"]}
+    assert deliveries == {"engine_flow": "duplicate", "direct_dispatch": "conflict"}
+    assert observed["after"]["claim_generation"] == observed["before"]["claim_generation"]
+    assert observed["after"]["mutating_owner_count"] == 1
+
+
+@pytest.mark.parametrize("state", ["released", "unresolved"])
+async def test_competing_probe_never_claims_a_free_or_unresolved_lane(scoped, monkeypatch, state):
+    factory, record, request = scoped
+    async with factory() as session:
+        claim = await session.get(OrchestrationWorkClaim, record.claim_id)
+        claim.state = state
+        await session.commit()
+    monkeypatch.setenv("FEATURE_ORCHESTRATION_ENGINE_ENABLED", "true")
+    request["mode"] = "competing-launches"
+    with pytest.raises(ValueError, match="never admit"):
+        await native.execute(request)
+
+
+@pytest.mark.parametrize(
+    "outcome,receipt,eligible",
+    [("succeeded", "remote/receipt", True), ("succeeded", None, False), ("failed", "remote/error", False), ("uncertain", None, False)],
+)
+async def test_timeout_capture_requires_actual_success_and_remote_receipt(outcome, receipt, eligible):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.orchestration.execution_runner import EffectOutcome, EffectResult
+
+    native_result = EffectResult(EffectOutcome(outcome), receipt_ref=receipt)
+    delegate = SimpleNamespace(perform=AsyncMock(return_value=native_result))
+    captured = native.CaptureEffect(delegate)
+    effect = SimpleNamespace(intent=SimpleNamespace(operation_key="offline-operation"))
+    assert await captured.perform(None, effect) is native_result
+    assert bool(captured.success) is eligible
+    delegate.perform.assert_awaited_once_with(None, effect)

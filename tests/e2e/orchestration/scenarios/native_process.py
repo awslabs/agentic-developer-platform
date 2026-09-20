@@ -21,6 +21,7 @@ MODES = frozenset(
         "timeout-after-effect",
         "duplicate-events",
         "out-of-order",
+        "competing-launches",
     }
 )
 KEYS = frozenset(
@@ -63,6 +64,28 @@ def validate_request(request):
 
 def emit(value):
     print("ADP_Q2_RESULT:" + json.dumps(value, sort_keys=True), flush=True)
+
+
+class CaptureEffect:
+    """Delegate unchanged; response loss is eligible only after proven success."""
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.success = None
+
+    def __getattr__(self, name):
+        return getattr(self.handler, name)
+
+    async def perform(self, context, effect):
+        from src.orchestration.execution_runner import EffectOutcome
+
+        result = await self.handler.perform(context, effect)
+        if result.outcome is EffectOutcome.SUCCEEDED and result.receipt_ref:
+            self.success = {
+                "operation_key": effect.intent.operation_key,
+                "receipt_ref": result.receipt_ref,
+            }
+        return result
 
 
 async def scoped_state(factory, request):
@@ -151,6 +174,7 @@ async def scoped_state(factory, request):
             plan_version=plan.version,
             claim_generation=claim.generation,
             owner_kind=claim.owner_kind,
+            active_run_id=claim.active_run_id,
             owner_ref=claim.owner_ref,
             mutating_owner_count=int(
                 claim.state == "held" and claim.active_run_id is not None
@@ -165,6 +189,12 @@ async def scoped_state(factory, request):
                     kind=a.kind,
                     status=a.status,
                     receipt_ref=a.receipt_ref,
+                    dispatch_started=(a.detail or {}).get("dispatch_started"),
+                    source_revision=(a.detail or {}).get("source_revision"),
+                    correlation=(a.detail or {}).get("correlation"),
+                    workflow_run_id=((a.detail or {}).get("workflow_run") or {}).get(
+                        "run_id"
+                    ),
                     attempt=a.attempt,
                     observed_at=a.observed_at.isoformat() if a.observed_at else None,
                 )
@@ -199,6 +229,80 @@ async def execute(request):
     config = runner.RunnerConfig.from_env()
     if not config.enabled:
         raise ValueError("runner feature is disabled; harness cannot activate it")
+    if mode == "competing-launches":
+        from sqlalchemy import select
+        from src.orchestration.models import OrchestrationWorkClaim
+        from src.orchestration.work_claims import (
+            ClaimBinding,
+            ClaimOwner,
+            OwnerKind,
+            claim_work,
+        )
+
+        async def compete(direct):
+            async with factory() as session:
+                claim = await session.scalar(
+                    select(OrchestrationWorkClaim)
+                    .where(
+                        OrchestrationWorkClaim.org_id == request["org_id"],
+                        OrchestrationWorkClaim.id == initial.claim_id,
+                    )
+                    .with_for_update()
+                )
+                if (
+                    claim is None
+                    or claim.state != "held"
+                    or claim.generation != initial.claim_generation
+                    or claim.owner_kind != OwnerKind.ENGINE_FLOW.value
+                    or claim.owner_ref != request["flow_id"]
+                    or not claim.claim_event_id
+                ):
+                    raise ValueError(
+                        "no held fixture engine lane to challenge; never admit a new lane"
+                    )
+                event = (
+                    "qualification:" + request["qualification_id"] + ":direct"
+                    if direct
+                    else claim.claim_event_id
+                )
+                owner = (
+                    ClaimOwner(OwnerKind.DIRECT_DISPATCH, event)
+                    if direct
+                    else ClaimOwner(OwnerKind.ENGINE_FLOW, claim.owner_ref)
+                )
+                receipt = await claim_work(
+                    session,
+                    binding=ClaimBinding(
+                        request["org_id"],
+                        claim.provider_repository_id,
+                        claim.issue_number,
+                    ),
+                    owner=owner,
+                    event_id=event,
+                )
+                await session.commit()
+                return {
+                    "event_id": event,
+                    "lane": owner.kind.value,
+                    "disposition": receipt.disposition.value,
+                }
+
+        deliveries = await asyncio.gather(
+            compete(False), compete(True), return_exceptions=True
+        )
+        for result in deliveries:
+            if isinstance(result, BaseException):
+                raise result
+        _, _, after = await scoped_state(factory, request)
+        return {
+            "live": True,
+            "before": before,
+            "after": after,
+            "injection": {
+                "delivery_ids": deliveries,
+                "boundary": "K3.claim_work:engine-and-direct",
+            },
+        }
     if mode in {"duplicate-events", "out-of-order"}:
         # Replay actual, already-settled native observations. No fabricated
         # provider receipt, webhook signature, expected success or new event id.
@@ -256,6 +360,7 @@ async def execute(request):
     handler = handlers.get(initial.phase)
     if handler is None:
         raise ValueError("no deployed phase handler")
+    handler = CaptureEffect(handler)
     injected = {}
 
     async def checkpoint(name, context):
@@ -275,8 +380,14 @@ async def execute(request):
             )
             # Only this newly created interpreter. Never signal an existing PID.
             os._exit(75)
-        if mode == "timeout-after-effect" and name == "after_effect":
-            injected.update(transport_outcome="timeout", checkpoint=name)
+        if (
+            mode == "timeout-after-effect"
+            and name == "after_effect"
+            and handler.success
+        ):
+            injected.update(
+                transport_outcome="timeout", checkpoint=name, remote=handler.success
+            )
             raise TimeoutError(
                 "qualification response-loss injection after actual provider effect"
             )

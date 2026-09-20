@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 from urllib.parse import urlsplit
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[4]
 
 
 class RuntimeTarget(Strict):
+    kind: Literal["deployment", "scaledjob"] = "deployment"
     cluster: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$")
     namespace: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     deployment: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -36,6 +38,7 @@ class Manifest(Strict):
     deployment_workflows: list[str] = Field(min_length=1, max_length=8)
     poll_seconds: int = Field(default=10, ge=1, le=30)
     native_faults: bool = False
+    worker_loss: bool = False
 
     @model_validator(mode="after")
     def fixed_contract(self):
@@ -59,6 +62,8 @@ class Manifest(Strict):
             "worker",
         }:
             raise ValueError("manifest must pin release gate and engine/worker targets")
+        if self.runtime["engine"].kind != "deployment":
+            raise ValueError("engine probes require a verified gateway deployment")
         if any(
             k in self.execution_policy
             for k in ("policy_id", "policy_hash", "principal_id")
@@ -112,7 +117,12 @@ def load_manifest(config):
 def verify_checkout(config):
     """Refuse untracked or modified code/config before resolving live credentials."""
     package = ROOT / "tests/e2e/orchestration"
-    paths = list(package.rglob("*.py"))
+    shared = [
+        ROOT / "tests/e2e/new_ui/test_coexistence.py",
+        ROOT / "tests/e2e/chat/helpers.py",
+        ROOT / "contracts/orchestration-evaluation/v1/models.py",
+    ]
+    paths = list(package.rglob("*.py")) + shared
     code_paths = set(paths)
     paths.append(ROOT / config.scenario_manifest)
     if config.source is None:
@@ -149,6 +159,7 @@ def verify_checkout(config):
             config.versions["harness"],
             "--",
             "tests/e2e/orchestration",
+            *[str(p.relative_to(ROOT)) for p in shared],
         ],
         cwd=ROOT,
         text=True,
