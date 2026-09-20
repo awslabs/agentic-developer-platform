@@ -145,7 +145,9 @@ async def test_operator_scope_selects_only_catalogue_models(db_session, monkeypa
     with patch("src.internal.persona_model_probe_service.bedrock_destination_signer.get_credentials", new_callable=AsyncMock) as credentials:
         with pytest.raises(ProbeConflictError, match="outside the configured"):
             await start_probe(
-                db_session, slot_id=claimed.slot.id, lease_token=claimed.lease_token,
+                db_session,
+                slot_id=claimed.slot.id,
+                lease_token=claimed.lease_token,
                 request_shape_sha256=claimed.slot.expected_request_shape_sha256,
             )
         credentials.assert_not_awaited()
