@@ -156,10 +156,25 @@ export function isPersonaModelConflict(error: unknown): error is PersonaModelCon
   );
 }
 
+/** Translate known refusal codes; keep backend diagnostics out of the settings page. */
 export function personaModelErrorMessage(error: unknown, fallback: string): string {
-  const detail = (error as { detail?: unknown })?.detail;
-  if (typeof detail === 'string' && detail) return detail;
-  const structured = detail as { message?: string } | undefined;
-  if (structured?.message) return structured.message;
-  return (error as { message?: string })?.message || fallback;
+  const value = error as { reason?: unknown; error?: unknown; detail?: unknown } | null;
+  const detail = value?.detail;
+  const structured = detail && typeof detail === 'object'
+    ? detail as { reason?: unknown; error?: unknown } : value;
+  const reason = structured?.reason ?? structured?.error;
+  const messages: Record<string, string> = {
+    unknown_model: 'This model is no longer listed. Reload the model choices.',
+    not_invocable: 'This model is currently unavailable. Choose another model.',
+    evidence_stale: 'Model availability needs to be checked. Try another available model or contact your ADP administrator.',
+    probing_disabled: 'Model choices are not ready yet. Contact your ADP administrator.',
+    not_yet_certified: 'This model is not ready to use yet. Choose another model.',
+    retired: 'This model has been retired. Choose another model.',
+    not_permitted: 'Your organization does not allow this model. Choose another model or contact your ADP administrator.',
+    harness_incompatible: 'This persona does not support this model.',
+    persona_not_configurable: 'Model selection is not available for this persona.',
+    access_denied: 'You do not have permission to change these settings.',
+    cross_tenant_denied: 'You do not have permission to change these settings.',
+  };
+  return typeof reason === 'string' && Object.prototype.hasOwnProperty.call(messages, reason) ? messages[reason] : fallback;
 }
