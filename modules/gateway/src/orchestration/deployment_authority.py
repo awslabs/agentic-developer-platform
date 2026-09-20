@@ -12,7 +12,7 @@ from .merge_controller import MERGE_KIND, MergeReceipt
 from .models import OrchestrationAction, OrchestrationWorkClaim
 from .pr_bindings import active_binding_for_node, binding_scope_matches
 
-DELIVERY_PHASES = frozenset({ExecutionPhase.DEPLOYMENT_PENDING, ExecutionPhase.AWAITING_RUNTIME_VERIFICATION})
+DELIVERY_PHASES = frozenset({ExecutionPhase.DEPLOYMENT_PENDING, ExecutionPhase.AWAITING_RUNTIME_VERIFICATION, ExecutionPhase.EVALUATION_PENDING})
 
 
 async def load_delivery_merge(session, *, identity, node):

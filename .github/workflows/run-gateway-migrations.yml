@@ -175,3 +175,18 @@ jobs:
           python3 modules/gateway/scripts/pricing-rollout.py migrate \
             --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" \
             --environment "$ENVIRONMENT" "${PRICING_IMAGE_ARGS[@]}"
+
+      - name: Record gateway-migrations build evidence
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
+          ADP_RELEASE_WORKFLOW: .github/workflows/run-gateway-migrations.yml
+        run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-migrations
+      - name: Upload gateway-migrations build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-release-gateway-migrations-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-release-gateway-migrations/release.json
+          if-no-files-found: error
+          retention-days: 30

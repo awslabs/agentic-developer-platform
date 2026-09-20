@@ -27,13 +27,14 @@ class ResolvedTarget:
     credential_label: str
     principal_user_id: str
     role_arn: str
+    observation: object | None = None
 
 
 class DeploymentTargetResolver:
     def __init__(self, *, secrets=None, assume=assume_role, session_factory=boto3.Session):
         self.secrets, self.assume, self.session_factory = secrets, assume, session_factory
 
-    async def resolve(self, session, *, entry, policy, principal_user_id, execution_id):
+    async def resolve(self, session, *, entry, policy, principal_user_id, execution_id, inspect_target=None, authorize_scope=None):
         if entry.connection_id not in policy.environment_connection_ids:
             raise CycleBlockedError("deployment_connection_not_permitted")
         authority = policy.user_credentials
@@ -54,6 +55,8 @@ class DeploymentTargetResolver:
             raise CycleBlockedError("deployment_registered_role_invalid")
         if role_arn not in authority.aws_role_arns:
             raise CycleBlockedError("deployment_registered_role_not_approved")
+        if authorize_scope is not None:
+            authorize_scope(credential.id, role_arn)
         temporary = await asyncio.to_thread(
             self.assume,
             role_arn=role_arn,
@@ -86,9 +89,9 @@ class DeploymentTargetResolver:
                 or description.get("name") != cluster
             ):
                 raise CycleBlockedError("deployment_target_identity_mismatch")
-            return account
+            return account, inspect_target(scoped, description, namespace) if inspect_target else None
 
-        account = await asyncio.to_thread(read_identity)
+        account, observation = await asyncio.to_thread(read_identity)
         return ResolvedTarget(
             PhysicalTarget(
                 provider="aws",
@@ -102,4 +105,5 @@ class DeploymentTargetResolver:
             credential.label,
             principal_user_id,
             role_arn,
+            observation,
         )

@@ -54,7 +54,7 @@ execution read model exposes a small run summary, excluding credential inputs.
 
 ENGINE-D3 consumes that receipt. After verified runtime evidence and safe lease
 settlement, D3 marks the corresponding action's `runtime_verified` field and
-returns to `deployment_pending` when `remaining_entry_ids` is nonempty. D2 then
+returns to `deployment_pending` for remaining entries or the final audited handoff. D2 then
 handles the next entry; it can observe the gateway run's migration artifact
 without dispatching migrations twice. D3 owns final acceptance and rollback
 decisions. A reviewed documentation-only selection creates a separate durable

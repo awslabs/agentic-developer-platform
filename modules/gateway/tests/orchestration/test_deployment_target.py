@@ -80,3 +80,22 @@ async def test_unverifiable_connection_never_falls_back(target, failure):
     with pytest.raises(CycleBlockedError):
         await resolve(target)
     assert target.session_factory.call_count <= 1
+
+
+async def test_full_policy_denial_precedes_role_assumption_and_runtime_reads(target):
+    authorize = Mock(side_effect=CycleBlockedError("deployment_runtime_authority_denied"))
+    inspect = Mock()
+    with pytest.raises(CycleBlockedError, match="authority_denied"):
+        await target.resolver.resolve(
+            object(),
+            entry=target.entry,
+            policy=target.policy,
+            principal_user_id="human",
+            execution_id="execution",
+            authorize_scope=authorize,
+            inspect_target=inspect,
+        )
+    authorize.assert_called_once_with("connection", "arn:aws:iam::123456789012:role/deploy")
+    target.assume.assert_not_called()
+    target.sts.get_caller_identity.assert_not_called()
+    inspect.assert_not_called()

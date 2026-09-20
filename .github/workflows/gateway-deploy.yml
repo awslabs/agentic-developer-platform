@@ -804,6 +804,21 @@ jobs:
           ENVIRONMENT: ${{ inputs.environment || 'dev' }}
           NAMESPACE: ${{ env.NAMESPACE }}
 
+      - name: Record gateway-backend build evidence
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
+          ADP_RELEASE_WORKFLOW: .github/workflows/gateway-deploy.yml
+        run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-backend
+      - name: Upload gateway-backend build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-release-gateway-backend-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-release-gateway-backend/release.json
+          if-no-files-found: error
+          retention-days: 30
+
   deploy-frontend:
     name: Build and Deploy Frontend
     runs-on: arc-runner-org
@@ -919,6 +934,21 @@ jobs:
           if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
             aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
           fi
+
+      - name: Record gateway-frontend build evidence
+        env:
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
+          ADP_RELEASE_SOURCE: ${{ inputs.adp_source_revision || github.sha }}
+          ADP_RELEASE_DEFINITION: ${{ github.workflow_sha }}
+          ADP_RELEASE_WORKFLOW: .github/workflows/gateway-deploy.yml
+        run: python3 modules/gateway/scripts/deployment-release-evidence.py gateway-frontend
+      - name: Upload gateway-frontend build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: adp-release-gateway-frontend-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-release-gateway-frontend/release.json
+          if-no-files-found: error
+          retention-days: 30
 
   run-migrations:
     name: Run Pending Migrations

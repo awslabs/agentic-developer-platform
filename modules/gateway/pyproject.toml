@@ -39,6 +39,7 @@ dependencies = [
     # would pass every test and raise ModuleNotFoundError in the image. Five test
     # modules (issue #5039) also import it; a runtime dep covers them too.
     "pyyaml>=6.0",
+    "websockets==17.1",
 ]
 
 [project.optional-dependencies]
