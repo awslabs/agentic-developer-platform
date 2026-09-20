@@ -323,7 +323,7 @@ class TestRequestShapeSha256:
     def test_reads_sdk_generated_digest(self):
         a = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")
         b = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")
-        assert a == b == "dc8a7d4f36cd242931147701899fba69170391d85684e12298fd26c0c528a2fc"
+        assert a == b == "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b"
 
     def test_sdk_body_digest_can_differ_by_model(self):
         a = compute_request_shape_sha256("global.anthropic.claude-sonnet-4-6")

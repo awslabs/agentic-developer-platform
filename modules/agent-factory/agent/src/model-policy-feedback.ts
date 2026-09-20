@@ -28,15 +28,15 @@ type Environment = Record<string, string | undefined>;
 const REQUESTER_ACTIONS: ReadonlyMap<string, string> = new Map([
   [
     'direct_override_unresolved',
-    'That model name is not in the published Agent Models catalogue. Check the catalogue for a published alias and request that instead.',
+    'That model is not listed in Agent Models. Choose one of the available models.',
   ],
   [
     'model_unavailable',
-    'That model is not currently active in the Agent Models catalogue. Choose an active model.',
+    'That model is currently unavailable. Choose another model in Agent Models.',
   ],
   [
     'harness_incompatible',
-    'That model is not compatible with this persona’s agent harness. Choose a model this persona supports.',
+    'This persona does not support that model. Choose another model in Agent Models.',
   ],
   [
     'persona_incompatible',
@@ -48,7 +48,7 @@ const REQUESTER_ACTIONS: ReadonlyMap<string, string> = new Map([
   ],
   [
     'class_default_unavailable',
-    'No default model is configured for this persona class. Ask an ADP administrator to configure one.',
+    'No default model is configured for this persona. Ask an ADP administrator to configure one.',
   ],
 ]);
 
@@ -93,10 +93,10 @@ const OPERATOR_REASONS: ReadonlySet<string> = new Set([
 ]);
 
 const OPERATOR_ACTION =
-  'ADP could not establish the model policy for this run. Ask an ADP operator to check model-policy evidence for this run.';
+  'ADP could not verify the model settings for this run. Contact your ADP administrator and include the run link.';
 
 const UNKNOWN_REASON_ACTION =
-  'ADP could not admit the request for an unrecognized reason. Ask an ADP operator to check model-policy evidence for this run.';
+  'ADP could not apply the requested model settings. Contact your ADP administrator and include the run link.';
 
 /** Placeholder shown instead of an unrenderable untrusted value. */
 const UNRENDERABLE = 'unavailable';
@@ -151,15 +151,15 @@ function knownPosture(value: string | undefined): Posture | null {
 function behaviorFor(posture: Posture | null): string {
   switch (posture) {
     case 'report_only':
-      return 'ADP is in report-only mode for model policy, so this run continued on its existing model assignment. Nothing was substituted.';
+      return 'This run kept its existing model. The requested model change was not applied.';
     case 'disabled':
-      return 'Model policy is disabled, so this run continued on its existing model assignment. Nothing was substituted.';
+      return 'This run kept its existing model. The requested model change was not applied.';
     case 'enforcing':
       // Deliberately makes no refusal claim: runtime enforcement is not
       // implemented in this worker, so the run continues past this notice.
-      return 'ADP recorded an enforcing model-policy posture for this run. This notice does not establish whether agent inference was blocked; ask an ADP operator to check model-policy evidence for this run.';
+      return 'Check the run status to see whether the agent started.';
     default:
-      return 'ADP could not confirm the model-policy posture for this run, so this notice makes no claim about whether inference was blocked.';
+      return 'ADP could not confirm whether the agent started. Check the run status.';
   }
 }
 
@@ -212,11 +212,10 @@ export function buildModelPolicyFeedback(
   // Only a reason that is *exactly* a member of the closed vocabulary is ever
   // rendered, and membership is tested on the raw value: sanitizing first would
   // repair a malformed code into a recognized one (see ``recognizedReason``).
-  // Anything else renders as ``unrecognized`` with neutral guidance, so neither
+  // Anything else receives neutral guidance, so neither
   // arbitrary server text nor an inherited object property can reach the
   // requester as though it were a real refusal reason.
   const reason = recognizedReason(env.ADP_MODEL_POLICY_REASON);
-  const displayReason = reason ?? 'unrecognized';
 
   const safeRequested = sanitizeUntrusted(requested);
   const messageId = sanitizeUntrusted(env.ADP_MESSAGE_ID, 64);
@@ -226,8 +225,8 @@ export function buildModelPolicyFeedback(
   return {
     marker,
     body:
-      `${marker}\n⚠️ Model request \`${safeRequested}\` could not be admitted ` +
-      `(\`${displayReason}\`). ${actionFor(reason)} ${behaviorFor(posture)}`,
+      `${marker}\n⚠️ Model request \`${safeRequested}\` could not be applied. ` +
+      `${actionFor(reason)} ${behaviorFor(posture)}`,
   };
 }
 

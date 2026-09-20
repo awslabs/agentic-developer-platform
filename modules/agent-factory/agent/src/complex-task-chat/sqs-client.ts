@@ -18,6 +18,8 @@ import {
 import type { AgUiEvent } from './ag-ui-events';
 
 export interface TaskPayload {
+  /** Model selected for the authenticated human by the trusted producer. */
+  model_resolved?: string;
   /** Server-registered run capability, distinct from the SQS delivery id. */
   message_id?: string;
   arrived_at?: string;

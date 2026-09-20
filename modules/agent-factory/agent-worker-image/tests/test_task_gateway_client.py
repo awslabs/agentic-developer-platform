@@ -104,6 +104,44 @@ def test_gateway_refusal_never_falls_back_to_sqs(transport, monkeypatch):
     direct.assert_not_called()
 
 
+def test_initial_workload_refusal_retries_with_fresh_proof(transport, monkeypatch):
+    proofs, response, calls = transport
+    response.status_code = 404
+
+    def pod_becomes_visible(_seconds):
+        proofs[0] = "published-pod"
+        response.status_code = 200
+
+    monkeypatch.setattr(client.time, "sleep", pod_becomes_visible)
+    assert client.own_task() == "own-task"
+    assert len(calls) == 2
+    assert [args["headers"]["X-Adp-Workload-Token"] for _, args, _ in calls] == [
+        "pod-one", "published-pod"
+    ]
+
+
+def test_permanent_workload_refusal_is_bounded(transport, monkeypatch):
+    _, response, calls = transport
+    response.status_code = 404
+    sleeps = Mock()
+    monkeypatch.setattr(client.time, "sleep", sleeps)
+    with pytest.raises(client.TaskGatewayError, match="workload unavailable"):
+        client.own_task()
+    assert len(calls) == 5
+    assert sleeps.call_count == 4
+
+
+@pytest.mark.parametrize("operation", ["heartbeat_task", "acknowledge_task"])
+def test_lost_workload_during_maintenance_is_not_a_startup_retry(transport, monkeypatch, operation):
+    _, response, calls = transport
+    response.status_code = 404
+    sleeps = Mock(side_effect=AssertionError("maintenance must not retry a refusal"))
+    monkeypatch.setattr(client.time, "sleep", sleeps)
+    with pytest.raises(client.TaskGatewayError, match="refused"):
+        getattr(client, operation)()
+    assert len(calls) == 1
+
+
 def test_protected_main_stops_early_heartbeat_on_startup_failure(transport, monkeypatch):
     import entrypoint
 

@@ -34,10 +34,15 @@ module "gateway_sessions" {
 # the API GW being created first, which is the correct ordering.
 
 module "gateway_lambda" {
-  source                   = "./modules/lambda-gateway"
-  model_policy_enabled     = var.chat_model_policy_enabled
-  model_control_endpoint   = var.chat_model_control_endpoint
-  model_root_admission_arn = var.chat_model_root_admission_arn
+  source                        = "./modules/lambda-gateway"
+  model_policy_enabled          = var.chat_model_policy_enabled
+  persona_model_mapping_enabled = var.persona_model_mapping_enabled
+  model_control_endpoint        = local.persona_model_control_endpoint
+  model_root_admission_arn      = local.persona_model_root_admission_arn
+
+  webhook_events_table_name  = local.chat_webhook_events_table
+  webhook_events_table_arn   = local.chat_webhook_events_table == "" ? "" : "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.chat_webhook_events_table}"
+  webhook_events_kms_key_arn = try(local.chat_worker_wiring.webhook_events_kms_key_arn, "")
 
   name_prefix         = local.name_prefix
   environment         = var.environment
@@ -593,4 +598,29 @@ resource "aws_iam_role_policy" "runner_gateway_dynamodb" {
       }
     ]
   })
+}
+
+# Basic saved-model lookup shares the existing gateway deployment. Derive its
+# endpoint from that deployment so a dev apply cannot erase manually supplied
+# producer wiring. Explicit advanced-policy endpoints still take precedence.
+locals {
+  persona_model_control_endpoint = var.chat_model_control_endpoint != "" ? var.chat_model_control_endpoint : (
+    var.persona_model_mapping_enabled && var.gateway_deployed ? "${data.terraform_remote_state.gateway[0].outputs.api_gateway_invoke_url}/internal/v1/agent" : ""
+  )
+  persona_model_root_admission_arn = var.chat_model_root_admission_arn != "" ? var.chat_model_root_admission_arn : (
+    var.persona_model_mapping_enabled && var.gateway_deployed ? "arn:aws:execute-api:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${data.terraform_remote_state.gateway[0].outputs.api_gateway_id}/${data.terraform_remote_state.gateway[0].outputs.api_gateway_stage_name}/POST/internal/v1/agent/roots/admit" : ""
+  )
+}
+
+# Chat registration is required before inference can inherit the human's
+# destination and budgets. Discover the webhook-owned resource identifiers.
+data "aws_ssm_parameters_by_path" "chat_worker_runtime" {
+  path            = "/adp/${var.environment}/webhook-ingress/worker-runtime"
+  recursive       = false
+  with_decryption = false
+}
+locals {
+  chat_worker_parameters    = zipmap(data.aws_ssm_parameters_by_path.chat_worker_runtime.names, data.aws_ssm_parameters_by_path.chat_worker_runtime.values)
+  chat_worker_wiring        = jsondecode(lookup(local.chat_worker_parameters, "/adp/${var.environment}/webhook-ingress/worker-runtime/wiring", "{}"))
+  chat_webhook_events_table = try(local.chat_worker_wiring.webhook_events_table, "")
 }

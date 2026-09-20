@@ -67,9 +67,9 @@ describe('persona-model requester feedback: message content', () => {
     const feedback = buildModelPolicyFeedback(REFUSED_ENV);
 
     expect(feedback).not.toBeNull();
-    expect(feedback?.body).toContain('not in the published Agent Models catalogue');
-    expect(feedback?.body).toContain('continued on its existing model assignment');
-    expect(feedback?.body).toContain('Nothing was substituted.');
+    expect(feedback?.body).toContain('not listed in Agent Models');
+    expect(feedback?.body).toContain('kept its existing model');
+    expect(feedback?.body).toContain('The requested model change was not applied.');
     // Report-only must never claim inference was blocked -- it was not.
     expect(feedback?.body).not.toContain('refused before agent inference');
   });
@@ -80,8 +80,8 @@ describe('persona-model requester feedback: message content', () => {
       ADP_MODEL_POLICY_REASON: 'snapshot_expired',
     });
 
-    expect(feedback?.body).toContain('Ask an ADP operator');
-    expect(feedback?.body).toContain('`snapshot_expired`');
+    expect(feedback?.body).toContain('Contact your ADP administrator');
+    expect(feedback?.body).not.toContain('`snapshot_expired`');
   });
 
   it('never claims inference was blocked, including under an enforcing posture', () => {
@@ -94,13 +94,13 @@ describe('persona-model requester feedback: message content', () => {
       ADP_MODEL_POLICY_POSTURE: 'enforcing',
     });
     expect(enforcing?.body).not.toContain('refused before agent inference');
-    expect(enforcing?.body).toContain('does not establish whether agent inference was blocked');
+    expect(enforcing?.body).toContain('Check the run status to see whether the agent started');
 
     const disabled = buildModelPolicyFeedback({
       ...REFUSED_ENV,
       ADP_MODEL_POLICY_POSTURE: 'disabled',
     });
-    expect(disabled?.body).toContain('continued on its existing model assignment');
+    expect(disabled?.body).toContain('kept its existing model');
     expect(disabled?.body).not.toContain('refused before agent inference');
   });
 
@@ -110,8 +110,8 @@ describe('persona-model requester feedback: message content', () => {
       ADP_MODEL_POLICY_POSTURE: 'quarantined-v9',
     });
 
-    expect(feedback?.body).toContain('could not confirm the model-policy posture');
-    expect(feedback?.body).toContain('makes no claim about whether inference was blocked');
+    expect(feedback?.body).toContain('could not confirm whether the agent started');
+    expect(feedback?.body).not.toContain('posture');
     expect(feedback?.body).not.toContain('refused before agent inference');
     expect(feedback?.body).not.toContain('quarantined-v9');
   });
@@ -122,8 +122,8 @@ describe('persona-model requester feedback: message content', () => {
       ADP_MODEL_POLICY_REASON: 'Traceback: psycopg2 OperationalError at 10.0.3.14:5432',
     });
 
-    expect(feedback?.body).toContain('`unrecognized`');
-    expect(feedback?.body).toContain('Ask an ADP operator');
+    expect(feedback?.body).toContain('could not apply the requested model settings');
+    expect(feedback?.body).toContain('Contact your ADP administrator');
     expect(feedback?.body).not.toContain('psycopg2');
     expect(feedback?.body).not.toContain('10.0.3.14');
   });
@@ -139,8 +139,8 @@ describe('persona-model requester feedback: message content', () => {
         ADP_MODEL_POLICY_REASON: key,
       });
 
-      expect(feedback?.body).toContain('`unrecognized`');
-      expect(feedback?.body).toContain('Ask an ADP operator');
+      expect(feedback?.body).toContain('could not apply the requested model settings');
+      expect(feedback?.body).toContain('Contact your ADP administrator');
       expect(feedback?.body).not.toContain('native code');
       expect(feedback?.body).not.toContain('[object Object]');
       expect(feedback?.body).not.toContain('function');
@@ -163,27 +163,27 @@ describe('persona-model requester feedback: message content', () => {
       ADP_MODEL_POLICY_REASON: raw,
     });
 
-    expect(feedback?.body).toContain('`unrecognized`');
+    expect(feedback?.body).toContain('could not apply the requested model settings');
     expect(feedback?.body).not.toContain('does not permit that model');
     expect(feedback?.body).not.toContain('`not_permitted`');
     expect(feedback?.body).not.toContain('`snapshot_expired`');
   });
 
-  it('still renders the exact recognized codes', () => {
+  it('translates recognized reasons without exposing internal codes', () => {
     // The corrections above must not make every reason unrecognized.
     const requester = buildModelPolicyFeedback({
       ...REFUSED_ENV,
       ADP_MODEL_POLICY_REASON: 'not_permitted',
     });
-    expect(requester?.body).toContain('`not_permitted`');
+    expect(requester?.body).not.toContain('`not_permitted`');
     expect(requester?.body).toContain('does not permit that model');
 
     const operator = buildModelPolicyFeedback({
       ...REFUSED_ENV,
       ADP_MODEL_POLICY_REASON: 'snapshot_expired',
     });
-    expect(operator?.body).toContain('`snapshot_expired`');
-    expect(operator?.body).toContain('Ask an ADP operator');
+    expect(operator?.body).not.toContain('`snapshot_expired`');
+    expect(operator?.body).toContain('Contact your ADP administrator');
   });
 
   it('is silent for accepted or absent direct requests', () => {
@@ -230,8 +230,8 @@ describe('persona-model requester feedback: untrusted text is inert', () => {
     }
 
     // Exactly one HTML comment in the body (our own marker), and the body
-    // cannot be broken out of: backticks appear only as the two code spans we
-    // emit ourselves.
+    // cannot be broken out of: backticks appear only around the requested model
+    // in the code span we emit ourselves.
     const body = feedback!.body;
     expect(body.split('<!--').length - 1).toBe(1);
     expect(body.split('-->').length - 1).toBe(1);
@@ -241,7 +241,7 @@ describe('persona-model requester feedback: untrusted text is inert', () => {
     expect(body).not.toContain('\r');
 
     const notice = body.slice(body.indexOf('-->') + 3).trimStart();
-    expect(notice.split('`').length - 1).toBe(4);
+    expect(notice.split('`').length - 1).toBe(2);
     for (const dangerous of ['@', '<', '>', '[', ']']) {
       expect(notice).not.toContain(dangerous);
     }
@@ -264,7 +264,7 @@ describe('persona-model requester feedback: untrusted text is inert', () => {
     expect(feedback!.body.split('<!--').length - 1).toBe(1);
     expect(feedback!.body.split('-->').length - 1).toBe(1);
     expect(feedback!.body).not.toContain('@everyone');
-    expect(feedback!.body).toContain('`unrecognized`');
+    expect(feedback!.body).toContain('could not apply the requested model settings');
   });
 
   it('bounds an over-long untrusted value', () => {
@@ -284,7 +284,7 @@ describe('persona-model requester feedback: real posting path', () => {
 
     expect(outcome).toBe('posted');
     expect(h.posted).toHaveLength(1);
-    expect(h.posted[0]).toContain('could not be admitted');
+    expect(h.posted[0]).toContain('could not be applied');
   });
 
   it('stays silent on a genuine retry of this run (trusted ADP author)', async () => {
@@ -365,7 +365,7 @@ describe('persona-model requester feedback: real posting path', () => {
     await deliverModelPolicyFeedback({ ...h, env: REFUSED_ENV });
 
     // The legacy assignment is what executed; the notice must say so.
-    expect(h.posted[0]).toContain('continued on its existing model assignment');
+    expect(h.posted[0]).toContain('kept its existing model');
     expect(h.posted[0]).not.toContain('refused before agent inference');
   });
 

@@ -4,6 +4,8 @@
 locals {
   worker_gateway_config = merge({
     AGENT_AUTHORITY_ENABLED               = tostring(var.agent_authority_enabled)
+    PERSONA_MODEL_MAPPING_ENABLED         = tostring(var.persona_model_mapping_enabled)
+    PERSONA_MODEL_PRODUCER_ROLES          = join(",", distinct(concat([aws_iam_role.lambda_execution.arn, "arn:aws:iam::${local.account_id}:role/adp-${var.environment}-agent-gateway-ingest"], var.persona_model_additional_producer_roles)))
     ADP_RUN_TASKS_ENABLED                 = tostring(var.agent_authority_enabled)
     ADP_DOOR_SERVICE_URL                  = var.agent_door_service_url
     AGENT_RUN_LOGS_BUCKET                 = aws_s3_bucket.agent_run_logs.bucket
@@ -53,6 +55,7 @@ resource "terraform_data" "worker_gateway_rollout" {
     kubernetes_secret.agent_authority,
     kubernetes_secret.worker_run_services,
     aws_iam_role_policy.gateway_authorized_dispatch,
+    aws_iam_role_policy_attachment.gateway_authorized_dispatch,
     kubernetes_cluster_role_binding.gateway_agent_tokenreview,
     kubernetes_role_binding.gateway_agent_pod_read,
     terraform_data.worker_security_rollout,

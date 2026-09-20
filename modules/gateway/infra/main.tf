@@ -1157,6 +1157,7 @@ module "orchestration_tick" {
   # nothing and reports `commands_enabled=false`.
   engine_enabled           = var.orchestration_engine_enabled
   agent_authority_enabled  = var.orchestration_agent_authority_enabled
+  persona_model_mapping_enabled = var.persona_model_mapping_enabled
   agent_authority_prepared = var.orchestration_agent_authority_prepared && local.worker_events_table != "" && local.worker_events_key != ""
   agent_authority_resources = {
     webhook_events_table_name  = local.worker_events_table

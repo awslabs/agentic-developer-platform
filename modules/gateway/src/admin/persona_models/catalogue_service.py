@@ -322,6 +322,7 @@ async def build_model_catalogue(
     principal_kind: Literal["human", "service_account"] = "human",
     canonical_principal_id: str | None = None,
     principal_status: str | None = None,
+    require_evidence: bool = True,
 ) -> list[ModelCatalogueRow]:
     """Build the selectable-model catalogue for a persona and destination.
 
@@ -381,6 +382,13 @@ async def build_model_catalogue(
         # neither may widen the other.
         if not _model_matches_service_restrictions(model.canonical_model_id, service_restriction_pattern_sets):
             rows.append(_model_row(model, selectable=False, reason="not_permitted", permitted=False))
+            continue
+
+        # A saved preference is a choice, not a provider-access certificate.
+        # The optional protected runtime retains its fresh-evidence gate.
+        if not require_evidence:
+            retired = model.lifecycle == "retired"
+            rows.append(_model_row(model, selectable=not retired, reason="retired" if retired else None, permitted=True))
             continue
 
         # Gate 5: Invocability evidence
@@ -512,6 +520,7 @@ async def validate_selection(
     service_restriction_pattern_sets: list[list[str]] | None = None,
     policy_unavailable_reason: str | None = None,
     principal_status: str | None = None,
+    require_evidence: bool = True,
 ) -> SelectionResult | SelectionRejection:
     """Validate whether a model is selectable for a principal and persona.
 
@@ -625,6 +634,13 @@ async def validate_selection(
         return SelectionRejection(
             reason="not_permitted",
             message=f"'{resolved}' is not permitted by the registered service-principal model policy.",
+        )
+
+    if not require_evidence:
+        return SelectionResult(
+            canonical_model_id=resolved,
+            compatibility_class=compat_class,
+            harness_contract_revision=catalogue_entry.harness_contract_revision,
         )
 
     # Gate 5: Invocability evidence — FAIL-CLOSED

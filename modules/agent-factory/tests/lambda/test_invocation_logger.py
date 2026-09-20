@@ -89,7 +89,13 @@ def mocked_aws_services(mock_env):
             AttributeDefinitions=[
                 {"AttributeName": "event_id", "AttributeType": "S"},
                 {"AttributeName": "arrived_at", "AttributeType": "S"},
+                {"AttributeName": "root_human_id", "AttributeType": "S"},
             ],
+            GlobalSecondaryIndexes=[{
+                "IndexName": "root-human-index",
+                "KeySchema": [{"AttributeName": "root_human_id", "KeyType": "HASH"}, {"AttributeName": "arrived_at", "KeyType": "RANGE"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }],
             BillingMode="PAY_PER_REQUEST",
         )
 
@@ -502,3 +508,14 @@ class TestTopicFallback:
         rows = _get_invocation_rows(mocked_aws_services["ddb"])
         assert len(rows) == 1
         assert rows[0]["topic"] == "(untitled)"
+
+
+def test_service_registration_omits_sparse_human_index_key(mocked_aws_services):
+    import invocation_logger
+    row = invocation_logger.log_invocation(
+        "adp-dev-webhook-events", event_id="service-run", arrived_at="2026-09-20T00:00:00Z",
+        user_id="service-user", channel="webchat", tenant_id="tenant", account_type="service",
+    )
+    assert row is not None
+    assert row["is_human_rooted"] is False
+    assert "root_human_id" not in row

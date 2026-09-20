@@ -98,6 +98,7 @@ resource "aws_lambda_function" "github_webhook" {
       EVENTS_TABLE                  = aws_dynamodb_table.webhook_events.name
       AGENT_AUTHORITY_TABLE         = aws_dynamodb_table.agent_authority.name
       AGENT_AUTHORITY_ENABLED       = tostring(var.agent_authority_enabled)
+      PERSONA_MODEL_MAPPING_ENABLED = tostring(var.persona_model_mapping_enabled)
       ADP_WORK_CLAIMS_ENABLED       = tostring(var.agent_authority_enabled)
       ADP_AGENT_CONTROL_ENDPOINT    = "${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent"
       RATE_LIMITS_TABLE             = aws_dynamodb_table.rate_limits.name

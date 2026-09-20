@@ -19,6 +19,9 @@ async function upstream(handler: http.RequestListener): Promise<{
 const credentials = { accessKeyId: 'TEST', secretAccessKey: 'TEST', sessionToken: 'TEST' };
 
 describe('Bedrock request capture proxy', () => {
+  it.each(['x@evil.com', 'us-east-1/other', 'us-east-1.example', '', 'us-east-1\n'])('rejects malformed region %j before opening a proxy', async (region) => {
+    await expect(startCaptureProxy({ modelId: 'selected-model', region, credentials })).rejects.toThrow('Probe region is malformed');
+  });
   it('captures the canonical digest, re-signs, preserves the path/body, and captures request ID', async () => {
     const body = Buffer.from('{"messages":[{"role":"user","content":"probe"}],"max_tokens":8}');
     let receivedPath = '';
@@ -66,6 +69,7 @@ describe('Bedrock request capture proxy', () => {
 
   it('does not forward a body whose digest differs from the manifest', async () => {
     let upstreamCalls = 0;
+    const onRequestRejected = jest.fn();
     const fake = await upstream((_request, response) => {
       upstreamCalls++;
       response.writeHead(500).end();
@@ -76,6 +80,7 @@ describe('Bedrock request capture proxy', () => {
       credentials,
       expectedRequestShapeSha256: '0'.repeat(64),
       upstreamBaseUrl: fake.origin,
+      onRequestRejected,
     });
     try {
       const response = await fetch(`${proxy.baseUrl}/model/model%3A1/invoke`, {
@@ -85,6 +90,7 @@ describe('Bedrock request capture proxy', () => {
       expect(response.status).toBe(409);
       expect((await proxy.captured()).forwarded).toBe(false);
       expect(upstreamCalls).toBe(0);
+      expect(onRequestRejected).toHaveBeenCalledTimes(1);
     } finally {
       await proxy.close();
       await fake.close();

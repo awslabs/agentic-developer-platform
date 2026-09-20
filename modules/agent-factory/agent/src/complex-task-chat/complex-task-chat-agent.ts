@@ -440,7 +440,7 @@ async function processOne(
       userMessage: message,
       tools,
       toolSanitizers: toolSanitizers.size > 0 ? toolSanitizers : undefined,
-      model: persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
+      model: task.model_resolved ?? persona.modelOverride ?? process.env.ANTHROPIC_MODEL,
       cwd: '/tmp/workspace',
       env: scopedEnv,
       effort: getChannelEffort(channel ?? ''),

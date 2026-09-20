@@ -31,6 +31,8 @@ export interface CaptureProxyOptions {
   upstreamBaseUrl?: string;
   /** Test/manifest seam for inspecting the fixed, non-secret probe body. */
   onCapturedBody?: (body: unknown) => void;
+  /** Stop the SDK promptly after a local shape refusal; no provider call exists. */
+  onRequestRejected?: () => void;
   signal?: AbortSignal;
 }
 
@@ -42,6 +44,7 @@ export interface CaptureProxy {
 }
 
 function bedrockEndpoint(region: string): string {
+  if (!region || /[^a-z0-9-]/.test(region)) throw new Error('Probe region is malformed');
   const suffix = region.startsWith('cn-') ? 'amazonaws.com.cn' : 'amazonaws.com';
   return `https://bedrock-runtime.${region}.${suffix}`;
 }
@@ -77,7 +80,8 @@ async function listen(server: http.Server): Promise<number> {
 }
 
 export async function startCaptureProxy(options: CaptureProxyOptions): Promise<CaptureProxy> {
-  const upstream = new URL(options.upstreamBaseUrl ?? bedrockEndpoint(options.region));
+  const endpoint = bedrockEndpoint(options.region);
+  const upstream = new URL(options.upstreamBaseUrl ?? endpoint);
   if (upstream.pathname !== '/' || upstream.search || upstream.hash) {
     throw new Error('Bedrock upstream must be an origin without a path, query or fragment');
   }
@@ -150,6 +154,7 @@ export async function startCaptureProxy(options: CaptureProxyOptions): Promise<C
         });
         response.writeHead(409, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ error: 'request_shape_mismatch' }));
+        options.onRequestRejected?.();
         return;
       }
 

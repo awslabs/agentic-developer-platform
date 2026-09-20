@@ -241,6 +241,8 @@ async def validate_model_for_persona(
             "persona_not_configurable",
             f"Persona '{persona_key}' is not configurable.",
         )
+    from .dispatch_selection import mapping_enabled
+
     result = await catalogue_service.validate_selection(
         db,
         org_id=org_id,
@@ -253,6 +255,7 @@ async def validate_model_for_persona(
         principal_status=principal_status,
         service_restriction_pattern_sets=service_restriction_pattern_sets,
         policy_unavailable_reason=policy_unavailable_reason,
+        require_evidence=not mapping_enabled(),
     )
     if isinstance(result, catalogue_service.SelectionRejection):
         raise PreferenceRejectedError(result.reason, result.message)

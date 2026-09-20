@@ -203,6 +203,7 @@ resource "aws_lambda_function" "tick" {
       BG_ORCH_DISPATCH_PERSONA      = var.dispatch_persona
       BG_ORCH_DISPATCH_MAX_PER_TICK = tostring(var.dispatch_max_per_tick)
       AGENT_AUTHORITY_ENABLED       = tostring(var.agent_authority_enabled)
+      PERSONA_MODEL_MAPPING_ENABLED = tostring(var.persona_model_mapping_enabled)
       AGENT_AUTHORITY_TABLE         = "${var.name_prefix}-agent-authority"
 
       # Issue #4527 — the GitHub engine-command bridge. NOT BG_-prefixed: both are

@@ -114,6 +114,10 @@ async function remoteHead(
   return result.stdout.trim().split(/\s+/)[0] ?? "";
 }
 
+export function selectedModel(env: NodeJS.ProcessEnv = process.env): string {
+  return env.ADP_MODEL_RESOLVED ?? env.CODEX_REVIEWER_MODEL ?? "openai.gpt-5.6-sol";
+}
+
 async function codexVerdict(
   codex: Codex,
   workspace: string,
@@ -121,7 +125,7 @@ async function codexVerdict(
 ): Promise<ReviewVerdict> {
   const thread = codex.startThread({
     workingDirectory: workspace,
-    model: process.env.CODEX_REVIEWER_MODEL ?? "openai.gpt-5.6-sol",
+    model: selectedModel(),
     modelReasoningEffort: "high",
     sandboxMode: WORKER_SANDBOX_MODE,
     approvalPolicy: "never",
@@ -145,7 +149,7 @@ async function applyMechanicalFixes(
 ): Promise<void> {
   const thread = codex.startThread({
     workingDirectory: workspace,
-    model: process.env.CODEX_REVIEWER_MODEL ?? "openai.gpt-5.6-sol",
+    model: selectedModel(),
     modelReasoningEffort: "high",
     sandboxMode: WORKER_SANDBOX_MODE,
     approvalPolicy: "never",

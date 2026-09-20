@@ -82,7 +82,6 @@ def log_invocation(
         "GSI1PK": tenant_id,
         "GSI1SK": arrived_at,
         "user_id": user_id or "unattributed",
-        "root_human_id": user_id if account_type == "human" else "",
         "is_human_rooted": account_type == "human",
         "channel": channel,
         "event_type": "chat_message",
@@ -91,6 +90,9 @@ def log_invocation(
         "status_updated_at": now_iso,
         "expires_at": expires_at,
     }
+
+    if account_type == "human":
+        item["root_human_id"] = user_id
 
     if persona:
         item["persona"] = persona

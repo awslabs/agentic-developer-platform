@@ -282,6 +282,9 @@ class Settings(BaseSettings):
     # explicitly non-zero/configured.  These defaults make a fresh deployment
     # incapable of reserving a slot or releasing destination credentials.
     model_probe_enabled: bool = False
+    # Optional operator scope for a bounded qualification run. Catalogue and
+    # destination admission still apply; unknown IDs never become candidates.
+    model_probe_model_allowlist: list[str] = Field(default_factory=list)
     # Keep this aligned with the worker's independent 100-claim hard stop.
     model_probe_max_slots_per_cycle: int = Field(default=0, ge=0, le=100)
     model_probe_budget_usd_per_cycle: Decimal = Field(default=Decimal("0"), ge=0)

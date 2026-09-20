@@ -150,6 +150,11 @@ class WebChatAdapter(ChannelAdapter):
         user_name = claims.get("email", claims.get("cognito:username", user_id))
         connection_id = request_context.get("connectionId", "")
 
+        # The API authorizer uses the legacy "user" label for authenticated
+        # Cognito humans. The invocation ledger uses "human" consistently.
+        raw_account_type = claims.get("custom:account_type", "")
+        account_type = "human" if raw_account_type in ("", "user", "human") else raw_account_type
+
         # Parse attachments
         attachments = self._parse_attachments(body.get("attachments", []))
 
@@ -201,7 +206,7 @@ class WebChatAdapter(ChannelAdapter):
                 "org_id": claims.get("custom:org_id", ""),
                 "team_id": claims.get("custom:team_id", ""),
                 "department_id": claims.get("custom:department_id", ""),
-                "account_type": claims.get("custom:account_type", ""),
+                "account_type": account_type,
                 "role": claims.get("custom:role", ""),
                 # Stage C (#186): artifact ID attachments from the upload flow.
                 # The frontend sends string IDs ["art_xxx", ...] in the sendMessage

@@ -9,6 +9,7 @@ import {
   childEnvironment,
   gitEnvironment,
   mergeEnabled,
+  selectedModel,
   repositoryUrl,
   validateAutofix,
   WORKER_SANDBOX_MODE,
@@ -105,4 +106,11 @@ test("autofix validation rejects a changed local head", async () => {
   } finally {
     await rm(state.directory, { recursive: true, force: true });
   }
+});
+
+
+test("persona selection is used before the reviewer deployment default", () => {
+  assert.equal(selectedModel({ ADP_MODEL_RESOLVED: "chosen", CODEX_REVIEWER_MODEL: "deployment" }), "chosen");
+  assert.equal(selectedModel({ CODEX_REVIEWER_MODEL: "deployment" }), "deployment");
+  assert.equal(selectedModel({}), "openai.gpt-5.6-sol");
 });
