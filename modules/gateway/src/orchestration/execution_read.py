@@ -107,6 +107,7 @@ from .execution_state import (
 # gates" rather than an exception so a cosmetic storage problem cannot make a
 # record unreadable to the operator diagnosing it.
 from .execution_store import _decode_gates
+from .merge_evidence import bounded_merge_summary
 from .models import OrchestrationAction, OrchestrationExecution
 
 logger = get_logger(__name__)
@@ -264,6 +265,7 @@ class ActionView:
     receipt_ref: str | None
     created_at: datetime | None
     observed_at: datetime | None
+    evidence_summary: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -408,6 +410,7 @@ def _action_view(row: OrchestrationAction) -> ActionView | None:
         receipt_ref=_safe_ref(row.receipt_ref),
         created_at=_as_aware(row.created_at),
         observed_at=_as_aware(row.observed_at),
+        evidence_summary=bounded_merge_summary(row.detail) if row.kind == "merge_eligibility" else None,
     )
 
 
