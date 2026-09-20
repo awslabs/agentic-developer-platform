@@ -249,6 +249,7 @@ export async function runOneProbe(gateway: ProbeGateway = new SigV4ProbeGateway(
       },
       expectedRequestShapeSha256: claim.expected_request_shape_sha256,
       signal: controller.signal,
+      onRequestRejected: () => controller.abort(),
     });
     const observation = await invokeHarness(claim, started, proxy.baseUrl, budget, controller);
     const captured = await proxy.captured();

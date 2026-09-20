@@ -1,18 +1,18 @@
 {
   "schema_version": 2,
-  "request_shape_normalization": "claude-code-probe-date-device-v2",
+  "request_shape_normalization": "claude-code-probe-context-v3",
   "compatibility_class": "claude-agent-sdk",
   "harness_contract_revision": "0.3.220",
   "probe_prompt_sha256": "9e1fdea65b5ba7339557628bf074553ed86cc65ed9de38a3e870a33817b949e0",
   "models": {
     "global.anthropic.claude-opus-5": "87bbb5a45d84d536298ab21ba511b0e66bf5547ba8751f318c3908e8aa343d1f",
     "global.anthropic.claude-opus-4-8": "c05f696431507f00e1ed96f19485ce4e59eea9f2d4bc2a7f25c8d14e6ef3fef8",
-    "global.anthropic.claude-opus-4-7": "7f0670286c80795e2f9cdf24e079cef1e5260f918b544681f5d7e835cb6ce62b",
-    "global.anthropic.claude-opus-4-6-v1": "7d4ce2eefb9fcc7df45954749f29024a0809bd83d2e13e6b43a123cfd106a5f1",
-    "global.anthropic.claude-opus-4-5-20251101-v1:0": "f9f7f6a3bd92bcdcfe06bb8426109f6fafbdde862084a6f2da14f59d815d5472",
-    "global.anthropic.claude-sonnet-4-6": "e120903f2e18a17e912ef3afa62f4094e8bac937c46d790957a6bef0dacff4d4",
-    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": "56140c92fabc859f61955d8703812233879fdfade6af313024b61ba1ad1a2418",
-    "global.anthropic.claude-haiku-4-5-20251001-v1:0": "78156323029ff5b08d4a65828d2937ab3607b2b031eec445c3de6b0dfbbfb1ad",
-    "us.anthropic.claude-sonnet-4-6": "e120903f2e18a17e912ef3afa62f4094e8bac937c46d790957a6bef0dacff4d4"
+    "global.anthropic.claude-opus-4-7": "778cdfb7ab1fd4467ae5a3a4bcf2de4beb60afc4ef67bc3a7eae84423edcf9c8",
+    "global.anthropic.claude-opus-4-6-v1": "e06ba0d8485b2d69a962db9a14ae17f683f11cdb12d879891e842967bda7bd1d",
+    "global.anthropic.claude-opus-4-5-20251101-v1:0": "ec4e1a8e8e4e499edc494cce2cb427535a0f30c341fff9c046982f1a5ad99a01",
+    "global.anthropic.claude-sonnet-4-6": "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b",
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0": "b2c824366a0b62b7a55c33e6547708eb03d05fb50bf5c74bfe4852ea45108234",
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": "e5fcc766e28403a773c53b482e533b23f9a44a1aec3fb2568743863a5820b19d",
+    "us.anthropic.claude-sonnet-4-6": "5a8388a6e33ad438b5c2a530b3221965c40a74007223f3711453f62183caca2b"
   }
 }

@@ -116,3 +116,27 @@ Authority, run tasks, source-isolation assertions and PMM enforcement remain off
   existing date reminder. Models, tools, token limits, account and session
   identities remain covered. All nine manifests matched across fresh containers.
   These are fake-upstream shape checks, not paid provider evidence.
+
+- Worker build `35512479119` and gateway release `35512616564` succeeded
+  from source `5e33b0df222d808421a9b4cfe26e847ff8d71d08`. The protected
+  worker's live secret/SQS/S3/IAM/EKS reads were denied and its scoped
+  CloudWatch log event was written and read back. This proves those
+  permissions, not complete protected-run compatibility.
+- Published real GitHub/GitLab Lambda packages with revision checks and pinned
+  S3 object versions. Both updates succeeded; all existing Lambda environment
+  values were verified unchanged. The broader producer Terraform plan remains
+  unapplied because it includes unrelated engine-signing provisioning.
+- Two unrelated AI-DLC tasks (issues 5526 and 5532) arrived during preparation.
+  Admissions were resumed to let them run on the legacy worker. Marker seeding
+  refused the nonempty queue before writing; its placeholder remains unchanged.
+- A one-off three-slot/$3 SDK qualification run found a second request-shape
+  issue: the SDK inserts the configured dollar budget into its initial reminder.
+  Two slots completed with local shape refusals and no provider request ID; a
+  third started slot was stopped by deleting the Job. Retain $1 conservatively
+  for that unresolved slot. Admission was restored to disabled and the CronJob
+  stayed suspended. No successful provider invocation is claimed.
+- Version-3 normalization additionally covers only the exact zero-spend initial
+  budget reminder with equal total/remaining values. The SDK still receives the
+  admitted budget unchanged; provider max_tokens and thinking limits remain
+  fingerprinted. Captured $0.01 and $1 requests now match. Local shape refusal
+  also aborts the SDK immediately instead of waiting for its timeout.

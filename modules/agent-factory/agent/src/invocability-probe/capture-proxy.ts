@@ -31,6 +31,8 @@ export interface CaptureProxyOptions {
   upstreamBaseUrl?: string;
   /** Test/manifest seam for inspecting the fixed, non-secret probe body. */
   onCapturedBody?: (body: unknown) => void;
+  /** Stop the SDK promptly after a local shape refusal; no provider call exists. */
+  onRequestRejected?: () => void;
   signal?: AbortSignal;
 }
 
@@ -152,6 +154,7 @@ export async function startCaptureProxy(options: CaptureProxyOptions): Promise<C
         });
         response.writeHead(409, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ error: 'request_shape_mismatch' }));
+        options.onRequestRejected?.();
         return;
       }
 

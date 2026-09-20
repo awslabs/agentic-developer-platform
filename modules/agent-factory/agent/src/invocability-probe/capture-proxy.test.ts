@@ -69,6 +69,7 @@ describe('Bedrock request capture proxy', () => {
 
   it('does not forward a body whose digest differs from the manifest', async () => {
     let upstreamCalls = 0;
+    const onRequestRejected = jest.fn();
     const fake = await upstream((_request, response) => {
       upstreamCalls++;
       response.writeHead(500).end();
@@ -79,6 +80,7 @@ describe('Bedrock request capture proxy', () => {
       credentials,
       expectedRequestShapeSha256: '0'.repeat(64),
       upstreamBaseUrl: fake.origin,
+      onRequestRejected,
     });
     try {
       const response = await fetch(`${proxy.baseUrl}/model/model%3A1/invoke`, {
@@ -88,6 +90,7 @@ describe('Bedrock request capture proxy', () => {
       expect(response.status).toBe(409);
       expect((await proxy.captured()).forwarded).toBe(false);
       expect(upstreamCalls).toBe(0);
+      expect(onRequestRejected).toHaveBeenCalledTimes(1);
     } finally {
       await proxy.close();
       await fake.close();

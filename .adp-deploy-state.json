@@ -32,15 +32,21 @@
     },
     "protected_worker_cutover": {
       "status": "running",
-      "admission_paused": true,
+      "admission_paused": false,
       "active_legacy_workers": 0,
       "live_queue_messages": 0,
-      "preserved_dead_letter_messages": 103
+      "preserved_dead_letter_messages": 103,
+      "reason": "New unrelated AI-DLC jobs 5526 and 5532 preserved and allowed to drain on legacy workers; no authentication/key switch applied"
     },
     "pmm_live_acceptance": {
-      "status": "pending",
+      "status": "running",
       "model_spend_ceiling_usd": 10,
-      "budget_authorization": "User approved $10 total for live tests; recurring paid schedules excluded"
+      "budget_authorization": "User approved $10 total for live tests; recurring paid schedules excluded",
+      "started_probe_slots": 3,
+      "confirmed_local_shape_refusals": 2,
+      "unresolved_stopped_slots": 1,
+      "probe_admission_restored_disabled": true,
+      "provider_successes": 0
     },
     "pmm_enforcement": {
       "status": "pending"
@@ -68,8 +74,8 @@
     }
   },
   "outputs": {
-    "candidate_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6fb49790e5b5fe4d5b126e30fb2450ac6b8237f0a2beb9162c90a26da7a5897e",
-    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:a026371515d53d329ea13cf2e2d079fa7b2d9645"
+    "candidate_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:be2a7be8bb21022973ca6fbd9f653dc0cf9c46342a24eb20cc2d55145db9f133",
+    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:5e33b0df222d808421a9b4cfe26e847ff8d71d08"
   },
   "validation": {
     "gateway_tests": 110,
@@ -95,6 +101,14 @@
     "final_runtime_posture": "report_only",
     "final_posture_revision": 1,
     "agent_models_ui_enabled": false,
-    "fresh_container_manifest_parity_models": 9
+    "fresh_container_manifest_parity_models": 9,
+    "protected_worker_direct_aws_denials": [
+      "secretsmanager",
+      "sqs",
+      "s3",
+      "iam",
+      "eks"
+    ],
+    "protected_worker_logging_write_and_readback": true
   }
 }

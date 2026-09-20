@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 
-export const REQUEST_SHAPE_NORMALIZATION = 'claude-code-probe-date-device-v2';
+export const REQUEST_SHAPE_NORMALIZATION = 'claude-code-probe-context-v3';
 const SDK_DATE_REMINDER = /# currentDate\nToday's date is (\d{4}-\d{2}-\d{2})\./g;
+const SDK_INITIAL_BUDGET_REMINDER = /^<system-reminder>\nUSD budget: \$0\/\$(\d+(?:\.\d+)?); \$\1 remaining\n<\/system-reminder>\n$/;
 
 /** Normalize only the SDK's per-installation identifier, never account/session identity. */
 function normalizeProbeDevice(value: unknown): unknown {
@@ -31,11 +32,38 @@ function normalizeProbeDevice(value: unknown): unknown {
  * first request message (the block index differs across model families),
  * even when CLAUDE_CODE_OVERRIDE_DATE is set. The date is non-semantic probe
  * context. Its device identifier is also random in fresh containers; normalize
- * only the known anonymous, fixed-session probe identity shape. All model,
- * tool, token, account and session fields remain covered by the digest.
+ * only the known anonymous, fixed-session probe identity shape and the initial
+ * SDK budget reminder. Provider model, tool, token, account and session fields
+ * remain covered by the digest.
  */
 export function normalizeRequestShape(value: unknown): unknown {
   value = normalizeProbeDevice(value);
+  const root = value as { messages?: unknown };
+  if (!root || typeof root !== 'object' || !Array.isArray(root.messages)) return value;
+  const first = root.messages[0] as { content?: unknown } | undefined;
+  if (!first || typeof first !== 'object' || !Array.isArray(first.content)) return value;
+  // The SDK reflects maxBudgetUsd into its first-message reminder. Admission
+  // still reserves the actual operator-approved amount and the SDK receives it
+  // unchanged. Only the exact zero-spend/equal-remaining reminder is normalized;
+  // provider max_tokens and thinking budgets remain part of the fingerprint.
+  const budgetBlocks = first.content.filter((block) => {
+    const text = (block as { text?: unknown })?.text;
+    if (typeof text !== 'string') return false;
+    const match = text.match(SDK_INITIAL_BUDGET_REMINDER);
+    return match !== null && Number.isFinite(Number(match[1])) && Number(match[1]) > 0;
+  });
+  if (budgetBlocks.length === 1) {
+    const content = first.content.map((block) => block === budgetBlocks[0]
+      ? { ...(block as Record<string, unknown>), text: '<system-reminder>\nUSD budget: $0/$<ADP_PROBE_BUDGET>; $<ADP_PROBE_BUDGET> remaining\n</system-reminder>\n' }
+      : block);
+    const messages = [...root.messages];
+    messages[0] = { ...first, content };
+    value = { ...(value as Record<string, unknown>), messages };
+  }
+  return normalizeDateReminder(value);
+}
+
+function normalizeDateReminder(value: unknown): unknown {
   const root = value as { messages?: unknown };
   if (!root || typeof root !== 'object' || !Array.isArray(root.messages)) return value;
   const first = root.messages[0] as { content?: unknown } | undefined;
