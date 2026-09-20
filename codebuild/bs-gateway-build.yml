@@ -42,6 +42,7 @@ phases:
       # evidence submission being refused `contract_unavailable` — a total outage of
       # the review path, discovered on first use. Deliberately BEFORE the push.
       - docker run --rm --entrypoint python $REGISTRY/adp-gateway:latest -m src.orchestration.review_contract_selfcheck
+      - docker run --rm --entrypoint python $REGISTRY/adp-gateway:latest -m src.orchestration.evaluation_contract_selfcheck
       - 'if [ -n "${IMAGE_TAG:-}" ]; then docker tag $REGISTRY/adp-gateway:latest $REGISTRY/adp-gateway:$IMAGE_TAG; fi'
   post_build:
     commands:

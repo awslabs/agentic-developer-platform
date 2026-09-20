@@ -32,3 +32,4 @@ phases:
       # COPY or an unstaged contract at PR time is the whole point of a smoke build;
       # without this the first sign would be refused review evidence in production.
       - docker run --rm --entrypoint python adp-gateway:pr-smoke -m src.orchestration.review_contract_selfcheck
+      - docker run --rm --entrypoint python adp-gateway:pr-smoke -m src.orchestration.evaluation_contract_selfcheck

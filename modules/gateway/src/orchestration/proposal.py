@@ -132,6 +132,8 @@ class ProposedNode(BaseModel):
     # The GitHub issue this node materialises as. Optional: eval and gate nodes
     # frequently have no issue of their own.
     issue_ref: str | None = None
+    # Stored in the accepted plan document; absence retains human mode.
+    evaluation: dict | None = None
 
 
 class ProposedEdge(BaseModel):
@@ -782,6 +784,39 @@ def _check_declarations(proposal: LoopProposal) -> list[Violation]:
     return violations
 
 
+def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
+    from .evaluation_contract import specification
+    from .execution_policy import AcceptanceMode
+
+    violations = []
+    for node in proposal.nodes:
+        if node.evaluation is None:
+            continue
+        if node.kind != NodeKind.EVAL.value:
+            violations.append(Violation("evaluation_node_kind", "Only eval nodes may carry an evaluation specification", node.address))
+            continue
+        try:
+            spec = specification(node.evaluation)
+        except ValueError:
+            violations.append(Violation("evaluation_specification_invalid", "Evaluation specification is invalid or unavailable", node.address))
+            continue
+        if spec.acceptance_mode == "machine":
+            policy = proposal.execution_policy
+            if policy is None or policy.evaluation_acceptance.get(node.address) is not AcceptanceMode.MACHINE:
+                violations.append(
+                    Violation("evaluation_policy_mode_mismatch", "Machine evidence requires accepted policy machine mode", node.address)
+                )
+            elif spec.runner.repository not in policy.repository_ids:
+                violations.append(
+                    Violation("evaluation_repository_not_permitted", "Evaluation harness requires a permitted repository", node.address)
+                )
+            elif spec.environment_connection_id not in policy.environment_connection_ids:
+                violations.append(
+                    Violation("evaluation_connection_not_permitted", "Evaluation target requires a permitted environment connection", node.address)
+                )
+    return violations
+
+
 def validate_proposal(proposal: LoopProposal) -> list[Violation]:
     """Check a proposal against every rule and return **all** violations.
 
@@ -802,6 +837,7 @@ def validate_proposal(proposal: LoopProposal) -> list[Violation]:
     """
     return [
         *_check_declarations(proposal),
+        *_check_evaluation_specs(proposal),
         *_check_addresses(proposal),
         *_check_kinds(proposal),
         *_check_edges(proposal),

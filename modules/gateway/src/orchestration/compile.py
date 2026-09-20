@@ -244,8 +244,21 @@ def plan_hash(proposal: LoopProposal) -> str:
     document = proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS)
     if document.get("execution_policy") is None:
         document.pop("execution_policy", None)
+    # Adding an optional suite must not change hashes of pre-E1 accepted plans.
+    # Explicit suites remain covered, so weakening one is never a retry.
+    for node in document.get("nodes", []):
+        if node.get("evaluation") is None:
+            node.pop("evaluation", None)
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def require_evaluation_acceptor(proposal, decision, in_force=None):
+    if ActorKind(decision.actor_kind) is ActorKind.HUMAN:
+        return
+    previous = (in_force.plan_document or {}).get("nodes", []) if in_force else []
+    if any(node.evaluation is not None for node in proposal.nodes) or any(node.get("evaluation") is not None for node in previous):
+        raise PolicyNotAcceptableError("Only a human acceptance may establish, change or remove an evaluation specification")
 
 
 def accept_execution_policy(
@@ -287,6 +300,7 @@ def accept_execution_policy(
         PolicyNotAcceptableError: A non-human actor attempted acceptance, or the
             document declared a server-stamped field.
     """
+    require_evaluation_acceptor(proposal, decision)
     policy = proposal.execution_policy
     if policy is None:
         return proposal
@@ -449,6 +463,7 @@ async def compile_proposal(
                 "path (PLAN_APPROVE), or target a flow with no plan in force."
             )
 
+        require_evaluation_acceptor(proposal, decision, in_force)
         node_ids, nodes_created = await upsert_nodes(
             repo,
             proposal=proposal,

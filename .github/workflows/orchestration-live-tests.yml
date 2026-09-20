@@ -20,6 +20,11 @@ name: Orchestration Live Tests
 on:
   workflow_dispatch:
     inputs:
+      evaluation_context:
+        description: Optional accepted E1 evaluation context JSON; contains no credentials
+        required: false
+        type: string
+
       config_path:
         description: >-
           Repo-relative path to the reviewed qualification config
@@ -149,7 +154,7 @@ jobs:
       # boto3 is needed here (unlike the offline job): the live path resolves
       # secret references and verifies the caller identity.
       - name: Install dependencies
-        run: pip install pytest==9.0.3 boto3
+        run: pip install pytest==9.0.3 pydantic==2.12.5 boto3
 
       # Scoped role, assumed after input validation. This is the only credential
       # in the workflow and it is never written to a file or an input.
@@ -197,6 +202,8 @@ jobs:
       - name: Run qualification
         id: qualification
         env:
+          ORCHESTRATION_EVALUATION_CONTEXT: ${{ inputs.evaluation_context }}
+          GITHUB_REPOSITORY_ID: ${{ github.repository_id }}
           ENVIRONMENT: ${{ github.event.inputs.environment }}
           AWS_REGION: us-east-1
         run: |
@@ -232,6 +239,15 @@ jobs:
             *) echo "::error::Qualification failed with exit code ${RC}." ;;
           esac
           exit "$RC"
+
+      - name: Upload evaluation evidence
+        if: always() && inputs.evaluation_context != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: orchestration-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.dispatch.outputs.artifact_dir }}/evaluation/
+          retention-days: 30
+          if-no-files-found: error
 
       # Always uploaded, especially on failure: a failed run is exactly when the
       # inventory is needed to find a fixture that may still exist. The inventory

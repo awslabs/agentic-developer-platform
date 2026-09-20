@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from datetime import UTC, datetime
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -199,9 +201,7 @@ def preflight(config: QualificationConfig) -> Outcome:
     for name, adapter in sorted(adapters.items()):
         planner = getattr(adapter, "planned_fixtures", None)
         planned = list(planner(config)) if callable(planner) else []
-        report["planned_resources"].extend(
-            {"scenario": name, "fixture_id": item.fixture_id, "kind": item.kind} for item in planned
-        )
+        report["planned_resources"].extend({"scenario": name, "fixture_id": item.fixture_id, "kind": item.kind} for item in planned)
 
     # Preflight reports rather than refuses — it mutates nothing either way — but
     # it reports the COMPARISON, so an operator sees a mismatch before dispatching
@@ -211,10 +211,7 @@ def preflight(config: QualificationConfig) -> Outcome:
         return Outcome(STATUS_FAILED, EXIT_TARGET_UNVERIFIED, report)
 
     if not adapters:
-        report["detail"] = (
-            "no scenario adapters are registered, so a run would execute nothing; "
-            "scenario adapters are supplied by #5157"
-        )
+        report["detail"] = "no scenario adapters are registered, so a run would execute nothing; scenario adapters are supplied by #5157"
         return Outcome(STATUS_INCOMPLETE, EXIT_NO_SCENARIOS, report)
 
     report["detail"] = "config and target verified; no mutation performed"
@@ -228,15 +225,22 @@ def _caller_identity() -> tuple[dict[str, str] | None, str | None]:
 
         identity = boto3.client("sts").get_caller_identity()
     except Exception as exc:
-        return None, f"could not verify the target account via sts:GetCallerIdentity: {exc}"
+        return (
+            None,
+            f"could not verify the target account via sts:GetCallerIdentity: {exc}",
+        )
     return {
         "account": str(identity.get("Account", "")),
         "arn": str(identity.get("Arn", "")),
     }, None
 
 
-def run(config: QualificationConfig) -> Outcome:
+def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
     """Execute the qualification. Refuses to report PASS if nothing ran."""
+    if evaluation_context is not None:
+        from tests.e2e.orchestration.evaluation_receipt import validate_context
+
+        validate_context(evaluation_context, config)
     adapters = load_scenario_adapters(config)
     if not adapters:
         # The central guarantee: an empty registry is never a pass. No
@@ -249,8 +253,7 @@ def run(config: QualificationConfig) -> Outcome:
                 "environment": config.environment,
                 "scenarios_executed": 0,
                 "detail": (
-                    "no scenario adapters are registered: nothing was executed and this run is "
-                    "NOT a pass. Scenario adapters are supplied by #5157."
+                    "no scenario adapters are registered: nothing was executed and this run is NOT a pass. Scenario adapters are supplied by #5157."
                 ),
             },
         )
@@ -265,6 +268,8 @@ def run(config: QualificationConfig) -> Outcome:
     inventory = Inventory.create(config.artifact_directory, qualification_id, config.environment)
     providers = load_providers(config)
 
+    started_at = datetime.now(UTC)
+    observations = []
     executed: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     attempts = 0
@@ -277,16 +282,15 @@ def run(config: QualificationConfig) -> Outcome:
             failures.append(
                 {
                     "scenario": name,
-                    "error": (
-                        f"bounds.max_runs={config.max_runs} reached after {attempts} attempt(s); "
-                        f"not invoked"
-                    ),
+                    "error": (f"bounds.max_runs={config.max_runs} reached after {attempts} attempt(s); not invoked"),
                 }
             )
             break
         attempts += 1
         try:
-            adapter.execute(config=config, inventory=inventory, providers=providers)
+            observed = adapter.execute(config=config, inventory=inventory, providers=providers)
+            if observed is not None:
+                observations.append(observed)
         except Exception as exc:  # any adapter failure is data, not a crash
             # One scenario failing must not skip the others or abandon the
             # inventory: the run reports FAILED and the fixtures stay cleanable.
@@ -306,6 +310,24 @@ def run(config: QualificationConfig) -> Outcome:
         "failures": failures,
         "live_resources": inventory.live_resource_count(),
     }
+
+    if evaluation_context is not None:
+        from tests.e2e.orchestration.evaluation_receipt import emit
+
+        try:
+            report["evaluation_bundle"] = str(
+                emit(
+                    evaluation_context,
+                    observations,
+                    config=config,
+                    target=target,
+                    started_at=started_at,
+                    completed_at=datetime.now(UTC),
+                )
+            )
+        except (ValueError, KeyError, OSError, TypeError):
+            report["detail"] = "evaluation evidence was incomplete or unverifiable; fixtures remain in the inventory"
+            return Outcome(STATUS_INCOMPLETE, EXIT_INCOMPLETE, report)
 
     if failures:
         report["detail"] = "at least one scenario failed; fixtures are retained for --resume or --cleanup"
@@ -340,10 +362,7 @@ def resume_qualification(config: QualificationConfig, qualification_id: str) -> 
         "reconcile_failed": [{"fixture_id": r.fixture_id, "detail": r.detail} for r in stuck],
     }
     if stuck:
-        report["detail"] = (
-            "some fixtures could not be reconciled and may be leaked; they are recorded as "
-            "reconcile_failed and need a human"
-        )
+        report["detail"] = "some fixtures could not be reconciled and may be leaked; they are recorded as reconcile_failed and need a human"
         return Outcome(STATUS_FAILED, EXIT_FAILED, report)
     report["detail"] = "inventory reconciled against the provider"
     return Outcome(STATUS_READY, EXIT_OK, report)
@@ -377,8 +396,7 @@ def cleanup_qualification(config: QualificationConfig, qualification_id: str) ->
         return Outcome(STATUS_FAILED, EXIT_FAILED, report)
     if outcome.refused:
         report["detail"] = (
-            "cleanup completed for verified fixtures; others were refused because ownership "
-            "could not be positively verified and were left untouched"
+            "cleanup completed for verified fixtures; others were refused because ownership could not be positively verified and were left untouched"
         )
         return Outcome(STATUS_INCOMPLETE, EXIT_INCOMPLETE, report)
     report["detail"] = "all recorded fixtures deleted after ownership verification"
@@ -424,6 +442,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.restore_from and not (args.resume or args.cleanup):
         parser.error("--restore-from applies only to --resume or --cleanup")
 
+    evaluation_context = None
+    raw_context = os.environ.get("ORCHESTRATION_EVALUATION_CONTEXT", "")
+    if raw_context:
+        if not args.run:
+            parser.error("evaluation evidence applies only to --run")
+        from tests.e2e.orchestration.evaluation_receipt import (
+            parse_context,
+            validate_context,
+        )
+
+        try:
+            evaluation_context = parse_context(raw_context)
+            validate_context(evaluation_context, config)
+        except ValueError:
+            print("evaluation context is invalid", file=sys.stderr)
+            return EXIT_CONFIG_INVALID
+
     try:
         if args.restore_from:
             qualification_id = args.resume or args.cleanup
@@ -433,12 +468,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.restore_from,
                 config.environment,
             )
-            print(f"restored inventory for {qualification_id} to {restored}", file=sys.stderr)
+            print(
+                f"restored inventory for {qualification_id} to {restored}",
+                file=sys.stderr,
+            )
 
         if args.preflight:
             outcome = preflight(config)
         elif args.run:
-            outcome = run(config)
+            outcome = run(config, evaluation_context=evaluation_context) if evaluation_context else run(config)
         elif args.resume:
             outcome = resume_qualification(config, args.resume)
         else:
