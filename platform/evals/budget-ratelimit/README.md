@@ -97,12 +97,17 @@ its own cap — which harness test 9 asserts never happens.
 
 Two pieces of arithmetic decide the whole design.
 
-**Budgets deny on an estimate, before spending anything.** Enforcement compares
-`current_spend + $0.05` (a flat `_DEFAULT_ESTIMATE_USD`) against the cap. So a
-cap of **$0.01 denies on the first request, at zero spend** — no token burn, no
-waiting on the async S3→Lambda ledger. That is what makes cases 1–5 instant and
-deterministic, and it confines the ledger to case 7, where the ledger *is* the
-subject. `TRIP_CAP` must stay below `$0.05` for this to hold.
+**Budget denial cases use an already-exhausted settled balance.** Cases 1–5
+create a **$1 cap through the admin API** and seed **$1.01 of settled usage** in
+the live test ledger. They then send real authenticated requests on both wire
+formats and require a 402 at the correct hierarchy level. The current gateway
+uses payload-aware estimates; a tiny request can legitimately cost less than
+the old $0.01 test cap, so a fixed pre-request estimate is no longer assumed.
+
+Synthetic balance rows carry a distinct run-owned ID and are deleted between
+cases. Case 7 independently verifies real model usage reaches the S3/Lambda
+ledger; seeded rows cannot satisfy that check. This is an exhausted-balance
+regression, **not an agent spending through a $1 balance**.
 
 **Rate limits trip at burst capacity, not at the nominal limit.**
 
@@ -194,7 +199,7 @@ under `root_user`; the previous harness incorrectly conflated those ledgers.
 - Org RPM now uses the same `org` key as the admin API and is required to enforce.
   Case 7 checks settled org usage under the same key used by budget enforcement.
   The old hardcoded key-mismatch findings were removed after those bugs were fixed.
-- Cases 1–5 trip the pre-request cost estimate. They exercise real API-configured
+- Cases 1–5 seed an exhausted settled balance. They exercise real API-configured
   caps and live denials, but do not spend through a $1–$2 balance using an agent.
 
 ## Running it

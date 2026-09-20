@@ -137,13 +137,13 @@ EVAL_CODEX_MODEL="${EVAL_CODEX_MODEL:-openai.gpt-5.6-sol}"
 # -----------------------------------------------------------------------------
 # The numbers that make this eval deterministic and nearly free
 # -----------------------------------------------------------------------------
-# BUDGET: enforcement adds a FLAT estimate before comparing —
-#   projected = current_spend + _DEFAULT_ESTIMATE_USD($0.05)   [enforcement_middleware.py:38]
-#   deny when projected > cap                                  [enforcement_service.py:409]
-# so a cap of $0.01 denies on the FIRST request, at zero spend, with no token
-# burn and no waiting on the async S3→Lambda ledger. That is what makes cases
-# 1-5 deterministic. TRIP_CAP must stay < $0.05 for this to hold.
-TRIP_CAP="0.01"
+# BUDGET: denial cases seed an already-exhausted settled balance. The gateway
+# estimates from payload size now; a tiny request can cost less than $0.01, so
+# relying on the historical flat $0.05 estimate made valid requests look broken.
+# Config is still written through the real admin API, and live requests must
+# receive a 402 at the right level. Real spend accrual is independently case 7.
+TRIP_CAP="1.00"
+EXHAUSTED_SPEND="1.01"
 # The "not this level" cap: high enough that no level under test is ever the
 # incidental cause of a denial.
 OPEN_CAP="1000.00"
@@ -262,7 +262,7 @@ setup_dry_run_stubs() {
   mkdir -p "$bin"
 
   export EVAL_STUB_STATE_DIR="$WORKDIR/stub-state"
-  mkdir -p "$EVAL_STUB_STATE_DIR/budgets" "$EVAL_STUB_STATE_DIR/ratelimits" "$EVAL_STUB_STATE_DIR/counts"
+  mkdir -p "$EVAL_STUB_STATE_DIR/budgets" "$EVAL_STUB_STATE_DIR/ratelimits" "$EVAL_STUB_STATE_DIR/counts" "$EVAL_STUB_STATE_DIR/spent"
 
   # The stub world needs to know which identity maps to which tenant claims, so
   # the curl stub can walk the same user→team→department→org hierarchy the real
@@ -346,6 +346,10 @@ while [ $# -gt 0 ]; do
 done
 sd="${EVAL_STUB_STATE_DIR:-/tmp}"
 case "$sql" in
+  *"INSERT INTO budget_usage"*)
+    key="$(printf '%s' "$sql" | awk -F "'" '/VALUES/{print $6 ":" $8}')"
+    printf '1.01' > "$sd/spent/$key" ;;
+  *"DELETE FROM budget_usage"*) rm -f "$sd/spent/"* ;;
   *"INSERT INTO"*|*"DELETE FROM"*) : ;;
   *"count(DISTINCT period_type)"*)
     # The tracker writes daily+weekly+monthly per entity.
@@ -370,7 +374,7 @@ STUB
 
   # The curl stub is where the real logic lives. It re-implements:
   #   * the budget cascade: user→team→department→org, first denial wins,
-  #     projected = spend + 0.05 > cap  (so a 0.01 cap denies at zero spend)
+  #     seeded settled spend > cap (independent of the request estimate)
   #   * the rate-limit bucket: capacity = max(1, int(rpm*1.5/60*10)), consumed
   #     per request, rpm checked before concurrent
   # from the recorded config state, so the verdicts are computed and not dictated.
@@ -446,8 +450,8 @@ case "$url" in
     who="$(basename "$cfg" .curlrc)"
     read -r _ org team dept <<< "$(grep "^${who} " "$sd/hierarchy" 2>/dev/null || echo "$who - - -")"
 
-    # The budget cascade, most-specific first. The flat $0.05 estimate is what
-    # makes a $0.01 cap deny at zero spend.
+    # The budget cascade, most-specific first. The exhausted settled balance is what
+    # makes the configured $1 cap deny without relying on a request estimate.
     for lvl in "user:sub-${who}" "team:${team}" "department:${dept}" "org:${org}"; do
       et="${lvl%%:*}"; ei="${lvl#*:}"
       [ "$ei" = "-" ] && continue
@@ -459,10 +463,10 @@ case "$url" in
       f="$sd/budgets/${et}:${ei}"
       [ -f "$f" ] || continue
       cap="$(cat "$f")"
-      # projected = 0 spend + 0.05 estimate
-      if awk -v c="$cap" 'BEGIN{exit !(0.05 > c)}'; then
+      spent="$(cat "$sd/spent/${et}:${ei}" 2>/dev/null || echo 0)"
+      if awk -v c="$cap" -v spent="$spent" 'BEGIN{exit !(spent > c)}'; then
         status=402
-        body="{\"error\":\"budget_exceeded\",\"message\":\"Budget exceeded for ${et} ${ei}\",\"details\":{\"entity_type\":\"${et}\",\"entity_id\":\"${ei}\",\"budget_usd\":${cap},\"spent_usd\":0.0,\"enforcement_mode\":\"hard\"}}"
+        body="{\"error\":\"budget_exceeded\",\"message\":\"Budget exceeded for ${et} ${ei}\",\"details\":{\"entity_type\":\"${et}\",\"entity_id\":\"${ei}\",\"budget_usd\":${cap},\"spent_usd\":${spent},\"enforcement_mode\":\"hard\"}}"
         emit
       fi
     done
@@ -760,6 +764,26 @@ set_budget() {
     return 1
   fi
   log "budget set: ${entity_type}=${entity_id} ${period} \$${amount}"
+  if [ "$amount" = "$TRIP_CAP" ]; then
+    seed_exhausted_budget "$entity_type" "$entity_id" "$org" "$period"
+  fi
+}
+
+# Only test-owned daily balances may be seeded. The row ID distinguishes this
+# synthetic exhausted balance from actual S3/Lambda accrual, and clear_budgets
+# removes it before case 7, so it cannot satisfy the real accounting assertion.
+seed_exhausted_budget() {
+  local entity_type="$1" entity_id="$2" org="$3" period="$4"
+  assert_owned_entity "settled budget entity" "$entity_type" "$entity_id"
+  assert_tagged "settled budget org" "$org"
+  [ "$period" = daily ] || die "exhausted-budget fixture only supports daily periods"
+  h_psql -c "INSERT INTO budget_usage
+              (id, org_id, entity_type, entity_id, period_type, period_start, total_cost_usd, total_tokens, request_count)
+             VALUES ('${EVAL_TAG}-spent-${entity_type}-${entity_id}', '${org}', '${entity_type}', '${entity_id}', '${period}', (now() AT TIME ZONE 'UTC')::date, ${EXHAUSTED_SPEND}, 0, 0)
+             ON CONFLICT (org_id, entity_type, entity_id, period_start, period_type)
+             DO UPDATE SET total_cost_usd=EXCLUDED.total_cost_usd;" >/dev/null \
+    || die "could not seed the exhausted ${entity_type} budget balance"
+  pass "seeded settled usage \$${EXHAUSTED_SPEND} against the \$${TRIP_CAP} ${entity_type} cap"
 }
 
 # Rate-limit configs go through POST /api/admin/organizations/{org}/ratelimits.
@@ -883,6 +907,13 @@ assert_budget_denied() {
     fi
   done
 
+  if ! jq -e --argjson cap "$TRIP_CAP" --argjson spent "$EXHAUSTED_SPEND" \
+      '.details.budget_usd == $cap and .details.spent_usd >= $spent and .details.enforcement_mode == "hard"' \
+      "$body" >/dev/null; then
+    fail "${label} [${wire}]: denial does not report the configured cap and seeded exhausted balance"
+    return 1
+  fi
+
   pass "${label} [${wire}]: HTTP 402 budget_exceeded at entity_type='${entity}'"
 }
 
@@ -976,6 +1007,8 @@ clear_budgets() {
       "${API}/admin/organizations/${org}/budget/${et}/${ei}/${period}" "$out" >/dev/null || true
   done
   state_set CREATED_BUDGETS ""
+  h_psql -c "DELETE FROM budget_usage WHERE org_id LIKE '${EVAL_TAG}-%' AND id LIKE '${EVAL_TAG}-spent-%';" >/dev/null \
+    || fail "could not remove synthetic exhausted-budget balances"
 }
 
 case_01() {
@@ -1057,8 +1090,8 @@ case_04() {
     assert_allowed "case 4 Org-B isolation" "$wire" "$status" "$WORKDIR/r.json"
   done
 
-  # This case trips the pre-request estimate; case 7 separately checks the
-  # settled organization ledger. It does not spend through a real dollar cap.
+  # This case denies an already-exhausted settled balance. Case 7 separately
+  # checks real usage accrual; this does not spend through the dollar cap.
   clear_budgets
 }
 
@@ -1103,8 +1136,8 @@ case_07() {
   phase 7 "accounting integrity — spend lands on the right entities"
   maybe_fail_phase 7
 
-  # Cases 1-5 deliberately avoid the ledger by tripping on the estimate. This
-  # case is the one that exercises it, so it needs a request that actually
+  # Cases 1-5 seed and remove synthetic exhausted balances. This case checks
+  # actual S3/Lambda accrual, so it needs a request that actually
   # SUCCEEDS and produces usage. u3 has no cap, so its call is billed normally.
   local wire status
   for wire in claude codex; do
