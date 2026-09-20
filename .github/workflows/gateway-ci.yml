@@ -3,6 +3,8 @@ name: Gateway CI
 on:
   pull_request:
     paths:
+      - 'platform/scripts/adversarial-test-assert.py'
+      - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'
@@ -85,6 +87,8 @@ on:
       - main
   push:
     paths:
+      - 'platform/scripts/adversarial-test-assert.py'
+      - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'

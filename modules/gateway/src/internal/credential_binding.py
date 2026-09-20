@@ -26,6 +26,8 @@ from fastapi import HTTPException
 
 from src.shared.config import Settings
 
+from .credential_binding_metrics import observe_binding
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +84,7 @@ def resolve_credential_binding(
 
     # --- Case 1: No invocation_id provided ---
     if not invocation_id:
+        observe_binding(from_registry=False, drift=False)
         if enforce:
             logger.warning(
                 "credential_binding: REJECTED — missing invocation_id (enforce mode) body_user_id=%s",
@@ -115,6 +118,7 @@ def resolve_credential_binding(
 
     # --- Case 3: Registry row found but authorized_user_id is empty ---
     if not authorized_user_id:
+        observe_binding(from_registry=False, drift=False)
         if enforce:
             logger.warning(
                 "credential_binding: REJECTED — empty authorized_user_id invocation_id=%s body_user_id=%s (enforce mode)",
@@ -143,6 +147,7 @@ def resolve_credential_binding(
 
     # --- Case 4: Registry user resolved — check for drift ---
     drift_detected = authorized_user_id != body_user_id
+    observe_binding(from_registry=True, drift=drift_detected)
     if drift_detected:
         logger.warning(
             "credential_binding: DRIFT detected — registry_user=%s body_user=%s invocation_id=%s enforce=%s",
