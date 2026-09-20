@@ -415,6 +415,10 @@ async def validate_engine_authority(*, session, execution: dict, grant: Delegate
         ).scalar_one_or_none()
         if node is None or node.state != NodeState.RUNNING.value or node.attempts != attempt:
             raise BootstrapRefusedError("engine node is no longer authorized")
+        if "orchestration_continuation_receipt" in execution:
+            from src.orchestration.review_cycle_dispatch import validate_continuation_assignment
+
+            await validate_continuation_assignment(session, execution=execution, grant=grant, node=node)
         if "orchestration_dispatch_receipt" in execution:
             receipt = (
                 await session.execute(

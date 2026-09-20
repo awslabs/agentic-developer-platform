@@ -817,3 +817,73 @@ async def force_handover(
         claim.generation,
     )
     return ClaimReceipt(disposition=Disposition.ADMITTED, claim_id=claim.id, generation=claim.generation)
+
+
+async def continue_run(session, *, identity, expected_run_id, run_id, operation_key, completed_execution):
+    """Move a held engine lane to its committed successor without a new generation.
+
+    This is not a takeover: the same accepted execution and owner continue after
+    the current run's protected successful terminal receipt. No lease expiry or
+    unprotected event row can authorize this operation.
+    """
+    import json
+
+    from .execution_state import OutcomeKind
+    from .execution_store import load_execution
+    from .models import OrchestrationAction, OrchestrationDecision
+    from .review_cycle_dispatch import ACTOR, continuation_run_id, receipt_id
+
+    loaded = await load_execution(session, identity=identity, for_update=True)
+    if loaded is None or loaded.kind is not OutcomeKind.APPLIED or loaded.record is None:
+        raise WorkClaimError("continuation_not_current", "The accepted execution is no longer current.")
+    action = await session.scalar(
+        select(OrchestrationAction).where(
+            OrchestrationAction.org_id == identity.org_id,
+            OrchestrationAction.execution_id == loaded.record.id,
+            OrchestrationAction.operation_key == operation_key,
+            OrchestrationAction.kind == "review_cycle_dispatch",
+        )
+    )
+    decision = await session.get(OrchestrationDecision, receipt_id(operation_key))
+    if (
+        action is None
+        or decision is None
+        or decision.org_id != identity.org_id
+        or decision.actor_id != ACTOR
+        or decision.kind != "agent_dispatched"
+        or continuation_run_id(operation_key) != run_id
+        or action.detail.get("active_run_id") != expected_run_id
+        or json.loads(decision.reason).get("run_id") != run_id
+    ):
+        raise WorkClaimError("continuation_not_committed", "A current durable dispatch action and receipt are required.")
+    claim = await session.scalar(
+        select(OrchestrationWorkClaim)
+        .where(OrchestrationWorkClaim.org_id == identity.org_id, OrchestrationWorkClaim.id == identity.claim_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if (
+        claim is None
+        or claim.state != ClaimState.HELD.value
+        or claim.generation != identity.claim_generation
+        or claim.owner_kind != OwnerKind.ENGINE_FLOW.value
+        or claim.owner_ref != loaded.record.flow_id
+    ):
+        raise WorkClaimError("continuation_claim_changed", "The same held engine claim is required.")
+    if claim.active_run_id == run_id and claim.claim_event_id == run_id:
+        return
+    if claim.active_run_id != expected_run_id:
+        raise WorkClaimError("continuation_owner_changed", "Another run owns the mutating lane.")
+    prior = completed_execution
+    if (
+        not prior
+        or prior.get("tenant_id") != {"S": identity.org_id}
+        or prior.get("status") != {"S": "completed"}
+        or prior.get("terminal_outcome") != {"S": "complete"}
+        or prior.get("orchestration_node_id") != {"S": identity.node_id}
+    ):
+        raise WorkClaimError("continuation_owner_not_finished", "The previous protected worker has not completed successfully.")
+    claim.active_run_id = run_id
+    claim.claim_event_id = run_id
+    claim.lease_expires_at = _now() + timedelta(seconds=DEFAULT_LEASE_SECONDS)
+    await session.flush()

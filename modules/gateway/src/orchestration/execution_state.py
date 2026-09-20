@@ -115,6 +115,7 @@ class ExecutionPhase(StrEnum):
     SUBMITTING = "submitting"  # Publishing the change (branch/PR) to the provider
     AWAITING_REVIEW = "awaiting_review"  # Published; waiting on review/check evidence
     REPAIRING = "repairing"  # Responding to review or a failed check
+    MERGE_READY = "merge_ready"  # Reviewed current head; merge is a separate effect
     SETTLING = "settling"  # Evidence observed; recording the terminal result
     CONCLUDED = "concluded"  # Nothing further for this execution to do
 

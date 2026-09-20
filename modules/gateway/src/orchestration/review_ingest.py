@@ -227,6 +227,9 @@ async def resolve_review_context(
         )
 
     author_run_id = _author_run_id(node_id, attempt)
+    from .review_cycle_dispatch import current_author_run
+
+    author_run_id = await current_author_run(session, node=node, default=author_run_id)
     if reviewer_run_id == author_run_id:
         raise ReviewEvidenceError(
             ReviewEvidenceRefusal.SELF_REVIEW,

@@ -390,10 +390,11 @@ async def recover_exited_claims(session, *, store, workloads, limit: int = 50, a
             continue
         parent_grant = raw.get("parent_grant_id", {}).get("S")
         reservation = raw.get("dispatch_reservation_id", {}).get("S")
-        if bool(parent_grant) != bool(reservation):
+        continuation = bool(raw.get("orchestration_continuation_receipt"))
+        if bool(parent_grant) != bool(reservation) and not (continuation and parent_grant and not reservation):
             logger.error("work claim recovery missing reservation binding invocation=%s", row.active_run_id)
             continue
-        if parent_grant:
+        if parent_grant and reservation:
             await run_in_threadpool(store.authority.release_dispatch, tenant_id=row.org_id, grant_id=parent_grant, reservation_id=reservation)
         releasable.append((row, reason, evidence))
     released = 0
