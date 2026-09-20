@@ -17,7 +17,7 @@ from harness_jobs import (
     OperationStore,
 )
 
-from .conftest import requires_postgres
+from .conftest import admit_paid, requires_postgres
 from .test_store_postgres import principal, request
 
 pytestmark = requires_postgres
@@ -75,7 +75,7 @@ async def test_admitted_operation_is_claimable_and_delivered_once(connection):
     """An admitted operation is dispatched exactly once and then not again."""
     store = OperationStore()
     outbox = DispatchOutbox(store=store)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
     executor = RecordingExecutor()
 
     first = await outbox.drain_once(connection, executor)
@@ -95,7 +95,7 @@ async def test_the_envelope_carries_no_connection_or_credential(connection):
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store)
-    await store.admit(connection, principal(), request())
+    await admit_paid(store, connection, principal(), request())
     executor = RecordingExecutor()
     await outbox.drain_once(connection, executor)
 
@@ -130,7 +130,7 @@ async def test_delivery_moves_the_operation_off_pending(connection):
     """A caller polling right after dispatch does not see PENDING forever."""
     store = OperationStore()
     outbox = DispatchOutbox(store=store)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
 
     await outbox.drain_once(connection, RecordingExecutor())
 
@@ -154,7 +154,7 @@ async def test_a_crash_after_delivery_replays_rather_than_loses(connection):
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
     crashing = CrashingExecutor()
 
     await outbox.drain_once(connection, crashing)
@@ -185,7 +185,7 @@ async def test_pending_work_is_recoverable_by_a_new_pool(pool, schema_name):
     outbox = DispatchOutbox(store=store)
     async with pool.acquire() as connection:
         for index in range(3):
-            await store.admit(connection, principal(), request(f"k-{index}"))
+            await admit_paid(store, connection, principal(), request(f"k-{index}"))
     await pool.close()
 
     fresh = await asyncpg.create_pool(
@@ -214,7 +214,7 @@ async def test_an_expired_claim_becomes_claimable_again(connection):
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store, claim_seconds=3600)
-    await store.admit(connection, principal(), request())
+    await admit_paid(store, connection, principal(), request())
 
     claimed = await outbox.claim(connection)
     assert len(claimed) == 1
@@ -241,7 +241,7 @@ async def test_concurrent_workers_claim_disjoint_rows(pool):
     outbox = DispatchOutbox(store=store, claim_seconds=3600)
     async with pool.acquire() as connection:
         for index in range(20):
-            await store.admit(connection, principal(), request(f"k-{index}"))
+            await admit_paid(store, connection, principal(), request(f"k-{index}"))
 
     async def worker():
         async with pool.acquire() as connection:
@@ -264,7 +264,7 @@ async def test_a_failed_delivery_stays_pending_and_records_why(connection, raisi
     """Both failure shapes -- returning False and raising -- leave the row retryable."""
     store = OperationStore()
     outbox = DispatchOutbox(store=store)
-    await store.admit(connection, principal(), request())
+    await admit_paid(store, connection, principal(), request())
 
     report = await outbox.drain_once(connection, FailingExecutor(raising=raising))
 
@@ -289,7 +289,7 @@ async def test_attempts_are_capped_and_the_outcome_is_unknown_not_failed(connect
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=3)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
     executor = FailingExecutor()
 
     totals = await outbox.drain(connection, executor, max_batches=10)
@@ -320,7 +320,7 @@ async def test_exhaustion_does_not_overwrite_a_real_conclusion(connection):
     """If something already knows the outcome, UNKNOWN must not clobber it."""
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=1)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
     await store.transition(
         connection,
         admitted.record.operation_id,
@@ -373,7 +373,7 @@ async def test_an_expired_claim_cannot_settle_its_successors_row(connection, set
     # longer claimable, and a test where B never gets the row proves nothing about
     # whether A's settlement would have hit it.
     outbox = DispatchOutbox(store=store, max_attempts=5)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
 
     stale = (await outbox.claim(connection))[0]
     await _expire_claims(connection)
@@ -434,7 +434,7 @@ async def test_a_crashed_final_claim_reaches_a_durable_unknown(connection):
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=1)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
 
     # A process killed mid-delivery, modelled exactly: `claim()` commits the attempt
     # increment and the lease, and then nothing else runs. Not via `drain_once` with a
@@ -485,7 +485,7 @@ async def test_recovery_leaves_a_live_claim_alone(connection):
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=1)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
 
     await outbox.claim(connection)  # live lease, not expired
 
@@ -594,7 +594,7 @@ async def test_an_interruption_inside_the_settlement_leaves_nothing_stranded(
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=1)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
     await _strand_a_final_claim(connection, outbox)
 
     before = await _row(connection)
@@ -661,7 +661,7 @@ async def test_an_interrupted_exhaustion_during_a_drain_is_also_recovered(connec
     """
     admitted_store = OperationStore()
     outbox = DispatchOutbox(store=_StoreThatFailsBeforeWriting(), max_attempts=1)
-    admitted = await admitted_store.admit(connection, principal(), request())
+    admitted = await admit_paid(admitted_store, connection, principal(), request())
 
     with pytest.raises(_Interrupted):
         await outbox.drain_once(connection, FailingExecutor())
@@ -702,7 +702,7 @@ async def test_a_row_stranded_by_the_earlier_two_commit_settlement_is_repaired(
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=1)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
     await _strand_a_final_claim(connection, outbox)
 
     # The earlier build's statement, as it stood, followed by nothing.
@@ -755,7 +755,7 @@ async def test_the_repair_branch_leaves_correctly_settled_rows_alone(connection)
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=1)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
     await store.transition(
         connection,
         admitted.record.operation_id,
@@ -790,7 +790,7 @@ async def test_the_repair_branch_ignores_a_delivered_row(connection):
     """
     store = OperationStore()
     outbox = DispatchOutbox(store=store, max_attempts=1)
-    admitted = await store.admit(connection, principal(), request())
+    admitted = await admit_paid(store, connection, principal(), request())
 
     assert (await outbox.drain_once(connection, RecordingExecutor())).delivered == 1
     await connection.execute("UPDATE harness_dispatch_outbox SET abandoned_at = now()")
@@ -805,7 +805,7 @@ async def test_marking_delivered_twice_keeps_the_first_timestamp(connection):
     """Settlement is idempotent: a replayed settle does not rewrite the evidence."""
     store = OperationStore()
     outbox = DispatchOutbox(store=store)
-    await store.admit(connection, principal(), request())
+    await admit_paid(store, connection, principal(), request())
     envelopes = await outbox.claim(connection)
 
     await outbox._mark_delivered(connection, envelopes[0])

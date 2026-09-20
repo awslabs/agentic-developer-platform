@@ -855,6 +855,19 @@ run_phase_b() {
 # The harness keeps the assertions (it has jq and psql); the pod does the doing.
 # Response bodies are copied back for assertion; TOKENS ARE NOT — they are minted,
 # used and destroyed inside the pod.
+# Use the deployed installer as the package manifest. Downloading only the auth
+# helper and proxy missed adp_deployments.py once serve gained ownership checks.
+install_cli_bundle() {
+  local installer="$POD_WORKDIR/install.sh"
+  if ! laptop curl -fsS -o "$installer" "${GATEWAY_URL}/cli/install.sh" \
+     || ! laptop sh "$installer" --gateway-url "$GATEWAY_URL" --prefix "$POD_HOME/bin" \
+       >"$WORKDIR/install.log" 2>&1; then
+    fail "C5c complete CLI installation failed: $(tail -3 "$WORKDIR/install.log" 2>/dev/null | tr '\n' ' ')"
+    return 1
+  fi
+  pass "C5c installed the complete CLI package through the live installer"
+}
+
 run_phase_c() {
   phase "C" "the laptop journey in the clean-room pod (no credentials in reach)"
   maybe_fail_phase C
@@ -876,9 +889,8 @@ run_phase_c() {
     return 1
   fi
 
-  # C5b — bg-gateway-proxy.py is a SOFT SKIP until #4156 allowlists it in
-  # src/cli_download/routes.py. When that lands this branch flips to a pass with
-  # no edit here; until then a 404 is the expected, correct behaviour.
+  # C5b — the proxy is required on a live run. The legacy offline fixture has
+  # no listening proxy; its separate package/config tests cover this branch.
   local proxy_file="$POD_HOME/bin/bg-gateway-proxy.py"
   local proxy_downloaded=false
   if laptop curl -fsS -o "$proxy_file" "${GATEWAY_URL}/cli/bg-gateway-proxy.py" 2>/dev/null \
@@ -887,7 +899,15 @@ run_phase_c() {
     pass "C5b bg-gateway-proxy.py is served by the download route (#4156 has landed)"
   else
     laptop rm -f "$proxy_file" || true
-    skip "C5b bg-gateway-proxy.py is not downloadable yet — expected until #4156 allowlists it; Codex leg (C10) will be skipped"
+    if [ "$DRY_RUN" = true ]; then
+      skip "C5b dry-run fixture has no proxy; C10 is covered separately"
+    else
+      fail "C5b bg-gateway-proxy.py is missing from the deployed CLI package"
+      return 1
+    fi
+  fi
+  if [ "$proxy_downloaded" = true ]; then
+    install_cli_bundle || return 1
   fi
 
   # C6 — public discovery. The CLI fetches this before it holds any token, so
@@ -993,10 +1013,9 @@ run_phase_c() {
     fail "C9 npm install of @anthropic-ai/claude-code failed: $(tail -3 "$WORKDIR/npm-claude.log" | tr '\n' ' ')"
   fi
 
-  # C10 — Codex through the local auth proxy. Requires the sibling proxy file,
-  # so it is skipped for the same reason C5b is, until #4156 lands.
+  # C10 — Codex through the local auth proxy from the complete CLI package.
   if [ "$proxy_downloaded" != true ]; then
-    skip "C10 Codex zero-touch leg skipped — bg-gateway-proxy.py is not downloadable until #4156"
+    skip "C10 dry-run proxy fixture unavailable"
     return 0
   fi
 

@@ -170,6 +170,8 @@ class Connection(Protocol):
 
     def transaction(self) -> object: ...
 
+    def is_in_transaction(self) -> bool: ...
+
 
 _COLUMNS = """
     operation_id, attempt_id, job_id, org_id, workspace_id, action, idempotency_key,

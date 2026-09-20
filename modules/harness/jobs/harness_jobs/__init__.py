@@ -1,7 +1,7 @@
-"""Shared durable execution: the operation store and dispatch outbox.
+"""Shared durable execution: the operation store, dispatch outbox and admission gate.
 
-Issue #5525 (w6-02), EPIC #4910, Wave 6. First implementation behind the
-``operation_facade`` port published by #5524 (w6-01).
+Issues #5525 (w6-02) and #5526 (w6-03), EPIC #4910, Wave 6. First implementation behind
+the ``operation_facade`` port published by #5524 (w6-01).
 
 ## What this package is
 
@@ -11,10 +11,17 @@ The one place a request to run an operation is written down. It owns:
   operation and attempt IDs, status and version (``identity.py``, ``schema.py``);
 * **atomic admission** -- the admission record and its outbox row in one transaction,
   so an accepted operation is always a dispatched one (``store.py``);
+* **approved, budget-bound admission** -- a current approval bound to an immutable plan
+  and a spend envelope, reserve/confirm against the domain ledger, one-time consumption
+  and the compensation ordering (``approval.py``, ``admission.py``);
 * **duplicate-safe delivery** -- resumable, at-least-once, marked delivered last
   (``outbox.py``);
 * **the consumer-facing surface** -- matching the ``OperationFacade`` Protocol the
   domain app already declares (``facade.py``).
+
+``admission.admit_operation()`` is the entry point a request handler should reach, not
+``store.admit()``: the store answers "is this well-formed, unique and tenant-scoped" and
+deliberately never "is this allowed".
 
 It is shared, not Superplane's: per #5524's ownership table, anything that is a job,
 approval, lease or credential lives in ``modules/harness/`` or ``modules/gateway/``.
@@ -28,7 +35,7 @@ and let a later story disagree with it:
 | Not here | Owner |
 |---|---|
 | Leases, fence tokens, cancellation, crash-recovery executor | #5527 (w6-04) |
-| Approval currency, expiry, one-time consumption | #5526 (w6-03) |
+| The reservation ledger -- balances, amounts, spend totals | Superplane (domain) |
 | Credential authorization and trusted delivery | #5528 (w6-05) |
 | Report authority, allocation inventory | #5529 (w6-06) |
 | Installing/composing this facade into the API | #5535 (w6-12) |
@@ -51,8 +58,46 @@ Importing this package runs no DDL and touches no database.
 
 from __future__ import annotations
 
+from .admission import (
+    DELIVERABLE_RESERVATION_STATES,
+    AdmissionIntent,
+    AdmissionOutcome,
+    BudgetDenied,
+    BudgetLedger,
+    BudgetUnavailable,
+    ConsumedApproval,
+    CreationFence,
+    DispatchEvidence,
+    IntentStage,
+    ReconciliationReport,
+    Reservation,
+    ReservationState,
+    admit_operation,
+    cancel_before_dispatch,
+    derive_operation_identity,
+    list_interrupted_admissions,
+    read_consumption,
+    read_consumption_privileged,
+    reconcile_interrupted_admissions,
+    retain_for_uncertain_dispatch,
+)
+from .approval import (
+    APPROVAL_PERMISSION,
+    NON_PERMISSIVE_RESULTS,
+    ApprovalBinding,
+    ApprovalDecision,
+    ApprovalRecord,
+    ApprovalRefused,
+    ApprovalResult,
+    ApproverStatus,
+    SpendEnvelope,
+    evaluate_approval,
+    requires_distinct_approver,
+)
 from .facade import (
     PORT_REFUSAL_NAMES,
+    ApprovalContext,
+    ApprovalSource,
     OperationFacadeService,
     OperationProgress,
     OperationUnavailable,
@@ -102,6 +147,40 @@ from .store import (
 )
 
 __all__ = [
+    # approval (#5526)
+    "APPROVAL_PERMISSION",
+    "NON_PERMISSIVE_RESULTS",
+    "ApprovalBinding",
+    "ApprovalDecision",
+    "ApprovalRecord",
+    "ApprovalRefused",
+    "ApprovalResult",
+    "ApproverStatus",
+    "SpendEnvelope",
+    "evaluate_approval",
+    "requires_distinct_approver",
+    # admission (#5526)
+    "DELIVERABLE_RESERVATION_STATES",
+    "AdmissionIntent",
+    "AdmissionOutcome",
+    "BudgetDenied",
+    "BudgetLedger",
+    "BudgetUnavailable",
+    "ConsumedApproval",
+    "CreationFence",
+    "DispatchEvidence",
+    "IntentStage",
+    "ReconciliationReport",
+    "Reservation",
+    "ReservationState",
+    "admit_operation",
+    "cancel_before_dispatch",
+    "derive_operation_identity",
+    "list_interrupted_admissions",
+    "read_consumption",
+    "read_consumption_privileged",
+    "reconcile_interrupted_admissions",
+    "retain_for_uncertain_dispatch",
     # identity
     "CONTRACT_VERSION",
     "MAX_IDEMPOTENCY_KEY_LENGTH",
@@ -142,6 +221,8 @@ __all__ = [
     "DispatchOutbox",
     # facade
     "PORT_REFUSAL_NAMES",
+    "ApprovalContext",
+    "ApprovalSource",
     "OperationFacadeService",
     "OperationProgress",
     "OperationUnavailable",

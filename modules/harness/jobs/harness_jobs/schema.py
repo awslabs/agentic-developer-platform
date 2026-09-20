@@ -52,6 +52,23 @@ The safe rollback sequence is therefore stated as an ordering, not a script:
 code back to a version whose `SCHEMA_VERSION` matches what is deployed. `DOWNGRADES`
 holds the statements; running one is an authorized operational act, and it drops
 rows, which is why the docstring on each says what is lost.
+
+## Versions
+
+| Version | Adds | Story |
+|---|---|---|
+| 1 | `harness_operations`, `harness_dispatch_outbox` | #5525 (w6-02) |
+| 2 | `harness_approval_consumption` | #5526 (w6-03) |
+| 3 | `harness_admission_intent` | #5526 (w6-03) repair |
+
+Rolling back to 1 has a consequence the DDL does not show: it discards the record of
+which approvals have already been spent, after which replaying one admits a second
+operation and reserves budget a second time against an envelope approved once. Revoke or
+expire outstanding approvals **before** rolling back. See `DOWNGRADES[2]`.
+
+Rolling back to 2 discards the record of reservations the harness is holding but has not
+resolved -- see `DOWNGRADES[3]`, which is a different and narrower hazard: the money
+stays held at the ledger with nothing left that knows to go and reclaim it.
 """
 
 from __future__ import annotations
@@ -60,7 +77,17 @@ from typing import Protocol
 
 # The schema version this code is written against. Bumped by any change to
 # `UPGRADES`; `check_schema_version` compares it to what the database reports.
-SCHEMA_VERSION = 1
+#
+# 2 as of #5526 (w6-03), which adds `harness_approval_consumption`. See the comment
+# above that table for why it is a new version rather than an addition to v1 -- in
+# short, because folding a new table into an already-applied version means `apply()`
+# skips it silently, and whether v1 has been applied is not something this code can
+# check.
+#
+# 3 adds `harness_admission_intent`, for the same reason stated once more: v2 has by now
+# been applied to databases this code cannot inspect, so extending v2 in place would
+# make the new table's existence depend on deployment order.
+SCHEMA_VERSION = 3
 
 
 class SupportsExecute(Protocol):
@@ -325,6 +352,228 @@ CREATE INDEX IF NOT EXISTS harness_dispatch_outbox_pending_idx
     WHERE delivered_at IS NULL
 """
 
+# ---------------------------------------------------------------------------
+# Version 2 -- approval consumption (#5526, w6-03)
+# ---------------------------------------------------------------------------
+
+# Why this is version 2 rather than an addition to version 1.
+#
+# #5525's README argues that the columns it added late belonged *in* v1 rather than in a
+# migration, because "v1 has never been applied to any database -- there is no deployed
+# schema for a migration to move". That reasoning was sound for that change and is not
+# sound for this one, for two reasons:
+#
+#  1. This is a new table, not a NOT NULL column on an existing one. The expensive case
+#     the argument was avoiding -- a backfill on live rows -- does not arise, so the
+#     cheaper option it was trading against costs nothing here.
+#  2. "No database has been applied" is an assumption about the world that this code
+#     cannot check, and #5525 has merged. The authorized installation step (#5538,
+#     w6-15) and the composition story (#5535, w6-12) are separate stories that may
+#     have applied v1 by then. If they have, folding this table into v1 means `apply()`
+#     sees `version >= target`, skips every statement, and the table is silently never
+#     created -- and the first symptom is the approval gate failing at runtime against a
+#     schema that reports itself as current.
+#
+# Version 2 is correct whether or not v1 was applied. Editing v1 is correct only under
+# an assumption nobody can verify at the time it matters, so the choice is not close.
+_APPROVAL_CONSUMPTION_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_approval_consumption (
+    -- The approval that was consumed. PRIMARY KEY, and this single line is the whole
+    -- of "an approval admits exactly once".
+    --
+    -- It is a constraint rather than application logic for the same reason the
+    -- idempotency rule is (`harness_operations_idempotent` above): a
+    -- SELECT-then-INSERT is green under test and wrong under concurrency. Two
+    -- admissions racing one approval both find no consumption row and both proceed,
+    -- and the effect of losing that race is a second budget reservation against an
+    -- envelope a human approved once. Here the conflict IS the detection, and the
+    -- loser is handed the winner's operation.
+    approval_id     text        PRIMARY KEY,
+
+    -- The operation the approval was consumed BY. This is what lets the loser of the
+    -- race receive the original answer rather than an error: on conflict, the
+    -- admission path reads this column and returns that operation, which is what
+    -- makes an honest retry idempotent instead of merely refused.
+    --
+    -- No ON DELETE CASCADE, deliberately, in contrast to the outbox's reference. A
+    -- cascade here would mean deleting an operation silently frees its approval for
+    -- reuse -- turning a row deletion into a budget grant. RESTRICT is the safe
+    -- direction: the consumption record outlives the operation, and an operator who
+    -- really must remove one has to say so explicitly.
+    operation_id    text        NOT NULL UNIQUE
+                        REFERENCES harness_operations (operation_id)
+                        ON DELETE RESTRICT,
+
+    -- Tenant, stored rather than joined for the same reason the outbox stores it: a
+    -- reader answering "was this approval consumed" must be able to scope the question
+    -- without read access to the operations table.
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+
+    -- What the approval was bound to, copied at consumption time. Stored so that the
+    -- binding an auditor reads is the one the gate actually checked, and not whatever
+    -- the approval source reports now -- an approval store that revised a record after
+    -- the fact would otherwise rewrite history that money was spent on.
+    plan_digest     text        NOT NULL,
+
+    -- Who asked and who approved. Both are needed to answer "was this self-approved"
+    -- after the fact, which is a question an audit asks about a spend that already
+    -- happened, when the live membership data has moved on.
+    requester       text        NOT NULL,
+    approved_by     text        NOT NULL,
+
+    -- The approved ceiling, as three integers rather than a serialized blob so that
+    -- "what was the envelope" is answerable in SQL by an operator. Millionths, matching
+    -- `SpendEnvelope.max_cost_micros`: a float column compares unequal to itself across
+    -- a round trip, and comparison is the field's only purpose.
+    max_resource_units  bigint  NOT NULL,
+    max_runtime_seconds bigint  NOT NULL,
+    max_cost_micros     bigint  NOT NULL,
+
+    -- The reservation this admission holds against the domain ledger, and its state.
+    --
+    -- Recorded here rather than inferred, because the compensation rules in #5524 §3.5
+    -- are decidable only if the step the sequence reached is durable. "Confirm
+    -- succeeded but the commit was lost" and "reserve succeeded but confirm was lost"
+    -- have different safe answers -- release after establishing nothing was dispatched,
+    -- versus retry the confirm under the same key -- and a recovering process that
+    -- could not tell them apart would have to guess between releasing money for work
+    -- that may be running and holding money for work that never will.
+    reservation_id  text,
+    reservation_state text      NOT NULL
+                        CHECK (reservation_state IN (
+                            'reserved', 'confirmed', 'released', 'retained'
+                        )),
+
+    consumed_at     timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+# Lookup by operation, for the recovery and compensation paths: given an operation whose
+# dispatch outcome is uncertain, find the reservation that must be retained until the
+# provider is reconciled. `operation_id` is already UNIQUE, so this is the index that
+# makes the reverse direction cheap rather than a second constraint.
+_APPROVAL_CONSUMPTION_OPERATION_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_approval_consumption_operation_idx
+    ON harness_approval_consumption (operation_id)
+"""
+
+# ---------------------------------------------------------------------------
+# Version 3: admission intent, written before any external effect (#5526 repair)
+# ---------------------------------------------------------------------------
+#
+# ## The hazard this table exists for
+#
+# Steps (1)-(3) of the admission sequence -- approve, reserve, confirm -- happen outside
+# the transaction, for the reason `admission.py` gives: a transaction held open across a
+# ledger call makes the store's throughput a function of the ledger's latency. The cost
+# of that choice is that a process which dies between "the ledger booked a hold" and
+# "the reply arrived" leaves a hold nothing in this database has ever heard of.
+#
+# That was reproduced (CXR-003): kill the process after `reserve` lands but before its
+# reply, and a new connection sees zero operations, zero outbox rows and zero
+# consumption rows, while the ledger holds budget. There was nothing to enumerate, so
+# there was no reconciliation that could be written -- recovery was not "hard", it was
+# undefined. And because the derived operation identity is a function of the approval
+# alone, the retry could not discover the hold either: it refused on the expired
+# approval before contacting the ledger at all, so the money stayed held forever.
+#
+# The fix is that the *intent* is durable before the first external effect. This row is
+# written and committed before `reserve` is called, so the invariant becomes: a hold can
+# only exist if a row here describes it. The reverse -- a row with no hold -- is the
+# harmless direction, and `reconcile_interrupted_admissions` resolves it by asking the
+# ledger, which is idempotent on the derived key.
+#
+# ## Why it is not a column on harness_approval_consumption
+#
+# The consumption row is written *inside* the transaction, at step (4c), and it
+# references the operation. Both are exactly what this record must not do: it has to
+# exist before there is an operation to reference, and it has to survive the rollback of
+# a transaction that failed. A nullable set of columns on a row that does not yet exist
+# is not a record.
+_ADMISSION_INTENT_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_admission_intent (
+    -- The approval this admission is spending. PRIMARY KEY, so an intent row is
+    -- per-approval exactly as the consumption row is, and a retry under the same
+    -- approval finds the existing row rather than writing a second one.
+    --
+    -- Deliberately NOT a foreign key to harness_approval_consumption: this row exists
+    -- before that one does, and referencing a row that does not exist yet is the
+    -- ordering problem this table was created to escape.
+    approval_id     text        PRIMARY KEY,
+
+    -- The derived identity. Stored because it IS the ledger's idempotency key: a
+    -- recovering process needs to name the reservation it is asking about, and the
+    -- ledger is keyed on (job_id, attempt_id) rather than on a reservation id it has
+    -- not told us yet. Without these columns, recovery would have to re-derive them
+    -- from the approval -- which works only while the derivation never changes, and
+    -- a recovery path whose correctness depends on a pure function staying pure across
+    -- versions is a recovery path that breaks silently at the worst moment.
+    operation_id    text        NOT NULL UNIQUE,
+    job_id          text        NOT NULL,
+    attempt_id      text        NOT NULL,
+
+    -- Tenant, so reconciliation can be scoped and so a cross-tenant read of this table
+    -- is expressible as a WHERE clause rather than as a filter someone remembers to
+    -- apply.
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+
+    -- The approved ceiling, copied. A recovering process must be able to retry the
+    -- confirm under the same envelope, and the approval it came from may by then have
+    -- expired or been revoked -- which is precisely when recovery matters and precisely
+    -- when the approval store can no longer answer. Copying is not duplication here:
+    -- it is the difference between a reconciliation that works after expiry and one
+    -- that gives up when the approval it needs to read is gone.
+    max_resource_units  bigint  NOT NULL,
+    max_runtime_seconds bigint  NOT NULL,
+    max_cost_micros     bigint  NOT NULL,
+
+    -- How far the sequence is known to have got. Advanced only after the corresponding
+    -- external effect is known to have happened, so the column can lag reality but can
+    -- never run ahead of it:
+    --
+    --   intended  -- nothing has been asked of the ledger yet, OR a reserve was issued
+    --                and its outcome is unknown. These are one state on purpose: they
+    --                are indistinguishable from inside this process after a crash, and
+    --                a state that claims to distinguish them would be guessing.
+    --   reserved  -- a reserve reply was received. A hold definitely exists.
+    --   confirmed -- a confirm reply was received. The envelope is bound.
+    --   resolved  -- the sequence reached a terminal answer (committed, refused and
+    --                compensated, or reconciled). Nothing further is owed. Rows are
+    --                marked rather than deleted so that "was this approval's hold ever
+    --                settled, and how" stays answerable after the fact.
+    stage           text        NOT NULL
+                        CHECK (stage IN (
+                            'intended', 'reserved', 'confirmed', 'resolved'
+                        )),
+
+    -- The reservation id, once the ledger has named one. Null while the stage is
+    -- 'intended', which is the whole reason recovery keys on (job_id, attempt_id).
+    reservation_id  text,
+
+    -- How a resolved row was settled, for the operator reading after the fact. Free
+    -- text rather than an enum: the useful content is which compensation ran and why,
+    -- and an enum would force that into categories chosen before the incidents.
+    resolution      text,
+
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+# The reconciliation sweep's only query: unresolved rows, oldest first. A partial index
+# because the interesting set is permanently tiny relative to the table -- every healthy
+# admission resolves within milliseconds -- so an index over all rows would be mostly
+# dead weight, and the sweep must stay cheap enough to run often. A sweep that is
+# expensive gets scheduled rarely, and a reconciliation that runs rarely is a hold that
+# sits for hours.
+_ADMISSION_INTENT_UNRESOLVED_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_admission_intent_unresolved_idx
+    ON harness_admission_intent (created_at)
+    WHERE stage <> 'resolved'
+"""
+
 UPGRADES: dict[int, tuple[str, ...]] = {
     1: (
         _VERSION_TABLE,
@@ -332,6 +581,14 @@ UPGRADES: dict[int, tuple[str, ...]] = {
         _OPERATIONS_TENANT_INDEX,
         _OUTBOX_TABLE,
         _OUTBOX_PENDING_INDEX,
+    ),
+    2: (
+        _APPROVAL_CONSUMPTION_TABLE,
+        _APPROVAL_CONSUMPTION_OPERATION_INDEX,
+    ),
+    3: (
+        _ADMISSION_INTENT_TABLE,
+        _ADMISSION_INTENT_UNRESOLVED_INDEX,
     ),
 }
 
@@ -347,6 +604,36 @@ DOWNGRADES: dict[int, tuple[str, ...]] = {
         "DROP TABLE IF EXISTS harness_operations",
         "DROP TABLE IF EXISTS harness_jobs_schema_version",
     ),
+    # Rolling back to v1 drops every record of which approvals have already been
+    # consumed. That is not a neutral cleanup: after this runs, an approval that already
+    # admitted an operation and already reserved budget is indistinguishable from an
+    # unused one, so replaying it admits a second operation and reserves a second time
+    # against an envelope a human approved once.
+    #
+    # Dropped rather than retained anyway, because the alternative is worse in a
+    # different direction: leaving the table while the code that maintains it is gone
+    # means v1 code admitting operations that never record a consumption, so the rows
+    # that survive are a partial record indistinguishable from a complete one.
+    #
+    # The safe sequence is therefore: revoke or expire outstanding approvals FIRST, then
+    # roll back. Stated here because `downgrade()` exists so an operator runs a reviewed
+    # statement rather than an improvised one, and this is the part of it that is not
+    # obvious from the DDL.
+    2: ("DROP TABLE IF EXISTS harness_approval_consumption",),
+    # Rolling back to v2 discards the record of which reservations the harness is
+    # holding and has not yet settled. The hazard is narrower than `DOWNGRADES[2]`'s and
+    # runs the other way: nothing becomes *reusable*, but any hold still outstanding
+    # becomes unreclaimable -- the ledger keeps the budget, and the only record naming
+    # the (job_id, attempt_id) needed to ask about it is gone. The money does not come
+    # back on its own, because a reservation is released by someone deciding to release
+    # it.
+    #
+    # The safe sequence is therefore: run `reconcile_interrupted_admissions` until it
+    # reports nothing outstanding, THEN roll back. Unlike the v2 rollback there is no
+    # counter-argument for keeping the table -- v2 code simply never reads it, so a
+    # surviving table would be an inert set of rows slowly diverging from the ledger,
+    # which is worse than absent because it looks authoritative.
+    3: ("DROP TABLE IF EXISTS harness_admission_intent",),
 }
 
 

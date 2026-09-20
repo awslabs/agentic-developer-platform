@@ -3,28 +3,142 @@
 Issue #5525 (w6-02), EPIC #4910, Wave 6. AC-02 (deployable API persists operations
 across restart) and the port's "acts as the facade's own resolved principal, never the
 request body's org_id".
+
+Updated for #5526 (w6-03): this facade admits through `admit_operation`, so every test
+here supplies an approval source and a ledger. That is not test scaffolding for its own
+sake -- the facade is the port the provisioning path actually calls, and a facade that
+could admit without an approval was the reproduced CXR-001 bypass.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from harness_jobs import (
+    APPROVAL_PERMISSION,
     REQUIRED_PERMISSION,
+    ApprovalBinding,
+    ApprovalContext,
+    ApprovalRecord,
+    ApprovalRefused,
+    ApprovalResult,
+    ApproverStatus,
     ContractViolation,
     OperationFacadeService,
     OperationRefused,
     OperationState,
     OperationStore,
     OperationUnavailable,
+    Reservation,
     ResolvedPrincipal,
+    SpendEnvelope,
 )
 
 from .conftest import requires_postgres
 
 pytestmark = requires_postgres
+
+APPROVER = "user:boss"
+ENVELOPE = SpendEnvelope(
+    max_resource_units=4, max_runtime_seconds=3600, max_cost_micros=5_000_000
+)
+
+
+class ApprovingSource:
+    """Approves whatever it is asked about, for the principal that asked.
+
+    Models a configured approval store that has a current approval on file. The approval
+    id is **derived from the request's idempotency key**, which is what makes the
+    facade's retry-collapse tests meaningful: an approval authorizes one request, so two
+    identical calls present the same approval and therefore the same derived operation
+    identity. An id that varied per call would model an approval store that issues a new
+    approval for every retry, and the facade would then be tested against a source no
+    real deployment would have.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def approval_for(self, *, principal, request) -> ApprovalContext:
+        self.calls.append(request.idempotency_key)
+        return ApprovalContext(
+            record=ApprovalRecord(
+                approval_id=f"appr-{request.idempotency_key}",
+                binding=ApprovalBinding.for_request(principal, request),
+                envelope=ENVELOPE,
+                result=ApprovalResult.ALLOWED_ONCE,
+                approvers=frozenset({APPROVER}),
+                decided_by=APPROVER,
+                decided_at=datetime.now(UTC) - timedelta(minutes=5),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+            requested_envelope=ENVELOPE,
+            approver_statuses={
+                APPROVER: ApproverStatus(
+                    subject=APPROVER,
+                    is_member=True,
+                    permissions=frozenset({APPROVAL_PERMISSION}),
+                )
+            },
+        )
+
+
+class UnapprovedSource:
+    """Has no approval on file. Absence is not permission."""
+
+    async def approval_for(self, *, principal, request) -> ApprovalContext:
+        return ApprovalContext(
+            record=None, requested_envelope=ENVELOPE, approver_statuses={}
+        )
+
+
+class BrokenApprovalSource:
+    """Raises, modelling an unreachable approval store.
+
+    Distinct from `UnapprovedSource` on purpose: an unanswered question is not a
+    refusal, and the facade must not report one as the other.
+    """
+
+    async def approval_for(self, *, principal, request) -> ApprovalContext:
+        raise ConnectionError("the approval store is unreachable")
+
+
+class FakeLedger:
+    """An idempotent ledger double that records what it was asked to do.
+
+    Idempotent on `(job_id, attempt_id)` as the Protocol requires, so a retry through
+    the facade gets the same reservation rather than a second hold -- which is the
+    property the facade's retry tests would silently stop covering if this double minted
+    a new reservation per call.
+    """
+
+    def __init__(self) -> None:
+        self.reserved: dict[tuple[str, str], Reservation] = {}
+        self.confirmed: list[str] = []
+        self.released: list[str] = []
+        self.retained: list[str] = []
+
+    async def reserve(self, *, job_id, attempt_id, org_id, workspace_id, envelope):
+        key = (job_id, attempt_id)
+        if key not in self.reserved:
+            self.reserved[key] = Reservation(
+                reservation_id=f"res-{len(self.reserved) + 1}",
+                job_id=job_id,
+                attempt_id=attempt_id,
+            )
+        return self.reserved[key]
+
+    async def confirm(self, *, reservation, envelope):
+        self.confirmed.append(reservation.reservation_id)
+
+    async def release(self, *, reservation, reason):
+        self.released.append(reservation.reservation_id)
+
+    async def retain(self, *, reservation, reason):
+        self.retained.append(reservation.reservation_id)
 
 
 class FixedResolver:
@@ -69,8 +183,19 @@ def principal(org: str = "org-a", workspace: str = "ws-1", *, permitted: bool = 
     )
 
 
-def facade(connect, resolver) -> OperationFacadeService:
-    return OperationFacadeService(connect=connect, resolver=resolver)
+def facade(connect, resolver, *, approvals=None, ledger=None):
+    """A facade wired to an approval source and a ledger, as a real one must be.
+
+    Both default to approving/idempotent doubles so the tests whose subject is something
+    else (tenant scoping, refusal translation, payload round-tripping) read as they did
+    before the gate was inserted. The tests whose subject *is* the gate pass their own.
+    """
+    return OperationFacadeService(
+        connect=connect,
+        resolver=resolver,
+        approvals=approvals or ApprovingSource(),
+        ledger=ledger or FakeLedger(),
+    )
 
 
 async def open_default(service, **overrides):
@@ -183,6 +308,100 @@ async def test_a_different_payload_without_a_key_is_a_different_operation(connec
     large = await open_default(service, parameters={"size": "enormous"})
 
     assert small.operation_id != large.operation_id
+
+
+# ---------------------------------------------------------------------------
+# The facade admits through the gate (#5526 CXR-001)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_facade_will_not_construct_without_an_approval_source(connect):
+    """The bypass, closed at the constructor rather than at the request.
+
+    CXR-001 reproduced a facade that called `store.admit` directly, so the port the
+    provisioning path actually calls admitted operations with no approval and no
+    reservation. The repair is not a check inside `open_operation` -- a misconfigured
+    facade must fail to exist, so it fails at startup instead of on the first real
+    provisioning request.
+    """
+    with pytest.raises(ContractViolation, match="requires an ApprovalSource"):
+        OperationFacadeService(connect=connect, resolver=FixedResolver(principal()))
+
+    with pytest.raises(ContractViolation, match="requires a BudgetLedger"):
+        OperationFacadeService(
+            connect=connect,
+            resolver=FixedResolver(principal()),
+            approvals=ApprovingSource(),
+        )
+
+
+async def test_an_unapproved_request_is_refused_and_writes_nothing(connect, connection):
+    """No approval on file means no operation, no outbox row and no ledger call.
+
+    Absence is not permission, and the refusal has to be *before* the durable write:
+    an operation row that exists because the approval store had nothing on file is the
+    unpaid row CXR-001 found being delivered.
+    """
+    ledger = FakeLedger()
+    service = facade(
+        connect, FixedResolver(principal()), approvals=UnapprovedSource(), ledger=ledger
+    )
+
+    with pytest.raises(ApprovalRefused):
+        await open_default(service)
+
+    assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 0
+    queued = await connection.fetchval("SELECT count(*) FROM harness_dispatch_outbox")
+    assert queued == 0
+    assert ledger.reserved == {}
+
+
+async def test_an_unreachable_approval_store_is_unavailable_not_refused(
+    connect, connection
+):
+    """An unanswered question is not a refusal, and it still admits nothing.
+
+    Reported as `OperationUnavailable` because the approval may well exist -- telling
+    the caller "refused" would have them stop retrying something a retry would allow.
+    The same split the resolver path already makes.
+    """
+    service = facade(
+        connect, FixedResolver(principal()), approvals=BrokenApprovalSource()
+    )
+
+    with pytest.raises(OperationUnavailable, match="could not be established"):
+        await open_default(service)
+
+    assert await connection.fetchval("SELECT count(*) FROM harness_operations") == 0
+
+
+async def test_an_approved_request_reserves_confirms_and_records_consumption(
+    connect, connection
+):
+    """The positive control: approved work is held, confirmed, written and payable.
+
+    Deliberately paired with the refusal tests above. A control that only ever refuses
+    is satisfied by a facade that refuses everything, so the repair has to be shown to
+    still admit the work it is supposed to admit -- through the ledger, in order, with
+    the consumption row that makes the operation claimable.
+    """
+    ledger = FakeLedger()
+    service = facade(connect, FixedResolver(principal()), ledger=ledger)
+
+    progress = await open_default(service)
+
+    assert len(ledger.reserved) == 1
+    assert ledger.confirmed == ["res-1"]
+    assert ledger.released == [] and ledger.retained == []
+
+    consumption = await connection.fetchrow(
+        "SELECT org_id, workspace_id, reservation_state FROM"
+        " harness_approval_consumption WHERE operation_id = $1",
+        progress.operation_id,
+    )
+    assert consumption is not None
+    assert (consumption["org_id"], consumption["workspace_id"]) == ("org-a", "ws-1")
+    assert consumption["reservation_state"] == "confirmed"
 
 
 # ---------------------------------------------------------------------------

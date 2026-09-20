@@ -231,6 +231,80 @@ async def connection(pool: object) -> AsyncIterator[object]:
         yield held
 
 
+async def mark_paid(
+    connection: object,
+    operation_id: str,
+    *,
+    approval_id: str | None = None,
+    org_id: str = "org-a",
+    workspace_id: str = "ws-1",
+    reservation_state: str = "confirmed",
+) -> str:
+    """Record that an operation was paid for by an approval, as the gate would.
+
+    `DispatchOutbox.claim` requires a spendable `harness_approval_consumption` row
+    (#5526, w6-03): an operation admitted without passing the approval gate is not
+    deliverable. The store's own tests and the outbox's tests admit through
+    `OperationStore.admit` because their subject is the durable write and the delivery
+    mechanics, not adjudication -- so they need the eligibility record the gate would
+    have written.
+
+    This is a **stand-in for the gate, not a way around it.** It exists so those
+    tests keep testing what they are about, and it is deliberately not used by the tests
+    that assert the control itself: `test_admission_bypass.py` admits without calling
+    this and asserts the row is never delivered, and `test_admission_postgres.py` drives
+    the real `admit_operation`, which writes this row itself. If this helper were used
+    there, the suite would be asserting that a test helper works.
+
+    The envelope amounts are fixed and arbitrary: nothing under test reads them, and a
+    test that needed a particular envelope should go through the gate.
+    """
+    consumed = approval_id or f"test-approval-{uuid.uuid4().hex}"
+    await connection.execute(  # type: ignore[attr-defined]
+        """
+        INSERT INTO harness_approval_consumption (
+            approval_id, operation_id, org_id, workspace_id, plan_digest,
+            requester, approved_by, max_resource_units, max_runtime_seconds,
+            max_cost_micros, reservation_id, reservation_state
+        )
+        VALUES ($1,$2,$3,$4,'test-digest','user:tester','user:approver',
+                4, 3600, 5000000, $5, $6)
+        ON CONFLICT (approval_id) DO NOTHING
+        """,
+        consumed,
+        operation_id,
+        org_id,
+        workspace_id,
+        f"res-{consumed}",
+        reservation_state,
+    )
+    return consumed
+
+
+async def admit_paid(
+    store: object, connection: object, principal: object, request: object
+):
+    """`store.admit` plus the consumption row the gate would have written.
+
+    The one-call form of `mark_paid` for the many delivery tests whose subject is the
+    outbox rather than admission. Returns exactly what `store.admit` returns, so a call
+    site changes from `store.admit(...)` to `admit_paid(store, ...)` and nothing else.
+
+    Reads the tenant off the admitted record rather than defaulting it, because the
+    eligibility predicate joins on `operation_id` and a mismatched tenant here would
+    make the helper silently write a row for a tenant the test is not using -- which
+    would pass today and become wrong the moment the predicate is tenant-aware.
+    """
+    admitted = await store.admit(connection, principal, request)  # type: ignore[attr-defined]
+    await mark_paid(
+        connection,
+        admitted.record.operation_id,
+        org_id=admitted.record.org_id,
+        workspace_id=admitted.record.workspace_id,
+    )
+    return admitted
+
+
 @pytest.fixture
 def connect(pool: object):
     """A `connect` callable in the shape `OperationFacadeService` expects.

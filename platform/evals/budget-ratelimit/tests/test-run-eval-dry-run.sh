@@ -18,7 +18,7 @@
 #      traffic. This is the single most dangerous failure mode in the file, so it
 #      is tested first and directly.
 #   2. Cleanup runs even when a case explodes. A crashed run must not leave a
-#      $0.01 cap or an rpm=1 limit behind in dev.
+#      $1 cap or an rpm=1 limit behind in dev.
 #   3. The clean-room detector actually trips. If it stopped detecting
 #      contamination, every future run would report green from inside the
 #      agent-worker image — whose baked-in sigv4-proxy makes requests
@@ -321,7 +321,7 @@ assert_eq "$TRACE" "phase:configphase:seedphase:1phase:8phase:cleanup" \
 # -----------------------------------------------------------------------------
 name "cleanup runs when a case explodes mid-run (--fail-phase 3)"
 # -----------------------------------------------------------------------------
-# The guarantee that a crashed run does not leave a $0.01 cap in dev. Cases 1-2
+# The guarantee that a crashed run does not leave a $1 cap in dev. Cases 1-2
 # have already WRITTEN budget config by the time 3 dies, so this is the real
 # scenario, not a no-op teardown.
 run_eval failmid --fail-phase 3; OUT="$RUN_OUT"
@@ -515,19 +515,18 @@ fi
 # -----------------------------------------------------------------------------
 name "the findings are reported rather than silently dropped"
 # -----------------------------------------------------------------------------
-# Four cases answer with a pinned FINDING instead of a pass (eval header). If
-# they stopped being emitted the eval would look cleaner while proving less, so
-# their presence is asserted — including the headline Phase H answer, which is
-# the deliverable #4163 asks for by name.
+# Preserve real coverage gaps without pinning obsolete implementation defects.
 run_eval findings; OUT="$RUN_OUT"
-assert_contains "$OUT" "ANSWER TO THE HEADLINE QUESTION" \
-  "Phase H states the answer to the headline question outright"
-assert_contains "$OUT" "does NOT land under the triggering human's budget" \
-  "the Phase H answer is stated as a definite finding, not a maybe"
+assert_contains "$OUT" "agent-triggered budget exhaustion is NOT TESTED" \
+  "Phase H states its observational coverage limit"
+assert_not_contains "$OUT" "does NOT land under the triggering human's budget" \
+  "historical direct billing cannot disprove root_user accounting"
 assert_contains "$OUT" "TPM rate limiting is effectively unenforceable" \
   "case 9 pins the TPM finding"
-assert_contains "$OUT" "org-level rate limit created through the admin API can never be enforced" \
-  "case 11 pins the org rate-limit key-mismatch finding"
+assert_contains "$OUT" "case 11 org RPM: HTTP 429" \
+  "case 11 requires the now-supported org rate limit"
+assert_contains "$OUT" "settled organization usage uses the enforceable 'org' ledger key" \
+  "case 7 verifies the current org ledger key"
 SUMMARY="$RUN_DIR/summary.md"
 if [ -f "$SUMMARY" ]; then
   assert_contains "$(cat "$SUMMARY")" "| Phase | Result | Assertion |" \

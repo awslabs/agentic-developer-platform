@@ -1,0 +1,39 @@
+{
+  "config_version": 1,
+  "environment": "dev",
+  "connection": {
+    "connection_ref": "adp-dev-embark1",
+    "repository": "aws-e/adp",
+    "expected_account_id": "000000000000",
+    "expected_org": "aws-e"
+  },
+  "identity": {
+    "org_ref": "qual-org",
+    "team_ref": "qual-team",
+    "identity_ref": "qual-identity"
+  },
+  "versions": {
+    "engine": "0000000000000000000000000000000000000000",
+    "worker": "0000000000000000000000000000000000000000",
+    "harness": "0000000000000000000000000000000000000000"
+  },
+  "bounds": {
+    "max_resources": 23,
+    "max_runs": 20,
+    "max_usd": 5.0,
+    "max_duration_seconds": 1800
+  },
+  "artifacts": {
+    "directory": "artifacts/qualification"
+  },
+  "secret_refs": {
+    "owner": "env:Q2_OWNER_SESSION",
+    "foreign": "env:Q2_FOREIGN_SESSION",
+    "github": "env:Q2_GITHUB_SESSION",
+    "browser_session": "env:Q2_BROWSER_SESSION"
+  },
+  "scenarios": [
+    "autonomous-delivery"
+  ],
+  "scenario_manifest": "tests/e2e/orchestration/manifest.example.json"
+}

@@ -39,6 +39,28 @@ callable the composer supplies. A facade that could build its own pool would be 
 second composition root, and whether this port is installed would become a property
 of this file rather than of the reviewed startup sequence that installs it -- the
 same reason #5524's registry refuses to hand back implementations.
+
+## Why this facade goes through the admission gate (#5526, w6-03)
+
+`open_operation` calls `admission.admit_operation`, not `store.admit`. An earlier
+revision called the store directly, and the consequence was reproduced against a real
+database: the port that the provisioning path actually calls admitted operations with no
+approval and no reservation at all, so the gate protected only callers who chose to use
+it. A control that the maintained entry point routes around is not a control.
+
+The port's signature is fixed by the consumer and has nowhere to put an approval, so the
+approval arrives through an injected `ApprovalSource` and the reservation through an
+injected `BudgetLedger`. **Both are required to construct this service.** Not optional
+with a permissive default, and not checked at call time: a facade that could be built
+without them would be one whose safety depended on how the composer happened to call it,
+and "is the gate installed" would again be a property of a call site rather than of the
+type. `__post_init__` refuses instead, so a misconfigured facade fails at startup --
+where a deployment notices -- rather than by admitting unpaid work at request time.
+
+The `ApprovalSource` is a Protocol for the same reason `BudgetLedger` is: *where* an
+approval record comes from (a HITL ticket store, a policy engine) is not this package's
+question, and shipping an implementation would be shipping a second answer to it. A
+source that returns no record is a refusal, because absence is not permission.
 """
 
 from __future__ import annotations
@@ -47,8 +69,16 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
+from .admission import BudgetDenied, BudgetLedger, BudgetUnavailable, admit_operation
+from .approval import (
+    ApprovalRecord,
+    ApprovalRefused,
+    ApproverStatus,
+    SpendEnvelope,
+)
 from .identity import REQUIRED_PERMISSION as _REQUIRED_PERMISSION
 from .identity import (
     ContractViolation,
@@ -63,6 +93,8 @@ from .store import Connection, OperationStore
 
 __all__ = [
     "PORT_REFUSAL_NAMES",
+    "ApprovalContext",
+    "ApprovalSource",
     "OperationFacadeService",
     "OperationProgress",
     "OperationUnavailable",
@@ -89,9 +121,20 @@ __all__ = [
 # The mapping is data, not behaviour: this module raises its own types, and the
 # composer's thin adapter re-raises as the declared ones. A translation living here
 # would require the import this package refuses.
+#
+# The gate's four answers are here too (#5526, w6-03), because `open_operation` now
+# admits through `admit_operation` and can therefore raise them at the port boundary.
+# They collapse onto the same two declared names -- an approval refusal and a budget
+# denial are both "refused" to a consumer, and an unanswerable ledger is "unavailable"
+# -- but each needs its own entry, because the registry matches the raised type's MRO
+# and `ApprovalRefused` does not inherit from `OperationRefused`. Leaving them out would
+# let a denied spend reach the conformance suite as an undeclared exception.
 PORT_REFUSAL_NAMES: dict[str, str] = {
     "OperationUnavailable": "ProvisioningUnavailable",
     "OperationRefused": "ProvisioningRefused",
+    "ApprovalRefused": "ProvisioningRefused",
+    "BudgetDenied": "ProvisioningRefused",
+    "BudgetUnavailable": "ProvisioningUnavailable",
 }
 
 
@@ -178,6 +221,51 @@ class PrincipalResolver(Protocol):
     ) -> ResolvedPrincipal | None: ...
 
 
+@dataclass(frozen=True)
+class ApprovalContext:
+    """Everything the admission gate needs about authority, for one request.
+
+    A single return value rather than three, because the three are only meaningful
+    together: an approval record checked against a different request's envelope, or
+    against approver statuses read at a different time, is not the check the gate
+    specifies. Bundling them means a source cannot supply two of the three and leave the
+    gate to default the rest.
+
+    ``record`` is optional because "there is no approval" is an answer a source must be
+    able to give. It produces a refusal -- absence is not permission -- and the gate is
+    where that is decided, not here.
+
+    ``approver_statuses`` is the *current* authority of each approver, which is why
+    it is supplied per request rather than stored on the record: an approver who has
+    since lost the permission or left the workspace must not still be able to authorize
+    a spend, and that is a fact about now rather than about when the approval was
+    decided.
+    """
+
+    record: ApprovalRecord | None
+    requested_envelope: SpendEnvelope
+    approver_statuses: dict[str, ApproverStatus]
+
+
+class ApprovalSource(Protocol):
+    """Where an approval for one request comes from.
+
+    A `Protocol`, and this package implements none of it, for the reason
+    `BudgetLedger` is one: whether a request is approved is adjudicated elsewhere (a
+    HITL ticket store, a policy engine), and a concrete implementation here would be a
+    second authority that could disagree with the real one.
+
+    Takes the *resolved* principal and the request, so an implementation looks up an
+    approval for the identity the facade established rather than one the caller named.
+    Returning `None` inside the context (`ApprovalContext.record is None`) is permitted
+    and means "no approval"; the gate refuses on it.
+    """
+
+    async def approval_for(
+        self, *, principal: ResolvedPrincipal, request: OperationRequest
+    ) -> ApprovalContext: ...
+
+
 @dataclass
 class OperationFacadeService:
     """Durable create/get/status for operations, as consumers call it.
@@ -185,15 +273,36 @@ class OperationFacadeService:
     ``connect`` returns an async context manager yielding a connection. A callable
     rather than a pool so this class never owns connection lifecycle -- see the module
     docstring on composition.
+
+    ``approvals`` and ``ledger`` are **required**, and `__post_init__` refuses without
+    them. See the module docstring: this facade admits through the approval gate, and a
+    constructor that tolerated their absence would make the gate optional again.
     """
 
     connect: Callable[[], AbstractAsyncContextManager[Connection]]
     resolver: PrincipalResolver
+    approvals: ApprovalSource = None  # type: ignore[assignment]
+    ledger: BudgetLedger = None  # type: ignore[assignment]
     store: OperationStore = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         if self.store is None:
             self.store = OperationStore()
+        # Refused at construction rather than defaulted, and rather than checked in
+        # `open_operation`. A default would be this package supplying a budget authority
+        # it does not own; a call-time check would let a misconfigured facade pass a
+        # startup probe and fail only once a real provisioning request arrived.
+        if self.approvals is None:
+            raise ContractViolation(
+                "OperationFacadeService requires an ApprovalSource: this facade admits "
+                "operations through the approval gate, and a facade without one would "
+                "admit unapproved work"
+            )
+        if self.ledger is None:
+            raise ContractViolation(
+                "OperationFacadeService requires a BudgetLedger: admission reserves "
+                "and confirms budget before it writes, and the ledger is the domain's"
+            )
 
     # ------------------------------------------------------------------
     # The declared port surface
@@ -218,6 +327,13 @@ class OperationFacadeService:
         two identical retries collapse. Deriving rather than minting a fresh UUID is
         deliberate: a random key would make every retry a new operation, which is
         exactly the duplicate this story exists to prevent.
+
+        **Admits through `admit_operation`, never `store.admit`** (#5526, w6-03). See
+        the module docstring: the store answers "well-formed, unique, tenant-scoped" and
+        this port must also answer "approved and within budget". `ApprovalRefused`,
+        `BudgetDenied` and `BudgetUnavailable` propagate as themselves -- an approval
+        refusal reported as unavailable would invite a retry of something no retry will
+        make permissible, and a budget denial is not an outage.
         """
         principal = await self._resolve(
             org_id=org_id, workspace_id=workspace_id, permission=permission
@@ -234,6 +350,7 @@ class OperationFacadeService:
             idempotency_key=idempotency_key,
             parameters=supplied,
         )
+        approval = await self._approval_for(principal=principal, request=request)
         # `OperationRefused` from `admit` -- a changed payload under a used key, or a
         # principal without the permission -- propagates unchanged; `_connection` lets
         # this package's refusals through deliberately, because converting one into an
@@ -241,8 +358,57 @@ class OperationFacadeService:
         # accepted. A schema mismatch or a backend failure becomes the port's
         # unavailable answer there.
         async with self._connection() as connection:
-            admitted = await self.store.admit(connection, principal, request)
-        return _progress(admitted.record)
+            outcome = await admit_operation(
+                connection,
+                self.store,
+                self.ledger,
+                principal=principal,
+                request=request,
+                approval=approval.record,
+                requested_envelope=approval.requested_envelope,
+                approver_statuses=approval.approver_statuses,
+                # The gate compares this against the approval's expiry, so it is read
+                # once here and passed in rather than read inside the gate. A gate
+                # that called `now()` itself would be untestable at its own boundary,
+                # which is the one place "is this approval still current" is decided.
+                now=datetime.now(UTC),
+            )
+        return _progress(outcome.operation.record)
+
+    async def _approval_for(
+        self, *, principal: ResolvedPrincipal, request: OperationRequest
+    ) -> ApprovalContext:
+        """Ask the approval source, translating only what it cannot answer.
+
+        A source that *raises* has not refused -- it failed to answer, which is the
+        port's unavailable condition and not a denial. The distinction is the same one
+        `BudgetUnavailable` draws against `BudgetDenied`, and collapsing it here would
+        mean an unreachable approval store read as "not approved", which is at least the
+        safe direction but tells the caller something false about why.
+
+        A source that returns the wrong shape is a `ContractViolation`, not an
+        unavailable: the deployment is wired incorrectly, and retrying will not fix it.
+        """
+        try:
+            approval = await self.approvals.approval_for(
+                principal=principal, request=request
+            )
+        except (OperationRefused, ContractViolation):
+            raise
+        except asyncio.CancelledError:
+            # See `_connection`: cancellation is this process stopping, not the approval
+            # source being unavailable.
+            raise
+        except Exception as error:
+            raise OperationUnavailable(
+                "the approval for this request could not be established; the operation "
+                "is not admitted"
+            ) from error
+        if not isinstance(approval, ApprovalContext):
+            raise ContractViolation(
+                "the approval source must return an ApprovalContext"
+            )
+        return approval
 
     async def report_progress(self, operation_id: str) -> OperationProgress:
         """The facade's current report. The only way an outcome is learned.
@@ -400,6 +566,14 @@ class OperationFacadeService:
           retry something that will never be accepted, and a `ContractViolation` about a
           corrupt stored payload must not read as a transient outage -- retrying it
           forever is the wrong response to a row that needs a human.
+        * **the gate's answers** -- `ApprovalRefused`, `BudgetDenied`,
+          `BudgetUnavailable` (#5526, w6-03). `open_operation` calls `admit_operation`
+          *inside* this context manager, so before they were named here an approval
+          refusal was rewritten into "the operation store is unreachable": a caller was
+          told to retry a request no retry will ever permit, and an operator
+          investigating a denied spend was pointed at the database. `BudgetUnavailable`
+          is kept distinct from `OperationUnavailable` for the same reason it exists at
+          all -- which system could not answer is the whole diagnostic.
 
         `SchemaMismatch` **is** translated, and translated here rather than at each call
         site: an installed-but-wrong-version store cannot answer, which is exactly the
@@ -417,7 +591,14 @@ class OperationFacadeService:
             raise
         except SchemaMismatch as error:
             raise OperationUnavailable(str(error)) from error
-        except (OperationUnavailable, OperationRefused, ContractViolation):
+        except (
+            OperationUnavailable,
+            OperationRefused,
+            ApprovalRefused,
+            BudgetDenied,
+            BudgetUnavailable,
+            ContractViolation,
+        ):
             raise
         except Exception as error:
             raise OperationUnavailable(_UNREACHABLE) from error

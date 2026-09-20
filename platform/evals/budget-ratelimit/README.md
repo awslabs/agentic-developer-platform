@@ -76,17 +76,15 @@ Org A ─ department D1 ─ team T1 ─ u1, u2
 Org B ─ x1                                (isolation control)
 ```
 
-Two details are load-bearing:
+The identity fixture has these properties:
 
-- **Org ids need no `organizations` row.** `budget_configs`,
-  `rate_limit_configs` and `budget_usage` carry `org_id` as an indexed column
-  with **no foreign key**, so a synthetic org can hold config without touching
-  the tenant tables.
-- **The admin identity does need real DB rows.** Authority is DB-resolved, not
-  claim-derived (#3987): a caller with no `tenant_memberships` row defaults to
-  `MEMBER` and has neither `budget:update` nor `ratelimit:update`. So `a1` gets
-  an `organizations` row, a `users` row and an active `org_admin`
-  `tenant_memberships` row.
+- **Both organizations have real rows**, including the required JSON defaults
+  that raw SQL does not inherit from the ORM.
+- **All five identities have canonical users and active memberships.** The
+  budget API resolves a Cognito sub to a user in the target tenant (#4511).
+  `a1` has `org_admin`; U1/U2/U3/X1 are ordinary members.
+- **User writes match the seeding receipt.** Cognito UUIDs must match the recorded
+  sub and current-run username. Organizational IDs retain the run-tag guard.
 - **Department is claim-only.** `users` has no `department_id` column at all, so
   the Cognito `custom:department_id` claim (copied into the *access* token by the
   pre-token-generation Lambda) is the only way to exercise case 3.
@@ -99,12 +97,17 @@ its own cap — which harness test 9 asserts never happens.
 
 Two pieces of arithmetic decide the whole design.
 
-**Budgets deny on an estimate, before spending anything.** Enforcement compares
-`current_spend + $0.05` (a flat `_DEFAULT_ESTIMATE_USD`) against the cap. So a
-cap of **$0.01 denies on the first request, at zero spend** — no token burn, no
-waiting on the async S3→Lambda ledger. That is what makes cases 1–5 instant and
-deterministic, and it confines the ledger to case 7, where the ledger *is* the
-subject. `TRIP_CAP` must stay below `$0.05` for this to hold.
+**Budget denial cases use an already-exhausted settled balance.** Cases 1–5
+create a **$1 cap through the admin API** and seed **$1.01 of settled usage** in
+the live test ledger. They then send real authenticated requests on both wire
+formats and require a 402 at the correct hierarchy level. The current gateway
+uses payload-aware estimates; a tiny request can legitimately cost less than
+the old $0.01 test cap, so a fixed pre-request estimate is no longer assumed.
+
+Synthetic balance rows carry a distinct run-owned ID and are deleted between
+cases. Case 7 independently verifies real model usage reaches the S3/Lambda
+ledger; seeded rows cannot satisfy that check. This is an exhausted-balance
+regression, **not an agent spending through a $1 balance**.
 
 **Rate limits trip at burst capacity, not at the nominal limit.**
 
@@ -137,10 +140,10 @@ is 60 minutes rather than 45.
 | 1 | user cap | 402, `entity_type == "user"` |
 | 2 | team cap | 402, `entity_type == "team"` |
 | 3 | department cap | 402, `entity_type == "department"` |
-| 4 | org cap + Org-B isolation | 402, `entity_type == "org"`; Org B's user is unaffected — plus a **finding** |
+| 4 | org cap + Org-B isolation | 402, `entity_type == "org"`; Org B's user is unaffected |
 | 5 | precedence | with every level over cap, the **most specific** exceeded level is the one reported |
 | 6 | no-config baseline | an unconfigured hierarchy returns 200 — enforcement must not deny by default |
-| 7 | accounting integrity | after a billable request, `budget_usage` has rows keyed to the right entity, for all three period types, and Org A's spend does not appear under Org B |
+| 7 | accounting integrity | after a billable request, `budget_usage` has rows keyed to the right entity, for all three period types; settled org usage uses `org`; Org A's spend does not appear under Org B |
 
 Cases 2–5 give the levels *not* under test an **open** cap ($1000) rather than
 leaving them unset. That matters: it proves the cascade *reaches* the level being
@@ -164,7 +167,7 @@ value in a 429 and must not read as missing.
 | 8 | user RPM | 429, `limit_type == "rpm"`, full documented shape |
 | 9 | user TPM | **skipped, with a finding** — not reachable end-to-end |
 | 10 | concurrent = 1 | 429, `limit_type == "concurrent"`, from genuinely overlapping in-flight requests |
-| 11 | org RPM shared bucket | **finding** — an org-level limit can never match; passes loudly if fixed |
+| 11 | org RPM shared bucket | 429, `limit_type == "rpm"`; missing enforcement fails |
 | 12 | defaults | with no config at any level, the defaults (60 rpm / 100000 tpm / 10 concurrent) admit normal traffic |
 
 Case 10 backgrounds its requests. Sequential calls each release their slot in the
@@ -175,70 +178,29 @@ Case 12 asserts only that defaults do **not** deny normal traffic. Proving a
 default eventually 429s would need 120+ real inference requests; that is a load
 test, and load-testing the limiter backends is an explicit non-goal.
 
-### Phase H — the headline question
+### Phase H — observing existing agent lineage
 
-> Does human-triggered agent spend land under the triggering human's budget?
+H1 finds an existing human-rooted event; H2 joins its `agent_run_id` to
+`usage_logs`; H3 reports the direct billing identity. H4 reads the separate
+`root_user` ledger for the root principal. Its aggregate row count is an
+observation, not proof that this particular event accrued or exhausted a cap.
 
-Answered **observationally**, from lineage that already exists in dev: H1 finds a
-human-rooted agent run in the `webhook-events` table, H2 joins it to `usage_logs`
-via `agent_run_id` (`event_id == ADP_MESSAGE_ID == x-agent-runid ==
-usage_logs.agent_run_id`), H3 reads who was actually billed, and H4 checks
-whether the human's ledger moved. No agent is dispatched and no attribution is
-fabricated.
+**Agent-triggered budget exhaustion is not tested by H.** It dispatches no new
+agent. That requires a bounded agent run, correlated root-user accrual and an
+observed denial. Direct agent billing under `user` does not disprove accounting
+under `root_user`; the previous harness incorrectly conflated those ledgers.
 
-**The answer today: it does not.** Not even partially. See the findings below.
+## Coverage limits and corrected expectations
 
-H3 is written so that if attribution is ever implemented, it reports that as the
-notable event it would be rather than silently continuing to pass.
-
-## The four findings — read this before reading the results
-
-Four things in this area **cannot honestly pass**, and were verified in the code
-before the eval was written. Each is reported as a `FINDING` — a pinned
-observation of current behaviour — rather than a fake pass or a flaky red. A
-finding does **not** fail the run, and the summary renders them in their own
-block so nobody mistakes one for a passing assertion.
-
-**1. Org budgets enforce on the estimate but never on accumulated spend.**
-The tracker Lambda writes `budget_usage` rows with `entity_type='organization'`;
-enforcement reads `EntityType.ORGANIZATION`, whose value is `'org'`. Org usage
-therefore never joins its own config. Case 4's *estimate* half passes; its
-accumulated-spend half cannot.
-
-**2. TPM rate limiting is effectively unenforceable.**
-`consume_rate_limit(context, tokens=1)` is the only call site, and it never
-passes a real token count — so the TPM bucket is debited **one token per
-request**, regardless of how many tokens the request actually used. A TPM limit
-behaves as a second, much larger RPM limit. Setting `tpm=1` to "prove" a 429
-would be dishonest: it would 429 because one request debits one token, not
-because token accounting works. Case 9 skips and says so.
-
-**3. An org-level rate limit can never be enforced.**
-`POST /admin/organizations/{org}/ratelimits` accepts `entity_type='org'` and
-stores it verbatim; the limiter loads rows by that raw string but looks them up
-as `EntityType.ORGANIZATION == 'organization'`. The keys never match, so an org
-that has been given a rate limit silently keeps the default 60 rpm. Case 11
-reports the finding — and passes loudly if the spelling is ever fixed.
-
-**4. Human-triggered agent spend does not land under the triggering human's
-budget.** An agent request is billed as `('user', <agent registry name>)`:
-`auth/agent_registry.py` builds the agent's `TokenContext` with `user_id` set to
-the agent's registry name and `account_type='service'`. `root_human_id` is
-captured in the `webhook-events` item, the `root-human-index` GSI, the worker's
-`ADP_ROOT_HUMAN_ID` env and the write-only `action_provenance` table — but is
-absent from `chat_logging/**`, `usage/service.py`, the tracker Lambda and
-`budget/**`, and no migration through 027 adds it to `usage_logs` or
-`budget_usage`.
-
-**Consequence: a per-user budget places no bound on what that user's agents can
-spend.** Nothing in the codebase claims it *should*, so the follow-up is a
-feature request, not a bug. Implementation is out of scope for #4163.
-
-Phase H also pins two adjacent defects: the `('agent', agent_id)` branch in the
-tracker Lambda is dead code (it reads a `ChatLog` field that does not exist), and
-agent budget *enforcement* checks `service_account` while agent budget
-*accounting* writes `user` — so an agent's accumulated usage is never compared
-against a `service_account` budget config.
+- Case 9 still reports the current TPM limitation: the middleware debits
+  `tokens=1` per request, so this does not prove actual token-based enforcement.
+- Case 10 can report inconclusive if requests land on different workers and no
+  concurrent denial is observed. Read its result rather than assuming coverage.
+- Org RPM now uses the same `org` key as the admin API and is required to enforce.
+  Case 7 checks settled org usage under the same key used by budget enforcement.
+  The old hardcoded key-mismatch findings were removed after those bugs were fixed.
+- Cases 1–5 seed an exhausted settled balance. They exercise real API-configured
+  caps and live denials, but do not spend through a $1–$2 balance using an agent.
 
 ## Running it
 

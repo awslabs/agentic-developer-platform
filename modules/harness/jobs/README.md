@@ -1,6 +1,7 @@
-# Harness Jobs — durable operation store and transactional dispatch outbox
+# Harness Jobs — durable operation store, dispatch outbox and admission gate
 
-Issue [#5525](https://github.com/aws-e/adp/issues/5525) (w6-02), EPIC #4910, Wave 6.
+Issues [#5525](https://github.com/aws-e/adp/issues/5525) (w6-02) and
+[#5526](https://github.com/aws-e/adp/issues/5526) (w6-03), EPIC #4910, Wave 6.
 Implements the `operation_facade` port declared in
 [#5524](https://github.com/aws-e/adp/issues/5524)'s registry
 (`superplane_contracts.integration`, owner `harness_jobs`).
@@ -8,6 +9,13 @@ Implements the `operation_facade` port declared in
 An accepted operation must not be lost, must not be run twice, and must not be
 visible to another tenant. This package is where those three properties are made true,
 once, for every consumer that opens a long-running operation.
+
+**A stored operation is not permission to spend.** `OperationStore.admit()` answers
+"is this well-formed, unique and tenant-scoped" and deliberately never "is this
+allowed". `admission.admit_operation()` is the gate that answers the second question —
+a current approval bound to an immutable plan and a spend envelope, reserved and
+confirmed against the domain's ledger, consumed exactly once. A request handler should
+reach the gate, not the store.
 
 ## What it is, and what it is not
 
@@ -170,6 +178,145 @@ provider did.
 | `harness_jobs/store.py` | `OperationStore`: `admit`, `get`, `get_by_idempotency_key`, `list_for_tenant`, `transition` |
 | `harness_jobs/outbox.py` | `DispatchOutbox`: `claim`, `drain_once`, `drain`, `pending_count`, `recover_abandoned`; `DispatchEnvelope`, `DispatchExecutor` |
 | `harness_jobs/facade.py` | `OperationFacadeService`, the declared port surface; `PORT_REFUSAL_NAMES` |
+| `harness_jobs/approval.py` | `ApprovalRecord`, `ApprovalBinding`, `SpendEnvelope`, `ApprovalResult`, `evaluate_approval`, `APPROVAL_PERMISSION` |
+| `harness_jobs/admission.py` | `admit_operation`, `BudgetLedger`, `CreationFence`, `Reservation`, `ReservationState`, `IntentStage`, `AdmissionIntent`, `DispatchEvidence`, `cancel_before_dispatch`, `retain_for_uncertain_dispatch`, `list_interrupted_admissions`, `reconcile_interrupted_admissions`, `read_consumption`, `read_consumption_privileged` |
+
+### The admission sequence (#5526)
+
+    (1) approval     evaluate_approval — current authority, binding, envelope
+         |
+   (1b) intent       harness_admission_intent row, COMMITTED before (2)
+         |           → the obligation is enumerable even if this process dies
+         |
+    (2) reserve      domain ledger hook, idempotent on (job_id, attempt_id)
+         |           → budget held. NOT a spend. Compensatable.
+    (3) confirm      domain ledger hook, same key
+         |
+    +----------- ONE transaction, in the store ---------------------------+
+    | (4a) operation record + (4b) outbox row + (4c) consumption row      |
+    +--------------------------------------------------------------------+
+         |           commit is the durability point.
+    (5) deliver      outbox → executor. At-least-once, duplicate-safe.
+
+Steps (1)–(3) cross a process boundary and sit **outside** the transaction, per #5524
+§3.1. A transaction held open across a ledger call would make the store's throughput a
+function of the ledger's latency and would hold locks on the admission tables while a
+hung ledger timed out. What makes that safe is idempotency plus the fact that a
+reservation is *not a spend*: holding one too long costs headroom, releasing one too
+early costs correctness.
+
+The job and attempt identity the ledger is keyed on is **derived from the approval id**
+(`derive_operation_identity`), and `admit_operation` accepts no `operation_id` /
+`job_id` / `attempt_id` parameters. A caller who could choose the key could present one
+approval twice and be granted a second hold, because from the ledger's side those would
+be two different attempts. Deriving it makes "no budget renewal through retries"
+structural rather than checked.
+
+### The domain ledger callback interface
+
+`BudgetLedger` and `CreationFence` are `Protocol`s and this package implements **neither**.
+Domain accounting stays Superplane-owned: `accounting.py` states that a second place
+computing cost is a second answer that can disagree with the real one, so this module
+holds the *ordering* and the *compensation* and calls out for every quantity. It performs
+no arithmetic on the envelope's amounts, and `tests/test_admission_bypass.py` asserts
+that by walking the AST rather than by reading the code.
+
+The implementer owes four methods. `reserve` and `confirm` must be **idempotent on
+`(job_id, attempt_id)`**, and a repeat under the same key with a *changed envelope* must
+raise `BudgetDenied` rather than be honoured — silently honouring it is how a retry
+becomes a budget increase.
+
+`BudgetUnavailable` (a `RuntimeError`) and `BudgetDenied` (a `PermissionError`) are
+deliberately different types: unanswered is not refused. The distinction decides
+compensation — a *denied* confirm releases, an *unavailable* one retains.
+
+| Failure | The one safe answer |
+|---|---|
+| (2) reserve refused | Nothing was reserved; nothing to compensate |
+| (2) ok, (3) confirm lost | **Retain.** Retry confirm under the same key |
+| (3) ok, (4) commit lost | *Establish* nothing was dispatched, then release |
+| Cancellation before dispatch | **Fence creation, then release.** Never the reverse |
+| Dispatch uncertain | **Retain** until provider reconciliation. Never release |
+
+The last one looks wrong and is not: releasing would let one envelope fund a second
+operation while the first may be running, and `CostExposure.NONE` is unreachable without
+provider-established absence. `cancel_before_dispatch` returns a `ReservationState`
+rather than `None` precisely so a *failed* fence is not treatable as a successful one —
+it retains.
+
+### "Nothing was dispatched" has to be established, not assumed
+
+Two rows of that table — the lost commit and the cancellation — turn on knowing that no
+executor has seen the work. The presence of an outbox row is *not* that knowledge, and
+neither is its absence in general: a delivered row is deleted, so "no row" can mean
+never-enqueued or already-delivered-and-cleaned-up.
+
+`DispatchEvidence` is the classification, computed by reading the row under `FOR UPDATE`:
+
+| Evidence | What the row says | Answer |
+|---|---|---|
+| `NEVER_QUEUED` | no row at this `operation_id` | safe to release |
+| `DEFINITELY_PENDING` | `attempts = 0`, no lease, not delivered, not abandoned | fence, withdraw the row, release |
+| `CLAIMED_OR_DELIVERED` | anything else | **retain** |
+
+`attempts = 0` rather than `claimed_until IS NULL` is the pending predicate, because
+`_record_failure` clears the lease while leaving `attempts` standing — a lease-only test
+would read a failed attempt as never-queued. `claim` increments `attempts` in the *same*
+`UPDATE` as the lease, so the row is its own witness: a row no claim has ever taken was
+never handed to a worker.
+
+The classification and the fence run in **one transaction**, and that is safe to hold
+briefly because `claim` uses `SKIP LOCKED` — a concurrent drain skips the locked row
+rather than blocking on it. The ledger call stays outside, because a release is not
+undone by a rollback, and released-hold-with-reverted-withdrawal is the one combination
+that funds work nobody is accounting for.
+
+### Recovering an interrupted admission
+
+Steps (2) and (3) cross a process boundary, so a process can die between issuing a
+reserve and hearing its reply. The hold exists; nothing in the admission tables mentions
+it. Step **(1b)** is what makes that recoverable: a committed `harness_admission_intent`
+row naming the derived `(operation_id, job_id, attempt_id)`, the tenant, and a **copy of
+the approved envelope** — copied because recovery matters precisely when the approval has
+expired or been revoked and the approval store can no longer answer.
+
+`IntentStage` records how far the sequence is *known* to have got. It may lag reality and
+must never run ahead of it: each value is written only after the corresponding reply
+arrives, so `reserved` implies a hold exists while `intended` implies nothing either way.
+The sweep resolves that ambiguity by re-asking the ledger under the derived key, which is
+idempotent — a false "maybe" costs one redundant call, a false "no" would cost a leaked
+hold.
+
+```python
+outstanding = await list_interrupted_admissions(connection, limit=50)
+report = await reconcile_interrupted_admissions(connection, ledger=ledger)
+# → ReconciliationReport(scanned, released, retained, unresolved)
+```
+
+The sweep **admits nothing and widens no budget**. It only releases, retains, or leaves
+the row unresolved for the next pass — and it retains, never releases, when a dispatch
+row exists. `unresolved` is the number an operator watches: a row that keeps failing to
+settle stays in the set, by design.
+
+Admission and recovery require an exclusively held PostgreSQL connection outside a
+caller transaction. They serialize each approval with a session advisory lock across
+reserve, confirm and commit. Recovery skips live writers, rereads stale enumeration
+results under ownership, and resolves an intent only after acknowledged compensation.
+A failed release remains enumerable. Connection loss releases ownership and prevents
+that writer from committing. A recovered-and-released admission needs a new approval;
+replaying an already consumed approval never renews its reservation.
+
+### Reading a consumption record
+
+`read_consumption(connection, principal, *, approval_id=...)` takes the **resolved
+principal** and scopes the SQL by `org_id`/`workspace_id`. An approval id is a bearer-ish
+string, and returning reservation, operation and plan metadata to anyone holding one
+makes it a cross-tenant read primitive. Absent and another-tenant's are the same answer
+(`None`) on purpose.
+
+Global recovery reads are a separate, explicitly named function —
+`read_consumption_privileged` — so a caller that wants to bypass tenancy has to say so at
+the call site rather than by omitting an argument.
 
 ### Bounded request sizes
 
@@ -204,13 +351,30 @@ rather than about this package.
 
 Set `HARNESS_JOBS_REQUIRE_POSTGRES=1` to turn that skip into a **failure**. CI sets it.
 A skip is the right answer for a developer without a database and the wrong answer for a
-lane, because "56 skipped" is green and a lane reporting green while asserting none of
-these guarantees is worse than no lane.
+lane, because a run of nothing but skips is green and a lane reporting green while
+asserting none of these guarantees is worse than no lane.
+
+One test module, `tests/test_admission_bypass.py`, deliberately carries **no**
+module-level database mark. A check that the admission gate cannot be bypassed must not
+be the check that is silent on a developer machine.
 
 CI: [`.github/workflows/harness-jobs-ci.yml`](../../../.github/workflows/harness-jobs-ci.yml),
 job **`Harness jobs store tests`**. It lints, runs the suite against a real server, and
 then asserts the run was not vacuous — a floor on the executed count, because the exit
 code alone cannot distinguish "everything passed" from "the database half never ran".
+The floor must stay **above the offline-only count**: a run where every database test
+skips executes exactly the offline half, so a floor at or below that number is satisfied
+by the very failure it exists to catch. Raise it when the offline half grows.
+
+The lane also asserts that **nothing skips at all**, which catches what a floor cannot.
+`HARNESS_JOBS_REQUIRE_POSTGRES=1` turns a missing database into a failure and `pydantic`
+is in the `dev` extra so the HITL contract is importable, so this lane has removed every
+skip reason the suite has — a remaining skip means an upstream became unimportable and a
+drift guard quietly stopped guarding. That is why the assertion exists: on this lane's
+first green run the two agreement tests that read the four HITL result values off
+`contracts/hitl-ticket/v1` skipped for want of pydantic, and 257 executed sailed over a
+floor of 200 while the check that the duplicated approval vocabulary had not drifted ran
+nowhere. A widened permissive set upstream would have merged under a green tick.
 
 ## Deployment
 
@@ -218,14 +382,25 @@ This package ships no service and no Terraform. Deploying it means, for whoever 
 it (#5535):
 
 1. **Install the schema.** `await apply(connection)` — idempotent, so a retried
-   install is safe. It creates `harness_operations`, `harness_dispatch_outbox` and
-   `harness_jobs_schema_version`.
+   install is safe. It creates `harness_operations`, `harness_dispatch_outbox`,
+   `harness_jobs_schema_version`, (v2) `harness_approval_consumption` and (v3)
+   `harness_admission_intent`.
 2. **Check compatibility at startup.** `await check_schema_version(connection)`, or
    `OperationStore.ensure_compatible()`. It refuses to run against a schema older *or*
    newer than `SCHEMA_VERSION`, and says which direction to move.
-3. **Supply the two seams.** A `connect` callable returning an async context manager
+3. **Supply the seams.** A `connect` callable returning an async context manager
    yielding a connection, and a `PrincipalResolver` that resolves identity from verified
    request context. Both belong to the composition root; neither can be defaulted here.
+   For the admission gate, also a `BudgetLedger` — and, for cancellation, a
+   `CreationFence`. There is no default implementation of either *on purpose*: a
+   fallback ledger would be a budget authority this package must not hold, and a
+   permissive default would make the gate satisfiable by omission. #5524 §3.6 warns
+   specifically against wiring these to `enforce_workspace_creation_quota` or
+   `CostReconciler._suspend_workspace`, which would put admission authority in the
+   domain app; and this package does **not** bind to
+   `modules/gateway/src/budget/reservations.py`, whose key is `request_id` rather than
+   `(job_id, attempt_id)` and whose ledger is a per-request token budget rather than a
+   provisioning envelope. An adapter over it would be a separate, named decision.
 4. **Translate the refusals.** The port declares `ProvisioningUnavailable` /
    `ProvisioningRefused`, which live in `app.services.provisioning` — a module this
    package must not import. `PORT_REFUSAL_NAMES` publishes the mapping for a thin
@@ -239,6 +414,13 @@ it (#5535):
    operation `PENDING` that no drain will ever pick up again — see above. The drain loop
    alone is not sufficient to guarantee every admitted operation reaches a terminal
    state.
+7. **Run the reconciliation sweep.** `reconcile_interrupted_admissions(connection,
+   ledger=...)` on a slower schedule still. This is the budget-side counterpart to (6):
+   without it, a process killed between issuing a reserve and hearing its reply leaves a
+   hold that no admission record mentions and no drain can see. The sweep admits nothing;
+   it releases what is provably unspent, retains what is uncertain, and reports
+   `unresolved` for what it could not settle. `unresolved` staying non-zero across passes
+   is the signal that a hold needs a human.
 
 Defaults worth knowing before running one: `DEFAULT_CLAIM_SECONDS = 60` (the lease a
 worker holds), `DEFAULT_MAX_ATTEMPTS = 10` (after which the operation becomes `UNKNOWN`
@@ -251,8 +433,46 @@ operation is already terminal.
 
 ### Rollback and compatibility
 
-`SCHEMA_VERSION = 1`. There is no earlier version to roll back to, so the only rollback
-is removal: `await downgrade(connection, target=0)` drops all three tables.
+`SCHEMA_VERSION = 3`. **v2 adds `harness_approval_consumption`** (#5526) — the durable
+record that one approval was spent on one operation, with `approval_id` as the primary
+key and `operation_id` `NOT NULL UNIQUE`. Those two constraints are the single-use rule:
+the first stops a second admission under one approval, the second stops a second approval
+paying for one operation. The foreign key is `ON DELETE RESTRICT`, deliberately not
+`CASCADE` — a cascade would mean deleting an operation silently frees its approval for
+reuse, turning a row deletion into a budget grant.
+
+Added as version 2 rather than folded into v1 because v2 needs no backfill (a new table,
+not a new `NOT NULL` column) and because "no database has been applied" is not verifiable
+from here — #5535 and #5538 may already have applied v1, and for those databases `apply()`
+must run the v2 statements alone. `apply()` and `downgrade()` are version-generic, so
+`await apply(connection)` reaches v2 from either 0 or 1.
+
+**v3 adds `harness_admission_intent`** (#5526) — the durable pre-ledger intent row that
+makes an interrupted reserve recoverable, keyed `approval_id` PRIMARY KEY with
+`operation_id NOT NULL UNIQUE`, and carrying a copy of the approved envelope so
+reconciliation still works after the approval has expired. It has **no foreign key**, on
+purpose: the row exists before the operation and consumption rows do, which is the entire
+ordering problem it was added to escape. Its only index is partial on
+`stage <> 'resolved'`, because the interesting set is permanently tiny and a sweep that is
+expensive gets scheduled rarely — and a reconciliation that runs rarely is a hold that
+sits for hours.
+
+`await downgrade(connection, target=2)` drops only the intent table;
+`await downgrade(connection, target=1)` also drops the consumption table; `target=0`
+removes the store entirely.
+
+> **Rolling back to v2 makes outstanding holds unreclaimable.** Nothing becomes
+> *reusable* — the hazard runs the other way to v1's. The ledger keeps the budget, and the
+> only record naming the `(job_id, attempt_id)` needed to ask about it is gone; a
+> reservation is released by someone deciding to release it, so it does not come back on
+> its own. **Run `reconcile_interrupted_admissions` until it reports nothing outstanding,
+> then roll back.**
+
+> **Rolling back to v1 discards every record of which approvals have been consumed.**
+> After it runs, an approval that already admitted an operation and already reserved
+> budget is indistinguishable from an unused one, so replaying it admits a second
+> operation and reserves a second time against an envelope a human approved once.
+> **Revoke or expire outstanding approvals first, then roll back.**
 
 The columns added for replay and claim ownership (`request_payload`, `job_id`,
 `attempt_id`, `claim_generation`, `abandoned_at`) are part of **v1**, not a v2 migration,
@@ -277,7 +497,22 @@ responses: install the fresh one, refuse to touch the corrupted one.
 
 ## Status
 
-Written, linted and tested against real PostgreSQL 18.4 (128 tests). **Not composed into
-any running service, and no database has been migrated** — this is implementation and
-offline verification only. Live release remains behind the named Wave 6 live gate; the
-`operation_facade` port's live verifier is the Wave 6 operations evaluator (#5540).
+Written, linted and tested against real PostgreSQL (296 tests, including the admission
+sequence, one-time consumption under genuine concurrency, dispatch-evidence
+classification, interrupted-reserve reconciliation, tenant-scoped reads and schema v2/v3).
+`pgserver` publishes no wheel for Python 3.13, so obtaining a server means a 3.12
+interpreter; where none is available the database half runs only in the CI lane — which is
+why `HARNESS_JOBS_REQUIRE_POSTGRES=1` and the vacuity floor exist rather than trust in a
+local green run. A suite that skips its database half reports 146 passed and 138
+*skipped*, and a skipped test is not a passing one.
+
+That lane earned its keep on the first run: it caught a schema assertion that compared
+against the wrong type (asyncpg decodes PostgreSQL's `"char"` as bytes) and proved a
+refusal branch in `admission.py` unreachable, since deriving `operation_id` from the
+approval id makes the store's constraint fire first. The branch was removed rather than
+left as dead code that looks load-bearing.
+
+**Not composed into any running service, and no database has been migrated** — this is
+implementation and offline verification only. Live release remains behind the named Wave 6
+live gate; the `operation_facade` port's live verifier is the Wave 6 operations evaluator
+(#5540).

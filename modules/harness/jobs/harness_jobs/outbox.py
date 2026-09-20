@@ -43,6 +43,31 @@ it cannot reach the store, so it cannot mark its own row delivered. That is why 
 envelope is built from the outbox row's denormalized columns rather than by joining
 to `harness_operations`: a worker that needed the join would need read access to
 every operation's full record.
+
+## Only paid work is claimable (#5526, w6-03)
+
+`claim` requires a spendable `harness_approval_consumption` row for the operation. An
+operation admitted without passing the approval gate has no such row, so it is never
+handed to an executor.
+
+This is enforcement in the claim rather than detection afterwards, and the difference
+was reproduced against a real database: `OperationStore.admit` with nothing but a
+provision-capable principal produced an operation with zero consumption rows, and
+`drain_once` then reported `delivered=1` with the executor genuinely receiving the
+envelope. An audit query that *finds* unpaid rows does not prevent that -- by the time
+it runs, the provision has been handed off. The gate is the control; this predicate is
+what makes going around the gate unable to reach a worker.
+
+It is one predicate inside the existing claim statement, not a second query before it.
+A check-then-claim would have a window where the consumption row is deleted or moved to
+a non-spendable state between the two, and the row would be delivered on the strength
+of a reading that was already stale -- the same reason the store interprets a constraint
+violation instead of pre-checking for one.
+
+Unpaid rows are **not** hidden. They stay in `pending_count`, because work that was
+accepted and cannot be delivered is an obligation and not an absence, and
+`ineligible_count` / `list_ineligible` name the condition so an operator can enumerate
+it rather than infer it from a queue that never drains.
 """
 
 from __future__ import annotations
@@ -51,6 +76,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
+from .admission import DELIVERABLE_RESERVATION_STATES
 from .identity import TERMINAL_STATES, OperationState
 from .store import ConcurrentUpdate, Connection, OperationStore
 
@@ -60,6 +86,19 @@ __all__ = [
     "DispatchExecutor",
     "DispatchOutbox",
 ]
+
+# The deliverable reservation states as a list, for binding as a SQL array parameter.
+# Derived from `admission`'s set rather than spelled out, for the same reason
+# `_CONCLUDED_STATE_VALUES` is derived from the enum: a hand-written copy stops agreeing
+# with its source the moment a state is added, and the consequence of *this*
+# disagreement is either delivering work whose budget was released or refusing to
+# deliver work that was paid for.
+#
+# Passed as a query parameter rather than interpolated, so the predicate is data and not
+# a formatting hole.
+_DELIVERABLE_STATE_VALUES: tuple[str, ...] = tuple(
+    sorted(DELIVERABLE_RESERVATION_STATES)
+)
 
 # How long a claim is held before it may be taken by another worker. Long enough that
 # a slow-but-alive delivery is not stolen mid-flight; short enough that a dead
@@ -232,20 +271,33 @@ class DispatchOutbox:
         Without it, a row whose final claim was abandoned and then resolved as UNKNOWN
         would be handed out again the moment a clock passed its lease, re-delivering
         work whose operation is already terminal.
+
+        **The `EXISTS` on `harness_approval_consumption` is the approval control**
+        (#5526, w6-03). A row whose operation was never paid for by an approval, or
+        whose reservation has since been released or retained, is not claimable and
+        therefore cannot be delivered. See the module docstring on why this is a
+        predicate in this statement rather than a check before it, and `admission`'s
+        `DELIVERABLE_RESERVATION_STATES` for why `confirmed` is the only payable state.
         """
         bounded = max(1, min(int(limit), 100))
         rows = await connection.fetch(
             """
             WITH claimable AS (
-                SELECT id
-                  FROM harness_dispatch_outbox
-                 WHERE delivered_at IS NULL
-                   AND abandoned_at IS NULL
-                   AND (claimed_until IS NULL OR claimed_until < now())
-                   AND attempts < $2
-                 ORDER BY id
+                SELECT o.id
+                  FROM harness_dispatch_outbox AS o
+                 WHERE o.delivered_at IS NULL
+                   AND o.abandoned_at IS NULL
+                   AND (o.claimed_until IS NULL OR o.claimed_until < now())
+                   AND o.attempts < $2
+                   AND EXISTS (
+                        SELECT 1
+                          FROM harness_approval_consumption AS c
+                         WHERE c.operation_id = o.operation_id
+                           AND c.reservation_state = ANY($4::text[])
+                   )
+                 ORDER BY o.id
                  LIMIT $3
-                 FOR UPDATE SKIP LOCKED
+                 FOR UPDATE OF o SKIP LOCKED
             )
             UPDATE harness_dispatch_outbox AS o
                SET claimed_until = now() + ($1 || ' seconds')::interval,
@@ -260,6 +312,7 @@ class DispatchOutbox:
             str(self._claim_seconds),
             self._max_attempts,
             bounded,
+            list(_DELIVERABLE_STATE_VALUES),
         )
         return tuple(
             DispatchEnvelope(
@@ -764,8 +817,88 @@ class DispatchOutbox:
         stopped being retried is still work that was accepted and never delivered,
         and hiding it behind the attempt cap is how a queue looks empty while holding
         unfinished obligations.
+
+        Counts **ineligible rows too**, for the same reason. A row with no approval
+        consumption is undeliverable rather than delivered, and excluding it here would
+        make an unpaid operation invisible to the one number an operator watches -- so a
+        bypass would read as an empty queue, which is the reporting half of the defect
+        `claim` closes.
         """
         value = await connection.fetchval(
             "SELECT count(*) FROM harness_dispatch_outbox WHERE delivered_at IS NULL"
         )
         return int(value or 0)
+
+    async def ineligible_count(self, connection: Connection) -> int:
+        """Undelivered rows that `claim` will never hand out for lack of paid approval.
+
+        The enumerable half of the approval control. `claim` makes an unpaid row
+        undeliverable; this makes it *findable*, which are two different requirements:
+        without it the only symptom of a bypass is a queue whose `pending_count` never
+        reaches zero, and "stuck" and "unpaid" would need the same investigation.
+
+        Counts rows whose operation has no consumption row at all as well as rows whose
+        reservation is no longer spendable (released, retained, or still only reserved).
+        Both are "accepted, not deliverable"; distinguishing them is `list_ineligible`'s
+        job, because a count is for alerting and the reason is for acting.
+        """
+        value = await connection.fetchval(
+            """
+            SELECT count(*)
+              FROM harness_dispatch_outbox AS o
+             WHERE o.delivered_at IS NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM harness_approval_consumption AS c
+                     WHERE c.operation_id = o.operation_id
+                       AND c.reservation_state = ANY($1::text[])
+               )
+            """,
+            list(_DELIVERABLE_STATE_VALUES),
+        )
+        return int(value or 0)
+
+    async def list_ineligible(
+        self, connection: Connection, *, limit: int = 50
+    ) -> tuple[tuple[str, str | None], ...]:
+        """`(operation_id, reservation_state)` for undelivered rows that cannot be
+        claimed.
+
+        `reservation_state` is `None` when there is no consumption row at all -- the
+        operation was never paid for by any approval -- and otherwise the non-spendable
+        state the reservation is in. The two need different responses: the first is a
+        bypass of the admission gate and the second is an operation whose budget was
+        released or retained, so collapsing them into one count would be collapsing
+        "somebody went around the gate" into "this was cancelled".
+
+        Bounded like `list_for_tenant`, because an unbounded list is a way to turn one
+        operator query into an arbitrarily expensive read.
+
+        Not tenant-scoped, and deliberately so: this is an operator-facing sweep over
+        the harness's own queue, in the same position as `recover_abandoned` and
+        `pending_count`. It must not be exposed to a request-path caller under a
+        caller-supplied principal -- the tenant-scoped question ("was *my* approval
+        consumed") is `read_consumption`'s, and it takes a resolved tenant.
+        """
+        bounded = max(1, min(int(limit), 200))
+        rows = await connection.fetch(
+            """
+            SELECT o.operation_id, c.reservation_state
+              FROM harness_dispatch_outbox AS o
+              LEFT JOIN harness_approval_consumption AS c
+                     ON c.operation_id = o.operation_id
+             WHERE o.delivered_at IS NULL
+               AND (
+                    c.operation_id IS NULL
+                    OR c.reservation_state <> ALL($1::text[])
+               )
+             ORDER BY o.id
+             LIMIT $2
+            """,
+            list(_DELIVERABLE_STATE_VALUES),
+            bounded,
+        )
+        return tuple(
+            (data["operation_id"], data["reservation_state"])
+            for data in (dict(row) for row in rows)  # type: ignore[union-attr]
+        )
