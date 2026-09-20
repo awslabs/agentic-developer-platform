@@ -1,10 +1,12 @@
 name: Superplane Infra Plan
 
-# Terraform plan + full test suite for the Superplane control plane.
+# Terraform plan + full test suite for the Superplane infra root modules.
 # Issue #5042 (U3), EPIC #4910. Mirrors cyber-infra-plan.yml, with two deliberate
-# differences documented below.
+# differences documented below. Extended by #5532 (w6-09) to cover the workspaces
+# root module as a second matrix leg of the test job.
 #
-# ACCEPTANCE CRITERION: 100% of the .tftest.hcl files in tests/ execute in this lane.
+# ACCEPTANCE CRITERION: 100% of the .tftest.hcl files in EVERY root module's tests/
+# directory execute in this lane.
 #
 # That is enforced by construction rather than by a list. `terraform test` discovers every
 # `tests/*.tftest.hcl` itself, so a new test file is picked up with no edit here — but
@@ -39,6 +41,10 @@ on:
     branches: [main]
     paths:
       - 'modules/domain-apps/superplane/infra/control-plane/**'
+      # The workspaces root module (#5532, w6-09). Its tests run in the matrixed `tests`
+      # job below; it has no entry in the credentialed `plan` job, which is deliberate —
+      # see the matrix comment there.
+      - 'modules/domain-apps/superplane/infra/workspaces/**'
       - 'environments/dev/modules/superplane.tfvars'
       - 'environments/dev/modules/superplane-backend.tfvars'
       # U2's lock is a Terraform INPUT here: ecr.tf derives repository names from it and
@@ -65,8 +71,30 @@ jobs:
   # Offline validations, formatting, and every .tftest.hcl file.
   # ---------------------------------------------------------------------------
   tests:
-    name: Terraform tests (no AWS)
+    name: Terraform tests (no AWS) — ${{ matrix.name }}
     runs-on: arc-runner-org
+    strategy:
+      # Every Superplane Terraform ROOT MODULE runs its suite here, one matrix leg each.
+      #
+      # A matrix rather than a second lane: the count guard below, the credential-free
+      # shell and the "no credentials configured" check are the valuable parts, and they
+      # are identical for every root module. Copying them into a per-module lane would
+      # mean the copies drift, and the copy nobody reads is the one that drifts.
+      #
+      # A matrix rather than `-recursive` from the module root: `terraform test` is
+      # per-root-module (it needs that module's providers initialised), and a single
+      # invocation cannot span two roots with separate state.
+      #
+      # WHEN YOU ADD A ROOT MODULE, ADD IT HERE. `test_every_root_module_runs_in_ci` in
+      # infra/workspaces/tests/test_ci_coverage.py fails if a directory containing
+      # .tftest.hcl files has no leg, so this list cannot silently fall behind the repo.
+      fail-fast: false
+      matrix:
+        include:
+          - name: control-plane
+            dir: modules/domain-apps/superplane/infra/control-plane
+          - name: workspaces
+            dir: modules/domain-apps/superplane/infra/workspaces
     # Tests use mocks. Disable normal AWS credential discovery in this job only;
     # the ARC runner retains its platform identity and is not a security sandbox.
     env:
@@ -100,21 +128,21 @@ jobs:
           terraform_wrapper: false
 
       - name: Terraform fmt
-        working-directory: ${{ env.TF_WORKING_DIR }}
+        working-directory: ${{ matrix.dir }}
         run: terraform fmt -check -recursive
 
       - name: Terraform init (no backend)
-        working-directory: ${{ env.TF_WORKING_DIR }}
+        working-directory: ${{ matrix.dir }}
         # `-backend=false` is what keeps this job credential-free: it installs providers
         # without contacting S3 for state. The backend is exercised by the plan job.
         run: terraform init -backend=false -input=false
 
       - name: Terraform validate
-        working-directory: ${{ env.TF_WORKING_DIR }}
+        working-directory: ${{ matrix.dir }}
         run: terraform validate
 
       - name: Run every .tftest.hcl and prove none was skipped
-        working-directory: ${{ env.TF_WORKING_DIR }}
+        working-directory: ${{ matrix.dir }}
         # The coverage criterion. `terraform test` discovers the files; this step verifies
         # the discovery actually found them, because a zero-file run exits 0.
         run: |
@@ -124,7 +152,7 @@ jobs:
           echo "Test files present in tests/: ${EXPECTED}"
 
           if [ "$EXPECTED" -eq 0 ]; then
-            echo "::error::No .tftest.hcl files found in ${TF_WORKING_DIR}/tests. The acceptance criterion for this unit requires 100% of them to execute; zero files means they were moved or deleted, and 'terraform test' would exit 0 regardless."
+            echo "::error::No .tftest.hcl files found in ${{ matrix.dir }}/tests. The acceptance criterion for this unit requires 100% of them to execute; zero files means they were moved or deleted, and 'terraform test' would exit 0 regardless."
             exit 1
           fi
 
@@ -174,14 +202,23 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Superplane Terraform tests"
+            echo "## Superplane Terraform tests — ${{ matrix.name }}"
+            echo "- **Root module**: \`${{ matrix.dir }}\`"
             echo "- **Runner**: arc-runner-org (offline test environment)"
-            echo "- **Test files**: $(find ${{ env.TF_WORKING_DIR }}/tests -name '*.tftest.hcl' | wc -l | tr -d ' ')"
+            echo "- **Test files**: $(find ${{ matrix.dir }}/tests -name '*.tftest.hcl' | wc -l | tr -d ' ')"
             echo "- **Status**: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # The credentialed half: a real plan against real state.
+  #
+  # CONTROL PLANE ONLY, and not an oversight. A workspace root module plans against a
+  # TENANT account with its own state key per workspace, so there is no single
+  # (backend, var-file) pair this job could use — and #5532 authorises offline
+  # verification only: no account vending, apply or spend. Workspace plans are produced
+  # by an operator with the target account's credentials and checked by
+  # infra/workspaces/scripts/check_workspace_plan.py, which is the reviewable artifact
+  # that stands in for this job. `needs: tests` still gates on BOTH matrix legs.
   # ---------------------------------------------------------------------------
   plan:
     name: Terraform Plan

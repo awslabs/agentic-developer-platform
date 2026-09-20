@@ -1,0 +1,20 @@
+{
+  "reviewed_on": "2026-09-20",
+  "vpc_cni_version": "v1.22.4-eksbuild.3",
+  "version_source": "AWS EKS DescribeAddonVersions for vpc-cni, verified Kubernetes 1.31-1.35 in each supported region",
+  "registry_source": "https://docs.aws.amazon.com/eks/latest/userguide/add-ons-images.html",
+  "system_registry_accounts": {
+    "us-east-1": "602401143452",
+    "us-west-2": "602401143452",
+    "eu-west-1": "602401143452",
+    "eu-central-1": "602401143452",
+    "ap-southeast-2": "602401143452"
+  },
+  "system_image_repositories": [
+    "amazon-k8s-cni",
+    "amazon-k8s-cni-init",
+    "eks/coredns",
+    "eks/kube-proxy",
+    "eks/eks-pod-identity-agent"
+  ]
+}
