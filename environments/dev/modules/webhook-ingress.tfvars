@@ -17,3 +17,7 @@ enable_adversarial_e2e = true
 # Enabling the rule still requires the producer IAM grant first (#4450 / #4559).
 eventbridge_security_agent_repo = "aws-e/adp"
 eventbridge_security_agent_org  = "aws-e"
+
+# The existing gateway role has reached AWS's aggregate inline-policy quota.
+# These new authority grants use managed policies with identical permissions.
+gateway_authority_managed_policies = true

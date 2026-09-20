@@ -53,6 +53,7 @@ resource "terraform_data" "worker_gateway_rollout" {
     kubernetes_secret.agent_authority,
     kubernetes_secret.worker_run_services,
     aws_iam_role_policy.gateway_authorized_dispatch,
+    aws_iam_role_policy_attachment.gateway_authorized_dispatch,
     kubernetes_cluster_role_binding.gateway_agent_tokenreview,
     kubernetes_role_binding.gateway_agent_pod_read,
     terraform_data.worker_security_rollout,

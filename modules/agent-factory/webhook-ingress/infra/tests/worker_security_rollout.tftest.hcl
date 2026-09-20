@@ -90,6 +90,7 @@ override_data {
   target          = data.aws_eks_cluster.main
   override_during = plan
   values = {
+    arn = "arn:aws:eks:us-east-1:123456789012:cluster/adp-dev-eks-cluster"
     identity = [{
       oidc = [{
         issuer = "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLED539D4633E53DE1B716D3041E"
@@ -355,6 +356,64 @@ run "active_run_services_are_gateway_owned" {
       yamldecode(local.keda_trigger_auth_yaml).spec.podIdentity.identityOwner == "keda"
     )
     error_message = "KEDA must poll under its own identity now workers have no SQS access."
+  }
+}
+
+run "managed_gateway_grants_do_not_consume_inline_quota" {
+  command = plan
+  variables {
+    gateway_authority_managed_policies = true
+  }
+  override_resource {
+    target          = aws_iam_role.agent_scaledjob
+    override_during = plan
+    values          = { arn = "arn:aws:iam::123456789012:role/adp-dev-agent-scaledjob-role" }
+  }
+  override_resource {
+    target          = aws_iam_policy.gateway_authorized_dispatch
+    override_during = plan
+    values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-policy-gateway-authorized-dispatch" }
+  }
+  override_resource {
+    target          = aws_iam_policy.gateway_task_source
+    override_during = plan
+    values          = { arn = "arn:aws:iam::123456789012:policy/adp-dev-policy-gateway-task-source" }
+  }
+  assert {
+    condition = (
+      length(aws_iam_role_policy.gateway_authorized_dispatch) == 0 &&
+      length(aws_iam_role_policy.gateway_task_source) == 0 &&
+      aws_iam_role_policy_attachment.gateway_authorized_dispatch[0].role == "adp-dev-role-gateway-service" &&
+      aws_iam_role_policy_attachment.gateway_task_source[0].role == "adp-dev-role-gateway-service" &&
+      aws_iam_role_policy_attachment.gateway_authorized_dispatch[0].policy_arn == aws_iam_policy.gateway_authorized_dispatch[0].arn &&
+      aws_iam_role_policy_attachment.gateway_task_source[0].policy_arn == aws_iam_policy.gateway_task_source[0].arn
+    )
+    error_message = "Managed mode must attach both scoped policies to the gateway without consuming inline quota."
+  }
+  assert {
+    condition = jsondecode(aws_iam_policy.gateway_authorized_dispatch[0].policy).Statement[2] == {
+      Sid      = "DeliverOwnRunTask", Effect = "Allow",
+      Action   = ["sqs:ReceiveMessage", "sqs:ChangeMessageVisibility", "sqs:DeleteMessage"],
+      Resource = ["arn:aws:sqs:us-east-1:123456789012:adp-dev-agent-submit.fifo"]
+    }
+    error_message = "Managed policy must retain the exact own-queue permissions."
+  }
+  assert {
+    condition = jsondecode(aws_iam_policy.gateway_authorized_dispatch[0].policy).Statement[3] == {
+      Sid      = "WriteOwnRunArtifacts", Effect = "Allow", Action = ["s3:PutObject"],
+      Resource = ["arn:aws:s3:::adp-dev-agent-run-logs-123456789012/runs/*"]
+    }
+    error_message = "Managed policy must retain the exact run archive prefix."
+  }
+  assert {
+    condition = (
+      length(jsondecode(aws_iam_policy.gateway_task_source[0].policy).Statement) == 3 &&
+      jsondecode(aws_iam_policy.gateway_task_source[0].policy).Statement[0].Action == ["sts:AssumeRole"] &&
+      jsondecode(aws_iam_policy.gateway_task_source[0].policy).Statement[0].Resource == aws_iam_role.agent_scaledjob.arn &&
+      kubernetes_config_map.worker_gateway[0].data.AGENT_TASK_SOURCE_ISOLATION_CONFIRMED == "false" &&
+      kubernetes_config_map.worker_gateway[0].data.AGENT_AUTHORITY_ENABLED == "false"
+    )
+    error_message = "Managed grants must not broaden source assumption or silently activate authority/source trust."
   }
 }
 

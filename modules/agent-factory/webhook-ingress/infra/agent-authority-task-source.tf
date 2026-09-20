@@ -8,11 +8,8 @@ variable "agent_task_source_isolation_confirmed" {
   description = "Approved isolation of the legacy worker principal from all platform Kubernetes authorization; requires a reviewed scoped rollout."
 }
 
-resource "aws_iam_role_policy" "gateway_task_source" {
-  count = local.agent_authority_provisioned ? 1 : 0
-  name  = "adp-${var.environment}-policy-gateway-task-source"
-  role  = "adp-${var.environment}-role-gateway-service"
-  policy = jsonencode({
+locals {
+  gateway_task_source_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       { Sid = "CustomerTaskSource", Effect = "Allow", Action = ["sts:AssumeRole"], Resource = aws_iam_role.agent_scaledjob.arn },
@@ -23,6 +20,25 @@ resource "aws_iam_role_policy" "gateway_task_source" {
       }
     ]
   })
+}
+
+resource "aws_iam_role_policy" "gateway_task_source" {
+  count  = local.agent_authority_provisioned && !var.gateway_authority_managed_policies ? 1 : 0
+  name   = "adp-${var.environment}-policy-gateway-task-source"
+  role   = "adp-${var.environment}-role-gateway-service"
+  policy = local.gateway_task_source_policy
+}
+
+resource "aws_iam_policy" "gateway_task_source" {
+  count  = local.agent_authority_provisioned && var.gateway_authority_managed_policies ? 1 : 0
+  name   = "adp-${var.environment}-policy-gateway-task-source"
+  policy = local.gateway_task_source_policy
+}
+
+resource "aws_iam_role_policy_attachment" "gateway_task_source" {
+  count      = local.agent_authority_provisioned && var.gateway_authority_managed_policies ? 1 : 0
+  role       = "adp-${var.environment}-role-gateway-service"
+  policy_arn = aws_iam_policy.gateway_task_source[0].arn
 }
 
 resource "kubernetes_role" "gateway_task_source_auth_read" {
