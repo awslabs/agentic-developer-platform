@@ -296,6 +296,8 @@ async def get_catalogue(
         routing_user_id="" if principal_kind == "service_account" else None,
     )
 
+    from .dispatch_selection import mapping_enabled
+
     models = await service.build_model_catalogue(
         db,
         persona_key=persona_key,
@@ -308,6 +310,7 @@ async def get_catalogue(
         # No explicit organization policy means the versioned platform
         # baseline.  Service restrictions are supplied separately above.
         tenant_allowed_patterns=None,
+        require_evidence=not mapping_enabled(),
     )
 
     return ModelCatalogueResponse(

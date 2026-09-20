@@ -559,3 +559,64 @@ class TestAwsLabelThreading:
         assert envelope["model_requested"] == "opus"
         assert envelope["model_resolved"] == "us.anthropic.claude-opus-4-v1"
         assert envelope["aws_label"] == "my-account"
+
+
+class TestSavedPersonaMapping:
+    def test_direct_and_delegated_runs_select_for_the_root_human(self, monkeypatch):
+        monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        for sender, identity in [
+            (_human_sender(), _human_identity()),
+            (_bot_sender(), _bot_identity()),
+        ]:
+
+            def select(envelope, *, user_id):
+                assert user_id == "user-alice"
+                assert envelope["persona"] == "developer"
+                return envelope | {"model_resolved": "saved-model"}
+
+            with (
+                patch(
+                    "common.persona_model_client.select_persona_model",
+                    side_effect=select,
+                ) as lookup,
+                patch(
+                    "common.sqs_publisher.publish_envelope", return_value="msg"
+                ) as publish,
+                patch("common.spawn_persona._capture_invocation_event"),
+                patch("common.spawn_persona._write_pointer_and_provenance"),
+                patch("common.spawn_persona._emit_metric"),
+            ):
+                result = spawn_persona(
+                    **_spawn_kwargs(
+                        sender=sender,
+                        resolved_identity=identity,
+                        actor_user_id=identity.user_id,
+                    )
+                )
+            assert result.success
+            lookup.assert_called_once()
+            assert publish.call_args.args[0]["model_resolved"] == "saved-model"
+
+    def test_refused_lookup_never_publishes_even_if_activity_write_fails(
+        self, monkeypatch
+    ):
+        from common.persona_model_client import ModelSelectionError
+
+        monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        with (
+            patch(
+                "common.persona_model_client.select_persona_model",
+                side_effect=ModelSelectionError("unavailable"),
+            ),
+            patch("common.sqs_publisher.publish_envelope") as publish,
+            patch(
+                "common.spawn_persona._capture_blocked_event",
+                side_effect=RuntimeError("ddb"),
+            ),
+        ):
+            result = spawn_persona(**_spawn_kwargs())
+        assert not result.success
+        assert result.block_reason == "persona_model_selection_unavailable"
+        publish.assert_not_called()

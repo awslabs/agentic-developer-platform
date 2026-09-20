@@ -222,6 +222,46 @@ def spawn_persona(
         token_source=token_source,
     )
 
+    # Preference lookup uses the already-resolved chain owner. It changes only
+    # the model passed to the existing worker, never credential authority.
+    if (
+        os.environ.get("PERSONA_MODEL_MAPPING_ENABLED", "false").lower() == "true"
+        and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true"
+        and spawned_ctx.get("is_human_rooted") is True
+    ):
+        from common.persona_model_client import (
+            ModelSelectionError,
+            select_persona_model,
+        )
+
+        try:
+            envelope = select_persona_model(
+                envelope, user_id=spawned_ctx.get("root_human_id", "")
+            )
+        except ModelSelectionError:
+            logger.exception("Saved persona model selection failed; no work published")
+            try:
+                _capture_blocked_event(
+                    tenant_id=tenant_id,
+                    actor_user_id=actor_user_id,
+                    sender=sender,
+                    event_type=event_type,
+                    action=action,
+                    installation_id=installation_id,
+                    repo=repo,
+                    persona=persona,
+                    payload=payload,
+                    correlation_ctx=spawned_ctx,
+                    block_reason="persona_model_selection_unavailable",
+                )
+            except Exception:
+                logger.warning(
+                    "Unable to record model-selection refusal", exc_info=True
+                )
+            return SpawnResult(
+                success=False, block_reason="persona_model_selection_unavailable"
+            )
+
     # Under delegated authority, no adapter may bypass the protected publisher.
     # Agent-originated requests need the gateway dispatch path; caller-controlled
     # parent/root fields and bot-comment marker HMACs cannot mint human authority.

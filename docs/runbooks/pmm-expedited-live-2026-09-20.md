@@ -269,3 +269,31 @@ The successful model evidence expires on 2026-09-21 around 13:41 UTC. Ongoing
 paid refresh remains unconfigured and unauthorized by the finite test budget.
 Opening or merging the remaining worker source PR can launch the repository's
 paid GitLab fleet tests; those side effects also need bounding before that step.
+
+
+## Saved mappings without the worker-security cutover
+
+The user-approved release resolves the initiating human's saved persona mapping
+once before dispatch using `PERSONA_MODEL_MAPPING_ENABLED`. Existing gateway
+identity, destination and budget enforcement continue to apply. An explicit
+model selection applies only to its invocation; otherwise the saved mapping,
+then the persona class default, is selected. With no configured default the
+existing runtime default remains in force. Lookup failures do not silently
+ignore a saved choice or dispatch an AI-DLC node in an unusable running state.
+
+GitHub direct/delegated producers and chat ingest authenticate their lookup with
+STS-bound request proofs and exact endpoint IAM grants. AI-DLC and replan use
+the same resolver with their already-validated human root. The native Codex
+reviewer and chat SDK honor the selected model. The protected worker protocol
+remains separately opt-in; this release does not require worker-role retirement.
+
+In this mode, saving and selecting require a compatible, active, permitted
+catalogue model, without requiring a recurring daily provider probe. The UI
+says "Available to select"; it does not claim a successful provider invocation.
+Provider access and quotas are still enforced on actual use. Advanced enforcing
+mode retains its evidence requirements. Profiles are deferred.
+
+Local validation covers direct/delegated and chat adapters, authenticated lookup,
+AI-DLC pre-transition refusal and replan retryability, preference API/catalogue,
+Codex model precedence, and the settings production build. Live activation and
+real user-to-runtime acceptance are still pending for this release.

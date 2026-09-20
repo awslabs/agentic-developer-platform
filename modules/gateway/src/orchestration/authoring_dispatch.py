@@ -564,6 +564,16 @@ async def publish_authoring(
 
     protected = os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
     envelope = pending.envelope
+    if not protected:
+        from src.admin.persona_models.dispatch_selection import apply_dispatch_selection, mapping_enabled
+
+        if mapping_enabled():
+            try:
+                async with session_factory() as session:
+                    envelope = await apply_dispatch_selection(session, envelope)
+            except Exception:
+                logger.exception("Authoring persona model selection unavailable request=%s; request remains queued", pending.request_id)
+                return False
     if protected:
         try:
             from src.agentauth.engine import get_engine_authority_writer

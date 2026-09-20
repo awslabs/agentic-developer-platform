@@ -996,6 +996,10 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
             from model_root_client import register_model_root
 
             send_kwargs["MessageBody"] = register_model_root(sqs_body, source="chat", subject=message.user_id)
+        elif os.environ.get("PERSONA_MODEL_MAPPING_ENABLED", "false").lower() == "true":
+            from persona_model_client import select_persona_model
+
+            send_kwargs["MessageBody"] = json.dumps(select_persona_model(sqs_body, user_id=message.user_id))
         sqs.send_message(**send_kwargs)
     except Exception:
         set_thread_processing(session_id, thread_id, None)

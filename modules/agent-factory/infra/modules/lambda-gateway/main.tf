@@ -24,6 +24,7 @@ resource "aws_lambda_function" "ingest" {
   environment {
     variables = {
       ADP_CHAT_MODEL_POLICY_ENABLED = tostring(var.model_policy_enabled)
+      PERSONA_MODEL_MAPPING_ENABLED = tostring(var.persona_model_mapping_enabled)
       ADP_AGENT_CONTROL_ENDPOINT    = var.model_control_endpoint
       INPUT_QUEUE_URL               = var.input_queue_url
       RESPONSE_QUEUE_URL            = var.response_queue_url
@@ -437,6 +438,22 @@ resource "aws_iam_role_policy" "ingest_model_root" {
     precondition {
       condition     = var.model_root_admission_arn != "" && var.model_control_endpoint != ""
       error_message = "Register the ingress role and exact gateway endpoint before enabling chat policy."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "ingest_persona_model_selection" {
+  count = var.persona_model_mapping_enabled ? 1 : 0
+  name  = "persona-model-selection"
+  role  = aws_iam_role.ingest.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = ["execute-api:Invoke"], Resource = [replace(var.model_root_admission_arn, "/roots/admit", "/persona-model/resolve")] }]
+  })
+  lifecycle {
+    precondition {
+      condition     = var.model_root_admission_arn != "" && var.model_control_endpoint != ""
+      error_message = "Configure the exact gateway endpoint before enabling saved persona models."
     }
   }
 }

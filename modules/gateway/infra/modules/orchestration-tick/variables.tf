@@ -427,3 +427,9 @@ variable "engine_command_signing_key_secret_arn" {
     error_message = "engine_command_signing_key_secret_arn must be empty or a full Secrets Manager secret ARN (arn:aws:secretsmanager:<region>:<account>:secret:<name>)."
   }
 }
+
+variable "persona_model_mapping_enabled" {
+  description = "Use saved persona models at dispatch without changing worker authority."
+  type        = bool
+  default     = false
+}

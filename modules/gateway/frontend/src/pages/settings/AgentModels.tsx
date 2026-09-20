@@ -47,6 +47,9 @@ function availability(
   if ((preference?.status === 'stale' || preference?.availability_status === 'stale') || model?.reason === 'evidence_stale' || model?.evidence?.stale) {
     return { label: 'Availability needs checking', className: 'text-amber-700' };
   }
+  if (preference?.availability_status === 'selectable' || (model?.selectable && model.invocable == null && !model.evidence)) {
+    return { label: 'Available to select', className: 'text-green-700' };
+  }
   if (preference?.effective_is_candidate) return { label: 'Not ready', className: 'text-gray-600' };
   if ((preference?.status === 'unavailable' || preference?.availability_status === 'unavailable') || model?.reason === 'not_invocable' || model?.invocable === false) {
     return { label: 'Unavailable', className: 'text-red-700' };
@@ -76,6 +79,7 @@ function effectiveSourceLabel(preference: PersonaPreference | undefined): string
   if (preference.source === 'principal-mapping') return 'Your choice';
 
   const status = preference.class_default_status;
+  if (preference.availability_status === 'selectable' && preference.effective_model_id) return 'Default for this persona';
   if (status === 'proven') return 'Default for this persona';
   if (status === 'candidate') return 'Default for this persona (not ready)';
   if (preference.effective_model_id) {

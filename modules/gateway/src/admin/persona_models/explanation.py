@@ -11,6 +11,8 @@ async def annotate_preferences(db, entries: list[dict], *, org_id: str, principa
     from src.proxy.bedrock_routing import bedrock_routing_resolver
     from src.shared.config import get_settings
 
+    from .dispatch_selection import mapping_enabled
+
     active = None
     destination = None
     policy_error = None
@@ -26,7 +28,7 @@ async def annotate_preferences(db, entries: list[dict], *, org_id: str, principa
             reason = "unknown_model"
         elif model.lifecycle == "retired":
             reason = "retired"
-        elif entry.get("effective_is_candidate"):
+        elif entry.get("effective_is_candidate") and not mapping_enabled():
             reason = "class_default_unproven"
         else:
             try:
@@ -66,11 +68,12 @@ async def annotate_preferences(db, entries: list[dict], *, org_id: str, principa
                             service_restriction_pattern_sets=active.service_restriction_pattern_sets,
                             policy_unavailable_reason=active.service_policy_unavailable_reason,
                             principal_status=active.principal_status,
+                            require_evidence=not mapping_enabled(),
                         )
                         if isinstance(result, SelectionRejection):
                             reason = result.reason
                         else:
-                            entry["availability_status"] = "verified"
+                            entry["availability_status"] = "selectable" if mapping_enabled() else "verified"
             except Exception as exc:
                 reason = getattr(exc, "reason", "availability_unknown")
         if reason:

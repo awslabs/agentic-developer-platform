@@ -2024,3 +2024,35 @@ async def test_governed_dispatch_refuses_when_claims_are_disabled(session, monke
         )
     ).one()
     assert json.loads(refusal.rejection_reason)["block_code"] == "authority_unverifiable"
+
+
+class TestSavedPersonaMapping:
+    @pytest.mark.parametrize("unavailable", [False, True])
+    async def test_selection_precedes_state_change_and_uses_approver(self, session, monkeypatch, unavailable):
+        from src.admin.persona_models import dispatch_selection
+
+        monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        _flow, node, _decision = await _ready_story(session)
+
+        async def select(db, *, org_id, user_id, persona):
+            assert user_id == APPROVER
+            assert org_id == ORG_A
+            assert persona == "developer"
+            assert await _state_of(db, node.id) == NodeState.READY.value
+            if unavailable:
+                raise RuntimeError("lookup unavailable")
+            return {"model": "saved-model", "source": "principal-mapping"}
+
+        monkeypatch.setattr(dispatch_selection, "select_for_dispatch", select)
+        report = await run_dispatch_pass(session, _config())
+        sqs = FakeSQS()
+        publish_pending(report, _config(), client=sqs)
+        if unavailable:
+            assert report.dispatched == 0
+            assert not sqs.calls
+            assert await _state_of(session, node.id) == NodeState.READY.value
+            assert report.policy_block_reasons["persona_model_selection_unavailable"] == 1
+        else:
+            assert report.dispatched == 1
+            assert sqs.envelope()["model_resolved"] == "saved-model"

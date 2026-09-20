@@ -872,6 +872,25 @@ async def _dispatch_one_unclaimed(
             report.policy_block_reasons[admission.reason.value] = report.policy_block_reasons.get(admission.reason.value, 0) + 1
         return
 
+    selection = None
+    from src.admin.persona_models.dispatch_selection import mapping_enabled, select_for_dispatch
+
+    if mapping_enabled() and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+        try:
+            selection = await select_for_dispatch(
+                session,
+                org_id=org_id,
+                user_id=user_id,
+                persona=EVALUATION_PERSONA if node.kind == NodeKind.EVAL.value else config.persona,
+            )
+        except Exception:
+            logger.exception("Saved persona model unavailable for node %s; node remains ready", node.id)
+            report.record(org_id, "policy_blocked")
+            report.policy_block_reasons["persona_model_selection_unavailable"] = (
+                report.policy_block_reasons.get("persona_model_selection_unavailable", 0) + 1
+            )
+            return
+
     outcome = await dispatch_node(session, node, genesis)
 
     if outcome.status is DispatchStatus.REJECTED:
@@ -903,6 +922,11 @@ async def _dispatch_one_unclaimed(
         user_id=user_id,
         cognito_sub=cognito_sub,
     )
+    if selection is not None:
+        envelope["model_selection"] = selection
+        if selection["model"] is not None:
+            envelope["model_resolved"] = selection["model"]
+
     if correction is not None:
         detail = correction.detail
         envelope["orchestration"]["correction"] = {
@@ -1475,8 +1499,6 @@ async def prepare_pending(
     if not report.pending:
         return report
     if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
-        # Unprotected environments have no execution record to attach to. Not an
-        # error: the inventory records those paths as unprotected, not blocked.
         return report
 
     from src.agentauth.model_policy import ensure_snapshot_report_only

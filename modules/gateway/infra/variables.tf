@@ -796,3 +796,9 @@ variable "user_identity_index_v2_read" {
   description = "Issue #4849: whether the auth Lambdas' membership-eligibility read tries the v2 user-identity-index table before the legacy one. String, not bool, because it is passed straight through to a Lambda env var. Mirrors the webhook-ingress reader's USER_IDENTITY_INDEX_V2_READ flag (#537) so all readers can be moved together."
   default     = "false"
 }
+
+variable "persona_model_mapping_enabled" {
+  description = "Use saved persona models at dispatch without changing worker authority."
+  type        = bool
+  default     = false
+}

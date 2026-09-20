@@ -39,6 +39,7 @@ UNIT_MODULES = [
     "src.internal.status_callback_routes",  # Issue #2049: ingestion worker status callback
     "src.internal.admin_routes",  # Issue #3462: admin read endpoints for adversarial E2E
     "src.internal.persona_model_probe_routes",  # PMM-03: bounded harness probe worker API
+    "src.internal.persona_model_selection",
     "src.agentauth.routes",  # #5028: IAM transport and verified pod-bound agent identity
     "src.agentauth.arc_model",
     "src.agentauth.model_policy_keys",

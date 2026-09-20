@@ -776,3 +776,34 @@ class TestAReplanChangesNoPromotionState:
         from src.orchestration.genesis import APPROVAL_DECISION_KINDS
 
         assert DecisionKind.REPLAN_REQUESTED.value not in APPROVAL_DECISION_KINDS
+
+
+class TestSavedAuthoringModel:
+    @pytest.mark.parametrize("unavailable", [False, True])
+    async def test_replan_selects_for_requester_and_remains_retryable(self, session, monkeypatch, unavailable):
+        from src.admin.persona_models import dispatch_selection
+
+        monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
+        monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+        flow_id = await flow_with_asker(session)
+        report = EngineCommandReport()
+        await replan(session, report, flow_id=flow_id)
+        selected = []
+
+        async def select(db, *, org_id, user_id, persona, direct_model=None):
+            selected.append((org_id, user_id, persona))
+            if unavailable:
+                raise RuntimeError("lookup unavailable")
+            return {"model": "author-model", "source": "principal-mapping"}
+
+        monkeypatch.setattr(dispatch_selection, "select_for_dispatch", select)
+        sqs = FakeSQS()
+        await flush(session, report, sqs, monkeypatch)
+        assert selected == [(ORG_A, ASKER, AUTHORING_PERSONA)]
+        rows = await requests(session)
+        if unavailable:
+            assert not sqs.calls
+            assert rows[0].state == AmendmentRequestState.QUEUED.value
+        else:
+            assert sqs.envelope()["model_resolved"] == "author-model"
+            assert rows[0].state == AmendmentRequestState.DISPATCHED.value

@@ -4,6 +4,8 @@
 locals {
   worker_gateway_config = merge({
     AGENT_AUTHORITY_ENABLED               = tostring(var.agent_authority_enabled)
+    PERSONA_MODEL_MAPPING_ENABLED         = tostring(var.persona_model_mapping_enabled)
+    PERSONA_MODEL_PRODUCER_ROLES          = join(",", concat([aws_iam_role.lambda_execution.arn], var.persona_model_additional_producer_roles))
     ADP_RUN_TASKS_ENABLED                 = tostring(var.agent_authority_enabled)
     ADP_DOOR_SERVICE_URL                  = var.agent_door_service_url
     AGENT_RUN_LOGS_BUCKET                 = aws_s3_bucket.agent_run_logs.bucket

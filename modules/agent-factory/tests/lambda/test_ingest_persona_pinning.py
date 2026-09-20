@@ -501,3 +501,29 @@ def test_ingest_registers_final_root_before_sqs_and_refuses_failed_authority(moc
         tasks = mocked_aws_services['sqs'].receive_message(QueueUrl=TASKS_QUEUE).get('Messages', [])
         assert len(tasks) == 1
         assert tasks[0]['Body'] == registered[0]
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_saved_persona_model_is_selected_for_authenticated_chat_owner(mocked_aws_services, monkeypatch, unavailable):
+    monkeypatch.setenv("PERSONA_MODEL_MAPPING_ENABLED", "true")
+    monkeypatch.setenv("ADP_CHAT_MODEL_POLICY_ENABLED", "false")
+    import persona_model_client
+
+    def select(envelope, *, user_id):
+        assert user_id == "user-pin"
+        assert envelope["tenant_id"] == "test-tenant"
+        assert envelope["agent_type"] == "intent-refinement"
+        if unavailable:
+            raise persona_model_client.ModelSelectionError("lookup unavailable")
+        return envelope | {"model_resolved": "saved-model"}
+
+    monkeypatch.setattr(persona_model_client, "select_persona_model", select)
+    handler = _import_handler(mock_bedrock=MagicMock())
+    result = _send(handler, persona="intent-refinement")
+    tasks = _drain_queue(mocked_aws_services["sqs"])
+    if unavailable:
+        assert result["statusCode"] == 503
+        assert not tasks
+    else:
+        assert result["statusCode"] == 200
+        assert tasks[0]["model_resolved"] == "saved-model"
