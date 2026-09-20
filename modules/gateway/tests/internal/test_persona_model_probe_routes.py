@@ -133,6 +133,26 @@ async def test_claim_atomically_reserves_gateway_selected_candidate(db_session, 
 
 
 @pytest.mark.asyncio
+async def test_operator_scope_selects_only_catalogue_models(db_session, monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setenv("BG_MODEL_PROBE_MODEL_ALLOWLIST", '["not-a-catalogue-model", "us.anthropic.claude-sonnet-4-6"]')
+    db_session.add(_destination())
+    await db_session.commit()
+    claimed = await claim_probe(db_session)
+    assert claimed.claimed and claimed.slot.canonical_model_id == "us.anthropic.claude-sonnet-4-6"
+    assert (await claim_probe(db_session)).reason == "no_candidates"
+    monkeypatch.setenv("BG_MODEL_PROBE_MODEL_ALLOWLIST", '["not-a-catalogue-model"]')
+    with patch("src.internal.persona_model_probe_service.bedrock_destination_signer.get_credentials", new_callable=AsyncMock) as credentials:
+        with pytest.raises(ProbeConflictError, match="outside the configured"):
+            await start_probe(
+                db_session, slot_id=claimed.slot.id, lease_token=claimed.lease_token,
+                request_shape_sha256=claimed.slot.expected_request_shape_sha256,
+            )
+        credentials.assert_not_awaited()
+    assert (await db_session.get(ModelProbeSlot, claimed.slot.id)).status == "reserved"
+
+
+@pytest.mark.asyncio
 async def test_start_is_durable_before_credentials_are_released(db_session, monkeypatch):
     _enable(monkeypatch)
     db_session.add(_destination())

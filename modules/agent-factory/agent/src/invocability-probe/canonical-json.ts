@@ -1,17 +1,41 @@
 import { createHash } from 'node:crypto';
 
-export const REQUEST_SHAPE_NORMALIZATION = 'claude-code-current-date-reminder-v1';
+export const REQUEST_SHAPE_NORMALIZATION = 'claude-code-probe-date-device-v2';
 const SDK_DATE_REMINDER = /# currentDate\nToday's date is (\d{4}-\d{2}-\d{2})\./g;
+
+/** Normalize only the SDK's per-installation identifier, never account/session identity. */
+function normalizeProbeDevice(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const root = value as Record<string, unknown>;
+  const metadata = root.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return value;
+  const fields = metadata as Record<string, unknown>;
+  if (typeof fields.user_id !== 'string') return value;
+  try {
+    const identity = JSON.parse(fields.user_id) as Record<string, unknown>;
+    if (!identity || typeof identity !== 'object' || Array.isArray(identity)
+        || Object.keys(identity).sort().join(',') !== 'account_uuid,device_id,session_id'
+        || identity.account_uuid !== ''
+        || identity.session_id !== '00000000-0000-4000-8000-000000000002'
+        || typeof identity.device_id !== 'string' || !/^[0-9a-f]{64}$/.test(identity.device_id)) return value;
+    return { ...root, metadata: { ...fields, user_id: JSON.stringify({
+      ...identity, device_id: '<ADP_PROBE_DEVICE>',
+    }) } };
+  } catch {
+    return value;
+  }
+}
 
 /**
  * Claude Code 0.3.220 injects the wall-clock date into one text block of the
  * first request message (the block index differs across model families),
  * even when CLAUDE_CODE_OVERRIDE_DATE is set. The date is non-semantic probe
- * context, so normalize only that exact reminder. Every other byte remains in
- * the digest; if the SDK moves or reformats the reminder, the digest fails
- * closed until the new body is reviewed.
+ * context. Its device identifier is also random in fresh containers; normalize
+ * only the known anonymous, fixed-session probe identity shape. All model,
+ * tool, token, account and session fields remain covered by the digest.
  */
 export function normalizeRequestShape(value: unknown): unknown {
+  value = normalizeProbeDevice(value);
   const root = value as { messages?: unknown };
   if (!root || typeof root !== 'object' || !Array.isArray(root.messages)) return value;
   const first = root.messages[0] as { content?: unknown } | undefined;

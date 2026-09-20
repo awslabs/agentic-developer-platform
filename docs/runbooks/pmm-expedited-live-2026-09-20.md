@@ -18,9 +18,10 @@ the UI flag alone or from report-only proposals. Keep background probes disabled
 unless separately configured within the agreed test budget. Customer-linked
 accounts are outside this rollout's verification scope.
 
-The user has authorized deployment. A total model-spend ceiling has been
-requested and is pending; no paid test invocation is authorized by an assumed
-ceiling. Record the ceiling before running the paid canaries.
+The user authorized deployment and approved a $10 total model-test ceiling.
+Count failed and indeterminate paid attempts and any automatically dispatched
+fleet tests against that ceiling. Keep recurring paid schedules suspended.
+A private ledger records reservations and receipts before each paid attempt.
 
 ## Deployment record
 
@@ -97,3 +98,21 @@ The proposed Terraform admission-pause plan is NOT applied: its dependency graph
 also proposed changing deployed webhook Lambda packages/configuration and creating
 engine-signing resources. Preserve active jobs and review those changes separately.
 Authority, run tasks, source-isolation assertions and PMM enforcement remain off.
+
+## Resumed cutover preparation
+
+- Refreshed Ada credentials and reconfirmed the approved AWS account. Paused
+  only the webhook ScaledJob using the KEDA pause annotation after a server dry
+  run; KEDA reports Paused=True. This narrow live change avoids the unapplied
+  broad Terraform quiesce plan. No active worker or live queue messages remained.
+  The 103 historical dead-letter messages are retained and were not replayed.
+- A reviewed saved gateway Terraform plan added exactly a dedicated
+  Bedrock-only role and policy. Only the gateway role may assume it; it has no
+  secret, queue, storage or platform-administration permission. Registered it
+  with an authenticated platform administrator and transactional audit after
+  the existing real STS/IAM routing verifier succeeded. No account mappings changed.
+- Fresh-container manifest generation exposed random SDK device IDs. Version-2
+  normalization covers only the known anonymous fixed-session device field and
+  existing date reminder. Models, tools, token limits, account and session
+  identities remain covered. All nine manifests matched across fresh containers.
+  These are fake-upstream shape checks, not paid provider evidence.

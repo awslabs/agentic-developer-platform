@@ -31,11 +31,16 @@
       "deployment_run": 35506167046
     },
     "protected_worker_cutover": {
-      "status": "pending"
+      "status": "running",
+      "admission_paused": true,
+      "active_legacy_workers": 0,
+      "live_queue_messages": 0,
+      "preserved_dead_letter_messages": 103
     },
     "pmm_live_acceptance": {
       "status": "pending",
-      "model_spend_ceiling_usd": null
+      "model_spend_ceiling_usd": 10,
+      "budget_authorization": "User approved $10 total for live tests; recurring paid schedules excluded"
     },
     "pmm_enforcement": {
       "status": "pending"
@@ -54,6 +59,12 @@
       "pull_request": 5577,
       "merge_commit": "a026371515d53d329ea13cf2e2d079fa7b2d9645",
       "deployment_run": 35506917122
+    },
+    "platform_probe_destination": {
+      "status": "complete",
+      "resources_added": 2,
+      "destination_id": "316dd12b-70c0-4f00-9efc-e55a7a91e5d4",
+      "routing_verification": "real gateway STS and malformed-request IAM probe; no paid invocation"
     }
   },
   "outputs": {
@@ -83,6 +94,7 @@
     "final_active_default_model_id": null,
     "final_runtime_posture": "report_only",
     "final_posture_revision": 1,
-    "agent_models_ui_enabled": false
+    "agent_models_ui_enabled": false,
+    "fresh_container_manifest_parity_models": 9
   }
 }

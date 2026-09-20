@@ -195,6 +195,8 @@ async def claim_probe(db: AsyncSession, *, trigger: Trigger = "scheduled") -> Cl
     candidate: tuple[BedrockDestinationRegistry, object] | None = None
     for destination in destinations:
         for model in PLATFORM_MODEL_CATALOGUE:
+            if settings.model_probe_model_allowlist and model.canonical_model_id not in settings.model_probe_model_allowlist:
+                continue
             expected_digest = expected_request_shape(model.canonical_model_id)
             if expected_digest is None:
                 continue
@@ -303,6 +305,8 @@ async def start_probe(
     settings = get_settings()
     if reason := _configuration_reason(settings):
         raise ProbeConflictError(reason, "Probe admission is currently unavailable")
+    if settings.model_probe_model_allowlist and slot.canonical_model_id not in settings.model_probe_model_allowlist:
+        raise ProbeConflictError("probe_model_not_permitted", "Probe model is outside the configured qualification scope")
     destination = await db.get(BedrockDestinationRegistry, slot.destination_id)
     if (
         destination is None
