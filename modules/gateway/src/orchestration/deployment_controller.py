@@ -161,7 +161,46 @@ class DeploymentServices(WorkflowServices):
                 )
             return RuntimeObservation(ObservationKind.SUCCEEDED, receipt=receipt, binding_revision=binding.revision, manifest_hash=manifest_hash)
 
-        row = outstanding[0]
+        return await self.verify_workflow(
+            context,
+            outstanding[0],
+            node=node,
+            binding=binding,
+            merge=merge,
+            flow=flow,
+            policy=policy,
+            principal=principal,
+            auth=auth,
+            components=components,
+            manifest=manifest,
+        )
+
+    async def verify_workflow(
+        self,
+        context,
+        row,
+        *,
+        node,
+        binding,
+        merge,
+        flow,
+        policy,
+        principal,
+        auth,
+        components,
+        manifest,
+        action=Action.DEPLOY,
+        resource_address=None,
+        revalidate=False,
+    ):
+        """Read the authenticated release and actual runtime; never settle a lease.
+
+        E2 reuses this after a test run. Only an already verified D2 entry may
+        outlive its original observation deadline, and current policy, manifest,
+        provider attempt, registered role and runtime checks still apply.
+        """
+        now = datetime.now(UTC)
+        manifest_hash = hashlib.sha256(canonical(asdict(manifest)).encode()).hexdigest()
         data = row.detail
         workflow = WorkflowReceipt.model_validate(data["workflow_receipt"])
         validate_identity(workflow, context, merge, binding)
@@ -171,7 +210,9 @@ class DeploymentServices(WorkflowServices):
             and workflow.provider_repository_id == binding.provider_repository_id,
             "deployment_workflow_receipt_changed",
         )
-        deadline = min(datetime.fromisoformat(data["observation_deadline"]), policy.expires_at)
+        if revalidate:
+            require(data.get("runtime_verified") is True, "evaluation_deployment_not_verified")
+        deadline = policy.expires_at if revalidate else min(datetime.fromisoformat(data["observation_deadline"]), policy.expires_at)
         require(now < deadline, "deployment_runtime_observation_deadline_reached")
         require(workflow.conclusion == "success", "deployment_workflow_failed_requires_accepted_repair")
         entry = next((e for e in manifest.entries if e.entry_id == workflow.manifest_entry_id), None)
@@ -237,11 +278,11 @@ class DeploymentServices(WorkflowServices):
         def authorize_scope(credential_id, role_arn):
             decision = authorize_action(
                 replace(auth, credential_scope=CredentialScope.USER_GRANTED),
-                Action.DEPLOY,
+                action,
                 ResourceRef(
                     repository_id=binding.repo,
                     environment_connection_id=entry.connection_id,
-                    node_address=graph_address(node, flow_slug=flow.slug),
+                    node_address=resource_address or graph_address(node, flow_slug=flow.slug),
                     org_id=node.org_id,
                     user_credential_id=credential_id,
                     aws_role_arn=role_arn,
@@ -260,6 +301,7 @@ class DeploymentServices(WorkflowServices):
                 execution_id=context.execution.id,
                 inspect_target=inspect,
                 authorize_scope=authorize_scope,
+                action=action,
             )
         require(resolved.physical.canonical_key == target.canonical_key, "deployment_runtime_physical_target_changed")
         authorize_scope(resolved.credential_id, resolved.role_arn)

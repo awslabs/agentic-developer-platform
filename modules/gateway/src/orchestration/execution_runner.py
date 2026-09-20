@@ -1207,6 +1207,7 @@ async def run_execution_runner(
     if handlers is None:
         from .deployment_controller import handlers as runtime_handlers
         from .deployment_workflows import handlers as deployment_handlers
+        from .evaluation_controller import handlers as evaluation_handlers
         from .merge_controller import handlers as merge_handlers
         from .review_cycle import handlers as review_cycle_handlers
 
@@ -1215,6 +1216,7 @@ async def run_execution_runner(
             **merge_handlers(factory),
             **deployment_handlers(factory),
             **runtime_handlers(factory),
+            **evaluation_handlers(factory),
             **registered_execution_handlers(),
         }
     clock = clock or SystemClock()

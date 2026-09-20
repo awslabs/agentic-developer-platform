@@ -167,3 +167,42 @@ async def test_missing_scoped_credential_returns_typed_unavailable(provider):
     with pytest.raises(EvaluationEvidenceError) as error:
         await provider.provider.observe(provider.binding, provider.expected, run_id=42)
     assert error.value.reason is EvidenceRefusal.PROVIDER_UNAVAILABLE
+
+
+async def test_find_selects_only_correlated_pinned_completed_runs(provider):
+    ctx = provider
+    request = ctx.provider.request
+    calls = []
+
+    async def listing(binding, method, path, **kwargs):
+        if "/workflows/" in path:
+            return httpx.Response(
+                200,
+                json={
+                    "workflow_runs": [
+                        {**ctx.run, "id": 99, "display_title": "unrelated"},
+                        {**ctx.run, "id": 98, "display_title": "ADP evaluation execution", "status": "in_progress"},
+                        {**ctx.run, "id": 97, "display_title": "ADP evaluation execution", "head_sha": "0" * 40},
+                        {**ctx.run, "display_title": "ADP evaluation execution"},
+                    ]
+                },
+            )
+        calls.append(path)
+        return await request(binding, method, path, **kwargs)
+
+    ctx.provider.request = listing
+    result = await ctx.provider.find(ctx.binding, ctx.expected)
+    assert result.mandatory_passed and result.receipt.producer.run_id == 42
+    assert not any("/runs/99" in path or "/runs/98" in path or "/runs/97" in path for path in calls)
+
+
+@pytest.mark.parametrize("failure", ["oversized", "malformed", "unavailable"])
+async def test_find_bounds_provider_listing_and_maps_errors(provider, failure):
+    async def listing(*args, **kwargs):
+        if failure == "unavailable":
+            raise httpx.ReadTimeout("offline")
+        return httpx.Response(200, json={"workflow_runs": [{}] * 21 if failure == "oversized" else {}})
+
+    provider.provider.request = listing
+    with pytest.raises(EvaluationEvidenceError):
+        await provider.provider.find(provider.binding, provider.expected)

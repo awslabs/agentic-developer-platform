@@ -76,3 +76,56 @@ and required failures; `evidence_summary` supplies bounded frontend fields.
 Eligibility itself creates no decision, graph acceptance, dependency release,
 correction dispatch or phase transition. Those are E2/E3 responsibilities, and
 parent live acceptance and two-run qualification remain separate.
+
+## E2 acceptance and runner handoff (#5154)
+
+The execution runner admits a separate evaluation execution only after every
+story predecessor has a final D3 receipt. It retains the source delivery
+continuation while the evaluation or its human approval is outstanding. The
+accepted suite and current predecessor receipts determine the request; a worker
+transcript cannot supply it or conclude the evaluation.
+
+The existing qualification workflow remains a reviewed manual dispatch. An
+operator with access to the gateway's protected execution environment can export
+the current request, using the evaluation execution ID shown by K4:
+
+```sh
+umask 077
+python -m src.orchestration.evaluation_request \
+  --org-id "$ADP_EVALUATION_ORG" --execution-id "$ADP_EVALUATION_EXECUTION" \
+  > /tmp/adp-evaluation-context.json
+```
+
+This read-only command rechecks current claim, plan, protected grant, machine
+mode and verified deployment window. The output contains claim identifiers;
+keep it in the operator environment, not in public UI, issue comments or logs.
+Pass the file content as the workflow's existing `evaluation_context` input,
+with an explicitly reviewed `config_path`, environment and `mode=run`. Dispatch
+at a ref resolving to the accepted harness SHA. No config path or paid dispatch
+is inferred by the acceptance controller. The pinned workflow must contain the
+E2 run-name correlation (`ADP evaluation <execution_id>`). An older pin requires
+the existing accepted amendment process before use; old specification hashes
+are unchanged. E3 corrections and Q2 scenario adapters retain their named scope.
+
+The provider examines at most 20 recent workflow runs and four correlated,
+completed runs at the accepted harness SHA. It authenticates artifacts through
+E1 before any decision. Missing evidence waits within the original K2 deadline;
+invalid evidence produces a typed block. Export and dispatch must occur within
+the D3 start window; expiration requires an authorized deployment/evaluation
+recovery, not a timestamp refresh.
+
+Acceptance rechecks current version, cycle, held claim, policy and protected
+authority, then rereads authenticated deployment artifacts and actual runtime.
+It refreshes authority again after that bounded read. Evidence, the attributed
+decision and satisfied dependency releases commit together under the K1 flow
+lock. Concurrent observers cannot commit a second decision. A failed required
+criterion records its evidence once and remains blocked for E3; runtime or
+authority refusal records a block without an acceptance decision. Human suites
+use the existing approval controls. Rejected, halted and failed nodes do not
+restart automatically, and passed predecessors never reopen.
+
+K4 returns only bounded criterion outcomes, release/harness revisions and evidence
+references. Its summary requires an actual recorded decision and complete required
+criterion metadata. The existing execution panel displays those fields without
+clearing outstanding human gates. Existing flow rollup remains incomplete while
+any mandatory node is queued, running, stalled or awaiting a human.

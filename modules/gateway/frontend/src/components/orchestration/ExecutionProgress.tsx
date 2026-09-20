@@ -14,7 +14,7 @@
  * information, and the operator acts through the gate controls.
  */
 
-import type { ExecutionSummary } from '@/types/orchestration';
+import type { EvaluationEvidenceSummary, ExecutionSummary } from '@/types/orchestration';
 import {
   absentExecutionNote,
   executionPresentation,
@@ -78,6 +78,11 @@ export function ExecutionProgress({
   }
 
   const view = executionPresentation(execution, serverTime, earlierCycles, nodeAccepted);
+  const evaluations = execution.actions.filter((action) =>
+    action.kind === 'evaluation_evidence' && action.status === 'succeeded' &&
+    action.evidence_summary && Array.isArray(action.evidence_summary.criteria) &&
+    typeof action.evidence_summary.mandatory_passed === 'boolean'
+  );
 
   return (
     <section
@@ -155,6 +160,22 @@ export function ExecutionProgress({
           ))}
         </ul>
       )}
+
+      {evaluations.map((action) => {
+        const evidence = action.evidence_summary as EvaluationEvidenceSummary;
+        return (
+          <div key={action.id} className="mt-2 text-xs" aria-label="Evaluation criteria">
+            <p>{evidence.mandatory_passed ? 'Required criteria passed' : 'Required criteria failed; correction required'}</p>
+            <p>Release: <span className="font-mono">{evidence.actual_revision}</span></p>
+            <p>Harness: <span className="font-mono">{evidence.harness_revision}</span></p>
+            <ul>
+              {evidence.criteria.map((criterion) => (
+                <li key={criterion.criterion_id}>{criterion.criterion_id}: {criterion.outcome}</li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
 
       {view.truncationNote && (
         <p className="mt-2 text-xs text-gray-500 dark:text-gray-400" data-testid={`execution-truncated-${nodeRef}`}>

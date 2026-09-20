@@ -366,6 +366,15 @@ async def dispatch_node(
             reason=f"node {node_id!r} references a flow that does not exist in this org",
         )
 
+    from .evaluation_plan import managed_evaluation
+
+    if await managed_evaluation(session, resolved):
+        return DispatchOutcome(
+            status=DispatchStatus.REJECTED,
+            node_id=resolved.id,
+            reason="The accepted evaluation is owned by the evidence controller; worker exit cannot accept it.",
+        )
+
     reason = f"engine dispatch authorised by decision {genesis.decision_id} (approver {genesis.root_human_id})"
 
     rows, allowed, rejection_reason = await _dispatch_transition(

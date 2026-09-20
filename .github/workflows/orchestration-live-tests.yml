@@ -1,4 +1,5 @@
 name: Orchestration Live Tests
+run-name: ${{ inputs.evaluation_context && format('ADP evaluation {0}', fromJSON(inputs.evaluation_context).execution_id) || format('Orchestration {0} ({1})', inputs.mode, inputs.environment) }}
 
 # MANUAL ONLY. Runs a bounded qualification (tests/e2e/orchestration/, #5156)
 # against a real environment, which provisions real fixtures and can spend money.

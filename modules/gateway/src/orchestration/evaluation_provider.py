@@ -21,6 +21,49 @@ MAX_RECEIPT = 256 * 1024
 
 
 class EvaluationProvider(WorkflowProvider):
+    async def find(self, binding, expected):
+        try:
+            return await self._find(binding, expected)
+        except EvaluationEvidenceError:
+            raise
+        except (httpx.HTTPError, CycleBlockedError):
+            raise EvaluationEvidenceError(EvidenceRefusal.PROVIDER_UNAVAILABLE) from None
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise EvaluationEvidenceError(EvidenceRefusal.SCHEMA_INVALID) from None
+
+    async def _find(self, binding, expected):
+        """Bounded pull of recent pinned harness runs; unrelated scopes grant nothing."""
+        spec = specification(expected.specification)
+        require(spec.runner is not None, EvidenceRefusal.SPECIFICATION_CHANGED)
+        response = await self.request(
+            binding, "GET", f"/repos/{binding.repo}/actions/workflows/orchestration-live-tests.yml/runs?event=workflow_dispatch&per_page=20"
+        )
+        runs = response.json().get("workflow_runs", [])
+        require(isinstance(runs, list) and len(runs) <= 20, EvidenceRefusal.SCHEMA_INVALID)
+        candidates = [
+            run
+            for run in runs
+            if isinstance(run, dict)
+            and run.get("display_title") == "ADP evaluation " + expected.execution_id
+            and run.get("head_sha") == spec.runner.harness_revision
+            and run.get("status") == "completed"
+        ]
+        for run in candidates[:4]:
+            try:
+                validated = await self.observe(binding, expected, run_id=run.get("id"))
+            except EvaluationEvidenceError as error:
+                if error.reason in {
+                    EvidenceRefusal.SCOPE_CHANGED,
+                    EvidenceRefusal.SPECIFICATION_CHANGED,
+                    EvidenceRefusal.DEPLOYMENT_CHANGED,
+                    EvidenceRefusal.EXPIRED,
+                }:
+                    continue
+                raise
+            if validated is not None:
+                return validated
+        return None
+
     async def observe(self, binding, expected, *, run_id):
         try:
             return await self._observe(binding, expected, run_id=run_id)

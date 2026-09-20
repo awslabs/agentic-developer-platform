@@ -330,6 +330,25 @@ async def _advance_node(session: AsyncSession, candidate: _Candidate, report: Ti
         report.blocked[candidate.node_id] = blocking
         return
 
+    if candidate.kind == NodeKind.EVAL.value:
+        from datetime import UTC, datetime
+
+        from .evaluation_plan import accepted_evaluation, managed_evaluation, predecessor_deployments
+        from .review_cycle import CycleBlockedError
+
+        evaluation = await session.get(OrchestrationNode, candidate.node_id)
+        if evaluation is not None and evaluation.org_id == candidate.org_id:
+            try:
+                if await managed_evaluation(session, evaluation):
+                    accepted = await accepted_evaluation(session, evaluation)
+                    deployed = await predecessor_deployments(session, evaluation, accepted[0].version, now=datetime.now(UTC))
+                    if not deployed:
+                        report.blocked[candidate.node_id] = ["verified_deployment_required"]
+                        return
+            except (CycleBlockedError, ValueError):
+                report.blocked[candidate.node_id] = ["deployment_authority_unverifiable"]
+                return
+
     targets = [NodeState.READY] if candidate.observed_state == NodeState.PENDING.value else []
     if candidate.kind == NodeKind.GATE.value:
         # Present a decision using existing legal edges, without a worker or an
@@ -370,6 +389,38 @@ async def _advance_node(session: AsyncSession, candidate: _Candidate, report: Ti
             "orchestration tick: node %s already advanced by a concurrent tick; no-op",
             candidate.node_id,
         )
+
+
+async def release_satisfied_successors(session: AsyncSession, node: OrchestrationNode) -> TickReport:
+    """Reuse the normal dependency and gate rules inside an acceptance transaction."""
+    rows = list(
+        (
+            await session.scalars(
+                select(OrchestrationNode)
+                .join(
+                    OrchestrationEdge,
+                    OrchestrationEdge.to_node_id == OrchestrationNode.id,
+                )
+                .where(
+                    OrchestrationEdge.org_id == node.org_id,
+                    OrchestrationEdge.from_node_id == node.id,
+                    OrchestrationNode.org_id == node.org_id,
+                    OrchestrationNode.flow_id == node.flow_id,
+                    OrchestrationNode.state.in_([NodeState.PENDING.value, NodeState.READY.value]),
+                )
+                .order_by(OrchestrationNode.id)
+                .limit(129)
+            )
+        ).all()
+    )
+    if len(rows) > 128:
+        raise ValueError("evaluation_successor_limit")
+    report = TickReport()
+    for successor in rows:
+        if successor.state == NodeState.READY.value and successor.kind != NodeKind.GATE.value:
+            continue
+        await _advance_node(session, _Candidate(successor.id, successor.org_id, successor.flow_id, successor.state, successor.kind), report)
+    return report
 
 
 async def run_tick(session: AsyncSession) -> TickReport:

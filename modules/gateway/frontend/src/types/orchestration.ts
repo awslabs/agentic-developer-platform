@@ -613,6 +613,7 @@ export interface ExecutionAction {
   receipt_ref: string | null;
   created_at: string | null;
   observed_at: string | null;
+  evidence_summary?: EvaluationEvidenceSummary | Record<string, unknown> | null;
 }
 
 /** One node's delivery cycle: where it is, whether it is moving, why not if not. */

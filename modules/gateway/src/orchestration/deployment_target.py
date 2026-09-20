@@ -34,11 +34,15 @@ class DeploymentTargetResolver:
     def __init__(self, *, secrets=None, assume=assume_role, session_factory=boto3.Session):
         self.secrets, self.assume, self.session_factory = secrets, assume, session_factory
 
-    async def resolve(self, session, *, entry, policy, principal_user_id, execution_id, inspect_target=None, authorize_scope=None):
+    async def resolve(
+        self, session, *, entry, policy, principal_user_id, execution_id, inspect_target=None, authorize_scope=None, action=Action.DEPLOY
+    ):
+        if action not in {Action.DEPLOY, Action.EVALUATE}:
+            raise CycleBlockedError("deployment_target_action_unsupported")
         if entry.connection_id not in policy.environment_connection_ids:
             raise CycleBlockedError("deployment_connection_not_permitted")
         authority = policy.user_credentials
-        if authority is None or Action.DEPLOY not in authority.actions or entry.connection_id not in authority.vault_credential_ids:
+        if authority is None or action not in authority.actions or entry.connection_id not in authority.vault_credential_ids:
             raise CycleBlockedError("deployment_user_credential_not_approved")
         credential = await resolve_user_credential(session, org_id=policy.org_id, user_id=principal_user_id, credential_id=entry.connection_id)
         if credential.credential_type != "aws_role" or credential.service != "aws":

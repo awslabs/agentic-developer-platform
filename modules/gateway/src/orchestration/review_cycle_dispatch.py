@@ -172,8 +172,8 @@ class ReviewCycleServices:
                 attempt=int(raw["current_attempt"]["N"]),
                 now=datetime.now(UTC),
             )
-            if delivery and action is not Action.DEPLOY:
-                raise BootstrapRefusedError("delivery continuation is reserved for engine deployment")
+            if delivery and action not in {Action.DEPLOY, Action.EVALUATE}:
+                raise BootstrapRefusedError("delivery continuation is reserved for engine deployment and evaluation")
             await validate_engine_authority(
                 session=session, execution=raw, grant=grant, store=self.writer.store, delivery_identity=context.identity if delivery else None
             )

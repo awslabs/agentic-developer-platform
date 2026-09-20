@@ -398,6 +398,11 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         # the later merge/deployment/evaluation phase handlers.
                         report.waiting += 1
                         continue
+                from .evaluation_plan import managed_evaluation
+
+                if await managed_evaluation(session, node):
+                    report.waiting += 1
+                    continue
                 observation: dict = {}
                 receipt_identity = None
                 if recovered_without_run_record:

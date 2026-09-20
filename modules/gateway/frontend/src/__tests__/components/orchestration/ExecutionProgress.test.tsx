@@ -344,3 +344,25 @@ describe('read-only surface', () => {
     expect(container.textContent).not.toMatch(/accepted plan|plan version|claim/i);
   });
 });
+
+describe('evaluation decision evidence', () => {
+  it.each([true, false])('renders criterion results without clearing a human gate (pass=%s)', (passed) => {
+    renderPanel({
+      nodeAccepted: false,
+      execution: execution({
+        phase: 'evaluation_pending', status: 'blocked',
+        block: { code: 'human_gate_required', owner: 'platform-operator', required_input: 'Review the security gate', remaining_gates: ['security'], progressed_at: null, detail: null },
+        actions: [action({ kind: 'evaluation_evidence', evidence_summary: {
+          actual_revision: 'a'.repeat(40), harness_revision: 'b'.repeat(40),
+          completed_at: SERVER_TIME, expires_at: SERVER_TIME, mandatory_passed: passed,
+          criteria: [{ criterion_id: 'API-1', outcome: passed ? 'pass' : 'fail' }],
+        } })],
+      }),
+    });
+    expect(screen.getByLabelText('Evaluation criteria')).toHaveTextContent(`API-1: ${passed ? 'pass' : 'fail'}`);
+    expect(screen.getByLabelText('Evaluation criteria')).toHaveTextContent('a'.repeat(40));
+    expect(screen.getByLabelText('Evaluation criteria')).toHaveTextContent('b'.repeat(40));
+    expect(screen.getByTestId(`execution-gates-${NODE_REF}`)).toHaveTextContent('security');
+    expect(screen.getByTestId(`execution-progress-${NODE_REF}`)).toHaveAttribute('data-tone', 'attention');
+  });
+});
