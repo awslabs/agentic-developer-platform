@@ -66,6 +66,7 @@ from .compile import (
     accept_execution_policy,
     address_of,
     plan_hash,
+    require_evaluation_acceptor,
     upsert_edges,
     upsert_nodes,
 )
@@ -272,6 +273,7 @@ async def amend_plan(
                 already_amended=True,
             )
 
+        require_evaluation_acceptor(proposal, actor.to_approval(), in_force)
         superseded_version = in_force.version if in_force is not None else None
 
         # --- Supersede the dropped nodes -----------------------------------

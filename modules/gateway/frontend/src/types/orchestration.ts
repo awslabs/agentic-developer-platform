@@ -681,3 +681,49 @@ export interface FlowExecutionParams {
   limit?: number;
   offset?: number;
 }
+
+/** E1 evidence eligibility is separate from the E2 acceptance decision. */
+export interface EvaluationEvidenceSummary {
+  actual_revision: string
+  harness_revision: string
+  completed_at: string
+  expires_at: string
+  mandatory_passed: boolean
+  criteria: Array<{ criterion_id: string; outcome: 'pass' | 'fail' | 'skipped' | 'not_run' }>
+}
+
+export interface EvaluationSpecification {
+  schema_version: 1
+  acceptance_mode: 'human' | 'machine'
+  evidence_schema: 'orchestration-evaluation/v1'
+  runner: {
+    adapter: 'github-orchestration-harness-v1'
+    repository: string
+    repository_id: number
+    workflow_path: '.github/workflows/orchestration-live-tests.yml'
+    harness_revision: string
+  } | null
+  environment_connection_id: string | null
+  target: {
+    provider: 'aws'
+    account_id: string
+    region: string
+    resource_kind: 'eks-namespace'
+    resource_id: string
+  } | null
+  fixtures: {
+    fixture_set_id: string
+    definition_hash: string
+    org_refs: string[]
+    roles: string[]
+    minimum_rows_per_org: number
+  } | null
+  criteria: Array<{
+    criterion_id: string
+    required: boolean
+    kind: 'functional' | 'control' | 'api' | 'data' | 'visual'
+    baseline_hash: string | null
+  }>
+  max_age_seconds: number
+  max_duration_seconds: number
+}

@@ -18,11 +18,15 @@ on:
   pull_request:
     paths:
       - 'tests/e2e/orchestration/**'
+      - 'contracts/orchestration-evaluation/**'
+      - '.github/workflows/orchestration-live-tests.yml'
       - '.github/workflows/orchestration-harness-ci.yml'
   push:
     branches: [main]
     paths:
       - 'tests/e2e/orchestration/**'
+      - 'contracts/orchestration-evaluation/**'
+      - '.github/workflows/orchestration-live-tests.yml'
       - '.github/workflows/orchestration-harness-ci.yml'
 
 # No `permissions: id-token` and no AWS credential step anywhere in this file.
@@ -88,12 +92,10 @@ jobs:
             exit 1
           fi
 
-      # pytest only. The harness is standard-library-only by design: repo-root
-      # tests/ has no requirements file, and the offline suite must not need
-      # boto3 (config.py imports it lazily, inside the runtime secret-resolution
-      # path that these tests never take).
+      # E1 shares the normative Pydantic receipt validator with the gateway.
+      # No AWS SDK or credentials are needed for these offline contract tests.
       - name: Install pytest
-        run: pip install pytest==9.0.3
+        run: pip install pytest==9.0.3 pydantic==2.12.5
 
       # Selecting the package explicitly matters. tests/e2e/chat/conftest.py and
       # tests/e2e/infra/conftest.py skip EVERY collected item when their opt-in
