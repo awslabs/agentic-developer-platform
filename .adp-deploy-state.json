@@ -1,23 +1,52 @@
 {
   "environment": "dev",
-  "account_id": "ACCOUNT_ID",
+  "account_id": "879318057152",
+  "aws_profile": "embark1",
   "github_org": "aws-e",
-  "github_repo": "adp",
-  "aws_profile": "embark2",
-  "modules": ["agent-factory"],
+  "scope": "PMM expedited rollout; profiles deferred",
   "phases": {
-    "org_setup":        {"status": "complete"},
-    "preflight":        {"status": "complete"},
-    "bootstrap":        {"status": "complete"},
-    "platform_infra":   {"status": "complete"},
-    "gateway_infra":    {"status": "skipped"},
-    "gateway_backend":  {"status": "skipped"},
-    "gateway_frontend": {"status": "skipped"},
-    "agent_factory":    {"status": "complete"},
-    "agent_gateway":    {"status": "complete"},
-    "github_apps":      {"status": "complete"},
-    "verification":     {"status": "pending"}
+    "gateway_backend": {
+      "status": "complete",
+      "verification": "Replan and readiness fixes deployed; public API healthy"
+    },
+    "worker_preparation": {
+      "status": "complete",
+      "resources_added": 25
+    },
+    "probe_preparation": {
+      "status": "complete",
+      "resources_added": 5,
+      "scheduled_execution_enabled": false
+    },
+    "knowledge_service_connectivity": {
+      "status": "complete",
+      "health_status": 200,
+      "unauthenticated_tools_status": 401,
+      "authenticated_tools_status": 200
+    },
+    "gateway_readiness_fixes": {
+      "status": "running",
+      "pull_request": 5576
+    },
+    "protected_worker_cutover": {
+      "status": "pending"
+    },
+    "pmm_live_acceptance": {
+      "status": "pending",
+      "model_spend_ceiling_usd": null
+    },
+    "pmm_enforcement": {
+      "status": "pending"
+    }
   },
-  "outputs": {},
-  "validation": {}
+  "outputs": {
+    "candidate_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:6fb49790e5b5fe4d5b126e30fb2450ac6b8237f0a2beb9162c90a26da7a5897e"
+  },
+  "validation": {
+    "gateway_tests": 110,
+    "network_policy_tests": 11,
+    "terraform_rollout_tests": 12,
+    "live_model_invocations": 0,
+    "seven_day_soak_claimed": false
+  }
 }
