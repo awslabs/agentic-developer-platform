@@ -9,12 +9,13 @@ look like it passed. This harness makes both impossible — every fixture is
 recorded before it is created, and a run that executed nothing reports
 `incomplete`, never `pass`.
 
-**What this package is not.** It runs no scenarios of its own. Scenario adapters
-are supplied by [#5157](https://github.com/aws-e/adp/issues/5157) and the live
-qualification run is owned by [#5158](https://github.com/aws-e/adp/issues/5158).
-Until #5157 lands, `--run` exits `4` (`incomplete`) by design. The tests in this
-package are **network-free** and prove the harness's safety rules; they are not
-evidence about a live engine.
+The Q2 `autonomous-delivery` adapter implements the fixed scenario/report contract.
+A missing adapter, unsupported injection, missing provenance or mandatory
+`NOT_RUN` cannot qualify. Ordinary tests are network-free harness simulations;
+[#5158](https://github.com/aws-e/adp/issues/5158) owns the two observed live runs.
+
+Q2 implementation status and remaining native fixture gaps are tracked in
+[SCENARIOS.md](SCENARIOS.md). This checkpoint is not live qualification evidence.
 
 ## Commands
 
@@ -206,7 +207,7 @@ python -m pytest tests/e2e/orchestration -q
 ```
 
 No AWS call, no browser, no deployed environment, no credentials. Standard
-library plus `pytest`; `boto3` is imported lazily inside the runtime
+library plus `pytest` and `pydantic`; `boto3` is imported lazily inside the runtime
 secret-resolution path, which these tests never take.
 
 Select this package explicitly. `tests/e2e/chat/conftest.py` and

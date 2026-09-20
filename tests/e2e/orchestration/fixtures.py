@@ -29,6 +29,7 @@ from tests.e2e.orchestration.config import QualificationConfig
 from tests.e2e.orchestration.inventory import (
     CREATED,
     PLANNED,
+    RECONCILE_FAILED,
     FixtureRecord,
     Inventory,
     InventoryError,
@@ -48,6 +49,13 @@ class BoundExceededError(FixtureError):
     """
 
 
+@dataclass(frozen=True)
+class RetainedAudit:
+    """Provider proved no live work; retain its durable audit record honestly."""
+
+    reason: str
+
+
 @runtime_checkable
 class FixtureProvider(Protocol):
     """What the harness needs from whatever actually creates a resource.
@@ -59,7 +67,13 @@ class FixtureProvider(Protocol):
 
     kind: str
 
-    def create(self, *, intended_identity: str, ownership_tags: dict[str, str], idempotency_token: str) -> str:
+    def create(
+        self,
+        *,
+        intended_identity: str,
+        ownership_tags: dict[str, str],
+        idempotency_token: str,
+    ) -> str:
         """Create the resource and return its provider-assigned id."""
 
     def find(self, *, intended_identity: str, idempotency_token: str) -> str | None:
@@ -77,7 +91,7 @@ class FixtureProvider(Protocol):
         ownership.
         """
 
-    def delete(self, resource_id: str) -> None:
+    def delete(self, resource_id: str) -> RetainedAudit | None:
         """Delete the resource. Must tolerate an already-deleted resource."""
 
 
@@ -101,6 +115,7 @@ class CleanupOutcome:
     deleted: tuple[str, ...]
     refused: tuple[tuple[str, str], ...]  # (fixture_id, reason)
     failed: tuple[tuple[str, str], ...]  # (fixture_id, error)
+    retained: tuple[tuple[str, str], ...] = ()
 
     @property
     def clean(self) -> bool:
@@ -126,15 +141,18 @@ def provision(
 ) -> FixtureRecord:
     """Provision one fixture, recording the intent before creating it."""
     if provider.kind != request.kind:
-        raise FixtureError(f"provider handles {provider.kind!r} fixtures, not {request.kind!r}")
+        raise FixtureError(
+            f"provider handles {provider.kind!r} fixtures, not {request.kind!r}"
+        )
 
     # Bound checked before the provider call. Counting `created` plus anything
     # still `planned` means an interrupted run cannot slip past the cap on
     # resume by leaving unresolved entries uncounted.
-    if len(inventory.unresolved) >= config.max_resources:
+    used = sum(resource_units(r.kind) for r in inventory.unresolved)
+    if used + resource_units(request.kind) > config.max_resources:
         raise BoundExceededError(
             f"provisioning {request.fixture_id!r} would exceed bounds.max_resources="
-            f"{config.max_resources} (already {len(inventory.unresolved)} unresolved fixtures)"
+            f"{config.max_resources} (already {used} unresolved resource units)"
         )
 
     token = _idempotency_token(inventory.qualification_id, request.fixture_id)
@@ -166,7 +184,9 @@ def provision(
         ) from exc
 
     if not resource_id:
-        raise FixtureError(f"provider returned no resource id for {request.fixture_id!r}")
+        raise FixtureError(
+            f"provider returned no resource id for {request.fixture_id!r}"
+        )
 
     # Step 3: the observed id.
     return inventory.mark_created(request.fixture_id, resource_id)
@@ -185,15 +205,21 @@ def readback(
     """
     record = inventory.get(fixture_id)
     if record.state != CREATED:
-        raise FixtureError(f"fixture {fixture_id!r} is {record.state!r}, not {CREATED!r}; nothing to read back")
+        raise FixtureError(
+            f"fixture {fixture_id!r} is {record.state!r}, not {CREATED!r}; nothing to read back"
+        )
     observed_tags = provider.read_tags(record.observed_resource_id or "")
     owned, reason = verify_ownership(record, observed_tags, expected_tags)
     if not owned:
-        raise FixtureError(f"readback of {fixture_id!r} could not confirm ownership: {reason}")
+        raise FixtureError(
+            f"readback of {fixture_id!r} could not confirm ownership: {reason}"
+        )
     return record
 
 
-def resume(inventory: Inventory, providers: dict[str, FixtureProvider]) -> list[FixtureRecord]:
+def resume(
+    inventory: Inventory, providers: dict[str, FixtureProvider]
+) -> list[FixtureRecord]:
     """Reconcile a partially provisioned qualification before it retries.
 
     Every ``planned`` entry is ambiguous — the resource may or may not exist.
@@ -205,7 +231,7 @@ def resume(inventory: Inventory, providers: dict[str, FixtureProvider]) -> list[
 
     Returns the records that are still unresolved after reconciliation.
     """
-    for record in list(inventory.in_state(PLANNED)):
+    for record in list(inventory.in_state(PLANNED, RECONCILE_FAILED)):
         provider = providers.get(record.kind)
         if provider is None:
             inventory.mark_reconcile_failed(
@@ -214,13 +240,17 @@ def resume(inventory: Inventory, providers: dict[str, FixtureProvider]) -> list[
             )
             continue
 
-        token = record.idempotency_token or _idempotency_token(inventory.qualification_id, record.fixture_id)
+        token = record.idempotency_token or _idempotency_token(
+            inventory.qualification_id, record.fixture_id
+        )
         # Blind catches here and below are deliberate: a provider is third-party
         # code that may raise anything, and an unhandled exception would abandon
         # the remaining records mid-reconcile — the one outcome guaranteed to
         # leak. Every failure is recorded and reported instead.
         try:
-            existing = provider.find(intended_identity=record.intended_identity, idempotency_token=token)
+            existing = provider.find(
+                intended_identity=record.intended_identity, idempotency_token=token
+            )
         except Exception as exc:
             inventory.mark_reconcile_failed(
                 record.fixture_id,
@@ -252,9 +282,21 @@ def cleanup(
     deleted: list[str] = []
     refused: list[tuple[str, str]] = []
     failed: list[tuple[str, str]] = []
+    retained: list[tuple[str, str]] = []
 
-    for record in list(inventory.unresolved):
-        if record.state == PLANNED:
+    # Namespace deletion cascades. It is eligible only after all explicitly
+    # inventoried children were positively deleted, including on a resumed run.
+    ordered = sorted(
+        inventory.unresolved, key=lambda r: r.kind == "qualification-namespace"
+    )
+    for record in ordered:
+        if record.kind == "qualification-namespace" and any(
+            r.kind in {"qualification-network-policy", "qualification-runtime"}
+            for r in inventory.unresolved
+        ):
+            refused.append((record.fixture_id, "runtime children remain unresolved"))
+            continue
+        if record.state in {PLANNED, RECONCILE_FAILED}:
             # Never created (or never reconciled): there is no verified resource
             # to delete, and guessing an id could delete something else.
             refused.append(
@@ -270,13 +312,17 @@ def cleanup(
 
         provider = providers.get(record.kind)
         if provider is None:
-            refused.append((record.fixture_id, f"no provider registered for kind {record.kind!r}"))
+            refused.append(
+                (record.fixture_id, f"no provider registered for kind {record.kind!r}")
+            )
             continue
 
         try:
             observed_tags = provider.read_tags(record.observed_resource_id or "")
         except Exception as exc:
-            refused.append((record.fixture_id, f"ownership tags could not be read: {exc}"))
+            refused.append(
+                (record.fixture_id, f"ownership tags could not be read: {exc}")
+            )
             continue
 
         owned, reason = verify_ownership(record, observed_tags, expected_tags)
@@ -285,16 +331,24 @@ def cleanup(
             continue
 
         try:
-            provider.delete(record.observed_resource_id or "")
+            result = provider.delete(record.observed_resource_id or "")
         except Exception as exc:
             failed.append((record.fixture_id, str(exc)))
             continue
 
         # Flushed per fixture, so an interruption here leaves an accurate record.
         try:
-            inventory.mark_deleted(record.fixture_id, detail="ownership verified before delete")
+            if isinstance(result, RetainedAudit):
+                inventory.mark_retained(record.fixture_id, detail=result.reason)
+                retained.append((record.fixture_id, result.reason))
+                continue
+            inventory.mark_deleted(
+                record.fixture_id, detail="ownership verified before delete"
+            )
         except InventoryError as exc:  # pragma: no cover - defensive
-            failed.append((record.fixture_id, f"deleted but could not be recorded: {exc}"))
+            failed.append(
+                (record.fixture_id, f"deleted but could not be recorded: {exc}")
+            )
             continue
         deleted.append(record.fixture_id)
 
@@ -302,4 +356,15 @@ def cleanup(
         deleted=tuple(deleted),
         refused=tuple(refused),
         failed=tuple(failed),
+        retained=tuple(retained),
     )
+
+
+def resource_units(kind):
+    """Conservative envelope including controller-owned Kubernetes children.
+
+    Recreate rollout: Deployment plus at most two ReplicaSets/two Pods during
+    transition. A worker fixture includes its Job and Pod; shared factories are
+    never created or counted as fixtures.
+    """
+    return {"qualification-runtime": 5, "qualification-worker": 2}.get(kind, 1)

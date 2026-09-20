@@ -15,6 +15,11 @@
     "artifacts"
   ],
   "properties": {
+    "scenario_manifest": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Repository-relative committed Q2 manifest; source, scope and criterion hash are verified before live credentials or effects."
+    },
     "config_version": {
       "const": 1,
       "description": "Layout version. A different value is refused rather than guessed at."

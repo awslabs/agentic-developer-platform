@@ -20,6 +20,7 @@ that executed nothing is not a passing qualification.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 from datetime import UTC, datetime
@@ -77,7 +78,7 @@ class Outcome:
 def _scenarios_module() -> Any:
     """Return #5157's scenarios module, or ``None`` while it has not landed."""
     try:
-        from tests.e2e.orchestration import scenarios  # type: ignore[attr-defined]
+        scenarios = importlib.import_module("tests.e2e.orchestration.scenarios")
     except ImportError:
         return None
     return scenarios
@@ -103,7 +104,11 @@ def load_scenario_adapters(config: QualificationConfig) -> dict[str, Any]:
     # a silently smaller run.
     missing = [name for name in config.scenarios if name not in registry]
     if missing:
-        raise ConfigError([f"config names scenario(s) with no registered adapter: {', '.join(sorted(missing))}"])
+        raise ConfigError(
+            [
+                f"config names scenario(s) with no registered adapter: {', '.join(sorted(missing))}"
+            ]
+        )
     return {name: registry[name] for name in config.scenarios}
 
 
@@ -115,7 +120,11 @@ def load_providers(config: QualificationConfig) -> dict[str, FixtureProvider]:
     """
     providers: dict[str, FixtureProvider] = {}
     for adapter in load_scenario_adapters(config).values():
-        for provider in getattr(adapter, "providers", ()):
+        factory = getattr(adapter, "fixture_providers", None)
+        available = (
+            factory(config) if callable(factory) else getattr(adapter, "providers", ())
+        )
+        for provider in available:
             providers[provider.kind] = provider
     return providers
 
@@ -129,7 +138,11 @@ def load_connection_resolver(config: QualificationConfig) -> ConnectionResolver 
     :func:`verify_target` treats as a refusal — an unverifiable target must never
     fall back to the config's own claim about itself.
     """
-    resolver = getattr(_scenarios_module(), "CONNECTION_RESOLVER", None)
+    module = _scenarios_module()
+    factory = getattr(module, "connection_resolver", None)
+    if callable(factory):
+        return factory(config)
+    resolver = getattr(module, "CONNECTION_RESOLVER", None)
     if resolver is not None:
         return resolver
     for adapter in load_scenario_adapters(config).values():
@@ -147,10 +160,14 @@ def verified_target(config: QualificationConfig) -> TargetVerification:
     really in?). Every mutating mode calls this first.
     """
     identity, identity_error = _caller_identity()
-    return verify_target(config, identity, identity_error, load_connection_resolver(config))
+    return verify_target(
+        config, identity, identity_error, load_connection_resolver(config)
+    )
 
 
-def _refusal(mode: str, config: QualificationConfig, target: TargetVerification, **extra: Any) -> Outcome:
+def _refusal(
+    mode: str, config: QualificationConfig, target: TargetVerification, **extra: Any
+) -> Outcome:
     """The outcome for a mode that refused to mutate an unverified target."""
     return Outcome(
         STATUS_REFUSED,
@@ -192,7 +209,9 @@ def preflight(config: QualificationConfig) -> Outcome:
     }
 
     identity, identity_error = _caller_identity()
-    target = verify_target(config, identity, identity_error, load_connection_resolver(config))
+    target = verify_target(
+        config, identity, identity_error, load_connection_resolver(config)
+    )
     report["caller_identity"] = identity
     report["target"] = target.to_json()
     if identity_error:
@@ -201,7 +220,19 @@ def preflight(config: QualificationConfig) -> Outcome:
     for name, adapter in sorted(adapters.items()):
         planner = getattr(adapter, "planned_fixtures", None)
         planned = list(planner(config)) if callable(planner) else []
-        report["planned_resources"].extend({"scenario": name, "fixture_id": item.fixture_id, "kind": item.kind} for item in planned)
+        report["planned_resources"].extend(
+            {"scenario": name, "fixture_id": item.fixture_id, "kind": item.kind}
+            for item in planned
+        )
+
+    from tests.e2e.orchestration.fixtures import resource_units
+
+    report["planned_resource_units"] = sum(
+        resource_units(row["kind"]) for row in report["planned_resources"]
+    )
+    if report["planned_resource_units"] > config.max_resources:
+        report["detail"] = "planned fixtures exceed the accepted resource bound"
+        return Outcome(STATUS_INCOMPLETE, EXIT_INCOMPLETE, report)
 
     # Preflight reports rather than refuses — it mutates nothing either way — but
     # it reports the COMPARISON, so an operator sees a mismatch before dispatching
@@ -211,7 +242,9 @@ def preflight(config: QualificationConfig) -> Outcome:
         return Outcome(STATUS_FAILED, EXIT_TARGET_UNVERIFIED, report)
 
     if not adapters:
-        report["detail"] = "no scenario adapters are registered, so a run would execute nothing; scenario adapters are supplied by #5157"
+        report["detail"] = (
+            "no scenario adapters are registered, so a run would execute nothing; scenario adapters are supplied by #5157"
+        )
         return Outcome(STATUS_INCOMPLETE, EXIT_NO_SCENARIOS, report)
 
     report["detail"] = "config and target verified; no mutation performed"
@@ -265,13 +298,17 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
         return _refusal("run", config, target, scenarios_executed=0, attempts=0)
 
     qualification_id = new_qualification_id()
-    inventory = Inventory.create(config.artifact_directory, qualification_id, config.environment)
+    inventory = Inventory.create(
+        config.artifact_directory, qualification_id, config.environment
+    )
     providers = load_providers(config)
 
     started_at = datetime.now(UTC)
     observations = []
     executed: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    incomplete: list[dict[str, Any]] = []
+    scenario_reports = []
     attempts = 0
     for name, adapter in sorted(adapters.items()):
         # Every ATTEMPT counts against max_runs, including one that fails. A cap
@@ -282,15 +319,55 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
             failures.append(
                 {
                     "scenario": name,
-                    "error": (f"bounds.max_runs={config.max_runs} reached after {attempts} attempt(s); not invoked"),
+                    "error": (
+                        f"bounds.max_runs={config.max_runs} reached after {attempts} attempt(s); not invoked"
+                    ),
                 }
             )
             break
         attempts += 1
         try:
-            observed = adapter.execute(config=config, inventory=inventory, providers=providers)
-            if observed is not None:
+            if evaluation_context is not None and callable(
+                getattr(adapter, "execute_evaluation", None)
+            ):
+                observed = adapter.execute_evaluation(
+                    config=config,
+                    inventory=inventory,
+                    providers=providers,
+                    context=evaluation_context,
+                )
+            else:
+                observed = adapter.execute(
+                    config=config, inventory=inventory, providers=providers
+                )
+            from tests.e2e.orchestration.report import ScenarioReport, write_report
+
+            if isinstance(observed, ScenarioReport):
+                from tests.e2e.orchestration.scenarios.manifest import load_manifest
+
+                _, expected_manifest_hash = load_manifest(config)
+                result = write_report(
+                    observed,
+                    config=config,
+                    inventory=inventory,
+                    manifest_hash=expected_manifest_hash,
+                )
+                scenario_reports.append(str(inventory.path.parent / "report.json"))
+                if result["overall"] != "PASS":
+                    incomplete.append(
+                        {"scenario": name, "blockers": result["blockers"]}
+                    )
+            elif evaluation_context is not None and isinstance(observed, dict):
                 observations.append(observed)
+            else:
+                incomplete.append(
+                    {
+                        "scenario": name,
+                        "blockers": [
+                            "adapter returned no validated criterion evidence"
+                        ],
+                    }
+                )
         except Exception as exc:  # any adapter failure is data, not a crash
             # One scenario failing must not skip the others or abandon the
             # inventory: the run reports FAILED and the fixtures stay cleanable.
@@ -308,6 +385,8 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
         "scenarios_executed": len(executed),
         "scenarios_failed": len(failures),
         "failures": failures,
+        "incomplete": incomplete,
+        "scenario_reports": scenario_reports,
         "live_resources": inventory.live_resource_count(),
     }
 
@@ -326,12 +405,21 @@ def run(config: QualificationConfig, *, evaluation_context=None) -> Outcome:
                 )
             )
         except (ValueError, KeyError, OSError, TypeError):
-            report["detail"] = "evaluation evidence was incomplete or unverifiable; fixtures remain in the inventory"
+            report["detail"] = (
+                "evaluation evidence was incomplete or unverifiable; fixtures remain in the inventory"
+            )
             return Outcome(STATUS_INCOMPLETE, EXIT_INCOMPLETE, report)
 
     if failures:
-        report["detail"] = "at least one scenario failed; fixtures are retained for --resume or --cleanup"
+        report["detail"] = (
+            "at least one scenario failed; fixtures are retained for --resume or --cleanup"
+        )
         return Outcome(STATUS_FAILED, EXIT_FAILED, report)
+    if incomplete:
+        report["detail"] = (
+            "mandatory criterion evidence is incomplete; this is not a qualifying PASS"
+        )
+        return Outcome(STATUS_INCOMPLETE, EXIT_INCOMPLETE, report)
     if not executed:
         report["detail"] = "no scenario executed, so this run is not a pass"
         return Outcome(STATUS_INCOMPLETE, EXIT_NO_SCENARIOS, report)
@@ -347,7 +435,9 @@ def resume_qualification(config: QualificationConfig, qualification_id: str) -> 
     if not target.verified:
         return _refusal("resume", config, target, qualification_id=qualification_id)
 
-    inventory = Inventory.load(config.artifact_directory, qualification_id, config.environment)
+    inventory = Inventory.load(
+        config.artifact_directory, qualification_id, config.environment
+    )
     unresolved = resume(inventory, load_providers(config))
     stuck = inventory.in_state(RECONCILE_FAILED)
 
@@ -359,24 +449,34 @@ def resume_qualification(config: QualificationConfig, qualification_id: str) -> 
         "inventory": str(inventory.path),
         "reconciled": [r.fixture_id for r in inventory.in_state(CREATED)],
         "unresolved": [r.fixture_id for r in unresolved],
-        "reconcile_failed": [{"fixture_id": r.fixture_id, "detail": r.detail} for r in stuck],
+        "reconcile_failed": [
+            {"fixture_id": r.fixture_id, "detail": r.detail} for r in stuck
+        ],
     }
     if stuck:
-        report["detail"] = "some fixtures could not be reconciled and may be leaked; they are recorded as reconcile_failed and need a human"
+        report["detail"] = (
+            "some fixtures could not be reconciled and may be leaked; they are recorded as reconcile_failed and need a human"
+        )
         return Outcome(STATUS_FAILED, EXIT_FAILED, report)
     report["detail"] = "inventory reconciled against the provider"
     return Outcome(STATUS_READY, EXIT_OK, report)
 
 
-def cleanup_qualification(config: QualificationConfig, qualification_id: str) -> Outcome:
+def cleanup_qualification(
+    config: QualificationConfig, qualification_id: str
+) -> Outcome:
     """Delete verified owned fixtures and retain sanitized evidence."""
     # Deletion against the wrong account is the worst outcome available here, so
     # cleanup verifies the target before reading the inventory.
     target = verified_target(config)
     if not target.verified:
-        return _refusal("cleanup", config, target, qualification_id=qualification_id, deleted=[])
+        return _refusal(
+            "cleanup", config, target, qualification_id=qualification_id, deleted=[]
+        )
 
-    inventory = Inventory.load(config.artifact_directory, qualification_id, config.environment)
+    inventory = Inventory.load(
+        config.artifact_directory, qualification_id, config.environment
+    )
     outcome = cleanup(inventory, config, load_providers(config))
 
     report = {
@@ -386,6 +486,7 @@ def cleanup_qualification(config: QualificationConfig, qualification_id: str) ->
         "target": target.to_json(),
         "inventory": str(inventory.path),
         "deleted": list(outcome.deleted),
+        "retained_audit": list(outcome.retained),
         "refused": [{"fixture_id": f, "reason": r} for f, r in outcome.refused],
         "failed": [{"fixture_id": f, "error": e} for f, e in outcome.failed],
         # Evidence is retained after cleanup so a leak stays investigable.
@@ -408,14 +509,22 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m tests.e2e.orchestration.run",
         description="Run a bounded qualification with a recoverable fixture inventory.",
     )
-    parser.add_argument("--config", required=True, help="path to the qualification config JSON")
+    parser.add_argument(
+        "--config", required=True, help="path to the qualification config JSON"
+    )
     # A mutually exclusive required group turns "--run --cleanup X" into a usage
     # error instead of a guess about which mode the operator meant.
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--preflight", action="store_true", help="read-only validation; mutates nothing")
+    mode.add_argument(
+        "--preflight", action="store_true", help="read-only validation; mutates nothing"
+    )
     mode.add_argument("--run", action="store_true", help="execute the qualification")
-    mode.add_argument("--resume", metavar="QUALIFICATION_ID", help="reconcile a partial qualification")
-    mode.add_argument("--cleanup", metavar="QUALIFICATION_ID", help="delete verified owned fixtures")
+    mode.add_argument(
+        "--resume", metavar="QUALIFICATION_ID", help="reconcile a partial qualification"
+    )
+    mode.add_argument(
+        "--cleanup", metavar="QUALIFICATION_ID", help="delete verified owned fixtures"
+    )
     # Not a mode: a modifier for resume/cleanup, which in a separate workflow run
     # start with an empty workspace and no inventory to act on.
     parser.add_argument(
@@ -476,7 +585,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.preflight:
             outcome = preflight(config)
         elif args.run:
-            outcome = run(config, evaluation_context=evaluation_context) if evaluation_context else run(config)
+            outcome = (
+                run(config, evaluation_context=evaluation_context)
+                if evaluation_context
+                else run(config)
+            )
         elif args.resume:
             outcome = resume_qualification(config, args.resume)
         else:
@@ -488,7 +601,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"inventory error: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
-    print(json.dumps({"status": outcome.status, **outcome.report}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {"status": outcome.status, **outcome.report}, indent=2, sort_keys=True
+        )
+    )
     if outcome.status != STATUS_PASS:
         print(
             f"\nstatus={outcome.status} exit={outcome.exit_code}: {outcome.report.get('detail', '')}",
