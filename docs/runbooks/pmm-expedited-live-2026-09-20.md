@@ -180,8 +180,8 @@ separate from the deployment workflow's bundled smoke job.
 ## Isolated protected-runtime canary in progress
 
 The two unrelated legacy Jobs for issues 5526 and 5532 remained active. The tick
-schedule and KEDA admissions remain paused while they finish; neither Job was
-terminated. Production authority, task services, source isolation, legacy IAM
+schedule and KEDA admissions were restored while isolated verification continued;
+neither Job was terminated. Production authority, task services, source isolation, legacy IAM
 retirement, PMM enforcement and the user-facing feature flag remain unchanged.
 
 A temporary gateway Deployment uses the same immutable source with authority and
@@ -199,3 +199,73 @@ using the actual protected role and projected Kubernetes token. Neither this
 setup nor the earlier IAM-denial canary establishes complete runtime acceptance.
 All temporary canary resources must be removed after retaining receipts. General
 PMM activation remains pending successful protected runtime verification.
+
+## Protected protocol acceptance completed
+
+Worker build `35515090602` published
+`adp-agent-runtime@sha256:d48c6dd28213962693145e13022416688dda7f8ad07d98a50a3c2f647aca5c58`
+from `ac7b9dbf4d510dd977bc64f22b9608c8e633f48a`. Initial task acquisition now
+retries workload-publication 404s within its existing five-attempt/eight-second
+bound, rereading the projected token each time. It does not retry maintenance
+404s or transport 403s and has no direct-SQS fallback. Twelve focused tests and
+Ruff passed before the build.
+
+The isolated protected worker passed these actual service checks with its real
+IRSA identity and projected workload token:
+
+- Acquired, heartbeated and acknowledged its dedicated-queue assignment.
+- Verified a signed report-only developer decision selecting the test human's
+  saved Haiku mapping from a snapshot created before enqueue.
+- Read run-bound marker fields matching that human and invocation.
+- Uploaded a transcript; the operator read it back from S3 and verified SHA-256.
+- Called the gateway-mediated Knowledge Door tools endpoint successfully.
+- Refused caller-selected marker identity (422), an invalid run credential
+  (404), and an invalid workload token (404).
+- Refreshed its run credential and verified the refreshed model decision.
+
+This was **instrumented protocol acceptance from an operator-created trusted
+record**, explicitly marked as a test fixture and audited. It was not a real
+GitHub event, a normal coding run, delegation, AI-DLC execution, or a provider
+invocation. The first fixture lacked a pre-admission snapshot and failed the
+mapping check; it was retired as failed, not counted as passing evidence.
+The successful fixture was acknowledged, its authority revoked, its execution
+cancelled for cleanup, and its work claim released as a completed protocol test.
+The temporary saved developer mapping was removed using the revision-checked API.
+
+The latest image separately passed **unmodified entrypoint** startup and empty
+protected-queue polling. Job `pmm-protected-empty-task-v4-20260920` logged
+`No message available after long-poll; exiting cleanly`. A preceding identical
+Job also completed, but its node terminated before log retrieval; only the
+retained v4 log is cited for the explicit empty-poll result.
+
+No model calls were added by these checks. The conservative budget reservation
+remains $4 of the authorized $10; it is not an actual-spend figure.
+
+The temporary API stage/deployment, ALB routing condition/path, gateway
+Deployment/Service/Secret, Door policy, empty test queue, dedicated IAM policy
+and attachment, terminal test Jobs and three probe-preflight ConfigMaps were
+removed after retaining receipts. The production API stage still points to
+`uwrcj9`; KEDA admissions and the tick schedule are enabled. Production frontend
+and API health checks returned 200. The suspended qualification CronJob and
+Terraform-managed authority preparation remain installed.
+
+## Remaining activation blockers
+
+At the latest live check, legacy Jobs for issues 5526 and 5532 were still making
+progress. Their configured maximum lifetime is six hours, not an estimate of
+completion. Changing gateway authentication while they run would interrupt
+their credential access. They have not been cancelled or reported drained.
+
+The protocol checks above do not complete #5195. Normal protected coding,
+GitHub renewal, cancellation and selected credential workflows still need live
+acceptance. Production cutover also needs the real marker key, a fresh scoped
+Terraform plan, coordinated gateway/worker/producer/tick activation and verified
+legacy IAM/EKS retirement. Human-rooted delegation and AI-DLC/replan acceptance,
+PMM enforcement and user-facing enablement remain outstanding. Production
+posture is still report-only and the feature flag is still off. There is no
+seven-day soak wait and no credential-refresh blocker.
+
+The successful model evidence expires on 2026-09-21 around 13:41 UTC. Ongoing
+paid refresh remains unconfigured and unauthorized by the finite test budget.
+Opening or merging the remaining worker source PR can launch the repository's
+paid GitLab fleet tests; those side effects also need bounding before that step.
