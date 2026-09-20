@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid5
 
@@ -15,6 +16,44 @@ from .models import OrchestrationAction, OrchestrationDecision, OrchestrationExe
 
 CORRECTION_KIND = "evaluation_correction_issue"
 ACTOR = "system:evaluation-corrections"
+
+
+def bounded_correction_summary(detail):
+    """Public correction/retest progress, with no authority or accepted scope."""
+    if not isinstance(detail, dict):
+        return None
+    try:
+        cycle = detail["evaluation_cycle"]
+        remaining = detail["remaining_corrections"]
+        issue = (detail.get("issue") or {}).get("number")
+        child = detail.get("child_node_id")
+        retest = detail.get("retest_cycle")
+        if (
+            type(cycle) is not int
+            or cycle < 1
+            or type(remaining) is not int
+            or remaining < 0
+            or (issue is not None and (type(issue) is not int or issue < 1))
+            or (child is not None and (not isinstance(child, str) or not re.fullmatch(r"[0-9a-f-]{36}", child)))
+            or (retest is not None and (type(retest) is not int or retest != cycle + 1))
+        ):
+            return None
+        return dict(
+            evaluation_cycle=cycle,
+            remaining_corrections=remaining,
+            issue_number=issue,
+            child_node_id=child,
+            retest_cycle=retest,
+            stage="retest_requested"
+            if retest
+            else "delivery_pending"
+            if child
+            else "creation_unresolved"
+            if detail.get("creation_started")
+            else "creation_pending",
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def child_id(operation_key):
@@ -61,7 +100,7 @@ async def correction_link(session, node):
     return action
 
 
-async def validate_correction(session, node):
+async def validate_correction(session, node, *, allow_accepted=False):
     """Every correction effect stays beneath a current, unresolved evaluation."""
     action = await correction_link(session, node)
     if action is None:
@@ -85,7 +124,11 @@ async def validate_correction(session, node):
         )
     )
     require(
-        parent is not None and parent.kind == "eval" and parent.state == "running" and record is not None, "evaluation_correction_parent_not_active"
+        parent is not None
+        and parent.kind == "eval"
+        and parent.state in ({"running", "passed"} if allow_accepted else {"running"})
+        and record is not None,
+        "evaluation_correction_parent_not_active",
     )
     loaded = await load_execution(session, identity=identity_for(record))
     require(loaded is not None and loaded.kind is OutcomeKind.APPLIED, "evaluation_correction_parent_authority_changed")
@@ -165,3 +208,35 @@ async def create_correction_child(session, context, action, issue):
     )
     await session.flush()
     return node
+
+
+async def retest_deployment(session, node, request, plan_version):
+    from .evaluation_plan import current_deployment
+
+    detail = request.detail
+    action = await session.scalar(
+        select(OrchestrationAction).where(
+            OrchestrationAction.org_id == node.org_id,
+            OrchestrationAction.execution_id == detail["correction_parent_execution_id"],
+            OrchestrationAction.operation_key == detail["correction_operation_key"],
+            OrchestrationAction.kind == CORRECTION_KIND,
+            OrchestrationAction.status == "succeeded",
+        )
+    )
+    require(
+        action is not None and action.detail["parent_node_id"] == node.id and action.detail["evaluation_cycle"] == node.attempts - 1,
+        "evaluation_retest_lineage_changed",
+    )
+    child = await session.scalar(
+        select(OrchestrationNode).where(
+            OrchestrationNode.org_id == node.org_id,
+            OrchestrationNode.flow_id == node.flow_id,
+            OrchestrationNode.id == action.detail["child_node_id"],
+        )
+    )
+    require(child is not None and child.state == "passed", "evaluation_retest_child_not_complete")
+    verified = await validate_correction(session, child, allow_accepted=True)
+    require(verified is not None and verified.id == action.id, "evaluation_retest_child_changed")
+    deployed = await current_deployment(session, child, plan_version, now=datetime.now(UTC))
+    require(deployed is not None and deployed[2].operation_key == detail["correction_deployment_key"], "evaluation_retest_deployment_changed")
+    return deployed

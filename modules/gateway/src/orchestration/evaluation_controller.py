@@ -152,7 +152,14 @@ class EvaluationServices:
         deployments = await predecessor_deployments(session, node, plan.version, now=datetime.now(UTC))
         require(deployments is not None, "evaluation_predecessor_not_complete")
         require(deployment_keys(deployments) == [tuple(item) for item in request.detail["deployments"]], "evaluation_deployment_changed")
-        anchor, _, deployment = anchor_for(deployments)
+        if request.detail.get("correction_operation_key"):
+            from .evaluation_correction_state import retest_deployment
+
+            corrected = await retest_deployment(session, node, request, plan.version)
+            deployments.append(corrected)
+            anchor, _, deployment = corrected
+        else:
+            anchor, _, deployment = anchor_for(deployments)
         require(asdict(anchor.identity) == request.detail["anchor_identity"], "evaluation_anchor_changed")
         return node, plan, spec, address, request, deployments, anchor, deployment
 
@@ -162,6 +169,16 @@ class EvaluationServices:
             require(node.state == "passed", "evaluation_code_not_complete")
             own = await current_deployment(session, node, context.identity.accepted_plan_version, now=context.now)
             require(own is not None and own[0].execution.id == context.execution.id, "evaluation_final_deployment_missing")
+            from .evaluation_correction_state import correction_link
+
+            correction = await correction_link(session, node)
+            if correction is not None:
+                parent = await session.get(OrchestrationNode, correction.detail["parent_node_id"], populate_existing=True)
+                require(parent is not None and parent.org_id == node.org_id, "evaluation_correction_parent_missing")
+                if parent.state == "passed" or parent.attempts > correction.detail["evaluation_cycle"] + 1:
+                    return EvaluationObservation(ObservationKind.SUCCEEDED, stage="done")
+                require(parent.state == "running", "evaluation_correction_parent_not_active")
+                return EvaluationObservation(ObservationKind.WAITING, detail="Corrected deployment is retained for the parent's current evaluation.")
             successors = list(
                 (
                     await session.scalars(

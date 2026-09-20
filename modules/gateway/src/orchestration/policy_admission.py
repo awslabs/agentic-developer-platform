@@ -66,7 +66,16 @@ from .execution_policy import (
     authorize_action,
 )
 from .flow_budget import release_flow_admission, reserve_flow_admission
-from .models import ClaimState, NodeKind, OrchestrationAcceptedPlan, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
+from .models import (
+    ClaimState,
+    NodeKind,
+    OrchestrationAcceptedPlan,
+    OrchestrationAction,
+    OrchestrationExecution,
+    OrchestrationFlow,
+    OrchestrationNode,
+    OrchestrationWorkClaim,
+)
 from .state import NodeState
 
 logger = logging.getLogger(__name__)
@@ -283,6 +292,28 @@ class SpendObservation:
     settled_node_ids: frozenset[str] = frozenset()
 
 
+def _engine_evaluation():
+    """A current K1 evaluation context proves this node is an observer, not a worker.
+
+    Legacy eval workers still count. A running E2 observer neither bills model
+    usage nor occupies a worker slot while its correction runs beneath it.
+    """
+    return (
+        select(OrchestrationExecution.id)
+        .join(OrchestrationAction, OrchestrationAction.execution_id == OrchestrationExecution.id)
+        .where(
+            OrchestrationExecution.org_id == OrchestrationNode.org_id,
+            OrchestrationExecution.flow_id == OrchestrationNode.flow_id,
+            OrchestrationExecution.node_id == OrchestrationNode.id,
+            OrchestrationExecution.cycle == OrchestrationNode.attempts,
+            OrchestrationAction.org_id == OrchestrationNode.org_id,
+            OrchestrationAction.kind == "evaluation_context",
+            OrchestrationAction.status == "succeeded",
+        )
+        .exists()
+    )
+
+
 async def _observed_spend(session: AsyncSession, *, org_id: str, flow_slug: str, nodes: list[OrchestrationNode]) -> SpendObservation:
     """Settled spend for a flow, and which nodes' holds it supersedes.
 
@@ -304,6 +335,17 @@ async def _observed_spend(session: AsyncSession, *, org_id: str, flow_slug: str,
     """
     measured = {cost.address: cost for cost in await get_cost_by_address(session, org_id=org_id, address_prefix=flow_slug)}
 
+    eval_ids = [node.id for node in nodes if node.kind == NodeKind.EVAL.value]
+    observers = (
+        set(
+            await session.scalars(
+                select(OrchestrationNode.id).where(OrchestrationNode.org_id == org_id, OrchestrationNode.id.in_(eval_ids), _engine_evaluation())
+            )
+        )
+        if eval_ids
+        else set()
+    )
+
     total = Decimal(0)
     settled: set[str] = set()
     for node in nodes:
@@ -321,7 +363,7 @@ async def _observed_spend(session: AsyncSession, *, org_id: str, flow_slug: str,
             continue
         # No usable figure. Whether that is expected depends on whether this node
         # ever ran, and on whether it is the kind of node that bills at all.
-        if node.kind == NodeKind.GATE.value:
+        if node.kind == NodeKind.GATE.value or node.id in observers:
             continue
         if node.state in _EXECUTED_STATES:
             logger.warning(
@@ -350,6 +392,7 @@ async def _running_count(session: AsyncSession, *, org_id: str, flow_id: str) ->
                 OrchestrationNode.org_id == org_id,
                 OrchestrationNode.flow_id == flow_id,
                 OrchestrationNode.state == NodeState.RUNNING.value,
+                ~((OrchestrationNode.kind == NodeKind.EVAL.value) & _engine_evaluation()),
             )
         )
     ).scalar_one()

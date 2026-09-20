@@ -456,8 +456,12 @@ async def validate_engine_authority(
         if node is None or node.attempts != attempt:
             raise BootstrapRefusedError("engine node is no longer authorized")
         from src.orchestration.evaluation_correction_state import link_id, validate_correction
+        from src.orchestration.review_cycle import CycleBlockedError
 
-        correction = await validate_correction(session, node)
+        try:
+            correction = await validate_correction(session, node)
+        except (CycleBlockedError, ValueError, KeyError, TypeError):
+            raise BootstrapRefusedError("evaluation correction assignment unavailable") from None
         correction_receipt = execution.get("orchestration_correction_receipt", {}).get("S")
         if correction is not None:
             if not execution.get("orchestration_continuation_receipt") and correction_receipt != link_id(node.id):

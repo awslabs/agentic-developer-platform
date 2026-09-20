@@ -28,7 +28,10 @@ DIGEST = "sha256:" + "f" * 64
 
 @pytest.fixture
 async def runtime(deployment):  # noqa: F811
-    ctx = deployment
+    return await prepare_runtime(deployment)
+
+
+async def prepare_runtime(ctx):
     ctx.entry = replace(ctx.entry, verification_adapter="gateway-health-verification")
     ctx.runs.append(ctx.make_run())
     await workflow_tick(ctx)
@@ -38,7 +41,7 @@ async def runtime(deployment):  # noqa: F811
     ctx.provider.contains = AsyncMock()
     ctx.component = RuntimeComponent(
         component="gateway-backend",
-        actual_revision=SOURCE,
+        actual_revision=ctx.entry.artifact_revision,
         artifact_hash="f" * 64,
         image_digest=DIGEST,
         healthy=True,

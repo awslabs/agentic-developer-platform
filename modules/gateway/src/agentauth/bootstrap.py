@@ -152,6 +152,7 @@ class BootstrapStore:
             "orchestration_amendment_request_id",
             "orchestration_continuation_receipt",
             "orchestration_continuation_action",
+            "orchestration_correction_receipt",
             "parent_grant_id",
             "parent_grant_epoch",
         }:

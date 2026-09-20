@@ -693,6 +693,15 @@ export interface EvaluationEvidenceSummary {
   criteria: Array<{ criterion_id: string; outcome: 'pass' | 'fail' | 'skipped' | 'not_run' }>
 }
 
+export interface EvaluationCorrectionSummary {
+  evaluation_cycle: number;
+  remaining_corrections: number;
+  issue_number: number | null;
+  child_node_id: string | null;
+  retest_cycle: number | null;
+  stage: 'creation_pending' | 'creation_unresolved' | 'delivery_pending' | 'retest_requested';
+}
+
 export interface EvaluationSpecification {
   schema_version: 1
   acceptance_mode: 'human' | 'machine'

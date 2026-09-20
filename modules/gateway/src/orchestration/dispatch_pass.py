@@ -830,7 +830,7 @@ async def _dispatch_one_unclaimed(
                 since=datetime.fromisoformat(detail["since"]),
                 issue_number=detail["issue"]["number"],
             )
-            if issue_state.state != "open":
+            if issue_state is None or issue_state.state != "open":
                 raise CycleBlockedError("evaluation_correction_human_refusal")
     except (CycleBlockedError, ValueError, KeyError, TypeError):
         report.record(org_id, "policy_blocked")

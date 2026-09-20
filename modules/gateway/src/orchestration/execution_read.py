@@ -95,6 +95,7 @@ from src.shared.logging import get_logger
 from .deployment_controller import bounded_deployment_summary
 from .deployment_workflows import bounded_workflow_summary
 from .evaluation_controller import bounded_evaluation_summary
+from .evaluation_correction_state import bounded_correction_summary
 from .execution_state import (
     ActionStatus,
     BlockCode,
@@ -425,6 +426,8 @@ def _action_view(row: OrchestrationAction) -> ActionView | None:
             if row.kind == "deployment_workflow"
             else bounded_evaluation_summary(row.detail)
             if row.kind == "evaluation_evidence"
+            else bounded_correction_summary(row.detail)
+            if row.kind in {"evaluation_correction_issue", "evaluation_context"}
             else None
         ),
     )
