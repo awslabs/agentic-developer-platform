@@ -4,6 +4,12 @@ on:
   pull_request:
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'deploy.sh'
+      - 'platform/scripts/enable-bedrock-models.sh'
+      - 'platform/scripts/bedrock-model-access.py'
+      - 'platform/scripts/tests/test_bedrock_model_access.py'
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/agent-factory/agent/k8s/chat-scaledjob.yaml'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/tests/pricing_policy/test_rollout.py'
       - 'platform/scripts/build-agent-factory-lambdas.sh'
@@ -26,6 +32,12 @@ on:
     branches: [main]
     paths:
       - 'platform/scripts/deploy-all.sh'
+      - 'deploy.sh'
+      - 'platform/scripts/enable-bedrock-models.sh'
+      - 'platform/scripts/bedrock-model-access.py'
+      - 'platform/scripts/tests/test_bedrock_model_access.py'
+      - 'modules/agent-factory/agent-worker-image/entrypoint.py'
+      - 'modules/agent-factory/agent/k8s/chat-scaledjob.yaml'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/tests/pricing_policy/test_rollout.py'
       - 'platform/scripts/build-agent-factory-lambdas.sh'
@@ -131,6 +143,7 @@ jobs:
           terraform_wrapper: false
       - run: python -m unittest discover -s platform/scripts/tests -p 'test_upgrade*.py' -v
       - run: python -m unittest discover -s platform/scripts/tests -p test_update_safety.py -v
+      - run: python -m pytest platform/scripts/tests/test_bedrock_model_access.py -q
       - run: python -m pytest --confcutdir=modules/gateway/tests/pricing_policy modules/gateway/tests/pricing_policy/test_rollout.py -q
 
   factory-before-github:

@@ -72,7 +72,7 @@ terraform_update_apply() { echo "terraform $1"; }
         policy["spec"]["egress"][0]["to"] = [{"podSelector": {}}]
         self.assertFalse(network.collector_allowed(policy))
 
-    def finalize(self, audit_fail=False):
+    def finalize(self, audit_fail=False, ci_mode=False, deferred=False):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()
         start = source.index("# Finalize after all installed modules")
         block = source[start:source.index("# Summary\n", start)]
@@ -93,7 +93,8 @@ curl() { echo '{"status":"healthy"}'; }
             calls = Path(tmp) / "calls"
             env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / "platform/scripts"),
                        UPDATE_MODE="true", DEPLOY_GATEWAY="true", DEPLOY_FACTORY="true", SKIP_FRONTEND="false", UPGRADE_RUN_DIR=tmp,
-                       ENVIRONMENT="test", AWS_REGION="us-east-1", CALLS=str(calls), AUDIT_FAIL=str(audit_fail).lower())
+                       ENVIRONMENT="test", AWS_REGION="us-east-1", CALLS=str(calls), AUDIT_FAIL=str(audit_fail).lower(),
+                       CI_MODE=str(ci_mode).lower(), ADP_BEDROCK_VERIFY_DEFERRED=str(deferred).lower())
             result = subprocess.run(["bash", "-c", prefix + block], env=env, text=True, capture_output=True)
             return result, calls.read_text().splitlines()
 
@@ -105,6 +106,14 @@ curl() { echo '{"status":"healthy"}'; }
         self.assertIn("deploy-frontend.sh", calls[4])
         self.assertIn("upgrade-state.py verify", calls[5])
         self.assertIn("--require-module agent-factory", calls[5])
+        self.assertIn("enable-bedrock-models.sh --verify", calls[6])
+
+    def test_default_model_invocations_skip_ci_and_wrapper_deferred_checks(self):
+        for ci_mode, deferred in ((True, False), (False, True)):
+            with self.subTest(ci_mode=ci_mode, deferred=deferred):
+                result, calls = self.finalize(ci_mode=ci_mode, deferred=deferred)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(any("enable-bedrock-models.sh" in line for line in calls))
 
     def test_factory_must_be_ready_on_the_intended_image(self):
         source = (ROOT / "platform/scripts/deploy-all.sh").read_text()

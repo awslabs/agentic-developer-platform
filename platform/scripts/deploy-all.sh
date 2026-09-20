@@ -200,11 +200,11 @@ ok "AWS Account: $ACCOUNT_ID | Region: $AWS_REGION | Env: $ENVIRONMENT"
 # AccessDeniedException and the agent-worker misreports it as "no changes
 # needed". Idempotent — skips models already enabled.
 # ---------------------------------------------------------------------------
-if [ "$UPDATE_MODE" = true ]; then
-  step "Bedrock model access (skipped — update mode)"
-else
-  step "Bedrock model access"
-  bash "$SCRIPT_DIR/enable-bedrock-models.sh" || fail "Bedrock model agreements could not be enabled. Agents cannot invoke Claude without them."
+# Upgrades may introduce a new runtime default too. Readiness must not be
+# skipped merely because an earlier version was already deployed.
+if [ "$CI_MODE" = false ] && [ "$DESTROY" = false ]; then
+  step "Bedrock model access and first-use registration"
+  bash "$SCRIPT_DIR/enable-bedrock-models.sh" || fail "Required Bedrock model access is not ready."
 fi
 
 # ---------------------------------------------------------------------------
@@ -1586,6 +1586,11 @@ if [ "$UPDATE_MODE" = true ]; then
     curl --fail --silent --show-error --retry 5 --retry-all-errors "https://$CF_DOMAIN/api/health" \
       | python3 -c 'import json,sys; assert json.load(sys.stdin).get("status")=="healthy", "CDN API is unhealthy"'
   fi
+fi
+
+if [ "$CI_MODE" = false ] && [ "${ADP_BEDROCK_VERIFY_DEFERRED:-false}" != true ]; then
+  step "Verify default Bedrock model invocations"
+  bash "$SCRIPT_DIR/enable-bedrock-models.sh" --verify || fail "Default model invocation failed."
 fi
 
 # =============================================================================

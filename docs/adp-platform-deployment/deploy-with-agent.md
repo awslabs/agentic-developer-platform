@@ -73,7 +73,7 @@ Each step is idempotent and re-runnable.
 | 6c | Broker Lambda code (real GitHub-login handler) | `modules/gateway/scripts/deploy-broker.sh` | Login |
 | 6d | Seed the first admin (org/user/role + Cognito claims) | `modules/gateway/scripts/bootstrap-admin.sh` | Login |
 | 7 | Webhook agent stack + agent-runtime image (incl. warm pool + image-prepull) | `modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh` | Agents |
-| 8a | Bedrock model access (marketplace agreements, CLI-only) | `platform/scripts/enable-bedrock-models.sh` (also runs automatically in deploy-all.sh / platform-infra-apply.yml) | Agents |
+| 8a | Bedrock first-use registration, agreements and readiness | `platform/scripts/enable-bedrock-models.sh` (also runs automatically in deploy-all.sh / platform-infra-apply.yml) | Agents |
 | 8b | Create + wire the GitHub App | **UI:** Settings → Connections → "Set up GitHub App" (as `platform_admin`). **CLI fallback:** `register-github-app.sh <org>` | Agents |
 
 > The webhook agent path (Phases 7–8) is **verified end-to-end** (account
@@ -84,25 +84,21 @@ Each step is idempotent and re-runnable.
 > image-prepull DaemonSet (PR #1316, on by default in Phase 7) make agents start
 > in ~10–15s instead of 1–2 min.
 
-### Phase 8a is now CLI-automated (no console step)
+### Phase 8a is CLI-automated
 
-**Bedrock model access.** The old guidance ("console-only, escalate to the
-user") is outdated — `platform/scripts/enable-bedrock-models.sh` performs the
-AWS Marketplace `Subscribe` programmatically (`create-foundation-model-agreement`)
-for every ACTIVE Anthropic model, and both deploy tracks run it automatically.
-Run it standalone if agents misbehave. Until access is enabled, the agent
-**hangs silently after "Session initialized"** or ends "no changes needed"
-with $0.0000 / 1 turn (the gateway returns HTTP 200 with an empty
-`text/event-stream`; no error). Verify with a real invoke:
-```bash
-aws bedrock-runtime invoke-model --model-id us.anthropic.claude-opus-4-6-v1 \
-  --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
-  --cli-binary-format raw-in-base64-out /dev/stdout   # a real JSON message = enabled
-```
-The ONE remaining human case: an org **private marketplace** policy blocking a
-model (`AccessDeniedException: ... private marketplace eligibility`) — a
-Private Marketplace admin in the org/management account must whitelist the
-product; then re-run the script.
+`platform/scripts/enable-bedrock-models.sh` prepares Anthropic first-use
+registration when needed and accepts missing Marketplace agreements. It reads
+required defaults from the runtime sources and checks authorization, entitlement,
+agreement and region availability. Both deployment entrypoints verify bounded
+model invocations before reporting success. See
+[Bedrock readiness during deployment](./bedrock-first-run.md).
+
+Use an operator-supplied organization form through `--anthropic-use-case FILE`
+(on `deploy.sh`) or `ADP_BEDROCK_USE_CASE_FILE`. Never invent registration details
+or overwrite an existing submission. Effective organization-inherited access
+needs no per-account submission. If the account needs registration and no form
+is supplied, request the real organization details. Private Marketplace policies
+must also permit the model; the helper reports restrictions without changing them.
 
 ### ⚠️ One step you (the agent) CANNOT do — escalate to the user
 
@@ -234,9 +230,11 @@ Terraform state backend (only `bootstrap-destroy.sh` removes it).
 
 Break silence ONLY when:
 - Confirming the target AWS account/profile (before Phase 1).
-- **Bedrock model access (Phase 8a)** — ask the user to enable the model in the
-  console; you cannot. Don't proceed to summon an agent until they confirm (else
-  it hangs silently).
+- **Bedrock model access (Phase 8a)** — request real organization registration
+  details only if first-use registration is needed and no form was supplied.
+  Escalate organization Marketplace restrictions that the deployment identity
+  cannot resolve. Use the helper's readiness and invocation checks before
+  summoning an agent.
 - The GitHub App browser steps in Phase 8b (UI flow: Settings → Connections →
   "Set up GitHub App"; or CLI fallback `register-github-app.sh`).
 - A required CLI tool is missing at preflight.

@@ -767,43 +767,25 @@ stack (incl. `warm-pool.tf` balloon Deployment + image-prepull DaemonSet for
 `adp-agents`; `agent-warm-pool` + `agent-image-prepull` READY. Smoke: unsigned
 `POST /dev/github` → 401 (HMAC reject = path live).
 
-## Phase 8 — Bedrock model access ✅ automated (CLI-only)
+## Phase 8 — Bedrock model access and first-run verification
 
-The agent model must be invokable in the target account. This is now a
-scripted step — `platform/scripts/enable-bedrock-models.sh` discovers every
-ACTIVE Anthropic model from the Bedrock API and accepts its marketplace
-agreement via CLI (the programmatic equivalent of the console *Subscribe*).
-It runs **automatically** in both deploy tracks (`deploy-all.sh` after
-preflight; `platform-infra-apply.yml` before terraform). Idempotent — safe
-to run standalone at any time:
+`./deploy.sh` and `deploy-all.sh` prepare Marketplace agreements and Anthropic
+first-use registration when needed, verify all access states for the actual
+runtime defaults, and perform bounded default-model invocations before reporting
+success. Existing account or organization authorization is reused.
+
+For an unregistered account, supply your organization's actual first-use JSON:
 
 ```bash
-./platform/scripts/enable-bedrock-models.sh   # all ACTIVE Anthropic models
+./deploy.sh --anthropic-use-case /secure/path/anthropic-use-case.json
 ```
 
-Only the models the platform invokes at runtime (Opus 4.6, Sonnet 4.6 — the
-`REQUIRED_MODELS` list in the script) are deploy-blocking; newer releases are
-enabled best-effort so an org restriction on a brand-new model never blocks
-an infra deploy.
+Direct `deploy-all.sh` and automated helper invocations accept the same file
+through `ADP_BEDROCK_USE_CASE_FILE`. See
+[Bedrock readiness during deployment](./bedrock-first-run.md) for permissions,
+form fields, standalone checks, invocation costs and organization restrictions.
+No per-user persona mapping is required for these default-model checks.
 
-**Verify** (source of truth is `invoke`, not agreement status):
-```bash
-aws bedrock-runtime invoke-model --model-id us.anthropic.claude-sonnet-4-6 \
-  --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}' \
-  --cli-binary-format raw-in-base64-out /dev/stdout
-```
-A real JSON message = access is live. The entitlement can take a few minutes
-to propagate after the agreement activates; re-test until it succeeds.
-
-**Blocked cases that DO need a human:**
-- `AccessDeniedException: ... private marketplace eligibility` → the model is not
-  on the account's **AWS Private Marketplace** allow-list. A Private Marketplace
-  admin (org/management account) must add it first; then step 2 works.
-- If the agreement shows `AVAILABLE` but invoke still 403s well past ~20 min, the
-  runtime entitlement is stuck → AWS support case.
-
-Until the model is invokable, the agent hangs silently after "Session
-initialized" (gateway returns an empty 200 `text/event-stream`).
 
 ## Phase 9 — GitHub App ⚠️ HUMAN browser step
 
