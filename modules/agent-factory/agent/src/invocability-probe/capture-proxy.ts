@@ -42,6 +42,7 @@ export interface CaptureProxy {
 }
 
 function bedrockEndpoint(region: string): string {
+  if (!region || /[^a-z0-9-]/.test(region)) throw new Error('Probe region is malformed');
   const suffix = region.startsWith('cn-') ? 'amazonaws.com.cn' : 'amazonaws.com';
   return `https://bedrock-runtime.${region}.${suffix}`;
 }
@@ -77,7 +78,8 @@ async function listen(server: http.Server): Promise<number> {
 }
 
 export async function startCaptureProxy(options: CaptureProxyOptions): Promise<CaptureProxy> {
-  const upstream = new URL(options.upstreamBaseUrl ?? bedrockEndpoint(options.region));
+  const endpoint = bedrockEndpoint(options.region);
+  const upstream = new URL(options.upstreamBaseUrl ?? endpoint);
   if (upstream.pathname !== '/' || upstream.search || upstream.hash) {
     throw new Error('Bedrock upstream must be an origin without a path, query or fragment');
   }

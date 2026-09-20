@@ -19,6 +19,9 @@ async function upstream(handler: http.RequestListener): Promise<{
 const credentials = { accessKeyId: 'TEST', secretAccessKey: 'TEST', sessionToken: 'TEST' };
 
 describe('Bedrock request capture proxy', () => {
+  it.each(['x@evil.com', 'us-east-1/other', 'us-east-1.example', '', 'us-east-1\n'])('rejects malformed region %j before opening a proxy', async (region) => {
+    await expect(startCaptureProxy({ modelId: 'selected-model', region, credentials })).rejects.toThrow('Probe region is malformed');
+  });
   it('captures the canonical digest, re-signs, preserves the path/body, and captures request ID', async () => {
     const body = Buffer.from('{"messages":[{"role":"user","content":"probe"}],"max_tokens":8}');
     let receivedPath = '';

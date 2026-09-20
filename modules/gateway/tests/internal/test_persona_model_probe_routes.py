@@ -24,6 +24,7 @@ from src.shared.models.persona_model_catalogue import ModelInvocabilityEvidence,
 
 
 def _enable(monkeypatch, *, slots: int = 2, cycle_budget: str = "0.02", attempt_budget: str = "0.01") -> None:
+    monkeypatch.setenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", "111111111111")
     monkeypatch.setenv("BG_MODEL_PROBE_ENABLED", "true")
     monkeypatch.setenv("BG_MODEL_PROBE_MAX_SLOTS_PER_CYCLE", str(slots))
     monkeypatch.setenv("BG_MODEL_PROBE_BUDGET_USD_PER_CYCLE", cycle_budget)
@@ -62,6 +63,50 @@ async def test_default_configuration_is_inert(db_session):
     result = await claim_probe(db_session)
     assert result == result.__class__(claimed=False, reason="disabled")
     assert await db_session.scalar(select(ModelProbeCycle.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_customer_destination_is_not_implicitly_consented_for_probing(db_session, monkeypatch):
+    _enable(monkeypatch)
+    customer = _destination()
+    customer.id = "customer-destination"
+    customer.account_id = "000000000001"
+    customer.role_arn = "arn:aws:iam::000000000001:role/customer"
+    customer.is_platform_registered = False
+    customer.owner_org_id = "customer-org"
+    customer.credential_id = "customer-credential"
+    db_session.add_all([customer, _destination()])
+    await db_session.commit()
+    result = await claim_probe(db_session)
+    assert result.claimed and result.slot.destination_id == "probe-destination"
+    assert await db_session.scalar(select(ModelProbeSlot.id).where(ModelProbeSlot.destination_id == customer.id)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["disabled", "different_account", "malformed_region", "destination_retired"])
+async def test_start_rechecks_admission_before_releasing_credentials(db_session, monkeypatch, change):
+    _enable(monkeypatch)
+    destination = _destination()
+    if change == "malformed_region":
+        destination.region = "x@evil.com"
+    db_session.add(destination)
+    await db_session.commit()
+    claimed = await claim_probe(db_session)
+    assert claimed.claimed and claimed.slot and claimed.lease_token
+    if change == "disabled":
+        monkeypatch.setenv("BG_MODEL_PROBE_ENABLED", "false")
+    elif change == "different_account":
+        monkeypatch.setenv("BG_PLATFORM_BEDROCK_ACCOUNT_ID", "222222222222")
+    elif change == "destination_retired":
+        destination.routing_capable = False
+        await db_session.commit()
+    with patch("src.internal.persona_model_probe_service.bedrock_destination_signer.get_credentials", new_callable=AsyncMock) as credentials:
+        with pytest.raises(ProbeConflictError):
+            await start_probe(
+                db_session, slot_id=claimed.slot.id, lease_token=claimed.lease_token, request_shape_sha256=claimed.slot.expected_request_shape_sha256
+            )
+        credentials.assert_not_awaited()
+    assert (await db_session.get(ModelProbeSlot, claimed.slot.id)).status == "reserved"
 
 
 @pytest.mark.asyncio
