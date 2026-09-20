@@ -34,15 +34,6 @@ function permissionDenied(error: unknown): boolean {
   return typeof detail === 'string' && /permission|human caller|administration requires/i.test(detail);
 }
 
-function formatEvidenceDate(iso: string): string {
-  try {
-    const date = new Date(iso);
-    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-  } catch {
-    return iso;
-  }
-}
-
 function availability(
   model: ModelCatalogueRow | undefined,
   preference?: PersonaPreference,
@@ -54,24 +45,21 @@ function availability(
     return { label: 'Not permitted', className: 'text-red-700' };
   }
   if ((preference?.status === 'stale' || preference?.availability_status === 'stale') || model?.reason === 'evidence_stale' || model?.evidence?.stale) {
-    return { label: 'Evidence stale', className: 'text-amber-700' };
+    return { label: 'Availability needs checking', className: 'text-amber-700' };
   }
-  if (preference?.effective_is_candidate) return { label: 'Not yet certified', className: 'text-gray-600' };
+  if (preference?.effective_is_candidate) return { label: 'Not ready', className: 'text-gray-600' };
   if ((preference?.status === 'unavailable' || preference?.availability_status === 'unavailable') || model?.reason === 'not_invocable' || model?.invocable === false) {
     return { label: 'Unavailable', className: 'text-red-700' };
   }
   if (model?.reason === 'harness_incompatible') {
     return { label: 'Incompatible', className: 'text-red-700' };
   }
-  if (preference?.effective_is_candidate) {
-    return { label: 'Not yet certified', className: 'text-gray-600' };
-  }
   if (preference?.availability_status === 'unknown') return { label: 'Availability unknown', className: 'text-gray-600' };
   if (!model) return { label: 'Availability unknown', className: 'text-gray-600' };
   if (model.invocable === true && !model.evidence?.stale) {
-    return { label: 'Verified', className: 'text-green-700' };
+    return { label: 'Available', className: 'text-green-700' };
   }
-  return { label: 'Not yet certified', className: 'text-gray-600' };
+  return { label: 'Not ready', className: 'text-gray-600' };
 }
 
 /**
@@ -87,47 +75,26 @@ function effectiveSourceLabel(preference: PersonaPreference | undefined): string
   if (!preference) return 'Source unknown';
   if (preference.source === 'principal-mapping') return 'Your choice';
 
-  const compatibilityClass = preference.compatibility_class;
   const status = preference.class_default_status;
-  if (status === 'proven') return `${compatibilityClass} class default (proven)`;
-  if (status === 'candidate') return `${compatibilityClass} class default (candidate)`;
+  if (status === 'proven') return 'Default for this persona';
+  if (status === 'candidate') return 'Default for this persona (not ready)';
   if (preference.effective_model_id) {
     // A default model is in effect but the server did not state its proof state.
     // Report the uncertainty rather than upgrading it to proven.
-    return `${compatibilityClass} class default (proof state unknown)`;
+    return 'Default for this persona (availability unconfirmed)';
   }
-  return `No ${compatibilityClass} class default is configured`;
-}
-
-function EvidenceProvenance({ model }: { model: ModelCatalogueRow | undefined }) {
-  if (!model?.evidence) return null;
-  const { verified_at, expires_at, stale } = model.evidence;
-  if (stale) {
-    return (
-      <p className="text-xs text-amber-700" data-testid="evidence-provenance">
-        Last verified <time dateTime={verified_at}>{formatEvidenceDate(verified_at)}</time>
-        {' (expired '}
-        <time dateTime={expires_at}>{formatEvidenceDate(expires_at)}</time>)
-      </p>
-    );
-  }
-  return (
-    <p className="text-xs text-gray-500" data-testid="evidence-provenance">
-      Verified <time dateTime={verified_at}>{formatEvidenceDate(verified_at)}</time>,
-      expires <time dateTime={expires_at}>{formatEvidenceDate(expires_at)}</time>
-    </p>
-  );
+  return 'No default is configured for this persona';
 }
 
 function reasonLabel(reason: string | null): string {
   const labels: Record<string, string> = {
-    probing_disabled: 'No certification probe has run.',
-    not_yet_certified: 'No certification probe has run.',
+    probing_disabled: 'This model is not ready to use yet.',
+    not_yet_certified: 'This model is not ready to use yet.',
     not_permitted: 'Not permitted by your organization.',
-    not_invocable: 'A probe confirmed that this model cannot currently run.',
-    evidence_stale: 'The last certification evidence has expired.',
+    not_invocable: 'This model is currently unavailable.',
+    evidence_stale: 'Availability needs to be checked before this model can be selected.',
     retired: 'This model is retired.',
-    harness_incompatible: 'This model is incompatible with the persona harness.',
+    harness_incompatible: 'This persona does not support this model.',
   };
   return (reason && labels[reason]) || 'This model cannot currently be selected.';
 }
@@ -212,36 +179,32 @@ function PersonaCard({
         <div>
           <h2 className="font-semibold text-gray-900 dark:text-white">{persona.display_name}</h2>
           <p className="text-sm text-gray-600 dark:text-gray-300">{persona.purpose}</p>
-          <p className="mt-1 text-xs text-gray-500">{persona.compatibility_class}</p>
         </div>
 
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Effective model</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Model for new runs</p>
           <p className="break-words text-sm font-medium text-gray-900 dark:text-white">
-            {effective ? `${effective.model_family} ${effective.canonical_version}` : preference?.effective_model_id || 'No effective model'}
+            {effective ? `${effective.model_family} ${effective.canonical_version}` : preference?.effective_model_id || 'No model configured'}
           </p>
           <p className="text-xs text-gray-500" data-testid={`effective-source-${persona.key}`}>
             {effectiveSourceLabel(preference)}
           </p>
           <p className={`mt-2 text-sm font-medium ${state.className}`}>{state.label}</p>
           {preference?.warnings?.map((warning) => <p key={warning} role="status" className="text-sm text-amber-700">{warning}</p>)}
-          <EvidenceProvenance model={effective} />
-          {preference && <p className="text-xs text-gray-500">Harness revision {preference.harness_contract_revision}</p>}
           {effectivePrice && <p className="text-xs text-gray-500">{effectivePrice}</p>}
         </div>
 
         <div>
           {!persona.configurable ? (
             <p className="text-sm text-gray-600" data-testid={`not-configurable-${persona.key}`}>
-              Not configurable{persona.not_configurable_reason ? ` — ${persona.not_configurable_reason.split('_').join(' ')}` : ''}.
+              Model selection is not available for this persona.
             </p>
           ) : (
             <fieldset disabled={busy}>
-              <legend className="text-xs font-medium uppercase tracking-wide text-gray-500">Saved model</legend>
-              <p className="mb-2 text-xs text-gray-500">{preference?.saved_model_id || 'Not set'}</p>
+              <legend className="text-xs font-medium uppercase tracking-wide text-gray-500">Choose a model</legend>
               {!catalogue && <div role="alert" className="text-sm text-amber-700">
-                <p>Model catalogue unavailable. Saved preferences and warnings remain visible.</p>
-                <Button size="sm" variant="secondary" onClick={onReload}>Retry catalogue</Button>
+                <p>Could not load model choices. Your saved settings are still shown.</p>
+                <Button size="sm" variant="secondary" onClick={onReload}>Reload models</Button>
               </div>}
               <div className="space-y-2" role="radiogroup" aria-label={`Model for ${persona.display_name}`}>
                 {(catalogue?.models ?? []).map((model) => (
@@ -259,17 +222,11 @@ function PersonaCard({
                     />
                     <span>
                       <span className="font-medium">{model.model_family} {model.canonical_version}</span>
-                      <span className="block break-all text-xs text-gray-500">{model.canonical_model_id}</span>
-                      {!model.selectable && <span className="block text-xs text-gray-600">{reasonLabel(model.reason)}</span>}
-                      {model.evidence && (
-                        <span className={`block text-xs ${model.evidence.stale ? 'text-amber-700' : 'text-gray-500'}`}>
-                          {model.evidence.stale ? 'Last verified' : 'Verified'}{' '}
-                          <time dateTime={model.evidence.verified_at}>{formatEvidenceDate(model.evidence.verified_at)}</time>
-                          {model.evidence.stale ? ' (expired ' : ', expires '}
-                          <time dateTime={model.evidence.expires_at}>{formatEvidenceDate(model.evidence.expires_at)}</time>
-                          {model.evidence.stale ? ')' : ''}
-                        </span>
+                      {catalogue!.models.some((other) => other.canonical_model_id !== model.canonical_model_id &&
+                        other.model_family === model.model_family && other.canonical_version === model.canonical_version) && (
+                        <span className="block break-all text-xs text-gray-500">{model.canonical_model_id}</span>
                       )}
+                      {!model.selectable && <span className="block text-xs text-gray-600">{reasonLabel(model.reason)}</span>}
                       {priceLabel(model) && <span className="block text-xs text-gray-500">{priceLabel(model)}</span>}
                     </span>
                   </label>
@@ -292,7 +249,7 @@ function PersonaCard({
         )}
       </div>
 
-      {error && <p className="mt-3 text-sm text-red-700" role="alert">{error} Nothing was changed.</p>}
+      {error && <p className="mt-3 text-sm text-red-700" role="alert">{error}</p>}
       {conflict && (
         <div className="mt-3 text-sm text-amber-800" role="alert">
           This mapping changed elsewhere. Your edit was not applied.{' '}
@@ -415,7 +372,7 @@ export default function AgentModels() {
       if (isPersonaModelConflict(error)) {
         setConflicts((current) => ({ ...current, [persona.key]: true }));
       } else {
-        setRowErrors((current) => ({ ...current, [persona.key]: personaModelErrorMessage(error, 'This mapping could not be saved.') }));
+        setRowErrors((current) => ({ ...current, [persona.key]: personaModelErrorMessage(error, 'Could not confirm this change. Reload your settings before trying again.') }));
       }
     } finally {
       setBusyPersonas((current) => ({ ...current, [persona.key]: false }));
@@ -443,7 +400,7 @@ export default function AgentModels() {
       if (isPersonaModelConflict(error)) {
         setConflicts((current) => ({ ...current, [persona.key]: true }));
       } else {
-        setRowErrors((current) => ({ ...current, [persona.key]: personaModelErrorMessage(error, 'This mapping could not be reset.') }));
+        setRowErrors((current) => ({ ...current, [persona.key]: personaModelErrorMessage(error, 'Could not confirm the reset. Reload your settings before trying again.') }));
       }
     } finally {
       setBusyPersonas((current) => ({ ...current, [persona.key]: false }));
@@ -464,12 +421,12 @@ export default function AgentModels() {
     <div className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6" data-testid="agent-models-page">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Agent Models</h1>
-        <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">Choose which certified model each agent persona uses.</p>
+        <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">Choose the model each agent persona uses when you start a new run.</p>
       </div>
 
       {principals.length > 0 && (
         <fieldset disabled={mutationInFlight} className="rounded-lg border border-gray-200 p-4">
-          <legend className="px-1 text-sm font-medium">Configuration scope</legend>
+          <legend className="px-1 text-sm font-medium">Settings for</legend>
           <div className="flex flex-wrap gap-3">
             <label className="flex items-center gap-2">
               <input type="radio" name="scope" checked={scopeKind === 'self'} onChange={switchToSelf} />
@@ -483,7 +440,7 @@ export default function AgentModels() {
                   checked={scopeKind === 'service' && adminPrincipalId === principal.canonical_service_principal_id}
                   onChange={() => switchToAdmin(principal.canonical_service_principal_id)}
                 />
-                {principal.display_name} ({principal.tenant_label}, {principal.source})
+                {principal.display_name} ({principal.tenant_label})
               </label>
             ))}
           </div>
@@ -496,20 +453,20 @@ export default function AgentModels() {
         </Alert>
       )}
       {scopeLoadWarning && <Alert variant="warning">{scopeLoadWarning}</Alert>}
-      <Alert variant="info">A change applies to the next new agent chain. It does not change a run already in progress.</Alert>
+      <Alert variant="info">Changes apply to new runs and the agents they start. Runs already in progress keep their settings.</Alert>
 
       {loading && <div className="flex items-center gap-3"><Spinner /><span>Loading Agent Models…</span></div>}
       {!loading && loadError && (
         <Alert variant="error" title="Agent Models could not be loaded">
-          <p>{loadError} This is not a statement that any effective model is known.</p>
+          <p>{loadError}</p>
           <Button className="mt-3" size="sm" variant="outline" onClick={() => load(scopeKind, adminPrincipalId)}>Retry</Button>
         </Alert>
       )}
       {!loading && data && (
         <>
           {nothingCertified && (
-            <Alert variant="info" title="No model has been certified yet">
-              Selections cannot be saved until invocability evidence exists. The effective models below remain the current policy answer.
+            <Alert variant="info" title="Model choices are not ready yet">
+              An ADP administrator needs to make models available before you can choose one. Your saved settings are shown below.
             </Alert>
           )}
           <div className="space-y-4">

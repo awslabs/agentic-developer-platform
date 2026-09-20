@@ -247,8 +247,8 @@ describe('Agent Models page — issue #5422', () => {
 
     expect(await screen.findByText('Brand New Persona')).toBeInTheDocument();
     expect(screen.getByText('Proves personas are server-driven.')).toBeInTheDocument();
-    expect(screen.queryByRole('group', { name: 'Configuration scope' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('not-configurable-pt-superpower')).toHaveTextContent('dispatches without persona identity');
+    expect(screen.queryByRole('group', { name: 'Settings for' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('not-configurable-pt-superpower')).toHaveTextContent('Model selection is not available for this persona');
     expect(selfApi.getPreferences).toHaveBeenCalledWith(expect.any(AbortSignal));
     expect(selfApi.getPreferences).toHaveBeenCalledTimes(1);
     expect(selfApi.getModelCatalogue).toHaveBeenCalledWith(
@@ -260,11 +260,11 @@ describe('Agent Models page — issue #5422', () => {
     expect(adminApi.getModelCatalogue).not.toHaveBeenCalled();
     const nonConfigurable = screen.getByTestId('persona-row-pt-superpower');
     expect(within(nonConfigurable).getByText('Sonnet 4.6')).toBeInTheDocument();
-    // Effective provenance comes from the preference response, not the model-catalogue row's 2026-09-01 revision.
-    expect(within(nonConfigurable).getByText('Harness revision 2026-09-15')).toBeInTheDocument();
+    // Runtime details stay in the API, while names, availability and price remain visible.
+    expect(within(nonConfigurable).queryByText(/Harness revision/)).not.toBeInTheDocument();
     expect(within(nonConfigurable).getByText('$2 input / $10 output per 1M tokens')).toBeInTheDocument();
-    expect(within(nonConfigurable).getByText('Not yet certified')).toBeInTheDocument();
-    expect(within(nonConfigurable).getByText('claude-agent-sdk class default (candidate)')).toBeInTheDocument();
+    expect(within(nonConfigurable).getByText('Not ready')).toBeInTheDocument();
+    expect(within(nonConfigurable).getByText('Default for this persona (not ready)')).toBeInTheDocument();
     expect(screen.queryByText(/platform default/i)).not.toBeInTheDocument();
   });
 
@@ -288,13 +288,13 @@ describe('Agent Models page — issue #5422', () => {
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
     expect(within(row).getByTestId('effective-source-brand-new-persona')).toHaveTextContent(
-      'No claude-agent-sdk class default is configured',
+      'No default is configured for this persona',
     );
     // It must not claim any proof state for a default that does not exist.
     expect(within(row).queryByText(/class default \(proven\)/)).not.toBeInTheDocument();
     expect(within(row).queryByText(/class default \(candidate\)/)).not.toBeInTheDocument();
     expect(screen.queryByText(/platform default/i)).not.toBeInTheDocument();
-    expect(within(row).getByText('No effective model')).toBeInTheDocument();
+    expect(within(row).getByText('No model configured')).toBeInTheDocument();
   });
 
   it('does not upgrade an unstated class-default proof state to proven', async () => {
@@ -312,14 +312,14 @@ describe('Agent Models page — issue #5422', () => {
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
     expect(within(row).getByTestId('effective-source-brand-new-persona')).toHaveTextContent(
-      'claude-agent-sdk class default (proof state unknown)',
+      'Default for this persona (availability unconfirmed)',
     );
     expect(within(row).queryByText(/class default \(proven\)/)).not.toBeInTheDocument();
   });
 
-  it('keys the default label to each persona own compatibility class', async () => {
-    // Defaults are per compatibility class, so two personas in different classes must
-    // not share one label. A single platform-wide default label is forbidden.
+  it('keeps each persona default readiness distinct without displaying compatibility classes', async () => {
+    // The user sees each persona's own readiness, while compatibility classes
+    // remain an implementation detail.
     vi.mocked(selfApi.getPersonaCatalogue).mockResolvedValue({
       personas: [
         { ...personas.personas[0] },
@@ -352,10 +352,10 @@ describe('Agent Models page — issue #5422', () => {
 
     await screen.findByTestId('persona-row-brand-new-persona');
     expect(screen.getByTestId('effective-source-brand-new-persona')).toHaveTextContent(
-      'claude-agent-sdk class default (proven)',
+      'Default for this persona',
     );
     expect(screen.getByTestId('effective-source-codex-persona')).toHaveTextContent(
-      'codex-sdk class default (candidate)',
+      'Default for this persona (not ready)',
     );
     expect(screen.queryByText(/platform default/i)).not.toBeInTheDocument();
   });
@@ -391,13 +391,9 @@ describe('Agent Models page — issue #5422', () => {
     render(<AgentModels />);
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    expect(within(row).getByText('claude-agent-sdk class default (proven)')).toBeInTheDocument();
-    expect(within(row).getByText('Verified')).toBeInTheDocument();
-    const provenance = within(row).getByTestId('evidence-provenance');
-    const timeElements = provenance.querySelectorAll('time');
-    expect(timeElements).toHaveLength(2);
-    expect(timeElements[0].getAttribute('datetime')).toBe('2026-09-19T00:00:00Z');
-    expect(timeElements[1].getAttribute('datetime')).toBe('2026-09-26T00:00:00Z');
+    expect(within(row).getByText('Default for this persona')).toBeInTheDocument();
+    expect(within(row).getByText('Available')).toBeInTheDocument();
+    expect(within(row).queryByTestId('evidence-provenance')).not.toBeInTheDocument();
     expect(within(row).queryByText(/class default \(candidate\)/)).not.toBeInTheDocument();
     expect(screen.queryByText(/platform default/i)).not.toBeInTheDocument();
   });
@@ -411,7 +407,7 @@ describe('Agent Models page — issue #5422', () => {
 
     expect(await screen.findByText('Brand New Persona')).toBeInTheDocument();
     await waitFor(() => expect(selfApi.getManageableServicePrincipals).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole('group', { name: 'Configuration scope' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Settings for' })).not.toBeInTheDocument();
     expect(screen.queryByText(/Managed service accounts could not be loaded/)).not.toBeInTheDocument();
   });
 
@@ -419,8 +415,8 @@ describe('Agent Models page — issue #5422', () => {
     render(<AgentModels />);
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    expect(within(row).getByText('Not yet certified')).toBeInTheDocument();
-    expect(within(row).getByText('No certification probe has run.')).toBeInTheDocument();
+    expect(within(row).getByText('Not ready')).toBeInTheDocument();
+    expect(within(row).getByText('This model is not ready to use yet.')).toBeInTheDocument();
     expect(within(row).getByText('Not permitted by your organization.')).toBeInTheDocument();
     expect(within(row).getByRole('radio', { name: /Sonnet 4.6/ })).toBeDisabled();
     expect(within(row).getByRole('radio', { name: /Opus 4.6/ })).toBeDisabled();
@@ -452,7 +448,7 @@ describe('Agent Models page — issue #5422', () => {
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
     expect(within(row).getByText('Retired')).toBeInTheDocument();
-    expect(within(row).queryByText('Verified')).not.toBeInTheDocument();
+    expect(within(row).queryByText('Available')).not.toBeInTheDocument();
   });
 
   it('uses preference and policy state instead of calling a disallowed mapping uncertified', async () => {
@@ -466,8 +462,8 @@ describe('Agent Models page — issue #5422', () => {
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
     expect(within(row).getByText('Not permitted')).toBeInTheDocument();
-    expect(within(row).queryByText('Not yet certified')).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'No model has been certified yet' })).not.toBeInTheDocument();
+    expect(within(row).queryByText('Not ready')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Model choices are not ready yet' })).not.toBeInTheDocument();
   });
 
   it('does not claim certification is missing when every model is blocked for a different reason', async () => {
@@ -483,7 +479,7 @@ describe('Agent Models page — issue #5422', () => {
     render(<AgentModels />);
 
     expect(await screen.findByText('Brand New Persona')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'No model has been certified yet' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Model choices are not ready yet' })).not.toBeInTheDocument();
   });
 
   it('shows the certification alert only when eligible models are genuinely unproven', async () => {
@@ -502,10 +498,10 @@ describe('Agent Models page — issue #5422', () => {
     }));
     render(<AgentModels />);
 
-    expect(await screen.findByRole('heading', { name: 'No model has been certified yet' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Model choices are not ready yet' })).toBeInTheDocument();
   });
 
-  it('renders stale evidence timestamps without claiming that certification never happened', async () => {
+  it('shows a stale availability warning without exposing evidence timestamps', async () => {
     vi.mocked(selfApi.getPreferences).mockResolvedValue({
       ...preferences,
       entries: preferences.entries.map((entry) => ({
@@ -538,15 +534,9 @@ describe('Agent Models page — issue #5422', () => {
     render(<AgentModels />);
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    expect(within(row).getByText('Evidence stale')).toBeInTheDocument();
-    const provenance = within(row).getByTestId('evidence-provenance');
-    const timeElements = provenance.querySelectorAll('time');
-    expect(timeElements).toHaveLength(2);
-    expect(timeElements[0].getAttribute('datetime')).toBe('2026-09-01T12:00:00Z');
-    expect(timeElements[1].getAttribute('datetime')).toBe('2026-09-08T12:00:00Z');
-    expect(provenance).toHaveTextContent(/Last verified/);
-    expect(provenance).toHaveTextContent(/expired/);
-    expect(screen.queryByRole('heading', { name: 'No model has been certified yet' })).not.toBeInTheDocument();
+    expect(within(row).getByText('Availability needs checking')).toBeInTheDocument();
+    expect(within(row).queryByTestId('evidence-provenance')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Model choices are not ready yet' })).not.toBeInTheDocument();
   });
 
   it('saves and resets a row from server responses without optimistic state', async () => {
@@ -561,14 +551,14 @@ describe('Agent Models page — issue #5422', () => {
       undefined,
     ));
     expect(await within(row).findByText('Your choice')).toBeInTheDocument();
-    expect(within(row).getAllByText('model-certified')).toHaveLength(2);
+    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
 
     fireEvent.click(within(row).getByRole('button', { name: 'Reset' }));
     await waitFor(() => expect(selfApi.resetPreference).toHaveBeenCalledWith(
       'brand-new-persona',
       1,
     ));
-    expect(await within(row).findByText('claude-agent-sdk class default (candidate)')).toBeInTheDocument();
+    expect(await within(row).findByText('Default for this persona (not ready)')).toBeInTheDocument();
     expect(screen.queryByText(/platform default/i)).not.toBeInTheDocument();
     expect(within(row).getByRole('button', { name: 'Reset' })).toBeDisabled();
     fireEvent.click(within(row).getByRole('button', { name: 'Reset' }));
@@ -599,7 +589,7 @@ describe('Agent Models page — issue #5422', () => {
     await waitFor(() => expect(selfApi.setPreference).toHaveBeenCalledTimes(1));
     expect(selfScope).toBeDisabled();
     expect(serviceScope).toBeDisabled();
-    expect(within(row).getByText('claude-agent-sdk class default (candidate)')).toBeInTheDocument();
+    expect(within(row).getByText('Default for this persona (not ready)')).toBeInTheDocument();
 
     pending.resolve(detail());
     expect(await within(row).findByText('Your choice')).toBeInTheDocument();
@@ -658,7 +648,7 @@ describe('Agent Models page — issue #5422', () => {
     });
     expect(await within(row).findByText(/changed elsewhere/)).toBeInTheDocument();
     expect(within(row).getByText('Your choice')).toBeInTheDocument();
-    expect(within(row).getAllByText('model-certified')).toHaveLength(2);
+    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
     expect(within(row).queryByText(/Nothing was changed/)).not.toBeInTheDocument();
     await waitFor(() => expect(selfScope).toBeEnabled());
     expect(serviceScope).toBeEnabled();
@@ -679,7 +669,7 @@ describe('Agent Models page — issue #5422', () => {
 
     await screen.findByText('Brand New Persona');
     vi.mocked(adminApi.getModelCatalogue).mockClear();
-    const managed = await screen.findByRole('radio', { name: /Nightly triage \(Acme, github-actions\)/ });
+    const managed = await screen.findByRole('radio', { name: /Nightly triage \(Acme\)/ });
     fireEvent.click(managed);
     await waitFor(() => expect(adminApi.getPreferences).toHaveBeenCalledWith(
       'opaque/service:id',
@@ -769,14 +759,14 @@ describe('Agent Models page — issue #5422', () => {
     fireEvent.click(managed);
     const row = await screen.findByTestId('persona-row-brand-new-persona');
     expect(await within(row).findByText('Your choice')).toBeInTheDocument();
-    expect(within(row).getAllByText('model-certified')).toHaveLength(2);
+    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
 
     await act(async () => {
       staleSelfPreferences.resolve(preferences);
       await staleSelfPreferences.promise;
     });
     expect(within(row).getByText('Your choice')).toBeInTheDocument();
-    expect(within(row).getAllByText('model-certified')).toHaveLength(2);
+    expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
   });
 
   it('does not replace known state after a refusal and offers an explicit conflict reload', async () => {
@@ -818,8 +808,8 @@ describe('Agent Models page — issue #5422', () => {
 
     fireEvent.click(choice);
     fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
-    expect(await within(row).findByText(/Evidence expired\. Nothing was changed/)).toBeInTheDocument();
-    expect(within(row).getByText('claude-agent-sdk class default (candidate)')).toBeInTheDocument();
+    expect(await within(row).findByText(/This model is currently unavailable/)).toBeInTheDocument();
+    expect(within(row).getByText('Default for this persona (not ready)')).toBeInTheDocument();
 
     fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
     expect(await within(row).findByText(/changed elsewhere/)).toBeInTheDocument();
@@ -834,7 +824,7 @@ describe('Agent Models page — issue #5422', () => {
       await staleReload.promise;
     });
     expect(within(managedRow).getByText('Your choice')).toBeInTheDocument();
-    expect(within(managedRow).getAllByText('model-certified')).toHaveLength(2);
+    expect(within(managedRow).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
   });
 
   it('fences an imperative retry so it cannot overwrite a newer principal scope', async () => {
@@ -864,8 +854,8 @@ describe('Agent Models page — issue #5422', () => {
     vi.mocked(selfApi.getPersonaCatalogue).mockRejectedValueOnce(new Error('catalogue offline'));
     render(<AgentModels />);
 
-    expect(await screen.findByText(/catalogue offline/)).toBeInTheDocument();
-    expect(screen.getByText(/not a statement that any effective model is known/)).toBeInTheDocument();
+    expect(await screen.findByText('Could not load Agent Models.')).toBeInTheDocument();
+    expect(screen.queryByText(/effective model is known/)).not.toBeInTheDocument();
     expect(screen.queryByText(/platform default/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
@@ -879,10 +869,10 @@ describe('Agent Models page — issue #5422', () => {
       await staleRetry.promise;
     });
     expect(within(managedRow).getByText('Your choice')).toBeInTheDocument();
-    expect(within(managedRow).getAllByText('model-certified')).toHaveLength(2);
+    expect(within(managedRow).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
   });
 
-  it('keeps stale evidence visible with expiry dates and never labels it verified', async () => {
+  it('keeps stale models unavailable without exposing expiry dates', async () => {
     vi.mocked(selfApi.getModelCatalogue).mockResolvedValue({
       ...modelCatalogue,
       models: modelCatalogue.models.map((model) => model.canonical_model_id === 'model-default'
@@ -900,18 +890,12 @@ describe('Agent Models page — issue #5422', () => {
     });
     render(<AgentModels />);
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    expect(within(row).getByText('Evidence stale')).toBeInTheDocument();
-    expect(within(row).queryByText('Verified')).not.toBeInTheDocument();
-    const provenance = within(row).getByTestId('evidence-provenance');
-    expect(provenance).toHaveTextContent(/Last verified/);
-    expect(provenance).toHaveTextContent(/expired/);
-    const timeElements = provenance.querySelectorAll('time');
-    expect(timeElements).toHaveLength(2);
-    expect(timeElements[0].getAttribute('datetime')).toBe('2026-09-01T00:00:00Z');
-    expect(timeElements[1].getAttribute('datetime')).toBe('2026-09-08T00:00:00Z');
+    expect(within(row).getByText('Availability needs checking')).toBeInTheDocument();
+    expect(within(row).queryByText('Available')).not.toBeInTheDocument();
+    expect(within(row).queryByTestId('evidence-provenance')).not.toBeInTheDocument();
   });
 
-  it('renders verified evidence timestamps for a proven model', async () => {
+  it('shows availability for a proven model without exposing verification timestamps', async () => {
     vi.mocked(selfApi.getPreferences).mockResolvedValue({
       ...preferences,
       entries: preferences.entries.map((entry) => ({
@@ -942,21 +926,15 @@ describe('Agent Models page — issue #5422', () => {
     render(<AgentModels />);
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    expect(within(row).getByText('Verified')).toBeInTheDocument();
-    const provenance = within(row).getByTestId('evidence-provenance');
-    expect(provenance).toHaveTextContent(/Verified/);
-    expect(provenance).toHaveTextContent(/expires/);
-    const timeElements = provenance.querySelectorAll('time');
-    expect(timeElements).toHaveLength(2);
-    expect(timeElements[0].getAttribute('datetime')).toBe('2026-09-19T00:00:00Z');
-    expect(timeElements[1].getAttribute('datetime')).toBe('2026-09-26T00:00:00Z');
+    expect(within(row).getByText('Available')).toBeInTheDocument();
+    expect(within(row).queryByTestId('evidence-provenance')).not.toBeInTheDocument();
   });
 
   it('does not render evidence timestamps for a candidate with no evidence', async () => {
     render(<AgentModels />);
 
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    expect(within(row).getByText('Not yet certified')).toBeInTheDocument();
+    expect(within(row).getByText('Not ready')).toBeInTheDocument();
     expect(within(row).queryByTestId('evidence-provenance')).not.toBeInTheDocument();
   });
 
@@ -995,7 +973,7 @@ describe('Agent Models page — issue #5422', () => {
 
     fireEvent.click(within(second).getByRole('radio', { name: /Haiku 4.5/ }));
     fireEvent.click(within(second).getByRole('button', { name: 'Save' }));
-    expect(await within(second).findByText(/Reviewer model is disallowed/)).toBeInTheDocument();
+    expect(await within(second).findByText(/Your organization does not allow this model/)).toBeInTheDocument();
     expect(within(first).getByText('Your choice')).toBeInTheDocument();
     expect(screen.queryByText(/all rows saved/i)).not.toBeInTheDocument();
   });
@@ -1057,7 +1035,7 @@ describe('Agent Models page — issue #5422', () => {
       // Each radio group must be announced with which persona it configures, otherwise
       // a screen-reader user cannot tell the identical model lists apart.
       expect(screen.getByRole('radiogroup', { name: 'Model for Brand New Persona' })).toBeInTheDocument();
-      expect(screen.getByRole('group', { name: 'Configuration scope' })).toBeInTheDocument();
+      expect(screen.getByRole('group', { name: 'Settings for' })).toBeInTheDocument();
     });
 
     it('switches configuration scope by keyboard and reports the target account', async () => {
@@ -1094,8 +1072,8 @@ describe('Agent Models page — issue #5422', () => {
       // role="alert" is what makes the failure reach a screen reader rather than being
       // visible-only; the reason must be stated, not a generic failure.
       const alert = await within(row).findByRole('alert');
-      expect(alert).toHaveTextContent(/That model is disallowed/);
-      expect(alert).toHaveTextContent(/Nothing was changed/);
+      expect(alert).toHaveTextContent(/Your organization does not allow this model/);
+      expect(alert).not.toHaveTextContent(/not_permitted/);
     });
   });
 });

@@ -231,20 +231,18 @@ def test_reset_passes_the_observed_revision_in_the_delete_body() -> None:
     assert result["detail"]["changed"] is True
 
 
-def test_ac05e_reset_renders_class_and_candidate_without_claiming_proof(monkeypatch, capsys) -> None:
+def test_reset_explains_unready_default_without_exposing_runtime_details(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "ModelsApi", lambda: StubApi(before=mapping(CANONICAL, 8)))
     code = cli.main(["mappings", "reset", "--persona", "architect", "--yes"])
     captured = capsys.readouterr()
     rendered = captured.out.lower()
 
     assert code == 0
-    assert '"compatibility_class": "claude-agent-sdk"' in rendered
-    assert '"harness_contract_revision": "server-harness-revision"' in rendered
-    assert '"effective_is_candidate": true' in rendered
-    assert '"class_default_status": "candidate"' in rendered
-    assert '"class_default_status": "proven"' not in rendered
+    assert "default for this persona (not ready)" in rendered
+    assert "harness_contract_revision" not in rendered
+    assert "compatibility_class" not in rendered
+    assert "candidate" not in rendered
     assert "the platform default" not in rendered
-    assert "the platform default" not in SCRIPT.read_text().lower()
 
 
 def test_reset_reports_unchanged_when_another_reset_won() -> None:
@@ -387,7 +385,7 @@ def test_stale_marked_2xx_write_is_unavailable_and_requires_readback(action, mon
 
     assert code == 4
     assert captured.out.splitlines()[0].startswith(f"models mappings {action}: unavailable")
-    assert '"changed": null' in captured.out
+    assert "The saved state is unknown." in captured.out
     assert "saved state is unknown" in captured.out
     assert "adp models mappings list" in captured.out
 
@@ -547,19 +545,19 @@ def test_json_success_is_one_parseable_document(monkeypatch, capsys) -> None:
     assert captured.err == ""
 
 
-def test_human_mutation_output_names_tenant_and_subject_on_first_line(monkeypatch, capsys) -> None:
+def test_human_mutation_output_names_organization_and_account_on_first_line(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "ModelsApi", StubApi)
     code = cli.main(["mappings", "set", "--persona", "architect", "--model", CANONICAL, "--dry-run"])
     captured = capsys.readouterr()
     first_line = captured.out.splitlines()[0]
     assert code == 0
-    assert "caller human/bearer" in first_line
-    assert "tenant org-1" in first_line
-    assert "principal user-1" in first_line
+    assert "account user-1" in first_line
+    assert "organization org-1" in first_line
+    assert "bearer" not in first_line
     assert captured.err == ""
 
 
-def test_signed_machine_mutation_names_mode_and_canonical_subject_on_first_line(monkeypatch, capsys) -> None:
+def test_signed_machine_mutation_names_service_account_on_first_line(monkeypatch, capsys) -> None:
     class SignedMachineStub(StubApi):
         machine = True
         caller_mode = "machine/SigV4"
@@ -579,9 +577,9 @@ def test_signed_machine_mutation_names_mode_and_canonical_subject_on_first_line(
     first_line = captured.out.splitlines()[0]
 
     assert code == 0
-    assert "caller machine/SigV4" in first_line
-    assert "tenant org-1" in first_line
-    assert "principal sp-canonical-1" in first_line
+    assert "service account sp-canonical-1" in first_line
+    assert "organization org-1" in first_line
+    assert "SigV4" not in first_line
     assert captured.err == ""
 
 
