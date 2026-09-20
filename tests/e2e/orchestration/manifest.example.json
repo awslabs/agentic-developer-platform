@@ -86,9 +86,9 @@
       "kind": "deployment",
       "cluster": "reviewed-fixture-cluster",
       "namespace": "reviewed-fixture-namespace",
-      "deployment": "gateway",
-      "container": "gateway",
-      "ecr_repository": "reviewed-gateway"
+      "deployment": "bedrockgateway",
+      "container": "bedrockgateway",
+      "ecr_repository": "adp-gateway"
     },
     "worker": {
       "kind": "scaledjob",
@@ -107,5 +107,7 @@
   ],
   "poll_seconds": 10,
   "native_faults": false,
-  "worker_loss": false
+  "worker_loss": false,
+  "halt_stop": false,
+  "allowance_fixture_usd": null
 }

@@ -49,7 +49,8 @@ class WorkerProvider:
             ):
                 raise Unsupported("invalid worker resource identity")
         graph = session.client.get(f"/orchestration/flows/{resource['flow_id']}")
-        if graph["slug"] != qualification_id:
+        suffix = "-stop" if resource.get("purpose") == "worker-stop" else ""
+        if graph["slug"] != qualification_id + suffix:
             raise Unsupported("worker is not in this qualification flow")
         plans = session.client.get(f"/orchestration/flows/{resource['flow_id']}/plans")
         current = [p for p in plans if p["superseded_at"] is None]
@@ -86,16 +87,17 @@ class WorkerProvider:
 
     def create(self, *, intended_identity, ownership_tags, idempotency_token):
         session = self.session
-        if (
-            intended_identity != session.inventory.qualification_id + "/worker-loss"
-            or ownership_tags
-            != session.config.ownership_tags(session.inventory.qualification_id)
+        if intended_identity != session.inventory.qualification_id + "/" + getattr(
+            self, "purpose", "worker-loss"
+        ) or ownership_tags != session.config.ownership_tags(
+            session.inventory.qualification_id
         ):
             raise ValueError("invalid disposable worker fixture")
         if self.node is None or not self.node.get("activity"):
             raise Unsupported("no live fixture worker")
         resource = {
             "qualification_id": session.inventory.qualification_id,
+            "purpose": getattr(self, "purpose", "worker-loss"),
             "flow_id": session.flow_id,
             "node_id": self.node["id"],
             "invocation_id": self.node["activity"]["invocation_id"],

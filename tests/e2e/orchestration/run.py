@@ -225,6 +225,15 @@ def preflight(config: QualificationConfig) -> Outcome:
             for item in planned
         )
 
+    from tests.e2e.orchestration.fixtures import resource_units
+
+    report["planned_resource_units"] = sum(
+        resource_units(row["kind"]) for row in report["planned_resources"]
+    )
+    if report["planned_resource_units"] > config.max_resources:
+        report["detail"] = "planned fixtures exceed the accepted resource bound"
+        return Outcome(STATUS_INCOMPLETE, EXIT_INCOMPLETE, report)
+
     # Preflight reports rather than refuses — it mutates nothing either way — but
     # it reports the COMPARISON, so an operator sees a mismatch before dispatching
     # a run that would be refused.
@@ -477,6 +486,7 @@ def cleanup_qualification(
         "target": target.to_json(),
         "inventory": str(inventory.path),
         "deleted": list(outcome.deleted),
+        "retained_audit": list(outcome.retained),
         "refused": [{"fixture_id": f, "reason": r} for f, r in outcome.refused],
         "failed": [{"fixture_id": f, "error": e} for f, e in outcome.failed],
         # Evidence is retained after cleanup so a leak stays investigable.

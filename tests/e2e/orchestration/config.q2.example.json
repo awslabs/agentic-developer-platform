@@ -18,7 +18,7 @@
     "harness": "0000000000000000000000000000000000000000"
   },
   "bounds": {
-    "max_resources": 12,
+    "max_resources": 23,
     "max_runs": 20,
     "max_usd": 5.0,
     "max_duration_seconds": 1800

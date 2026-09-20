@@ -88,6 +88,18 @@ def assert_outcome(name, observed):
     The backend preserves native responses in hashed artifacts and normalizes
     just these facts. Missing keys are failure, not benign default values.
     """
+    if name == "halt-stop":
+        from .stop import assert_stop
+
+        return assert_stop(observed)
+    if name in {"revocation", "fanout-budget", "repair-budget"}:
+        from .controls import assert_control_outcome
+
+        return assert_control_outcome(name, observed)
+    if name in {"stale-image", "failed-deploy"}:
+        from .runtime_faults import assert_runtime_outcome
+
+        return assert_runtime_outcome(name, observed)
     if name == "failed-ci":
         head = observed["injection"]["head_sha"]
         assert any(
@@ -185,34 +197,6 @@ def assert_outcome(name, observed):
             == "ADP deployment " + remote["correlation"]
         )
         assert remote["runs"][0]["head_sha"] == matching[0]["source_revision"]
-    elif name in {"failed-ci", "stale-image", "failed-deploy"}:
-        assert after["explicit_block"] and not after["accepted"]
-        if name == "failed-ci":
-            assert observed["checks"]["required_conclusion"] == "failure"
-            assert after["merged"] is False
-        elif name == "stale-image":
-            assert (
-                observed["runtime"]["actual_revision"]
-                != observed["runtime"]["required_revision"]
-            )
-        else:
-            assert observed["deployment"]["conclusion"] == "failure"
-    elif name == "revocation":
-        assert observed["injection"]["revoked_at"] <= after["observed_at"]
-        assert after["boundary_status"] in {403, 404, 409}
-        assert after["effect_ids"] == before["effect_ids"]
-    elif name in {"fanout-budget", "repair-budget"}:
-        assert (
-            after["explicit_block"] and after["allowance_id"] == before["allowance_id"]
-        )
-        assert after["effect_ids"] == before["effect_ids"]
-        assert observed["cost"]["reserved_plus_settled"] >= observed["policy"]["limit"]
-        assert len(observed["cost"]["descendant_run_ids"]) >= 2
-    elif name == "halt-stop":
-        assert observed["graph"]["halted"] is True
-        assert observed["worker"]["termination_confirmed"] is True
-        assert observed["worker"]["status_code"] != 501
-        assert after["effect_ids"] == before["effect_ids"]
     else:
         raise Unsupported(f"no supported outcome assertion for {name}")
 

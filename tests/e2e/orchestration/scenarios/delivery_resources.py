@@ -41,16 +41,20 @@ class DeliveryResourceProvider:
             raise Unsupported(
                 "worker-created PR/branch absent or ambiguous; retain intent for reconciliation"
             )
-        return self.descriptor(matches[0], qualification_id)
+        from .cleanup import find_flow
+
+        flow_id = find_flow(self.client, qualification_id)
+        return self.descriptor(matches[0], qualification_id, flow_id)
 
     @staticmethod
-    def descriptor(pr, qualification_id):
+    def descriptor(pr, qualification_id, flow_id=None):
         return json.dumps(
             {
                 "qualification_id": qualification_id,
                 "pr_number": pr["number"],
                 "branch": pr["head"]["ref"],
                 "head_sha": pr["head"]["sha"],
+                "flow_id": flow_id,
             },
             sort_keys=True,
         )
@@ -80,17 +84,44 @@ class DeliveryResourceProvider:
         return self.client.config.ownership_tags(value["qualification_id"])
 
     def delete(self, resource_id):
-        # GitHub's branch-delete API has no expected-SHA precondition. A stale
-        # read must not delete a replacement branch; preserve the explicit record.
-        raise Unsupported(
-            "retain worker-created PR/branch audit; cleanup requires terminal worker evidence and provider-safe branch reconciliation"
+        from tests.e2e.orchestration.fixtures import RetainedAudit
+        from .cleanup import terminal_flow, delete_branch
+
+        value = json.loads(resource_id)
+        if not value.get("flow_id"):
+            raise Unsupported("cleanup requires flow lineage reconciliation")
+        graph, _ = terminal_flow(
+            self.client, value["flow_id"], value["qualification_id"]
         )
+        if not any(
+            (n.get("bound_pull_request") or {}).get("pr_number") == value["pr_number"]
+            for n in graph["nodes"]
+        ):
+            raise Unsupported("PR is not bound to the owned terminal flow")
+        if self.read_tags(resource_id) is None:
+            raise Unsupported("delivery resource changed before cleanup")
+        path = f"/repos/{self.client.config.repository}/pulls/{value['pr_number']}"
+        pr = self.client.get(path, github=True)
+        if self.kind == "qualification-pr":
+            if pr["state"] != "closed":
+                status, _ = self.client.request(
+                    "PATCH", path, github=True, body={"state": "closed"}
+                )
+                if (
+                    status != 200
+                    or self.client.get(path, github=True)["state"] != "closed"
+                ):
+                    raise Unsupported("PR close was not verified")
+            return RetainedAudit("closed pull request and review history retained")
+        if pr["state"] != "closed":
+            raise Unsupported("close the PR before branch cleanup")
+        delete_branch(self.client, value["branch"], value["head_sha"])
 
 
 def plan_resources(session):
-    if session.config.max_resources < 9:
+    if session.config.max_resources < 23:
         raise Unsupported(
-            "Q2 needs at least 9 inventory slots: two issues, two PRs, two branches, two flows and one worker"
+            "Q2 needs at least 23 inventory slots: delivery resources, worker, namespace, network policy, deployment and its bounded ReplicaSet/Pod"
         )
     for index in (1, 2):
         for resource in ("pr", "branch"):
@@ -123,7 +154,7 @@ def record_resources(session, data):
         if pr["head"]["ref"] != branch_name(session.inventory.qualification_id, index):
             raise Unsupported("worker created an off-plan branch")
         descriptor = DeliveryResourceProvider.descriptor(
-            pr, session.inventory.qualification_id
+            pr, session.inventory.qualification_id, session.flow_id
         )
         for resource in ("pr", "branch"):
             provider = session.providers["qualification-" + resource]

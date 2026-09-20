@@ -33,6 +33,28 @@ class DeliveryAdapter:
                 "worker-loss", "qualification-worker", "<qualification-id>/worker-loss"
             )
         )
+        for suffix, kind in (
+            ("namespace", "qualification-namespace"),
+            ("network", "qualification-network-policy"),
+            ("deployment", "qualification-runtime"),
+        ):
+            base.append(
+                FixtureRequest(
+                    "runtime-" + suffix, kind, "<qualification-id>/runtime-" + suffix
+                )
+            )
+        base.extend(
+            FixtureRequest(name, "qualification-flow", "<qualification-id>/" + name)
+            for name in ("allowance", "revocation")
+        )
+        base.extend(
+            FixtureRequest(name, kind, "<qualification-id>/" + name)
+            for name, kind in (
+                ("stop", "qualification-flow"),
+                ("stop-issue", "qualification-stop-issue"),
+                ("worker-stop", "qualification-worker"),
+            )
+        )
         return base
 
     def fixture_providers(self, config):
@@ -42,11 +64,22 @@ class DeliveryAdapter:
         from .providers import IssueProvider
         from .workers import WorkerProvider
         from .delivery_resources import DeliveryResourceProvider
+        from .runtime_faults import RuntimeFixtureProvider
+        from .stop import StopIssueProvider
 
         manifest, _ = load_manifest(config)
         client = Client(config, manifest)
         return (
+            *(
+                RuntimeFixtureProvider(client, manifest, kind)
+                for kind in (
+                    "qualification-namespace",
+                    "qualification-network-policy",
+                    "qualification-runtime",
+                )
+            ),
             IssueProvider(client),
+            StopIssueProvider(client),
             FlowProvider(client),
             WorkerProvider.for_config(config, manifest),
             DeliveryResourceProvider(client, "qualification-pr"),

@@ -1,8 +1,7 @@
 # ENGINE-Q2 delivery scenarios
 
-Implementation checkpoint for #5157. The code is not yet ready for qualification
-or code closure: the unsupported fixture cases and remaining checklist below are
-explicit. #5158, #5133 and #5134 retain live acceptance.
+Scenario implementation for #5157. #5158, #5133 and #5134 retain live acceptance.
+Offline contract checks are not live qualification evidence.
 
 `autonomous-delivery` creates two real-code issues and an accepted graph:
 first story → deployed evaluation → human release → dependent story. Fixed tests
@@ -68,16 +67,36 @@ mandatory `NOT_RUN` or `FAIL` prevents overall PASS.
 | Failed CI | Pinned rounding defect's actual required-check failure and blocked merge |
 | Tenant denial | Authenticated different user/org receives 404 for the owner flow |
 | Human refusal | Separate gate-only graph; actual human rejection and no successor dispatch |
-| Stale image / failed deployment | NOT_RUN: no inventoried disposable rollout target; owners #5152 / #5151 |
-| Revocation | NOT_RUN: no disposable authority fixture; owner #5128 |
-| Fan-out / repair allowance | NOT_RUN: public cost omits in-flight reservations; isolated allowance proof missing; owner #5128 |
-| Halt versus proven stop | NOT_RUN: no separate halt-control worker; owner #3963 |
+| Stale image / failed deployment | Owned namespace, deny-all network policy and bounded sleep-only Deployment; fresh authenticated captures reach the deployed native runtime verifier |
+| Revocation | Withdraw the accepted policy from a separate gate-only flow through the full amendment API; native admission must refuse stale authority, never revert to legacy access |
+| Fan-out / repair allowance | Concurrent native reservations for real server-created fixture nodes exhaust one accepted flow allowance; additional and retry admissions must both refuse; unused holds are reconciled through the native service |
+| Halt versus proven stop | Deployed capability check, separate owned issue/flow/worker, signed abort, exact generation acknowledgement, graph halt and independent invocation/Pod termination proof; unavailable abort remains NOT_RUN (#3963) |
 
-The last six cases are implementation/integration gaps, not successful tests or
-claims that the platform supports their safe injection. Do not approve this
-checkpoint as complete solely because its offline tests pass. Shared deployment
-changes, revoking the operator connection, direct budget-ledger edits, shared
-controller stops and queue purges are not substitutes for disposable fixtures.
+Native faults require `native_faults`; worker loss requires `worker_loss` and
+stop requires `halt_stop`. Before provisioning, the registered runtime revisions
+and ownership are verified again. There is no shared deployment mutation,
+operator credential revocation, direct ledger edit, queue purge or controller stop.
+
+The runtime fixture starts from a verified old gateway digest. It runs only a
+bounded sleep command, with no secrets, volumes, service account token, root
+user or writable root filesystem. A healthy baseline must precede stale-image
+validation and the failing readiness probe. The verifier runs deployed code over
+an authenticated Deployment capture; it is explicitly a negative runtime-boundary
+probe, not a fabricated successful D3 deployment receipt.
+
+Allowance probes use three gate nodes that cannot launch work, and the actual
+reservation service, including its concurrent Lua operation. They are admission
+boundary checks, not claimed paid worker runs. `allowance_fixture_usd` must pin
+exactly twice the actual per-run ceiling and fit inside `max_usd`; otherwise the
+probe is NOT_RUN. The two holds and the denied fan-out/retry share the original
+server flow binding. Only those undispatched holds are canceled. Actual delivery
+review/repair is separately required by the primary scenario.
+
+The complete inventory reserves at least 23 resource units, including bounded
+Deployment ReplicaSet/Pod overlap and worker Job/Pod pairs. An unavailable stop
+capability is reported before creating a paid worker. The stop fixture uses only
+the known unspent remainder and one attempt, after primary workers have exited.
+Final spend includes all fixture flows. Examples remain deliberately non-runnable.
 
 ## Evidence and cleanup
 
@@ -100,16 +119,22 @@ audit state: no delete API exists, so the inventory explicitly retains them and
 cleanup reports that reason. Worker cleanup never terminates another worker.
 Code closure, deployed revision evidence and live acceptance are separate.
 
-## Remaining completion checklist
+## Validation and acceptance
 
-- Connect the six unavailable cases to reviewed disposable fixture contracts.
-- Finish terminal-worker proof and safe cleanup of worker-created branches;
-  PR/branch intents are now recorded before dispatch and reconciled from bindings.
-- Complete visual/role fixtures only where the accepted E1 specification
-  requires them; current owner/release binding and adversarial report checks exist.
-- Validate all full-report paths, credential/clock failures and interruption
-  accounting; preserve artifacts when an early prerequisite fails.
-- Run the affected integrated regression once, perform Root contributor review,
-  open one ready PR, pass required CI and merge normally.
-- Execute no Q3 run until its prerequisite acceptance and complete approved
-  fixture manifest are available. Q3 remains 0/2 at this checkpoint.
+Run `python -m pytest tests/e2e/orchestration -q` for network-free harness checks.
+From `modules/gateway`, run the Q2 native contract suites with real PostgreSQL:
+`python -m pytest tests/orchestration/test_q2_native_contract.py tests/orchestration/test_q2_control_contract.py -q`.
+The allowance contract test executes production Lua using fakeredis/lupa; it is
+labeled non-live, as are the PostgreSQL fixture tests. Ordinary CI never performs
+paid execution or resolves live credentials.
+
+Report tests cover early credential/runtime failure and interruption. Evidence
+resumption appends new files; it never overwrites a preceding capture. Cleanup
+checks terminal invocation history, closes and retains provider audit records,
+and deletes branches with an atomic expected-head lease. Namespace cleanup waits
+for inventoried children; UID preconditions prevent deleting a replacement.
+
+No Q3 run can pass until its prerequisite acceptance and complete approved
+fixture manifest are available. Q3 remains 0/2; unavailable abort and durable
+control history remain visible acceptance blockers rather than implementation
+claims of successful live behavior.

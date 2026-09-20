@@ -38,6 +38,7 @@ from tests.e2e.orchestration.run import (
     resume_qualification,
 )
 from tests.e2e.orchestration.test_fixtures import FakeProvider
+from tests.e2e.orchestration import report as _report_contract  # noqa: F401
 
 QUAL_ID = "q-0123456789abcdef"
 ORG = FixtureRequest("org", "organization", "qual-org")

@@ -106,13 +106,22 @@ class IssueProvider:
         return metadata.get("ownership_tags") if metadata else None
 
     def delete(self, resource_id):
-        # GitHub issues are closed, not erased. The immutable receipt stays in
-        # inventory/evidence and cleanup documents this provider's semantics.
+        from tests.e2e.orchestration.fixtures import RetainedAudit
+        from .cleanup import find_flow, terminal_flow
+
+        path = self.path + "/issues/" + resource_id
+        issue = self.client.get(path, github=True)
+        metadata = self.metadata(issue)
+        if not metadata:
+            raise Unsupported("issue ownership metadata unavailable")
+        qualification_id = metadata["ownership_tags"]["adp:qualification-id"]
+        suffix = "-stop" if self.kind == "qualification-stop-issue" else ""
+        flow_id = find_flow(self.client, qualification_id, suffix, allow_absent=True)
+        if flow_id:
+            terminal_flow(self.client, flow_id, qualification_id)
         status, _ = self.client.request(
-            "PATCH",
-            self.path + "/issues/" + resource_id,
-            github=True,
-            body={"state": "closed"},
+            "PATCH", path, github=True, body={"state": "closed"}
         )
-        if status != 200:
-            raise Unsupported(f"fixture issue close returned HTTP {status}")
+        if status != 200 or self.client.get(path, github=True)["state"] != "closed":
+            raise Unsupported("fixture issue closure was not verified")
+        return RetainedAudit("closed issue and its provider history retained")

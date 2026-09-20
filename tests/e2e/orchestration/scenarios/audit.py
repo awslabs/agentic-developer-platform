@@ -30,6 +30,10 @@ def collect(session, pull_requests):
             elif row["actor_kind"] == "human":
                 if row["kind"] == "plan_accepted":
                     kind = "planned_setup"
+                elif row["kind"] == "plan_amended" and row["id"] in getattr(
+                    session, "planned_decision_ids", set()
+                ):
+                    kind, target = "fault", "revocation"
                 elif row["kind"] in {"gate_approved", "gate_rejected"} and target in {
                     "release",
                     "refuse",

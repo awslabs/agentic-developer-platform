@@ -45,7 +45,8 @@ PLANNED = "planned"
 CREATED = "created"
 DELETED = "deleted"
 RECONCILE_FAILED = "reconcile_failed"
-_STATES = frozenset({PLANNED, CREATED, DELETED, RECONCILE_FAILED})
+RETAINED = "retained"
+_STATES = frozenset({PLANNED, CREATED, DELETED, RECONCILE_FAILED, RETAINED})
 
 # Entry fields that may never hold a credential. The inventory is an artifact
 # that gets uploaded, so a secret reaching it would outlive the run.
@@ -99,9 +100,15 @@ class FixtureRecord:
     def from_json(cls, body: Any) -> FixtureRecord:
         if not isinstance(body, dict):
             raise InventoryError("inventory entry is not an object")
-        missing = [k for k in ("fixture_id", "kind", "intended_identity", "state") if k not in body]
+        missing = [
+            k
+            for k in ("fixture_id", "kind", "intended_identity", "state")
+            if k not in body
+        ]
         if missing:
-            raise InventoryError(f"inventory entry is missing required field(s): {', '.join(missing)}")
+            raise InventoryError(
+                f"inventory entry is missing required field(s): {', '.join(missing)}"
+            )
         state = body["state"]
         if state not in _STATES:
             raise InventoryError(f"inventory entry has unknown state {state!r}")
@@ -136,7 +143,9 @@ def inventory_path(artifact_directory: str | Path, qualification_id: str) -> Pat
     sit under the artifact root, so a crafted id cannot write outside it even
     if the pattern above is later loosened.
     """
-    if not isinstance(qualification_id, str) or not _QUALIFICATION_ID.match(qualification_id):
+    if not isinstance(qualification_id, str) or not _QUALIFICATION_ID.match(
+        qualification_id
+    ):
         raise InventoryError(
             f"invalid qualification id {qualification_id!r}: expected 8-64 characters "
             f"matching {_QUALIFICATION_ID.pattern}"
@@ -144,7 +153,9 @@ def inventory_path(artifact_directory: str | Path, qualification_id: str) -> Pat
     root = Path(artifact_directory).expanduser().resolve()
     candidate = (root / qualification_id / INVENTORY_FILENAME).resolve()
     if root not in candidate.parents:
-        raise InventoryError(f"qualification id {qualification_id!r} resolves outside the artifact directory {root}")
+        raise InventoryError(
+            f"qualification id {qualification_id!r} resolves outside the artifact directory {root}"
+        )
     return candidate
 
 
@@ -160,7 +171,9 @@ class Inventory:
     # -- lifecycle ---------------------------------------------------------
 
     @classmethod
-    def create(cls, artifact_directory: str | Path, qualification_id: str, environment: str) -> Inventory:
+    def create(
+        cls, artifact_directory: str | Path, qualification_id: str, environment: str
+    ) -> Inventory:
         """Start a new inventory and persist it before any fixture exists."""
         path = inventory_path(artifact_directory, qualification_id)
         if path.exists():
@@ -194,11 +207,15 @@ class Inventory:
         try:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            raise InventoryError(f"no inventory for qualification {qualification_id!r} at {path}") from None
+            raise InventoryError(
+                f"no inventory for qualification {qualification_id!r} at {path}"
+            ) from None
         try:
             document = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise InventoryError(f"inventory at {path} is not valid JSON: {exc}") from None
+            raise InventoryError(
+                f"inventory at {path} is not valid JSON: {exc}"
+            ) from None
         if not isinstance(document, dict):
             raise InventoryError(f"inventory at {path} must be a JSON object")
 
@@ -248,7 +265,9 @@ class Inventory:
     ) -> FixtureRecord:
         """Record an intent and persist it BEFORE the provider is called."""
         if any(f.fixture_id == fixture_id for f in self.fixtures):
-            raise InventoryError(f"fixture {fixture_id!r} is already recorded in this inventory")
+            raise InventoryError(
+                f"fixture {fixture_id!r} is already recorded in this inventory"
+            )
         record = FixtureRecord(
             fixture_id=fixture_id,
             kind=kind,
@@ -265,12 +284,20 @@ class Inventory:
     def mark_created(self, fixture_id: str, observed_resource_id: str) -> FixtureRecord:
         """Attach the provider's real resource id to a planned fixture."""
         if not observed_resource_id:
-            raise InventoryError(f"fixture {fixture_id!r} cannot be marked created without a resource id")
-        return self._update(fixture_id, state=CREATED, observed_resource_id=str(observed_resource_id))
+            raise InventoryError(
+                f"fixture {fixture_id!r} cannot be marked created without a resource id"
+            )
+        return self._update(
+            fixture_id, state=CREATED, observed_resource_id=str(observed_resource_id)
+        )
 
     def mark_deleted(self, fixture_id: str, detail: str | None = None) -> FixtureRecord:
         """Record that cleanup verified this fixture is gone."""
         return self._update(fixture_id, state=DELETED, detail=detail)
+
+    def mark_retained(self, fixture_id: str, detail: str) -> FixtureRecord:
+        """A verified inert provider audit record remains; no live work remains."""
+        return self._update(fixture_id, state=RETAINED, detail=detail)
 
     def mark_reconcile_failed(self, fixture_id: str, detail: str) -> FixtureRecord:
         """Record that resume could not determine this fixture's real state."""
@@ -284,7 +311,9 @@ class Inventory:
                 self.fixtures[index] = updated
                 self.flush()
                 return updated
-        raise InventoryError(f"fixture {fixture_id!r} is not in inventory {self.qualification_id!r}")
+        raise InventoryError(
+            f"fixture {fixture_id!r} is not in inventory {self.qualification_id!r}"
+        )
 
     # -- queries -----------------------------------------------------------
 
@@ -292,7 +321,9 @@ class Inventory:
         for record in self.fixtures:
             if record.fixture_id == fixture_id:
                 return record
-        raise InventoryError(f"fixture {fixture_id!r} is not in inventory {self.qualification_id!r}")
+        raise InventoryError(
+            f"fixture {fixture_id!r} is not in inventory {self.qualification_id!r}"
+        )
 
     def in_state(self, *states: str) -> list[FixtureRecord]:
         wanted = set(states)
@@ -305,7 +336,7 @@ class Inventory:
         PLANNED means we may have crashed before or after the create, so the
         provider must be asked. CREATED means it exists and needs cleanup.
         """
-        return self.in_state(PLANNED, CREATED)
+        return self.in_state(PLANNED, CREATED, RECONCILE_FAILED)
 
     def live_resource_count(self) -> int:
         return len(self.in_state(CREATED))
@@ -356,7 +387,9 @@ def _reject_secretish(record: FixtureRecord) -> None:
     """Keep credentials out of an artifact that outlives the run."""
     for key in record.ownership_tags:
         if key not in _TOKEN_ALLOWED and _SECRET_LIKE.search(key):
-            raise InventoryError(f"refusing to record secret-like ownership tag {key!r} in the inventory")
+            raise InventoryError(
+                f"refusing to record secret-like ownership tag {key!r} in the inventory"
+            )
 
 
 def verify_ownership(
@@ -407,7 +440,9 @@ def restore_inventory(
     """
     source_root = Path(restore_root).expanduser().resolve()
     if not source_root.is_dir():
-        raise InventoryError(f"restore root does not exist or is not a directory: {source_root}")
+        raise InventoryError(
+            f"restore root does not exist or is not a directory: {source_root}"
+        )
 
     # Locate the inventory inside the downloaded tree. An artifact may unpack
     # either as `<root>/<qual-id>/inventory.json` or with the artifact directory

@@ -122,6 +122,25 @@
       "default": false,
       "title": "Worker Loss",
       "type": "boolean"
+    },
+    "halt_stop": {
+      "default": false,
+      "title": "Halt Stop",
+      "type": "boolean"
+    },
+    "allowance_fixture_usd": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Allowance Fixture Usd"
     }
   },
   "required": [

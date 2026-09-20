@@ -97,7 +97,10 @@ class FlowProvider:
         qualification_id = ownership_tags["adp:qualification-id"]
         if self.plan is None or self.plan["flow_slug"] not in {
             qualification_id,
-            qualification_id + "-refusal",
+            *(
+                qualification_id + suffix
+                for suffix in ("-refusal", "-allowance", "-revocation", "-stop")
+            ),
         }:
             raise ValueError("flow plan is not pinned to inventory")
         status, response = self.client.request(
@@ -112,11 +115,18 @@ class FlowProvider:
         return response["flow_id"]
 
     def find(self, *, intended_identity, idempotency_token):
-        # No blind repost following an unknown creation response. A human may
-        # reconcile through the published list API and the saved plan.
-        raise Unsupported(
-            "flow creation outcome needs explicit reconciliation; do not repost"
-        )
+        from .cleanup import find_flow
+
+        qualification_id, fixture = intended_identity.split("/", 1)
+        suffix = "" if fixture == "flow" else "-" + fixture
+        if suffix not in {"", "-refusal", "-allowance", "-revocation", "-stop"}:
+            raise Unsupported("unrecognized flow intent")
+        flow_id = find_flow(self.client, qualification_id, suffix)
+        if self.read_tags(flow_id) != self.client.config.ownership_tags(
+            qualification_id
+        ):
+            raise Unsupported("reconciled flow definition/ownership mismatch")
+        return flow_id
 
     def read_tags(self, resource_id):
         graph = self.client.get(f"/orchestration/flows/{resource_id}")
@@ -128,18 +138,34 @@ class FlowProvider:
             p["plan_document"].get("spec_revision") == DEFINITION_HASH for p in plans
         ):
             return None
-        return self.client.config.ownership_tags(slug.removesuffix("-refusal"))
+        from .cleanup import qualification_from_slug
+
+        return self.client.config.ownership_tags(qualification_from_slug(slug))
 
     def delete(self, resource_id):
-        raise Unsupported(
-            "accepted flow is durable audit state; no published flow-delete API; retain in cleanup inventory"
+        from tests.e2e.orchestration.fixtures import RetainedAudit
+        from .cleanup import terminal_flow
+
+        graph = self.client.get(f"/orchestration/flows/{resource_id}")
+        from .cleanup import qualification_from_slug
+
+        terminal_flow(self.client, resource_id, qualification_from_slug(graph["slug"]))
+        return RetainedAudit(
+            "terminal flow and accepted plans retained as durable audit history"
         )
 
 
 class Evidence:
     def __init__(self, inventory):
         self.root = inventory.path.parent
-        self.counter = 0
+        self.counter = max(
+            (
+                int(p.name.split("-", 1)[0])
+                for p in (self.root / "evidence").glob("[0-9]*-*.json")
+                if p.name.split("-", 1)[0].isdigit()
+            ),
+            default=0,
+        )
 
     def save(self, kind, data, source):
         self.counter += 1
@@ -149,7 +175,12 @@ class Evidence:
         raw = json.dumps(data, sort_keys=True, indent=2).encode()
         if len(raw) > 8 * 1024 * 1024:
             raise ValueError("evidence size limit exceeded")
-        path.write_bytes(raw)
+        with path.open("xb") as stream:
+            stream.write(raw)
+            stream.flush()
+            import os
+
+            os.fsync(stream.fileno())
         return Artifact(
             path=name,
             sha256=hashlib.sha256(raw).hexdigest(),
@@ -177,6 +208,7 @@ class LiveSession:
         self.flow_id = None
         self.samples = []
         self.runtime_observations = {}
+        self.prerequisite_runtime = {}
         self.parity_observation = None
         self.observation_errors = {}
         self.actual_versions = {"engine": "unobserved", "worker": "unobserved"}
@@ -193,6 +225,7 @@ class LiveSession:
         for component, target in self.manifest.runtime.items():
             observed = read_runtime(self.client, target)
             self.actual_versions[component] = observed["actual_revision"]
+            self.prerequisite_runtime[component] = observed
             self.evidence.save(
                 "prerequisite-runtime", observed, "registered-role:EKS/ECR"
             )
@@ -392,16 +425,24 @@ class LiveSession:
         return result
 
     def exercise(self, name):
-        from .capabilities import UNAVAILABLE, unavailable
+        if name == "halt-stop":
+            from .stop import exercise
 
+            return exercise(self)
+        if name in {"revocation", "fanout-budget", "repair-budget"}:
+            from .controls import exercise
+
+            return exercise(name, self)
+        if name in {"stale-image", "failed-deploy"}:
+            from .runtime_faults import exercise
+
+            return exercise(name, self)
         if name == "human-refusal":
             return self.human_refusal()
         if name in self.fault_observations:
             return self.fault_observations[name]
         if name in self.fault_errors:
             raise Unsupported(self.fault_errors[name])
-        if name in UNAVAILABLE:
-            return unavailable(name, self)
         # Named adapters need a disposable provider that can prove the current
         # ownership generation at the native boundary. Never target the shared
         # tick, synthesize a webhook, or turn a missing capability into PASS.
@@ -1047,12 +1088,32 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
                 }, {}
 
             check(criterion_id, fault)
-    except Exception as exc:
+    except (Exception, KeyboardInterrupt) as exc:
         results["A6-2.development"] = Result(
             id="A6-2.development",
             status="NOT_RUN" if isinstance(exc, Unsupported) else "FAIL",
             detail=f"Delivery stopped ({type(exc).__name__}); inventory and evidence retained",
         )
+    # Include every fixture flow, including failed/partial control creation.
+    # Unknown additional spend prevents PASS; never count only the primary flow.
+    if session.live:
+        try:
+            totals = []
+            for resource in inventory.fixtures:
+                if (
+                    resource.kind != "qualification-flow"
+                    or not resource.observed_resource_id
+                ):
+                    continue
+                cost = session.client.get(
+                    f"/orchestration/flows/{resource.observed_resource_id}/cost"
+                )
+                if cost["status"] != "known" or cost["partial"]:
+                    raise Unsupported("fixture spend is incomplete")
+                totals.append(float(cost["amount_usd"]))
+            spend = sum(totals) if totals else None
+        except Exception:
+            spend = None
     interventions_complete = False
     try:
         from .audit import collect
@@ -1094,6 +1155,14 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
         detail="Isolated inventory retained; cleanup is a separate recorded operation",
         evidence={"inventory": inventory_artifact},
     )
+    try:
+        observed_versions = session.versions()
+    except Exception:
+        observed_versions = {
+            "engine": "unobserved",
+            "worker": "unobserved",
+            "harness": "unverified",
+        }
     return ScenarioReport(
         qualification_id=inventory.qualification_id,
         definition_hash=DEFINITION_HASH,
@@ -1101,7 +1170,7 @@ def execute(config, inventory, providers, *, session_factory=LiveSession):
         live=session.live,
         started_at=started_at,
         completed_at=now(),
-        versions=session.versions(),
+        versions=observed_versions,
         checkout_revision=getattr(session, "checkout_revision", None),
         policy_id=policy.get("policy_id"),
         policy_hash=policy.get("policy_hash"),

@@ -23,11 +23,11 @@ def test_worker_resource_intents_precede_any_dispatch(valid_config):
     )
     client = Mock()
     session = NS(config=valid_config, inventory=inventory, client=client)
-    with pytest.raises(Unsupported, match="9 inventory slots"):
+    with pytest.raises(Unsupported, match="23 inventory slots"):
         plan_resources(session)
     assert inventory.fixtures == []
     session.config = replace(
-        valid_config, bounds={**valid_config.bounds, "max_resources": 9}
+        valid_config, bounds={**valid_config.bounds, "max_resources": 23}
     )
     plan_resources(session)
     assert len(inventory.fixtures) == 4

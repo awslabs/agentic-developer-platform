@@ -39,6 +39,8 @@ class Manifest(Strict):
     poll_seconds: int = Field(default=10, ge=1, le=30)
     native_faults: bool = False
     worker_loss: bool = False
+    halt_stop: bool = False
+    allowance_fixture_usd: float | None = Field(default=None, gt=0, le=100000)
 
     @model_validator(mode="after")
     def fixed_contract(self):
@@ -98,6 +100,11 @@ def load_manifest(config):
         or policy.get("environment_connection_ids") != [config.connection_ref]
     ):
         raise ValueError("manifest policy scope differs from qualification config")
+    if (
+        manifest.allowance_fixture_usd is not None
+        and manifest.allowance_fixture_usd > config.max_usd
+    ):
+        raise ValueError("allowance fixture exceeds accepted spend bound")
     limits = policy.get("limits", {})
     if (
         not 0 < float(limits.get("max_spend_usd", 0)) <= config.max_usd
