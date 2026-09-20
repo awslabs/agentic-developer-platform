@@ -703,7 +703,8 @@ def _grant(kind: str, human_id: str = "human-sub") -> DelegatedGrant:
 
 
 @pytest.mark.asyncio
-async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_session):
+@pytest.mark.parametrize("authority_kind", ["github_event", "gate_decision", "replan_request"])
+async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_session, authority_kind):
     db_session.add(User(id="user-a", org_id="tenant-a", team_id="team-a", email="a@example.test", cognito_sub="human-sub"))
     db_session.add(
         PersonaModelPreference(
@@ -736,14 +737,14 @@ async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_ses
         db_session,
         store=_RootStore(
             {
-                "authority_kind": {"S": "github_event"},
+                "authority_kind": {"S": authority_kind},
                 "human_id": {"S": "human-sub"},
             }
         ),
         invocation_id="root-a",
         tenant_id="tenant-a",
         execution={"flow_id": {"S": "chain-a"}},
-        grant=_grant("github_event"),
+        grant=_grant(authority_kind),
         now=NOW,
     )
 
@@ -776,20 +777,40 @@ async def test_human_root_snapshot_uses_canonical_user_and_frozen_db_rows(db_ses
 
 
 @pytest.mark.asyncio
-async def test_forged_root_identity_is_distinct_unverified_provenance(db_session):
+@pytest.mark.parametrize("authority_kind", ["github_event", "gate_decision", "replan_request"])
+async def test_forged_root_identity_is_distinct_unverified_provenance(db_session, authority_kind):
     with pytest.raises(ModelPolicyError, match="unverified_provenance"):
         await build_root_snapshot(
             db_session,
             store=_RootStore(
                 {
-                    "authority_kind": {"S": "github_event"},
+                    "authority_kind": {"S": authority_kind},
                     "human_id": {"S": "forged-human"},
                 }
             ),
             invocation_id="root-a",
             tenant_id="tenant-a",
             execution={"flow_id": {"S": "chain-a"}},
-            grant=_grant("github_event", "trusted-human"),
+            grant=_grant(authority_kind, "trusted-human"),
+            now=NOW,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authority_kind", ["github_event", "gate_decision", "replan_request"])
+async def test_human_root_cannot_resolve_another_tenants_user(db_session, authority_kind):
+    from src.shared.identity.resolver import UnresolvableUserEntityError
+
+    db_session.add(User(id="other-user", org_id="tenant-b", team_id="team-b", email="b@example.test", cognito_sub="human-sub"))
+    await db_session.flush()
+    with pytest.raises(UnresolvableUserEntityError):
+        await build_root_snapshot(
+            db_session,
+            store=_RootStore({"authority_kind": {"S": authority_kind}, "human_id": {"S": "human-sub"}}),
+            invocation_id="root-a",
+            tenant_id="tenant-a",
+            execution={"flow_id": {"S": "chain-a"}},
+            grant=_grant(authority_kind),
             now=NOW,
         )
 
@@ -943,10 +964,12 @@ async def test_service_root_resolves_verified_alias_to_canonical_principal(db_se
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("authority_kind", ["github_event", "replan_request"])
 async def test_root_uses_only_fresh_tenant_and_principal_bound_lkg_on_database_outage(
     db_session,
     policy_store,
     monkeypatch,
+    authority_kind,
 ):
     db_session.add(
         User(
@@ -988,7 +1011,7 @@ async def test_root_uses_only_fresh_tenant_and_principal_bound_lkg_on_database_o
         {
             "pk": {"S": "TENANT#tenant-a"},
             "sk": {"S": "AUTHORITY#authority-a"},
-            "authority_kind": {"S": "github_event"},
+            "authority_kind": {"S": authority_kind},
             "human_id": {"S": "cache-sub"},
         },
     )
@@ -999,7 +1022,7 @@ async def test_root_uses_only_fresh_tenant_and_principal_bound_lkg_on_database_o
         invocation_id="root-cache-a",
         tenant_id="tenant-a",
         execution={"flow_id": {"S": "chain-cache-a"}},
-        grant=_grant("github_event", "cache-sub"),
+        grant=_grant(authority_kind, "cache-sub"),
         now=NOW,
     )
     monkeypatch.setattr(
@@ -1013,7 +1036,7 @@ async def test_root_uses_only_fresh_tenant_and_principal_bound_lkg_on_database_o
         invocation_id="root-cache-b",
         tenant_id="tenant-a",
         execution={"flow_id": {"S": "chain-cache-b"}},
-        grant=_grant("github_event", "cache-sub"),
+        grant=_grant(authority_kind, "cache-sub"),
         now=NOW + timedelta(seconds=60),
     )
 
@@ -1033,7 +1056,7 @@ async def test_root_uses_only_fresh_tenant_and_principal_bound_lkg_on_database_o
         {
             "pk": {"S": "TENANT#tenant-b"},
             "sk": {"S": "AUTHORITY#authority-a"},
-            "authority_kind": {"S": "github_event"},
+            "authority_kind": {"S": authority_kind},
             "human_id": {"S": "cache-sub"},
         },
     )
@@ -1044,7 +1067,7 @@ async def test_root_uses_only_fresh_tenant_and_principal_bound_lkg_on_database_o
             invocation_id="root-cache-tenant-b",
             tenant_id="tenant-b",
             execution={"flow_id": {"S": "chain-cache-tenant-b"}},
-            grant=_grant("github_event", "cache-sub"),
+            grant=_grant(authority_kind, "cache-sub"),
             now=NOW + timedelta(seconds=60),
         )
     assert policy_store._read(tenant_b_pk, tenant_b_sk) is None

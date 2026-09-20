@@ -86,6 +86,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from src.shared.models.base import utcnow
 
@@ -538,6 +539,12 @@ async def publish_authoring(
     successful replan. The caller is responsible for that wording; this function's
     job is to be truthful about what happened.
 
+    Protected runs capture the requesting human's persona-model settings after
+    authority provisioning and before SQS publication, while the execution is
+    still pending. The snapshot lives on the protected record, so the sealed
+    envelope is unchanged. Preparation failures are report-only evidence; the
+    worker's runtime posture still determines whether model use is permitted.
+
     `mark_request_dispatched` runs in its own short transaction *after* a successful
     send, through `session_factory`, because the caller's transaction is already
     committed by the time this runs. If that write fails the message has still been
@@ -561,7 +568,8 @@ async def publish_authoring(
         try:
             from src.agentauth.engine import get_engine_authority_writer
 
-            envelope = get_engine_authority_writer().provision_authoring(pending)
+            writer = await run_in_threadpool(get_engine_authority_writer)
+            envelope = await run_in_threadpool(writer.provision_authoring, pending)
         except Exception:
             # Fail-closed and loudly: no authority row means no credential, so a
             # message sent now would produce a run that cannot bootstrap. The
@@ -571,6 +579,23 @@ async def publish_authoring(
                 pending.request_id,
             )
             return False
+
+        from src.agentauth.model_policy import ensure_snapshot_report_only
+
+        try:
+            async with session_factory() as session:
+                receipt = await ensure_snapshot_report_only(session, store=writer.store, invocation_id=pending.author_run_id)
+        except Exception:
+            # Session acquisition/cleanup can fail outside the report-only
+            # helper. Like unavailable policy reads, this must not change queue
+            # admission or be mistaken for a protected-authority failure.
+            receipt = {"status": "unavailable", "reason": "snapshot_unavailable"}
+        if receipt.get("status") != "available":
+            logger.warning(
+                "authoring model-policy evidence unavailable request=%s reason=%s; dispatch is unaffected",
+                pending.request_id,
+                receipt.get("reason"),
+            )
 
     sqs = client if client is not None else _get_sqs_client(region or os.environ.get("AWS_REGION") or "us-east-1")
     try:

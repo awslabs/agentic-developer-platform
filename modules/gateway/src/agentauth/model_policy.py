@@ -38,7 +38,13 @@ from src.admin.persona_models.catalogue import (
 from src.admin.persona_models.catalogue_schemas import SelectionRejection
 from src.admin.persona_models.catalogue_service import validate_selection
 from src.agentauth.envelope import MODEL_POLICY_AUDIENCE, EnvelopeError, sign_envelope
-from src.agentauth.grants import AUTHORITY_GATE_DECISION, AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY, DelegatedGrant
+from src.agentauth.grants import (
+    AUTHORITY_GATE_DECISION,
+    AUTHORITY_GITHUB_EVENT,
+    AUTHORITY_REPLAN_REQUEST,
+    AUTHORITY_SERVICE_POLICY,
+    DelegatedGrant,
+)
 from src.agentauth.runtime_posture import (
     LivePosture,
     RuntimePosture,
@@ -76,6 +82,12 @@ MAX_SNAPSHOT_BYTES = 128 * 1024
 LKG_CACHE_TTL_ENV = "AGENT_MODEL_POLICY_LKG_TTL_SECONDS"
 DEFAULT_LKG_CACHE_TTL_SECONDS = 300
 MAX_LKG_CACHE_TTL_SECONDS = 900
+
+# Preference ownership only: recognizing a requesting human here grants no
+# execution or delegation rights to an amendment-authoring run.
+_HUMAN_ROOT_AUTHORITY_KINDS = frozenset(
+    {AUTHORITY_GITHUB_EVENT, AUTHORITY_GATE_DECISION, AUTHORITY_REPLAN_REQUEST, "chat_event", "gitlab_event", "github_actions_event"}
+)
 
 
 class ModelPolicyError(Exception):
@@ -730,7 +742,7 @@ async def _resolve_principal(
     grant: DelegatedGrant,
     authority: dict,
 ) -> tuple[Literal["human", "service_account"], str]:
-    if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_GATE_DECISION, "chat_event", "gitlab_event", "github_actions_event"}:
+    if grant.authority.kind in _HUMAN_ROOT_AUTHORITY_KINDS:
         return "human", await resolve_root_user_entity_id(session, tenant_id, grant.authority.human_id)
     if grant.authority.kind != AUTHORITY_SERVICE_POLICY:
         raise ModelPolicyError("authority_kind_unsupported")
@@ -895,7 +907,7 @@ def _canonical_owner_locator(
 
 def _trusted_root_locator(grant: DelegatedGrant, authority: dict) -> str:
     """Derive the cache root only from the already-verified authority record."""
-    if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_GATE_DECISION, "chat_event", "gitlab_event", "github_actions_event"}:
+    if grant.authority.kind in _HUMAN_ROOT_AUTHORITY_KINDS:
         human_id = authority.get("human_id", {}).get("S")
         if not human_id or human_id != grant.authority.human_id:
             raise ModelPolicyError("unverified_provenance")
