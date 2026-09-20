@@ -347,7 +347,9 @@ def get_engine_authority_writer() -> EngineAuthorityWriter:
     )
 
 
-async def validate_engine_authority(*, session, execution: dict, grant: DelegatedGrant, store=None) -> GraphAttribution | None:
+async def validate_engine_authority(
+    *, session, execution: dict, grant: DelegatedGrant, store=None, delivery_identity=None
+) -> GraphAttribution | None:
     """Read current flow/node/approval state, rather than cached SQS claims.
 
     Returns the verified graph assignment (issue #4898) when this execution is
@@ -416,8 +418,14 @@ async def validate_engine_authority(*, session, execution: dict, grant: Delegate
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
-        if node is None or node.state != NodeState.RUNNING.value or node.attempts != attempt:
+        if node is None or node.attempts != attempt:
             raise BootstrapRefusedError("engine node is no longer authorized")
+        if node.state != NodeState.RUNNING.value:
+            if delivery_identity is None:
+                raise BootstrapRefusedError("engine node is no longer authorized")
+            from src.orchestration.deployment_authority import validate_delivery_continuation
+
+            await validate_delivery_continuation(session, identity=delivery_identity, node=node, execution=execution, grant=grant)
         if "orchestration_continuation_receipt" in execution:
             from src.orchestration.review_cycle_dispatch import validate_continuation_assignment
 

@@ -526,6 +526,7 @@ export type ExecutionPhase =
   | 'repairing'
   | 'merge_ready'
   | 'deployment_pending'
+  | 'awaiting_runtime_verification'
   | 'settling'
   | 'concluded';
 

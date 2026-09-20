@@ -74,6 +74,7 @@ const PHASE_LABELS: Record<ExecutionPhase, string> = {
   repairing: 'Repairing',
   merge_ready: 'Ready to merge',
   deployment_pending: 'Code merged; deployment pending',
+  awaiting_runtime_verification: 'Workflow complete; runtime verification pending',
   settling: 'Settling',
   concluded: 'Concluded',
 };

@@ -370,7 +370,11 @@ async def _load_due(
     limit: int,
     phases: frozenset[ExecutionPhase],
 ) -> list[ExecutionRecord]:
-    """Claim a bounded, fair snapshot with PostgreSQL row locks.
+    """Read a bounded, fair snapshot; effect reservation uses the ledger CAS.
+
+    Taking execution locks here before the ledger's flow/claim locks reverses
+    the writer lock order and deadlocks concurrent ticks. A snapshot does not
+    reserve an effect: `_advance` fences its revision before any provider call.
 
     The due index begins with ``org_id``.  Resolve the oldest-due tenants first,
     then use an equality probe per tenant so ``status`` and ``next_check_at``
@@ -411,7 +415,6 @@ async def _load_due(
                     )
                     .order_by(OrchestrationExecution.next_check_at, OrchestrationExecution.id)
                     .limit(per_org)
-                    .with_for_update(skip_locked=True)
                 )
             ).scalars()
             rows.extend(tenant_rows)
@@ -435,7 +438,7 @@ async def _load_due(
                 claim_id=row.claim_id,
                 claim_generation=row.claim_generation,
             )
-            outcome = await load_execution(session, identity=identity, for_update=True)
+            outcome = await load_execution(session, identity=identity)
             if outcome is not None and outcome.kind is OutcomeKind.APPLIED and outcome.record is not None:
                 records.append(outcome.record)
         await session.commit()
@@ -1202,10 +1205,11 @@ async def run_execution_runner(
         return report
 
     if handlers is None:
+        from .deployment_workflows import handlers as deployment_handlers
         from .merge_controller import handlers as merge_handlers
         from .review_cycle import handlers as review_cycle_handlers
 
-        handlers = {**review_cycle_handlers(factory), **merge_handlers(factory), **registered_execution_handlers()}
+        handlers = {**review_cycle_handlers(factory), **merge_handlers(factory), **deployment_handlers(factory), **registered_execution_handlers()}
     clock = clock or SystemClock()
     if not handlers:
         return report
