@@ -220,6 +220,22 @@ def _archive_slice(consumed: tuple[bytes, int, str], *, commit_sha: str, offset:
     return ArchiveSlice(commit_sha=commit_sha, total_bytes=total, digest=digest, content=content, offset=offset)
 
 
+@dataclass(frozen=True)
+class BoundMergeAssignment:
+    """Engine-owned PR identity resolved from the current accepted binding.
+
+    Unlike a worker assignment this carries no invented pod or worker identity.
+    Only the engine merge adapter constructs it after current policy/grant checks.
+    """
+
+    repository: str
+    repository_id: int
+    branch: str
+    default_branch: str
+    pr_number: int
+    pr_node_id: str
+
+
 class GitHubProvider:
     """Performs the five typed operations against one authorized repository.
 
@@ -228,7 +244,7 @@ class GitHubProvider:
     returned, or placed in an exception message.
     """
 
-    def __init__(self, *, token: str, assignment: OperationAssignment, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, *, token: str, assignment: OperationAssignment | BoundMergeAssignment, client: httpx.AsyncClient | None = None) -> None:
         self._token = token
         self.assignment = assignment
         self._client = client
@@ -733,6 +749,10 @@ class GitHubProvider:
         A pull request whose refs or head repository we cannot read is refused:
         unestablished ownership is not ownership.
         """
+        if isinstance(self.assignment, BoundMergeAssignment) and (
+            pull.get("number") != self.assignment.pr_number or pull.get("node_id") != self.assignment.pr_node_id
+        ):
+            raise OperationRefusedError("the pull request identity changed")
         head = pull.get("head") or {}
         head_ref = head.get("ref")
         base_ref = (pull.get("base") or {}).get("ref")
@@ -777,7 +797,7 @@ class GitHubProvider:
 
     # --- Merge (separately authorized) -----------------------------------
 
-    async def merge_pull_request(self, *, pull_number: int, expected_head: str, reauthorize) -> dict:
+    async def merge_pull_request(self, *, pull_number: int, expected_head: str, reauthorize, method: str = "squash") -> dict:
         """Merge a pull request. Reachable only via `GitHubOperation.MERGE_PULL_REQUEST`.
 
         The service authorizes this operation against a current `Action.MERGE`
@@ -786,6 +806,8 @@ class GitHubProvider:
         moved after the decision to merge produces a conflict rather than merging
         content nobody approved.
         """
+        if method not in {"merge", "squash", "rebase"}:
+            raise OperationRefusedError("unsupported merge method")
         await reauthorize()
         # Same reasoning as the review path, and it matters more here: an
         # unvalidated number would let a merge authorization for this assignment
@@ -796,9 +818,33 @@ class GitHubProvider:
         merged = await self._call(
             "PUT",
             f"/repos/{self.repo}/pulls/{pull_number}/merge",
-            json={"sha": expected_head, "merge_method": "squash"},
+            json={"sha": expected_head, "merge_method": method},
         )
         return {"merged": bool(merged.get("merged")), "sha": merged.get("sha")}
+
+    async def enqueue_pull_request(self, *, pull_number: int, expected_head: str, operation_key: str, reauthorize) -> dict:
+        """Ordinary queue admission under the same separate MERGE authorization."""
+        await reauthorize()
+        pull = await self._call("GET", f"/repos/{self.repo}/pulls/{pull_number}")
+        self._require_assigned_pull_request(pull)
+        if (pull.get("head") or {}).get("sha") != expected_head or not pull.get("node_id"):
+            raise ProviderConflictError("the reviewed pull request head changed")
+        await reauthorize()
+        result = await self._call(
+            "POST",
+            "/graphql",
+            json={
+                "query": "mutation($input:EnqueuePullRequestInput!) { enqueuePullRequest(input:$input) { mergeQueueEntry { id } } }",
+                "variables": {"input": {"pullRequestId": pull["node_id"], "expectedHeadOid": expected_head, "clientMutationId": operation_key}},
+            },
+        )
+        if not isinstance(result, dict) or result.get("errors"):
+            # A GraphQL error may accompany a committed effect. Reconcile it.
+            raise ProviderUnavailableError("queue admission outcome is unknown")
+        entry = ((result.get("data") or {}).get("enqueuePullRequest") or {}).get("mergeQueueEntry") or {}
+        if not isinstance(entry.get("id"), str) or not entry["id"]:
+            raise ProviderUnavailableError("queue admission receipt is missing")
+        return {"queue_entry_id": entry["id"]}
 
 
 async def reconcile_commit(

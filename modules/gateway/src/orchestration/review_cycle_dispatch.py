@@ -141,7 +141,7 @@ class ReviewCycleServices:
     async def protected(self, org_id, run_id):
         return await asyncio.to_thread(self.writer.store._read, f"TENANT#{org_id}", f"EXEC#{run_id}")
 
-    async def authorize(self, session, context, node, binding, run_id, action, *, reserve=False):
+    async def authority_context(self, session, context, node, binding, run_id, action):
         if os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
             raise CycleBlockedError("protected_authority_required", BlockCode.AUTHORITY_UNVERIFIABLE)
         claim = await session.scalar(
@@ -198,6 +198,13 @@ class ReviewCycleServices:
         # one shared allowance. A fresh invocation never restarts this counter.
         used = node.attempts + context.execution.attempts - 1
         auth = replace(auth, observed_attempts=max(0, used), observed_concurrency=max(0, auth.observed_concurrency - 1))
+        started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)
+        if started is None or (datetime.now(UTC) - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
+            raise CycleBlockedError("wall_clock_limit_exceeded", BlockCode.ATTEMPTS_EXHAUSTED)
+        return raw, grant, inputs, principal, meter, auth
+
+    async def authorize(self, session, context, node, binding, run_id, action, *, reserve=False):
+        raw, grant, inputs, principal, meter, auth = await self.authority_context(session, context, node, binding, run_id, action)
         flow = await session.get(OrchestrationFlow, node.flow_id)
         decision = authorize_action(
             auth,
@@ -212,9 +219,6 @@ class ReviewCycleServices:
                 else BlockCode.AUTHORITY_UNVERIFIABLE
             )
             raise CycleBlockedError(decision.reason.value, code)
-        started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)
-        if started is None or (datetime.now(UTC) - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
-            raise CycleBlockedError("wall_clock_limit_exceeded", BlockCode.ATTEMPTS_EXHAUSTED)
         if reserve:
             admission = await authorize_node_dispatch(
                 session,
