@@ -233,7 +233,7 @@ def test_only_rollout_wait_can_extend_the_kubernetes_request_timeout(monkeypatch
 
 
 @pytest.mark.parametrize("already_enabled,execute", [(False, True), (True, True), (False, False)])
-def test_gateway_enable_retries_verify_enabled_pods_without_restarting(monkeypatch, tmp_path, already_enabled, execute):
+def test_gateway_enable_waits_for_full_rollout_even_if_one_pod_is_enabled(monkeypatch, tmp_path, already_enabled, execute):
     context = {"worker_image": "approved-worker", "gateway_image": IMAGE, "tick_overlay": {}, "signing_key": SIGNING_KEY,
                "probe": {"flags": {k: str(already_enabled).lower() for k in guard.FLAGS}}, "queue": {}, "active_worker_images": []}
     calls = []
@@ -250,8 +250,7 @@ def test_gateway_enable_retries_verify_enabled_pods_without_restarting(monkeypat
     maintenance.main()
     expected = []
     if execute:
-        if not already_enabled:
-            expected.append((("rollout", "restart", "deployment/bedrockgateway", "-n", maintenance.NAMESPACE), {}))
+        expected.append((("rollout", "restart", "deployment/bedrockgateway", "-n", maintenance.NAMESPACE), {}))
         expected.append((("rollout", "status", "deployment/bedrockgateway", "-n", maintenance.NAMESPACE, "--timeout=300s"), {"request_timeout": "330s"}))
     assert calls == expected
     assert len(probes) == int(execute)

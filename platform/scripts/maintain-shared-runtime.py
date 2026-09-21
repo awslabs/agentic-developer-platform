@@ -350,10 +350,9 @@ def main():
             init(WEBHOOK)
             plan_apply(WEBHOOK, "gateway-enable", context, overlay, scratch, enabled=True, execute=args.execute)
             if args.execute:
-                # A retry after successful activation should verify the existing
-                # rollout, not trigger another restart of already-enabled pods.
-                if not all(context["probe"]["flags"].get(flag) == "true" for flag in FLAGS):
-                    kube("rollout", "restart", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE)
+                # A deployment probe samples one pod; it cannot establish that
+                # every replica has consumed the updated ConfigMap.
+                kube("rollout", "restart", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE)
                 # The per-request timeout is independent of the rollout watch's
                 # deadline; give this one long watch its full bounded window.
                 kube("rollout", "status", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "--timeout=300s", request_timeout="330s")

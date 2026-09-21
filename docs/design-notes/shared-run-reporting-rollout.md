@@ -188,8 +188,9 @@ are current observations; repeat preflight before each enabling stage.
 
 Gateway activation waits up to 300 seconds for rollout status, with a 330-second
 request bound for that watch. Ordinary Kubernetes requests retain a 30-second
-bound. A gateway-enable retry whose running-pod flags are already enabled skips
-the restart and still verifies rollout completion, flags and unchanged tick wiring.
+bound. Gateway-enable restarts and verifies the full deployment even when the
+sampled pod is already enabled; one pod cannot prove all replicas consumed the
+updated ConfigMap. Rollout completion, flags and unchanged tick wiring are checked.
 
 After `verify`, obtain a fresh continuation preview and accept **only CLI**
 (`0737183c-99c4-4e1f-bdb7-e4432b46ca20`, tenant `aws-e`) through the existing API,
