@@ -875,7 +875,11 @@ async def _dispatch_one_unclaimed(
             # Which reason, kept out of the counter set: `record` writes named
             # fields, and the typed reasons are an open vocabulary that #5122 owns.
             report.policy_block_reasons[admission.reason.value] = report.policy_block_reasons.get(admission.reason.value, 0) + 1
-        return
+        from .admission_diagnostics import description
+
+        code = admission.reason.value if admission.reason else "authority_unverifiable"
+        owner, detail, required_input = description(code)
+        raise _AdmissionRefusedError(_admission_refused(code, owner=owner, required_input=required_input, detail=detail))
 
     selection = None
     from src.admin.persona_models.dispatch_selection import mapping_enabled, select_for_dispatch
@@ -1355,7 +1359,7 @@ async def _shared_continuation(session, node) -> bool:
         return False
 
 
-async def _dispatch_one(session, node, *, config, report) -> None:
+async def _dispatch_one_attempt(session, node, *, config, report, scope) -> None:
     from .evaluation_plan import accepted_evaluation, managed_evaluation
     from .work_admission import admit, enabled, require_authority, resolve_repository_id
     from .work_claims import ClaimOwner, OwnerKind, WorkClaimError
@@ -1381,6 +1385,7 @@ async def _dispatch_one(session, node, *, config, report) -> None:
                     required_input="accept an explicit machine evidence specification for this evaluation",
                     detail="Machine evaluation has no executable evidence specification; worker dispatch cannot substitute human acceptance.",
                 ),
+                scope=scope,
             )
             report.record(node.org_id, "admission_refused")
         # The machine controller owns admission. Do not claim its issue lane or
@@ -1406,68 +1411,79 @@ async def _dispatch_one(session, node, *, config, report) -> None:
                     required_input="enable work-claim admission before dispatching governed work",
                     detail="work claims are disabled; governed work cannot use legacy dispatch",
                 ),
+                scope=scope,
             )
             report.record(node.org_id, "admission_refused")
             return
         await _dispatch_one_unclaimed(session, node, config=config, report=report)
         return
     before = len(report.pending)
-    # Captured BEFORE the savepoint, because a rollback expires every loaded
-    # attribute on `node` and re-reading one inside an exception handler issues a
-    # lazy SELECT on a session that is still unwinding. `flow_id` is here for the
-    # #5144 refusal path, which has to attribute its evidence to this node's flow
-    # after exactly that rollback.
+    if not shared_continuation:
+        require_authority()
+    installation = await resolve_installation_id(session, org_id=node.org_id)
+    if installation is None:
+        raise WorkClaimError("installation_unresolved", "Ownership requires a tenant installation.")
+    repository_id = await resolve_repository_id(org_id=node.org_id, installation_id=installation, repo=config.repo)
+    issue = int(str(node.issue_ref).lstrip("#"))
+    async with session.begin_nested():
+        claim = await admit(
+            session,
+            org_id=node.org_id,
+            repository_id=repository_id,
+            issue=issue,
+            owner=ClaimOwner(OwnerKind.ENGINE_FLOW, node.flow_id),
+            invocation_id=attempt_run_id(node.id, node.attempts + 1),
+        )
+        await _dispatch_one_unclaimed(
+            session,
+            node,
+            config=config,
+            report=report,
+            repository_id=repository_id,
+            work_claim_required=True,
+            claim=claim,
+        )
+        if len(report.pending) == before:
+            raise _AdmissionUnusedError()
+
+
+async def _dispatch_one(session, node, *, config, report) -> None:
+    from .admission_diagnostics import description, safe_claim_code
+    from .policy_admission import load_in_force_policy
+    from .work_claims import WorkClaimError
+
+    # Capture scalar identity before any savepoint rollback expires the ORM node.
     node_id, org_id, flow_id = node.id, node.org_id, node.flow_id
+    inputs = await load_in_force_policy(session, org_id=org_id, flow_id=flow_id)
+    scope = {
+        "attempt": node.attempts,
+        "accepted_plan_version": inputs.plan_version,
+        "policy_hash": inputs.policy.policy_hash if inputs.policy else None,
+    }
     try:
-        if not shared_continuation:
-            require_authority()
-        installation = await resolve_installation_id(session, org_id=node.org_id)
-        if installation is None:
-            raise WorkClaimError("installation_unresolved", "Ownership requires a tenant installation.")
-        repository_id = await resolve_repository_id(org_id=node.org_id, installation_id=installation, repo=config.repo)
-        issue = int(str(node.issue_ref).lstrip("#"))
-        async with session.begin_nested():
-            claim = await admit(
-                session,
-                org_id=node.org_id,
-                repository_id=repository_id,
-                issue=issue,
-                owner=ClaimOwner(OwnerKind.ENGINE_FLOW, node.flow_id),
-                invocation_id=attempt_run_id(node.id, node.attempts + 1),
-            )
-            await _dispatch_one_unclaimed(
-                session,
-                node,
-                config=config,
-                report=report,
-                repository_id=repository_id,
-                work_claim_required=True,
-                # #5144: the claim this dispatch just admitted. Passed rather than
-                # re-read so the execution is created under the SAME generation that
-                # was admitted — a second read could observe a handover in between and
-                # bind the receipt to ownership this dispatch never held.
-                claim=claim,
-            )
-            if len(report.pending) == before:
-                raise _AdmissionUnusedError()
+        await _dispatch_one_attempt(session, node, config=config, report=report, scope=scope)
     except _AdmissionUnusedError:
         return
     except _AdmissionRefusedError as exc:
-        # The nested transaction has unwound: the ownership reservation is released
-        # and the node is back in `ready` with nothing published. Now — outside that
-        # savepoint, so it survives — record why, as a typed condition with an owner
-        # rather than only a log line. `run_dispatch_pass`'s own savepoint commits it.
-        await _record_admission_refusal(session, node_id=node_id, org_id=org_id, flow_id=flow_id, admission=exc.admission)
+        # The claim/dispatch savepoint has rolled back. Only this diagnostic is
+        # persisted; no claim, execution, dispatch record or attempt is retained.
+        await _record_admission_refusal(session, node_id=node_id, org_id=org_id, flow_id=flow_id, admission=exc.admission, scope=scope)
         report.record(org_id, "admission_refused")
-        logger.warning(
-            "orchestration dispatch: node %s refused #5144 execution admission code=%s detail=%s — nothing published",
-            node_id,
-            exc.admission.block_code,
-            exc.admission.detail,
-        )
+        logger.warning("orchestration admission refused node=%s reason=%s", node_id, exc.admission.block_code)
     except WorkClaimError as exc:
+        code = safe_claim_code(exc.code)
+        owner, detail, required_input = description(code)
+        await _record_admission_refusal(
+            session,
+            node_id=node_id,
+            org_id=org_id,
+            flow_id=flow_id,
+            admission=_admission_refused(code, owner=owner, required_input=required_input, detail=detail),
+            scope=scope,
+        )
         report.record(org_id, "undispatchable")
-        logger.warning("orchestration ownership refused node=%s reason=%s", node_id, exc.code)
+        report.record(org_id, "admission_refused")
+        logger.warning("orchestration ownership refused node=%s reason=%s", node_id, code)
 
 
 async def _record_admission_refusal(
@@ -1477,6 +1493,7 @@ async def _record_admission_refusal(
     org_id: str,
     flow_id: str,
     admission: _ExecutionAdmission,
+    scope: dict | None = None,
 ) -> None:
     """Persist a refused execution admission as attributed, queryable evidence (#5144).
 
@@ -1487,13 +1504,15 @@ async def _record_admission_refusal(
     `rejection_reason` so an operator gets a resolvable condition rather than prose,
     and so a reader does not have to parse a message to route it.
     """
+    from .admission_diagnostics import ACTOR, CONTRACT
+
     session.add(
         OrchestrationDecision(
             org_id=org_id,
             flow_id=flow_id,
             node_id=node_id,
             kind=DecisionKind.TRANSITION_REJECTED.value,
-            actor_id="system:orchestration-dispatch",
+            actor_id=ACTOR,
             actor_role="engine",
             actor_kind=ActorKind.SERVICE.value,
             from_state=NodeState.READY.value,
@@ -1504,6 +1523,7 @@ async def _record_admission_refusal(
             rejection_reason=json.dumps(
                 {
                     "issue": "5144",
+                    **({"contract": CONTRACT, **scope} if scope is not None else {}),
                     "block_code": admission.block_code,
                     "owner": admission.owner,
                     "required_input": admission.required_input,

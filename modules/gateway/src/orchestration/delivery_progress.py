@@ -166,6 +166,8 @@ def node_progress(
     execution=None,
     policy_enabled=False,
     plan_version=None,
+    policy_hash=None,
+    admission_refusal=None,
     observed_at=None,
 ) -> DeliveryProgress | None:
     if node.kind != "story":
@@ -184,6 +186,33 @@ def node_progress(
             next_action=None if node.state == "superseded" else "Inspect the recorded hold and use the appropriate approval or resume control.",
             automation="paused",
         )
+    if node.state == "ready" and isinstance(admission_refusal, dict):
+        from .admission_diagnostics import CONTRACT, description, recognized_code
+
+        if (
+            admission_refusal.get("contract") == CONTRACT
+            and type(admission_refusal.get("attempt")) is int
+            and admission_refusal["attempt"] == node.attempts
+            and type(admission_refusal.get("accepted_plan_version")) is int
+            and admission_refusal.get("accepted_plan_version") == plan_version
+            and admission_refusal.get("policy_hash") == policy_hash
+            and isinstance(admission_refusal.get("block_code"), str)
+            and recognized_code(admission_refusal["block_code"])
+        ):
+            # Stored exception detail is never rendered. The typed code selects
+            # safe text, and an old attempt/policy cannot override current work.
+            code = admission_refusal["block_code"]
+            owner, detail, action = description(code)
+            return DeliveryProgress(
+                stage="admission",
+                actor=owner,
+                blocker=code,
+                blockers=[code],
+                detail=detail,
+                next_action=action,
+                automation="blocked",
+                observed_at=admission_refusal.get("observed_at"),
+            )
     if execution is not None:
         current_execution = (
             policy_enabled

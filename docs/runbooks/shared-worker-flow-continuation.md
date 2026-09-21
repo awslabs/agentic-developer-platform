@@ -46,6 +46,16 @@ the existing flow meter. Unknown spend is not inferred as zero: the approver mus
 provide the reconciliation amount and its evidence. Failed meter initialization
 prevents acceptance, and a missing meter after acceptance blocks further work.
 
+Before a worker starts, policy and ownership refusals are recorded as attributed
+`transition_rejected` decisions after the unused claim reservation rolls back.
+The graph's `delivery_progress` shows stage `admission`, the typed blocker, the
+responsible actor, the next required action and the observation time. For example,
+`budget_unavailable` asks the platform operator to restore the existing meter;
+it does not grant a new allowance. The story remains ready at its current attempt,
+with no new claim, execution or dispatch. These diagnostics apply only to the
+same attempt and accepted plan/policy, and a later dispatch supersedes them.
+They do not claim that a retry is scheduled or expose provider error payloads.
+
 The budget scope is `authenticated_gateway_calls`. The shared IAM role retains
 its configured AWS permissions, so this does not promise a cap on direct provider
 calls outside the gateway. Reporting capabilities authenticate one assignment;
