@@ -17,8 +17,15 @@ or Codex.
 | `install.sh` | Installer for `adp` — one line, run via `curl … \| sh` from your gateway |
 | `bg-cognito-auth.sh` | Cognito authentication core (login, import, refresh, token, serve). `adp` delegates every auth verb to it |
 | `bg-gateway-proxy.py` | Localhost auth proxy started by `serve` — zero-touch auth for Codex (stdlib python3, no pip installs) |
+| `adp_common.py` | Shared transport, session reuse, output envelope and exit codes. Every `adp-*.py` helper imports it |
+| `adp-admin.py` | Administrator login and resumable guided setup (`adp admin login`, `adp admin setup`) |
 | `adp_deployments.py` | Named deployments and the one selection rule, shared by the bash and python halves (stdlib Python 3) |
 | `adp-bedrock.py` | Bedrock account connection and routing, used by `adp admin bedrock connect` (stdlib Python 3) |
+| `adp-aws.py` | Personal AWS account connection — `adp aws` ([guide](aws.md)) |
+| `adp-github.py` | Connect a repository you have access to — `adp github` ([guide](github.md)) |
+| `adp-github-admin.py` | GitHub App registration and status for administrators — `adp admin github` ([guide](github-admin.md)) |
+| `adp-superplane.py` | Provider configuration — `adp superplane` |
+| `adp-flow.py` | Follow and control AI-DLC delivery flows — `adp flow` ([guide](flow.md)) |
 | `bg-auth.sh` | Legacy SigV4 credential exchange (deprecated) |
 | `examples/claude-settings-bedrock-gateway.json` | Claude Code settings (Bedrock format via gateway) |
 | `examples/claude-settings-cognito.json` | Claude Code settings (Anthropic format via gateway) |
@@ -48,7 +55,8 @@ adp claude setup   # or: adp codex setup
 claude             # or: adp codex
 ```
 
-The installer puts `adp`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`, `adp_common.py`, `adp_deployments.py`, `adp-admin.py` and `adp-bedrock.py` side by
+The installer puts `adp` and its helper siblings — the files listed in Contents
+above, which is `CLI_FILES` in `install.sh` — side by
 side in `~/.adp/bin` (override with `--prefix`), adds that directory to your PATH,
 and remembers the gateway URL in `~/.bedrock-gateway/config.json` — which is why
 no later command needs a flag. `adp update` re-pulls from the same gateway;
@@ -208,6 +216,32 @@ gateway's destination-setup API and the updated CLI download endpoint.
 For effective routing, run `adp bedrock status`. Administrators can use
 `adp admin bedrock verify DESTINATION_ID` or `status --user USER`. See the
 [model access guide](bedrock.md) for scope, handoff, scripting and regression checks.
+
+## Follow and control delivery flows: `adp flow`
+
+Follow and control AI-DLC delivery flows from the terminal, reusing the session
+`adp login` already established:
+
+```bash
+adp flow list                    # your flows, worst news first
+adp flow show FLOW_ID            # progress, blockers, gates, next eligible work
+adp flow watch FLOW_ID           # follow it; Ctrl-C detaches, it does NOT cancel
+adp flow plans FLOW_ID           # plan versions, and which revision is proposed
+adp flow gate approve GATE_ID --expect-plan-hash HASH
+```
+
+Readable output by default, `--json` on stdout with diagnostics on stderr.
+Exiting a watch **detaches** and leaves hosted execution untouched. Approvals
+prompt, refuse rather than assume an answer without a terminal, and can be bound
+to the exact plan revision you read. Cost stays three-valued: unmeasured spend is
+reported as `unknown`, never as `$0.00`.
+
+`adp flow start --repo OWNER/NAME --issue NUMBER` opens hosted intent refinement
+and, in a terminal, continues to a bounded plan preview. `--resume SESSION_ID`
+returns to the same conversation. `create --file plan.json` reviews a prepared
+engine plan. Noninteractive acceptance requires both `--yes` and
+`--expect-plan-hash HASH`. See the [delivery flow guide](flow.md) for supported
+commands, deployment prerequisites and the remaining full-inception limitations.
 
 ## Using the scripts directly (no `adp`)
 

@@ -4,6 +4,7 @@ Issues #4528 and #4529 (EPIC #4191, intent #4120).
 
 - POST /orchestration/flows/drafts — register a compiled loop proposal as an inert
   draft. Gated on `Permission.PLAN_DRAFT`.
+- POST /orchestration/flows/drafts/preview — read-only effective graph and policy preview.
 - POST /orchestration/flows/{flow_id}/amendments/drafts — register an authored
   **amendment** to an already-accepted plan as a pending draft awaiting one named
   human accept (#4529). Same permission, same tenant resolution, and inert in a
@@ -82,7 +83,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.admin.access_control import AccessControl
@@ -90,15 +91,17 @@ from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.budget.run_binding import RunBindingResolver
 from src.orchestration.amend import FlowNotFoundError
-from src.orchestration.compile import ApprovalContext, NonApprovalSupersedeError, ProposalRejectedError, TenantMismatchError
+from src.orchestration.compile import ApprovalContext, NonApprovalSupersedeError, ProposalRejectedError, TenantMismatchError, plan_hash
 from src.orchestration.draft_binding import DraftBindingError, resolve_draft_tenant
+from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.pending_amendments import (
     AmendmentRequestNotFoundError,
     register_amendment_draft,
     resolve_authoring_request,
 )
-from src.orchestration.proposal import LoopProposal
-from src.orchestration.registration import DraftFlowConflictError, register_draft_proposal
+from src.orchestration.preview import ConclusionAuthority, derive_nodes, derive_waves
+from src.orchestration.proposal import LoopProposal, validate_proposal
+from src.orchestration.registration import DraftFlowConflictError, register_draft_proposal, transform_for_registration
 from src.orchestration.state import ActorKind
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
@@ -189,6 +192,161 @@ _SERVER_RESOLVED_TENANT_SCOPE = "internal"
 # `RunId`, matching `proxy/routes.py`'s `x-agent-runid` read and the worker's
 # `engine_registration.py`. Header matching is case-insensitive, hyphenation is not.
 RUN_ID_HEADER = "X-Agent-RunId"
+
+
+class PreviewNode(BaseModel):
+    """One node of the effective graph, as the preview reports it.
+
+    Carries the joined `address` deliberately, unlike `GraphNodeResponse`, which
+    ships the components because the SPA must never render an internal path. A
+    preview has no rows and therefore no node ids, so the address is the only thing
+    that can identify a node here — and the caller is an operator reviewing a plan
+    they are about to approve, for whom "which node is this" is the whole question.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    address: str
+    kind: str
+    title: str
+    # True for a node the registration transforms ADD — the acceptance gate, and any
+    # per-wave gate. Flagged explicitly because these are precisely the nodes absent
+    # from the document the operator wrote, so a preview that did not distinguish
+    # them would leave them looking like the author's own work.
+    inserted_by_server: bool
+    # The issue this node's work is bound to, as the author declared it. Empty when
+    # the node declares none — which for a story is a real gap a reviewer should see
+    # before approving, because a story with no issue binding has nowhere to report.
+    issue_ref: str = ""
+    # `epic/wave`, split out so a client can group without parsing the address.
+    epic_ref: str = ""
+    wave_ref: str = ""
+    # What must be true before this node can pass, and who is allowed to say so. See
+    # `preview.ConclusionAuthority`: a gate is human by the state machine, a story
+    # passes on merged-PR evidence, an evaluation is human unless the PROPOSED policy
+    # explicitly marks it machine-accepted.
+    concluded_by: str = ConclusionAuthority.UNDETERMINED.value
+    # This node's direct predecessors, sorted. A reviewer reading one node wants to
+    # know what immediately holds it up; the wave staging carries the wider picture.
+    depends_on: list[str] = Field(default_factory=list)
+
+
+class PreviewEdge(BaseModel):
+    """One dependency of the effective graph. Direction is execution order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_address: str
+    to_address: str
+    inserted_by_server: bool
+
+
+class PreviewWave(BaseModel):
+    """A wave of the effective graph, and where it sits in the real execution order.
+
+    Waves are not nodes — the schema deliberately stores no wave rows — so this is a
+    derived grouping, labelled `epic/wave` because a wave ref is unique only within
+    its epic.
+
+    `stage` is what makes the preview answer "what runs at the same time as what":
+    waves sharing a stage have no dependency path between them and may run
+    concurrently. It is derived from the dependency edges, never from the order the
+    author listed nodes in, because the issue is explicit that visual order alone is
+    not an execution dependency.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    epic_ref: str
+    wave_ref: str
+    # `None` when the document's wave-level dependencies form a cycle, which can
+    # happen even though the NODE graph is acyclic (`w1/a -> w2/b` with
+    # `w2/c -> w1/d`). Reported as unknown rather than given an invented number: the
+    # relative order genuinely is not determined, and a number would assert one the
+    # engine will not honour.
+    stage: int | None
+    node_addresses: list[str]
+    # The `epic/wave` labels this wave waits for.
+    depends_on: list[str] = Field(default_factory=list)
+
+
+class DraftPreviewResponse(BaseModel):
+    """What registering this document would produce. Nothing was written.
+
+    `plan_hash` is computed over the *transformed* document — the same input
+    `register_draft_proposal` hashes — so for a policyless document it is exactly the
+    revision that registration will put in force, and binding an acceptance to it is
+    safe. Hashing the authored document instead would hand the operator a revision
+    the server would refuse as stale.
+
+    **Since the inert-policy work in this same issue, that now holds for a
+    policy-bearing document too**, which is the point of demoting the policy rather
+    than stamping it. It did not always: `compile_proposal` stamps a policy at Gate 2a
+    *before* hashing, and the stamp carries the accepting principal, so the in-force
+    hash used to be a function of *who* accepted and could not be known in advance by
+    anyone — two humans accepting the identical document put two different hashes in
+    force, and a preview hash passed as `expected_plan_hash` was refused as stale for
+    a reason no operator could diagnose. `transform_for_registration` now demotes a
+    submitted policy into `proposed_execution_policy`, so the draft path stamps
+    nothing and the hash below is the revision that lands in force. The class of plan
+    carrying the most delegated authority is therefore the one that gained
+    revision-bound acceptance, not the one excluded from it.
+
+    `plan_hash_is_bindable` states which of the two this is, on the wire, so a client
+    does not have to re-derive the rule from the presence of a policy. It is computed
+    from the transformed document rather than asserted from that history, so if a
+    future change ever reintroduced stamping on this path it would report `false`
+    again on its own rather than inviting a binding the server would reject.
+
+    `violations` is non-empty when the document would be REJECTED. Reported rather
+    than raised so an author sees every problem at once instead of fixing them one
+    422 at a time; `would_register` states the conclusion so a caller does not have
+    to infer it from an empty list.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    would_register: bool
+    violations: list[str]
+    plan_hash: str
+    # True whenever the transformed document carries no `execution_policy` — which,
+    # since the demotion, includes policy-bearing submissions. False would mean the
+    # transform left a policy in the enforced field and acceptance will therefore
+    # re-stamp and re-hash it; a client must NOT pass a non-bindable hash as
+    # `expected_plan_hash`, because it would be refused as stale.
+    plan_hash_is_bindable: bool
+    flow_slug: str
+    title: str
+    acceptance_gate_address: str
+    nodes: list[PreviewNode]
+    edges: list[PreviewEdge]
+    # The authority the plan PROPOSES, summarized — not an accepted grant. `None`
+    # when the document declares no policy, which is a real state meaning "legacy
+    # unbounded semantics", not "authorizes nothing".
+    #
+    # Summarized through the same `summarize_policy` the accepted-plan views use, so
+    # the bounds an operator reviews here read identically to the bounds they will
+    # see in force afterwards. It is derived from authorizing content only
+    # (`policy_id`, `policy_hash` and `principal_id` are excluded from
+    # `policy_hash`'s input and unset on a proposal), which is exactly why an
+    # unstamped policy can be displayed without being accepted.
+    proposed_execution_policy: PolicySummary | None = None
+    # TRUE when the document declares no execution policy at all.
+    #
+    # Stated as its own boolean rather than left to be inferred from
+    # `proposed_execution_policy is None`, because the two readings of that `null` are
+    # opposites and the dangerous one is the natural one. "No policy" does not mean
+    # "authorizes nothing" — it means legacy unbounded semantics: no repository
+    # restriction, no action allowlist, no spend ceiling, no expiry. That is the most
+    # consequential fact a preview can carry and it is exactly the one that looks like
+    # a harmless empty field, so it is named positively and affirmatively here.
+    execution_is_unbounded: bool = False
+    # The waves of the effective graph in execution order, with concurrency staged.
+    waves: list[PreviewWave] = Field(default_factory=list)
+    # Stated on the wire, not just in this docstring. A caller reading a preview
+    # needs to know that no flow exists yet and no authority was granted — the
+    # field exists so that fact survives into a client's own output.
+    wrote_nothing: bool = True
 
 
 async def _resolve_owning_tenant(
@@ -598,6 +756,163 @@ async def register_amendment(
         accept_command=ACCEPT_AMENDMENT_COMMAND.format(draft_id=draft.draft_id) if draft.state == "pending" else "",
         flow_url=_flow_url(draft.flow_id),
     )
+
+
+@router.post("/flows/drafts/preview", response_model=DraftPreviewResponse)
+async def preview_draft(
+    proposal: LoopProposal,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+) -> DraftPreviewResponse:
+    """Compute what registering this document would produce. Writes nothing.
+
+    The step that makes an approval meaningful: it renders the graph that would
+    actually execute — including the gates the server inserts, which are absent from
+    the document the author wrote — plus the revision hash an acceptance binds to and
+    the authority the plan proposes.
+
+    **No database session is taken at all.** Not "a session that happens not to
+    write", but no `get_db` dependency: the four computations behind this route are
+    pure functions of the request body, so a preview cannot create a flow, stamp a
+    policy, or supersede a plan even if a future edit here got it wrong. That is a
+    stronger guarantee than a docstring promising restraint, and it is why a
+    policy-bearing document is safe to preview when it is not safe to register.
+
+    Gated on `PLAN_DRAFT`, matching `register_draft`: this shows what a draft
+    registration would do, so anyone who may register may preview, and someone who
+    may not register learns nothing they could not have learned by registering. It
+    deliberately does NOT require `PLAN_APPROVE` — an author needs to see the
+    effective shape of their own plan, and a preview grants nothing.
+
+    Tenant handling differs from `register_draft` in one way worth stating: there is
+    no server-resolved-tenant path here, because there is nothing to home. The
+    document's declared `org_id` is echoed through the transforms untouched and
+    compared against the caller's only at real registration. A preview therefore
+    cannot be used to probe another tenant — it reads no rows, so it has nothing of
+    any tenant's to leak.
+
+    Returns 200 whether or not the document is valid: a rejected document's
+    violations are the useful answer, and a 422 could not carry the effective graph
+    alongside them. `would_register` is the caller's conclusion.
+    """
+    # Gate before any computation, matching `register_draft`'s ordering. Nothing
+    # below reads state, but keeping the check first means a permission change here
+    # can never be reordered into "compute, then decide whether you were allowed".
+    await access.check_permission(
+        current_user,
+        Permission.PLAN_DRAFT,
+        target_org_id=current_user.org_id,
+    )
+
+    transformed, gate_address = transform_for_registration(proposal)
+    violations = validate_proposal(transformed)
+
+    # What the author actually wrote, so the transforms' additions can be flagged
+    # rather than presented as the operator's own plan.
+    authored_addresses = {node.address for node in proposal.nodes}
+    authored_edges = {(edge.from_address, edge.to_address) for edge in proposal.edges}
+
+    # Derived over the TRANSFORMED document, so the staging and conclusion authority
+    # describe the graph that would actually execute — gates included. Deriving over
+    # the authored document would omit the acceptance gate from the wave it lands in
+    # and understate every downstream wave's stage by one.
+    derived_nodes = derive_nodes(transformed)
+    derived_waves = derive_waves(transformed)
+
+    nodes = [
+        PreviewNode(
+            address=node.address,
+            kind=node.kind,
+            title=node.title,
+            inserted_by_server=node.address not in authored_addresses,
+            issue_ref=node.issue_ref or "",
+            epic_ref=derived.epic_ref if (derived := derived_nodes.get(node.address)) is not None else "",
+            wave_ref=derived.wave_ref if derived is not None else "",
+            concluded_by=(derived.concluded_by.value if derived is not None else ConclusionAuthority.UNDETERMINED.value),
+            depends_on=list(derived.depends_on) if derived is not None else [],
+        )
+        for node in transformed.nodes
+    ]
+    edges = [
+        PreviewEdge(
+            from_address=edge.from_address,
+            to_address=edge.to_address,
+            inserted_by_server=(edge.from_address, edge.to_address) not in authored_edges,
+        )
+        for edge in transformed.edges
+    ]
+
+    logger.info(
+        "plan_preview org=%s actor=%s slug=%s nodes=%s edges=%s violations=%s policy=%s",
+        current_user.org_id,
+        current_user.user_id,
+        transformed.flow_slug,
+        len(nodes),
+        len(edges),
+        len(violations),
+        transformed.execution_policy is not None,
+    )
+
+    return DraftPreviewResponse(
+        would_register=not violations,
+        # Rendered through `Violation.__str__` rather than reassembled here: that
+        # method already joins rule, message and location, and omits `where` when it
+        # is None. Formatting the fields by hand would print a literal "None: " for
+        # every document-level violation.
+        violations=[str(violation) for violation in violations],
+        plan_hash=plan_hash(transformed),
+        # Derived from the document, not hardcoded to a rule: registration rehashes iff
+        # it stamps, and since #5331 the draft path stamps nothing — the transform
+        # demotes a submitted policy into `proposed_execution_policy` instead, so the
+        # hash shown here IS the hash that lands in force. A transformed document with
+        # `execution_policy` still set would mean the demotion did not run, and this
+        # stays derived so that case reports non-bindable rather than lying.
+        plan_hash_is_bindable=transformed.execution_policy is None,
+        flow_slug=transformed.flow_slug,
+        title=transformed.title,
+        acceptance_gate_address=gate_address,
+        nodes=nodes,
+        edges=edges,
+        # Read from the demoted field, because that is where the transform put it and
+        # therefore where a registered draft will carry it. Falls back to
+        # `execution_policy` only so a future transform change that stopped demoting
+        # would still display the policy rather than silently showing none — a preview
+        # that omitted a policy the plan declares is the one failure mode here that
+        # could get an unreviewed grant approved.
+        proposed_execution_policy=_policy_summary_of(transformed),
+        # Derived from the same both-fields read the summary uses, so the boolean and
+        # the summary can never disagree about whether a policy is present.
+        execution_is_unbounded=transformed.proposed_execution_policy is None and transformed.execution_policy is None,
+        waves=[
+            PreviewWave(
+                epic_ref=wave.epic_ref,
+                wave_ref=wave.wave_ref,
+                stage=wave.stage,
+                node_addresses=list(wave.node_addresses),
+                depends_on=list(wave.depends_on),
+            )
+            for wave in derived_waves
+        ],
+    )
+
+
+def _policy_summary_of(proposal: LoopProposal) -> PolicySummary | None:
+    """The authority this document proposes, summarized, from whichever field holds it.
+
+    Both fields are consulted because the transform moves the value between them
+    (#5331): a submitted document declares `execution_policy`, and
+    `transform_for_registration` demotes it to `proposed_execution_policy` so a draft
+    can carry it inertly. `LoopProposal` refuses a document with both set, so there is
+    never an ambiguity to resolve here.
+
+    Summarized through the same `summarize_policy` the accepted-plan views use, so the
+    bounds an operator reviews before approving read identically to the bounds they
+    will see in force afterwards. Safe on an unstamped policy: the summary is derived
+    from authorizing content, and `policy_id` / `policy_hash` / `principal_id` are
+    excluded from it precisely because they are not yet decided.
+    """
+    policy = proposal.proposed_execution_policy or proposal.execution_policy
+    return summarize_policy(policy) if policy is not None else None
 
 
 def _flow_url(flow_id: str) -> str | None:

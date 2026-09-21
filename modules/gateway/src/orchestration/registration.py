@@ -132,11 +132,12 @@ from __future__ import annotations
 import logging
 import os
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .compile import ApprovalContext, CompileResult, ProposalRejectedError, compile_proposal, plan_hash
+from .compile import ApprovalContext, CompileResult, ProposalRejectedError, address_of, compile_proposal, plan_hash
 from .genesis import APPROVAL_DECISION_KINDS
-from .models import DecisionKind, NodeKind
+from .models import DecisionKind, NodeKind, OrchestrationFlow
 from .proposal import ADDRESS_PATTERN, LoopProposal, ProposedEdge, ProposedNode, split_address
 from .repository import OrchestrationRepository
 from .state import NodeState
@@ -148,9 +149,12 @@ __all__ = [
     "AUTONOMY_FLAG_ENV",
     "WAVE_GATE_REF",
     "DraftFlowConflictError",
+    "acceptance_gate_address",
+    "demote_proposed_policy",
     "gate_every_wave_enabled",
     "insert_acceptance_gate",
     "insert_wave_gates",
+    "promote_proposed_policy",
     "register_draft_proposal",
     "transform_for_registration",
 ]
@@ -376,6 +380,98 @@ def _dedupe_edges(edges: list[ProposedEdge]) -> list[ProposedEdge]:
     return unique
 
 
+def acceptance_gate_address(proposal: LoopProposal) -> str | None:
+    """The address of the gate that dominates this whole document, or None (#5331).
+
+    Identifies the gate whose answer means "this plan may run at all", as distinct
+    from an authored gate or an inserted wave-boundary gate. Needed because
+    promoting a demoted policy is something only the *acceptance* gate's approval
+    may do: a wave gate says "the previous wave's work is good", which is not a
+    grant of delegated authority over everything still to come.
+
+    Identified **structurally**, not by name alone, and that is the load-bearing
+    part. `insert_acceptance_gate` points the new gate at every prior root, so after
+    the transform the acceptance gate is the *only* node in the document with no
+    incoming edge — rule 3 rejects cycles, so a valid document cannot have a second
+    one. Trusting the `accept` node ref by itself would let an author who declared
+    their own gate with that ref in a later wave have its approval activate the
+    plan's policy, which is the authority inversion this whole field exists to
+    prevent. All three conditions must hold: sole root, gate kind, fixed ref.
+
+    Returns None for any document that does not present exactly that shape,
+    including an untransformed authored document and any graph with several roots.
+    None means "no promotion from this node", never "promote anyway".
+    """
+    has_incoming = {edge.to_address for edge in proposal.edges}
+    roots = [node for node in proposal.nodes if node.address not in has_incoming]
+    if len(roots) != 1:
+        return None
+    root = roots[0]
+    if root.kind != NodeKind.GATE.value or not ADDRESS_PATTERN.match(root.address):
+        return None
+    _, _, _, node_ref = split_address(root.address)
+    return root.address if node_ref == ACCEPTANCE_GATE_REF else None
+
+
+def demote_proposed_policy(proposal: LoopProposal) -> LoopProposal:
+    """Move a submitted `execution_policy` into `proposed_execution_policy` (#5331).
+
+    The registration transform that makes a policy-bearing document *registrable*
+    while granting nothing. Before this existed, such a document could not be
+    registered as a draft at all: `compile.accept_execution_policy` refuses a
+    non-human acceptor, draft registration compiles as `ActorKind.SERVICE` by
+    design, and so the plans carrying the most authority were the only ones that
+    could not be previewed and then accepted at an exact revision. The author's
+    remaining options were to approve in one unattended step without seeing the
+    effective graph, or to strip the bounds.
+
+    Demotion is not a softened version of that refusal — the refusal is untouched.
+    `accept_execution_policy` still refuses a SERVICE actor that reaches it with
+    `execution_policy` set, and a test holds that. What changes is that the draft
+    path no longer reaches it with that field set, because the policy now travels in
+    a field `policy_admission.load_in_force_policy` contains no code to read. The
+    document compiles, the graph is inert behind its acceptance gate as always, and
+    the policy's full text is available for a human to review before granting it.
+
+    A no-op when there is no policy, and a no-op when the policy has already been
+    demoted — so applying the transform twice (a retry re-running it over a document
+    read back from the store) cannot lose or duplicate anything.
+
+    Deliberately NOT applied by the direct acceptance route (`POST /flows`): its
+    caller is human and holds `PLAN_APPROVE`, so the policy is stamped in that same
+    call and there is no interval between proposal and grant to protect. Demoting
+    there would add a second step to a path that has no gap.
+    """
+    if proposal.execution_policy is None:
+        return proposal
+    return proposal.model_copy(update={"execution_policy": None, "proposed_execution_policy": proposal.execution_policy})
+
+
+def promote_proposed_policy(proposal: LoopProposal) -> LoopProposal:
+    """Move `proposed_execution_policy` back into `execution_policy` (#5331).
+
+    The inverse of :func:`demote_proposed_policy`, and the ONLY way a demoted policy
+    becomes authority. Called from the bound-acceptance path when a human answers a
+    plan's acceptance gate with the exact revision they reviewed
+    (`adapters/github_comments.apply_gate_answer_for_context`), and from nowhere
+    else — not from the tick, not from dispatch, not from any agent-reachable route.
+
+    This function does **not** decide whether promotion is allowed. It moves a field.
+    The authority decision stays where it already lives: the caller hands the result
+    to `compile.accept_execution_policy`, which refuses any non-human acceptor and
+    stamps the policy with that human's principal id via `stamp_policy`. Keeping the
+    two separate is what stops this from becoming a second, weaker acceptance check
+    that is free to drift from the real one — there is still exactly one place a
+    policy becomes a grant.
+
+    A no-op when nothing was demoted, so the promotion step is unconditional at the
+    call site and a policyless plan's acceptance is byte-identical to what it was.
+    """
+    if proposal.proposed_execution_policy is None:
+        return proposal
+    return proposal.model_copy(update={"execution_policy": proposal.proposed_execution_policy, "proposed_execution_policy": None})
+
+
 def transform_for_registration(proposal: LoopProposal) -> tuple[LoopProposal, str]:
     """Apply the registration-time transforms. Returns the document and the gate address.
 
@@ -383,9 +479,18 @@ def transform_for_registration(proposal: LoopProposal) -> tuple[LoopProposal, st
     acceptance gate would already be a declared gate and `insert_wave_gates` would
     read the document as author-gated and decline to touch it — the autonomy
     default would silently never apply to anything.
+
+    The policy demotion (#5331) runs last, and its position does not matter to the
+    two gate transforms — neither reads the policy — but it must be inside this
+    function rather than at its two call sites. `register_draft_proposal` hashes what
+    this returns and `preview_draft` displays what this returns, and the hash the
+    preview shows is the revision an acceptance binds to; a demotion applied at only
+    one of the two would make the preview's hash and the registered hash disagree,
+    so every bound acceptance of a policy-bearing plan would be refused as stale.
     """
     working = insert_wave_gates(proposal) if gate_every_wave_enabled() else proposal
-    return insert_acceptance_gate(working)
+    transformed, gate_address = insert_acceptance_gate(working)
+    return demote_proposed_policy(transformed), gate_address
 
 
 async def _refuse_if_flow_is_live(
@@ -494,13 +599,33 @@ async def register_draft_proposal(
         TenantMismatchError: The document declares another tenant.
     """
     transformed, gate_address = transform_for_registration(proposal)
+    document_hash = plan_hash(transformed)
+    repo = OrchestrationRepository(session)
+    flow = await session.scalar(
+        select(OrchestrationFlow).where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.slug == transformed.flow_slug).with_for_update()
+    )
+    if flow is not None:
+        # A bound acceptance promotes the policy and records a new plan version.
+        # Replaying the original registration must return that original draft,
+        # without replacing the granted plan or compiling additional nodes.
+        for prior in await repo.list_plan_versions(org_id=actor.org_id, flow_id=flow.id):
+            if prior.plan_hash == document_hash:
+                nodes = await repo.list_nodes(org_id=actor.org_id, flow_id=flow.id)
+                return CompileResult(
+                    flow_id=flow.id,
+                    plan_version=prior.version,
+                    decision_id=prior.accepted_by_decision_id,
+                    plan_hash=prior.plan_hash,
+                    node_ids={address_of(flow.slug, node): node.id for node in nodes},
+                    already_compiled=True,
+                ), gate_address
 
     # Hashed on the TRANSFORMED document, because that is what `compile_proposal`
     # receives and therefore what its idempotency compares and what the plan store
     # holds. Hashing the authored document here would make the retry this check
     # permits a different retry to the one that call treats as a no-op, and every
     # fail-soft retry would be refused as a plan-of-record rewrite.
-    await _refuse_if_flow_is_live(session, proposal=transformed, org_id=actor.org_id, document_hash=plan_hash(transformed))
+    await _refuse_if_flow_is_live(session, proposal=transformed, org_id=actor.org_id, document_hash=document_hash)
 
     result = await compile_proposal(
         session,

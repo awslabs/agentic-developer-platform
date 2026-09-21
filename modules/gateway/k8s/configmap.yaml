@@ -410,6 +410,31 @@ data:
   AGENT_TASK_SOURCE_ROLE_ARN: "__AGENT_TASK_SOURCE_ROLE_ARN__"
   AGENT_TASK_SOURCE_EKS_CLUSTER: "__AGENT_TASK_SOURCE_EKS_CLUSTER__"
   AGENT_TASK_SOURCE_ISOLATION_CONFIRMED: "__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__"
+  # --- Conversational intake for `adp flow start` (#5331, EPIC #4191) ---
+  # All three name agent-factory resources and are published to SSM by that stack
+  # (modules/agent-factory/infra/gateway-intake-access.tf), which also grants this
+  # role the reads and the InvokeFunction. Substituted by gateway-deploy.yml.
+  #
+  # Each is INDEPENDENTLY optional, and unset is a supported state rather than an
+  # error: the gateway builds an unconfigured reader/dispatcher that answers
+  # "unavailable" on every intake verb (503; the CLI maps it to its documented
+  # `unavailable` exit code). Raising at import instead would stop a gateway that
+  # merely cannot PLAN from also proxying, approving gates and serving the
+  # dashboard.
+  #
+  # The split is deliberate: with only the context table unset, a conversation is
+  # still readable — transcript, issue, in-flight state — and just the draft comes
+  # back flagged `draft_available: false`. Folding the two together would 503 a
+  # readback that mostly works.
+  BG_INTAKE_SESSIONS_TABLE: "__BG_INTAKE_SESSIONS_TABLE__"
+  BG_INTAKE_CONTEXT_TABLE: "__BG_INTAKE_CONTEXT_TABLE__"
+  # A Lambda FUNCTION NAME, not a queue URL. The turn enters through the ingest
+  # Lambda so it gets the session row, the thread, the transcript and the
+  # registered run a browser turn gets. `BG_INTAKE_QUEUE_URL` is deliberately not
+  # read as a fallback anywhere, so a stale deployment reports unavailable rather
+  # than resuming the queue shortcut this replaced.
+  BG_INTAKE_INGEST_FUNCTION: "__BG_INTAKE_INGEST_FUNCTION__"
+
 
   # PMM-07 producer and ARC registrations are operator-owned deployment data.
   # Empty registrations refuse these paths; rollout does not activate defaults.

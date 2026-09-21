@@ -433,6 +433,20 @@ jobs:
           AGENT_TASK_SOURCE_ROLE_ARN=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-role-arn" "")
           AGENT_TASK_SOURCE_EKS_CLUSTER=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-eks-cluster" "")
           AGENT_TASK_SOURCE_ISOLATION_CONFIRMED=$(get_authority_ssm "/adp/${ENVIRONMENT}/gateway/agent-task-source-isolation-confirmed" "false")
+          # Conversational intake for `adp flow start` (#5331). Published by
+          # agent-factory (infra/gateway-intake-access.tf), which owns the two tables
+          # and the ingest Lambda and grants this role the reads plus
+          # lambda:InvokeFunction.
+          #
+          # Defaults are the convention-derived names rather than "": on an
+          # environment where agent-factory is applied but these parameters have not
+          # landed yet, the convention is correct, and the IAM grant is what actually
+          # gates access — so a wrong guess fails closed as AccessDenied (503
+          # unavailable) rather than reading someone else's table. An empty default
+          # would report unavailable even where the resources exist.
+          BG_INTAKE_SESSIONS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/sessions-table" "adp-${ENVIRONMENT}-agent-gateway-sessions")
+          BG_INTAKE_CONTEXT_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/context-table" "adp-${ENVIRONMENT}-chat-context")
+          BG_INTAKE_INGEST_FUNCTION=$(get_ssm "/adp/${ENVIRONMENT}/agent-gateway/ingest-function" "adp-${ENVIRONMENT}-agent-gateway-ingest")
 
           sed -e "s|__AWS_REGION__|${AWS_REGION}|g" \
               -e "s|__ENVIRONMENT__|${ENVIRONMENT}|g" \
@@ -483,6 +497,9 @@ jobs:
               -e "s|__AGENT_TASK_SOURCE_ROLE_ARN__|${AGENT_TASK_SOURCE_ROLE_ARN}|g" \
               -e "s|__AGENT_TASK_SOURCE_EKS_CLUSTER__|${AGENT_TASK_SOURCE_EKS_CLUSTER}|g" \
               -e "s|__AGENT_TASK_SOURCE_ISOLATION_CONFIRMED__|${AGENT_TASK_SOURCE_ISOLATION_CONFIRMED}|g" \
+              -e "s|__BG_INTAKE_SESSIONS_TABLE__|${BG_INTAKE_SESSIONS_TABLE}|g" \
+              -e "s|__BG_INTAKE_CONTEXT_TABLE__|${BG_INTAKE_CONTEXT_TABLE}|g" \
+              -e "s|__BG_INTAKE_INGEST_FUNCTION__|${BG_INTAKE_INGEST_FUNCTION}|g" \
               modules/gateway/k8s/configmap.yaml | kubectl apply -f -
 
           # --- Create K8s Secret from Secrets Manager (Section 2) ---

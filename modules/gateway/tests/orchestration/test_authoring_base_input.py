@@ -12,7 +12,7 @@ from src.orchestration import authoring_input
 from src.orchestration.authoring_input import AuthoringInputError, resolve_authoring_input
 from src.orchestration.engine_commands import EngineCommandReport
 from src.orchestration.pending_amendments import _snapshot, in_force_plan
-from src.orchestration.registration import transform_for_registration
+from src.orchestration.registration import promote_proposed_policy, transform_for_registration
 
 from . import test_replan_authoring_dispatch as dispatch_tests
 from .test_pending_amendments import ORG_A, base_proposal
@@ -28,6 +28,9 @@ spec.loader.exec_module(worker)
 
 async def commissioned(session, proposal=None):
     proposal, _ = transform_for_registration(proposal or base_proposal())
+    # This fixture performs explicit human acceptance, rather than inert draft
+    # registration. Carry the proposed bounds into that acceptance unchanged.
+    proposal = promote_proposed_policy(proposal)
     flow = await flow_with_asker(session, proposal=proposal)
     report = EngineCommandReport()
     await replan(session, report, flow_id=flow)

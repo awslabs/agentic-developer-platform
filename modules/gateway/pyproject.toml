@@ -168,6 +168,7 @@ pricing_policy = ["snapshots/*.json"]
 "tests/cli/test_bg_cognito_auth_login_web.py" = ["N802"]
 "tests/cli/test_adp_update.py" = ["N802"]
 "tests/cli/test_adp_install.py" = ["N802"]
+"tests/cli/test_adp_flow.py" = ["N802"]
 # E402: pytestmark must appear before project imports for pytest collection;
 # this is a deliberate pattern across all e2e test files.
 "tests/e2e/test_*.py" = ["E402"]

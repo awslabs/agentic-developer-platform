@@ -851,6 +851,367 @@ class TestDecisionsReadApi:
         assert human_approvals[0]["actor_role"] == ACTOR_ROLE
 
 
+class TestRevisionBoundAcceptance:
+    """#5331: an answer may be bound to the plan revision the human reviewed.
+
+    The hole this closes is narrow and easy to misjudge, so it is worth stating
+    exactly. A client that reads the plan, checks the hash it expected and *then*
+    approves has a window between those two HTTP calls. If the plan is amended in
+    that window the approval is still accepted, and the decision row then claims a
+    human approved a document they never saw. No client can close that window —
+    only a comparison inside the same transaction as the state change can, which is
+    why the precondition lives on the server and these tests live here.
+
+    `expected_plan_hash` is OPTIONAL and its absence must remain byte-for-byte the
+    old behaviour, because every existing caller (the dashboard, the GitHub comment
+    path) omits it. That is asserted too: a regression there is a silent outage of
+    gate approval, not a missing feature.
+    """
+
+    @staticmethod
+    async def _plan(session, flow, *, document=None, plan_hash="a" * 64):
+        return await OrchestrationRepository(session).record_accepted_plan(
+            org_id=ORG_A,
+            flow_id=flow.id,
+            plan_document=document or {"flow_slug": FLOW_SLUG, "nodes": []},
+            plan_hash=plan_hash,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_revision_in_force_is_approved(self, session, app_with_router):
+        """The happy path: the hash matches, so the gate moves exactly as it would
+        have without a precondition."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        plan = await self._plan(session, flow)
+
+        response = client_for(app_with_router).post(
+            approve_route(gate.id),
+            json={"reason": "reviewed version 1", "expected_plan_hash": plan.plan_hash},
+        )
+
+        assert response.status_code == 200, response.text
+        assert await state_of(session, gate.id) == NodeState.PASSED.value
+
+    @pytest.mark.asyncio
+    async def test_a_superseded_revision_is_refused_and_the_gate_does_not_move(self, session, app_with_router):
+        """The defect this exists for. An operator reviewed version 1, the plan was
+        amended to version 2, and their approval must NOT be recorded against the
+        document they did not read."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        reviewed = await self._plan(session, flow, plan_hash="a" * 64)
+        # An amendment supersedes `reviewed` and becomes the plan in force.
+        await self._plan(session, flow, plan_hash="b" * 64)
+
+        response = client_for(app_with_router).post(
+            approve_route(gate.id),
+            json={"expected_plan_hash": reviewed.plan_hash},
+        )
+
+        assert response.status_code == 409, response.text
+        # The claim that matters is not the status code — it is that nothing moved.
+        assert await state_of(session, gate.id) == NodeState.AWAITING_GATE.value
+        approvals = [row for row in await decisions_for(session, flow.id) if row.kind == DecisionKind.GATE_APPROVED.value]
+        assert approvals == []
+
+    @pytest.mark.asyncio
+    async def test_a_stale_answer_is_recorded_as_a_refusal(self, session, app_with_router):
+        """A refused approval is evidence. Someone tried to approve a plan that had
+        already moved, and a reader of the decision log needs to see that rather
+        than infer it from an absence."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        await self._plan(session, flow, plan_hash="a" * 64)
+
+        client_for(app_with_router).post(approve_route(gate.id), json={"expected_plan_hash": "c" * 64})
+
+        refusals = [row for row in await decisions_for(session, flow.id) if row.kind == DecisionKind.TRANSITION_REJECTED.value]
+        assert len(refusals) == 1
+        assert "not the revision in force" in refusals[0].rejection_reason
+        assert refusals[0].actor_id == USER_ID
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_does_not_echo_the_revision_in_force(self, session, app_with_router):
+        """The message says the expectation was wrong, not what the right answer
+        is. A caller re-reads the plan to learn that; a refusal is not a read API,
+        and letting it become one invites a client that approves whatever it is
+        told is current — which is the review step this story exists to enforce."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        in_force = "d" * 64
+        await self._plan(session, flow, plan_hash=in_force)
+
+        response = client_for(app_with_router).post(approve_route(gate.id), json={"expected_plan_hash": "c" * 64})
+
+        assert response.status_code == 409
+        assert in_force not in response.text
+
+    @pytest.mark.asyncio
+    async def test_a_flow_with_no_plan_in_force_refuses_a_bound_answer(self, session, app_with_router):
+        """Fail closed. Nothing is in force, so no revision can match — the one
+        thing this must not do is treat "nothing to compare" as "comparison
+        passed"."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+
+        response = client_for(app_with_router).post(approve_route(gate.id), json={"expected_plan_hash": "a" * 64})
+
+        assert response.status_code == 409, response.text
+        assert await state_of(session, gate.id) == NodeState.AWAITING_GATE.value
+
+    @pytest.mark.asyncio
+    async def test_an_empty_expected_hash_is_refused_at_the_edge(self, session, app_with_router):
+        """`--expect-plan-hash "$(...)"` whose substitution produced nothing must
+        not approve. 422 from the model, before the adapter is reached."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        await self._plan(session, flow)
+
+        response = client_for(app_with_router).post(approve_route(gate.id), json={"expected_plan_hash": ""})
+
+        assert response.status_code == 422, response.text
+        assert await state_of(session, gate.id) == NodeState.AWAITING_GATE.value
+
+    @pytest.mark.asyncio
+    async def test_a_whitespace_expected_hash_fails_closed_in_the_adapter(self, session):
+        """The adapter has a second caller (the GitHub comment path) that does not
+        go through the request model, so it must fail closed on its own. A
+        precondition enforced only by the door you came in is not a precondition.
+
+        Driven at the adapter directly, because that is the seam the other caller
+        uses."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.admin.access_control import AccessControl
+        from src.orchestration.adapters.github_comments import (
+            GateAnswerStatus,
+            InputPath,
+            apply_gate_answer_for_context,
+        )
+
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        await self._plan(session, flow)
+        access = MagicMock(spec=AccessControl)
+        access.check_permission = AsyncMock(return_value=True)
+        access.get_user_role = AsyncMock(return_value=(AdminRole(ACTOR_ROLE), ORG_A, None))
+
+        outcome = await apply_gate_answer_for_context(
+            session,
+            context=_token_context(ORG_A),
+            node_id=gate.id,
+            approve=True,
+            reason=None,
+            access=access,
+            input_path=InputPath.DASHBOARD,
+            expected_plan_hash="   ",
+        )
+
+        assert outcome.status is GateAnswerStatus.REFUSED_STALE_PLAN
+        assert await state_of(session, gate.id) == NodeState.AWAITING_GATE.value
+
+    @pytest.mark.asyncio
+    async def test_omitting_the_precondition_preserves_the_prior_behaviour(self, session, app_with_router):
+        """Every existing caller omits this field. A flow with a plan in force and
+        an unbound answer must approve exactly as it did before — this field is
+        additive or it is a gate-approval outage."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        await self._plan(session, flow)
+
+        response = client_for(app_with_router).post(approve_route(gate.id), json={"reason": "unbound, as today"})
+
+        assert response.status_code == 200, response.text
+        assert await state_of(session, gate.id) == NodeState.PASSED.value
+
+    @pytest.mark.asyncio
+    async def test_a_stale_rejection_is_also_refused(self, session, app_with_router):
+        """Rejecting a revision you did not read is the same misattribution as
+        approving one, so the precondition is honoured on both verbs."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        await self._plan(session, flow, plan_hash="a" * 64)
+
+        response = client_for(app_with_router).post(reject_route(gate.id), json={"expected_plan_hash": "c" * 64})
+
+        assert response.status_code == 409, response.text
+        assert await state_of(session, gate.id) == NodeState.AWAITING_GATE.value
+
+    @pytest.mark.asyncio
+    async def test_an_unauthorized_caller_cannot_probe_which_revision_is_in_force(self, session, app_with_router):
+        """Ordering, asserted. The permission check runs BEFORE the plan read, so a
+        caller without approval authority gets the same 403 whatever hash they
+        send and cannot use this field to discover a tenant's plan state."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        in_force = "e" * 64
+        await self._plan(session, flow, plan_hash=in_force)
+        client = client_for(app_with_router, permitted=False)
+
+        matching = client.post(approve_route(gate.id), json={"expected_plan_hash": in_force})
+        stale = client.post(approve_route(gate.id), json={"expected_plan_hash": "c" * 64})
+
+        assert matching.status_code == 403, matching.text
+        assert stale.status_code == 403, stale.text
+        assert in_force not in matching.text
+
+    @pytest.mark.asyncio
+    async def test_another_tenants_plan_hash_cannot_satisfy_the_precondition(self, session, app_with_router):
+        """The plan is read under the answering caller's resolved org, so a hash
+        that is in force in another tenant is simply not in force here."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        await self._plan(session, flow, plan_hash="a" * 64)
+        other = await seed_flow(session, org_id=ORG_B, slug="other-loop")
+        foreign = "f" * 64
+        await OrchestrationRepository(session).record_accepted_plan(
+            org_id=ORG_B,
+            flow_id=other.id,
+            plan_document={"flow_slug": "other-loop", "nodes": []},
+            plan_hash=foreign,
+        )
+
+        response = client_for(app_with_router).post(approve_route(gate.id), json={"expected_plan_hash": foreign})
+
+        assert response.status_code == 409, response.text
+        assert await state_of(session, gate.id) == NodeState.AWAITING_GATE.value
+
+    @pytest.mark.asyncio
+    async def test_a_retry_after_a_lost_response_does_not_approve_twice(self, session, app_with_router):
+        """The retry case the CLI actually hits. The first bound approval succeeds
+        and its response is lost; the retry sends the same hash. It returns the
+        original success and decision id without writing a second approval.
+        """
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        plan = await self._plan(session, flow)
+        client = client_for(app_with_router)
+
+        first = client.post(approve_route(gate.id), json={"expected_plan_hash": plan.plan_hash})
+        retry = client.post(approve_route(gate.id), json={"expected_plan_hash": plan.plan_hash})
+
+        assert first.status_code == 200, first.text
+        assert retry.status_code == 200, retry.text
+        assert retry.json() == first.json()
+        approvals = [row for row in await decisions_for(session, flow.id) if row.kind == DecisionKind.GATE_APPROVED.value]
+        assert len(approvals) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_different_actor_cannot_claim_the_original_bound_result(self, session, app_with_router):
+        """Only the original actor gets a replay; another human gets a conflict."""
+        from src.auth.dependencies import get_current_user
+
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        plan = await self._plan(session, flow)
+
+        first = client_for(app_with_router).post(approve_route(gate.id), json={"expected_plan_hash": plan.plan_hash})
+        other = client_for(app_with_router, org_id=ORG_A)
+        app_with_router.dependency_overrides[get_current_user] = lambda: _token_context(ORG_A, user_id="another-human")
+        retry = other.post(approve_route(gate.id), json={"expected_plan_hash": plan.plan_hash})
+
+        assert first.status_code == 200, first.text
+        assert retry.status_code == 409, retry.text
+
+    @pytest.mark.asyncio
+    async def test_an_opposite_verb_cannot_claim_the_original_bound_result(self, session, app_with_router):
+        """Approve and reject are different decisions even for the same actor and plan."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        plan = await self._plan(session, flow)
+        client = client_for(app_with_router)
+
+        first = client.post(approve_route(gate.id), json={"expected_plan_hash": plan.plan_hash})
+        opposite = client.post(reject_route(gate.id), json={"expected_plan_hash": plan.plan_hash})
+
+        assert first.status_code == 200, first.text
+        assert opposite.status_code == 409, opposite.text
+
+    @pytest.mark.asyncio
+    async def test_a_decision_for_an_earlier_plan_is_not_replayed_for_a_later_plan(self, session, app_with_router):
+        """The replay key includes the exact plan, not just actor, verb and gate.
+
+        Amendments preserve the state of unchanged nodes. Therefore the same gate
+        can still be passed after plan B replaces plan A, and a retry carrying B's
+        hash must not be handed the decision that approved A.
+        """
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        plan_a = await self._plan(session, flow, plan_hash="a" * 64)
+        client = client_for(app_with_router)
+
+        first = client.post(approve_route(gate.id), json={"expected_plan_hash": plan_a.plan_hash})
+        plan_b = await self._plan(session, flow, plan_hash="b" * 64)
+        wrong_revision = client.post(approve_route(gate.id), json={"expected_plan_hash": plan_b.plan_hash})
+
+        assert first.status_code == 200, first.text
+        assert wrong_revision.status_code == 409, wrong_revision.text
+        approvals = [row for row in await decisions_for(session, flow.id) if row.kind == DecisionKind.GATE_APPROVED.value]
+        assert len(approvals) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_unbound_answer_is_not_reclassified_as_a_bound_retry(self, session, app_with_router):
+        """A later bound request is a retry only when the original was bound too."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        plan = await self._plan(session, flow)
+        client = client_for(app_with_router)
+
+        first = client.post(approve_route(gate.id), json={"reason": "ordinary dashboard approval"})
+        bound = client.post(approve_route(gate.id), json={"expected_plan_hash": plan.plan_hash})
+
+        assert first.status_code == 200, first.text
+        assert bound.status_code == 409, bound.text
+
+    @pytest.mark.asyncio
+    async def test_operator_text_cannot_forge_a_bound_retry_marker(self, session, app_with_router):
+        """User-controlled reason text cannot turn an unbound answer into a replay."""
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        plan = await self._plan(session, flow)
+        client = client_for(app_with_router)
+
+        first = client.post(
+            approve_route(gate.id),
+            json={"reason": f"[plan-hash={plan.plan_hash}] pretend this was bound"},
+        )
+        bound = client.post(approve_route(gate.id), json={"expected_plan_hash": plan.plan_hash})
+
+        assert first.status_code == 200, first.text
+        assert bound.status_code == 409, bound.text
+
+    @pytest.mark.asyncio
+    async def test_knowing_the_right_revision_does_not_confer_authority_to_accept_it(self, session, app_with_router):
+        """The self-approval boundary, restated for the bound path.
+
+        An authoring agent knows its own plan's hash better than anyone — it just
+        registered it. So the one thing the precondition must NOT become is a
+        capability: presenting the correct revision has to remain insufficient
+        without `PLAN_APPROVE`. A registry-resolved agent principal lands on
+        `AdminRole.MEMBER`, which holds `PLAN_DRAFT` and not `PLAN_APPROVE`, and
+        the acceptance route gates on the latter.
+
+        Asserted as "the exactly-correct hash still gets 403, and the gate does not
+        move", because a precondition evaluated before authority — or one that
+        short-circuited a match into an approval — would pass every other test in
+        this class while handing an agent the ability to accept its own draft.
+        """
+        flow = await seed_flow(session)
+        gate = await seed_node(session, flow)
+        plan = await self._plan(session, flow)
+
+        response = client_for(app_with_router, permitted=False).post(
+            approve_route(gate.id),
+            json={"expected_plan_hash": plan.plan_hash},
+        )
+
+        assert response.status_code == 403, response.text
+        assert await state_of(session, gate.id) == NodeState.AWAITING_GATE.value
+        approvals = [row for row in await decisions_for(session, flow.id) if row.kind == DecisionKind.GATE_APPROVED.value]
+        assert approvals == []
+
+
 class TestLegacyLaneAdoptionThroughResume:
     """Resume is the production caller of `handoff.adopt_legacy_lane` (#5144).
 

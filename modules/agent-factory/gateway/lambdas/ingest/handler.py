@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 from channels.base import (
     UNUSABLE_ORG_IDS,
@@ -27,6 +28,7 @@ from channels.base import (
     ChannelType,
     UnifiedMessage,
 )
+from channels.gateway_api import GATEWAY_API_SOURCE, GatewayApiAdapter
 from channels.slack import SlackAdapter
 from channels.webchat import WebChatAdapter
 from classifier import ClassificationResult, classify_message
@@ -120,6 +122,12 @@ def _send_ws_response(connection_id: str, request_id: str, payload: dict) -> Non
 ADAPTERS: dict[str, ChannelAdapter] = {
     "webchat": WebChatAdapter(),
     "slack": SlackAdapter(signing_secret=SLACK_SIGNING_SECRET, bot_user_id=SLACK_BOT_USER_ID),
+    # #5331: IAM-gated operator-plane invocations from the gateway (`adp flow
+    # start`). Registered as its own adapter but EMITS ChannelType.WEBCHAT, so the
+    # session row it produces is indistinguishable from a browser-started one and
+    # `--resume` finds either from the same GSI partition. See
+    # `channels/gateway_api.py` on why a distinct channel value would split them.
+    GATEWAY_API_SOURCE: GatewayApiAdapter(),
 }
 
 
@@ -221,7 +229,13 @@ def lambda_handler(event, context):
         if not adapter.verify_request(event.get("headers", {}), event.get("body", "").encode("utf-8")):
             return {"statusCode": 401, "body": "Invalid signature"}
 
-    message = adapter.parse_event(event) if channel_name == "webchat" else adapter.parse_event(parse_body(event))
+    # webchat needs the whole event (it reads `requestContext.authorizer.claims`);
+    # gateway-api needs it too, because a direct invocation's event IS the envelope
+    # — there is no `body` wrapper. Only the HTTP-webhook channels have a body.
+    if channel_name in ("webchat", GATEWAY_API_SOURCE):
+        message = adapter.parse_event(event)
+    else:
+        message = adapter.parse_event(parse_body(event))
     if message is None:
         return {"statusCode": 200, "body": "OK"}
 
@@ -612,6 +626,50 @@ def _validate_requested_persona(message: UnifiedMessage) -> str | None:
 
 
 def handle_unified_message(message: UnifiedMessage) -> dict:
+    if message.platform_data.get("ingress") != "gateway-api":
+        return _handle_unified_message(message)
+    try:
+        _validate_requested_persona(message)
+    except ValueError:
+        return _handle_unified_message(message)
+
+    # Claim the turn before touching the session, registering spend or enqueueing.
+    # A repeated message_id alone is insufficient: the run table also keys on
+    # arrival time and SQS deduplicates by a newly minted task id.
+    identity = [message.platform_data.get("org_id"), message.user_id, message.thread_id, message.message_id]
+    key = "gateway-turn#" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+    fingerprint = hashlib.sha256(json.dumps([
+        message.text, message.platform_data.get("intake_repository"),
+        message.platform_data.get("intake_issue"), message.platform_data.get("requested_persona"),
+    ]).encode()).hexdigest()
+    try:
+        sessions_table.put_item(
+            Item={"session_id": key, "fingerprint": fingerprint, "expires_at": int(time.time()) + 7 * 86400},
+            ConditionExpression="attribute_not_exists(session_id)",
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
+        prior = sessions_table.get_item(Key={"session_id": key}, ConsistentRead=True).get("Item", {})
+        if prior.get("fingerprint") != fingerprint:
+            return {"statusCode": 409, "body": json.dumps({"error": "retry_token_reused"})}
+        if prior.get("result"):
+            return json.loads(prior["result"])
+        return {"statusCode": 409, "body": json.dumps({"error": "turn_delivery_uncertain", "session_id": message.thread_id})}
+
+    result = _handle_unified_message(message)
+    # If the process dies after dispatch, the claim remains. A retry then reports
+    # uncertainty rather than sending a second task. Never turn an unknown result
+    # into a fresh dispatch.
+    sessions_table.update_item(
+        Key={"session_id": key}, UpdateExpression="SET #result = :result",
+        ExpressionAttributeNames={"#result": "result"},
+        ExpressionAttributeValues={":result": json.dumps(result)},
+    )
+    return result
+
+
+def _handle_unified_message(message: UnifiedMessage) -> dict:
     now = int(time.time())
     task_id = str(uuid.uuid4())
     connection_id = message.platform_data.get("connection_id", "")
@@ -683,6 +741,8 @@ def handle_unified_message(message: UnifiedMessage) -> dict:
             persona=pinned_persona,
             reasoning=f"persona pinned by client: {pinned_persona}",
         )
+        if message.platform_data.get("ingress") == "gateway-api":
+            classification.repo = session.get("intake_repository") or message.platform_data.get("intake_repository") or None
         if active_threads:
             classification.thread_action = "follow_up"
             classification.follow_up_thread_id = active_threads[0]["thread_id"]
@@ -1051,11 +1111,32 @@ def _send_response(session_id: str, body: dict, *, dedup_id: str) -> None:
 
 
 def detect_channel(event):
+    # ORDER IS THE SECURITY PROPERTY HERE (#5331).
+    #
+    # The gateway-api envelope carries its own `user_id`/`org_id`, because its
+    # transport is `lambda:InvokeFunction` and the IAM grant is what authenticates
+    # it. That makes it the one envelope a WebSocket client must never be able to
+    # reach: a browser that sent `{"source": "gateway-api", "user_id": "someone-
+    # else"}` would otherwise be handed another person's identity.
+    #
+    # The `connectionId` check therefore stays FIRST and unconditional. Every API
+    # Gateway WebSocket event carries one, so such a client is still a webchat
+    # event and their identity still comes from their own $connect claims. The
+    # gateway-api check is placed after the Slack signature check for the same
+    # reason in the other direction: a signed Slack event is Slack's regardless of
+    # what its body says.
     if event.get("requestContext", {}).get("connectionId"):
         return "webchat", ADAPTERS["webchat"]
     headers = event.get("headers", {})
     if headers.get("x-slack-signature") or headers.get("X-Slack-Signature"):
         return "slack", ADAPTERS["slack"]
+    # A direct Lambda invocation: no requestContext, no headers, no HTTP at all.
+    # Matched on an explicit discriminator rather than on the absence of the
+    # markers above, because "no connectionId and no signature" is also true of a
+    # malformed webchat event — and treating malformed-webchat as trusted-gateway
+    # would be an identity bypass rather than a parsing quirk.
+    if event.get("source") == GATEWAY_API_SOURCE:
+        return GATEWAY_API_SOURCE, ADAPTERS[GATEWAY_API_SOURCE]
     body = parse_body(event)
     if body.get("type") in ("url_verification", "event_callback"):
         return "slack", ADAPTERS["slack"]
@@ -1073,10 +1154,24 @@ def parse_body(event):
 # ─── Session & Thread DynamoDB Operations ─────────────────────
 
 def get_or_create_session(session_id, connection_id, message, now):
+    # `org_id` is stamped on creation so the row records WHICH TENANT the
+    # conversation belongs to (#5331). `user_workspace` is `user#channel` and carries
+    # no tenant, so without this a reader can only compare the user — and one human
+    # who belongs to two workspaces authenticates with the same user_id in both, which
+    # made their tenants indistinguishable to any consumer of this row. The gateway's
+    # operator-plane readback (`orchestration/intake_session.py`) compares this value
+    # and refuses a row that lacks it, so a session created without the stamp is
+    # unreachable there rather than readable across tenants.
+    org_id = str(message.platform_data.get("org_id", "") or "")
     try:
         resp = sessions_table.get_item(Key={"session_id": session_id})
         item = resp.get("Item")
         if item:
+            # Deliberately NOT backfilled onto an existing row. `session_id` comes from
+            # the client (`message.thread_id`), so a caller who learned somebody else's
+            # id could otherwise stamp their OWN tenant onto an unstamped legacy row and
+            # thereby claim it. An unstamped row stays unreachable to the readback until
+            # the table's 24h TTL reaps it; that is the safe end of the trade.
             sessions_table.update_item(Key={"session_id": session_id},
                 UpdateExpression="SET connection_id = :c, updated_at = :t, expires_at = :e",
                 ExpressionAttributeValues={":c": connection_id, ":t": now, ":e": now + 86400})
@@ -1084,13 +1179,22 @@ def get_or_create_session(session_id, connection_id, message, now):
     except Exception as e:
         logger.warning("get_session failed: %s", e)
 
-    sessions_table.put_item(Item={
+    item = {
         "session_id": session_id,
         "user_workspace": f"{message.user_id}#{message.channel.value}",
         "connection_id": connection_id, "channel": message.channel.value,
         "messages": [], "threads": {}, "created_at": now, "updated_at": now, "expires_at": now + 86400,
-    })
-    return {"threads": {}}
+    }
+    # Written only when known. An empty string is not a tenant, and storing one would
+    # turn "no tenant recorded" into a value a caller with an empty org_id could
+    # match — the readback guards that too, but the row should not offer the target.
+    if org_id:
+        item["org_id"] = org_id
+    if message.platform_data.get("ingress") == "gateway-api":
+        item["intake_repository"] = str(message.platform_data.get("intake_repository") or "")
+        item["intake_issue"] = str(message.platform_data.get("intake_issue") or "")
+    sessions_table.put_item(Item=item)
+    return item
 
 
 def append_message(session_id, role, content, ts):

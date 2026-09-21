@@ -5,15 +5,18 @@ route existed the button pointed at `/api/cli/bg-auth.sh`, which nothing served
 (and its PowerShell sibling had no source file at all), so both downloads were
 dead links.
 
-Five files are serveable: the `adp` CLI and its `install.sh` (Issue #4852 — the
-one-line install path, where install.sh fetches the rest from this same route),
-the Cognito auth helper `bg-cognito-auth.sh` that `adp` wraps, and
-`bg-gateway-proxy.py` — the localhost auth proxy its `serve` subcommand starts
-for Codex. `serve` requires the two to sit side by side, so serving only the
-helper left the documented Codex flow unfinishable (Issue #4156). The domain
-helpers `adp-bedrock.py` and `adp-aws.py` provide scriptable destination setup,
-routing and personal AWS account connection through the same authenticated APIs
-as the UI. Only their static code is served here.
+`ALLOWED_SCRIPTS` below is the serveable set — read it rather than a count here,
+which went stale as helpers were added. It holds the `adp` CLI and its
+`install.sh` (Issue #4852 — the one-line install path, where install.sh fetches
+the rest from this same route), the Cognito auth helper `bg-cognito-auth.sh` that
+`adp` wraps, and `bg-gateway-proxy.py` — the localhost auth proxy its `serve`
+subcommand starts for Codex. `serve` requires the two to sit side by side, so
+serving only the helper left the documented Codex flow unfinishable (Issue #4156).
+The domain helpers (`adp-bedrock.py`, `adp-aws.py`, `adp-github*.py`,
+`adp-superplane.py`, `adp-flow.py`) provide scriptable destination setup, routing,
+personal AWS account connection, provider configuration and delivery-flow control
+through the same authenticated APIs as the UI. Only their static code is served
+here.
 
 Two deliberate design points:
 
@@ -65,6 +68,11 @@ _CLI_DIR = _GATEWAY_ROOT / "cli"
 # user. It carries no secret — provider values are prompted for at runtime and
 # POSTed straight to the vault API, never written into the script.
 #
+# `adp-flow.py` backs `adp flow <verb>` (Issue #5331), for the same reason: the
+# dispatch resolves it as an installed sibling, so a verb in `adp`'s `case` that
+# is absent here is a CLI whose new command 404s for every user. It carries no
+# secret — it reads the session `adp login` already wrote.
+
 # `adp_deployments.py` owns named deployments and the selection rule (Issue
 # #5413). It is not optional: `adp` resolves which deployment a command runs
 # against by invoking it at entry, so an install missing this file has no working
@@ -88,6 +96,7 @@ ALLOWED_SCRIPTS: dict[str, Path] = {
     "adp-github-admin.py": (_CLI_DIR / "adp-github-admin.py").resolve(),
     "adp-superplane.py": (_CLI_DIR / "adp-superplane.py").resolve(),
     "adp-models.py": (_CLI_DIR / "adp-models.py").resolve(),
+    "adp-flow.py": (_CLI_DIR / "adp-flow.py").resolve(),
 }
 
 SHELL_SCRIPT_MEDIA_TYPE = "text/x-shellscript"
@@ -109,6 +118,7 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     "adp-github-admin.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-superplane.py": PYTHON_SCRIPT_MEDIA_TYPE,
     "adp-models.py": PYTHON_SCRIPT_MEDIA_TYPE,
+    "adp-flow.py": PYTHON_SCRIPT_MEDIA_TYPE,
 }
 
 
@@ -121,8 +131,8 @@ SCRIPT_MEDIA_TYPES: dict[str, str] = {
     Public and unauthenticated by design: the /setup page downloads via
     `window.open`, which cannot attach an Authorization header — and the
     documented `curl … | sh` install line sends no header either. The serveable
-    files are `adp`, `install.sh`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py`,
-    `adp-bedrock.py` and `adp-aws.py`, none of which contains secrets.
+    files are `adp`, `install.sh`, `bg-cognito-auth.sh`, `bg-gateway-proxy.py` and
+    the `adp-*.py` area helpers, none of which contains secrets.
 
     `script_name` is matched against an explicit allowlist — it is never
     joined onto a filesystem path — so traversal attempts return 404.

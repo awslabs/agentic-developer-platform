@@ -1177,6 +1177,131 @@ class TestNativeTenantFallback:
         assert task["org_id"] == "org-acme"
 
 
+class TestTheSessionRowRecordsItsTenant:
+    """Issue #5331: the row must say WHICH TENANT the conversation belongs to.
+
+    `user_workspace` is `user#channel` -- it names the user and the client, and no
+    tenant at all. Any consumer of this row could therefore only compare the user,
+    and one human who belongs to two workspaces authenticates with the same
+    `user_id` in both, so their two tenants were indistinguishable here. The
+    gateway's operator-plane readback (`modules/gateway/src/orchestration/
+    intake_session.py`) compares the tenant, and there was nothing on the row to
+    compare against.
+
+    These tests pin the write half. The read half is
+    `modules/gateway/tests/orchestration/test_intake_session.py`.
+    """
+
+    @staticmethod
+    def _direct_response_handler():
+        # `direct_response` is the cheapest path that still creates a session:
+        # no queue, no invocation row, no thread -- just the row this class is about.
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.return_value = _make_bedrock_response({
+            "path": "direct_response",
+            "persona": "developer",
+            "response": "Hello!",
+            "thread_action": "none",
+            "reasoning": "Simple greeting",
+        })
+        return _import_handler(mock_bedrock=mock_bedrock)
+
+    def _send(self, claims, *, session_id="sess-5331"):
+        return mock_apigw_event(
+            route_key="$default",
+            body={"action": "message", "text": "Hello!", "session_id": session_id},
+            connection_id="conn-5331",
+            authorizer_claims=claims,
+        )
+
+    def test_a_new_session_records_the_callers_tenant(self, mocked_aws_services):
+        """The defect: this attribute was absent from every session row written."""
+        handler = self._direct_response_handler()
+        handler.lambda_handler(
+            self._send({"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": "org-acme"}),
+            None,
+        )
+
+        item = mocked_aws_services["table"].get_item(Key={"session_id": "sess-5331"}).get("Item", {})
+        assert item, "the session row must exist"
+        assert item["org_id"] == "org-acme"
+
+    def test_the_tenant_on_the_row_is_the_claim_not_the_client_body(self, mocked_aws_services):
+        """A client naming its own tenant would be choosing who may read the row.
+
+        The readback treats this value as authorization, so a body-supplied org
+        would let a caller plant a row readable by a tenant they do not belong to.
+        """
+        handler = self._direct_response_handler()
+        event = mock_apigw_event(
+            route_key="$default",
+            body={
+                "action": "message",
+                "text": "Hello!",
+                "session_id": "sess-5331-spoof",
+                # Attacker-controlled, named exactly like the trusted claim.
+                "org_id": "org-victim",
+            },
+            connection_id="conn-5331",
+            authorizer_claims={"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": "org-acme"},
+        )
+        handler.lambda_handler(event, None)
+
+        item = mocked_aws_services["table"].get_item(Key={"session_id": "sess-5331-spoof"}).get("Item", {})
+        assert item["org_id"] == "org-acme"
+
+    def test_no_tenant_claim_writes_no_tenant_attribute(self, mocked_aws_services):
+        """An empty string is not a tenant, so it is omitted rather than stored.
+
+        Storing "" would turn "no tenant recorded" into a value a caller with an
+        empty `org_id` could match. The readback guards that independently, but the
+        row should not offer the target. Matches the `$connect` claims row, which
+        already omits absent extended fields rather than writing blanks.
+        """
+        handler = self._direct_response_handler()
+        handler.lambda_handler(
+            self._send(
+                {"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": ""},
+                session_id="sess-5331-no-org",
+            ),
+            None,
+        )
+
+        item = mocked_aws_services["table"].get_item(Key={"session_id": "sess-5331-no-org"}).get("Item", {})
+        assert item, "the conversation still works; only the readback is forfeited"
+        assert "org_id" not in item
+
+    def test_an_existing_unstamped_row_is_not_claimed_by_whoever_touches_it(self, mocked_aws_services):
+        """`session_id` comes from the client, so a backfill would be a takeover.
+
+        A caller who learned another user's session id could send into it and, if
+        the update backfilled the tenant, stamp their OWN org onto the row -- making
+        somebody else's conversation readable by them. The row stays unstamped and
+        therefore unreachable to the readback until the 24h TTL reaps it.
+        """
+        table = mocked_aws_services["table"]
+        table.put_item(Item={
+            "session_id": "sess-5331-legacy",
+            "user_workspace": "user-5331#webchat",
+            "connection_id": "conn-old",
+            "channel": "webchat",
+            "messages": [],
+            "threads": {},
+        })
+
+        handler = self._direct_response_handler()
+        handler.lambda_handler(
+            self._send(
+                {"sub": "user-5331", "custom:tenant_id": "acme", "custom:org_id": "org-attacker"},
+                session_id="sess-5331-legacy",
+            ),
+            None,
+        )
+
+        item = table.get_item(Key={"session_id": "sess-5331-legacy"}).get("Item", {})
+        assert "org_id" not in item, "an unstamped row must not acquire a toucher's tenant"
+
+
 class TestEffectiveTenantIdHelper:
     """Issue #5268: the substitution itself, isolated from the dispatch path."""
 

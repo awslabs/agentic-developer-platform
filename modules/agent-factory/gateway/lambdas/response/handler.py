@@ -181,11 +181,11 @@ def _append_response(session_id: str, content: str, task_id: str, now: int):
             Key={"session_id": session_id},
             UpdateExpression=(
                 "SET messages = list_append(if_not_exists(messages, :e), :m), "
-                "last_response = :r, updated_at = :t"
+                "last_response = :r, last_response_task_id = :task, updated_at = :t"
             ),
             ExpressionAttributeValues={
                 ":m": [{"role": "assistant", "content": content[:10000], "timestamp": Decimal(str(now)), "task_id": task_id}],
-                ":e": [], ":r": content[:10000], ":t": now,
+                ":e": [], ":r": content[:10000], ":t": now, ":task": task_id,
             },
         )
     except Exception as e:

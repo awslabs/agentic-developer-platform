@@ -296,6 +296,22 @@ class TestOrchestrationRouterIsOperatorPlane:
 
         assert "src.orchestration.draft_routes" in UNIT_MODULES, "src.orchestration.draft_routes is not registered; draft registration would 404."
 
+    def test_intake_router_is_registered_on_the_operator_plane(self):
+        """Issue #5331's intake-conversation router, same plane as the rest.
+
+        A third module for the same structural reason as the second: it carries
+        permissions weaker than approval authority (`PLAN_DRAFT` to speak in a
+        planning conversation, `USAGE_READ` to read one back), and `routes.py`'s
+        guarantee is that nothing on it is reachable below `PLAN_APPROVE`. Separate
+        module, identical authentication — a weaker permission must never arrive
+        with weaker authentication.
+        """
+        from src.app import UNIT_MODULES
+
+        assert "src.orchestration.intake_routes" in UNIT_MODULES, (
+            "src.orchestration.intake_routes is not registered; `adp flow start` would 404 rather than plan."
+        )
+
     def test_orchestration_is_not_registered_as_an_internal_module(self):
         """Registering orchestration routes under /internal/v1 is the failure mode."""
         from src.app import UNIT_MODULES
@@ -564,6 +580,33 @@ class TestOrchestrationRouterIsOperatorPlane:
             # without a separate human approval, the permission must become
             # PLAN_APPROVE.
             "/orchestration/flows/drafts": "Permission.PLAN_DRAFT",
+            # Issue #5331: computing what that registration WOULD produce — the
+            # effective graph including server-inserted gates, the revision hash an
+            # acceptance binds to, and the authority the plan proposes.
+            #
+            # It is a POST, so this guard demands a justification for anything below
+            # PLAN_APPROVE. The justification is that it writes nothing and reads
+            # nothing: the handler takes no `get_db` dependency at all, and its four
+            # computations (transform_for_registration, validate_proposal, plan_hash,
+            # summarize_policy) are pure functions of the request body. There is no
+            # session through which it could create a flow, stamp a policy or
+            # supersede a plan.
+            #
+            # PLAN_DRAFT rather than PLAN_APPROVE because an author must be able to
+            # see the effective shape of their own plan, and a preview grants no
+            # authority. It reveals nothing a caller could not learn by registering,
+            # which they may already do at this same permission.
+            #
+            # The reason this route exists at all is a safety one worth keeping next
+            # to the permission: a policy-bearing document CANNOT be registered as a
+            # draft (accept_execution_policy refuses a SERVICE actor), so before this
+            # route the only way to see a policy's bounds was the acceptance surface,
+            # which compiles and approves in one call. If a future change here takes
+            # a session or persists any part of a preview, the permission must be
+            # re-argued from scratch — a stored unaccepted policy would be read as
+            # authority by load_in_force_policy, whose permit path formats
+            # `policy_id or '(unstamped)'` rather than refusing.
+            "/orchestration/flows/drafts/preview": "Permission.PLAN_DRAFT",
             # Issue #4529: an authoring agent filing an AMENDMENT to an
             # already-accepted plan as a pending draft. Same permission, and inert in
             # a stronger sense than #4528's: registration writes no node, no edge, no
@@ -623,6 +666,165 @@ class TestOrchestrationRouterIsOperatorPlane:
 
         internal_paths = [route.path for route in draft_router.routes if "/internal/" in getattr(route, "path", "")]
         assert internal_paths == [], f"draft router declares internal-plane paths: {internal_paths}"
+
+    def test_intake_route_surface_is_exactly_the_allowlist(self):
+        """Issue #5331: the intake router's surface, checked for equality.
+
+        A third equality-checked allowlist, for the same reason the draft router got
+        the second: this router's rule is neither "PLAN_APPROVE everywhere" nor
+        "PLAN_DRAFT everywhere" — it is split by verb, and a split rule is exactly
+        the kind that erodes silently. Adding a route here is a review moment: name
+        the permission, and justify anything below approval authority.
+        """
+        from src.auth.dependencies import get_current_user
+        from src.orchestration.intake_routes import router as intake_router
+
+        expected_permissions = {
+            # POST — starting a planning conversation. PLAN_DRAFT, matching draft
+            # registration, because refining an intent IS authoring: it produces the
+            # document a human is later asked to approve.
+            #
+            # Below PLAN_APPROVE, so this guard demands the justification. It is that
+            # nothing reachable from this router can accept a plan, stamp an
+            # execution policy, record a decision or move a gate. The router imports
+            # no compile, acceptance or state-transition symbol at all; what it can
+            # produce is a queue message and a conversation row, and a conversation's
+            # output is inert until a human with PLAN_APPROVE acts on it.
+            #
+            # If a future change here lets an intake turn register, compile or accept
+            # a plan, the permission must be re-argued — an agent-driven conversation
+            # that could accept its own output is the self-approval inversion this
+            # EPIC exists to prevent.
+            "/orchestration/intake/sessions": "Permission.PLAN_DRAFT",
+            # POST — a turn in an existing conversation. Same permission, same
+            # reasoning. Ownership is additionally resolved from the STORED row
+            # before the turn is enqueued (see intake_session.py): a session id
+            # appears in logs and shell history, so possession of one is never
+            # authority, and the check happens before the send because no later
+            # rejection could unsend a caller's words into somebody else's
+            # conversation.
+            "/orchestration/intake/sessions/{session_id}/turns": "Permission.PLAN_DRAFT",
+            # GET — reading a conversation back, which is what `--resume` is built
+            # on. USAGE_READ: a transcript and a draft are not an approval record.
+            # They carry no actor_id, no decision row and no accepted plan, so
+            # reading them is not reading who approved what. Gating this on
+            # PLAN_APPROVE would mean nobody could resume their own planning
+            # conversation without also being able to accept plans — strictly more
+            # authority than the operation needs.
+            "/orchestration/intake/sessions/{session_id}": "Permission.USAGE_READ",
+            # GET — the caller's own most recent conversation. Same permission, and
+            # scoped to the authenticated identity with no user_id parameter: one
+            # would turn this into a way to read other people's planning
+            # conversations.
+            "/orchestration/intake/sessions/latest": "Permission.USAGE_READ",
+            # POST — derive a plan DOCUMENT from the conversation's refined draft
+            # (#5331 blocker 4). PLAN_DRAFT, matching the two write routes above and
+            # draft registration, for the same reason: producing the document a human
+            # is later asked to approve is authoring.
+            #
+            # Below PLAN_APPROVE, so this guard demands the justification. It is
+            # stronger here than for the turn routes rather than weaker, because this
+            # route's whole output is a document and nothing else:
+            #
+            # * It writes nothing at all — no flow, no plan version, no decision, no
+            #   gate movement. `wrote_nothing` is on the response model with a pinned
+            #   default so a client can repeat the claim, and the route takes the
+            #   session reader and a db session only to READ the draft and resolve the
+            #   caller's own repository connections.
+            # * The derived document carries NO execution policy in either field, so
+            #   even registering it grants no authority. `execution_is_unbounded` is
+            #   likewise pinned.
+            # * The router still imports and calls none of `compile_proposal`,
+            #   `accept_execution_policy`, `stamp_policy` or `apply_gate_answer`,
+            #   which `test_intake_routes.py` now asserts by PARSING the module rather
+            #   than scanning its text.
+            #
+            # A repository name is the one thing here that could become authority, and
+            # it is resolved against the authenticated tenant's real GitHub App
+            # installations and refused when absent — never accepted from the caller.
+            #
+            # If a future change lets this route register or accept what it derived,
+            # the permission must be re-argued from scratch: a conversation accepting
+            # the plan it just wrote is the self-approval inversion this EPIC exists
+            # to prevent.
+            "/orchestration/intake/sessions/{session_id}/plan": "Permission.PLAN_DRAFT",
+        }
+
+        actual_paths = set()
+        unguarded = []
+        for route in intake_router.routes:
+            endpoint = getattr(route, "endpoint", None)
+            if endpoint is None:
+                continue
+
+            path = getattr(route, "path", "?")
+            actual_paths.add(path)
+            dependency_calls = {getattr(dep, "call", None) for dep in getattr(getattr(route, "dependant", None), "dependencies", []) or []}
+            source = inspect.getsource(endpoint)
+
+            required = expected_permissions.get(path)
+            if get_current_user not in dependency_calls or required is None or required not in source:
+                unguarded.append(path)
+
+        assert actual_paths == set(expected_permissions), (
+            f"intake router surface changed: {sorted(actual_paths ^ set(expected_permissions))}. "
+            "Add the new route to expected_permissions with the permission it enforces."
+        )
+
+        assert unguarded == [], f"intake routes missing authentication or their required permission check: {unguarded}."
+
+    def test_intake_router_declares_no_internal_plane_path(self):
+        """The mount-path variant of the mistake, for the third router too."""
+        from src.orchestration.intake_routes import router as intake_router
+
+        internal_paths = [route.path for route in intake_router.routes if "/internal/" in getattr(route, "path", "")]
+        assert internal_paths == [], f"intake router declares internal-plane paths: {internal_paths}"
+
+    def test_intake_router_cannot_reach_acceptance_or_compilation(self):
+        """The load-bearing one: PLAN_DRAFT on this router must not reach approval.
+
+        Asserted on the module's IMPORTS rather than on prose, because the weaker
+        permission is justified entirely by what this router is unable to do. A
+        conversation that could compile and accept its own refined plan would turn
+        the intake door into the escalation path — the plan's author approving
+        itself, which is precisely what the acceptance gate exists to stop.
+
+        Checked by symbol rather than by string search for "PLAN_APPROVE" so that
+        adding an acceptance call fails here even if it is written via an alias.
+        """
+        tree = ast.parse(Path("src/orchestration/intake_routes.py").read_text())
+
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    imported.add(f"{module}.{alias.name}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported.add(alias.name)
+
+        forbidden = sorted(
+            name
+            for name in imported
+            if any(
+                marker in name
+                for marker in (
+                    "orchestration.compile",
+                    "orchestration.registration",
+                    "orchestration.genesis",
+                    "accept_execution_policy",
+                    "stamp_policy",
+                    "plan_hash",
+                    "DecisionKind",
+                )
+            )
+        )
+        assert forbidden == [], (
+            f"intake_routes.py now imports acceptance/compilation symbols: {forbidden}. "
+            "Its PLAN_DRAFT/USAGE_READ permissions are justified by being unable to reach them; "
+            "if an intake turn must compile or accept a plan, the permission has to be re-argued first."
+        )
 
     def test_draft_route_never_records_an_approval_kind_decision(self):
         """The load-bearing one: PLAN_DRAFT must not be able to write an approval.

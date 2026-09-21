@@ -186,6 +186,19 @@ class CompileResult:
 # it executes, and are therefore NOT part of its identity. See `plan_hash`.
 HASH_EXCLUDED_FIELDS = frozenset({"description", "design_history"})
 
+# Fields whose key is DROPPED from the canonical JSON when their value is absent,
+# rather than serialised as `null`. Distinct from `HASH_EXCLUDED_FIELDS` above: these
+# fields ARE part of the plan's identity when present (they carry authority), but a
+# document that does not use them must hash exactly as it did before the field
+# existed — otherwise every plan predating it rehashes on deploy and every in-flight
+# fail-soft retry is refused 409 as a plan-of-record rewrite. See `plan_hash`.
+#
+# Named rather than inlined so a test asserting the backward-compatibility claim can
+# reconstruct "what the older code hashed" from this list instead of hardcoding one
+# key — a hardcoded key is how such a test starts failing the moment a second
+# omitted field is added, reporting a regression where the property still holds.
+HASH_OMITTED_WHEN_ABSENT = frozenset({"execution_policy", "proposed_execution_policy"})
+
 
 def plan_hash(proposal: LoopProposal) -> str:
     """Stable SHA-256 of a proposal document.
@@ -240,10 +253,29 @@ def plan_hash(proposal: LoopProposal) -> str:
     no-op for the plans that do not use it. `exclude_none` would be the wrong tool
     here: it would also strip nulls from nested policy fields and from unrelated
     optional fields, changing hashes it has no business changing.
+
+    **`proposed_execution_policy` is covered too, and omitted when absent (#5331)**,
+    on both counts for the reasons above. Covered, because two drafts differing only
+    in the authority they ask a human to grant are not the same draft: hashing them
+    alike would make the wider proposal indistinguishable from a retry of the
+    narrower one, so a human's bound acceptance of the revision they reviewed could
+    arm a revision they did not. Omitted when absent, because every existing plan —
+    accepted or draft — has no such key, and emitting `null` would rehash all of them
+    on deploy and turn every in-flight fail-soft retry into a 409.
+
+    Note what this means for binding, which is the point of the whole field: because
+    a demoted policy is NOT stamped at registration, the hash computed over a draft
+    carrying one *is* the hash that lands in force. So a policy-bearing plan becomes
+    bindable to an exact revision, which is precisely what it was not while the
+    policy had to be stamped by whoever compiled it.
     """
     document = proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS)
-    if document.get("execution_policy") is None:
-        document.pop("execution_policy", None)
+    # Both policy keys, by the same rule and for the same reason. Driven off the
+    # named constant rather than written twice, so a third such field cannot be added
+    # to the model and silently left out of this.
+    for policy_field in HASH_OMITTED_WHEN_ABSENT:
+        if document.get(policy_field) is None:
+            document.pop(policy_field, None)
     # Adding an optional suite must not change hashes of pre-E1 accepted plans.
     # Explicit suites remain covered, so weakening one is never a retry.
     for node in document.get("nodes", []):
@@ -300,7 +332,13 @@ def accept_execution_policy(
         PolicyNotAcceptableError: A non-human actor attempted acceptance, or the
             document declared a server-stamped field.
     """
-    require_evaluation_acceptor(proposal, decision)
+    if decision_kind != DecisionKind.PLAN_DRAFTED:
+        require_evaluation_acceptor(proposal, decision)
+        if proposal.proposed_execution_policy is not None:
+            raise PolicyNotAcceptableError(
+                "Proposed policy bounds cannot remain inert on an accepted plan. "
+                "Accept the draft through its revision-bound gate, or submit an execution_policy for explicit human acceptance."
+            )
     policy = proposal.execution_policy
     if policy is None:
         return proposal
@@ -463,7 +501,8 @@ async def compile_proposal(
                 "path (PLAN_APPROVE), or target a flow with no plan in force."
             )
 
-        require_evaluation_acceptor(proposal, decision, in_force)
+        if decision_kind != DecisionKind.PLAN_DRAFTED:
+            require_evaluation_acceptor(proposal, decision, in_force)
         node_ids, nodes_created = await upsert_nodes(
             repo,
             proposal=proposal,

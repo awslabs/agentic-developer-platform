@@ -74,7 +74,7 @@ from src.shared.models.vault import UserIdentity
 from src.shared.schemas.auth import TokenContext
 
 from .. import repository as repository_module
-from ..models import DecisionKind, OrchestrationNode
+from ..models import DecisionKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from ..state import ActorKind, NodeState, transition
 
 logger = logging.getLogger("bedrockgateway.orchestration.adapters.github_comments")
@@ -135,6 +135,7 @@ class InputPath(StrEnum):
 # reads. If provenance later needs indexing, that is a migration in its own
 # issue, and this format is what it would backfill from.
 _INPUT_PATH_PREFIX = "input-path"
+_PLAN_HASH_PREFIX = "plan-hash"
 
 # The same cap the dashboard path applies to `reason` (`routes.py`:166, :277,
 # `Query(max_length=2000)`). Applied here because the comment path has no
@@ -145,32 +146,34 @@ _REASON_MAX_LEN = 2000
 
 
 def _neutralize_marker(reason: str) -> str:
-    """Make operator text unable to forge the `[input-path=...]` marker.
+    """Make operator text unable to forge either persisted system marker.
 
-    Only `[` can open a marker, so replacing that one character wherever a
+    Only `[` can open a marker, so replacing that one character wherever either
     marker-like token starts is sufficient, and is deliberately narrower than
     stripping all brackets: benign text ("see [PR #123]") survives intact while
     `[input-path=dashboard]` becomes `(input-path=dashboard]`, which no grep for
-    the real marker matches. Case-insensitive so `grep -i` cannot be fooled
-    either. The substitution is 1 char to 1 char, hence length-preserving, so it
-    composes with the cap below in either order.
+    the real marker matches. The plan marker must be protected too: otherwise an
+    unbound answer whose operator text starts with `[plan-hash=...]` would be
+    indistinguishable from a revision-bound answer during retry detection.
+    Case-insensitive so `grep -i` cannot be fooled either. The substitution is 1
+    char to 1 char, hence length-preserving, so it composes with the cap below in
+    either order.
 
     Pure `str` operations, no `re`: an AST test asserts this module does not
     import `re`, because comment parsing belongs to the caller.
     """
-    needle = f"[{_INPUT_PATH_PREFIX}="
     lowered = reason.lower()
-    if needle not in lowered:
-        return reason
     out = list(reason)
-    start = lowered.find(needle)
-    while start != -1:
-        out[start] = "("
-        start = lowered.find(needle, start + 1)
+    for prefix in (_INPUT_PATH_PREFIX, _PLAN_HASH_PREFIX):
+        needle = f"[{prefix}="
+        start = lowered.find(needle)
+        while start != -1:
+            out[start] = "("
+            start = lowered.find(needle, start + 1)
     return "".join(out)
 
 
-def _stamp_input_path(input_path: InputPath, reason: str | None) -> str:
+def _stamp_input_path(input_path: InputPath, reason: str | None, *, bound_plan_hash: str | None = None) -> str:
     """Compose the persisted `reason`, prefixed with the input path.
 
     The marker is machine-greppable provenance on an append-only audit row, so
@@ -179,26 +182,60 @@ def _stamp_input_path(input_path: InputPath, reason: str | None) -> str:
     marker-grep attributes to the dashboard path.
     """
     marker = f"[{_INPUT_PATH_PREFIX}={input_path.value}]"
+    if bound_plan_hash is not None:
+        marker += f" [{_PLAN_HASH_PREFIX}={bound_plan_hash.strip()}]"
     if not reason:
         return marker
     return f"{marker} {_neutralize_marker(reason)[:_REASON_MAX_LEN]}"
 
 
+def _bound_plan_hash(reason: str | None) -> str | None:
+    """Read the system-stamped plan revision from a successful decision.
+
+    The marker is accepted only immediately after the trusted input-path prefix.
+    Operator text is neutralized before persistence, so an unbound decision
+    cannot forge this position and later be mistaken for a bound retry.
+    """
+    if not reason:
+        return None
+    for input_path in InputPath:
+        prefix = f"[{_INPUT_PATH_PREFIX}={input_path.value}] [{_PLAN_HASH_PREFIX}="
+        if reason.startswith(prefix):
+            end = reason.find("]", len(prefix))
+            if end != -1:
+                return reason[len(prefix) : end]
+    return None
+
+
 class GateAnswerStatus(StrEnum):
     """The outcome of one gate answer.
 
-    Six members rather than a bool because the caller must respond differently to
-    each, and collapsing them loses the distinction that matters: two of them are
-    recorded evidence to surface, two are refusals that must stay
-    indistinguishable from each other, and one is benign concurrency.
+    Nine members rather than a bool because the caller must respond differently
+    to each, and collapsing them loses the distinction that matters: two of them
+    are recorded evidence to surface, two are refusals that must stay
+    indistinguishable from each other, one is benign concurrency, one is an
+    idempotent replay, one is a precondition the caller asked for and did not
+    get, and one is a precondition the caller did not ask for and needed.
     """
 
     APPLIED = "applied"  # The node moved; a gate decision row was written
+    IDEMPOTENT_REPLAY = "idempotent_replay"  # The original bound result is returned
     REFUSED_NO_PERMISSION = "refused_no_permission"  # In-org but unauthorized; RECORDED
     REFUSED_ILLEGAL_TRANSITION = "refused_illegal_transition"  # Not at a gate; RECORDED
     REFUSED_UNKNOWN_IDENTITY = "refused_unknown_identity"  # No identity in org; nothing written
     REFUSED_NOT_FOUND = "refused_not_found"  # No such node in org; nothing written
     ALREADY_ANSWERED = "already_answered"  # Lost race — someone answered first
+    # The caller bound the answer to a plan revision and that is not the revision
+    # in force. RECORDED, for the same reason the permission refusal is: an
+    # attempt to approve a plan that had already moved is exactly the off-plan
+    # activity a reader of the decision log needs to see. Nothing is approved.
+    REFUSED_STALE_PLAN = "refused_stale_plan"
+    # This plan proposes an execution policy, and the answer named no revision, so
+    # it cannot be the grant of one (#5331). Approving anyway would arm the graph
+    # while the author's bounds stayed inert — unbounded execution under a plan its
+    # author believes constrained. RECORDED, and remediable by re-answering with the
+    # reviewed revision's hash. Nothing is approved.
+    REFUSED_UNBOUND_POLICY_GRANT = "refused_unbound_policy_grant"
 
 
 @dataclass(frozen=True)
@@ -242,6 +279,11 @@ class GateDecisionRecord:
     actor_role: str
     actor_kind: ActorKind
     input_path: InputPath
+    # Present only for a successful revision-bound answer. It is stamped into
+    # the append-only reason field so a response-lost retry can prove that the
+    # original answer was for this exact plan rather than merely finding an old
+    # same-actor/same-verb decision after a later amendment.
+    bound_plan_hash: str | None = None
     reason: str | None = None
     rejection_reason: str | None = None
     from_state: str | None = None
@@ -262,7 +304,7 @@ class GateDecisionRecord:
             "actor_id": self.actor_id,
             "actor_role": self.actor_role,
             "actor_kind": self.actor_kind.value,
-            "reason": _stamp_input_path(self.input_path, self.reason),
+            "reason": _stamp_input_path(self.input_path, self.reason, bound_plan_hash=self.bound_plan_hash),
             "rejection_reason": self.rejection_reason,
             "from_state": self.from_state,
             "to_state": self.to_state,
@@ -305,6 +347,7 @@ def build_gate_decision(
     approve: bool,
     from_state: str,
     reason: str | None = None,
+    bound_plan_hash: str | None = None,
 ) -> GateDecisionRecord:
     """Build the decision record for an *accepted* gate answer.
 
@@ -323,6 +366,7 @@ def build_gate_decision(
         actor_role=actor_role,
         actor_kind=ActorKind.HUMAN,
         input_path=input_path,
+        bound_plan_hash=bound_plan_hash,
         reason=reason,
         from_state=from_state,
         to_state=(NodeState.PASSED if approve else NodeState.REJECTED_AT_GATE).value,
@@ -419,6 +463,102 @@ async def _record_refusal(
     return record, appended.id
 
 
+async def _stale_plan_reason(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    flow_id: str,
+    expected_plan_hash: str,
+) -> str | None:
+    """Why this answer's plan precondition fails, or None when it holds.
+
+    Read in the CALLER's transaction and immediately before the conditional
+    UPDATE, which is the whole point: the comparison and the state change are then
+    one atomic unit, so a plan amended after this read cannot be the plan the
+    answer applied to. A client that re-reads over HTTP and then approves has a
+    window between the two calls, and its approval is accepted whatever landed in
+    between — that is the hole this closes and the reason the check cannot live in
+    a CLI.
+
+    An empty or whitespace-only expectation is a MISMATCH, not "no precondition".
+    A caller reaching here has already stated the intent to be bound (the
+    parameter is `None` for "unbound"), and the realistic way to arrive with an
+    empty string is a shell substitution that produced nothing. Treating it as
+    unbound would approve unconditionally for a caller who asked to be guarded —
+    fail closed instead.
+
+    Returns a human-readable reason, phrased for the operator who will read it on
+    the refused decision row, or None when the expectation matches the plan in
+    force.
+    """
+    expected = expected_plan_hash.strip()
+    if not expected:
+        return "the expected plan revision was empty, so it could not be checked"
+
+    repo = repository_module.OrchestrationRepository(session)
+    in_force = await repo.get_accepted_plan(org_id=org_id, flow_id=flow_id)
+    if in_force is None:
+        # Nothing is in force, so no revision can match. Reported as its own case:
+        # "there is no plan of record" sends an operator somewhere different from
+        # "your revision is behind".
+        return f"no plan is in force for this flow, so revision {expected} could not be confirmed"
+    if in_force.plan_hash != expected:
+        # The in-force hash is NOT echoed. The caller already holds a hash for this
+        # flow and is authorized to read `GET /flows/{id}/plans`, so this withholds
+        # nothing they cannot fetch — but a refusal message is not the place to
+        # hand back state, and keeping it out means this string cannot become the
+        # way a client learns the current revision instead of re-reading it.
+        return f"plan revision {expected} is not the revision in force (version {in_force.version})"
+    return None
+
+
+async def _matching_bound_answer(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    flow_id: str,
+    node_id: str,
+    actor_id: str,
+    approve: bool,
+    expected_plan_hash: str,
+) -> OrchestrationDecision | None:
+    """Return this actor's original same-verb gate decision, if one exists.
+
+    Consulted while holding the flow row lock, once the gate has already moved. The
+    tuple ``(actor, verb, exact plan hash, gate)`` is the idempotency identity: a
+    lost HTTP response can be replayed without appending a second decision, and a
+    different actor or the opposite verb does not match and remains a conflict.
+
+    **This identity deliberately does not depend on what is currently in force**
+    (#5331), which is why the caller consults it *before* the staleness comparison
+    rather than after. A recorded decision by this actor, with this verb, on this
+    gate, bound to this exact hash is proof that this person made this decision about
+    this document — a historical fact that no later amendment or policy grant can
+    change. Requiring the bound hash to still match the plan of record would make
+    every retry of a successful bound approval fail, because granting a proposed
+    execution policy records a new plan version by design: the retry of a request
+    whose effect already happened would be told its revision was stale.
+    """
+    kind = DecisionKind.GATE_APPROVED if approve else DecisionKind.GATE_REJECTED
+    stmt = (
+        select(OrchestrationDecision)
+        .where(
+            OrchestrationDecision.org_id == org_id,
+            OrchestrationDecision.flow_id == flow_id,
+            OrchestrationDecision.node_id == node_id,
+            OrchestrationDecision.kind == kind.value,
+            OrchestrationDecision.actor_id == actor_id,
+            OrchestrationDecision.actor_kind == ActorKind.HUMAN.value,
+        )
+        .order_by(OrchestrationDecision.created_at.desc())
+    )
+    expected = expected_plan_hash.strip()
+    for decision in (await session.execute(stmt)).scalars():
+        if _bound_plan_hash(decision.reason) == expected:
+            return decision
+    return None
+
+
 async def _gate_transition(
     session: AsyncSession,
     *,
@@ -482,6 +622,203 @@ async def _gate_transition(
     rows = (await session.execute(stmt)).rowcount or 0
     await session.flush()
     return rows, True, None
+
+
+async def _proposed_policy_grant_target(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    flow_id: str,
+    node_id: str,
+):
+    """The plan whose proposed policy answering THIS node would grant, or None (#5331).
+
+    One resolver, two callers, deliberately. The activation path needs to know
+    whether this answer is a grant; the precondition path needs to know whether an
+    *unbound* answer is about to arm a graph whose bounds would stay inert. Those two
+    questions must never disagree — a refusal that triggered on a wider set than the
+    grant would block ordinary wave gates, and one that triggered on a narrower set
+    would let exactly the unbounded-execution case through. So neither caller decides
+    it; both ask here.
+
+    Returns the parsed in-force `LoopProposal` when all of these hold:
+
+    * a plan is in force for this flow, and it carries a `proposed_execution_policy`;
+    * that document's structural acceptance gate exists
+      (`registration.acceptance_gate_address` — sole root, gate kind, `accept` ref);
+    * the node being answered IS that gate.
+
+    Returns None otherwise, which is the overwhelmingly common case: every policyless
+    plan, and every wave or authored gate within a policy-bearing one.
+
+    Raises `PolicyNotAcceptableError` when a policy is proposed but the document
+    cannot be read back. Refused rather than ignored: a document we cannot parse is
+    one whose bounds we cannot honour, and proceeding would arm the graph while
+    discarding authority limits we could see were requested.
+    """
+    # Imported here rather than at module scope. `registration` imports `compile`,
+    # which would make an adapter->registration->compile edge at import time in a
+    # package whose layering `test_internal_plane_guard.py` and the module docstrings
+    # both take care over. The call happens once per gate answer, so the lookup cost
+    # is irrelevant next to keeping the import graph flat.
+    from ..compile import PolicyNotAcceptableError
+    from ..proposal import LoopProposal
+    from ..registration import acceptance_gate_address
+
+    repo = repository_module.OrchestrationRepository(session)
+    in_force = await repo.get_accepted_plan(org_id=org_id, flow_id=flow_id)
+    if in_force is None:
+        return None
+
+    document = in_force.plan_document or {}
+    if document.get("proposed_execution_policy") is None:
+        # The common case by a wide margin: no policy was proposed, so there is
+        # nothing to grant and nothing an unbound answer could leave inert. Checked
+        # on the raw dict before parsing, so a plan document from an older schema is
+        # a cheap no-op rather than a parse error.
+        return None
+
+    try:
+        proposal = LoopProposal.model_validate(document)
+    except Exception as exc:  # noqa: BLE001 — translated below, cause preserved
+        raise PolicyNotAcceptableError(
+            f"this plan proposes an execution policy that cannot be read back ({exc}); the gate was not answered. "
+            "Re-register the plan against the current schema."
+        ) from exc
+
+    gate_address = acceptance_gate_address(proposal)
+    if gate_address is None:
+        # The plan in force has no single dominating acceptance gate, so no gate
+        # answer within it can be read as accepting the whole plan.
+        return None
+
+    # Resolve the answered node's own address and compare. The node row is the
+    # authority for which node was answered; the document is the authority for which
+    # address is the acceptance gate.
+    answered = await repo.get_node(org_id=org_id, node_id=node_id)
+    if answered is None:
+        return None
+    answered_address = f"{proposal.flow_slug}/{answered.epic_ref}/{answered.wave_ref}/{answered.node_ref}"
+    if answered_address != gate_address:
+        # A wave gate or an authored gate. Not this plan's acceptance, so not a
+        # grant. Logged at info because an operator tracing "why is my policy not in
+        # force" needs to see that the answer landed on a different gate.
+        logger.info(
+            "orchestration gate answer: node %s (%s) is not this plan's acceptance gate (%s); proposed policy stays inert",
+            node_id,
+            answered_address,
+            gate_address,
+        )
+        return None
+
+    return proposal
+
+
+async def _activate_proposed_policy(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    flow_id: str,
+    node_id: str,
+    actor_id: str,
+    actor_role: str,
+    accepted_by_decision_id: str,
+) -> bool:
+    """Grant a draft's proposed execution policy, if this answer is its grant (#5331).
+
+    The single place a demoted policy becomes authority. A draft registered with a
+    policy carries it in `proposed_execution_policy`, a field
+    `policy_admission.load_in_force_policy` contains no code to read — so the plan is
+    reviewable in full while granting nothing. This promotes it into
+    `execution_policy` and records a new accepted-plan version, which is the first
+    moment anything in the system will enforce it as authority.
+
+    **Every one of these must hold, and each rules out a different way authority
+    could be granted by something other than a person's deliberate act:**
+
+    * the caller established that this was an *approval* and that it was *bound* to
+      an expected revision. A rejection is not a grant. An unbound approval is not
+      one either — the approver never stated which document they were approving, so
+      activating on their behalf would attribute authority to a review of unknown
+      content. It does not reach here at all: the caller refuses it up front
+      (`REFUSED_UNBOUND_POLICY_GRANT`), because approving without granting would arm
+      the graph while the author's bounds stayed inert.
+    * the answered node must be this plan's **acceptance gate**, and there must be a
+      plan in force carrying a demoted policy. Both are decided by
+      `_proposed_policy_grant_target`, which the unbound refusal consults too so the
+      two cannot disagree about what counts as a grant. No policy, no-op — the
+      acceptance of a policyless plan is byte-identical to what it was before this
+      function existed.
+    * the acceptor must be **human**. Not decided here: the proposal is handed to
+      `compile.accept_execution_policy` unchanged, which refuses a non-human actor
+      and is the same function the direct acceptance route uses. That is what keeps
+      one place deciding who may grant authority, rather than two that agree today.
+      `ActorKind.HUMAN` is correct at this call site because `build_gate_decision`
+      already establishes that answering a gate is a human act by construction —
+      `state.py` makes every progress edge out of `awaiting_gate` human-only, so the
+      engine cannot reach this code path at all.
+
+    Returns True when a policy was granted, False for the (overwhelmingly common)
+    no-op. Raises `PolicyNotAcceptableError` when a policy exists but cannot be
+    granted — never silently drops it, because a graph armed without its bounds is
+    worse than one that refused to arm.
+    """
+    # Imported here rather than at module scope, for the same layering reason
+    # `_proposed_policy_grant_target` defers its own imports.
+    from ..compile import ApprovalContext, accept_execution_policy, plan_hash
+    from ..registration import promote_proposed_policy
+
+    proposal = await _proposed_policy_grant_target(session, org_id=org_id, flow_id=flow_id, node_id=node_id)
+    if proposal is None:
+        return False
+
+    repo = repository_module.OrchestrationRepository(session)
+
+    # Promote, then hand to the UNCHANGED acceptance path. `accept_execution_policy`
+    # refuses a non-human acceptor and stamps the policy with this principal; the
+    # stamp is content-derived plus principal, so the same human re-accepting the
+    # same document produces the same stamp and therefore the same hash — which is
+    # what makes the replay path above able to recognise a retry after promotion.
+    #
+    # `promote_proposed_policy` rather than an inlined `model_copy`: it is documented
+    # as the inverse of `demote_proposed_policy` and as the ONLY way a demoted policy
+    # becomes authority, and a second copy of the field move here would make that
+    # claim false. Two implementations of one inverse can drift — and the drift would
+    # surface as a plan armed with bounds that are not the ones the human reviewed.
+    promoted = promote_proposed_policy(proposal)
+    granted = accept_execution_policy(
+        promoted,
+        decision=ApprovalContext(org_id=org_id, actor_id=actor_id, actor_role=actor_role, actor_kind=ActorKind.HUMAN),
+        decision_kind=DecisionKind.PLAN_ACCEPTED,
+    )
+
+    # A new version rather than a mutation of the one in force. The revision the
+    # human bound their answer to stays readable exactly as they reviewed it —
+    # `expected_plan_hash` named it, and rewriting it in place would make the
+    # decision row reference a document that no longer exists. `record_accepted_plan`
+    # supersedes the prior version under the flow row lock the caller already holds.
+    new_plan = await repo.record_accepted_plan(
+        org_id=org_id,
+        flow_id=flow_id,
+        plan_document=granted.model_dump(mode="json"),
+        plan_hash=plan_hash(granted),
+        accepted_by_decision_id=accepted_by_decision_id,
+    )
+
+    # The grant, not the policy. `policy_id` is a content digest and carries no
+    # secret material (`ExecutionPolicy` forbids extra fields precisely so it cannot),
+    # but the bounds themselves are the owner's business and do not belong in
+    # operational logs.
+    logger.info(
+        "orchestration policy granted flow=%s org=%s principal=%s gate=%s plan_version=%s policy=%s",
+        flow_id,
+        org_id,
+        actor_id,
+        node_id,
+        new_plan.version,
+        (granted.execution_policy.policy_id if granted.execution_policy else None),
+    )
+    return True
 
 
 async def apply_gate_answer(
@@ -550,6 +887,7 @@ async def apply_gate_answer_for_context(
     access: AccessControl,
     input_path: InputPath,
     refusal_message: str | None = None,
+    expected_plan_hash: str | None = None,
 ) -> GateAnswerOutcome:
     """Apply a gate answer for an **already-resolved** platform identity.
 
@@ -581,6 +919,11 @@ async def apply_gate_answer_for_context(
             such node" from "not a member"; the dashboard path leaves it None and
             gets a specific message, because its caller is an authenticated member
             of the tenant already and the route answers 404 either way.
+        expected_plan_hash: When given, the answer is bound to this plan revision:
+            it is compared against the plan in force for the node's flow **inside
+            this transaction**, and a mismatch refuses without moving the node.
+            `None` means "no precondition" and preserves the prior behaviour
+            exactly, which is what keeps every existing caller unchanged.
 
     Returns:
         A :class:`GateAnswerOutcome`. Only `APPLIED` moved the node.
@@ -649,6 +992,191 @@ async def apply_gate_answer_for_context(
             decision_id=decision_id,
         )
 
+    # --- the revision precondition, INSIDE this transaction ----------------
+    # Checked after authority (an unauthorized caller must not learn which plan is
+    # in force) and before the transition, so a refusal moves nothing.
+    #
+    # This is what a client-side re-read cannot do. A CLI that reads the plan, sees
+    # the hash it expected and then approves has a window between those two calls
+    # in which the plan can be amended; its approval is accepted anyway and the
+    # human's decision is recorded against a document they never saw. Here the
+    # comparison and the state change share one transaction and one session, so
+    # an amendment that commits after this read cannot also be the plan this
+    # answer applied to.
+    # Serialize bound and unbound answers with draft replacement. Otherwise an
+    # unbound answer can inspect a policyless draft, then release a newly replaced
+    # policy-bearing graph while leaving its proposed bounds inert.
+    await session.execute(select(OrchestrationFlow).where(OrchestrationFlow.org_id == org_id, OrchestrationFlow.id == node.flow_id).with_for_update())
+    await session.refresh(node)
+    observed_state = node.state
+
+    if expected_plan_hash is not None:
+        # --- replay is decided BEFORE staleness, and only once the gate has moved --
+        #
+        # Ordering that matters as of #5331. Granting a proposed execution policy
+        # records a NEW plan version, so the moment a bound approval succeeds the
+        # hash it was bound to is no longer the hash in force — by design, and
+        # correctly, because what is in force now includes authority the reviewed
+        # revision only proposed. A caller whose response was lost then retries the
+        # identical request and, under the previous ordering, would be told its
+        # revision is stale: a refusal recorded against a decision that had already
+        # taken effect, sending an operator to re-read a plan whose approval already
+        # succeeded. Checking the replay first makes the retry idempotent across
+        # promotion, which is the whole reason the field is hashed.
+        #
+        # Guarded on the gate having already moved, so this cannot short-circuit the
+        # real precondition: while the node is still `awaiting_gate` nothing has been
+        # applied, and staleness is exactly the question to ask.
+        #
+        # The identity is sound independently of what is in force. A recorded
+        # decision by THIS actor, same verb, same gate, bound to THIS exact hash is
+        # proof that this person made this decision about this document — a fact no
+        # later amendment or grant can alter. A different actor, the opposite verb, or
+        # a different hash does not match and remains a conflict.
+        if observed_state != NodeState.AWAITING_GATE.value:
+            replay = await _matching_bound_answer(
+                session,
+                org_id=org_id,
+                flow_id=node.flow_id,
+                node_id=node_id,
+                actor_id=context.user_id,
+                approve=approve,
+                expected_plan_hash=expected_plan_hash,
+            )
+            if replay is not None:
+                record = build_gate_decision(
+                    org_id=org_id,
+                    flow_id=node.flow_id,
+                    node_id=node_id,
+                    actor_id=replay.actor_id,
+                    actor_role=replay.actor_role,
+                    input_path=input_path,
+                    approve=approve,
+                    from_state=replay.from_state or NodeState.AWAITING_GATE.value,
+                    reason=reason,
+                    bound_plan_hash=expected_plan_hash,
+                )
+                logger.info(
+                    "orchestration gate answer: replaying original decision %s for node %s",
+                    replay.id,
+                    node_id,
+                )
+                return GateAnswerOutcome(
+                    status=GateAnswerStatus.IDEMPOTENT_REPLAY,
+                    node_id=node_id,
+                    message=f"gate {'approved' if approve else 'rejected'}",
+                    decision=record,
+                    decision_id=replay.id,
+                )
+
+        stale_reason = await _stale_plan_reason(
+            session,
+            org_id=org_id,
+            flow_id=node.flow_id,
+            expected_plan_hash=expected_plan_hash,
+        )
+        if stale_reason is not None:
+            record, decision_id = await _record_refusal(
+                session,
+                org_id=org_id,
+                flow_id=node.flow_id,
+                node_id=node_id,
+                actor_id=context.user_id,
+                actor_role=actor_role,
+                input_path=input_path,
+                reason=reason,
+                rejection_reason=stale_reason,
+                from_state=observed_state,
+                to_state=target_state,
+            )
+            logger.warning(
+                "orchestration gate answer: node %s refused on plan precondition — %s",
+                node_id,
+                stale_reason,
+            )
+            return GateAnswerOutcome(
+                status=GateAnswerStatus.REFUSED_STALE_PLAN,
+                node_id=node_id,
+                message=(
+                    f"this gate was NOT answered: {stale_reason}. Re-read the plan, review the current "
+                    "revision, then answer with that revision's hash."
+                ),
+                decision=record,
+                decision_id=decision_id,
+            )
+
+    # --- an UNBOUND approval may not arm a graph whose bounds would stay inert ---
+    #
+    # The other half of #5331's demotion, and the one that is easy to miss. A plan
+    # registered with an execution policy carries it in `proposed_execution_policy`,
+    # which nothing enforces; only a *bound* approval promotes it. So an unbound
+    # approval of that plan's acceptance gate would pass the gate, arm every root
+    # behind it, and leave the policy inert — the graph would run under legacy
+    # unbounded semantics while its author believes it constrained to their
+    # repositories, actions, expiry and spend cap. That is strictly worse than either
+    # refusing or granting, so it is refused.
+    #
+    # Deliberately NOT a silent promotion instead. The approver named no revision, so
+    # there is no document they can be said to have reviewed, and granting standing
+    # authority on their behalf over content they did not identify is the attribution
+    # this story exists to prevent.
+    #
+    # Scoped by the same resolver the grant uses, so this cannot drift into refusing
+    # answers that would never have been grants: every policyless plan (i.e. every
+    # flow that exists today) and every wave or authored gate is unaffected, and the
+    # `expected_plan_hash is None` guard means no currently-passing caller changes
+    # behaviour unless its plan actually proposes a policy.
+    if approve and expected_plan_hash is None:
+        from ..compile import PolicyNotAcceptableError
+
+        try:
+            grant_target = await _proposed_policy_grant_target(session, org_id=org_id, flow_id=node.flow_id, node_id=node_id)
+        except PolicyNotAcceptableError as exc:
+            # Unreadable proposed authority. Refused on the same grounds, and by the
+            # same reasoning as the bound path: bounds we cannot parse are bounds we
+            # cannot honour.
+            grant_target = None
+            unreadable = str(exc)
+        else:
+            unreadable = None
+
+        if grant_target is not None or unreadable is not None:
+            rejection_reason = (
+                unreadable
+                if unreadable is not None
+                else (
+                    "this plan proposes an execution policy, which is granted only by an approval bound to the "
+                    "revision that was reviewed; an unbound approval would arm the plan with its bounds inert"
+                )
+            )
+            record, decision_id = await _record_refusal(
+                session,
+                org_id=org_id,
+                flow_id=node.flow_id,
+                node_id=node_id,
+                actor_id=context.user_id,
+                actor_role=actor_role,
+                input_path=input_path,
+                reason=reason,
+                rejection_reason=rejection_reason,
+                from_state=observed_state,
+                to_state=target_state,
+            )
+            logger.warning(
+                "orchestration gate answer: node %s refused — an unbound approval cannot grant this plan's proposed execution policy",
+                node_id,
+            )
+            return GateAnswerOutcome(
+                status=GateAnswerStatus.REFUSED_UNBOUND_POLICY_GRANT,
+                node_id=node_id,
+                message=(
+                    f"this gate was NOT answered: {rejection_reason}. Read the plan, review the execution policy it "
+                    "proposes, then answer with that revision's hash to accept the plan and its bounds together."
+                ),
+                decision=record,
+                decision_id=decision_id,
+            )
+
     rows, allowed, rejection_reason = await _gate_transition(
         session,
         node_id=node_id,
@@ -713,9 +1241,50 @@ async def apply_gate_answer_for_context(
         approve=approve,
         from_state=observed_state,
         reason=reason,
+        bound_plan_hash=expected_plan_hash,
     )
     repo = repository_module.OrchestrationRepository(session)
     appended = await repo.append_decision(**record.to_append_kwargs())
+
+    # --- activate a proposed execution policy, if this answer is its grant ----
+    # After the append, so the decision row this policy is accepted *by* already
+    # exists and the new plan version can reference it; inside this transaction, so
+    # the gate move, the decision and the grant are one atomic fact. A policy that
+    # activated without its gate answer, or a gate answer whose grant was lost,
+    # would each be a plan whose authority and whose approval record disagree.
+    #
+    # Every precondition is checked inside `_activate_proposed_policy`: approval
+    # only, bound only, the acceptance gate only, and a human acceptor only. It is a
+    # no-op for every gate answer in the system that is not exactly that.
+    if approve and expected_plan_hash is not None:
+        # Imported here for the same layering reason `_activate_proposed_policy`
+        # defers its own imports: `compile` is below this adapter, not beside it.
+        from ..compile import PolicyNotAcceptableError
+
+        try:
+            await _activate_proposed_policy(
+                session,
+                org_id=org_id,
+                flow_id=node.flow_id,
+                node_id=node_id,
+                actor_id=context.user_id,
+                actor_role=actor_role,
+                accepted_by_decision_id=appended.id,
+            )
+        except PolicyNotAcceptableError as exc:
+            # The policy the human reviewed cannot be granted — an expired expiry, a
+            # tenant mismatch, a field `stamp_policy` refuses. Raised, not swallowed:
+            # the alternative is committing an approval that armed the graph while
+            # discarding its bounds, which is the "runs unbounded while its author
+            # believes it constrained" failure the demotion exists to prevent. The
+            # caller's transaction is not committed on an exception, so the gate move
+            # and the decision row roll back with it and the gate stays answerable.
+            logger.error(
+                "orchestration gate answer: node %s approved but its proposed policy could not be granted: %s",
+                node_id,
+                exc,
+            )
+            raise
 
     logger.info(
         "orchestration gate answer: node %s %s by %s via %s",

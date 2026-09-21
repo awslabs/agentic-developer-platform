@@ -1,7 +1,11 @@
 # CLI command contract — ADP CLI uplift (#5180 / #5185)
 
 **Status:** foundation implementation in PR #5188; domain integration in PR #5179. Release/live acceptance is recorded separately.
-**Foundation story:** #5185 · **Epic:** #5180 · **Coordinate shared files with:** #5039, #5179
+**Foundation story:** #5185 · **Epic:** #5180 · **Coordinate shared files with:** #5039, #5179, #5331
+
+> The command table and helper lists below are maintained past the original four
+> domain stories — `adp superplane` (#5039) and `adp flow` (#5331) were added
+> later. The registration surface in §2.2 applies unchanged to any new area.
 
 This document is the interface between the shared CLI foundation and the four
 domain feature stories. It exists so four developers working in parallel can add
@@ -35,6 +39,8 @@ existing shortcut is added.
 | `adp admin github <action>` | #5183 | |
 | `adp github <action>` | #5184 | |
 | `adp models <action>` | #5423 | persona/model catalogue and self/service-principal mappings |
+| `adp superplane <action>` | #5039 | shipped after this note was written |
+| `adp flow start\|create\|list\|show\|watch\|plans\|decisions\|cost\|gate` | #5331 | **new** — delivery-flow readback and control; `#5329` adds amendment verbs to the same dispatcher |
 
 ### `adp codex` is frozen
 
@@ -67,6 +73,8 @@ All CLI files install side by side in one directory (`~/.adp/bin` by default), a
   adp-aws.py           # #5182
   adp-github.py        # #5184
   adp-github-admin.py  # #5183
+  adp-superplane.py    # #5039
+  adp-flow.py          # #5331
 ```
 
 Python helpers are **standard library only**. A CLI that needs `pip install` on a
@@ -86,8 +94,22 @@ A feature story's patch to shared files is exactly three edits, and nothing else
    present, checks the helper file exists (pointing at `adp update` if not), and
    `exec`s it so the helper owns the terminal and the exit status.
 2. **`adp` usage text** — one entry in the matching help section.
-3. **`install.sh` + the download allowlist** — the helper's filename added to
-   `CLI_FILES` (install.sh) and `ALLOWED_SCRIPTS` (`src/cli_download/routes.py`).
+3. **Both `CLI_FILES` lists + the download allowlist** — the helper's filename
+   added to `CLI_FILES` in **`install.sh`** *and* in **`adp`** (they are separate
+   lists: install.sh places the files, `adp update` re-pulls from its own copy, so
+   a helper in only one installs but never updates), plus `ALLOWED_SCRIPTS` and
+   `SCRIPT_MEDIA_TYPES` in `src/cli_download/routes.py`.
+
+Each of those is silently fatal on its own, and all four fail the same way — the
+repo checkout has the file sitting right there, so every local test passes while a
+fresh user's install 404s. Verify the whole path, not just that the code works.
+
+The deploy filter is the fifth point and is guarded by a test rather than by
+review: `tests/cli/test_deploy_filter_covers_cli.py` executes
+`gateway-deploy.yml`'s filters against a synthetic diff, so a new helper is added
+to its `CLI_FILES` list to keep `modules/gateway/cli/` load-bearing in both
+filters. Without that a CLI-only change merges green and the gateway keeps serving
+the old helper.
 
 The integration owner (#5185) applies these sequentially. Feature PRs keep them
 minimal so the merges do not conflict. **A file enters the allowlist and the help
@@ -392,6 +414,8 @@ traceback.
 | `adp-aws.py` + `src/auth/aws_connect_routes.py` | #5182 |
 | GitHub admin helper + app register/manual/status handlers | #5183 |
 | GitHub user helper + install/callback/repository handlers | #5184 |
+| `adp-superplane.py` + provider configuration handlers | #5039 |
+| `adp-flow.py` (shared `adp flow` dispatcher, renderers, readback helpers) + `src/orchestration/` read and control routes | #5331 |
 
 Feature stories touch shared files only for the three registrations in §2.2. The
 integration owner reviews and merges those sequentially. Only the integration

@@ -39,6 +39,7 @@ from sqlalchemy.pool import StaticPool
 from src.orchestration.amend import AmendmentContext, amend_plan
 from src.orchestration.compile import (
     HASH_EXCLUDED_FIELDS,
+    HASH_OMITTED_WHEN_ABSENT,
     ApprovalContext,
     PolicyNotAcceptableError,
     ProposalRejectedError,
@@ -216,13 +217,22 @@ class TestMissingPolicyPreservesLegacySemantics:
         fail-soft retry would be refused 409 as a plan-of-record rewrite (the #4885
         failure mode).
 
-        Pinned against a hash recomputed here from a document with the key removed —
-        i.e. what the pre-#5128 code would have hashed. Comparing an absent field
-        against an explicit `None` would be vacuous: pydantic normalises those to the
-        same document, so such a test passes even when the bug is present.
+        Pinned against a hash recomputed here from a document with the optional policy
+        keys removed — i.e. what code predating each of them would have hashed.
+        Comparing an absent field against an explicit `None` would be vacuous: pydantic
+        normalises those to the same document, so such a test passes even when the bug
+        is present.
+
+        Driven off `HASH_OMITTED_WHEN_ABSENT` rather than naming `execution_policy`
+        directly, so the claim stays "every optional authority field is omitted when
+        absent" as further ones are added (#5331 adds `proposed_execution_policy`).
+        Hardcoding one key made this test fail on the *addition* of the second field
+        while the property it protects still held.
         """
         proposal = valid_proposal()
-        legacy_document = {k: v for k, v in proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS).items() if k != "execution_policy"}
+        legacy_document = {
+            k: v for k, v in proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS).items() if k not in HASH_OMITTED_WHEN_ABSENT
+        }
         # E1 adds another optional field after this historical schema. A
         # pre-#5128 document contains neither policy nor evaluation declarations.
         for node in legacy_document["nodes"]:

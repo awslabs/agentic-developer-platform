@@ -399,6 +399,19 @@ class GateDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str | None = Field(default=None, max_length=2000)
+    # Optional revision binding (#5331). When present, the answer applies only if
+    # this is still the plan in force for the gate's flow, compared inside the same
+    # transaction that moves the node — so a plan amended between a client's read
+    # and its approval cannot be the plan the approval landed against. Absent means
+    # "no precondition", which is what every existing caller sends and what keeps
+    # their behaviour identical.
+    #
+    # `min_length=1` so an explicitly empty string is a 422 at the edge rather than
+    # a value the adapter has to interpret. The adapter ALSO fails closed on an
+    # empty value, because it has a second caller (the GitHub comment path) that
+    # does not go through this model, and a precondition that is only enforced by
+    # whichever door you came in is not a precondition.
+    expected_plan_hash: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ResumeRequest(BaseModel):
@@ -494,9 +507,23 @@ async def get_access_control(db: Annotated[AsyncSession, Depends(get_db)]) -> Ac
 # mapping lives here rather than at each call site so the two cannot drift apart.
 _GATE_STATUS_CODES: dict[GateAnswerStatus, int] = {
     GateAnswerStatus.APPLIED: 200,
+    GateAnswerStatus.IDEMPOTENT_REPLAY: 200,
     GateAnswerStatus.ALREADY_ANSWERED: 409,
     GateAnswerStatus.REFUSED_ILLEGAL_TRANSITION: 409,
     GateAnswerStatus.REFUSED_NO_PERMISSION: 403,
+    # 409, like the other two "the state is not what you thought" refusals: the
+    # request was well-formed and authorized, and the plan of record moved. A 412
+    # would also be defensible, but these three are the same class of answer to a
+    # caller — re-read, then decide again — and giving one of them its own code
+    # would split that handling for no gain.
+    GateAnswerStatus.REFUSED_STALE_PLAN: 409,
+    # 409 as well, and for the same reason: the request was well-formed and
+    # authorized, and the state of the plan is not what the caller assumed — it
+    # proposes authority that only a bound approval can grant. The caller's remedy is
+    # the same shape too (re-read the plan, answer with its revision), so giving this
+    # its own code would split handling a client should not split. The message names
+    # the policy, which is what actually tells an operator what to do differently.
+    GateAnswerStatus.REFUSED_UNBOUND_POLICY_GRANT: 409,
     # Both of these mean "no such gate for you", and they must stay
     # indistinguishable from each other and from a cross-org id.
     GateAnswerStatus.REFUSED_NOT_FOUND: 404,
@@ -512,6 +539,7 @@ async def _answer_gate(
     current_user: TokenContext,
     access: AccessControl,
     db: AsyncSession,
+    expected_plan_hash: str | None = None,
 ) -> GateDecisionResponse:
     """Approve or reject one gate through the shared adapter.
 
@@ -529,6 +557,7 @@ async def _answer_gate(
         reason=reason,
         access=access,
         input_path=InputPath.DASHBOARD,
+        expected_plan_hash=expected_plan_hash,
     )
 
     status_code = _GATE_STATUS_CODES[outcome.status]
@@ -548,7 +577,11 @@ async def _answer_gate(
     decision = outcome.decision
     return GateDecisionResponse(
         node_id=outcome.node_id,
-        status=outcome.status.value,
+        # A response-lost retry returns the original wire result. Internally the
+        # adapter distinguishes the replay so callers cannot mistake it for a
+        # second state change, but the client receives the same successful
+        # envelope and decision id it would have received the first time.
+        status=(GateAnswerStatus.APPLIED.value if outcome.status is GateAnswerStatus.IDEMPOTENT_REPLAY else outcome.status.value),
         state=decision.to_state if decision else None,
         decision_id=outcome.decision_id,
         actor_kind=decision.actor_kind.value if decision else None,
@@ -572,6 +605,12 @@ async def approve_gate(
     The decision row carries the acting SSO identity, the role held **at decision
     time**, and ``actor_kind="human"`` derived from the authenticated session — the
     attribution that makes the approval evidence rather than a convention.
+
+    Pass ``expected_plan_hash`` to bind the approval to the revision you reviewed
+    (#5331). It is compared against the plan in force inside the same transaction
+    that moves the node, so an amendment landing between your read and this call
+    refuses with **409** and approves nothing — the window a client-side re-read
+    cannot close. Omit it and nothing about this route's behaviour changes.
     """
     return await _answer_gate(
         gate_id,
@@ -580,6 +619,7 @@ async def approve_gate(
         current_user=current_user,
         access=access,
         db=db,
+        expected_plan_hash=body.expected_plan_hash,
     )
 
 
@@ -599,6 +639,11 @@ async def reject_gate(
     leaves the node live and re-openable, and successors stay pending.
 
     The reason is recorded on the decision row.
+
+    ``expected_plan_hash`` is honoured here too, and deliberately so: rejecting a
+    revision you did not read is the same misattribution as approving one. A
+    reviewer who rejects "the plan I was shown" should not have that recorded
+    against a plan that has since been amended.
     """
     return await _answer_gate(
         gate_id,
@@ -607,6 +652,7 @@ async def reject_gate(
         current_user=current_user,
         access=access,
         db=db,
+        expected_plan_hash=body.expected_plan_hash,
     )
 
 

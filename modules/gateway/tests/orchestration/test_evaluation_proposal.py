@@ -27,6 +27,7 @@ def test_legacy_plan_hash_is_identical_before_and_after_e1():
     proposal = valid_proposal()
     old = proposal.model_dump(mode="json", exclude=HASH_EXCLUDED_FIELDS)
     old.pop("execution_policy", None)
+    old.pop("proposed_execution_policy", None)
     for node in old["nodes"]:
         node.pop("evaluation", None)
     assert plan_hash(proposal) == hashlib.sha256(json.dumps(old, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -97,7 +98,8 @@ async def test_service_amendment_cannot_remove_accepted_suite_or_write_version(s
 
 
 @pytest.mark.parametrize("mismatch", [None, "policy", "mode", "repository", "connection"])
-def test_machine_evaluation_matches_existing_accepted_policy(evaluation, mismatch):  # noqa: F811
+@pytest.mark.parametrize("draft", [False, True])
+def test_machine_evaluation_matches_declared_policy(evaluation, mismatch, draft):  # noqa: F811
     from copy import deepcopy
 
     from tests.orchestration.test_execution_policy_acceptance import a_policy
@@ -115,6 +117,11 @@ def test_machine_evaluation_matches_existing_accepted_policy(evaluation, mismatc
     elif mismatch == "mode":
         policy = policy.model_copy(update={"evaluation_acceptance": {}})
     proposal.execution_policy = None if mismatch == "policy" else policy
+    if draft:
+        from src.orchestration.registration import transform_for_registration
+
+        proposal, _ = transform_for_registration(proposal)
+        assert proposal.execution_policy is None
     rules = {v.rule for v in validate_proposal(proposal) if v.rule.startswith("evaluation_")}
     assert bool(rules) is (mismatch is not None)
 

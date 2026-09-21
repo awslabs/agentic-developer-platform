@@ -39,6 +39,7 @@ WORKFLOW = REPO / ".github/workflows/gateway-deploy.yml"
 # of this story; `adp` and `install.sh` are what carry it to a user's machine.
 CLI_FILES = [
     "modules/gateway/cli/adp-superplane.py",
+    "modules/gateway/cli/adp-flow.py",
     "modules/gateway/cli/adp",
     "modules/gateway/cli/install.sh",
     "modules/gateway/cli/adp_common.py",

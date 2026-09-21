@@ -309,6 +309,67 @@ class LoopProposal(BaseModel):
     # compared rather than trusted.
     execution_policy: ExecutionPolicy | None = None
 
+    # --- The authority a plan PROPOSES but has not been granted (#5331) -----
+    # The same document as `execution_policy` above, in the one place nothing reads
+    # it as a grant. This is where a policy lives between *submitted* and
+    # *accepted*, and the separation is the whole mechanism.
+    #
+    # Why a second field rather than a flag on the first. `policy_admission.
+    # load_in_force_policy` resolves authority by reading
+    # `plan_document["execution_policy"]`, and its permit path formats
+    # `policy.policy_id or '(unstamped)'` — so an unaccepted policy sitting in that
+    # field would be *enforced as authority*, unstamped, with no principal, by code
+    # that has no way to tell a proposal from a grant. Inertness therefore cannot be
+    # a property anyone remembers to check; it has to be a field the admission path
+    # contains no code to read. This is that field, and grepping for its name across
+    # `policy_admission.py`, `runtime_policy.py` and `dispatch_pass.py` returns
+    # nothing by design.
+    #
+    # Set by `registration.demote_proposed_policy`, which moves a submitted
+    # `execution_policy` here as part of the registration transform — so a *draft*
+    # carries its policy's full text for human review while granting nothing at all.
+    # Promoted back by `registration.promote_proposed_policy` at the moment a human
+    # answers the acceptance gate bound to this exact revision, through the
+    # unchanged `compile.accept_execution_policy` / `stamp_policy` path with that
+    # human as principal. The direct acceptance route (`POST /flows`) never uses
+    # either: its caller is already human and already holds `PLAN_APPROVE`, so there
+    # is no interval to protect.
+    #
+    # **Covered by `compile.plan_hash`, for the same reason `execution_policy` is.**
+    # Two drafts differing only in the authority they propose are not the same draft
+    # — one asks a human to grant more than the other — and hashing them alike would
+    # make the wider proposal indistinguishable from a retry of the narrower one, so
+    # a human's bound acceptance of the narrow revision would arm the wide one. The
+    # key is omitted from the canonical JSON when absent (`plan_hash` drops it), so
+    # every plan authored before this field existed keeps its exact bytes and hash.
+    #
+    # Dropping a submitted policy instead of demoting it would be the worse failure:
+    # the graph would run with legacy *unbounded* semantics while its author
+    # believed it constrained. Both halves of that are why this field exists.
+    proposed_execution_policy: ExecutionPolicy | None = None
+
+    @model_validator(mode="after")
+    def _one_policy_field_at_most(self) -> "LoopProposal":
+        """A document may declare a policy, or carry a demoted one — never both.
+
+        Both set at once has no coherent reading: the two fields would name
+        different authority for one plan, and whichever the reader consulted would
+        be an arbitrary answer to a question with a real one. In particular
+        `promote_proposed_policy` moves the value between the fields, so a document
+        holding both is either a hand-edited accepted plan or a transform applied
+        twice, and neither should compile.
+
+        Refused at the boundary rather than resolved by precedence, because a
+        precedence rule is exactly what would let a submitter park a wide policy in
+        the field the reader ignores and a narrow one in the field it reads.
+        """
+        if self.execution_policy is not None and self.proposed_execution_policy is not None:
+            raise ValueError(
+                "a plan may declare 'execution_policy' or carry a demoted 'proposed_execution_policy', not both; "
+                "two different grants for one plan have no defined reading"
+            )
+        return self
+
 
 def _check_addresses(proposal: LoopProposal) -> list[Violation]:
     """Rule 1: every address is `flow/epic/wave/node`, and addresses are unique.
@@ -801,7 +862,9 @@ def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
             violations.append(Violation("evaluation_specification_invalid", "Evaluation specification is invalid or unavailable", node.address))
             continue
         if spec.acceptance_mode == "machine":
-            policy = proposal.execution_policy
+            # Validation checks the requested authority, including an inert draft.
+            # Admission still reads only the accepted execution_policy field.
+            policy = proposal.execution_policy or proposal.proposed_execution_policy
             if policy is None or policy.evaluation_acceptance.get(node.address) is not AcceptanceMode.MACHINE:
                 violations.append(
                     Violation("evaluation_policy_mode_mismatch", "Machine evidence requires accepted policy machine mode", node.address)

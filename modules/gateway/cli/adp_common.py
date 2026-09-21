@@ -22,9 +22,10 @@ from pathlib import Path
 
 
 class CliError(Exception):
-    def __init__(self, message, code="operation_failed", exit_code=5):
+    def __init__(self, message, code="operation_failed", exit_code=5, *, status_code=None):
         super().__init__(message)
         self.code, self.exit_code = code, exit_code
+        self.status_code = status_code
 
 
 class Parser(argparse.ArgumentParser):
@@ -188,7 +189,7 @@ class Api:
                 429: "Wait a minute before retrying.",
             }
             hint = hints.get(exc.code, "Check status before retrying; an interrupted request may have changed configuration.")
-            raise CliError(f"ADP returned HTTP {exc.code} ({code}). {hint}", code, {401: 2, 403: 3}.get(exc.code, 5)) from None
+            raise CliError(f"ADP returned HTTP {exc.code} ({code}). {hint}", code, {401: 2, 403: 3}.get(exc.code, 5), status_code=exc.code) from None
         except (urllib.error.URLError, TimeoutError, ValueError):
             raise CliError("ADP could not be reached or returned an invalid response. Check status before retrying.", "gateway_unavailable") from None
 

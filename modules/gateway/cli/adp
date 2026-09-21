@@ -52,7 +52,7 @@ TOKEN_FILE="${CONFIG_DIR}/tokens.json"
 CORE_SCRIPT_NAME="bg-cognito-auth.sh"
 PROXY_SCRIPT_NAME="bg-gateway-proxy.py"
 DEPLOYMENTS_SCRIPT_NAME="adp_deployments.py"
-CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-models.py"
+CLI_FILES="adp bg-cognito-auth.sh bg-gateway-proxy.py adp_common.py adp_deployments.py adp-admin.py adp-bedrock.py adp-aws.py adp-github.py adp-github-admin.py adp-superplane.py adp-models.py adp-flow.py"
 
 CODEX_CONFIG_FILE="${HOME}/.codex/config.toml"
 CLAUDE_SETTINGS_FILE="${HOME}/.claude/settings.json"
@@ -1410,6 +1410,18 @@ Configure agent persona models:
     models explain --persona KEY
     models service-principals list
 
+Follow autonomous delivery (AI-DLC flows):
+    flow start --repo O/R   Plan a new flow conversationally, then approve it
+    flow list             Flows you can see, with status filters
+    flow show FLOW_ID     Progress, blockers, outstanding gates, next eligible work
+    flow watch FLOW_ID    Follow a flow; exiting detaches, hosted work keeps running
+    flow plans|decisions|cost FLOW_ID
+                          Plan revisions, attributed approvals, recorded spend
+    flow gate approve|reject GATE_ID
+                          Answer a decision the engine is waiting on
+    flow create --file plan.json
+                          Submit a prepared plan for approval
+
   Administration:
     admin login           Sign in with a Cognito administrator account
     admin setup           Check and resume first-time setup
@@ -1550,6 +1562,11 @@ main() {
         # than as a separate `superplane` CLI on the user's PATH.
         superplane) exec_python_helper "adp-superplane.py" "$@" ;;
         models) exec_python_helper "adp-models.py" "$@" ;;
+        # AI-DLC delivery flows (Issue #5331). Same helper path as the areas
+        # above, so it inherits the one credential path: the session `adp login`
+        # already established. This dispatcher is also the foundation the later
+        # amendment subcommands (#5329) attach to.
+        flow)    exec_python_helper "adp-flow.py" "$@" ;;
         login)   cmd_login "$@" ;;
         status)  cmd_status "$@" ;;
         # Pure pass-throughs. The core owns their flags and their exit codes.

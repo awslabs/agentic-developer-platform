@@ -179,6 +179,15 @@ UNIT_MODULES = [
     # inert by construction (src/orchestration/registration.py). Guarded by
     # tests/orchestration/test_internal_plane_guard.py.
     "src.orchestration.draft_routes",
+    # Issue #5331: the intake-conversation surface a terminal client plans through.
+    # Operator plane like the three routers above; PLAN_DRAFT to speak in a
+    # conversation and USAGE_READ to read one back. NOT PLAN_APPROVE, and nothing
+    # here can accept a plan, stamp an execution policy or move a gate — a planning
+    # conversation's output is a draft that a human must still act on, which is the
+    # separation this EPIC protects. A separate module for the same reason
+    # draft_routes.py is: routes.py's guarantee is "nothing here is reachable below
+    # approval authority". Guarded by tests/orchestration/test_internal_plane_guard.py.
+    "src.orchestration.intake_routes",
 ]
 
 
