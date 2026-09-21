@@ -1,6 +1,7 @@
 import { parseEnvelope } from "./contracts.js";
 import { runReview } from "./reviewer.js";
 import { runEngineReview } from "./engine-review.js";
+import { withGitHubTokenRenewal } from "./token-lifecycle.js";
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -13,17 +14,19 @@ async function main(): Promise<void> {
     throw new Error("agent-codex-reviewer runs only through the shared worker entrypoint");
   }
   const envelope = parseEnvelope(await readStdin());
-  const githubToken = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? "";
-  if (!githubToken) throw new Error("embedded Codex review requires the worker GitHub token");
-  const proxyPort = process.env.SIGV4_PROXY_PORT ?? "9090";
-  const runtime = {
-    workspace: process.cwd(),
-    githubToken,
-    proxyBaseUrl: `http://127.0.0.1:${proxyPort}/openai/v1`,
-  };
-  const result = envelope.kind === "codex_engine_review"
-    ? await runEngineReview(envelope, runtime)
-    : await runReview(envelope, runtime);
+  const result = await withGitHubTokenRenewal(async (getGitHubToken, githubToken) => {
+    const proxyPort = process.env.SIGV4_PROXY_PORT ?? "9090";
+    const runtime = {
+      workspace: process.cwd(),
+      githubToken,
+      getGitHubToken,
+      proxyBaseUrl: `http://127.0.0.1:${proxyPort}/openai/v1`,
+    };
+    return envelope.kind === "codex_engine_review"
+      ? await runEngineReview(envelope, runtime)
+      : await runReview(envelope, runtime);
+  });
+  // The delivery adapter consumes the final line, after renewal has stopped.
   console.log(JSON.stringify(result));
 }
 

@@ -43,9 +43,12 @@ export function parseEngineVerdict(raw: string): EngineVerdict {
   return verdict;
 }
 
+function inspected(verdict: EngineVerdict): boolean {
+  return Object.values(verdict.stages).every(value => value === "completed");
+}
+
 function complete(verdict: EngineVerdict): boolean {
-  return !requiresChanges(verdict) && verdict.validationGaps.length === 0
-    && Object.values(verdict.stages).every(value => value === "completed");
+  return !requiresChanges(verdict) && verdict.validationGaps.length === 0 && inspected(verdict);
 }
 
 export interface EngineReviewServices {
@@ -64,11 +67,11 @@ function services(runtime: ReviewRuntime & { repository: string }): EngineReview
     approvalPolicy: "never", networkAccessEnabled: false, webSearchMode: "disabled",
     threadSource: "adp-agent-codex-reviewer-engine" });
   return {
-    github: new GitHubClient(runtime.repository ?? "", async () => {
+    github: new GitHubClient(runtime.repository ?? "", runtime.getGitHubToken ?? (async () => {
       // The shared worker rotates this file; long reviews must not retain an expired token.
       try { return (await readFile(process.env.ADP_TOKEN_FILE ?? "/tmp/.adp-gh-token", "utf8")).trim() || runtime.githubToken; }
       catch { return runtime.githubToken; }
-    }),
+    })),
     review: async prompt => parseEngineVerdict((await thread().run(prompt,
       { outputSchema: engineReviewSchema, signal })).finalResponse),
     fix: async prompt => { await thread().run(prompt, { signal }); },
@@ -172,7 +175,10 @@ export async function runEngineReview(
     const changed = (await git(["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "HEAD"]))
       .split("\0").filter(Boolean);
     const files = [...new Set([...changed, ...(await untracked()).filter(file => !baseline.has(file))])];
-    if (complete(verdict) && files.length) {
+    // A repaired PR must be published before remote CI can validate it. Review
+    // completion permits publishing progress; only complete() permits approval.
+    // Retain remaining findings against the exact commit sent to the provider.
+    if (inspected(verdict) && files.length) {
       const current = await controller.github.getPullRequest(cycle.pr_number);
       if (current.state !== "open" || current.head.sha !== expected || current.head.ref !== initialPr.head.ref) {
         throw new Error("PR changed during Codex story repair");
@@ -183,9 +189,13 @@ export async function runEngineReview(
       head = await git(["rev-parse", "HEAD"]);
       if (await git(["rev-parse", "HEAD^"]) !== expected) throw new Error("Repair does not descend directly from assigned head");
       verdict = await inspect(head);
-      if (!complete(verdict)) throw new Error("Committed story repair did not pass final review; nothing pushed");
-      let token = runtime.githubToken;
-      try { token = (await readFile(process.env.ADP_TOKEN_FILE ?? "/tmp/.adp-gh-token", "utf8")).trim() || token; } catch { /* startup token */ }
+      if (!inspected(verdict)) throw new Error("Committed story repair inspection did not complete; nothing pushed");
+      let token: string;
+      if (runtime.getGitHubToken) token = await runtime.getGitHubToken();
+      else {
+        token = runtime.githubToken;
+        try { token = (await readFile(process.env.ADP_TOKEN_FILE ?? "/tmp/.adp-gh-token", "utf8")).trim() || token; } catch { /* embedded entrypoint always supplies renewal */ }
+      }
       await run("git", ["push", `--force-with-lease=refs/heads/${initialPr.head.ref}:${expected}`,
         repositoryUrl(envelope.repository), `HEAD:refs/heads/${initialPr.head.ref}`],
       { cwd: runtime.workspace, env: gitEnvironment(token) });

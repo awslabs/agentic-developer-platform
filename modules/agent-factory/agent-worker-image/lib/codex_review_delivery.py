@@ -25,16 +25,19 @@ def finish_engine_review(output: str, *, envelope: dict, delivery, run, cwd) -> 
     elif base is not None:
         raise RuntimeError("Codex repair result has inconsistent lineage")
 
-    if cycle["action"] == "repair":
-        # A separately dispatched repair remains an authoring execution. Its next
-        # reviewer must be a distinct run, even when both use the Codex persona.
-        pr_binding.register_pull_request(repo=cycle["repo"], pr_number=cycle["pr_number"])
-        return "Codex story repair delivered to the existing PR"
-    if delivery is None:
-        raise RuntimeError("Codex engine review has no evidence assignment")
     report = result.get("report")
     if not isinstance(report, dict) or not isinstance(result.get("body"), str):
         raise RuntimeError("Codex did not produce a structured review")
+    if cycle["action"] == "repair":
+        if head == cycle["head_sha"] and report.get("verdict") != "approve":
+            raise RuntimeError("Codex story repair remains blocked; no commit was published")
+        # A separately dispatched repair remains an authoring execution. Its next
+        # reviewer must be a distinct run, even when both use the Codex persona.
+        pr_binding.register_pull_request(repo=cycle["repo"], pr_number=cycle["pr_number"])
+        return ("Codex story repair delivered to the existing PR" if base
+                else "Codex verified the existing PR; no repair was needed")
+    if delivery is None:
+        raise RuntimeError("Codex engine review has no evidence assignment")
     event = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES"}.get(report.get("verdict"), "COMMENT")
     try:
         token, identity = mint_review_token(repo=cycle["repo"])

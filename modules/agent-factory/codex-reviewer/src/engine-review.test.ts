@@ -87,14 +87,39 @@ test("engine review repairs semantic story issues, re-reviews and pushes the ver
   await assert.rejects(state.git("show", "HEAD:review-note.md"));
 });
 
-test("unverified local fixes never become remote-head evidence or a push", async t => {
+test("reviewed repairs publish progress while remaining findings block approval", async t => {
   const state = await fixture(t);
   let repairs = 0;
+  let reviews = 0;
   const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
-    review: async () => blocked, fix: async () => { repairs++; await writeFile(join(state.workspace, "code.txt"), "unverified\n"); } });
+    review: async () => { reviews++; return { ...approved, validationGaps: ["Remote image scan must run on the published PR commit"] }; },
+    fix: async () => { repairs++; await writeFile(join(state.workspace, "code.txt"), "fixed behavior awaiting CI\n"); } });
   assert.equal(repairs, 2);
-  assert.equal(result.sha, state.sha);
+  assert.equal(reviews, 4);
+  assert.notEqual(result.sha, state.sha);
+  assert.equal(result.repair_base_sha, state.sha);
   assert.equal(result.report.verdict, "request-changes");
+  assert.equal(result.report.findings[0]?.severity, "blocking");
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+  assert.ok(result.body.includes(result.sha));
+});
+
+test("failed functional or security inspection never publishes a repaired tree", async t => {
+  const state = await fixture(t);
+  const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => ({ ...blocked, stages: { functional: "failed", security: "completed" } }),
+    fix: async () => { await writeFile(join(state.workspace, "code.txt"), "uninspected\n"); } });
+  assert.equal(result.sha, state.sha);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
+});
+
+test("failed final commit inspection stops publication even after a completed working-tree review", async t => {
+  const state = await fixture(t);
+  let reviews = 0;
+  await assert.rejects(runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => ++reviews === 1 ? blocked : reviews === 2 ? approved
+      : { ...approved, stages: { functional: "completed", security: "failed" } },
+    fix: async () => { await writeFile(join(state.workspace, "code.txt"), "fixed\n"); } }), /inspection did not complete/);
   assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
 });
 

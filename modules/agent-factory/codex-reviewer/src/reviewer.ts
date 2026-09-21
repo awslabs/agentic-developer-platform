@@ -45,6 +45,8 @@ export interface ReviewRuntime {
   workspace: string;
   /** Default/developer installation token prepared by the shared worker entrypoint. */
   githubToken: string;
+  /** Renew through the shared worker before API calls and authenticated git. */
+  getGitHubToken?: () => Promise<string>;
   /** Existing gateway-only loopback proxy, ending in /openai/v1. */
   proxyBaseUrl: string;
 }
@@ -242,7 +244,7 @@ async function runIssueReview(
   if (!runtime.workspace || !runtime.githubToken || !runtime.proxyBaseUrl) {
     throw new Error("Codex review requires the shared worker workspace, GitHub token, and gateway proxy");
   }
-  const github = new GitHubClient(envelope.repository, async () => runtime.githubToken);
+  const github = new GitHubClient(envelope.repository, runtime.getGitHubToken ?? (async () => runtime.githubToken));
   const [issue, persona] = await Promise.all([
     github.getIssue(envelope.issue.number),
     readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8"),
@@ -276,7 +278,7 @@ async function runPullRequestReview(
   if (!runtime.workspace || !runtime.githubToken || !runtime.proxyBaseUrl) {
     throw new Error("Codex review requires the shared worker workspace, GitHub token, and gateway proxy");
   }
-  const tokenProvider = async () => runtime.githubToken;
+  const tokenProvider = runtime.getGitHubToken ?? (async () => runtime.githubToken);
   const github = new GitHubClient(envelope.repository, tokenProvider);
   const expected = envelope.pull_request.expected_head_sha;
   const initialPr = await github.getPullRequest(envelope.pull_request.number);
@@ -289,8 +291,7 @@ async function runPullRequestReview(
     return { status: "stale", expected, actual: initialPr.head.sha };
   }
 
-  const token = await tokenProvider();
-  const gitEnv = gitEnvironment(token);
+  const gitEnv = async () => gitEnvironment(await tokenProvider());
   const workspace = runtime.workspace;
   {
     const checkedOutSha = (
@@ -304,7 +305,7 @@ async function runPullRequestReview(
         workspace,
         envelope.repository,
         envelope.pull_request.head_ref,
-        gitEnv,
+        await gitEnv(),
       )) !== expected
     ) {
       return { status: "stale", expected, actual: initialPr.head.sha };
@@ -329,7 +330,7 @@ async function runPullRequestReview(
       workspace,
       envelope.repository,
       envelope.pull_request.head_ref,
-      gitEnv,
+      await gitEnv(),
     );
     if (current !== expected) return { status: "stale", expected, actual: current };
 
@@ -364,7 +365,7 @@ async function runPullRequestReview(
         workspace,
         envelope.repository,
         envelope.pull_request.head_ref,
-        gitEnv,
+        await gitEnv(),
       );
       if (beforePush !== expected) return { status: "stale", expected, actual: beforePush };
       const localGitEnv = childEnvironment();
@@ -397,13 +398,13 @@ async function runPullRequestReview(
           repositoryUrl(envelope.repository),
           `HEAD:refs/heads/${envelope.pull_request.head_ref}`,
         ],
-        { cwd: workspace, env: gitEnv },
+        { cwd: workspace, env: await gitEnv() },
       );
       const pushedHead = await remoteHead(
         workspace,
         envelope.repository,
         envelope.pull_request.head_ref,
-        gitEnv,
+        await gitEnv(),
       );
       if (pushedHead !== newSha) {
         return { status: "stale", expected: newSha, actual: pushedHead };

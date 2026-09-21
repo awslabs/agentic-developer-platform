@@ -57,6 +57,47 @@ def test_verified_story_repair_is_reviewed_at_final_child_commit(setup):
     assert setup.uploaded[0]["subject"]["reviewed_head_sha"] == "b" * 40
 
 
+def test_repaired_commit_keeps_blocking_findings_in_formal_review(setup):
+    setup.result.update(sha="b" * 40, repair_base_sha=HEAD)
+    setup.result["report"].update(verdict="request-changes", findings=[{
+        "finding_id": "scan", "stage": "security", "severity": "blocking",
+        "disposition": "open", "summary": "Image scan still required",
+    }])
+    setup.submit.return_value["commit_id"] = "b" * 40
+    finish(setup)
+    assert setup.submit.call_args.kwargs["event"] == "REQUEST_CHANGES"
+    assert setup.uploaded[0]["verdict"] == "request-changes"
+    assert setup.uploaded[0]["subject"]["reviewed_head_sha"] == "b" * 40
+
+
+def test_unchanged_unresolved_repair_does_not_claim_delivery(setup, monkeypatch):
+    setup.envelope["review_cycle_input"]["action"] = "repair"
+    setup.result["report"]["verdict"] = "request-changes"
+    register = Mock()
+    monkeypatch.setattr(finalizer.pr_binding, "register_pull_request", register)
+    with pytest.raises(RuntimeError, match="no commit was published"):
+        finish(setup)
+    register.assert_not_called()
+    setup.submit.assert_not_called()
+
+
+def test_published_partial_repair_retains_distinct_followup_review(setup, monkeypatch):
+    setup.envelope["review_cycle_input"]["action"] = "repair"
+    setup.result.update(sha="b" * 40, repair_base_sha=HEAD)
+    setup.result["report"]["verdict"] = "request-changes"
+    register = Mock()
+    monkeypatch.setattr(finalizer.pr_binding, "register_pull_request", register)
+    assert "repair delivered" in finish(setup)
+    register.assert_called_once_with(repo="org/repo", pr_number=77)
+    setup.submit.assert_not_called()
+
+
+def test_unchanged_clean_repair_reports_no_repair_needed(setup, monkeypatch):
+    setup.envelope["review_cycle_input"]["action"] = "repair"
+    monkeypatch.setattr(finalizer.pr_binding, "register_pull_request", Mock())
+    assert "no repair was needed" in finish(setup)
+
+
 @pytest.mark.parametrize("change", ["parent", "authorization", "lineage"])
 def test_unassigned_head_cannot_be_published_or_uploaded(setup, change):
     setup.result.update(sha="b" * 40, repair_base_sha=HEAD)
