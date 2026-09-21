@@ -70,9 +70,12 @@ the generated patch, then use `kubectl patch --type=json --patch-file=...` on
 that ScaledJob; a changed resource version requires a fresh snapshot and review.
 
 The same command updates a supplied Terraform JSON overlay with `agent_image`
-and `gitlab_webhook_enabled`. Keep that overlay in the matching
-`environments/<environment>/modules/webhook-ingress.tfvars.json` so a later
-managed rollout retains the image and existing GitLab integration. URLs remain
-deployment-owned SSM inputs, and reporting/continuation flags remain explicit
-separate rollout decisions. This scoped patch does not remove the deployment
-hold or establish whole-module Terraform convergence.
+and `gitlab_webhook_enabled`. Retain it with the durable rollout record for the
+verified AWS account, and explicitly pass that exact overlay after the shared
+variable files on every subsequent reconciliation of this runtime. The shared
+`environments/dev` inputs also serve fresh and customer accounts: do not put a
+platform-account image or optional GitLab activation in those shared files.
+URLs remain deployment-owned SSM inputs, and reporting/continuation flags remain
+explicit separate rollout decisions. This scoped patch does not remove the
+deployment hold or establish whole-module Terraform convergence. Reconciliation
+without the account-specific overlay can undo the patch and must not proceed.

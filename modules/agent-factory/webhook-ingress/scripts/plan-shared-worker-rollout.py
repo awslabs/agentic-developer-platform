@@ -2,8 +2,9 @@
 """Prepare a narrow shared-worker patch and its durable Terraform inputs.
 
 Reads a kubectl JSON snapshot and trusted deployment URLs; never contacts or
-changes the cluster. Apply the reviewed JSON patch separately. Commit the
-generated tfvars overlay so the next managed rollout retains the same runtime.
+changes the cluster. Apply the reviewed JSON patch separately. Retain the
+generated account-specific overlay with the rollout record and pass it to the
+next managed reconciliation; shared dev inputs also serve customer accounts.
 """
 
 from __future__ import annotations
