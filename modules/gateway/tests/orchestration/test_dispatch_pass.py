@@ -1571,7 +1571,9 @@ async def test_unconfigured_evaluations_do_not_consume_the_dispatch_cap(session)
     story.id = "zzz-story"
     await session.flush()
     report = await run_dispatch_pass(session, _config(max_dispatches_per_tick=1))
-    assert report.undispatchable == 10
+    # Worker admission precedes evidence/misconfiguration reads. Reaching the
+    # worker cap leaves unexamined evaluations for a later tick.
+    assert report.undispatchable == 0
     assert report.dispatched == 1
     assert report.pending[0].node_id == story.id
 

@@ -32,9 +32,22 @@ async def accepted_evaluation(session, node):
     address = graph_address(node, flow_slug=flow.slug)
     rows = [item for item in (plan.plan_document or {}).get("nodes", []) if item.get("address") == address]
     require(len(rows) <= 1, "evaluation_accepted_node_ambiguous")
-    if not rows or rows[0].get("evaluation") is None:
+    if not rows:
         return None
-    return plan, specification(rows[0]["evaluation"]), address
+    raw = rows[0].get("evaluation")
+    marker = (plan.plan_document or {}).get("execution_continuation") or {}
+    attached = None
+    if marker.get("mode") == "shared_worker_role" and (raw is None or raw.get("evidence_schema") == "repository-evaluation/v1"):
+        from .evaluation_acceptance import accepted_contract
+
+        attached = await accepted_contract(session, node=node, plan=plan)
+    if attached is None and raw is None:
+        return None
+    spec = attached[1] if attached is not None else specification(raw)
+    policy = (plan.plan_document or {}).get("execution_policy") or {}
+    if policy.get("evaluation_acceptance", {}).get(address) == "machine":
+        require(spec.acceptance_mode == "machine", "evaluation_acceptance_mode_changed")
+    return plan, spec, address
 
 
 async def managed_evaluation(session, node):
