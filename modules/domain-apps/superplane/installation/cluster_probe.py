@@ -370,7 +370,7 @@ class ClusterProbe:
         egress = []
         if database_cidrs:
             egress = [
-                dns_egress(self.installer.env),
+                dns_egress(self.installer.network_environment),
                 {
                     "to": [{"ipBlock": {"cidr": cidr}} for cidr in database_cidrs],
                     "ports": [{"protocol": "TCP", "port": database_port}],
@@ -390,7 +390,7 @@ class ClusterProbe:
                 "python",
                 "-c",
                 (MODULE / "installation/dns_probe.py").read_text(),
-                self.installer.env.get("cluster_dns_ip", ""),
+                self.installer.network_environment.get("cluster_dns_ip", ""),
                 *names,
             ],
         )

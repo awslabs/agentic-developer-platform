@@ -20,7 +20,7 @@ from .config import (
 def dns_egress(env: dict) -> dict:
     # Auto Mode serves DNS on the node, outside namespace/pod selectors. Keep
     # traditional DNS peers for standard/mixed clusters and allow only the exact
-    # native resolver address, verified against EKS during target preflight.
+    # native resolver address, discovered from EKS during target preflight.
     peers = [
         {
             "namespaceSelector": {

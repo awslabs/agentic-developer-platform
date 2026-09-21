@@ -45,7 +45,7 @@ def test_rejects_dns_ranges_and_non_resolvers(environment, release, value):
 def test_native_resolver_matches_selected_cluster(enabled, actual, requested, valid):
     cluster = {
         "computeConfig": {"enabled": enabled},
-        "kubernetesNetworkConfig": {"serviceIpv4Cidr": actual},
+        "kubernetesNetworkConfig": {"ipFamily": "ipv4", "serviceIpv4Cidr": actual},
     }
     if valid:
         verify_cluster_dns({"cluster_dns_ip": requested}, cluster)
@@ -63,6 +63,47 @@ def test_legacy_dns_remains_compatible():
             }
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "family,cidr,expected",
+    [
+        ("ipv4", "172.20.0.0/16", "172.20.0.10"),
+        ("ipv4", "10.100.0.0/16", "10.100.0.10"),
+        ("ipv6", "fd00:1234::/108", "fd00:1234::a"),
+    ],
+)
+def test_native_dns_discovered_without_input(family, cidr, expected):
+    environment = {}
+    cluster = {
+        "computeConfig": {"enabled": True},
+        "kubernetesNetworkConfig": {
+            "ipFamily": family,
+            f"serviceIpv{4 if family == 'ipv4' else 6}Cidr": cidr,
+        },
+    }
+    assert verify_cluster_dns(environment, cluster) == expected
+    assert environment == {}
+
+
+@pytest.mark.parametrize(
+    "network",
+    [
+        {},
+        None,
+        {"ipFamily": "unknown"},
+        {"ipFamily": "ipv4"},
+        {"ipFamily": "ipv4", "serviceIpv4Cidr": "bad"},
+        {"ipFamily": "ipv4", "serviceIpv4Cidr": None},
+        {"ipFamily": "ipv4", "serviceIpv4Cidr": "172.20.0.0/32"},
+        {"ipFamily": "ipv4", "serviceIpv4Cidr": "fd00::/108"},
+    ],
+)
+def test_auto_mode_never_silently_falls_back_when_discovery_fails(network):
+    with pytest.raises(Refusal, match="discover cluster_dns_ip"):
+        verify_cluster_dns(
+            {}, {"computeConfig": {"enabled": True}, "kubernetesNetworkConfig": network}
+        )
 
 
 @pytest.mark.parametrize("management_only", [False, True])

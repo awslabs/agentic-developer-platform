@@ -106,6 +106,7 @@ class Installer:
         self.run_id = uuid.uuid4().hex[:16]
         self.owner = identity(env)
         self.release = digest(lock)
+        self.cluster_dns_ip = env.get("cluster_dns_ip")
         self.docs = render(env, lock, control_plane_only=self.control_plane_only)
         self.secret_values = {}
         self.secret_versions = {}
@@ -170,18 +171,29 @@ class Installer:
         self.save()
         return result
 
-    def plan(self):
+    @property
+    def network_environment(self):
+        # Discovery must not mutate user input: resume/rollback bind that exact
+        # input, while rendered policies and probes need the resolved address.
+        if self.cluster_dns_ip is None:
+            return self.env
+        return dict(self.env, cluster_dns_ip=self.cluster_dns_ip)
+
+    def write_manifests(self):
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         (self.directory / "manifests.yaml").write_text(
             yaml.safe_dump_all(
                 [
                     *self.docs,
-                    migration_job(self.env, self.lock, self.run_id),
-                    bootstrap_job(self.env, self.lock, self.run_id),
+                    migration_job(self.network_environment, self.lock, self.run_id),
+                    bootstrap_job(self.network_environment, self.lock, self.run_id),
                 ],
                 sort_keys=False,
             )
         )
+
+    def plan(self):
+        self.write_manifests()
         if self.control_plane_only:
             self.receipt["actions"] = [
                 "verify account/cluster/source/images/production capabilities",
@@ -232,7 +244,21 @@ class Installer:
             cluster["arn"] == expected_arn and cluster["status"] == "ACTIVE",
             "Wrong or inactive management cluster",
         )
-        verify_cluster_dns(self.env, cluster)
+        self.cluster_dns_ip = verify_cluster_dns(self.env, cluster)
+        dns_configuration = {
+            "cluster_arn": cluster["arn"],
+            "mode": "eks-auto-mode" if self.cluster_dns_ip else "pod-dns",
+            "resolver": self.cluster_dns_ip,
+        }
+        # Recheck live resolution on every online preflight, including resume.
+        self.receipt.pop("management_dns", None)
+        self.receipt["management_dns_configuration"] = dns_configuration
+        self.docs = render(
+            self.network_environment,
+            self.lock,
+            control_plane_only=self.control_plane_only,
+        )
+        self.write_manifests()
         self.aws(
             "eks",
             "update-kubeconfig",
@@ -1081,6 +1107,9 @@ class Installer:
             "environment": self.env,
             "resource_changes": plan.get("resource_changes", []),
             "secret_versions": self.secret_versions,
+            "management_dns_configuration": self.receipt.get(
+                "management_dns_configuration"
+            ),
         }
         self.receipt["plan_sha256"] = digest(binding)
         self.save()
@@ -2080,8 +2109,11 @@ class Installer:
         self.lock = previous["release_lock"]
         self.release = previous["release_id"]
         self.docs = render(
-            self.env, self.lock, control_plane_only=self.control_plane_only
+            self.network_environment,
+            self.lock,
+            control_plane_only=self.control_plane_only,
         )
+        self.write_manifests()
         self.images()
         self.receipt["secret_versions"] = previous["secret_versions"]
         self.secrets()

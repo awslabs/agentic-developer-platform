@@ -42,16 +42,23 @@ The release lock must remove the three built images from `pending_images`, suppl
 
 Both managed VPC CNI and EKS Auto Mode are supported when NetworkPolicy enforcement
 is verified. Set `gateway_namespace` to the existing Gateway's actual namespace.
-For native EKS Auto Mode DNS, set `cluster_dns_ip` to the cluster's resolver IP
-(the service CIDR's network address plus 10; verify the pod resolver matches).
-Target preflight checks this address against the selected Auto Mode cluster.
+Native EKS Auto Mode DNS is discovered automatically during target preflight
+from the cluster's service network. No DNS address is required in the environment
+file. The installer derives the resolver (service CIDR network address plus 10),
+refreshes the rendered manifests and records `management_dns_configuration`.
 Workload and database-probe policies then allow UDP/TCP 53 to that exact address,
 in addition to traditional `kube-system` DNS peers. Auto Mode runs CoreDNS as a
 node system service, which cannot be selected by a namespace selector. It does
 not require Superplane to install another CoreDNS Deployment. The cluster image
 execution path checks Kubernetes service and private database DNS over both UDP
 and TCP inside the restricted probe boundary and records `management_dns`.
-Without `cluster_dns_ip`, the existing pod-based DNS policy is retained.
+The discovered configuration is included in the reviewed plan hash and is read
+again on execution/resume and rollback. User inputs remain unchanged. The default
+offline plan performs no AWS calls; native DNS rules appear in `manifests.yaml`
+after online preflight. Missing or invalid Auto Mode service-network data refuses
+preflight rather than silently producing the old namespace-only rule.
+Standard clusters retain pod-based DNS. An older explicit `cluster_dns_ip` remains
+accepted as an assertion against the discovered address; it is never required.
 Mixed clusters must retain traditional CoreDNS for their non-Auto Mode nodes,
 including managed node groups currently scaled to zero and Fargate profiles.
 Removing an existing add-on is a separate platform operation: inventory both

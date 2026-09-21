@@ -17,6 +17,7 @@ class ExternalTools:
     def __init__(self, environment, release, failure=None, auto_mode=False):
         self.environment, self.release, self.failure = environment, release, failure
         self.auto_mode = auto_mode
+        self.service_cidr = "172.20.0.0/16"
         self.calls, self.objects = [], {}
         self.route = None
         self.restarts = {}
@@ -98,6 +99,10 @@ class ExternalTools:
             }
             if self.auto_mode and name == env["cluster"]:
                 cluster_detail["computeConfig"] = {"enabled": True}
+                cluster_detail["kubernetesNetworkConfig"] = {
+                    "ipFamily": "ipv4",
+                    "serviceIpv4Cidr": self.service_cidr,
+                }
             result = {"cluster": cluster_detail}
         elif "config" in args and "view" in args:
             result = {
@@ -502,10 +507,13 @@ def test_incompatible_schema_rollback_is_rejected_before_tools(
     assert tools.calls == []
 
 
+@pytest.mark.parametrize("auto_mode", [False, True])
 def test_resume_reuses_jobs_and_completed_bootstrap_has_no_new_token(
-    tmp_path, environment, release, monkeypatch
+    tmp_path, environment, release, monkeypatch, auto_mode
 ):
-    installer, tools = setup(tmp_path, environment, release, monkeypatch, "rollout")
+    installer, tools = setup(
+        tmp_path, environment, release, monkeypatch, "rollout", auto_mode=auto_mode
+    )
     installer.preflight()
     with pytest.raises(Refusal):
         installer.execute(installer.receipt["plan_sha256"], "verified-user")
@@ -521,6 +529,9 @@ def test_resume_reuses_jobs_and_completed_bootstrap_has_no_new_token(
     tools.failure = None
     resumed.execute(resumed.receipt["plan_sha256"], "verified-user")
     assert resumed.receipt["status"] == "installed-and-verified"
+    assert "cluster_dns_ip" not in resumed.receipt["environment"]
+    if auto_mode:
+        assert resumed.cluster_dns_ip == "172.20.0.10"
     assert {
         key: obj["metadata"]["uid"]
         for key, obj in tools.objects.items()
@@ -572,10 +583,13 @@ def test_cleanup_refuses_replaced_uid(tmp_path, environment, release, monkeypatc
     assert tools.route["enabled"] is False
 
 
+@pytest.mark.parametrize("auto_mode", [False, True])
 def test_compatible_rollback_verifies_public_release(
-    tmp_path, environment, release, monkeypatch
+    tmp_path, environment, release, monkeypatch, auto_mode
 ):
-    installer, tools = setup(tmp_path, environment, release, monkeypatch)
+    installer, tools = setup(
+        tmp_path, environment, release, monkeypatch, auto_mode=auto_mode
+    )
     installer.preflight()
     installer.execute(installer.receipt["plan_sha256"], "verified-user")
     previous = copy.deepcopy(installer.receipt)
@@ -597,6 +611,18 @@ def test_compatible_rollback_verifies_public_release(
     assert rollback.receipt["status"] == "installed-and-verified"
     assert rollback.receipt["rollback_of"] == previous["run_id"]
     assert tools.route["enabled"] is True
+    if auto_mode:
+        assert "cluster_dns_ip" not in rollback.receipt["environment"]
+        policies = [
+            d
+            for d in rollback.docs
+            if d["kind"] == "NetworkPolicy" and d["spec"].get("egress")
+        ]
+        assert len(policies) == 4
+        assert all(
+            {"ipBlock": {"cidr": "172.20.0.10/32"}} in d["spec"]["egress"][0]["to"]
+            for d in policies
+        )
 
 
 @pytest.mark.parametrize(
@@ -711,6 +737,93 @@ def test_auto_mode_cluster_passes_network_policy_preflight(
     assert any("describe-addon" in a for a, _ in tools.calls)
     # NodeClass was queried as the fallback enforcement evidence.
     assert any("nodeclass" in a for a, _ in tools.calls)
+
+
+@pytest.mark.parametrize("management_only", [False, True])
+def test_fresh_auto_mode_install_discovers_dns_in_manifests_and_probes(
+    tmp_path, environment, release, monkeypatch, management_only
+):
+    from installation.cluster_probe import ClusterProbe
+
+    if management_only:
+        environment = _cp_only_environment(environment)
+    original = copy.deepcopy(environment)
+    installer, tools = setup(
+        tmp_path, environment, release, monkeypatch, auto_mode=True
+    )
+    assert tools.calls == []  # Offline plan never contacts AWS.
+    assert installer.cluster_dns_ip is None
+    installer.preflight()
+    assert environment == original
+    assert "cluster_dns_ip" not in installer.receipt["environment"]
+    assert (
+        installer.receipt["management_dns_configuration"]["resolver"] == "172.20.0.10"
+    )
+    saved = list(yaml.safe_load_all((tmp_path / "manifests.yaml").read_text()))
+    policies = [
+        d for d in saved if d["kind"] == "NetworkPolicy" and d["spec"].get("egress")
+    ]
+    assert len(policies) == 4
+    expected_peer = {"ipBlock": {"cidr": "172.20.0.10/32"}}
+    assert all(expected_peer in d["spec"]["egress"][0]["to"] for d in policies)
+
+    probe = ClusterProbe(installer)
+    observed = []
+    monkeypatch.setattr(probe, "policy", lambda name, spec: observed.append(spec))
+    probe.isolate(database_cidrs=["10.0.1.2/32"])
+    assert expected_peer in observed[0]["egress"][0]["to"]
+    commands = []
+
+    def dns_result(component, command):
+        commands.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "verified": True,
+                    "names": [
+                        "kubernetes.default.svc.cluster.local",
+                        "db.example.test",
+                    ],
+                    "resolvers": ["172.20.0.10"],
+                    "protocols": ["UDP", "TCP"],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(probe, "run", dns_result)
+    probe.prove_dns("db.example.test")
+    assert commands[0][3] == "172.20.0.10"
+
+    installer.execute(installer.receipt["plan_sha256"], "verified-user")
+    applied = [
+        obj
+        for (kind, _, _), obj in tools.objects.items()
+        if kind == "NetworkPolicy" and obj["spec"].get("egress")
+    ]
+    assert len(applied) == 4
+    assert all(expected_peer in d["spec"]["egress"][0]["to"] for d in applied)
+
+
+def test_changed_discovered_dns_invalidates_approved_plan(
+    tmp_path, environment, release, monkeypatch
+):
+    installer, tools = setup(
+        tmp_path, environment, release, monkeypatch, auto_mode=True
+    )
+    installer.preflight()
+    approved = installer.receipt["plan_sha256"]
+    tools.service_cidr = "10.100.0.0/16"
+    installer.receipt["management_dns"] = {"verified": True}
+    with pytest.raises(Refusal, match="exact current domain Terraform plan"):
+        installer.execute(approved, "verified-user")
+    assert installer.receipt["plan_sha256"] != approved
+    assert "management_dns" not in installer.receipt
+    assert installer.cluster_dns_ip == "10.100.0.10"
+    assert not any(
+        "put-object" in a or "apply" in a or "put-parameter" in a
+        for a, _ in tools.calls
+    )
 
 
 def test_auto_mode_missing_nodeclass_refuses_before_mutation(

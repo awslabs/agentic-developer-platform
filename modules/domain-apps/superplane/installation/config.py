@@ -98,22 +98,31 @@ def cluster_dns_address(env: dict):
         ) from None
 
 
-def verify_cluster_dns(env: dict, cluster: dict) -> None:
-    address = cluster_dns_address(env)
-    if address is None:
-        return
+def verify_cluster_dns(env: dict, cluster: dict) -> str | None:
+    """Discover the native resolver; older explicit inputs remain assertions."""
+    requested = cluster_dns_address(env)
+    if cluster.get("computeConfig", {}).get("enabled") is not True:
+        require(requested is None, "cluster_dns_ip requires EKS Auto Mode")
+        return None
     network = cluster.get("kubernetesNetworkConfig", {})
     try:
-        cidr = ipaddress.ip_network(network[f"serviceIpv{address.version}Cidr"])
-    except (KeyError, ValueError):
+        version = {"ipv4": 4, "ipv6": 6}[network["ipFamily"]]
+        cidr = ipaddress.ip_network(network[f"serviceIpv{version}Cidr"])
+        address = cidr.network_address + 10
+    except (KeyError, TypeError, ValueError):
         raise Refusal(
-            "Cannot verify cluster_dns_ip against the EKS service network"
+            "Cannot discover cluster_dns_ip from the EKS service network"
         ) from None
     require(
-        cluster.get("computeConfig", {}).get("enabled") is True
-        and address == cidr.network_address + 10,
+        cidr.version == version and address in cidr,
+        "Cannot discover cluster_dns_ip from the EKS service network",
+    )
+    cluster_dns_address({"cluster_dns_ip": str(address)})
+    require(
+        requested is None or requested == address,
         "cluster_dns_ip must match the selected EKS Auto Mode resolver",
     )
+    return str(address)
 
 
 def validate(

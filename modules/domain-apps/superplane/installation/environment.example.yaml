@@ -1,6 +1,5 @@
 version: 1
-# Native Auto Mode DNS: set to the verified EKS resolver (service CIDR + 10).
-# cluster_dns_ip: 172.20.0.10
+# Native Auto Mode DNS is discovered automatically during preflight.
 # All values are explicit — nothing is inferred from the AWS environment.
 # Replace every null (and the placeholders in comments) with values specific
 # to your ADP deployment.  Do not commit a filled-in copy; keep credentials
