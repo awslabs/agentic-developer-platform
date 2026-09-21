@@ -48,6 +48,25 @@ declares the following evidence:
   requires the committed YAML to declare only `workflow_dispatch`; the actual
   run must always have that event. The observer dispatches no workflow.
 
+For an already-running shared-worker flow, use
+`POST /orchestration/flows/{flow_id}/evaluation/preview`, then the matching
+`/evaluation/accept`. Both require the existing human session and `PLAN_APPROVE`
+permission. The request names `node_id`, `expected_plan_version`,
+`expected_plan_hash`, the exact `specification`, and a `reason`. Acceptance also
+requires the preview's `snapshot` as `expected_snapshot`. If the original policy
+does not permit evaluation, the reviewed request must explicitly set
+`authorize_evaluate: true`; the machine-mode map and a deferred-action marker
+never imply that permission.
+
+This records one immutable `evaluation_contract_accepted` decision for the exact
+current plan and evaluation node. It carries only evaluate authority, with the
+same repositories, limits and expiry and the existing budget meter reference.
+It changes no worker policy, plan version, continuation marker, run assignment,
+claim, or budget counter. The evaluator rechecks the attributed contract and its
+limits at settlement. A plan amendment invalidates the attachment. An existing
+live deployment contract or explicit human gate cannot be replaced through this
+repository-only API.
+
 Workflow artifacts are selected from the exact latest run/attempt. Artifact
 creation must follow that attempt's start. The GitHub archive digest, bounded ZIP
 contents, file SHA-256, job identities, workflow blob, source commit, repository

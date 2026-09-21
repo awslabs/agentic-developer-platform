@@ -200,7 +200,13 @@ def canonical(value):
 def harness_digest():
     """Pin the actual deterministic verifier shipped in the gateway artifact."""
     digest = hashlib.sha256()
-    for name in ("repository_evaluation_contract.py", "repository_evaluation_provider.py", "repository_evaluation.py"):
+    for name in (
+        "repository_evaluation_contract.py",
+        "repository_evaluation_provider.py",
+        "repository_evaluation.py",
+        "evaluation_acceptance.py",
+        "merge_evidence.py",
+    ):
         data = Path(__file__).with_name(name).read_bytes()
         digest.update(name.encode() + b"\0" + data + b"\0")
     return digest.hexdigest()

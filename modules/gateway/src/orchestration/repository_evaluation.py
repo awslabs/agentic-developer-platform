@@ -51,6 +51,8 @@ class RepositoryEvaluationReceipt(Contract):
     cycle: int = Field(gt=0)
     accepted_plan_version: int = Field(gt=0)
     accepted_plan_hash: Digest
+    acceptance_decision_id: Name | None = None
+    evaluation_policy_hash: Digest
     specification_hash: Digest
     harness_sha256: Digest
     source_snapshot_hash: Digest
@@ -179,14 +181,19 @@ async def authorize(session, node, plan, spec, binding, provider):
     await provider.token(binding)
     inputs, marker = await shared_policy.shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
     require(inputs.plan_version == plan.version and spec.runner.repository in inputs.policy.repository_ids, "policy_changed")
+    from .evaluation_acceptance import accepted_contract
+
+    attached = await accepted_contract(session, node=node, plan=plan)
+    require(attached is None or attached[1] == spec, "accepted_specification_changed")
+    policy = attached[2] if attached is not None else inputs.policy
     meter = await shared_policy.read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
     require(meter is not None and meter.total_usd >= Decimal(marker["prior_spend_usd"]), "budget_unavailable")
     context = await shared_policy.resolve_authorization_context(
         session,
-        policy=inputs.policy,
+        policy=policy,
         plan_version=plan.version,
         node=node,
-        principal_user_id=inputs.policy.principal_id,
+        principal_user_id=policy.principal_id,
         credential_scope=CredentialScope.SCOPED,
         spend=SpendObservation(total_usd=meter.total_usd),
     )
@@ -210,6 +217,7 @@ async def authorize(session, node, plan, spec, binding, provider):
         context, Action.EVALUATE, ResourceRef(repository_id=binding.repo, node_address=address, org_id=node.org_id), plan.version
     )
     require(decision.permitted, "authority_" + (decision.reason.value if decision.reason else "denied"))
+    return (attached[0].id if attached is not None else None), policy.policy_hash
 
 
 async def record(session, node, payload, *, rejection=False, before=None):
@@ -292,7 +300,7 @@ async def _observe_repository_evaluation(session, node, *, provider=None):
         binding = SimpleNamespace(
             org_id=node.org_id, installation_id=installation, repo=spec.runner.repository, provider_repository_id=spec.runner.repository_id
         )
-        await authorize(session, node, plan, spec, binding, provider)
+        authority = await authorize(session, node, plan, spec, binding, provider)
         sources = await sources_for(session, node, plan, spec)
         spec_hash = hashlib.sha256(canonical(spec.model_dump(mode="json")).encode()).hexdigest()
         snapshot_hash = hashlib.sha256(canonical(sources).encode()).hexdigest()
@@ -327,7 +335,7 @@ async def _observe_repository_evaluation(session, node, *, provider=None):
         fresh = await accepted_evaluation(session, node)
         require(fresh is not None and fresh[1] == spec and node.state == "ready" and flow.state == "running", "scope_changed")
         require(await sources_for(session, node, current, spec, lock=True) == sources, "source_changed")
-        await authorize(session, node, current, spec, binding, provider)
+        require(await authorize(session, node, current, spec, binding, provider) == authority, "evaluation_authority_changed")
         receipt = RepositoryEvaluationReceipt(
             org_id=node.org_id,
             flow_id=node.flow_id,
@@ -335,6 +343,8 @@ async def _observe_repository_evaluation(session, node, *, provider=None):
             cycle=node.attempts + 1,
             accepted_plan_version=current.version,
             accepted_plan_hash=current.plan_hash,
+            acceptance_decision_id=authority[0],
+            evaluation_policy_hash=authority[1],
             specification_hash=spec_hash,
             harness_sha256=spec.runner.harness_sha256,
             source_snapshot_hash=snapshot_hash,
