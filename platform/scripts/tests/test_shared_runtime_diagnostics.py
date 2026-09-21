@@ -135,7 +135,14 @@ def test_migration_filter_and_collection_truncation_are_explicit(monkeypatch):
 
 def test_diagnose_has_independent_lane_and_cannot_select_mutation_flags():
     workflow = (SCRIPTS.parents[1] / ".github/workflows/shared-runtime-maintenance.yml").read_text()
-    assert "group: ${{ inputs.stage == 'diagnose' && 'gateway-diagnostics-dev' || 'gateway-release-dev' }}" in workflow
+    assert "group: ${{ (inputs.stage == 'diagnose' || inputs.stage == 'redis-diagnose') && 'gateway-diagnostics-dev' || 'gateway-release-dev' }}" in workflow
     assert '[[ "$EXECUTE" == false && "$UNLOCK_KNOWN_ORPHAN" == false ]]' in workflow
     assert "if: inputs.stage != 'diagnose'" in workflow
     assert 'python platform/scripts/diagnose-shared-runtime.py' in workflow
+
+
+def test_redis_diagnose_requires_no_image_inputs_and_cannot_execute():
+    workflow = (SCRIPTS.parents[1] / ".github/workflows/shared-runtime-maintenance.yml").read_text()
+    assert 'if [[ "$ROLLOUT_STAGE" == diagnose || "$ROLLOUT_STAGE" == redis-diagnose ]]; then' in workflow
+    assert "python platform/scripts/tick_redis.py" in workflow
+    assert "if: inputs.stage != 'diagnose' && inputs.stage != 'redis-diagnose'" in workflow
