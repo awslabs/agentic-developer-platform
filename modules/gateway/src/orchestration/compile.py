@@ -58,11 +58,12 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .execution_policy import PolicyRejectedError, stamp_policy
 from .genesis import APPROVAL_DECISION_KINDS
-from .models import DecisionKind
+from .models import DecisionKind, OrchestrationAcceptedPlan, OrchestrationFlow
 from .proposal import LoopProposal, Violation, split_address, validate_proposal
 from .repository import OrchestrationRepository
 from .state import ActorKind, NodeState
@@ -461,11 +462,33 @@ async def compile_proposal(
     # nodes on the graph for a plan nobody accepted.
     async with session.begin_nested():
         flow = await _resolve_flow(repo, proposal=proposal, org_id=decision.org_id)
+        # A create/resubmit can resolve an existing flow. Serialize it with
+        # continuation acceptance and bounded append before reading its policy;
+        # otherwise this ingress could replace a shared plan mid-execution.
+        await session.execute(
+            select(OrchestrationFlow)
+            .where(OrchestrationFlow.org_id == decision.org_id, OrchestrationFlow.id == flow.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        in_force = await session.scalar(
+            select(OrchestrationAcceptedPlan)
+            .where(
+                OrchestrationAcceptedPlan.org_id == decision.org_id,
+                OrchestrationAcceptedPlan.flow_id == flow.id,
+                OrchestrationAcceptedPlan.superseded_at.is_(None),
+            )
+            .execution_options(populate_existing=True)
+        )
+        if in_force is not None and (in_force.plan_document or {}).get("execution_continuation"):
+            raise ProposalRejectedError(
+                "Shared worker continuations require the bounded append preview/accept path; "
+                "a full proposal cannot discard their authority marker or invalidate active worker assignments."
+            )
 
         # --- Idempotency (R-NF2) -------------------------------------------
         # An identical document already in force means this is a retry. Return
         # what exists rather than writing a second identical plan version.
-        in_force = await repo.get_accepted_plan(org_id=decision.org_id, flow_id=flow.id)
         if in_force is not None and in_force.plan_hash == document_hash:
             existing = await repo.list_nodes(org_id=decision.org_id, flow_id=flow.id)
             return CompileResult(
