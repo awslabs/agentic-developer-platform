@@ -103,40 +103,64 @@ local request_id = ARGV[1]
 local amount = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
 
--- Pass 1: verify every budget has room. No writes here, so a denial cannot
--- leave a partial reservation behind.
+-- An authenticated policy meter already records which requests still await
+-- trusted usage. Read those markers atomically with the cap check. They only
+-- classify a DENIAL as transient; they never reduce the admitted denominator.
+local pending_requests = {}
 for i = 1, #KEYS do
-    local headroom = tonumber(ARGV[1 + (i * 3)])
-    local strict = ARGV[3 + (i * 3)] == '1'
-    if strict then
+    if ARGV[3 + (i * 3)] == '1' then
         local anchor = redis.call('HGET', KEYS[i], '__initialized__')
         if not anchor then return {-1, i} end
         local sep = string.find(anchor, ':')
         if not sep or tonumber(string.sub(anchor, 1, sep - 1)) ~= 0 or tonumber(string.sub(anchor, sep + 1)) <= now then
             return {-1, i}
         end
+        local entries = redis.call('HGETALL', KEYS[i])
+        for j = 1, #entries, 2 do
+            local field, value = entries[j], entries[j + 1]
+            local split = string.find(value, ':')
+            -- Expired/unknown usage is unavailable, never a retryable cap wait.
+            if tonumber(string.sub(value, split + 1)) <= now then return {-1, i} end
+            if string.sub(field, 1, 8) == 'pending:' then
+                pending_requests[string.sub(field, 9)] = true
+            end
+        end
     end
-    local in_flight = 0
+end
+
+-- Pass 1: verify every budget has room. No writes here, so a denial cannot
+-- leave a partial reservation behind. A definitive cap takes precedence over
+-- temporary contention at another level of the same hierarchy.
+local waiting_index = 0
+for i = 1, #KEYS do
+    local headroom = tonumber(ARGV[1 + (i * 3)])
+    local in_flight, awaiting_usage, settled = 0, 0, 0
     local entries = redis.call('HGETALL', KEYS[i])
     for j = 1, #entries, 2 do
         local field, value = entries[j], entries[j + 1]
         local sep = string.find(value, ':')
         local entry_amount = tonumber(string.sub(value, 1, sep - 1))
         local entry_deadline = tonumber(string.sub(value, sep + 1))
-        -- A policy accumulator cannot discard usage because a field expired.
-        -- Pending provider calls get a bounded observation window; a missing
-        -- receipt beyond it blocks further spend until reconciliation.
-        if strict and entry_deadline <= now then return {-1, i} end
-        -- Skip this request's own prior reservation: a retry must replace it,
-        -- not stack on top of it. Skip expired entries: their owner is gone.
+        -- A retry replaces its own reservation; expired non-policy entries
+        -- retain their existing TTL semantics.
         if field ~= request_id and entry_deadline > now then
             in_flight = in_flight + entry_amount
+            if pending_requests[field] then
+                awaiting_usage = awaiting_usage + entry_amount
+            else
+                settled = settled + entry_amount
+            end
         end
     end
     if in_flight + amount > headroom then
-        return {0, i}
+        if awaiting_usage > 0 and settled + amount <= headroom then
+            if waiting_index == 0 then waiting_index = i end
+        else
+            return {0, i, 0}
+        end
     end
 end
+if waiting_index > 0 then return {0, waiting_index, 1} end
 
 -- Pass 2: every budget had room, so commit to all of them.
 for i = 1, #KEYS do
@@ -269,10 +293,13 @@ class ReservationOutcome:
     Attributes:
         admitted: ``True`` if the live denominator had room for this request.
         exhausted: Which budget ran out, when ``admitted`` is ``False``.
+        awaiting_usage: Denied solely by active policy request holds, so a retry
+            may fit after trusted settlement. Never permission to discount spend.
     """
 
     admitted: bool
     exhausted: ReservationTarget | None = None
+    awaiting_usage: bool = False
 
 
 @dataclass(frozen=True)
@@ -397,7 +424,7 @@ class ReservationStore:
             return ReservationOutcome(admitted=True)
 
         index = int(result[1])
-        return ReservationOutcome(admitted=False, exhausted=targets[index - 1])
+        return ReservationOutcome(admitted=False, exhausted=targets[index - 1], awaiting_usage=len(result) > 2 and bool(int(result[2])))
 
     async def snapshot(self, target: ReservationTarget) -> ReservationSnapshot | None:
         """Read an initialized policy accumulator; absence is never zero spend."""

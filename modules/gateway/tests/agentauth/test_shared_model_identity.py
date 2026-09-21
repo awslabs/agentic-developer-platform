@@ -230,6 +230,9 @@ async def test_same_flow_budget_covers_retries_with_legacy_caps_disabled(model_p
     assert (
         await model_path.service._reservations.reserve("prior-spend", model_path.policy.limits.max_spend_usd - Decimal("0.011"), [target])
     ).admitted
+    pending = await invoke(model_path, shared)
+    assert pending.sent[0]["status"] == 429 and model_path.calls == 1
+    await model_path.service._reservations.reconcile("prior-spend", model_path.policy.limits.max_spend_usd - Decimal("0.011"), [target])
     denied = await invoke(model_path, shared)
     assert denied.sent[0]["status"] == 402 and model_path.calls == 1
     assert denied.token._policy_request_id != first.token._policy_request_id

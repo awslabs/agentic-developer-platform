@@ -142,11 +142,15 @@ async def test_first_model_call_before_any_usage_row_succeeds_and_preserves_stre
     assert meter.total_usd == Decimal("0.01") and not meter.has_pending
 
 
-async def test_exhausted_shared_budget_never_reaches_provider(model_path, assignment):
+@pytest.mark.parametrize("settled", [False, True])
+async def test_exhausted_shared_budget_never_reaches_provider(model_path, assignment, settled):
     target = meter_target(org_id=assignment.grant.tenant_id, flow_id=assignment.flow.id, policy=model_path.policy)
-    await get_flow_reservations().reserve("earlier", model_path.policy.limits.max_spend_usd - Decimal("0.001"), [target])
+    cost = model_path.policy.limits.max_spend_usd - Decimal("0.001")
+    await get_flow_reservations().reserve("earlier", cost, [target])
+    if settled:
+        await get_flow_reservations().reconcile("earlier", cost, [target])
     sent, _ = await invoke(model_path, assignment)
-    assert sent[0]["status"] == 402
+    assert sent[0]["status"] == (402 if settled else 429)
     assert model_path.calls == 0
 
 
@@ -374,12 +378,12 @@ async def test_concurrent_children_reviewers_and_restarts_cannot_exceed_one_shar
     # the shared allowance affords: the cap held across all four concurrently.
     assert 0 < admitted.count(200) <= min(affordable, len(runs))
     assert admitted.count(200) < len(runs)
-    assert admitted.count(402) == len(runs) - admitted.count(200)
+    assert admitted.count(429) == len(runs) - admitted.count(200)
     # Only admitted calls reached the provider, each with its OWN reservation id.
     assert model_path.calls == admitted.count(200)
     assert len(set(model_path.request_ids)) == model_path.calls
     # A further restart after the fact still finds no fresh allowance.
-    assert (await invoke(model_path, assignment, request_id="restarted-again", reconcile=False))[0][0]["status"] == 402
+    assert (await invoke(model_path, assignment, request_id="restarted-again", reconcile=False))[0][0]["status"] == 429
 
 
 async def test_repeated_client_ids_reserve_each_submission_separately(model_path, assignment):
@@ -396,7 +400,7 @@ async def test_repeated_client_ids_reserve_each_submission_separately(model_path
     else:
         # Or it was denied because the first hold still occupies the cap — which
         # is equally proof that it did not silently reuse the same reservation.
-        assert second[0]["status"] == 402
+        assert second[0]["status"] == 429
 
 
 async def test_a_provider_error_after_submission_retains_the_hold(model_path, assignment):

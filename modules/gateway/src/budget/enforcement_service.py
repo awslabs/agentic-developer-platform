@@ -1113,6 +1113,17 @@ class BudgetEnforcementService:
         exhausted = outcome.exhausted
         assert exhausted is not None  # denials always name the exhausted budget
         emit_budget_reservation_outcome(outcome="denied", environment=environment)
+        if strict and outcome.awaiting_usage:
+            # The Lua denied without writing any reservation. This request may
+            # fit after current provider calls settle; the SDK can retry through
+            # every identity, policy, quote and cap check without losing its run.
+            logger.info("Policy model request waiting for in-flight usage", extra={"budget_scope": exhausted.entity_type})
+            return EnforcementResult(
+                allowed=False,
+                deny_reason=DenyReason.RESERVATIONS_PENDING,
+                blocked_reason="Current model requests are awaiting usage settlement. Retry shortly.",
+                scope=exhausted.entity_type,
+            )
         logger.warning(
             f"Budget exceeded (in-flight reservations): {exhausted.entity_type} {exhausted.entity_id} "
             f"- {exhausted.period_type} settled headroom ${exhausted.headroom_usd}, request estimate ${estimated_cost}"

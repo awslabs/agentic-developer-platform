@@ -18,6 +18,7 @@ from src.budget.reservations import ReservationStore
 from src.budget.run_binding import RunBinding
 from src.orchestration import flow_budget, flow_meter
 from src.shared.schemas.auth import TokenContext
+from src.shared.schemas.budget import DenyReason
 from tests.agentauth.test_human_dispatch import store as authority_fixture
 from tests.budget.test_run_spend_cap import _no_budget_session
 from tests.orchestration.test_policy_admission import _policy
@@ -153,6 +154,10 @@ async def test_budget_service_enforces_flow_when_legacy_run_caps_are_disabled(me
     context._policy_request_id = "two"
     second = await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="untrusted")
     assert not second.allowed and second.scope == "flow"
+    assert second.deny_reason == DenyReason.RESERVATIONS_PENDING
+    # A repeated request must recheck the still-live denominator, not bypass it.
+    again = await service.check_budget_hierarchy(context, Decimal("0.01"), request_id="untrusted")
+    assert not again.allowed and again.deny_reason == DenyReason.RESERVATIONS_PENDING
     await service.reconcile_reservation(context, "one", "unknown-model", 0, 0, actual_cost_usd=Decimal(0), usage_known=False)
     assert await meter.store.snapshot(meter.target) is None
     await service.reconcile_reservation(context, "one", "unknown-model", 1, 1, actual_cost_usd=Decimal(5))

@@ -154,7 +154,7 @@ class BudgetStatusResponse(BaseModel):
 
 
 class DenyReason(str, Enum):
-    """Why a request was denied — a real cap, or an unreadable ledger.
+    """Why a request was denied — cap, pending usage, or unreadable ledger.
 
     Issue #4075: these are very different incidents and must not look alike.
     ``BUDGET_EXCEEDED`` is a genuine cap (non-retryable — more money is not
@@ -166,6 +166,8 @@ class DenyReason(str, Enum):
 
     BUDGET_EXCEEDED = "budget_exceeded"
     CHECK_UNAVAILABLE = "check_unavailable"
+    # Pending holds may settle below their bound; 429 retries still recheck all caps.
+    RESERVATIONS_PENDING = "reservations_pending"
 
 
 class EnforcementResult(BaseModel):

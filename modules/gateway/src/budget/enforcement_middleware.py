@@ -145,7 +145,9 @@ class BudgetEnforcementMiddleware:
 
             # Write the denial directly via ASGI send(). Issue #4075: which
             # denial matters — a real cap is 402, an unreadable ledger is 503.
-            if result.deny_reason == DenyReason.CHECK_UNAVAILABLE:
+            if result.deny_reason == DenyReason.RESERVATIONS_PENDING:
+                await self._send_reservations_pending(send, result)
+            elif result.deny_reason == DenyReason.CHECK_UNAVAILABLE:
                 await self._send_check_unavailable(send, result)
                 logger.info("Budget check unavailable response sent successfully")
             else:
@@ -309,6 +311,34 @@ class BudgetEnforcementMiddleware:
                 "body": body_bytes,
             }
         )
+
+    async def _send_reservations_pending(self, send: Send, result: EnforcementResult) -> None:
+        """Throttle unadmitted policy calls while existing provider holds settle.
+
+        This is never proof that another call is affordable. SDK retries must
+        re-enter the full authorization and atomic reservation path. Actual cap
+        exhaustion remains 402; absent or unknown usage remains fail-closed.
+        """
+        body = json.dumps(
+            {
+                "error": "budget_reservations_pending",
+                "message": result.blocked_reason,
+                "details": {"scope": result.scope},
+            }
+        ).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 429,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                    (b"retry-after", b"2"),
+                    (b"x-amzn-errortype", b"ThrottlingException"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
     async def _send_check_unavailable(self, send: Send, result: EnforcementResult) -> None:
         """Write a 503 JSON response when the budget CHECK failed (Issue #4075).

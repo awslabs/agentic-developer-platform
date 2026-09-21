@@ -473,11 +473,15 @@ async def test_a_refusal_does_not_poison_the_flow(model_path, assignment):
     assert model_path.calls == 1
 
 
-async def test_an_exhausted_shared_budget_never_reaches_the_provider(model_path, assignment):
+@pytest.mark.parametrize("settled", [False, True])
+async def test_an_exhausted_shared_budget_never_reaches_the_provider(model_path, assignment, settled):
     target = meter_target(org_id=assignment.grant.tenant_id, flow_id=assignment.flow.id, policy=model_path.policy)
-    await get_flow_reservations().reserve("earlier", model_path.policy.limits.max_spend_usd - Decimal("0.001"), [target])
+    cost = model_path.policy.limits.max_spend_usd - Decimal("0.001")
+    await get_flow_reservations().reserve("earlier", cost, [target])
+    if settled:
+        await get_flow_reservations().reconcile("earlier", cost, [target])
     sent, _ = await invoke(model_path, assignment)
-    assert sent[0]["status"] == 402
+    assert sent[0]["status"] == (402 if settled else 429)
     assert model_path.calls == 0
 
 
