@@ -716,19 +716,25 @@ def test_every_statement_is_an_allow_with_a_sid(policy):
         assert statement.get("Sid"), "every statement needs a Sid"
 
 
-def test_list_bucket_is_prefix_bounded(policy):
-    """s3:ListBucket cannot be resource-scoped to a prefix — the bucket is the
-    resource — so without an s3:prefix condition a role allowed to read one
-    prefix can still enumerate every key in the bucket."""
+def test_list_bucket_allows_preflight_and_bounds_explicit_prefixes(policy):
+    """Bucket preflight omits s3:prefix; explicit listings stay constrained."""
     listing = [
         s for s in _statements(policy) if "s3:ListBucket" in _as_list(s.get("Action"))
     ]
     assert listing, "expected a ListBucket statement"
     for statement in listing:
-        prefixes = statement["Condition"]["StringLike"]["s3:prefix"]
+        assert statement["Resource"] == "arn:aws:s3:::${staging_bucket}"
+        prefixes = statement["Condition"]["StringLikeIfExists"]["s3:prefix"]
         assert prefixes, "ListBucket is not bounded to a prefix"
         for prefix in _as_list(prefixes):
             assert prefix != "*" and "${staging_prefix}" in prefix
+
+
+def test_bucket_preflight_does_not_expand_object_access(policy):
+    for statement in _statements(policy):
+        if any(action in _as_list(statement.get("Action"))
+               for action in ("s3:GetObject", "s3:GetObjectVersion", "s3:PutObject")):
+            assert _as_list(statement["Resource"]) == ["arn:aws:s3:::${staging_bucket}/${staging_prefix}/*"]
 
 
 def test_policy_actions_come_from_the_validated_profile(policy, profile):
@@ -774,16 +780,35 @@ def test_policy_withholds_target_domain_verification(policy):
     )
 
 
-def test_policy_cannot_create_or_widen_log_groups(policy):
-    """logs:CreateLogGroup cannot be scoped to a name, so the group is created
-    in Terraform and the grant only writes to it."""
-    granted = {
-        action
-        for statement in _statements(policy)
-        for action in _as_list(statement.get("Action"))
-    }
-    assert "logs:CreateLogGroup" not in granted
-    assert "logs:PutLogEvents" in granted
+def test_policy_supports_service_created_groups_only_in_its_agent_space(policy):
+    """A review creates its own group; an unrelated space must stay denied."""
+    from fnmatch import fnmatchcase
+    from string import Template
+
+    values = dict(region="us-east-1", account_id="123456789012",
+                  staging_bucket="test", staging_prefix="security-agent",
+                  log_group_name="/aws/securityagent/adp-dev-nightly",
+                  service_log_group_prefix="/aws/securityagent/adp-embark1-secreview")
+    rendered = json.loads(Template(json.dumps(policy)).substitute(values))
+    group = "arn:aws:logs:us-east-1:123456789012:log-group:/aws/securityagent/adp-embark1-secreview/cr-example"
+
+    def permits(action, resource):
+        return any(action in _as_list(statement["Action"]) and
+                   any(fnmatchcase(resource, pattern) for pattern in _as_list(statement["Resource"]))
+                   for statement in _statements(rendered))
+
+    for action, suffix in (("logs:CreateLogGroup", ""), ("logs:CreateLogGroup", ":*"),
+                           ("logs:DescribeLogStreams", ":*"),
+                           ("logs:CreateLogStream", ":log-stream:review"),
+                           ("logs:PutLogEvents", ":log-stream:review")):
+        assert permits(action, group + suffix), (action, suffix)
+        assert not permits(action, group.replace("adp-embark1-secreview/", "other-space/") + suffix)
+        assert not permits(action, group.replace("adp-embark1-secreview/", "adp-embark1-secreview-other/") + suffix)
+        assert not permits(action, group.replace("123456789012", "999999999999") + suffix)
+    assert not permits("logs:DeleteLogGroup", group)
+    terraform = TERRAFORM_PATH.read_text()
+    assert 'jsondecode(file("${path.module}/../../.github/security/security-agent-profile.json"))' in terraform
+    assert "local.securityagent_profile.agent_space.existing_name" in terraform
 
 
 def test_policy_grants_no_iam_or_sts_privilege(policy):

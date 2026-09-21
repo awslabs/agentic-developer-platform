@@ -23,13 +23,14 @@
 #   2. S3 is scoped to the one staging bucket AND one prefix within it — not
 #      `arn:aws:s3:::*`, and not the whole bucket. ListBucket cannot be
 #      resource-scoped to a prefix in the Resource element (the bucket is the
-#      resource), so the prefix bound is enforced with an s3:prefix
-#      condition; without it, a role that may only read one prefix can still
-#      enumerate every key in the bucket.
+#      resource), so explicit list prefixes are bounded by s3:prefix. The
+#      IfExists form also allows the service's bucket-access preflight, which
+#      uses s3:ListBucket permission without supplying a prefix. Object access
+#      remains bounded to security-agent/*, including on prefix-free requests.
 #
-#   3. Logs are scoped to one named log group, created here rather than left
-#      to service auto-creation, so the grant needs no `logs:CreateLogGroup`
-#      and cannot name a group outside its own.
+#   3. Security Agent creates a log group per review under its agent-space
+#      name. Creation and writes are bounded to that space's log-group prefix.
+#      The existing Terraform-managed group remains writable for compatibility.
 #
 # The policy document lives in a standalone JSON file rather than the
 # `jsonencode({...})` idiom used elsewhere in this directory. That is a
@@ -51,10 +52,15 @@ locals {
   securityagent_staging_prefix = "security-agent"
 
   securityagent_log_group_name = "/aws/securityagent/${local.name_prefix}-nightly"
+
+  # The service chooses /aws/securityagent/<space-name>/<review-id>, rather
+  # than the fixed group above. Read the same space name the nightly reuses.
+  securityagent_profile                  = jsondecode(file("${path.module}/../../.github/security/security-agent-profile.json"))
+  securityagent_service_log_group_prefix = "/aws/securityagent/${local.securityagent_profile.agent_space.existing_name}"
 }
 
-# Created explicitly so the IAM grant can name one existing group instead of
-# carrying logs:CreateLogGroup, which is inherently unscopeable to a name.
+# Retain the existing group and its retention policy. Security Agent's per-job
+# groups are service-created; CreateLogGroup supports their scoped ARN prefix.
 resource "aws_cloudwatch_log_group" "securityagent_nightly" {
   name              = local.securityagent_log_group_name
   retention_in_days = var.securityagent_log_retention_days
@@ -109,10 +115,11 @@ resource "aws_iam_role_policy" "securityagent_nightly" {
   role = aws_iam_role.securityagent_nightly.id
 
   policy = templatefile("${path.module}/policies/securityagent-nightly-policy.json", {
-    region         = var.aws_region
-    account_id     = data.aws_caller_identity.current.account_id
-    staging_bucket = module.security_scans.bucket_name
-    staging_prefix = local.securityagent_staging_prefix
-    log_group_name = aws_cloudwatch_log_group.securityagent_nightly.name
+    region                   = var.aws_region
+    account_id               = data.aws_caller_identity.current.account_id
+    staging_bucket           = module.security_scans.bucket_name
+    staging_prefix           = local.securityagent_staging_prefix
+    log_group_name           = aws_cloudwatch_log_group.securityagent_nightly.name
+    service_log_group_prefix = local.securityagent_service_log_group_prefix
   })
 }
