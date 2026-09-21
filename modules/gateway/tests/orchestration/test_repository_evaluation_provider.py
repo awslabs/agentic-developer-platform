@@ -148,6 +148,8 @@ async def observe(data):
     def transport(request):
         assert request.method == "GET" and request.url.host == "api.github.com"
         if request.url.path == "/repos/o/r/actions/artifacts/13/zip":
+            if callback := getattr(data, "after_artifact_read", None):
+                callback()
             return httpx.Response(200, content=data.binary)
         assert request.url.path in data.responses, request.url.path
         return httpx.Response(200, json=data.responses[request.url.path])
@@ -279,6 +281,21 @@ async def test_workflow_revision_must_include_all_verified_source_merges(evidenc
     else:
         with pytest.raises(CycleBlockedError, match="workflow_missing_delivered_revision"):
             await observe(evidence)
+
+
+@pytest.mark.parametrize("conclusion", ["failure", None])
+async def test_newer_failed_or_pending_run_during_download_invalidates_older_success(evidence, conclusion):
+    newer = {
+        **evidence.responses["/repos/o/r/actions/runs/10"],
+        "id": 20,
+        "run_number": 4,
+        "run_attempt": 1,
+        "status": "completed" if conclusion else "in_progress",
+        "conclusion": conclusion,
+    }
+    evidence.after_artifact_read = lambda: evidence.responses["/repos/o/r/actions/workflows/scan.yml/runs"]["workflow_runs"].append(newer)
+    with pytest.raises(CycleBlockedError, match="workflow_latest_run_changed"):
+        await observe(evidence)
 
 
 async def test_large_flow_checks_each_ancestry_pair_once_with_four_reads_in_flight(evidence):

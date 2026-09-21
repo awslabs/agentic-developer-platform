@@ -156,18 +156,8 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         require(blob == record.get("sha"), "workflow_blob_digest")
         return blob, content
 
-    async def workflow(self, binding, workflow, *, revisions, max_age_seconds):
-        source = workflow.source.revision or revisions[workflow.source.predecessor]
-        definition = workflow.definition.revision or revisions[workflow.definition.predecessor]
-        blob, content = await self.definition_blob(binding, workflow.path, definition)
-        source_blob, _ = await self.definition_blob(binding, workflow.path, source)
-        require(blob == source_blob, "workflow_definition_changed")
-        document = yaml.safe_load(content)
-        require(isinstance(document, dict), "workflow_events")
-        events = document.get("on", document.get(True))
-        names = set(events) if isinstance(events, dict | list) else {events} if isinstance(events, str) else set()
-        require("workflow_dispatch" in names and (not workflow.dispatch_only or names == {"workflow_dispatch"}), "workflow_not_dispatch_only")
-        path = quote(workflow.path.rsplit("/", 1)[1], safe="")
+    async def latest_workflow_run(self, binding, workflow_path, source):
+        path = quote(workflow_path.rsplit("/", 1)[1], safe="")
         response = await self.request(
             binding,
             "GET",
@@ -179,7 +169,20 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         # Never skip a newer failed/pending attempt to select an older green run.
         candidates = [run for run in candidates if run.get("head_sha") == source and run.get("event") == "workflow_dispatch"]
         require(bool(candidates), "workflow_run_missing")
-        chosen = max(candidates, key=lambda run: (run.get("run_number", 0), run.get("id", 0)))
+        return max(candidates, key=lambda run: (run.get("run_number", 0), run.get("id", 0)))
+
+    async def workflow(self, binding, workflow, *, revisions, max_age_seconds):
+        source = workflow.source.revision or revisions[workflow.source.predecessor]
+        definition = workflow.definition.revision or revisions[workflow.definition.predecessor]
+        blob, content = await self.definition_blob(binding, workflow.path, definition)
+        source_blob, _ = await self.definition_blob(binding, workflow.path, source)
+        require(blob == source_blob, "workflow_definition_changed")
+        document = yaml.safe_load(content)
+        require(isinstance(document, dict), "workflow_events")
+        events = document.get("on", document.get(True))
+        names = set(events) if isinstance(events, dict | list) else {events} if isinstance(events, str) else set()
+        require("workflow_dispatch" in names and (not workflow.dispatch_only or names == {"workflow_dispatch"}), "workflow_not_dispatch_only")
+        chosen = await self.latest_workflow_run(binding, workflow.path, source)
         run = (await self.request(binding, "GET", f"/repos/{binding.repo}/actions/runs/{int(chosen['id'])}")).json()
         require(
             run.get("repository", {}).get("id") == binding.provider_repository_id
@@ -234,6 +237,10 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             all(current.get(key) == run.get(key) for key in ("id", "run_attempt", "head_sha", "status", "conclusion", "updated_at")),
             "workflow_run_changed_during_observation",
         )
+        # The selected run can remain green while a newer run starts or fails.
+        # Re-read selection too; rechecking only this run would accept stale success.
+        latest = await self.latest_workflow_run(binding, workflow.path, source)
+        require(latest.get("id") == run_id and latest.get("run_attempt") == attempt, "workflow_latest_run_changed")
         return dict(
             criterion_id=workflow.criterion_id,
             workflow_path=workflow.path,
