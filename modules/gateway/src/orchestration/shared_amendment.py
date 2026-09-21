@@ -10,6 +10,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from .compile import address_of, upsert_edges, upsert_nodes
 from .continuation import digest
@@ -62,9 +63,17 @@ def request_hash(actor, request):
     return digest(dict(org_id=actor.org_id, actor_id=actor.actor_id, request=request.model_dump(mode="json", exclude={"expected_snapshot"})))
 
 
-async def rows(session, model, filters, *, lock=False, key="id"):
+async def rows(session, model, filters, *, lock=False, nowait=False, key="id"):
     query = select(model).where(*filters).order_by(getattr(model, key)).limit(HISTORY_LIMIT + 1).execution_options(populate_existing=True)
-    found = list(await session.scalars(query.with_for_update() if lock else query))
+    try:
+        found = list(await session.scalars(query.with_for_update(nowait=nowait) if lock else query))
+    except DBAPIError as error:
+        if nowait and (getattr(error.orig, "sqlstate", None) or getattr(error.orig, "pgcode", None)) == "55P03":
+            # Dispatch locks READY nodes before taking the flow lock. Never wait
+            # for its nodes while holding that flow lock: unwind the enclosing
+            # savepoint, release our locks, and let dispatch finish before retry.
+            raise SharedAppendError("amendment_dispatch_in_progress") from error
+        raise
     require(len(found) <= HISTORY_LIMIT, "amendment_history_limit")
     return found
 
@@ -102,6 +111,7 @@ async def history(session, *, flow, lock=False):
             model,
             [model.org_id == flow.org_id, model.flow_id == flow.id],
             lock=lock and name == "nodes",
+            nowait=lock and name == "nodes",
             key="run_id" if name == "reports" else "id",
         )
     found["actions"] = await rows(

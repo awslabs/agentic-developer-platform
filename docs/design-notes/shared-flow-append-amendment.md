@@ -20,8 +20,14 @@ that have never started. Existing node IDs, states, attempts, bindings, receipts
 and execution history remain unchanged; new nodes start pending for normal tick
 admission.
 
-Acceptance serializes with dispatch using the flow lock, refreshes its graph,
-and requires a settled boundary: no running/awaiting-merge nodes, unfinished
+Acceptance takes the flow lock and refreshes its graph under node locks. Dispatch
+already takes READY node locks before the flow lock, so append uses `NOWAIT` for
+its node locks. Contention rolls back the append savepoint and releases its locks;
+the endpoint returns HTTP 409 with `code: amendment_dispatch_in_progress` and
+`retryable: true`. Retry preview/accept after dispatch settles. Append never waits
+for dispatch's nodes while holding the flow lock.
+
+Acceptance requires a settled boundary: no running/awaiting-merge nodes, unfinished
 executions, unresolved actions, unverified worker reports, or authoring jobs.
 Claims retained by a concluded cycle are preserved only when their exact worker
 report and generation are settled. Expired leases are never evidence of exit.
@@ -37,4 +43,5 @@ current resulting plan must still match, and the retry writes nothing.
 Evaluation attachments are bound to their original accepted plan. Preview lists
 contracts needing explicit reacceptance after the append; their decision history
 is retained and their authority is not carried forward implicitly. Generic full
-amendments refuse shared continuations rather than discarding the marker.
+amendments and create/resubmit through `compile_proposal` refuse existing shared
+continuations under the flow lock, preserving the marker and worker assignments.

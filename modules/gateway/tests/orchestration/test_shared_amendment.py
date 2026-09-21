@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import JSON, select
 
-from src.orchestration.compile import compile_proposal
+from src.orchestration.compile import ProposalRejectedError, compile_proposal
 from src.orchestration.continuation import digest
 from src.orchestration.execution_policy import ExecutionPolicy, stamp_policy
 from src.orchestration.models import (
@@ -275,13 +275,56 @@ async def test_partial_append_rolls_back_all_new_nodes_and_edges(session, append
 
 async def test_generic_amendment_cannot_strip_shared_authority(session, appendable):  # noqa: F811
     from src.orchestration.amend import AmendmentContext, amend_plan
-    from src.orchestration.compile import ProposalRejectedError
 
     ctx = appendable
     actor = AmendmentContext(org_id=ctx.actor.org_id, actor_id=ctx.actor.actor_id, actor_role=ctx.actor.actor_role)
     with pytest.raises(ProposalRejectedError, match="bounded append"):
         await amend_plan(session, ctx.flow.id, valid_proposal(), actor)
     assert len(list(await session.scalars(select(OrchestrationAcceptedPlan)))) == 1
+
+
+@pytest.mark.parametrize("state,attempts", [("pending", 0), ("running", 1), ("passed", 1)])
+async def test_compile_resubmission_cannot_strip_shared_authority(session, appendable, state, attempts):  # noqa: F811
+    ctx = appendable
+    node = await session.get(OrchestrationNode, ctx.nodes[address("story-a")])
+    node.state, node.attempts = state, attempts
+    await session.commit()
+    with pytest.raises(ProposalRejectedError, match="bounded append preview/accept"):
+        await compile_proposal(session, valid_proposal(), ctx.actor)
+    plans = list(await session.scalars(select(OrchestrationAcceptedPlan)))
+    assert len(plans) == 1 and plans[0].plan_document == ctx.original
+    assert plans[0].superseded_at is None
+    assert node.state == state and node.attempts == attempts
+
+
+async def test_create_flow_http_resubmission_preserves_active_shared_plan(session, appendable, monkeypatch):  # noqa: F811
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from src.admin.config import Permission
+    from src.orchestration import routes
+
+    ctx = appendable
+    node = await session.get(OrchestrationNode, ctx.nodes[address("story-a")])
+    node.state, node.attempts = "running", 1
+    await session.commit()
+    user = SimpleNamespace(org_id=ctx.actor.org_id, user_id=ctx.actor.actor_id)
+    access = SimpleNamespace(check_permission=AsyncMock())
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[routes.get_current_user] = lambda: user
+    app.dependency_overrides[routes.get_access_control] = lambda: access
+    app.dependency_overrides[routes.get_db] = lambda: session
+    monkeypatch.setattr(routes, "_resolve_actor_role", AsyncMock(return_value=ctx.actor.actor_role))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/orchestration/flows", json=valid_proposal().model_dump(mode="json"))
+    assert response.status_code == 422
+    assert "bounded append preview/accept" in response.json()["detail"]["message"]
+    access.check_permission.assert_awaited_once_with(user, Permission.PLAN_APPROVE, target_org_id=ctx.actor.org_id)
+    plans = list(await session.scalars(select(OrchestrationAcceptedPlan)))
+    assert len(plans) == 1 and plans[0].plan_document == ctx.original
+    assert plans[0].superseded_at is None
+    assert node.state == "running" and node.attempts == 1
 
 
 async def test_immutable_allowance_and_evaluation_attachment_are_visible_in_preview(session, appendable):  # noqa: F811

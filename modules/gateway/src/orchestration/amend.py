@@ -256,6 +256,10 @@ async def amend_plan(
             select(OrchestrationFlow).where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.id == flow.id).with_for_update()
         )
         in_force = await repo.get_accepted_plan(org_id=actor.org_id, flow_id=flow.id)
+        if in_force is not None:
+            # A continuation may have committed while this request waited for
+            # the flow lock. Do not inspect a pre-lock ORM identity-map snapshot.
+            await session.refresh(in_force)
         if in_force is not None and (in_force.plan_document or {}).get("execution_continuation"):
             raise ProposalRejectedError(
                 "Shared worker continuations require the bounded append preview/accept path; "

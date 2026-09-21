@@ -444,6 +444,8 @@ class TestOrchestrationRouterIsOperatorPlane:
             ("/orchestration/flows/{flow_id}/continuation/accept", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/evaluation/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/evaluation/accept", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/append/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/append/accept", "POST"): "Permission.PLAN_APPROVE",
             # Issue #5301: attributed recovery of a *historically unbound* story —
             # a human asserting which pull request delivered work that no run ever
             # registered. PLAN_APPROVE and nothing weaker, for two reasons.
