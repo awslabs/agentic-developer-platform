@@ -359,15 +359,13 @@ async def test_real_observer_rejects_receipt_identity_disagreement(reports):
 
 
 async def test_worker_cannot_start_after_governed_authority_expires(reports, monkeypatch):
-    import sys
-
     from src.orchestration.review_cycle import CycleBlockedError
 
     authorizer = AsyncMock(side_effect=CycleBlockedError("policy_expired"))
     monkeypatch.setattr(
         "src.orchestration.policy_admission.load_in_force_policy", AsyncMock(return_value=SimpleNamespace(policy=object(), refusal=None))
     )
-    monkeypatch.setitem(sys.modules, "src.orchestration.shared_policy", SimpleNamespace(authorize_shared_model=authorizer))
+    monkeypatch.setattr("src.orchestration.shared_policy.authorize_shared_model", authorizer)
     response = await reports.client.post(URL + "/started", headers=reports.headers, json={"ownership_nonce": "a" * 32})
     assert response.status_code == 409 and response.json()["detail"] == "policy_expired"
     readback = await reports.client.get(URL, headers=reports.headers)

@@ -819,12 +819,12 @@ async def force_handover(
     return ClaimReceipt(disposition=Disposition.ADMITTED, claim_id=claim.id, generation=claim.generation)
 
 
-async def continue_run(session, *, identity, expected_run_id, run_id, operation_key, completed_execution):
+async def continue_run(session, *, identity, expected_run_id, run_id, operation_key, completed_execution, recovery_decision_id=None):
     """Move a held engine lane to its committed successor without a new generation.
 
-    This is not a takeover: the same accepted execution and owner continue after
-    the current run's protected successful terminal receipt. No lease expiry or
-    unprotected event row can authorize this operation.
+    The same accepted execution and owner continue after a successful terminal
+    receipt, or an explicit human recovery decision verified against a positively
+    exited worker and this exact PR. Recovery never supplies a terminal receipt.
     """
     import json
 
@@ -875,7 +875,26 @@ async def continue_run(session, *, identity, expected_run_id, run_id, operation_
     if claim.active_run_id != expected_run_id:
         raise WorkClaimError("continuation_owner_changed", "Another run owns the mutating lane.")
     prior = completed_execution
-    if (
+    if recovery_decision_id:
+        from .execution_runner import RunnerContext
+        from .models import OrchestrationNode
+        from .pr_bindings import active_binding_for_node
+        from .review_recovery import verify_recovery_decision
+
+        if action.detail.get("recovery_decision_id") != recovery_decision_id or action.detail.get("action") != "review":
+            raise WorkClaimError("recovery_not_committed", "Recovery must name this committed review action.")
+        node = await session.get(OrchestrationNode, identity.node_id)
+        binding = await active_binding_for_node(session, org_id=identity.org_id, node_id=identity.node_id, attempt=identity.cycle)
+        await verify_recovery_decision(
+            session,
+            decision_id=recovery_decision_id,
+            context=RunnerContext(identity, loaded.record, _now()),
+            node=node,
+            binding=binding,
+            prior_run_id=expected_run_id,
+            head_sha=action.detail["head_sha"],
+        )
+    elif (
         not prior
         or prior.get("tenant_id") != {"S": identity.org_id}
         or prior.get("status") != {"S": "completed"}

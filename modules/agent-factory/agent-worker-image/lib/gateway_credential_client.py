@@ -157,7 +157,7 @@ class GatewayCredentialClient:
         req = Request(endpoint, data=data, headers=headers, method="POST")
 
         try:
-            opener = build_opener(_NoRedirect()).open if authority else urlopen
+            opener = build_opener(_NoRedirect()).open if authority or (extra_headers or {}).get("X-Adp-Report-Credential") else urlopen
             with opener(req, timeout=self._timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except HTTPError as exc:
@@ -300,7 +300,25 @@ class GatewayCredentialClient:
             identity or "default",
         )
 
-        result = self._make_request(endpoint, payload)
+        report_path = os.environ.get("ADP_RUN_REPORT_CREDENTIAL_FILE")
+        extra_headers = None
+        if identity == "review" and report_path:
+            parsed = urlparse(endpoint)
+            if not self._use_sigv4 or parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise GatewayCredentialError("Shared review identity requires HTTPS and SigV4")
+            try:
+                fd = os.open(report_path, os.O_RDONLY | os.O_NONBLOCK)
+                with os.fdopen(fd, "rb") as source:
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        raise ValueError("not a file")
+                    raw = source.read(16387)
+                credential = raw.decode("ascii").rstrip("\r\n")
+                if not credential or len(credential) > 16384 or any(ord(c) < 33 or ord(c) > 126 for c in credential):
+                    raise ValueError("invalid credential")
+            except (OSError, ValueError):
+                raise GatewayCredentialError("Shared review identity unavailable") from None
+            extra_headers = {"X-Adp-Report-Credential": credential}
+        result = self._make_request(endpoint, payload, extra_headers=extra_headers) if extra_headers else self._make_request(endpoint, payload)
 
         if not result.get("token"):
             raise GatewayCredentialError("Gateway returned no token for the installation-token request")

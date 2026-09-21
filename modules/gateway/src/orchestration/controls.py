@@ -97,6 +97,7 @@ from .handoff import outstanding_block
 from .lifecycle_recovery import RecoveryRefusedError, ResumeContinuationRequest, resume_continuation
 from .models import DecisionKind, OrchestrationNode
 from .repository import OrchestrationRepository
+from .review_recovery import ReviewRecoveryRequest, request_review_recovery
 from .state import ActorKind, NodeState, transition
 
 logger = logging.getLogger("bedrockgateway.orchestration.controls")
@@ -655,6 +656,60 @@ async def reject_gate(
         db=db,
         expected_plan_hash=body.expected_plan_hash,
     )
+
+
+async def _review_recovery_request(node_id, body, current_user, access, db, *, accept):
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+
+    from .review_cycle import CycleBlockedError
+    from .run_reports import RunReportError
+
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    try:
+        human = await authorize_human_session(current_user, db)
+    except BootstrapRefusedError:
+        raise HTTPException(403, "An authenticated human plan approver is required.") from None
+    try:
+        result = await request_review_recovery(
+            db,
+            org_id=human.tenant_id,
+            node_id=node_id,
+            actor_id=human.user_id,
+            actor_role=(await access.get_user_role(current_user))[0].value,
+            request=body,
+            accept=accept,
+        )
+        if accept:
+            await db.commit()
+        else:
+            await db.rollback()
+        return result
+    except (CycleBlockedError, RunReportError) as error:
+        await db.rollback()
+        raise HTTPException(409, str(error)) from None
+
+
+@router.post("/nodes/{node_id}/review-recovery/preview")
+async def preview_review_recovery(
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: ReviewRecoveryRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    return await _review_recovery_request(node_id, body, current_user, access, db, accept=False)
+
+
+@router.post("/nodes/{node_id}/review-recovery/accept")
+async def accept_review_recovery(
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: ReviewRecoveryRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    return await _review_recovery_request(node_id, body, current_user, access, db, accept=True)
 
 
 @router.post("/nodes/{node_id}/resume-continuation")

@@ -184,6 +184,10 @@ async def _active_count(session, *, org_id, flow_id, exclude_run_id=None, initia
                 and claim.release_reason in {reason.value for reason in ReleaseReason}
             ):
                 continue
+            from .review_recovery import recovered_worker_exit
+
+            if await recovered_worker_exit(session, report, claim):
+                continue
         count += 1
     historical = or_(
         False,

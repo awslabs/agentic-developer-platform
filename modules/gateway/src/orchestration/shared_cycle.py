@@ -240,6 +240,11 @@ class SharedCycleServices(ReviewCycleServices):
 
     allows_pending_flow = True
 
+    async def recovery_snapshot(self, session, context, node, binding, dispatches):
+        from .review_recovery import recovery_snapshot
+
+        return await recovery_snapshot(session, context, node, binding, self, dispatches)
+
     async def protected(self, org_id, run_id):
         # The historical method name is the controller interface. This projection
         # always names its actual provenance; it is not a Dynamo authority grant.
@@ -358,11 +363,32 @@ class SharedCycleServices(ReviewCycleServices):
 
     async def observe_dispatch(self, context, action):
         raw = await self.protected(context.identity.org_id, continuation_run_id(action.operation_key))
-        if raw and raw.get("status") == {"S": "completed"}:
+        if raw and raw.get("status") in ({"S": "running"}, {"S": "completed"}):
             return CycleObservation(
                 ObservationKind.SUCCEEDED, operation_key=action.operation_key, receipt_ref=f"dispatch:{continuation_run_id(action.operation_key)}"
             )
+        async with self.factory() as session:
+            node = await session.get(OrchestrationNode, context.identity.node_id)
+            binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
+            if binding is None:
+                raise CycleBlockedError("bound_delivery_missing")
+            source = continuation_run_id(action.operation_key) if raw else action.detail["active_run_id"]
+            waiting = await self.dispatch_readiness(session, context, node, binding, source, Action(action.detail["action"]))
+            if waiting is not None:
+                return waiting
         return CycleObservation(ObservationKind.READY, operation_key=action.operation_key, snapshot={"replay": dict(action.detail)})
+
+    async def dispatch_readiness(self, session, context, node, binding, run_id, action):
+        """Capacity waits happen before reserving another effect attempt."""
+        from .shared_policy import authorize_shared_action
+
+        try:
+            await authorize_shared_action(session, context, node, binding, run_id, action, reserve=False)
+        except CycleBlockedError as error:
+            if error.reason != "concurrency_limit_exceeded":
+                raise
+            return CycleObservation(ObservationKind.WAITING, detail="Waiting for a shared worker slot; no dispatch attempt consumed.")
+        return None
 
     async def dispatch(self, context, effect):
         try:
@@ -400,7 +426,9 @@ class SharedCycleServices(ReviewCycleServices):
         if not cfg.configured or cfg.repo != detail["repo"]:
             raise CycleBlockedError("dispatch_configuration_unavailable", BlockCode.CREDENTIAL_UNAVAILABLE)
         async with self.factory() as session:
-            node = await session.get(OrchestrationNode, context.identity.node_id)
+            # Report mutations also lock the node. Serialize the claim transfer
+            # with their final current-assignment check before creating a successor.
+            node = await session.scalar(select(OrchestrationNode).where(OrchestrationNode.id == context.identity.node_id).with_for_update())
             loaded = await load_execution(session, identity=context.identity)
             if (
                 node is None
@@ -449,7 +477,21 @@ class SharedCycleServices(ReviewCycleServices):
                     # A review-only policy still gets its review. It never gains
                     # repair authority merely by selecting a different runtime.
                     pass
-            if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
+            recovery_id = detail.get("recovery_decision_id")
+            if recovery_id:
+                from .review_recovery import exited_run, verify_recovery_decision
+
+                await verify_recovery_decision(
+                    session,
+                    decision_id=recovery_id,
+                    context=context,
+                    node=node,
+                    binding=binding,
+                    prior_run_id=detail["active_run_id"],
+                    head_sha=detail["head_sha"],
+                )
+                await exited_run(detail["active_run_id"], node.org_id)
+            elif raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
                 raise CycleBlockedError("previous_worker_not_completed")
             if await self.head(binding) != detail["head_sha"]:
                 raise CycleBlockedError("head_changed_before_dispatch")
@@ -552,6 +594,7 @@ class SharedCycleServices(ReviewCycleServices):
                 run_id=run_id,
                 operation_key=action.operation_key,
                 completed_execution=raw,
+                recovery_decision_id=recovery_id,
             )
             await prepare_run_report(session, envelope)
             await session.commit()

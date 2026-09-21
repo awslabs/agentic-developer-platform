@@ -544,11 +544,16 @@ async def resolve_installation(
 
 
 async def _revalidate_github_binding(request: Request, binding, permissions=None, authorized_action=None) -> None:
-    if getattr(request.state, "agent_broker_grant", None) is None:
-        return  # Legacy rollout cohort, not a protected worker.
-    from src.agentauth.broker_identity import verify_broker_worker
+    if getattr(request.state, "shared_review_identity", False):
+        from src.agentauth.shared_review_identity import verify_shared_review_worker
 
-    await verify_broker_worker(request)
+        await verify_shared_review_worker(request)
+    elif getattr(request.state, "agent_broker_grant", None) is not None:
+        from src.agentauth.broker_identity import verify_broker_worker
+
+        await verify_broker_worker(request)
+    else:
+        return  # Legacy rollout cohort, not a protected worker.
     current = request.state.agent_installation_binding
     if (
         current != binding
@@ -623,6 +628,11 @@ async def github_installation_token(
             status_code=400,
             detail={"error": "unknown_identity", "message": f"Unsupported identity; expected one of {sorted(SUPPORTED_IDENTITIES)}"},
         )
+
+    if body.identity == REVIEW_IDENTITY and request.headers.get("X-Adp-Report-Credential"):
+        from src.agentauth.shared_review_identity import verify_shared_review_worker
+
+        await verify_shared_review_worker(request)
 
     # Layer 1 — bind the run to the installation its originating webhook carried.
     # Fail-closed, and deliberately NOT gated on ENFORCE_CREDENTIAL_BINDING:
@@ -764,7 +774,7 @@ async def github_installation_token(
     # set there would make every reviewer mint fail its own re-check with a 404.
     minted_permissions = permissions
     if granted_identity == REVIEW_IDENTITY:
-        minted_permissions = {key: value for key, value in permissions.items() if key in REVIEW_IDENTITY_PERMISSIONS}
+        minted_permissions = {key: "read" if key == "contents" else value for key, value in permissions.items() if key in REVIEW_IDENTITY_PERMISSIONS}
     token = None
     try:
         token, expires_at = await mint_installation_token_with_expiry(

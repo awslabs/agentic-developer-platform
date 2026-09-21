@@ -32,7 +32,8 @@ ACTUAL_ACTIVE_COUNT = shared_policy._active_count
 
 @pytest.mark.parametrize("flow_state", ["running", "pending"])
 @pytest.mark.parametrize("later_gate", [False, True])
-async def test_fresh_story_dispatch_model_handoff_and_review(shared, monkeypatch, flow_state, later_gate):  # noqa: F811
+@pytest.mark.parametrize("recover_exited", [False, True])
+async def test_fresh_story_dispatch_model_handoff_and_review(shared, monkeypatch, flow_state, later_gate, recover_exited):  # noqa: F811
     ctx = shared
     monkeypatch.setenv("ADP_WORK_CLAIMS_ENABLED", "false")
     monkeypatch.setenv("ADP_SHARED_RUN_REPORTING_ENABLED", "true")
@@ -139,8 +140,9 @@ async def test_fresh_story_dispatch_model_handoff_and_review(shared, monkeypatch
         request,
     )
     assert receipt["binding_receipt"]["bound"]
-    finished = await run_report_routes.terminal_report(run_report_routes.TerminalReport(outcome="complete"), request)
-    assert finished["terminal_receipt"]["outcome"] == "complete"
+    if not recover_exited:
+        finished = await run_report_routes.terminal_report(run_report_routes.TerminalReport(outcome="complete"), request)
+        assert finished["terminal_receipt"]["outcome"] == "complete"
     async with ctx.factory() as db:
         ctx.node = await db.get(OrchestrationNode, fresh.id)
         ctx.binding = await db.scalar(select(OrchestrationPullRequestBinding).where(OrchestrationPullRequestBinding.node_id == fresh.id))
@@ -148,7 +150,52 @@ async def test_fresh_story_dispatch_model_handoff_and_review(shared, monkeypatch
     ctx.head = new_head
     ctx.identity = ExecutionIdentity(ctx.node.org_id, fresh.id, 1, execution.accepted_plan_version, execution.claim_id, execution.claim_generation)
     ctx.execution = SimpleNamespace(id=execution.id)
-    assert (await tick(ctx)).effects_succeeded == 1
+    if recover_exited:
+        from src.orchestration.review_recovery import ReviewRecoveryRequest, request_review_recovery
+        from src.orchestration.stall import _continuation_clock
+
+        resolver = SimpleNamespace(
+            resolve=AsyncMock(return_value={"tenant_id": ctx.node.org_id, "status": "failed", "arrived_at": "2026-01-01T00:00:00Z"})
+        )
+        monkeypatch.setattr("src.orchestration.controls.get_run_binding_resolver", AsyncMock(return_value=resolver))
+        body = ReviewRecoveryRequest(
+            expected_attempt=1,
+            expected_plan_version=ctx.identity.accepted_plan_version,
+            expected_run_id=ctx.root,
+            expected_head_sha=new_head,
+            reason="Fresh review after verified developer exit with retained PR and missing terminal.",
+        )
+        async with ctx.factory() as db:
+            (await db.get(OrchestrationNode, ctx.node.id)).state = "failed"
+            await db.commit()
+        async with ctx.factory() as db:
+            preview = await request_review_recovery(
+                db, org_id=ctx.node.org_id, node_id=ctx.node.id, actor_id="human", actor_role="owner", request=body
+            )
+            body.expected_snapshot = preview["snapshot"]
+        async with ctx.factory() as db:
+            await request_review_recovery(
+                db, org_id=ctx.node.org_id, node_id=ctx.node.id, actor_id="human", actor_role="owner", request=body, accept=True
+            )
+            await db.commit()
+        async with ctx.factory() as db:
+            managed, since = await _continuation_clock(
+                db, SimpleNamespace(org_id=ctx.node.org_id, flow_id=ctx.flow.id, node_id=ctx.node.id, attempts=1)
+            )
+            assert managed and since is not None
+    tick_result = await tick(ctx)
+    async with ctx.factory() as db:
+        observed_execution = await db.get(OrchestrationExecution, execution.id)
+    assert tick_result.effects_succeeded == 1, (tick_result, vars(observed_execution))
+    if recover_exited:
+        async with ctx.factory() as db:
+            prior = await db.get(OrchestrationRunReport, ctx.root)
+            assert prior.terminal_receipt is None
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as stale:
+            await run_report_routes.terminal_report(run_report_routes.TerminalReport(outcome="complete"), request)
+        assert stale.value.status_code == 404
     assert ctx.calls[-1]["persona"] == "agent-codex-reviewer"
     assert ctx.calls[-1]["review_expect"]["author_run_id"] == envelope["message_id"]
     assert ctx.calls[-1]["review_expect"]["expected_head_sha"] == new_head

@@ -113,6 +113,11 @@ class ReviewCycleHandler:
             # dispatch. No cached decision licenses a new worker.
             if pending is not None:
                 return await self.services.observe_dispatch(context, pending)
+            recover = getattr(self.services, "recovery_snapshot", None)
+            recovered = await recover(session, context, node, binding, dispatches) if recover else None
+            if recovered is not None:
+                waiting = await self.services.dispatch_readiness(session, context, node, binding, recovered["active_run_id"], Action.REVIEW)
+                return waiting or CycleObservation(ObservationKind.READY, snapshot=recovered)
             facts = await self.services.facts(session, context, node, binding, dispatches)
             if not facts["worker_complete"]:
                 return CycleObservation(ObservationKind.WAITING, detail="Waiting for the current protected worker to finish.")
@@ -191,11 +196,22 @@ class ReviewCycleHandler:
                         author_run_id=latest.detail["author_run_id"],
                     )
             await self.services.recheck(session, context, node, binding, facts)
+            readiness = getattr(self.services, "dispatch_readiness", None)
+            if readiness is not None:
+                waiting = await readiness(session, context, node, binding, facts["active_run_id"], Action(snapshot["next_action"]))
+                if waiting is not None:
+                    return waiting
             return CycleObservation(ObservationKind.READY, snapshot=snapshot)
 
     def decide(self, context, observation):
         if observation.kind is ObservationKind.BLOCKED:
             return HandlerDecision(DecisionKind.BLOCK, block=observation.block)
+        if observation.kind is ObservationKind.SUCCEEDED and not getattr(observation, "snapshot", None):
+            return HandlerDecision(
+                DecisionKind.ADVANCE,
+                phase=context.execution.phase,
+                progress_note="Worker start acknowledged; observing the current review assignment.",
+            )
         snapshot = dict(getattr(observation, "snapshot", None) or {})
         if snapshot.get("merge_ready"):
 

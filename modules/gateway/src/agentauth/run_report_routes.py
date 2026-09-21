@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.agentauth.pr_binding_routes import BindPullRequestRequest
 from src.agentauth.routes import require_agent_transport
+from src.orchestration.review_cycle import CycleBlockedError
 from src.orchestration.run_reports import (
     REPORT_HEADER,
     RunReportError,
@@ -27,17 +28,24 @@ def _sessions():
     return get_session_factory()
 
 
-async def _authenticate(session, request):
+async def _authenticate(session, request, *, current=True):
     try:
-        return await authenticate_run_report(session, request.headers.get(REPORT_HEADER, ""))
-    except RunReportError:
+        row = await authenticate_run_report(session, request.headers.get(REPORT_HEADER, ""))
+        if current:
+            from src.orchestration.shared_cycle import validate_current_report_assignment
+            from src.orchestration.shared_policy import is_shared_continuation
+
+            if row.dispatch_metadata.get("execution_continuation") or await is_shared_continuation(session, org_id=row.org_id, flow_id=row.flow_id):
+                await validate_current_report_assignment(session, row)
+        return row
+    except (RunReportError, CycleBlockedError):
         raise HTTPException(404, "not found") from None
 
 
 @router.get("")
 async def read_report(request: Request):
     async with _sessions()() as session:
-        row = await _authenticate(session, request)
+        row = await _authenticate(session, request, current=False)
         return report_snapshot(row)
 
 

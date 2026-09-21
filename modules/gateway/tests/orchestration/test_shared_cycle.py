@@ -149,3 +149,56 @@ async def test_shared_repair_registration_proves_current_dispatch(shared):
 
         with pytest.raises(RunReportError, match="unverifiable"):
             await registration_target_for_report(db, report)
+
+
+async def test_capacity_waits_do_not_consume_attempts_then_dispatch_once(shared, monkeypatch):
+    active = AsyncMock(return_value=shared.policy.limits.max_concurrent_actions)
+    monkeypatch.setattr("src.orchestration.shared_policy._active_count", active)
+    before = await protocol.state(shared)
+    for _ in range(3):
+        result = await protocol.tick(shared)
+        assert result.effects_succeeded == 0 and result.effects_uncertain == 0
+    after = await protocol.state(shared)
+    assert not shared.calls and not after[3]
+    assert after[0].attempts == before[0].attempts and after[2].attempts == before[2].attempts
+    active.return_value = 0
+    assert (await protocol.tick(shared)).effects_succeeded == 1
+    assert len(shared.calls) == 1
+
+
+async def test_uncertain_dispatch_waits_for_capacity_without_consuming_retries(shared, monkeypatch):
+    queue = shared.service.queue
+    original = queue.send_message
+    queue.send_message = lambda **kwargs: (_ for _ in ()).throw(TimeoutError("response lost"))
+    assert (await protocol.tick(shared)).effects_uncertain == 1
+    before = await protocol.state(shared)
+    active = AsyncMock(return_value=shared.policy.limits.max_concurrent_actions)
+    monkeypatch.setattr("src.orchestration.shared_policy._active_count", active)
+    for _ in range(3):
+        assert (await protocol.tick(shared)).effects_uncertain == 0
+    assert (await protocol.state(shared))[0].attempts == before[0].attempts
+    assert len((await protocol.state(shared))[3]) == 1
+    active.return_value = 0
+    queue.send_message = original
+    assert (await protocol.tick(shared)).effects_succeeded == 1
+    assert len(shared.calls) == 1
+
+
+async def test_started_successor_settles_uncertain_dispatch_without_republishing(shared):
+    queue = shared.service.queue
+    original = queue.send_message
+
+    def lost_response(**kwargs):
+        original(**kwargs)
+        raise TimeoutError("response lost")
+
+    queue.send_message = lost_response
+    assert (await protocol.tick(shared)).effects_uncertain == 1
+    async with shared.factory() as db:
+        row = await db.get(OrchestrationRunReport, shared.calls[-1]["message_id"])
+        row.worker_receipt = {"started": True}
+        await db.commit()
+    await protocol.tick(shared)
+    after = await protocol.state(shared)
+    assert after[0].pending_action_key is None
+    assert len(shared.calls) == 1

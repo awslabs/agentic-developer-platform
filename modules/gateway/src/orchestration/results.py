@@ -525,6 +525,14 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                         report.waiting += 1
                         report.reasons[node.id] = "The failed worker no longer owns the current delivery execution; reconcile its current owner."
                         continue
+                    from .review_recovery import pending_recovery_for_report
+                    from .run_reports import OrchestrationRunReport
+
+                    prior_report = await session.get(OrchestrationRunReport, dispatch["run_id"])
+                    if prior_report and await pending_recovery_for_report(session, prior_report):
+                        report.waiting += 1
+                        report.reasons[node.id] = "A fresh review was requested for the retained PR; awaiting its own evidence."
+                        continue
                     successor = await session.scalar(
                         select(OrchestrationAction.id)
                         .where(

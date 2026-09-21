@@ -667,6 +667,11 @@ async def _continuation_clock(session, candidate):
         return False, None
     if (row.terminal_receipt or {}).get("outcome") in {"complete", "failed"}:
         return True, None
+    from .review_recovery import pending_recovery_for_report
+
+    recovery = await pending_recovery_for_report(session, row)
+    if recovery is not None:
+        return True, recovery.created_at.replace(tzinfo=UTC) if recovery.created_at.tzinfo is None else recovery.created_at
     since = row.created_at
     started = (row.worker_receipt or {}).get("recorded_at")
     if started:

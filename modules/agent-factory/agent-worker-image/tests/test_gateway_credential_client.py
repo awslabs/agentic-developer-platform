@@ -489,3 +489,36 @@ class TestAuthorityBrokerIdentity:
             with pytest.raises(GatewayCredentialError, match="HTTPS and SigV4"):
                 GatewayCredentialClient(gateway_url="https://legacy.example.test", api_key="legacy")._make_request("https://legacy.example.test/internal/v1/credential-assume-role", {})
             signer.assert_not_called()
+
+
+@pytest.mark.parametrize("identity", [None, "review"])
+def test_shared_report_credential_sent_only_for_review_mint(monkeypatch, tmp_path, identity):
+    proof = tmp_path / "report"
+    proof.write_text("adprpt1.test-proof")
+    monkeypatch.setenv("ADP_RUN_REPORT_CREDENTIAL_FILE", str(proof))
+    monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gateway.test")
+    client = GatewayCredentialClient()
+    with patch.object(client, "_make_request", return_value={"token": "test"}) as send:
+        client.github_installation_token(installation_id=42, repo_owner="org", repo_name="repo", identity=identity)
+    assert send.call_args.kwargs == ({"extra_headers": {"X-Adp-Report-Credential": "adprpt1.test-proof"}} if identity else {})
+
+
+@pytest.mark.parametrize("endpoint", ["http://gateway.test", "https://gateway.test?redirect=evil"])
+def test_shared_review_proof_rejects_insecure_endpoint(monkeypatch, tmp_path, endpoint):
+    proof = tmp_path / "report"
+    proof.write_text("adprpt1.test-proof")
+    monkeypatch.setenv("ADP_RUN_REPORT_CREDENTIAL_FILE", str(proof))
+    monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", endpoint)
+    with pytest.raises(GatewayCredentialError, match="HTTPS and SigV4"):
+        GatewayCredentialClient().github_installation_token(installation_id=42, repo_owner="org", repo_name="repo", identity="review")
+
+
+def test_shared_review_proof_rejects_redirects(monkeypatch, tmp_path):
+    proof = tmp_path / "report"
+    proof.write_text("adprpt1.test-proof")
+    monkeypatch.setenv("ADP_RUN_REPORT_CREDENTIAL_FILE", str(proof))
+    monkeypatch.setenv("ADP_GATEWAY_ENDPOINT", "https://gateway.test")
+    with patch("lib.gateway_credential_client._sigv4_sign_request", side_effect=lambda method, url, headers, data: headers), patch("lib.gateway_credential_client.build_opener") as opener:
+        opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{"token":"test"}'
+        GatewayCredentialClient().github_installation_token(installation_id=42, repo_owner="org", repo_name="repo", identity="review")
+        assert opener.call_args.args[0].redirect_request(None, None, 302, "redirect", {}, "https://evil.test") is None
