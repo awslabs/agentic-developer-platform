@@ -34,7 +34,11 @@ async def accepted_evaluation(session, node):
     require(len(rows) <= 1, "evaluation_accepted_node_ambiguous")
     if not rows or rows[0].get("evaluation") is None:
         return None
-    return plan, specification(rows[0]["evaluation"]), address
+    spec = specification(rows[0]["evaluation"])
+    policy = (plan.plan_document or {}).get("execution_policy") or {}
+    if policy.get("evaluation_acceptance", {}).get(address) == "machine":
+        require(spec.acceptance_mode == "machine", "evaluation_acceptance_mode_changed")
+    return plan, spec, address
 
 
 async def managed_evaluation(session, node):

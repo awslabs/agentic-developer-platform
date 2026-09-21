@@ -873,6 +873,25 @@ def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
         except ValueError:
             violations.append(Violation("evaluation_specification_invalid", "Evaluation specification is invalid or unavailable", node.address))
             continue
+        active = proposal.execution_policy
+        if (
+            active is not None
+            and Action.EVALUATE in active.allowed_actions
+            and active.evaluation_acceptance.get(node.address) is AcceptanceMode.MACHINE
+            and spec.acceptance_mode != "machine"
+        ):
+            violations.append(Violation("evaluation_policy_mode_mismatch", "Machine policy cannot use human evidence acceptance", node.address))
+        if spec.evidence_schema == "repository-evaluation/v1":
+            from .repository_evaluation_contract import harness_digest
+
+            if spec.runner.harness_sha256 != harness_digest():
+                violations.append(
+                    Violation("evaluation_harness_mismatch", "Repository harness digest does not match the installed verifier", node.address)
+                )
+            kinds = {item.address: item.kind for item in proposal.nodes}
+            parents = {edge.from_address for edge in proposal.edges if edge.to_address == node.address and kinds.get(edge.from_address) == "story"}
+            if parents != {item.address for item in spec.predecessors}:
+                violations.append(Violation("evaluation_predecessor_mismatch", "Evidence must declare every direct story predecessor", node.address))
         if spec.acceptance_mode == "machine":
             # Validation checks the requested authority, including an inert draft.
             # Admission still reads only the accepted execution_policy field.
@@ -885,7 +904,7 @@ def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
                 violations.append(
                     Violation("evaluation_repository_not_permitted", "Evaluation harness requires a permitted repository", node.address)
                 )
-            elif spec.environment_connection_id not in policy.environment_connection_ids:
+            elif spec.evidence_schema != "repository-evaluation/v1" and spec.environment_connection_id not in policy.environment_connection_ids:
                 violations.append(
                     Violation("evaluation_connection_not_permitted", "Evaluation target requires a permitted environment connection", node.address)
                 )

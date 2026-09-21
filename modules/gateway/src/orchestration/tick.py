@@ -344,10 +344,11 @@ async def _advance_node(session: AsyncSession, candidate: _Candidate, report: Ti
                     if accepted is None:
                         report.blocked[candidate.node_id] = ["evaluation_specification_missing"]
                         return
-                    deployed = await predecessor_deployments(session, evaluation, accepted[0].version, now=datetime.now(UTC))
-                    if not deployed:
-                        report.blocked[candidate.node_id] = ["verified_deployment_required"]
-                        return
+                    if accepted[1].evidence_schema != "repository-evaluation/v1":
+                        deployed = await predecessor_deployments(session, evaluation, accepted[0].version, now=datetime.now(UTC))
+                        if not deployed:
+                            report.blocked[candidate.node_id] = ["verified_deployment_required"]
+                            return
             except (CycleBlockedError, ValueError):
                 report.blocked[candidate.node_id] = ["deployment_authority_unverifiable"]
                 return

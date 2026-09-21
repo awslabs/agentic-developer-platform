@@ -207,10 +207,14 @@ class EvaluationServices:
                 if evaluation.state == "passed":
                     continue
                 require(evaluation.state not in {"rejected_at_gate", "failed", "halted", "superseded"}, "evaluation_requires_human_recovery")
-                pending = True
                 accepted = await accepted_evaluation(session, evaluation)
                 require(accepted is not None, "evaluation_specification_missing")
                 plan, spec, address = accepted
+                if spec.evidence_schema == "repository-evaluation/v1":
+                    # The native read-only observer consumes merged-code receipts
+                    # independently; it must not inherit a deployment claim.
+                    continue
+                pending = True
                 require(plan.version == context.identity.accepted_plan_version, "evaluation_plan_changed")
                 deployments = await predecessor_deployments(session, evaluation, plan.version, now=datetime.now(UTC))
                 if deployments is None or evaluation.state != "ready":

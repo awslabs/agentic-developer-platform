@@ -1356,6 +1356,10 @@ async def _dispatch_one(session, node, *, config, report) -> None:
     from .work_claims import ClaimOwner, OwnerKind, WorkClaimError
 
     if await managed_evaluation(session, node):
+        from .repository_evaluation import observe_repository_evaluation
+
+        if await observe_repository_evaluation(session, node):
+            return
         if await accepted_evaluation(session, node) is None:
             await _record_admission_refusal(
                 session,

@@ -29,4 +29,8 @@ def models():
 
 
 def specification(value):
+    if isinstance(value, dict) and value.get("evidence_schema") == "repository-evaluation/v1":
+        from .repository_evaluation_contract import RepositoryEvaluationSpecification
+
+        return RepositoryEvaluationSpecification.model_validate(value)
     return models().EvaluationSpecification.model_validate(value)

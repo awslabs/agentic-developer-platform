@@ -1,0 +1,280 @@
+"""Exercise the real provider parser against authenticated API/archive shapes."""
+
+import base64
+import copy
+import hashlib
+import io
+import json
+import zipfile
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
+
+from src.orchestration.repository_evaluation_contract import Predicate, RepositoryEvaluationSpecification, predicate_passes
+from src.orchestration.repository_evaluation_provider import RepositoryEvidenceProvider
+from src.orchestration.review_cycle import CycleBlockedError
+
+
+def archive_for(data):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("evidence.json", data)
+    return stream.getvalue()
+
+
+@pytest.fixture
+def evidence():
+    now = datetime.now(UTC)
+    source = dict(
+        criterion_id="external-pr",
+        issue_number=1,
+        pr_number=2,
+        head_sha="a" * 40,
+        merge_sha="b" * 40,
+        required_checks=[dict(name="Tests", app_id=15368)],
+    )
+    spec = RepositoryEvaluationSpecification.model_validate(
+        dict(
+            evidence_schema="repository-evaluation/v1",
+            runner=dict(adapter="engine-repository-evidence-v1", repository="o/r", repository_id=123, harness_sha256="c" * 64),
+            external_pull_requests=[source],
+            workflows=[
+                dict(
+                    criterion_id="one-off-scan",
+                    path=".github/workflows/scan.yml",
+                    source=dict(revision="b" * 40),
+                    definition=dict(revision="b" * 40),
+                    required_jobs=["Full scan", "Cleanup"],
+                    artifacts=[
+                        dict(
+                            name="evidence-{run_attempt}",
+                            path="evidence.json",
+                            predicates=[
+                                dict(criterion_id="coverage", pointer="/coverage", operation="equals", expected=True),
+                                dict(
+                                    criterion_id="inventory",
+                                    pointer="/records",
+                                    operation="records",
+                                    expected=["source-a", "source-b"],
+                                    id_field="id",
+                                    required_fields={"outcome": ["fixed", "false_positive"], "owner": ["S21"]},
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+    )
+    document = dict(
+        coverage=True, records=[dict(id="source-a", outcome="fixed", owner="S21"), dict(id="source-b", outcome="false_positive", owner="S21")]
+    )
+    binary = archive_for(json.dumps(document).encode())
+    definition = b"on:\n  workflow_dispatch:\njobs: {}\n"
+    run = dict(
+        id=10,
+        run_number=3,
+        run_attempt=2,
+        repository=dict(id=123),
+        head_repository=dict(id=123),
+        head_sha="b" * 40,
+        event="workflow_dispatch",
+        path=".github/workflows/scan.yml",
+        status="completed",
+        conclusion="success",
+        updated_at=now.isoformat(),
+        run_started_at=(now - timedelta(seconds=20)).isoformat(),
+    )
+    responses = {
+        "/repos/o/r": dict(id=123),
+        "/repos/o/r/pulls/2": dict(
+            number=2,
+            node_id="PR_2",
+            base=dict(repo=dict(id=123)),
+            head=dict(repo=dict(id=123), sha="a" * 40),
+            merged=True,
+            merge_commit_sha="b" * 40,
+            merged_at=(now - timedelta(days=1)).isoformat(),
+        ),
+        "/repos/o/r/commits/" + "a" * 40 + "/check-runs": dict(
+            check_runs=[
+                dict(id=7, name="Tests", app=dict(id=15368), head_sha="a" * 40, status="completed", conclusion="success"),
+            ]
+        ),
+        "/repos/o/r/contents/.github/workflows/scan.yml": dict(
+            type="file",
+            encoding="base64",
+            size=len(definition),
+            content=base64.b64encode(definition).decode(),
+            sha=hashlib.sha1(b"blob " + str(len(definition)).encode() + b"\0" + definition).hexdigest(),
+        ),
+        "/repos/o/r/actions/workflows/scan.yml/runs": dict(workflow_runs=[run]),
+        "/repos/o/r/actions/runs/10": run,
+        "/repos/o/r/actions/runs/10/attempts/2/jobs": dict(
+            jobs=[
+                dict(id=11, run_id=10, name="Full scan", status="completed", conclusion="success"),
+                dict(id=12, run_id=10, name="Cleanup", status="completed", conclusion="success"),
+            ]
+        ),
+        "/repos/o/r/actions/runs/10/artifacts": dict(
+            artifacts=[
+                dict(
+                    id=13,
+                    name="evidence-2",
+                    expired=False,
+                    size_in_bytes=len(binary),
+                    digest="sha256:" + hashlib.sha256(binary).hexdigest(),
+                    created_at=(now - timedelta(seconds=5)).isoformat(),
+                )
+            ]
+        ),
+    }
+    return SimpleNamespace(
+        now=now,
+        spec=spec,
+        source=source,
+        responses=responses,
+        binary=binary,
+        document=document,
+        review=SimpleNamespace(review_approved=True, head_sha="a" * 40),
+    )
+
+
+async def observe(data):
+    def transport(request):
+        assert request.method == "GET" and request.url.host == "api.github.com"
+        if request.url.path == "/repos/o/r/actions/artifacts/13/zip":
+            return httpx.Response(200, content=data.binary)
+        assert request.url.path in data.responses, request.url.path
+        return httpx.Response(200, json=data.responses[request.url.path])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        provider = RepositoryEvidenceProvider(
+            client=client, clock=lambda: data.now, reviews=SimpleNamespace(bound_pull_request=AsyncMock(return_value=data.review))
+        )
+        provider.token = AsyncMock(return_value="test-read-only-token")
+        return await provider.observe(
+            SimpleNamespace(org_id="org", installation_id=42, repo="o/r", provider_repository_id=123), data.spec, [data.source]
+        )
+
+
+async def test_real_provider_observation_binds_checks_workflow_attempt_and_digested_artifact(evidence):
+    receipt = await observe(evidence)
+    assert receipt["mandatory_passed"] is True
+    assert receipt["pull_requests"][0]["checks"] == [dict(name="Tests", app_id=15368, check_run_id=7, head_sha="a" * 40)]
+    workflow = receipt["workflows"][0]
+    assert workflow["run_id"] == 10 and workflow["run_attempt"] == 2 and workflow["source_revision"] == "b" * 40
+    assert workflow["artifacts"][0]["digest"] == hashlib.sha256(evidence.binary).hexdigest()
+    assert {item["criterion_id"] for item in workflow["criteria"]} == {"coverage", "inventory"}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "head",
+        "review",
+        "check_failed",
+        "check_skipped",
+        "check_missing",
+        "check_app",
+        "job_skipped",
+        "job_missing",
+        "wrong_event",
+        "wrong_workflow",
+        "wrong_repository",
+        "stale",
+        "archive_digest",
+        "prior_artifact",
+        "scheduled_scan",
+        "duplicate_json",
+    ],
+)
+async def test_missing_stale_skipped_and_wrong_producer_evidence_refuses(evidence, case):
+    data = evidence
+    pr = data.responses["/repos/o/r/pulls/2"]
+    checks = data.responses["/repos/o/r/commits/" + "a" * 40 + "/check-runs"]["check_runs"]
+    run = data.responses["/repos/o/r/actions/runs/10"]
+    jobs = data.responses["/repos/o/r/actions/runs/10/attempts/2/jobs"]["jobs"]
+    artifact = data.responses["/repos/o/r/actions/runs/10/artifacts"]["artifacts"][0]
+    if case == "head":
+        pr["head"]["sha"] = "f" * 40
+    elif case == "review":
+        data.review.review_approved = False
+    elif case in {"check_failed", "check_skipped"}:
+        checks[0]["conclusion"] = "failure" if case == "check_failed" else "skipped"
+    elif case == "check_missing":
+        checks.clear()
+    elif case == "check_app":
+        checks[0]["app"]["id"] = 99
+    elif case == "job_skipped":
+        jobs[1]["conclusion"] = "skipped"
+    elif case == "job_missing":
+        jobs.pop()
+    elif case == "wrong_event":
+        run["event"] = "schedule"
+    elif case == "wrong_workflow":
+        run["path"] = ".github/workflows/other.yml"
+    elif case == "wrong_repository":
+        run["repository"]["id"] = 999
+    elif case == "stale":
+        run["updated_at"] = (data.now - timedelta(days=2)).isoformat()
+    elif case == "archive_digest":
+        artifact["digest"] = "sha256:" + "0" * 64
+    elif case == "prior_artifact":
+        artifact["created_at"] = (data.now - timedelta(days=1)).isoformat()
+    elif case == "scheduled_scan":
+        content = b"on:\n  workflow_dispatch:\n  schedule: []\n"
+        definition = data.responses["/repos/o/r/contents/.github/workflows/scan.yml"]
+        definition.update(
+            content=base64.b64encode(content).decode(),
+            size=len(content),
+            sha=hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest(),
+        )
+    elif case == "duplicate_json":
+        data.binary = archive_for(b'{"coverage":false,"coverage":true}')
+        artifact["digest"] = "sha256:" + hashlib.sha256(data.binary).hexdigest()
+    with pytest.raises(CycleBlockedError):
+        await observe(data)
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate", "bad_owner", "not_boolean"])
+async def test_artifact_assertions_cannot_replace_required_machine_predicates(evidence, change):
+    document = copy.deepcopy(evidence.document)
+    if change == "missing":
+        document["records"].pop()
+    elif change == "duplicate":
+        document["records"][1] = document["records"][0]
+    elif change == "bad_owner":
+        document["records"][0]["owner"] = "unowned"
+    else:
+        document["coverage"] = 1
+    evidence.binary = archive_for(json.dumps(document).encode())
+    evidence.responses["/repos/o/r/actions/runs/10/artifacts"]["artifacts"][0]["digest"] = "sha256:" + hashlib.sha256(evidence.binary).hexdigest()
+    result = await observe(evidence)
+    assert result["mandatory_passed"] is False
+
+
+def test_machine_json_comparison_preserves_json_types_and_missing_is_not_pass():
+    check = Predicate(criterion_id="ac", pointer="/nested/0/success", operation="equals", expected=True)
+    assert predicate_passes(check, {"nested": [{"success": True}]})
+    assert not predicate_passes(check, {"nested": [{"success": 1}]})
+    assert not predicate_passes(check, {"success": True})
+
+
+@pytest.mark.parametrize("included", [True, False])
+async def test_workflow_revision_must_include_all_verified_source_merges(evidence, included):
+    document = evidence.spec.model_dump(mode="json")
+    document["workflows"][0]["source"] = {"revision": "f" * 40}
+    evidence.spec = RepositoryEvaluationSpecification.model_validate(document)
+    evidence.responses["/repos/o/r/actions/runs/10"]["head_sha"] = "f" * 40
+    evidence.responses["/repos/o/r/compare/" + "b" * 40 + "..." + "f" * 40] = dict(
+        status="ahead" if included else "diverged", base_commit=dict(sha="b" * 40), merge_base_commit=dict(sha="b" * 40 if included else "d" * 40)
+    )
+    if included:
+        assert (await observe(evidence))["mandatory_passed"]
+    else:
+        with pytest.raises(CycleBlockedError, match="workflow_missing_delivered_revision"):
+            await observe(evidence)
