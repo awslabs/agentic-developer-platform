@@ -2,6 +2,8 @@ name: Nightly CLI Regression
 
 # One run owns all three suites. Child workflows have no independent schedules.
 # The shared child lock also serializes standalone diagnostic runs with nightlies.
+# Engine qualification producer contract: docs/design-notes/cli-live-evaluation.md.
+# Existing partial reports do not satisfy that contract; triggers remain unchanged.
 on:
   schedule:
     - cron: '0 5 * * *'
