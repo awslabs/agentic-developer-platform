@@ -168,6 +168,13 @@ def preflight(args, scratch):
     command(["aws", "eks", "update-kubeconfig", "--name", CLUSTER, "--region", REGION, "--kubeconfig", os.environ["KUBECONFIG"]])
     gateway_image = checked_image("adp-gateway", args.gateway_revision)
     worker_image = checked_image("adp-agent-runtime", args.worker_revision, args.worker_digest)
+    rollout_failure = None
+    try:
+        kube("rollout", "status", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "--timeout=300s", request_timeout="330s")
+    except Refused as error:
+        # Still capture fresh, safe readiness evidence when the bounded wait
+        # fails. The failure is re-raised below; this never permits activation.
+        rollout_failure = error
     deployment = snapshot("deployment", DEPLOYMENT)
     container = next(c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == DEPLOYMENT)
     accepted_images = {gateway_image, gateway_image.split("@")[0] + ":" + args.gateway_revision}
@@ -176,11 +183,23 @@ def preflight(args, scratch):
     require(any(e.get("name") == "AGENT_RUN_CREDENTIAL_KEY" and e.get("valueFrom", {}).get("secretKeyRef", {}).get("name") == "agent-authority-signing" and e.get("valueFrom", {}).get("secretKeyRef", {}).get("key") == "run-credential-key" for e in container.get("env", [])), "gateway signing-key reference changed")
     selectors = ",".join(f"{k}={v}" for k, v in sorted(deployment["spec"]["selector"]["matchLabels"].items()))
     pods = decode_json(kube("get", "pods", "-n", NAMESPACE, "-l", selectors, "-o", "json"), source="kubernetes.gateway_pods")["items"]
-    ready = [p for p in pods if not p["metadata"].get("deletionTimestamp")]
+    readiness = []
+    for pod in pods:
+        statuses = [s for s in pod.get("status", {}).get("containerStatuses", []) if s["name"] == DEPLOYMENT]
+        spec_images = [c.get("image") for c in pod.get("spec", {}).get("containers", []) if c.get("name") == DEPLOYMENT]
+        readiness.append({"pod": pod["metadata"]["name"], "terminating": bool(pod["metadata"].get("deletionTimestamp")),
+                          "status_count": len(statuses), "ready": statuses[0].get("ready") if len(statuses) == 1 else None,
+                          "spec_image": spec_images[0] if len(spec_images) == 1 else None,
+                          "image_id": statuses[0].get("imageID") if len(statuses) == 1 else None})
+    print(json.dumps({"gateway_pod_readiness": {"expected_image": gateway_image, "desired_replicas": deployment["spec"]["replicas"], "pods": readiness}}))
+    if rollout_failure is not None:
+        raise rollout_failure
+    ready = [row for row in readiness if not row["terminating"]]
     require(len(ready) == deployment["spec"]["replicas"] > 0, "gateway rollout incomplete")
     for pod in ready:
-        statuses = [s for s in pod.get("status", {}).get("containerStatuses", []) if s["name"] == DEPLOYMENT]
-        require(len(statuses) == 1 and statuses[0]["ready"] and statuses[0]["imageID"].endswith(gateway_image), "gateway pod image/readiness differs")
+        require(pod["status_count"] == 1, "gateway pod container status is missing or ambiguous")
+        require(pod["ready"] is True, "gateway pod is not ready")
+        require(isinstance(pod["image_id"], str) and pod["image_id"].endswith(gateway_image), "gateway pod image digest differs")
     tick = aws("lambda", "get-function", "--function-name", TICK)
     require(tick["Code"]["ResolvedImageUri"] == gateway_image, "tick is not running the reviewed gateway image")
     require(tick["Configuration"].get("State") == "Active" and tick["Configuration"].get("LastUpdateStatus") == "Successful", "tick update incomplete")

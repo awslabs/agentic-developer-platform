@@ -256,6 +256,68 @@ def test_gateway_enable_waits_for_full_rollout_even_if_one_pod_is_enabled(monkey
     assert len(probes) == int(execute)
 
 
+@pytest.mark.parametrize("case", ["replacement_ready", "not_ready", "wrong_digest", "missing_status", "extra_pod", "wait_failed"])
+def test_preflight_waits_before_fresh_snapshots_and_reports_safe_readiness(monkeypatch, tmp_path, capsys, case):
+    calls = []
+    state = {"waited": False}
+    container = {"name": maintenance.DEPLOYMENT, "image": IMAGE,
+                 "envFrom": [{"configMapRef": {"name": "adp-worker-authority-config"}}],
+                 "env": [{"name": "AGENT_RUN_CREDENTIAL_KEY", "valueFrom": {"secretKeyRef": {"name": "agent-authority-signing", "key": "run-credential-key"}}},
+                         {"name": "PRIVATE", "value": "private-env-fixture"}]}
+    deployment = {"spec": {"replicas": 1, "selector": {"matchLabels": {"app": "gateway"}}, "template": {"spec": {"containers": [container]}}}}
+    pod = {"metadata": {"name": "replacement-pod"}, "spec": {"containers": [container]},
+           "status": {"containerStatuses": [{"name": maintenance.DEPLOYMENT, "ready": False, "imageID": "containerd://" + IMAGE}],
+                      "private-log": "private-log-fixture"}}
+    def aws(*args):
+        if args[:2] == ("sts", "get-caller-identity"):
+            return {"Account": guard.ACCOUNT, "Arn": "reviewed-maintenance-role"}
+        calls.append("after-pod-checks")
+        raise RuntimeError("reached later preflight checks")
+    def snapshot(*args):
+        assert state["waited"], "deployment snapshot must be refreshed after the wait"
+        calls.append("deployment-snapshot")
+        return copy.deepcopy(deployment)
+    def kube(*args, **kwargs):
+        if args[:2] == ("rollout", "status"):
+            calls.append("rollout-wait")
+            assert args[-1] == "--timeout=300s" and kwargs == {"request_timeout": "330s"}
+            state["waited"] = True
+            pod["status"]["containerStatuses"][0]["ready"] = case != "not_ready"
+            if case == "wait_failed":
+                raise guard.Refused("rollout wait failed")
+            return "rollout complete"
+        assert args[:2] == ("get", "pods") and state["waited"]
+        calls.append("pod-snapshot")
+        if case == "wrong_digest":
+            pod["status"]["containerStatuses"][0]["imageID"] = "containerd://" + IMAGE[:-1] + "b"
+        if case == "missing_status":
+            pod["status"]["containerStatuses"] = []
+        pods = [pod]
+        if case == "extra_pod":
+            pods.append({**pod, "metadata": {"name": "unexpected-second-pod"}})
+        return json.dumps({"items": pods})
+    monkeypatch.setattr(maintenance, "aws", aws)
+    monkeypatch.setattr(maintenance, "command", lambda *a, **k: "")
+    monkeypatch.setattr(maintenance, "checked_image", lambda *a, **k: IMAGE)
+    monkeypatch.setattr(maintenance, "snapshot", snapshot)
+    monkeypatch.setattr(maintenance, "kube", kube)
+    args = SimpleNamespace(account_id=guard.ACCOUNT, stage="gateway-enable", gateway_revision="b" * 40,
+                           worker_revision="c" * 40, worker_digest="sha256:" + "d" * 64)
+    errors = {"replacement_ready": "reached later preflight checks", "not_ready": "gateway pod is not ready",
+              "wrong_digest": "gateway pod image digest differs", "missing_status": "container status is missing",
+              "extra_pod": "gateway rollout incomplete", "wait_failed": "rollout wait failed"}
+    with pytest.raises(RuntimeError if case == "replacement_ready" else guard.Refused, match=errors[case]):
+        maintenance.preflight(args, tmp_path)
+    assert calls[:3] == ["rollout-wait", "deployment-snapshot", "pod-snapshot"]
+    assert ("after-pod-checks" in calls) is (case == "replacement_ready")
+    output = capsys.readouterr().out
+    assert "private-" not in output
+    projection = json.loads(output.splitlines()[-1])["gateway_pod_readiness"]
+    assert projection["expected_image"] == IMAGE and projection["desired_replicas"] == 1
+    assert projection["pods"][0]["pod"] == "replacement-pod" and projection["pods"][0]["spec_image"] == IMAGE
+    assert set(projection["pods"][0]) == {"pod", "terminating", "status_count", "ready", "spec_image", "image_id"}
+
+
 @pytest.mark.parametrize("difference", ["ID", "Who", "Operation", "Path", "Created"])
 def test_unlock_refuses_any_other_lock_before_reading_github(monkeypatch, difference):
     info = {"ID": maintenance.LOCK_ID, "Who": maintenance.LOCK_OWNER, "Operation": "OperationTypePlan", "Path": maintenance.LOCK_PATH, "Created": "2026-09-20T23:34:38.654494254Z"}
