@@ -117,7 +117,33 @@ resource "helm_release" "arc_runner_set" {
         #    without node-level CPU/memory data over a window that includes
         #    heavy workflows (full pytest suites, security scans, npm audit).
         #
-        # Limits stay 4 CPU / 8Gi so a heavy build can still burst.
+        # 3) 2026-09-21: cpu request 2 -> 4, matching the limit. Gateway CI was
+        #    sharded 4 ways with `pytest -n 4` (#5550), so one Gateway CI run is
+        #    now FOUR runners that each genuinely want 4 cores, and runs overlap
+        #    routinely (3 concurrent observed on 09-21). At a cpu=2 request the
+        #    scheduler placed twice as many runners as the node could actually
+        #    feed — the same overbooking revision 2 diagnosed, but now hit on
+        #    every gateway PR rather than occasionally. Symptoms measured on
+        #    identical code and config: shard throughput fell from 18.2 to 10.4
+        #    tests/s between a quiet and a busy cluster (1.75x), node CPU peaked
+        #    at 94%, and a timing-sensitive test
+        #    (tests/budget/test_pricing_read_timeout.py) flaked under contention.
+        #    Revision 2 already measured a runner at 3.7 cores, so cpu=4 is the
+        #    honest figure, not a guess.
+        #
+        #    request == limit for CPU is deliberate: it removes CPU
+        #    oversubscription entirely rather than bounding it, so a runner
+        #    cannot be starved by a co-tenant mid-test. Density halves (~8
+        #    runners per 32-vCPU node instead of ~16), which again STRENGTHENS
+        #    the IOPS density guard above. The cost is real: Karpenter will
+        #    provision more nodes instead of packing, so this trades AWS spend
+        #    for developer wall clock. Do not revert it to buy density back
+        #    without first re-measuring shard throughput on a BUSY cluster —
+        #    a quiet-cluster measurement will show no difference and will
+        #    mislead you.
+        #
+        # Memory is unchanged: revision 2 measured a peak of 2.7Gi against the
+        # 4Gi request, so that one is already honest. Limits stay 4 CPU / 8Gi.
         spec = {
           serviceAccountName = kubernetes_service_account.runner.metadata[0].name
           containers = [
@@ -126,7 +152,7 @@ resource "helm_release" "arc_runner_set" {
               image   = var.runner_image == "" ? "ghcr.io/actions/actions-runner:latest" : var.runner_image
               command = ["/home/runner/run.sh"]
               resources = {
-                requests = { cpu = "2", memory = "4Gi" }
+                requests = { cpu = "4", memory = "4Gi" }
                 limits   = { cpu = "4", memory = "8Gi" }
               }
             }
