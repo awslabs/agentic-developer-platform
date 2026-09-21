@@ -86,3 +86,18 @@ checks, while separate evaluation nodes retain their original evidence
 requirements. Omitting the field preserves the existing delivery lifecycle.
 Changing this choice requires a new preview; it never grants deployment or
 evaluation authority.
+
+For an inert registered draft, use `accept_draft_policy: true` with
+`delivery_mode: "code_only"` instead of `preserve_accepted_policy`. This explicitly
+accepts its initial gate and shared transport together. Keep the proposed limits,
+fixed expiry, scope, human gates for code actions, and evaluation map. The request
+must contain exactly the proposed code actions; `evaluate`, if proposed, is
+deferred until a real evaluation contract is accepted. No worker or delivery
+history may exist, and the live graph must still match the reviewed draft.
+
+The preview identifies the single structural initial acceptance gate. Acceptance
+records its human approval in the same transaction as the policy, shared meter,
+and new plan version. Other gates and evaluation nodes retain their state. The
+proposed policy remains in the historical draft; it is removed from the new
+version so a later gate answer cannot overwrite the accepted shared transport.
+Ordinary continuation refuses a draft that still carries inert proposed bounds.

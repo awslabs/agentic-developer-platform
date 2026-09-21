@@ -49,6 +49,8 @@ class ContinuationRequest(BaseModel):
     # Explicit transport adoption of an accepted, never-started policy. Its
     # bounds and gates must remain byte-equivalent after schema normalization.
     preserve_accepted_policy: bool = False
+    # Initial, revision-bound human acceptance of an inert registered draft.
+    accept_draft_policy: bool = False
     # Selected by the approver; only merged story settlement changes. Evaluation
     # nodes keep their existing evidence and acceptance requirements.
     delivery_mode: Literal["code_only"] | None = None
@@ -63,10 +65,12 @@ class ContinuationRequest(BaseModel):
     @model_validator(mode="after")
     def code_delivery_only(self):
         policy = self.execution_policy
+        if self.accept_draft_policy and (self.preserve_accepted_policy or self.delivery_mode != "code_only"):
+            raise ValueError("draft acceptance requires code_only delivery and cannot also preserve an already accepted policy")
         if (
             set(policy.allowed_actions) - CODE_ACTIONS
             or policy.environment_connection_ids
-            or (policy.evaluation_acceptance and not self.preserve_accepted_policy)
+            or (policy.evaluation_acceptance and not (self.preserve_accepted_policy or self.accept_draft_policy))
         ):
             raise ValueError("continuation authorizes code delivery only; deployment and evaluation retain their existing gates")
         if not {Action.REVIEW, Action.REPAIR}.issubset(policy.allowed_actions):
@@ -95,6 +99,8 @@ def request_digest(request: ContinuationRequest, actor: ApprovalContext) -> str:
     # Preserve lost-response replay for requests accepted before this field existed.
     if not request.preserve_accepted_policy:
         excluded.add("preserve_accepted_policy")
+    if not request.accept_draft_policy:
+        excluded.add("accept_draft_policy")
     if request.delivery_mode is None:
         excluded.add("delivery_mode")
     return digest(
@@ -302,19 +308,31 @@ async def preview_continuation(session, *, flow_id, actor, request, resolver, re
     if actor.actor_kind is not ActorKind.HUMAN:
         raise ContinuationRefusedError("human_acceptance_required", "Only a plan approver can accept continuation authority.")
     policy = stamp_policy(request.execution_policy, principal_id=actor.actor_id, org_id=actor.org_id)
-    flow, plan, nodes, bindings, snapshot = await _snapshot(session, actor.org_id, flow_id, require_pristine=request.preserve_accepted_policy)
+    flow, plan, nodes, bindings, snapshot = await _snapshot(
+        session, actor.org_id, flow_id, require_pristine=request.preserve_accepted_policy or request.accept_draft_policy
+    )
     blockers = []
     if os.environ.get("AGENT_WORKER_ROLE_ARN") != request.worker_role_arn:
         blockers.append({"code": "worker_role_mismatch", "detail": "The accepted role must match the configured worker IAM role."})
     marker = (plan.plan_document or {}).get("execution_continuation")
     preserved_authority = {}
-    if request.preserve_accepted_policy and not marker:
+    draft_acceptance = {}
+    if request.accept_draft_policy and not marker:
+        from .draft_continuation import preview_draft_acceptance
+
+        try:
+            draft_acceptance = preview_draft_acceptance(plan, snapshot, policy)
+        except ContinuationRefusedError as error:
+            blockers.append({"code": error.code, "detail": error.detail})
+    elif request.preserve_accepted_policy and not marker:
         try:
             preserved_authority = _preserved_authority(plan, snapshot, policy, now)
         except ContinuationRefusedError as error:
             blockers.append({"code": error.code, "detail": error.detail})
     elif marker or (plan.plan_document or {}).get("execution_policy") is not None or snapshot["executions"]:
         blockers.append({"code": "already_governed", "detail": "Use the existing execution and amendment controls for a governed flow."})
+    elif (plan.plan_document or {}).get("proposed_execution_policy") is not None:
+        blockers.append({"code": "draft_acceptance_required", "detail": "Accept this draft's initial gate explicitly with its proposed bounds."})
     if flow.state not in {"pending", "running"}:
         blockers.append({"code": "flow_not_running", "detail": "The flow's current human control must be resolved first."})
     if not request.effects_and_credentials_reconciled:
@@ -325,6 +343,8 @@ async def preview_continuation(session, *, flow_id, actor, request, resolver, re
     for node in nodes:
         stage = {"node_id": node.id, "state": node.state, "attempt": node.attempts, "action": "preserve"}
         stages.append(stage)
+        if draft_acceptance.get("gate_node_id") == node.id:
+            stage["action"] = "approve_initial_acceptance_gate"
         if node.kind != "story" or node.state in PRESERVED:
             continue
         if node.attempts == 0 and node.state in {"pending", "ready"}:
@@ -422,6 +442,7 @@ async def preview_continuation(session, *, flow_id, actor, request, resolver, re
         "ready": not blockers,
         "initial_runs": initial_runs,
         "preserved_authority": preserved_authority,
+        "draft_acceptance": draft_acceptance,
         "delivery_mode": request.delivery_mode,
         "budget_scope": "authenticated_gateway_calls",
         "budget_limitation": "The shared IAM role retains its configured permissions; direct provider calls are outside this gateway budget.",
@@ -434,7 +455,9 @@ async def _accept_continuation(session, *, flow_id, actor, request, resolver, re
         raise ContinuationRefusedError("preview_required", "Accept the exact snapshot returned by continuation preview.")
     # Lost-response replay is recognized before the precondition that the flow is
     # legacy. The accepted immutable request hash binds the same human and bounds.
-    _, current, _, _, _ = await _snapshot(session, actor.org_id, flow_id, require_pristine=request.preserve_accepted_policy)
+    _, current, _, _, _ = await _snapshot(
+        session, actor.org_id, flow_id, require_pristine=request.preserve_accepted_policy or request.accept_draft_policy
+    )
     marker = (current.plan_document or {}).get("execution_continuation")
     if marker and marker.get("request_hash") == request_digest(request, actor) and marker.get("snapshot_hash") == request.expected_snapshot:
         return {"flow_id": flow_id, "plan_version": current.version, "decision_id": current.accepted_by_decision_id, "already_accepted": True}
@@ -446,7 +469,7 @@ async def _accept_continuation(session, *, flow_id, actor, request, resolver, re
     # Serialize with graph dispatch. All provider I/O above completed before this
     # lock; every controller rechecks the actual head before issuing a new effect.
     flow, plan, nodes, bindings, snapshot = await _snapshot(
-        session, actor.org_id, flow_id, lock=True, require_pristine=request.preserve_accepted_policy
+        session, actor.org_id, flow_id, lock=True, require_pristine=request.preserve_accepted_policy or request.accept_draft_policy
     )
     raced_marker = (plan.plan_document or {}).get("execution_continuation")
     if (
@@ -459,6 +482,10 @@ async def _accept_continuation(session, *, flow_id, actor, request, resolver, re
         raise ContinuationRefusedError("snapshot_changed", "The flow changed during acceptance; preview again.")
     policy = stamp_policy(request.execution_policy, principal_id=actor.actor_id, org_id=actor.org_id)
     document = copy.deepcopy(plan.plan_document)
+    if request.accept_draft_policy:
+        # The reviewed proposed authority stays in the historical draft. Keeping
+        # both fields would let a later ordinary gate answer overwrite this grant.
+        document.pop("proposed_execution_policy", None)
     marker = {
         "contract_version": 1,
         "mode": MODE,
@@ -473,6 +500,7 @@ async def _accept_continuation(session, *, flow_id, actor, request, resolver, re
         "budget_scope": "authenticated_gateway_calls",
         **preview["preserved_authority"],
         **({"delivery_mode": request.delivery_mode} if request.delivery_mode else {}),
+        **({"draft_acceptance": preview["draft_acceptance"]} if request.accept_draft_policy else {}),
     }
     if not await initialize_meter(org_id=actor.org_id, flow_id=flow_id, policy=policy, marker=marker):
         raise ContinuationRefusedError(
@@ -501,6 +529,10 @@ async def _accept_continuation(session, *, flow_id, actor, request, resolver, re
     plan.superseded_at = now
     session.add(new_plan)
     await session.flush()
+    if request.accept_draft_policy:
+        from .draft_continuation import approve_initial_gate
+
+        await approve_initial_gate(session, actor=actor, flow_id=flow_id, acceptance=preview["draft_acceptance"])
     for node in nodes:
         initial = preview["initial_runs"].get(node.id)
         if initial is None:

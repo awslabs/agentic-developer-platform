@@ -326,7 +326,7 @@ def test_legacy_request_hash_retains_pre_adoption_shape():
         effects_and_credentials_reconciled=True,
     )
     actor = ApprovalContext(org_id="org", actor_id="owner", actor_role="owner")
-    old_request = request.model_dump(mode="json", exclude={"expected_snapshot", "preserve_accepted_policy", "delivery_mode"})
+    old_request = request.model_dump(mode="json", exclude={"expected_snapshot", "preserve_accepted_policy", "accept_draft_policy", "delivery_mode"})
     assert request_digest(request, actor) == digest(
         {"request": old_request, "actor": "owner", "org": "org", "budget_scope": "authenticated_gateway_calls"}
     )
