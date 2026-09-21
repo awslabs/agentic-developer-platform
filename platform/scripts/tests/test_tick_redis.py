@@ -86,3 +86,20 @@ def test_full_missing_wiring_diagnosis(monkeypatch):
     assert "credential-must-not-escape" in json.dumps(private)
     assert "credential-must-not-escape" not in json.dumps(facts)
     assert expected["BG_REDIS_URL"] not in json.dumps(facts)
+
+
+def test_simulator_grouped_resource_results_preserve_both_decisions():
+    rows = [{"EvalActionName": "elasticache:Connect", "EvalResourceName": "*", "EvalDecision": "implicitDeny", "ResourceSpecificResults": [
+        {"EvalResourceName": "group-arn", "EvalResourceDecision": "allowed"},
+        {"EvalResourceName": "user-arn", "EvalResourceDecision": "implicitDeny"},
+    ]}]
+    assert redis.simulation_decisions(rows) == {"group-arn": "allowed", "user-arn": "implicitDeny"}
+
+
+def test_known_diagnostic_reason_is_sanitized(monkeypatch):
+    monkeypatch.setattr(redis, "aws", lambda *a: (_ for _ in ()).throw(redis.diag.DiagnosticError("command_failed")))
+    _, facts = redis.collect()
+    assert facts["checks"]["tick"]["reason"] == "command_failed"
+    monkeypatch.setattr(redis, "aws", lambda *a: (_ for _ in ()).throw(redis.diag.DiagnosticError("secret-provider-message")))
+    _, facts = redis.collect()
+    assert "reason" not in facts["checks"]["tick"]

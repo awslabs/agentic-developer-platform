@@ -64,6 +64,24 @@ def permits_group(rules, peer, port):
                and any(pair.get("GroupId") == peer for pair in rule.get("UserIdGroupPairs", [])) for rule in rules)
 
 
+def simulation_decisions(rows):
+    decisions = {}
+    for row in rows:
+        if row.get("EvalActionName") != "elasticache:Connect":
+            continue
+        scoped = row.get("ResourceSpecificResults")
+        if scoped:
+            for resource in scoped:
+                name = resource.get("EvalResourceName")
+                require(name not in decisions, "iam_simulation_incomplete")
+                decisions[name] = resource.get("EvalResourceDecision")
+        else:
+            name = row.get("EvalResourceName")
+            require(name not in decisions, "iam_simulation_incomplete")
+            decisions[name] = row.get("EvalDecision")
+    return decisions
+
+
 def collect():
     """Return private facts plus the only projection permitted in artifacts."""
     evidence = {"observed_at": datetime.now(UTC).isoformat(), "read_only": True, "stage": "redis-diagnose", "checks": {}}
@@ -75,6 +93,14 @@ def collect():
         except Exception as error:
             # Even a malformed provider body can put raw values in exception args.
             evidence["checks"][name] = {"status": "unavailable", "failure_type": type(error).__name__}
+            if isinstance(error, diag.DiagnosticError) and str(error) in {
+                "Forbidden", "Unauthorized", "NotFound", "AccessDenied", "ValidationError", "command_failed", "read_timeout", "tool_unavailable",
+                "invalid_projected_response", "iam_simulation_incomplete", "gateway_store_configuration_mismatch",
+                "tick_update_in_progress", "redis_store_unavailable", "redis_topology_unexpected", "redis_endpoint_mismatch",
+                "redis_cluster_ambiguous", "redis_security_group_ambiguous", "redis_user_unavailable", "redis_user_not_attached",
+                "tick_security_group_ambiguous", "redis_vpc_mismatch", "tick_identity_mismatch", "tick_role_mismatch",
+            }:
+                evidence["checks"][name]["reason"] = str(error)
             return None
 
     def store():
@@ -131,7 +157,7 @@ def collect():
             tick_sg, redis_sg = by_id[ids[0]], by_id[private["redis_sg"]]
             require(tick_sg["VpcId"] == redis_sg["VpcId"] == config["VpcConfig"]["VpcId"], "redis_vpc_mismatch")
             private["security_groups"] = by_id
-            evidence["checks"]["network"] = {"status": "observed", "same_vpc": True,
+            evidence["checks"]["network"] = {"status": "observed", "same_vpc": True, "exact_peer_rules_only": True, "connectivity_tested": False,
                 "tick_to_redis_egress": permits_group(tick_sg.get("IpPermissionsEgress", []), redis_sg["GroupId"], private["port"]),
                 "redis_from_tick_ingress": permits_group(redis_sg.get("IpPermissions", []), tick_sg["GroupId"], private["port"])}
         read("network", network)
@@ -140,7 +166,7 @@ def collect():
             result = aws("iam", "simulate-principal-policy", "--policy-source-arn", config["Role"], "--action-names", "elasticache:Connect",
                          "--resource-arns", *private["resource_arns"])
             rows = result.get("EvaluationResults", [])
-            decisions = {r["EvalResourceName"]: r.get("EvalDecision") for r in rows if r.get("EvalActionName") == "elasticache:Connect"}
+            decisions = simulation_decisions(rows)
             require(set(decisions) == set(private["resource_arns"]), "iam_simulation_incomplete")
             evidence["checks"]["iam"] = {"status": "observed", "simulation_only": True,
                 "elasticache_connect_allowed": all(x == "allowed" for x in decisions.values())}
