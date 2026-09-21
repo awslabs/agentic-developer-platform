@@ -17,8 +17,9 @@ from src.budget import pricing_decisions, pricing_v2_reader
 async def test_stalled_read_times_out_retains_generation_and_releases_lock(monkeypatch, capsys, completion):
     snapshot = load_snapshot()
     generation = ActiveGeneration(7, 9, snapshot.snapshot_version, 1, snapshot.rates, "2026-09-12T00:00:00+00:00")
-    cache = V2RateCache()
-    cache.record_success(generation, monotonic=0)
+    # Exercise the stalled refresh even when the runner uptime is below the cache TTL.
+    cache = V2RateCache(ttl_seconds=0)
+    cache.record_success(generation, monotonic=time.monotonic())
     monkeypatch.setattr(pricing_v2_reader, "_cache", cache)
     monkeypatch.setattr(pricing_v2_reader, "_refresh_lock", asyncio.Lock())
     cancelled = asyncio.Event()
