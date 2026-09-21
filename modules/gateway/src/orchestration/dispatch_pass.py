@@ -144,7 +144,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -499,6 +499,7 @@ class DispatchPassReport:
     # owned by `execution_policy` and read by #5122; mirroring it as dataclass fields
     # here would guarantee the two drift.
     policy_block_reasons: dict[str, int] = field(default_factory=dict)
+    _repository_evaluation_attempted: bool = field(default=False, repr=False)
 
     @property
     def success(self) -> bool:
@@ -552,9 +553,13 @@ async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[Orche
             OrchestrationNode.state == NodeState.READY.value,
             OrchestrationNode.kind.in_([NodeKind.STORY.value, NodeKind.EVAL.value]),
         )
-        .order_by(OrchestrationNode.id)
+        .order_by(
+            (OrchestrationNode.kind == NodeKind.EVAL.value).asc(),
+            case((OrchestrationNode.kind == NodeKind.EVAL.value, OrchestrationNode.updated_at)).asc().nullsfirst(),
+            OrchestrationNode.id,
+        )
         .limit(limit)
-        .with_for_update(skip_locked=True)
+        .with_for_update(of=OrchestrationNode, skip_locked=True)
         .execution_options(populate_existing=True)
     )
     return list((await session.execute(stmt)).scalars().all())
@@ -1358,9 +1363,13 @@ async def _dispatch_one(session, node, *, config, report) -> None:
     if await managed_evaluation(session, node):
         from .repository_evaluation import observe_repository_evaluation
 
-        if await observe_repository_evaluation(session, node):
+        accepted = await accepted_evaluation(session, node)
+        if accepted is not None and accepted[1].evidence_schema == "repository-evaluation/v1":
+            if not report._repository_evaluation_attempted:
+                report._repository_evaluation_attempted = True
+                await observe_repository_evaluation(session, node)
             return
-        if await accepted_evaluation(session, node) is None:
+        if accepted is None:
             await _record_admission_refusal(
                 session,
                 node_id=node.id,

@@ -3,7 +3,9 @@
 `repository-evaluation/v1` is an explicitly accepted machine specification. The
 engine reads evidence itself; it does not launch a reviewer/coordinator worker,
 claim an external dependency issue, or create a fictitious deployment receipt.
-The existing tick invokes the observer before ordinary worker dispatch. Its
+The existing tick admits ready stories first, then observes at most one
+repository evaluation within a 15-second budget including authentication and
+settlement. Oldest-observed evaluations receive the next turn. Its
 typed receipt is recorded in the existing orchestration decision ledger under
 `system:repository-evaluation`.
 

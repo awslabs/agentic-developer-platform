@@ -198,3 +198,88 @@ async def test_external_pr_evidence_never_takes_the_foreign_issue_lane(repositor
     assert state == "passed"
     ctx.claim_spy.assert_not_awaited()
     assert ctx.provider.observe.call_args.args[2][0]["issue_number"] == 5329
+
+
+async def test_slow_evaluations_share_one_small_budget_after_worker_admission(repository_evaluation, monkeypatch):
+    import asyncio
+    import time
+
+    from src.orchestration import dispatch_pass
+
+    ctx = repository_evaluation
+    monkeypatch.setattr("src.orchestration.repository_evaluation.OBSERVATION_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr("src.orchestration.repository_evaluation.RepositoryEvidenceProvider", lambda: ctx.provider)
+    monkeypatch.setattr("src.orchestration.report_dispatch.recover_pending_reports", AsyncMock())
+
+    async def slow_token(binding):
+        await asyncio.Future()
+
+    ctx.provider.token.side_effect = slow_token
+    admitted = []
+    original = dispatch_pass._dispatch_one
+
+    async def dispatch(session, node, *, config, report):
+        if node.kind == "story":
+            # Routing/admission has its own integration suite. This test proves
+            # the scheduler reaches an eligible worker before any slow observer.
+            assert ctx.provider.token.await_count == 0
+            admitted.append(node.id)
+            node.state = "running"
+            report.record(node.org_id, "dispatched")
+        else:
+            await original(session, node, config=config, report=report)
+
+    monkeypatch.setattr(dispatch_pass, "_dispatch_one", dispatch)
+    async with ctx.factory() as db:
+        first = await db.get(OrchestrationNode, ctx.eval_id)
+        second = OrchestrationNode(
+            org_id=first.org_id,
+            flow_id=first.flow_id,
+            epic_ref="E1",
+            wave_ref="W1",
+            node_ref="REPOEVAL2",
+            kind="eval",
+            title="Second evidence read",
+            issue_ref="998",
+            state="ready",
+            attempts=0,
+        )
+        story = OrchestrationNode(
+            org_id=first.org_id,
+            flow_id=first.flow_id,
+            epic_ref="E1",
+            wave_ref="W2",
+            node_ref="NEWSTORY",
+            kind="story",
+            title="Eligible coding work",
+            issue_ref="997",
+            state="ready",
+            attempts=0,
+        )
+        db.add_all([second, story])
+        await db.flush()
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        document = deepcopy(plan.plan_document)
+        document["nodes"].append(
+            dict(
+                address=graph_address(second, flow_slug="cycle"),
+                kind="eval",
+                title=second.title,
+                issue_ref=second.issue_ref,
+                evaluation=ctx.spec,
+            )
+        )
+        document["execution_policy"]["evaluation_acceptance"][graph_address(second, flow_slug="cycle")] = "machine"
+        plan.plan_document = document
+        await db.commit()
+        started = time.monotonic()
+        report = await dispatch_pass.run_dispatch_pass(db, dispatch_pass.DispatchPassConfig(queue_url="queue", repo=ctx.binding.repo))
+        assert time.monotonic() - started < 0.5
+        assert admitted == [story.id] and report.dispatched == 1 and report.errors == 0
+        assert ctx.provider.token.await_count == 1
+        ctx.provider.observe.assert_not_awaited()
+        await db.commit()
+        decisions = list(await db.scalars(select(OrchestrationDecision).where(OrchestrationDecision.actor_id == "system:repository-evaluation")))
+        assert len(decisions) == 1 and "repository_evaluation_time_budget" in decisions[0].reason
+        retry_order = await dispatch_pass._fetch_ready_nodes(db, limit=10)
+        assert retry_order[0].id != decisions[0].node_id

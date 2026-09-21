@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -10,6 +11,7 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
+import httpx
 import yaml
 
 from src.knowledge.github_app_service import mint_installation_token_with_expiry, resolve_tenant_app_credentials
@@ -93,7 +95,7 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             private_key,
             binding.installation_id,
             repositories=[binding.repo.split("/", 1)[1]],
-            permissions={"actions": "read", "contents": "read", "pull_requests": "read", "checks": "read", "metadata": "read"},
+            permissions={"actions": "read", "contents": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"},
         )
         deadline = timestamp(expires)
         require(deadline > self.clock() + timedelta(seconds=30), "credential_expired")
@@ -116,7 +118,11 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         if source.get("provider_pr_node_id"):
             require(pr["node_id"] == source["provider_pr_node_id"], "pull_request_identity_changed")
         review = await self.reviews.bound_pull_request(
-            org_id=binding.org_id, installation_id=binding.installation_id, repo=binding.repo, pr_number=source["pr_number"]
+            org_id=binding.org_id,
+            installation_id=binding.installation_id,
+            repo=binding.repo,
+            pr_number=source["pr_number"],
+            read_token=await self.token(binding),
         )
         require(review is not None and review.review_approved and review.head_sha == source["head_sha"], "review_missing_or_stale")
         checks = await self.pages(binding, f"{prefix}/commits/{source['head_sha']}/check-runs", "check_runs", filter="latest")
@@ -243,9 +249,33 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         )
 
     async def observe(self, binding, spec, sources):
+        owned = self.client is None
+        if owned:
+            self.client = httpx.AsyncClient(timeout=10, trust_env=False, follow_redirects=False)
+        try:
+            return await self._observe(binding, spec, sources)
+        finally:
+            if owned:
+                await self.client.aclose()
+                self.client = None
+
+    async def _observe(self, binding, spec, sources):
         repository = (await self.request(binding, "GET", f"/repos/{binding.repo}")).json()
         require(repository.get("id") == spec.runner.repository_id == binding.provider_repository_id, "repository_changed")
-        pulls = [await self.pull_request(binding, source) for source in sources]
+        semaphore = asyncio.Semaphore(4)
+
+        async def pull(source):
+            async with semaphore:
+                return await self.pull_request(binding, source)
+
+        try:
+            async with asyncio.TaskGroup() as group:
+                tasks = [group.create_task(pull(source)) for source in sources]
+        except ExceptionGroup as errors:
+            if all(isinstance(error, CycleBlockedError) for error in errors.exceptions):
+                raise errors.exceptions[0] from None
+            raise
+        pulls = [task.result() for task in tasks]
         revisions = {source["address"]: source["merge_sha"] for source in sources if source.get("address")}
         for workflow in spec.workflows:
             revision = workflow.source.revision or revisions[workflow.source.predecessor]

@@ -278,3 +278,53 @@ async def test_workflow_revision_must_include_all_verified_source_merges(evidenc
     else:
         with pytest.raises(CycleBlockedError, match="workflow_missing_delivered_revision"):
             await observe(evidence)
+
+
+async def test_shared_app_review_reuses_scoped_read_token_without_minting_broad_token(monkeypatch):
+    from src.orchestration.merge_evidence import GitHubEvidenceSource
+
+    app = SimpleNamespace(get_installation_token=AsyncMock(side_effect=AssertionError("no broad token")), aclose=AsyncMock())
+    monkeypatch.setattr("src.admin.connections.github_client.GitHubAppClient", lambda *args: app)
+    monkeypatch.setattr("src.knowledge.github_app_service.resolve_tenant_app_credentials", AsyncMock(return_value=(42, "unused")))
+
+    def transport(request):
+        assert request.headers["authorization"] == "Bearer actual-scoped-read-token"
+        if request.url.path == "/graphql":
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "repository": {
+                            "databaseId": 123,
+                            "pullRequest": {
+                                "id": "PR_2",
+                                "headRefOid": "a" * 40,
+                                "author": {"login": "shared-app[bot]"},
+                                "merged": True,
+                                "reviews": {"nodes": [], "pageInfo": {"hasPreviousPage": False}},
+                            },
+                        }
+                    }
+                },
+            )
+        assert request.url.path == "/repos/o/r/issues/2/comments"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 9,
+                    "updated_at": "2026-09-21T00:00:00Z",
+                    "performed_via_github_app": {"id": 42},
+                    "user": {"type": "Bot"},
+                    "body": "## agent-codex-reviewer — APPROVE\n\n**Reviewed head:** `" + "a" * 40 + "`\n**Blockers:** 0\n**Engine:** reviewer-run\n",
+                }
+            ],
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    monkeypatch.setattr("src.orchestration.merge_evidence.httpx.AsyncClient", lambda **kwargs: client)
+    result = await GitHubEvidenceSource().bound_pull_request(
+        org_id="org", installation_id=42, repo="o/r", pr_number=2, read_token="actual-scoped-read-token"
+    )
+    assert result.review_approved and result.head_sha == "a" * 40
+    app.get_installation_token.assert_not_awaited()

@@ -40,6 +40,7 @@ from .state import ActorKind, NodeState, transition
 
 ACTOR = "system:repository-evaluation"
 logger = logging.getLogger(__name__)
+OBSERVATION_TIMEOUT_SECONDS = 15
 
 
 class RepositoryEvaluationReceipt(Contract):
@@ -214,6 +215,9 @@ async def authorize(session, node, plan, spec, binding, provider):
 async def record(session, node, payload, *, rejection=False, before=None):
     text = canonical(payload)
     require(len(text) <= 512 * 1024, "receipt_size_limit")
+    # A repeated blocker still advances the observation cursor so the next tick
+    # gives another ready evaluation its bounded turn without growing the ledger.
+    node.updated_at = datetime.now(UTC)
     previous = await session.scalar(
         select(OrchestrationDecision)
         .where(
@@ -245,7 +249,29 @@ async def record(session, node, payload, *, rejection=False, before=None):
 
 
 async def observe_repository_evaluation(session, node, *, provider=None):
-    """Called before ordinary dispatch; caller owns the existing tick transaction."""
+    """One bounded observer after story admission; no slow read owns the tick."""
+    try:
+        async with asyncio.timeout(OBSERVATION_TIMEOUT_SECONDS):
+            async with session.begin_nested():
+                return await _observe_repository_evaluation(session, node, provider=provider)
+    except TimeoutError:
+        await session.refresh(node)
+        await record(
+            session,
+            node,
+            dict(
+                action="repository_evaluation_blocked",
+                block_code="repository_evaluation_time_budget",
+                owner="engine",
+                required_input="Complete authenticated evidence reads within the per-tick observation budget.",
+                next_action="Retry this evidence observation on a later engine tick without delaying worker admission.",
+            ),
+            rejection=True,
+        )
+        return True
+
+
+async def _observe_repository_evaluation(session, node, *, provider=None):
     accepted = await accepted_evaluation(session, node)
     if accepted is None or accepted[1].evidence_schema != "repository-evaluation/v1":
         return False
@@ -270,7 +296,7 @@ async def observe_repository_evaluation(session, node, *, provider=None):
         sources = await sources_for(session, node, plan, spec)
         spec_hash = hashlib.sha256(canonical(spec.model_dump(mode="json")).encode()).hexdigest()
         snapshot_hash = hashlib.sha256(canonical(sources).encode()).hexdigest()
-        observed = await asyncio.wait_for(provider.observe(binding, spec, sources), timeout=90)
+        observed = await provider.observe(binding, spec, sources)
         settlement = await session.begin_nested()
         # Lock/re-read accepted state at the write boundary, including all direct
         # predecessors. An amendment or binding replacement invalidates the read.

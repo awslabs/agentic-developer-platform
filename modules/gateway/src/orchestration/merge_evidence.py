@@ -107,6 +107,7 @@ class GitHubEvidenceSource:
         installation_id: int,
         repo: str,
         pr_number: int,
+        read_token: str | None = None,
     ) -> MergeEvidence | None:
         """Provider truth about one specific pull request (#5301).
 
@@ -138,7 +139,7 @@ class GitHubEvidenceSource:
         app_id, private_key = await resolve_tenant_app_credentials(org_id)
         app = GitHubAppClient(app_id, private_key)
         try:
-            token = await app.get_installation_token(installation_id)
+            token = read_token if read_token is not None else await app.get_installation_token(installation_id)
             query = """query($owner:String!,$name:String!,$pr:Int!) {
               repository(owner:$owner,name:$name) { databaseId pullRequest(number:$pr) {
                 id url merged mergedAt headRefOid reviewDecision isDraft mergeable mergeStateStatus mergeCommit { oid }
