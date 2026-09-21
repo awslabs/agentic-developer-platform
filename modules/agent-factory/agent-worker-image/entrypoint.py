@@ -2671,11 +2671,13 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             agent_env["ANTHROPIC_BEDROCK_BASE_URL"] = (
                 f"http://127.0.0.1:{agent_env['SIGV4_PROXY_PORT']}"
             )
-            if agent_env.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() == "true":
-                # Only this loopback hop is unsigned. The proxy authenticates
-                # upstream with protected IRSA and the current run/pod proof.
-                # Model startup must not mint customer task credentials.
-                agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] = "1"
+            # Only this loopback hop is unsigned. The proxy signs every upstream
+            # request with platform IRSA; gateway run/budget checks still apply.
+            # This applies to shared as well as protected workers: asking the SDK
+            # to authenticate the local hop also triggers unrelated default-model
+            # probes before the selected model can run. An unavailable legacy
+            # model can then block a healthy selected model's shared budget.
+            agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] = "1"
             # Do NOT set ANTHROPIC_BASE_URL — that routes to the broken translator
             agent_env.pop("ANTHROPIC_BASE_URL", None)
             # claude-agent-sdk >= ~0.3.2xx rejects streaming responses whose

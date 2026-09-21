@@ -2227,6 +2227,10 @@ class TestBedrockViaGateway:
         else:
             monkeypatch.setenv("SIGV4_PROXY_PORT", port)
         monkeypatch.setenv("ADP_AGENT_AUTHORITY_ENABLED", str(protected).lower())
+        # A pod-level false value must not re-enable SDK authentication/probes
+        # against the loopback proxy for either shared or protected workers.
+        monkeypatch.setenv("CLAUDE_CODE_SKIP_BEDROCK_AUTH", "0")
+        selected_model = "global.anthropic.claude-opus-5"
         if protected:
             monkeypatch.setattr(
                 entrypoint,
@@ -2238,7 +2242,10 @@ class TestBedrockViaGateway:
         monkeypatch.setattr(entrypoint, "_setup_agent_control", lambda *_: False)
         monkeypatch.setattr("lib.run_identity.bootstrap_run_identity", lambda *_: None)
 
-        mock_receive_msg.return_value = (json.dumps(SAMPLE_ENVELOPE), "receipt-gw1")
+        mock_receive_msg.return_value = (
+            json.dumps({**SAMPLE_ENVELOPE, "model_resolved": selected_model}),
+            "receipt-gw1",
+        )
         mock_vault = MagicMock()
         mock_vault_cls.return_value = mock_vault
         mock_vault.get_secret.return_value = {"app_id": "123", "private_key": "k"}
@@ -2264,16 +2271,22 @@ class TestBedrockViaGateway:
         assert agent_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
         assert agent_env["SIGV4_PROXY_PORT"] == (port or "9090")
         assert agent_env["ANTHROPIC_BEDROCK_BASE_URL"] == f"http://127.0.0.1:{port or '9090'}"
+        assert agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
+        assert agent_env["ANTHROPIC_MODEL"] == selected_model
         # Must NOT have ANTHROPIC_BASE_URL (that routes to the broken translator)
         assert "ANTHROPIC_BASE_URL" not in agent_env
         if protected:
-            assert agent_env["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "1"
             assert "AWS_ROLE_ARN" not in agent_env
             assert agent_env["ADP_WORKER_IRSA_ROLE_ARN"].endswith(":role/authority-worker")
             assert agent_env["ADP_WORKER_AWS_REGION"] == "us-east-1"
             assert not Path(agent_env["AWS_CONFIG_FILE"]).exists()
         # Parent lifecycle operations continue to use platform IRSA.
         assert os.environ["AWS_ROLE_ARN"].endswith(":role/authority-worker")
+        assert os.environ["CLAUDE_CODE_SKIP_BEDROCK_AUTH"] == "0"
+        # Upstream proxy authentication keeps the original platform identity.
+        proxy_env = mock_start_proxy.call_args.args[0]
+        assert proxy_env["AWS_ROLE_ARN"].endswith(":role/authority-worker")
+        assert proxy_env["AWS_WEB_IDENTITY_TOKEN_FILE"] == "/projected/worker-token"
 
         # Proxy was started and stopped
         mock_start_proxy.assert_called_once()
