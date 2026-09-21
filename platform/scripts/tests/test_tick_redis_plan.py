@@ -186,6 +186,24 @@ def test_equivalent_empty_network_collections_may_be_null_in_saved_plan():
     assert len(guard.check_plan(data, ctx)) == 4
 
 
+def test_provider_6_ingress_metadata_must_remain_exact_and_inert():
+    ctx = context()
+    data = plan(ctx)
+    data["resource_changes"][2]["change"]["after"].update(region=REGION, timeouts=None)
+    assert len(guard.check_plan(data, ctx)) == 4
+
+
+@pytest.mark.parametrize("field,value", [("region", "us-west-2"), ("region", None), ("timeouts", {"create": "60m"}), ("timeouts", {}), ("extra_field", None)])
+def test_ingress_region_timeouts_and_extra_fields_remain_restricted(field, value):
+    ctx = context()
+    data = plan(ctx)
+    change = data["resource_changes"][2]["change"]
+    change["after"].update(region=REGION, timeouts=None)
+    change["after"][field] = value
+    with pytest.raises(Refused):
+        guard.check_plan(data, ctx)
+
+
 def test_pre_guard_plan_shape_exposes_only_safe_addresses_and_actions():
     data = plan(context())
     data["resource_changes"].append(resource("module.redis[0].aws_elasticache_user.unrelated", {"secret": "hidden"}, {"secret": "changed-hidden"}))

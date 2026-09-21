@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from shared_runtime_plan_guard import known, normalized, require, unchanged
+from shared_runtime_plan_guard import REGION, known, normalized, require, unchanged
 from tick_redis import KEYS, TICK
 
 PREFIX = "module.orchestration_tick[0]."
@@ -137,7 +137,11 @@ def check_plan(plan, context):
             require(known({k: v for k, v in unknown.items() if k not in {"id", "security_group_rule_id"}}), "Redis ingress is unresolved")
             expected = {"description": "Redis budget access from the orchestration tick", "type": "ingress", "protocol": "tcp", "from_port": context["port"], "to_port": context["port"], "security_group_id": context["redis_sg"], "source_security_group_id": context["configuration"]["VpcConfig"]["SecurityGroupIds"][0], "self": False}
             require(all(after.get(k) == v for k, v in expected.items()), "Redis ingress scope changed")
-            require(set(after) <= set(expected) | {"id", "security_group_rule_id", "cidr_blocks", "ipv6_cidr_blocks", "prefix_list_ids"}, "unexpected Redis ingress fields")
+            # AWS provider 6 adds a per-resource region and represents an omitted
+            # timeout block as null. Neither may change the approved operation.
+            require(after.get("region", REGION) == REGION, "Redis ingress region changed")
+            require(after.get("timeouts") is None, "Redis ingress has explicit timeouts")
+            require(set(after) <= set(expected) | {"id", "security_group_rule_id", "cidr_blocks", "ipv6_cidr_blocks", "prefix_list_ids", "region", "timeouts"}, "unexpected Redis ingress fields")
             require(not any(after.get(k) for k in ("cidr_blocks", "ipv6_cidr_blocks", "prefix_list_ids")), "Redis ingress broadens network access")
         elif address == IAM:
             require(actions == ["create"] and before is None, "Redis policy must not replace existing permissions")
