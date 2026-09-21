@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from shared_runtime_plan_guard import known, normalized, require, unchanged
 from tick_redis import KEYS, TICK
 
@@ -32,6 +33,19 @@ def network_rules(rules):
                 item[key] = []
         result.append(item)
     return normalized(result)
+
+
+def plan_shape(plan):
+    """Resource identities/actions only; no keyed addresses or provider values."""
+    result = []
+    for resource in plan.get("resource_changes", []):
+        actions = resource.get("change", {}).get("actions")
+        address = resource.get("address")
+        require(isinstance(address, str) and bool(re.fullmatch(r"[A-Za-z0-9_.\[\]-]{1,256}", address)), "unprojectable Terraform resource address")
+        require(isinstance(actions, list) and all(value in {"no-op", "read", "create", "update", "delete", "forget"} for value in actions), "unknown Terraform action")
+        if actions != ["no-op"]:
+            result.append({"address": address, "actions": actions})
+    return result
 
 
 def check_plan(plan, context):

@@ -184,3 +184,14 @@ def test_equivalent_empty_network_collections_may_be_null_in_saved_plan():
     for key in ("cidr_blocks", "ipv6_cidr_blocks", "prefix_list_ids"):
         rule[key] = None
     assert len(guard.check_plan(data, ctx)) == 4
+
+
+def test_pre_guard_plan_shape_exposes_only_safe_addresses_and_actions():
+    data = plan(context())
+    data["resource_changes"].append(resource("module.redis[0].aws_elasticache_user.unrelated", {"secret": "hidden"}, {"secret": "changed-hidden"}))
+    shape = guard.plan_shape(data)
+    assert shape[-1] == {"address": "module.redis[0].aws_elasticache_user.unrelated", "actions": ["update"]}
+    assert "hidden" not in json.dumps(shape) and "never-print-fixture" not in json.dumps(shape)
+    data["resource_changes"][-1]["address"] = 'module.secret["sensitive-key"].resource.name'
+    with pytest.raises(Refused, match="unprojectable"):
+        guard.plan_shape(data)

@@ -19,7 +19,7 @@ import time
 
 from shared_runtime_plan_guard import ACCOUNT, REGION, Refused, preserved_tick_inputs, require
 import tick_redis
-from tick_redis_plan_guard import TARGETS, LAMBDA, SG, INGRESS, IAM, check_plan
+from tick_redis_plan_guard import TARGETS, LAMBDA, SG, INGRESS, IAM, check_plan, plan_shape
 
 ROOT = Path(__file__).resolve().parents[2]
 GATEWAY = ROOT / "modules/gateway/infra"
@@ -114,6 +114,16 @@ def run_stage(account, directory, execute):
             command(["terraform", "plan", "-input=false", "-lock-timeout=30s", f"-var-file={ROOT}/environments/dev/modules/gateway.tfvars", f"-var-file={variables}", f"-out={saved}", *[f"-target={name}" for name in sorted(TARGETS)]], cwd=GATEWAY)
             saved.chmod(0o600)
             plan = tick_redis.diag.decode(command(["terraform", "show", "-json", str(saved)], cwd=GATEWAY))
+            shape = plan_shape(plan)
+            image_facts = []
+            for resource in plan.get("resource_changes", []):
+                if resource.get("address") == LAMBDA:
+                    before_image = (resource["change"].get("before") or {}).get("image_uri")
+                    image_facts.append({"before_matches_live_reference": before_image == function["Code"].get("ImageUri"),
+                                        "before_matches_resolved_digest": before_image == context["image_uri"],
+                                        "live_reference_is_digest": "@sha256:" in function["Code"].get("ImageUri", "")})
+            write_private(directory / "redis-plan-shape.json", {"resources": shape, "lambda_image_facts": image_facts})
+            print(json.dumps({"redis_plan_shape": shape, "lambda_image_facts": image_facts}))
             changes = check_plan(plan, context)
             digest = hashlib.sha256(saved.read_bytes()).hexdigest()
             summary = {"stage": "tick-redis", "account_id": ACCOUNT, "plan_sha256": digest, "changes": changes, "executed": False}
