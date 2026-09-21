@@ -195,3 +195,96 @@ def test_pre_guard_plan_shape_exposes_only_safe_addresses_and_actions():
     data["resource_changes"][-1]["address"] = 'module.secret["sensitive-key"].resource.name'
     with pytest.raises(Refused, match="unprojectable"):
         guard.plan_shape(data)
+
+
+def test_existing_policy_projection_compares_without_disclosing_values():
+    old = {"Version": "2012-10-17", "Statement": [{"Sid": "RDSConnect", "Action": ["old-secret-action"], "Resource": "secret-resource"}, {"Sid": "secret-custom-sid", "Resource": "secret-resource"}]}
+    new = deepcopy(old)
+    new["Statement"][0]["Action"] = ["new-secret-action"]
+    data = {"resource_changes": [resource(guard.EXISTING_IAM, {"policy": json.dumps(old), "id": "old-secret-id"}, {"policy": json.dumps(new), "id": "new-secret-id"})]}
+    facts = guard.existing_policy_facts(data, old)[0]
+    assert facts["changed_fields"] == ["id", "policy"]
+    assert facts["before_matches_live_policy"] and not facts["after_matches_live_policy"]
+    assert not facts["normalized_policy_unchanged"] and facts["policy_metadata_unchanged"]
+    assert facts["statements"] == [{"sid": "RDSConnect", "before_count": 1, "after_count": 1, "unchanged": False, "changed_fields": ["Action"]}]
+    assert facts["unprojected_statement_counts"] == {"before": 1, "after": 1}
+    assert "secret" not in json.dumps(facts)
+    with pytest.raises(Refused, match="unrelated resource"):
+        guard.check_plan(data, context())
+
+
+def test_existing_policy_projection_distinguishes_formatting_and_unknowns():
+    policy = {"Version": "2012-10-17", "Statement": [{"Sid": "RDSConnect", "Action": ["two", "one"]}]}
+    reordered = {"Statement": [{"Action": ["one", "two"], "Sid": "RDSConnect"}], "Version": "2012-10-17"}
+    data = {"resource_changes": [resource(guard.EXISTING_IAM, {"policy": json.dumps(policy)}, {"policy": json.dumps(reordered)})]}
+    facts = guard.existing_policy_facts(data, policy)[0]
+    assert facts["changed_fields"] == ["policy"] and facts["normalized_policy_unchanged"]
+    assert facts["before_matches_live_policy"] and facts["after_matches_live_policy"]
+    change = data["resource_changes"][0]["change"]
+    change["after"] = {"policy": None}
+    change["after_unknown"] = {"policy": True}
+    facts = guard.existing_policy_facts(data, policy)[0]
+    assert facts["unresolved_fields"] == ["policy"] and not facts["after_policy_available"]
+
+
+@pytest.mark.parametrize("drift", [None, "before_apply", "after_apply"])
+def test_maintenance_preserves_existing_policy_and_checks_both_sides_of_apply(monkeypatch, tmp_path, capsys, drift):
+    ctx = context()
+    policy = {"Version": "2012-10-17", "Statement": [{"Sid": "RDSConnect", "Effect": "Allow", "Action": ["fixture:Read"], "Resource": "secret-resource"}]}
+    state = {"applied": False, "policy_reads": 0}
+    module = tmp_path / "gateway" / "modules" / "tick"
+    module.mkdir(parents=True)
+    monkeypatch.setattr(maintenance, "GATEWAY", module.parents[1])
+    monkeypatch.setattr(maintenance, "MODULE", module)
+    monkeypatch.setattr(maintenance.tick_redis.diag, "identity", lambda *a: None)
+    monkeypatch.setattr(maintenance, "preserved_tick_inputs", lambda *a, **k: {})
+    def collect():
+        present = state["applied"]
+        evidence = {"complete": True, "checks": {"tick": {"redis_settings": {key: {"matches_gateway_store": present} for key in ctx["expected_env"]}},
+                    "network": {"tick_to_redis_egress": present, "redis_from_tick_ingress": present}, "iam": {"elasticache_connect_allowed": present}}}
+        return deepcopy(ctx), evidence
+    monkeypatch.setattr(maintenance.tick_redis, "collect", collect)
+    def aws(*args):
+        if args[:2] == ("lambda", "get-function"):
+            config = deepcopy(ctx["configuration"])
+            if state["applied"]:
+                config["Environment"]["Variables"].update(ctx["expected_env"])
+            return {"Configuration": config, "Code": {"ImageUri": ctx["image_uri"], "ResolvedImageUri": ctx["image_uri"]}}
+        if args[:2] == ("iam", "get-role-policy"):
+            state["policy_reads"] += 1
+            current = deepcopy(policy)
+            if drift == "before_apply" and state["policy_reads"] > 1 or drift == "after_apply" and state["applied"]:
+                current["Statement"][0]["Resource"] = "changed-secret-resource"
+            return {"PolicyDocument": current}
+        assert args[:2] == ("ssm", "get-parameter")
+        return {"Parameter": {"Value": "{}"}}
+    monkeypatch.setattr(maintenance, "aws", aws)
+    def command(args, **kwargs):
+        if args[:2] == ["terraform", "plan"]:
+            Path(next(arg.removeprefix("-out=") for arg in args if arg.startswith("-out="))).write_bytes(b"private-fixture-plan")
+            state["override"] = json.loads((module / "zz_tick_redis_maintenance_override.tf.json").read_text())
+        if args[:2] == ["terraform", "show"]:
+            data = plan(ctx)
+            old = {"name": "adp-dev-orchestration-tick-policy", "role": "adp-dev-orchestration-tick-role", "policy": json.dumps(policy)}
+            retained = resource(guard.EXISTING_IAM, old, deepcopy(old))
+            retained["change"]["actions"] = ["no-op"]
+            data["resource_changes"].append(retained)
+            return json.dumps(data)
+        if args[:2] == ["terraform", "apply"]:
+            state["applied"] = True
+        return ""
+    monkeypatch.setattr(maintenance, "command", command)
+    if drift:
+        with pytest.raises(Refused, match="existing tick permissions changed"):
+            maintenance.run_stage(ACCOUNT, tmp_path / "evidence", True)
+    else:
+        maintenance.run_stage(ACCOUNT, tmp_path / "evidence", True)
+    retained = state["override"]["resource"]["aws_iam_role_policy"]["tick"]
+    assert json.loads(retained["policy"]) == policy and retained["lifecycle"] == {"ignore_changes": ["policy"]}
+    assert state["applied"] is (drift != "before_apply")
+    assert (tmp_path / "evidence" / "redis-verified.json").exists() is (drift is None)
+    assert state["policy_reads"] == (2 if drift == "before_apply" else 3)
+    assert not (module / "zz_tick_redis_maintenance_override.tf.json").exists()
+    assert not (module.parents[1] / "zz_tick_redis_maintenance_override.tf.json").exists()
+    output = capsys.readouterr().out
+    assert "secret-resource" not in output and "never-print-fixture" not in output

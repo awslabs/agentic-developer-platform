@@ -11,6 +11,7 @@ LAMBDA = PREFIX + "aws_lambda_function.tick"
 SG = PREFIX + "aws_security_group.tick"
 INGRESS = PREFIX + "aws_security_group_rule.redis_from_tick[0]"
 IAM = PREFIX + "aws_iam_role_policy.tick_redis[0]"
+EXISTING_IAM = PREFIX + "aws_iam_role_policy.tick"
 TARGETS = {LAMBDA, SG, INGRESS, IAM}
 
 
@@ -46,6 +47,57 @@ def plan_shape(plan):
         if actions != ["no-op"]:
             result.append({"address": address, "actions": actions})
     return result
+
+
+def existing_policy_facts(plan, live_policy):
+    """Compare in memory; emit only fixed schema/Sid names and equality facts."""
+    resource_fields = {"id", "name", "name_prefix", "policy", "role"}
+    statement_fields = {"Sid", "Effect", "Action", "NotAction", "Resource", "NotResource", "Principal", "NotPrincipal", "Condition"}
+    # These names come from the checked-in module, never from an arbitrary value.
+    allowed_sids = {"RDSConnect", "CloudWatchLogs", "PublishTickMetrics", "PublishOrchestrationAlerts", "PublishEngineDispatch",
+                    "VPCExecution", "XRayTracing", "EngineCommandEventsRead", "EngineCommandConsume", "EngineRuns",
+                    "EngineCommandEventsKMSDecrypt", "ReadRunReportSigningMaterial", "EngineCommandAckCredentials"}
+    def statements(document):
+        items = document.get("Statement", [])
+        return items if isinstance(items, list) else [items]
+    output = []
+    for resource in plan.get("resource_changes", []):
+        if resource.get("address") != EXISTING_IAM:
+            continue
+        change = resource["change"]
+        before, after, unknown = change.get("before") or {}, change.get("after") or {}, change.get("after_unknown") or {}
+        keys = set(before) | set(after)
+        facts = {"changed_fields": sorted(k for k in keys & resource_fields if before.get(k) != after.get(k)),
+                 "unexpected_field_count": len(keys - resource_fields),
+                 "unresolved_fields": sorted(k for k in unknown.keys() & resource_fields if not known(unknown[k])),
+                 "unexpected_unresolved_field_count": sum(not known(v) for k, v in unknown.items() if k not in resource_fields)}
+        documents = {}
+        for label, values in (("before", before), ("after", after)):
+            value = values.get("policy")
+            document = json.loads(value) if isinstance(value, str) else value
+            facts[label + "_policy_available"] = isinstance(document, dict)
+            if isinstance(document, dict):
+                documents[label] = document
+                facts[label + "_matches_live_policy"] = normalized(document) == normalized(live_policy)
+        if set(documents) == {"before", "after"}:
+            old, new = documents["before"], documents["after"]
+            facts["normalized_policy_unchanged"] = normalized(old) == normalized(new)
+            facts["policy_metadata_unchanged"] = {k: v for k, v in old.items() if k != "Statement"} == {k: v for k, v in new.items() if k != "Statement"}
+            old_items, new_items = statements(old), statements(new)
+            facts["unprojected_statement_counts"] = {label: sum(not isinstance(item, dict) or item.get("Sid") not in allowed_sids for item in items)
+                                                     for label, items in (("before", old_items), ("after", new_items))}
+            facts["statements"] = []
+            for sid in sorted(allowed_sids):
+                old_sid = [item for item in old_items if isinstance(item, dict) and item.get("Sid") == sid]
+                new_sid = [item for item in new_items if isinstance(item, dict) and item.get("Sid") == sid]
+                if not old_sid and not new_sid:
+                    continue
+                item = {"sid": sid, "before_count": len(old_sid), "after_count": len(new_sid), "unchanged": normalized(old_sid) == normalized(new_sid)}
+                if len(old_sid) == len(new_sid) == 1:
+                    item["changed_fields"] = sorted(k for k in statement_fields if normalized(old_sid[0].get(k)) != normalized(new_sid[0].get(k)))
+                facts["statements"].append(item)
+        output.append(facts)
+    return output
 
 
 def check_plan(plan, context):

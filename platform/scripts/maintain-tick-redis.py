@@ -19,7 +19,7 @@ import time
 
 from shared_runtime_plan_guard import ACCOUNT, REGION, Refused, preserved_tick_inputs, require
 import tick_redis
-from tick_redis_plan_guard import TARGETS, LAMBDA, SG, INGRESS, IAM, check_plan, plan_shape
+from tick_redis_plan_guard import TARGETS, LAMBDA, SG, INGRESS, IAM, check_plan, plan_shape, existing_policy_facts
 
 ROOT = Path(__file__).resolve().parents[2]
 GATEWAY = ROOT / "modules/gateway/infra"
@@ -107,7 +107,11 @@ def run_stage(account, directory, execute):
             created.append(root_override)
             write_private(module_override, {"resource": {
                 "aws_lambda_function": {"tick": {"environment": {"variables": config["Environment"]["Variables"] | context["expected_env"]}}},
-                "aws_iam_role_policy": {"tick": {"policy": json.dumps(policy)}}}})
+                # The existing policy is outside this maintenance operation.
+                # Even provider/document normalization must not schedule a rewrite.
+                # The guard still refuses any change to this resource, and the
+                # live document is compared exactly before and after apply.
+                "aws_iam_role_policy": {"tick": {"policy": json.dumps(policy), "lifecycle": {"ignore_changes": ["policy"]}}}}})
             created.append(module_override)
             command(["terraform", "init", "-input=false", "-reconfigure", f"-backend-config={ROOT}/environments/dev/modules/gateway-backend.tfvars", f"-backend-config=bucket=adp-terraform-state-{ACCOUNT}"], cwd=GATEWAY)
             saved = scratch / "redis.tfplan"
@@ -122,8 +126,9 @@ def run_stage(account, directory, execute):
                     image_facts.append({"before_matches_live_reference": before_image == function["Code"].get("ImageUri"),
                                         "before_matches_resolved_digest": before_image == context["image_uri"],
                                         "live_reference_is_digest": "@sha256:" in function["Code"].get("ImageUri", "")})
-            write_private(directory / "redis-plan-shape.json", {"resources": shape, "lambda_image_facts": image_facts})
-            print(json.dumps({"redis_plan_shape": shape, "lambda_image_facts": image_facts}))
+            policy_facts = existing_policy_facts(plan, policy)
+            write_private(directory / "redis-plan-shape.json", {"resources": shape, "lambda_image_facts": image_facts, "existing_policy_facts": policy_facts})
+            print(json.dumps({"redis_plan_shape": shape, "lambda_image_facts": image_facts, "existing_policy_facts": policy_facts}))
             changes = check_plan(plan, context)
             digest = hashlib.sha256(saved.read_bytes()).hexdigest()
             summary = {"stage": "tick-redis", "account_id": ACCOUNT, "plan_sha256": digest, "changes": changes, "executed": False}
@@ -150,6 +155,7 @@ def run_stage(account, directory, execute):
                 require(ready(after), "Redis configuration verification incomplete")
                 latest = aws("lambda", "get-function", "--function-name", TICK)
                 require(latest["Code"]["ResolvedImageUri"] == context["image_uri"] and latest["Configuration"]["Environment"]["Variables"] == config["Environment"]["Variables"] | context["expected_env"], "post-apply image or environment differs")
+                require(aws("iam", "get-role-policy", "--role-name", role_name, "--policy-name", TICK + "-policy")["PolicyDocument"] == policy, "existing tick permissions changed after apply")
                 summary["executed"] = True
                 write_private(directory / "redis-verified.json", summary)
                 print(json.dumps(summary))
