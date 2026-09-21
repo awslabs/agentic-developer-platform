@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       stage:
-        description: Run one explicit rollout stage; verify is read-only.
+        description: Run one explicit stage; diagnose reads rollout health independently of the release lane.
         required: true
         type: choice
         options:
@@ -19,17 +19,18 @@ on:
           - gateway-enable
           - tick-enable
           - verify
+          - diagnose
       gateway_revision:
-        description: Full reviewed commit SHA already deployed to gateway and tick.
-        required: true
+        description: Full reviewed gateway/tick SHA. Required except for diagnose.
+        required: false
         type: string
       worker_revision:
-        description: Full reviewed source commit SHA for the worker image.
-        required: true
+        description: Full reviewed worker source SHA. Required except for diagnose.
+        required: false
         type: string
       worker_digest:
-        description: Approved sha256 digest of that worker image.
-        required: true
+        description: Approved worker sha256 digest. Required except for diagnose.
+        required: false
         type: string
       execute:
         description: Apply the exact machine-validated plans or worker patch. False plans only.
@@ -42,9 +43,10 @@ on:
         default: false
         type: boolean
 
-# Same release lane as gateway deploy/infra; never cancel an active release.
+# Diagnostics may observe an in-progress rollout. All other stages retain the
+# gateway deploy/infra release lane; neither lane cancels an active run.
 concurrency:
-  group: gateway-release-dev
+  group: ${{ inputs.stage == 'diagnose' && 'gateway-diagnostics-dev' || 'gateway-release-dev' }}
   cancel-in-progress: false
 
 permissions:
@@ -69,6 +71,16 @@ jobs:
       UNLOCK_KNOWN_ORPHAN: ${{ inputs.unlock_known_orphan }}
     steps:
       - uses: actions/checkout@v7
+      - name: Validate stage inputs before tooling or runtime reads
+        run: |
+          set -euo pipefail
+          if [[ "$ROLLOUT_STAGE" == diagnose ]]; then
+            [[ "$EXECUTE" == false && "$UNLOCK_KNOWN_ORPHAN" == false ]]
+          else
+            [[ "$GATEWAY_REVISION" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$WORKER_REVISION" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$WORKER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          fi
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
@@ -76,9 +88,12 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install 'pytest==9.0.3'
+          python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_diagnostics.py -q
           python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_maintenance.py -q
-          python -m pytest --import-mode=importlib modules/agent-factory/webhook-ingress/tests/test_shared_worker_rollout.py -q
+          # These pure patch-generator tests need no Lambda/AWS fixture setup.
+          python -m pytest --noconftest --import-mode=importlib modules/agent-factory/webhook-ingress/tests/test_shared_worker_rollout.py -q
       - uses: hashicorp/setup-terraform@v3
+        if: inputs.stage != 'diagnose'
         with:
           terraform_version: '1.14.6'
           terraform_wrapper: false
@@ -107,6 +122,12 @@ jobs:
       - name: Run reviewed maintenance stage
         run: |
           set -euo pipefail
+          if [[ "$ROLLOUT_STAGE" == diagnose ]]; then
+            python platform/scripts/diagnose-shared-runtime.py \
+              --account-id "$TARGET_ACCOUNT" \
+              --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence"
+            exit 0
+          fi
           args=(
             --account-id "$TARGET_ACCOUNT"
             --stage "$ROLLOUT_STAGE"
@@ -119,6 +140,7 @@ jobs:
           if [[ "$UNLOCK_KNOWN_ORPHAN" == true ]]; then args+=(--unlock-known-orphan); fi
           python platform/scripts/maintain-shared-runtime.py "${args[@]}"
       - name: Retain sanitized evidence and account-specific inputs
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: shared-runtime-${{ inputs.stage }}-${{ github.run_id }}
