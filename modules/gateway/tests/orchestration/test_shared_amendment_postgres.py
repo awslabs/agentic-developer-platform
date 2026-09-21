@@ -97,14 +97,10 @@ async def test_append_yields_to_production_dispatch_node_then_flow_lock_order(se
         fetched = await _fetch_ready_nodes(dispatcher, limit=10)
         assert [node.id for node in fetched] == [ready.id]
         with pytest.raises(SharedAppendError, match="amendment_dispatch_in_progress"):
-            await asyncio.wait_for(
-                accept_shared_append(session, flow_id=ctx.flow.id, actor=ctx.actor, request=request), timeout=2
-            )
+            await asyncio.wait_for(accept_shared_append(session, flow_id=ctx.flow.id, actor=ctx.actor, request=request), timeout=2)
         # Do not roll back the request session: the failed append's savepoint
         # must have released its flow/plan locks without relying on route cleanup.
-        inputs, marker = await asyncio.wait_for(
-            shared_inputs(dispatcher, org_id=ctx.actor.org_id, flow_id=ctx.flow.id, lock=True), timeout=2
-        )
+        inputs, marker = await asyncio.wait_for(shared_inputs(dispatcher, org_id=ctx.actor.org_id, flow_id=ctx.flow.id, lock=True), timeout=2)
         assert inputs.plan_version == ctx.plan.version
         assert marker == ctx.original["execution_continuation"]
         fetched[0].state, fetched[0].attempts = "running", 1
