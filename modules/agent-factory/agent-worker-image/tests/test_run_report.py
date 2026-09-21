@@ -257,3 +257,58 @@ def test_two_retries_observe_empty_receipt_but_only_gateway_nonce_winner_can_con
         outcomes = list(pool.map(begin, workers))
     assert sorted(outcomes) == ["acknowledged", "run_report_http_409"]
     assert spool[1] == original and spool[0].put_object.call_count == writes
+
+
+def test_failed_owner_survives_terminal_outage_without_restarting_work(spool, monkeypatch):
+    run_report.begin_delivery()
+    run_report.spool_undelivered_failure()
+    terminal = MagicMock(side_effect=[run_report.RunReportError("run_report_unavailable"), {}])
+    monkeypatch.setattr(run_report, "terminal", terminal)
+    original = dict(spool[1])
+    monkeypatch.setattr(run_report, "_assignment", run_report._assignment | {"ownership_nonce": "b" * 32})
+    with pytest.raises(run_report.RunReportError, match="run_report_unavailable"):
+        resume_handoff()
+    assert resume_handoff() is True
+    assert [call.args for call in terminal.call_args_list] == [("failed",), ("failed",)]
+    assert spool[1] == original
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        run_report.begin_delivery()
+    assert "credential" not in next(iter(spool[1].values())).decode()
+
+
+@pytest.mark.parametrize("owner", [None, "b" * 32])
+def test_failure_spool_cannot_report_for_unacknowledged_or_other_owner(spool, monkeypatch, owner):
+    run_report.begin_delivery()
+    run_report.spool_undelivered_failure()
+    monkeypatch.setattr(run_report, "request", lambda: {"worker_receipt": {"ownership_nonce": owner}})
+    terminal = MagicMock()
+    monkeypatch.setattr(run_report, "terminal", terminal)
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        resume_handoff()
+    terminal.assert_not_called()
+
+
+def test_failure_spool_preserves_existing_pr_candidate(spool):
+    run_report.begin_delivery()
+    run_report.spool_candidate({"head_sha": "a" * 40})
+    original = dict(spool[1])
+    run_report.spool_undelivered_failure()
+    assert spool[1] == original
+
+
+def test_failed_spool_upload_cannot_fabricate_terminal_evidence(spool):
+    run_report.begin_delivery()
+    spool[0].put_object.side_effect = EndpointConnectionError(endpoint_url="https://s3.test")
+    with pytest.raises(run_report.RunReportError, match="report_spool_unavailable"):
+        run_report.spool_undelivered_failure()
+    assert run_report.read_spool()["phase"] == "executing"
+
+
+@pytest.mark.parametrize("change", [{"candidate_pr": {}}, {"ownership_nonce": None}, {"ownership_nonce": "X" * 32}, {"outcome": "complete"}])
+def test_failure_spool_rejects_malformed_or_success_claims(spool, change):
+    run_report.begin_delivery()
+    run_report.spool_undelivered_failure()
+    key = next(iter(spool[1]))
+    spool[1][key] = json.dumps(json.loads(spool[1][key]) | change).encode()
+    with pytest.raises(run_report.RunReportError, match="report_spool_scope_mismatch"):
+        run_report.read_spool()

@@ -182,7 +182,15 @@ def read_spool() -> dict | None:
         not isinstance(body, dict)
         or body.get("contract_version") != 1
         or any(body.get(field) != _assignment[field] for field in ("run_id", "attempt", "repo"))
-        or body.get("phase") not in {"executing", "candidate"}
+        or body.get("phase") not in {"executing", "candidate", "failed"}
+    ):
+        raise RunReportError("report_spool_scope_mismatch", retryable=False)
+    if body["phase"] == "failed" and (
+        set(body) != {"contract_version", "run_id", "attempt", "repo", "phase", "candidate_pr", "ownership_nonce"}
+        or body.get("candidate_pr") is not None
+        or not isinstance(body.get("ownership_nonce"), str)
+        or len(body["ownership_nonce"]) != 32
+        or any(char not in "0123456789abcdef" for char in body["ownership_nonce"])
     ):
         raise RunReportError("report_spool_scope_mismatch", retryable=False)
     return body
@@ -218,6 +226,8 @@ def can_retry_start(spool: dict, snapshot: dict) -> bool:
 def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = False) -> None:
     bucket, key = _spool_location()
     body = _spool_document(phase, candidate)
+    if phase == "failed":
+        body["ownership_nonce"] = _assignment["ownership_nonce"]
     options = {"IfNoneMatch": "*"} if create else {}
     try:
         _spool_client().put_object(
@@ -260,6 +270,27 @@ def begin_delivery() -> None:
         "ownership_nonce"
     ]:
         raise RunReportError("delivery_start_unacknowledged")
+
+
+def spool_undelivered_failure() -> None:
+    """Keep a failed owner's report retryable without starting another worker.
+
+    Delivered PR candidates retain their existing handoff recovery. Only the
+    exact executing marker can become a failure marker, and replay must match
+    the gateway's acknowledged ownership nonce before reporting failure.
+    """
+    spool = read_spool()
+    if spool is None:
+        raise RunReportError("delivery_recovery_required", retryable=False)
+    if spool["phase"] == "candidate":
+        return
+    if spool["phase"] == "failed":
+        if spool["ownership_nonce"] != _assignment["ownership_nonce"]:
+            raise RunReportError("delivery_recovery_required", retryable=False)
+        return
+    if spool != _spool_document("executing"):
+        raise RunReportError("delivery_recovery_required", retryable=False)
+    _write_spool("failed")
 
 
 def spool_candidate(candidate: dict) -> None:

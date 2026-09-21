@@ -2965,6 +2965,8 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
 
     if run_report.enabled():
         try:
+            if exit_code != 0:
+                run_report.spool_undelivered_failure()
             run_report.terminal("complete" if exit_code == 0 else "failed")
         except run_report.RunReportError as exc:
             logger.warning("Engine terminal report deferred: %s", exc.code)
