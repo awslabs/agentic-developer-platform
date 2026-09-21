@@ -341,6 +341,9 @@ async def _advance_node(session: AsyncSession, candidate: _Candidate, report: Ti
             try:
                 if await managed_evaluation(session, evaluation):
                     accepted = await accepted_evaluation(session, evaluation)
+                    if accepted is None:
+                        report.blocked[candidate.node_id] = ["evaluation_specification_missing"]
+                        return
                     deployed = await predecessor_deployments(session, evaluation, accepted[0].version, now=datetime.now(UTC))
                     if not deployed:
                         report.blocked[candidate.node_id] = ["verified_deployment_required"]

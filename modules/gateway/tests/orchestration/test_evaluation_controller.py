@@ -55,6 +55,40 @@ async def test_machine_evaluation_never_claims_or_dispatches_legacy_worker(evalu
         assert any("evaluation_specification_missing" in (row.rejection_reason or "") for row in refusals) is missing
 
 
+async def test_pending_machine_evaluation_reports_missing_spec_without_tick_error(evaluation):
+    from src.orchestration.tick import run_tick
+
+    ctx = evaluation
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        plan.plan_document = {**plan.plan_document, "nodes": [{**row, "evaluation": None} for row in plan.plan_document["nodes"]]}
+        node = await db.get(OrchestrationNode, ctx.eval_id)
+        node.state = "pending"
+        await db.commit()
+        report = await run_tick(db)
+        assert report.success and report.errors == 0
+        assert report.blocked[ctx.eval_id] == ["evaluation_specification_missing"]
+        assert node.state == "pending" and node.attempts == 0
+        assert await db.scalar(select(OrchestrationExecution.id).where(OrchestrationExecution.node_id == node.id)) is None
+
+
+async def test_deployed_story_reports_missing_dependent_spec_without_provider_failure(evaluation):
+    ctx = evaluation
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        plan.plan_document = {**plan.plan_document, "nodes": [{**row, "evaluation": None} for row in plan.plan_document["nodes"]]}
+        await db.commit()
+    report = await tick(ctx)
+    assert report.blocked == 1
+    async with ctx.factory() as db:
+        record = await db.scalar(select(OrchestrationExecution).where(OrchestrationExecution.node_id == ctx.node.id))
+        assert record.block_detail == "evaluation_specification_missing"
+        assert record.block_code != "provider_unavailable"
+        evaluation_node = await db.get(OrchestrationNode, ctx.eval_id)
+        assert evaluation_node.state == "ready" and evaluation_node.attempts == 0
+    ctx.evaluation_provider.find.assert_not_awaited()
+
+
 @pytest.fixture
 async def evaluation(runtime):  # noqa: F811
     ctx = runtime

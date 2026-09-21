@@ -209,6 +209,7 @@ class EvaluationServices:
                 require(evaluation.state not in {"rejected_at_gate", "failed", "halted", "superseded"}, "evaluation_requires_human_recovery")
                 pending = True
                 accepted = await accepted_evaluation(session, evaluation)
+                require(accepted is not None, "evaluation_specification_missing")
                 plan, spec, address = accepted
                 require(plan.version == context.identity.accepted_plan_version, "evaluation_plan_changed")
                 deployments = await predecessor_deployments(session, evaluation, plan.version, now=datetime.now(UTC))
