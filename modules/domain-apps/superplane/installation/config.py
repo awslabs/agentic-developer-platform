@@ -20,6 +20,9 @@ COMPONENTS = (
 LABEL = "adp.aws-e.io/installation"
 SHA = re.compile(r"[0-9a-f]{40}")
 IDENTIFIER = re.compile(r"[a-z][a-z0-9-]{0,39}")
+# EKS cluster names: 1–100 chars, alphanumeric/underscore/hyphen, alphanumeric first.
+# Wider than IDENTIFIER to accept the Terraform-generated suffix form used by workspace clusters.
+EKS_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 SCHEMA = re.compile(r"[a-z][a-z0-9_]{0,62}")
 
 
@@ -62,8 +65,34 @@ def https_origin(value: object) -> bool:
     )
 
 
-def validate(env: dict, lock: dict) -> None:
-    """No credentials, shell fragments, caller-selected commands or guessed targets."""
+def control_plane_mode(env: dict, selected: bool = False) -> bool:
+    require(
+        type(env.get("control_plane_only", False)) is bool,
+        "control_plane_only must be a boolean",
+    )
+    return selected or env.get("control_plane_only", False)
+
+
+def validate(
+    env: dict,
+    lock: dict | None,
+    *,
+    control_plane_only: bool = False,
+    preparation: bool = False,
+) -> None:
+    """No credentials, shell fragments, caller-selected commands or guessed targets.
+
+    control_plane_only defers workspace-specific fields (workspace_cluster,
+    workspace_namespace, workspace_id, cluster_id, controller_ownership and the
+    workspace_access secret reference) so the management surface can be installed
+    before any workspace cluster or controller credential exists.  All other fields
+    remain unconditionally required.  Workspace activation later must pass the full
+    validation.
+
+    Pass lock=None to validate environment-only inputs (e.g. for --prepare-database)
+    and skip all release-lock checks.
+    """
+    control_plane_only = control_plane_mode(env, control_plane_only) or preparation
     require(env.get("version") == 1, "environment.version must be 1")
     allowed = {
         "version",
@@ -86,10 +115,21 @@ def validate(env: dict, lock: dict) -> None:
         "timeout_seconds",
         "network_policy_enforced",
         "controller_ownership",
+        "control_plane_only",
+        "image_execution",
+        "gateway_namespace",
     }
     require(
         set(env) <= allowed,
         "Unknown environment fields; secrets belong in Secrets Manager",
+    )
+    require(
+        env.get("image_execution", "docker") in {"docker", "cluster"},
+        "image_execution must be docker or cluster",
+    )
+    require(
+        IDENTIFIER.fullmatch(env.get("gateway_namespace", "adp")),
+        "gateway_namespace must be a namespace name",
     )
     require(
         re.fullmatch(
@@ -115,17 +155,28 @@ def validate(env: dict, lock: dict) -> None:
         set(env.get("auth", {})) <= {"issuer", "client_ids"},
         "Unknown authentication fields; tokens must not be written to configuration",
     )
-    for key in (
-        "environment",
-        "namespace",
-        "skypilot_namespace",
-        "cluster",
-        "workspace_cluster",
-        "workspace_namespace",
-    ):
+    unconditional_identifiers = ("environment", "namespace", "skypilot_namespace")
+    workspace_identifiers = ("workspace_namespace",)
+    for key in unconditional_identifiers:
         require(
             isinstance(env.get(key), str) and IDENTIFIER.fullmatch(env[key]),
             f"Invalid {key}",
+        )
+    if not control_plane_only:
+        for key in workspace_identifiers:
+            require(
+                isinstance(env.get(key), str) and IDENTIFIER.fullmatch(env[key]),
+                f"Invalid {key}",
+            )
+    require(
+        isinstance(env.get("cluster"), str) and EKS_NAME.fullmatch(env["cluster"]),
+        "Invalid cluster",
+    )
+    if not control_plane_only:
+        require(
+            isinstance(env.get("workspace_cluster"), str)
+            and EKS_NAME.fullmatch(env["workspace_cluster"]),
+            "Invalid workspace_cluster",
         )
     require(
         env["namespace"] != env["skypilot_namespace"],
@@ -136,10 +187,11 @@ def validate(env: dict, lock: dict) -> None:
         & {"adp", "default", "kube-system", "kube-public", "kube-node-lease"},
         "A core namespace cannot host domain resources",
     )
-    require(
-        env["cluster"] != env["workspace_cluster"],
-        "Workspace controller must not target the ADP management cluster",
-    )
+    if not control_plane_only:
+        require(
+            env["cluster"] != env["workspace_cluster"],
+            "Workspace controller must not target the ADP management cluster",
+        )
     require(
         isinstance(env.get("account_id"), str)
         and re.fullmatch(r"\d{12}", env["account_id"]),
@@ -153,13 +205,24 @@ def validate(env: dict, lock: dict) -> None:
         https_origin(env.get("origin")),
         "origin must be an HTTPS origin without credentials",
     )
-    for key in ("org_id", "workspace_id", "cluster_id"):
+    uuid_always = ("org_id",)
+    uuid_workspace = ("workspace_id", "cluster_id")
+    for key in uuid_always:
         require(
             re.fullmatch(
                 r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", str(env.get(key, ""))
             ),
             f"{key} must be an immutable UUID",
         )
+    if not control_plane_only:
+        for key in uuid_workspace:
+            require(
+                re.fullmatch(
+                    r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}",
+                    str(env.get(key, "")),
+                ),
+                f"{key} must be an immutable UUID",
+            )
     auth = env.get("auth", {})
     require(
         re.fullmatch(
@@ -199,11 +262,21 @@ def validate(env: dict, lock: dict) -> None:
             and db[key].lower() not in {"tbd", "unknown", "todo"},
             f"database.{key} is required",
         )
-    require(
-        set(env.get("secrets", {})) == {"database", "observation", "workspace_access"},
-        "Secret references must be exactly the three documented domain-owned references",
+    required_secrets = (
+        {"database", "observation"}
+        if control_plane_only
+        else {"database", "observation", "workspace_access"}
     )
-    for key in ("database", "observation", "workspace_access"):
+    require(
+        set(env.get("secrets", {})) == required_secrets
+        or (
+            preparation
+            and set(env.get("secrets", {})) == required_secrets | {"workspace_access"}
+        ),
+        "Secret references must name exactly the documented domain-owned references"
+        " (workspace_access is required only for full installation)",
+    )
+    for key in env.get("secrets", {}):
         value = env.get("secrets", {}).get(key, "")
         require(
             isinstance(value, str)
@@ -216,63 +289,66 @@ def validate(env: dict, lock: dict) -> None:
             type(env.get(key)) is int and 30 <= env[key] <= 3600,
             f"{key} must be 30–3600",
         )
-    require(
-        SHA.fullmatch(str(lock.get("source_revision", ""))),
-        "release lock needs the exact maintained source_revision",
-    )
-    require(
-        lock.get("schema", {}).get("single_head") is True,
-        "release schema must have a single head",
-    )
-    head = lock["schema"].get("observed", {}).get("head")
-    require(
-        head == "015_add_adp_org_binding",
-        "release schema must include U11c013, U7b014 and the U23 identity binding",
-    )
-    sources = lock.get("image_sources", {})
-    base = load(MODULE / "releases/superplane.lock.yaml")
-    for component in COMPONENTS:
-        value = lock.get("images", {}).get(component)
+    if lock is not None:
+        # Database preparation does not require a built release.
         require(
-            component not in lock.get("pending_images", {}),
-            f"Release image is unresolved: {component}",
+            SHA.fullmatch(str(lock.get("source_revision", ""))),
+            "release lock needs the exact maintained source_revision",
         )
         require(
-            re.fullmatch(r"sha256:[0-9a-f]{64}", str(value)),
-            f"Immutable digest required: {component}",
+            lock.get("schema", {}).get("single_head") is True,
+            "release schema must have a single head",
         )
-        source = sources.get(component, {})
-        if component == "skypilot-api":
+        head = lock["schema"].get("observed", {}).get("head")
+        require(
+            head == "016_add_organization_grants",
+            "release schema must include U11c013, U7b014 and the U23 identity binding",
+        )
+        sources = lock.get("image_sources", {})
+        base = load(MODULE / "releases/superplane.lock.yaml")
+        for component in COMPONENTS:
+            value = lock.get("images", {}).get(component)
             require(
-                value == base["images"][component]
-                and source.get("registry")
-                == base["image_sources"][component]["registry"]
-                and source.get("repository")
-                == base["image_sources"][component]["repository"],
-                "Preserve the reviewed SkyPilot runtime pin",
-            )
-        else:
-            require(
-                source.get("registry")
-                == f"{env['account_id']}.dkr.ecr.{env['region']}.amazonaws.com",
-                f"Wrong ECR registry: {component}",
+                component not in lock.get("pending_images", {}),
+                f"Release image is unresolved: {component}",
             )
             require(
-                source.get("repository") == f"adp-{component}",
-                f"Wrong ECR repository: {component}",
+                re.fullmatch(r"sha256:[0-9a-f]{64}", str(value)),
+                f"Immutable digest required: {component}",
             )
-            require(
-                source.get("source_revision") == lock["source_revision"],
-                f"Image provenance must bind final source: {component}",
-            )
+            source = sources.get(component, {})
+            if component == "skypilot-api":
+                require(
+                    value == base["images"][component]
+                    and source.get("registry")
+                    == base["image_sources"][component]["registry"]
+                    and source.get("repository")
+                    == base["image_sources"][component]["repository"],
+                    "Preserve the reviewed SkyPilot runtime pin",
+                )
+            else:
+                require(
+                    source.get("registry")
+                    == f"{env['account_id']}.dkr.ecr.{env['region']}.amazonaws.com",
+                    f"Wrong ECR registry: {component}",
+                )
+                require(
+                    source.get("repository") == f"adp-{component}",
+                    f"Wrong ECR repository: {component}",
+                )
+                require(
+                    SHA.fullmatch(str(source.get("source_revision", ""))),
+                    f"Image provenance needs an exact source revision: {component}",
+                )
     require(
-        env.get("network_policy_enforced") is True,
+        preparation or env.get("network_policy_enforced") is True,
         "The selected cluster must enforce Kubernetes NetworkPolicy",
     )
-    require(
-        env.get("controller_ownership") == "single-workspace-controller",
-        "Explicit single-controller ownership is required",
-    )
+    if not control_plane_only:
+        require(
+            env.get("controller_ownership") == "single-workspace-controller",
+            "Explicit single-controller ownership is required",
+        )
 
 
 def image(lock: dict, component: str) -> str:
@@ -284,3 +360,149 @@ def identity(env: dict) -> str:
     return digest(
         {k: env[k] for k in ("account_id", "region", "environment", "cluster")}
     )[:24]
+
+
+def prepare_database_sql(env: dict) -> str:
+    """Prepare only new or previously marked domain schemas and roles, atomically.
+
+    This emits SQL, not credentials or a database connection. Existing unmarked
+    resources are refused rather than silently adopted or transferred. Applying
+    the same script again preserves identities and existing runtime data.
+    """
+    db = env["database"]
+    schemas = (db["schema"], db["skypilot_schema"])
+    require(
+        all(
+            isinstance(name, str)
+            and SCHEMA.fullmatch(name)
+            and name not in {"public", "information_schema"}
+            and not name.startswith("pg_")
+            for name in schemas
+        )
+        and schemas[0] != schemas[1],
+        "Database preparation requires two distinct isolated schemas",
+    )
+    require(
+        isinstance(env["environment"], str)
+        and IDENTIFIER.fullmatch(env["environment"]),
+        "Invalid environment",
+    )
+    require(
+        isinstance(db["database"], str)
+        and db["database"]
+        and "\x00" not in db["database"]
+        and len(db["database"].encode()) <= 63,
+        "Invalid database identifier",
+    )
+
+    def literal(value):
+        return "'" + value.replace("'", "''") + "'"
+
+    def identifier(value):
+        return '"' + value.replace('"', '""') + '"'
+
+    def block(body):
+        # A quoted body avoids dollar-quote delimiter injection from database names.
+        return "DO " + literal("BEGIN\n" + body + "\nEND") + ";"
+
+    api, sky = map(identifier, schemas)
+    database = identifier(db["database"])
+    roles = {
+        key: f"superplane_{env['environment']}_{key}"
+        for key in ("migration", "runtime", "skypilot")
+    }
+    migration, runtime, skypilot = (
+        identifier(roles[key]) for key in ("migration", "runtime", "skypilot")
+    )
+    marker = "adp-superplane-database-v1:" + digest(
+        {
+            "environment": env["environment"],
+            "database": db["database"],
+            "schemas": schemas,
+        }
+    )
+    lines = [
+        "-- Domain-only preparation. Run against the selected database; no credentials are included.",
+        "BEGIN;",
+        "SET LOCAL standard_conforming_strings = on;",
+        "SET LOCAL lock_timeout = '10s';",
+        "SET LOCAL statement_timeout = '60s';",
+        block(
+            f"IF current_database() <> {literal(db['database'])} THEN\n"
+            "  RAISE EXCEPTION 'Database preparation target mismatch';\nEND IF;"
+        ),
+        "SELECT pg_advisory_xact_lock(hashtextextended('adp-superplane-prepare:' || current_database(), 0));",
+    ]
+    for role in roles.values():
+        name, quoted = literal(role), identifier(role)
+        lines.append(
+            block(f"""
+IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {name}) THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles r WHERE r.rolname = {name}
+      AND shobj_description(r.oid, 'pg_authid') = {literal(marker)}
+      AND r.rolcanlogin AND NOT (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls)
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members WHERE member = r.oid)
+  ) THEN
+    RAISE EXCEPTION 'Existing database role is unowned or has incompatible authority';
+  END IF;
+ELSE
+  CREATE ROLE {quoted} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  COMMENT ON ROLE {quoted} IS {literal(marker)};
+END IF;""")
+        )
+        # RDS does not apply createrole_self_grant consistently to rds_superuser.
+        # The selected trusted administrator needs explicit membership to create
+        # and grant objects owned by these three installation-owned roles.
+        lines.append(f"GRANT {quoted} TO CURRENT_USER WITH SET TRUE, INHERIT TRUE;")
+    for schema, owner in zip(
+        schemas, (roles["migration"], roles["skypilot"]), strict=True
+    ):
+        name, quoted = literal(schema), identifier(schema)
+        lines.append(
+            block(f"""
+IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = {name}) THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_namespace n WHERE n.nspname = {name}
+      AND pg_get_userbyid(n.nspowner) = {literal(owner)}
+      AND obj_description(n.oid, 'pg_namespace') = {literal(marker)}
+  ) THEN
+    RAISE EXCEPTION 'Existing database schema is unowned or owned by another role';
+  END IF;
+ELSE
+  CREATE SCHEMA {quoted} AUTHORIZATION {identifier(owner)};
+  COMMENT ON SCHEMA {quoted} IS {literal(marker)};
+END IF;""")
+        )
+    lines.extend(
+        [
+            f"REVOKE ALL ON SCHEMA {api}, {sky} FROM PUBLIC;",
+            f"GRANT CONNECT ON DATABASE {database} TO {migration}, {runtime}, {skypilot};",
+            f"GRANT USAGE ON SCHEMA {api} TO {runtime};",
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA {api} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime};",
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA {api} GRANT USAGE, SELECT ON SEQUENCES TO {runtime};",
+            f"ALTER ROLE {migration} IN DATABASE {database} SET search_path = {api}, pg_catalog;",
+            f"ALTER ROLE {runtime} IN DATABASE {database} SET search_path = {api}, pg_catalog;",
+            f"ALTER ROLE {skypilot} IN DATABASE {database} SET search_path = {sky}, pg_catalog;",
+        ]
+    )
+    for role, schema in zip(
+        roles.values(), (schemas[0], schemas[0], schemas[1]), strict=True
+    ):
+        name = literal(role)
+        lines.append(
+            block(f"""
+IF has_database_privilege({name}, current_database(), 'CREATE') OR EXISTS (
+  SELECT 1 FROM pg_namespace n
+  WHERE n.nspname <> {literal(schema)} AND n.nspname NOT LIKE 'pg_%'
+    AND n.nspname <> 'information_schema'
+    AND (has_schema_privilege({name}, n.oid, 'CREATE') OR EXISTS (
+      SELECT 1 FROM pg_class c WHERE c.relnamespace = n.oid AND c.relkind IN ('r','p','v','m','f')
+        AND has_table_privilege({name}, c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+    ))
+) THEN
+  RAISE EXCEPTION 'Database role can mutate outside its domain schema; shared grants require separate remediation';
+END IF;""")
+        )
+    lines.append("COMMIT;")
+    return "\n\n".join(lines) + "\n"

@@ -1,11 +1,26 @@
 """Health check endpoint."""
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.database import get_session
+from app.management import management_only
 from app.schemas.health import HealthResponse
 
 router = APIRouter()
+
+
+@router.get("/readyz")
+async def readiness(request: Request, db: AsyncSession = Depends(get_session)):
+    try:
+        await db.execute(text("SELECT 1"))
+        if management_only() and getattr(request.app.state, "domain_policy", None) is None:
+            raise ValueError("strict authorization unavailable")
+    except Exception:
+        raise HTTPException(503, "Management service is not ready") from None
+    return {"status": "ready", "mode": "management" if management_only() else "full"}
 
 
 @router.get("/health", response_model=HealthResponse)

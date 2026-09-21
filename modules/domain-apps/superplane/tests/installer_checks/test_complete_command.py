@@ -14,20 +14,28 @@ from installation.runner import Installer
 
 
 class ExternalTools:
-    def __init__(self, environment, release, failure=None):
+    def __init__(self, environment, release, failure=None, auto_mode=False):
         self.environment, self.release, self.failure = environment, release, failure
+        self.auto_mode = auto_mode
         self.calls, self.objects = [], {}
         self.route = None
-        workspace = environment["workspace_id"]
+        self.restarts = {}
+        # workspace_id may be absent in control-plane-only mode; use a placeholder
+        # so the grants array is still structurally valid for observation checks.
+        workspace = environment.get("workspace_id")
         grants = [
             {
                 "submitter_id": component,
                 "credential": component + "-private",
                 "signing_key": component + "-key",
-                "workspaces": [workspace],
+                "workspaces": [workspace] if workspace else [],
                 "lease_scopes": ["budget_monitor/global"]
                 if component == "monitor"
-                else [],
+                else (
+                    [f"controller_management/{environment['org_id']}"]
+                    if environment.get("control_plane_only")
+                    else []
+                ),
             }
             for component in ("monitor", "controller")
         ]
@@ -80,16 +88,17 @@ class ExternalTools:
             result = {"Account": env["account_id"]}
         elif "describe-cluster" in args:
             name = args[args.index("--name") + 1]
-            result = {
-                "cluster": {
-                    "arn": f"arn:aws:eks:{env['region']}:{env['account_id']}:cluster/{name}",
-                    "status": "ACTIVE",
-                    "endpoint": "https://workspace.example.test"
-                    if name == env["workspace_cluster"]
-                    else "https://management.example.test",
-                    "certificateAuthority": {"data": "CA"},
-                }
+            cluster_detail = {
+                "arn": f"arn:aws:eks:{env['region']}:{env['account_id']}:cluster/{name}",
+                "status": "ACTIVE",
+                "endpoint": "https://workspace.example.test"
+                if name == env.get("workspace_cluster")
+                else "https://management.example.test",
+                "certificateAuthority": {"data": "CA"},
             }
+            if self.auto_mode and name == env["cluster"]:
+                cluster_detail["computeConfig"] = {"enabled": True}
+            result = {"cluster": cluster_detail}
         elif "config" in args and "view" in args:
             result = {
                 "clusters": [{"cluster": {"server": "https://management.example.test"}}]
@@ -119,6 +128,8 @@ class ExternalTools:
                     }
                 }
             ]
+        elif "management-capabilities" in args:
+            result = {"controller_management": True, "governed_provisioning": False}
         elif "capabilities" in args:
             result = {
                 "capabilities": {
@@ -132,7 +143,10 @@ class ExternalTools:
                 }
             }
         elif "--installation-preflight" in args:
-            result = {"governed_provisioning": True}
+            result = {
+                "governed_provisioning": not env.get("control_plane_only"),
+                "controller_management": True,
+            }
         elif "get-secret-value" in args:
             name = args[args.index("--secret-id") + 1]
             kind = next(k for k, v in env["secrets"].items() if v == name)
@@ -156,12 +170,18 @@ class ExternalTools:
                 ]
             }
         elif "describe-addon" in args:
-            result = {
-                "addon": {
-                    "status": "ACTIVE",
-                    "configurationValues": json.dumps({"enableNetworkPolicy": "true"}),
+            if self.auto_mode:
+                # EKS Auto Mode: no standalone vpc-cni addon → ResourceNotFoundException
+                code, error = 254, "ResourceNotFoundException"
+            else:
+                result = {
+                    "addon": {
+                        "status": "ACTIVE",
+                        "configurationValues": json.dumps(
+                            {"enableNetworkPolicy": "true"}
+                        ),
+                    }
                 }
-            }
         elif "can-i" in args:
             text = "yes"
         elif "database" == args[-1]:
@@ -171,10 +191,20 @@ class ExternalTools:
                 ),
                 "database": env["database"]["database"],
                 "role": "domain-role",
-                "revision": "015_add_adp_org_binding" if "exec" in args else None,
+                "revision": "016_add_organization_grants" if "exec" in args else None,
+            }
+        elif "--check-database" == args[-1]:
+            result = {
+                "dialect": "postgresql",
+                "database": env["database"]["database"],
+                "schema": env["database"]["skypilot_schema"],
+                "tls": True,
+                "config_matches": True,
+                "tables": ["clusters"],
             }
         elif "readiness" == args[-1]:
             result = {
+                "mode": "management" if env.get("control_plane_only") else "full",
                 "release_id": self.installer.release,
                 "source_revision": self.release["source_revision"],
                 "domain_auth_enforced": True,
@@ -189,14 +219,29 @@ class ExternalTools:
                 },
                 "observations": {
                     x: {
-                        "workspace": env["workspace_id"],
-                        "cluster_id": env["cluster_id"],
+                        "workspace": env.get("workspace_id"),
+                        "cluster_id": env.get("cluster_id"),
                         "reported_at": datetime.now(UTC).isoformat(),
                         "status": "healthy",
                     }
                     for x in ("monitor", "controller")
                 },
             }
+        elif any("/statusz" in argument for argument in args):
+            result = {
+                "mode": "management",
+                "registry_ready": True,
+                "governed_provisioning": False,
+                "targets": {},
+            }
+        elif any("r=httpx.get(" in argument for argument in args):
+            result = {
+                "domain_auth_enforced": self.failure != "private-health",
+                "cognito_enabled": True,
+            }
+        elif args[0] == "kubectl" and "rollout" in args and "restart" in args:
+            name = args[args.index("restart") + 1].split("/")[1]
+            self.restarts[name] = self.restarts.get(name, 0) + 1
         elif "show" in args:
             result = {
                 "format_version": "1.2",
@@ -267,6 +312,7 @@ class ExternalTools:
                 "configmaps": "ConfigMap",
                 "networkpolicies": "NetworkPolicy",
                 "serviceaccounts": "ServiceAccount",
+                "poddisruptionbudgets": "PodDisruptionBudget",
             }
             key = (kinds[plural], name, namespace)
             current = self.objects[key]
@@ -288,6 +334,54 @@ class ExternalTools:
                 kind, name = args[index + 1 : index + 3]
                 if kind == "deployments":
                     result = {"items": []}
+                elif kind == "replicasets" and "-l" in args:
+                    component = args[args.index("-l") + 1].split("=", 1)[1]
+                    deployment = self.objects[
+                        ("Deployment", component, env["namespace"])
+                    ]
+                    result = {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "uid": f"rs-{component}-{generation}",
+                                    "ownerReferences": [
+                                        {
+                                            "kind": "Deployment",
+                                            "controller": True,
+                                            "uid": deployment["metadata"]["uid"],
+                                        }
+                                    ],
+                                }
+                            }
+                            for generation in range(self.restarts.get(component, 0) + 1)
+                        ]
+                    }
+                elif kind == "pods" and "-l" in args:
+                    component = args[args.index("-l") + 1].split("=", 1)[1]
+                    result = {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "uid": f"pod-{component}-{self.restarts.get(component, 0)}",
+                                    "ownerReferences": [
+                                        {
+                                            "kind": "ReplicaSet",
+                                            "controller": True,
+                                            "uid": f"rs-{component}-{self.restarts.get(component, 0)}",
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    }
+                elif kind == "nodeclass" and name == "default" and self.auto_mode:
+                    # Auto Mode NodeClass confirms NetworkPolicy enforcement is configured.
+                    result = {
+                        "apiVersion": "eks.amazonaws.com/v1",
+                        "kind": "NodeClass",
+                        "metadata": {"name": "default"},
+                        "spec": {"networkPolicy": "DefaultAllow"},
+                    }
                 else:
                     namespace = args[args.index("-n") + 1] if "-n" in args else None
                     result = self.objects.get((kind, name, namespace))
@@ -308,19 +402,28 @@ class ExternalTools:
             return httpx.Response(404)
         if not headers or headers.get("Authorization") != "Bearer verified-user":
             return httpx.Response(401)
-        if "/workspaces/" in url and not url.endswith(self.environment["workspace_id"]):
+        workspace_id = self.environment.get("workspace_id")
+        if "/workspaces/" in url and (
+            not workspace_id or not url.endswith(workspace_id)
+        ):
             return httpx.Response(403)
         if self.failure == "public-verification":
             return httpx.Response(403)
         return httpx.Response(
             200,
-            json={"id": self.environment["workspace_id"]},
+            json=(
+                {"workspaces": [], "total": 0}
+                if url.endswith("/workspaces")
+                else {"id": self.environment["org_id"]}
+                if url.endswith("/orgs/current")
+                else {"id": workspace_id}
+            ),
             headers={"X-Superplane-Release": self.installer.release},
         )
 
 
-def setup(tmp_path, environment, release, monkeypatch, failure=None):
-    tools = ExternalTools(environment, release, failure)
+def setup(tmp_path, environment, release, monkeypatch, failure=None, auto_mode=False):
+    tools = ExternalTools(environment, release, failure, auto_mode=auto_mode)
     installer = Installer(environment, release, tmp_path, tools)
     tools.installer = installer
     monkeypatch.setattr("installation.runner.httpx.get", tools.http)
@@ -335,7 +438,7 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     installer.preflight()
     installer.execute(installer.receipt["plan_sha256"], "verified-user")
     assert installer.receipt["status"] == "installed-and-verified"
-    assert installer.receipt["migration"]["schema"] == "015_add_adp_org_binding"
+    assert installer.receipt["migration"]["schema"] == "016_add_organization_grants"
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
     ) == {"monitor", "controller"}
@@ -496,6 +599,39 @@ def test_compatible_rollback_verifies_public_release(
     assert tools.route["enabled"] is True
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dialect", "sqlite"),
+        ("database", "another_database"),
+        ("schema", "public"),
+        ("tls", False),
+        ("tables", []),
+        ("config_matches", False),
+    ],
+)
+def test_skypilot_durable_state_refusal_keeps_public_route_disabled(
+    tmp_path, environment, release, monkeypatch, field, value
+):
+    installer, tools = setup(tmp_path, environment, release, monkeypatch)
+    original = tools.call
+
+    def wrong_database(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[-1] == "--check-database":
+            observed = json.loads(result.stdout)
+            observed[field] = value
+            result.stdout = json.dumps(observed)
+        return result
+
+    monkeypatch.setattr(tools, "call", wrong_database)
+    installer.preflight()
+    with pytest.raises(Refusal, match="durable database"):
+        installer.execute(installer.receipt["plan_sha256"], "verified-user")
+    assert tools.route["enabled"] is False
+    assert installer.receipt["status"] == "recovery-required"
+
+
 def test_monitor_not_checked_is_preserved_without_claiming_fleet_health(
     tmp_path, environment, release, monkeypatch
 ):
@@ -558,3 +694,339 @@ def test_foreign_public_route_refuses_before_mutation(
         "put-object" in args or "apply" in args or "put-parameter" in args
         for args, _ in tools.calls
     )
+
+
+def test_auto_mode_cluster_passes_network_policy_preflight(
+    tmp_path, environment, release, monkeypatch
+):
+    """EKS Auto Mode path: no vpc-cni addon, computeConfig enabled + NodeClass present."""
+    installer, tools = setup(
+        tmp_path, environment, release, monkeypatch, auto_mode=True
+    )
+    installer.preflight()
+    installer.execute(installer.receipt["plan_sha256"], "verified-user")
+    assert installer.receipt["status"] == "installed-and-verified"
+    # Confirm that describe-addon was attempted (with allow_failure) and not that it
+    # was skipped — the code must try the managed path first.
+    assert any("describe-addon" in a for a, _ in tools.calls)
+    # NodeClass was queried as the fallback enforcement evidence.
+    assert any("nodeclass" in a for a, _ in tools.calls)
+
+
+def test_auto_mode_missing_nodeclass_refuses_before_mutation(
+    tmp_path, environment, release, monkeypatch
+):
+    """Auto Mode without a default NodeClass must refuse, not proceed."""
+    installer, tools = setup(
+        tmp_path, environment, release, monkeypatch, auto_mode=True
+    )
+    original = tools.call
+
+    def no_nodeclass(args, **kwargs):
+        # Override: nodeclass get returns not-found regardless of auto_mode
+        if args[0] == "kubectl" and "get" in args and "nodeclass" in args:
+            from types import SimpleNamespace
+
+            return SimpleNamespace(returncode=1, stdout="", stderr="not found")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(tools, "call", no_nodeclass)
+    with pytest.raises(Refusal, match="NodeClass"):
+        installer.preflight()
+    assert not any("put-object" in a or "apply" in a for a, _ in tools.calls)
+
+
+def test_neither_addon_nor_auto_mode_refuses_before_mutation(
+    tmp_path, environment, release, monkeypatch
+):
+    """A cluster with no vpc-cni addon and no computeConfig must refuse."""
+    installer, tools = setup(
+        tmp_path, environment, release, monkeypatch, auto_mode=True
+    )
+    original = tools.call
+
+    def no_compute_config(args, **kwargs):
+        result = original(args, **kwargs)
+        import json as _json
+
+        if "describe-cluster" in args:
+            val = _json.loads(result.stdout)
+            val["cluster"].pop("computeConfig", None)
+            result.stdout = _json.dumps(val)
+        return result
+
+    monkeypatch.setattr(tools, "call", no_compute_config)
+    with pytest.raises(Refusal, match="Auto Mode"):
+        installer.preflight()
+    assert not any("put-object" in a or "apply" in a for a, _ in tools.calls)
+
+
+# --- Control-plane-only mode ---
+
+
+def _cp_only_environment(environment):
+    """Strip workspace fields to produce a valid control-plane-only environment."""
+    env = copy.deepcopy(environment)
+    env["control_plane_only"] = True
+    for key in (
+        "workspace_cluster",
+        "workspace_namespace",
+        "workspace_id",
+        "cluster_id",
+    ):
+        env.pop(key, None)
+    env.pop("controller_ownership", None)
+    env["secrets"] = {
+        k: v for k, v in env["secrets"].items() if k != "workspace_access"
+    }
+    return env
+
+
+def setup_cp_only(tmp_path, environment, release, monkeypatch, failure=None):
+    """Set up a control-plane-only installer with ExternalTools (no workspace fields)."""
+    env = _cp_only_environment(environment)
+    tools = ExternalTools(env, release, failure)
+    installer = Installer(env, release, tmp_path, tools, control_plane_only=True)
+    tools.installer = installer
+    monkeypatch.setattr("installation.runner.httpx.get", tools.http)
+    installer.plan()
+    return installer, tools
+
+
+def test_control_plane_only_preflight_skips_workspace_stage(
+    tmp_path, environment, release, monkeypatch
+):
+    """Preflight in control-plane-only mode must not call workspace-cluster APIs."""
+    installer, tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    installer.preflight()
+    assert installer.receipt["status"] == "preflight-passed"
+    assert installer.receipt.get("mode") == "control-plane-only"
+    # No describe-addon call against workspace_cluster — the workspace stage is skipped.
+    argv = "\n".join(" ".join(a) for a, _ in tools.calls)
+    # workspace CRD/namespace queries must not have occurred.
+    assert "nodepools.superplane.ai" not in argv
+    assert "superplanenodes.superplane.ai" not in argv
+
+
+def test_control_plane_only_execute_completes_without_workspace_credentials(
+    tmp_path, environment, release, monkeypatch
+):
+    """Full execute in control-plane-only mode must succeed without workspace_access secret."""
+    installer, tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    installer.preflight()
+    installer.execute(installer.receipt["plan_sha256"], "verified-user")
+    assert installer.receipt["status"] == "installed-and-verified"
+    assert installer.receipt.get("mode") == "control-plane-only"
+    # No superplane-workspace-access secret should be created.
+    assert not any(
+        k[0] == "Secret" and k[1] == "superplane-workspace-access"
+        for k in tools.objects
+    )
+    # Management controller runs without a workspace credential mount.
+    assert any(
+        k[0] == "Deployment" and k[1] == "superplane-controller" for k in tools.objects
+    )
+    # Workspace-specific observation delivery is deferred, not required.
+    pv = installer.receipt.get("private_verification", {})
+    assert "deferred" in str(pv.get("authenticated_observation_delivery", ""))
+    # Public verification records zero workspaces, not a workspace check.
+    vf = installer.receipt.get("verification", {})
+    assert vf.get("workspace_id") is None
+    assert vf["authenticated"] is True and vf["registered_workspaces"] == 0
+    assert vf["workspace_execution_ready"] is False
+    # ADP health and private-route denial must still be checked.
+    assert vf.get("private_routes_denied") is True
+
+
+def test_control_plane_only_does_not_claim_workspace_observation(
+    tmp_path, environment, release, monkeypatch
+):
+    """Control-plane-only receipt must not claim authenticated workspace observations."""
+    installer, _tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    installer.preflight()
+    installer.execute(installer.receipt["plan_sha256"], "verified-user")
+    receipt = json.dumps(installer.receipt)
+    # The workspace UUID from the full environment fixture must not appear in
+    # a control-plane-only receipt; there is no registered workspace.
+    assert environment["workspace_id"] not in receipt
+
+
+@pytest.mark.parametrize("lingering", ["terminating", "stuck", "empty"])
+def test_management_restart_waits_for_old_pod_removal(
+    tmp_path, environment, release, monkeypatch, lingering
+):
+    installer, tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    original = tools.call
+    observations = {}
+
+    def with_old_pod(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[0] == "kubectl" and "get" in args and "pods" in args:
+            component = args[args.index("-l") + 1].split("=", 1)[1]
+            if tools.restarts.get(component):
+                observations[component] = observations.get(component, 0) + 1
+                pods = json.loads(result.stdout)
+                if lingering == "empty":
+                    pods["items"] = []
+                elif lingering == "stuck" or observations[component] == 1:
+                    pods["items"].append(
+                        {
+                            "metadata": {
+                                "uid": f"pod-{component}-0",
+                                "deletionTimestamp": "2026-09-21T08:00:00Z",
+                                "ownerReferences": [
+                                    {
+                                        "kind": "ReplicaSet",
+                                        "controller": True,
+                                        "uid": f"rs-{component}-0",
+                                    }
+                                ],
+                            }
+                        }
+                    )
+                result.stdout = json.dumps(pods)
+        return result
+
+    monkeypatch.setattr(tools, "call", with_old_pod)
+    clock = iter(range(10000))
+    monkeypatch.setattr("installation.runner.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("installation.runner.time.sleep", lambda _: None)
+    installer.preflight()
+    if lingering == "terminating":
+        installer.execute(installer.receipt["plan_sha256"], "verified-user")
+        assert installer.receipt["verification"]["restart_persistence_verified"]
+        assert observations == {"superplane-api": 2, "superplane-controller": 2}
+        for proof in installer.receipt["management_restart"].values():
+            assert proof["after_pod_uids"]
+            assert not set(proof["before_pod_uids"]) & set(proof["after_pod_uids"])
+    else:
+        with pytest.raises(Refusal, match="process replacement not verified"):
+            installer.execute(installer.receipt["plan_sha256"], "verified-user")
+        assert installer.receipt["status"] == "recovery-required"
+        assert installer.receipt["remote_lock"]
+        assert not installer.receipt["verification"].get("restart_persistence_verified")
+        assert tools.route["enabled"] is False
+
+
+def test_management_restart_ignores_jobs_and_foreign_deployments(
+    tmp_path, environment, release, monkeypatch
+):
+    installer, tools = setup_cp_only(tmp_path, environment, release, monkeypatch)
+    original = tools.call
+
+    def with_non_service_pods(args, **kwargs):
+        result = original(args, **kwargs)
+        if args[0] == "kubectl" and "get" in args:
+            kind = args[args.index("get") + 1]
+            if kind in {"pods", "replicasets"}:
+                objects = json.loads(result.stdout)
+                foreign = {
+                    "metadata": {
+                        "uid": "foreign-rs",
+                        "ownerReferences": [
+                            {
+                                "kind": "Deployment",
+                                "controller": True,
+                                "uid": "foreign-deployment",
+                            }
+                        ],
+                    }
+                }
+                if kind == "replicasets":
+                    objects["items"].append(foreign)
+                else:
+                    for owner_kind, uid in (
+                        ("Job", "bootstrap-job"),
+                        ("ReplicaSet", "foreign-rs"),
+                    ):
+                        objects["items"].append(
+                            {
+                                "metadata": {
+                                    "uid": "pod-" + uid,
+                                    "ownerReferences": [
+                                        {
+                                            "kind": owner_kind,
+                                            "controller": True,
+                                            "uid": uid,
+                                        }
+                                    ],
+                                }
+                            }
+                        )
+                result.stdout = json.dumps(objects)
+        return result
+
+    monkeypatch.setattr(tools, "call", with_non_service_pods)
+    installer.preflight()
+    installer.execute(installer.receipt["plan_sha256"], "verified-user")
+    assert installer.receipt["verification"]["restart_persistence_verified"]
+    for name, proof in installer.receipt["management_restart"].items():
+        assert proof == {
+            "before_pod_uids": [f"pod-{name}-0"],
+            "after_pod_uids": [f"pod-{name}-1"],
+        }
+
+
+def test_installer_uses_the_canonical_state_lock_and_checksum(
+    tmp_path, environment, release, monkeypatch
+):
+    installer, tools = setup(tmp_path, environment, release, monkeypatch)
+    installer.terraform()
+    initializations = [args for args, _ in tools.calls if "init" in args]
+    assert len(initializations) == 1
+    assert "-backend-config=dynamodb_table=adp-terraform-locks" in initializations[0]
+    assert "-backend-config=encrypt=true" in initializations[0]
+
+
+@pytest.mark.parametrize("pending_read", [False, True])
+def test_refreshed_platform_data_omitted_from_planned_values(
+    tmp_path, environment, release, monkeypatch, pending_read
+):
+    installer, tools = setup(tmp_path, environment, release, monkeypatch)
+    original = tools.call
+
+    def refreshed(args, **kwargs):
+        result = original(args, **kwargs)
+        if "show" in args:
+            value = json.loads(result.stdout)
+            resources = value["planned_values"]["root_module"]["resources"]
+            platform = resources.pop(0)
+            value["prior_state"] = {
+                "values": {"root_module": {"resources": [platform]}}
+            }
+            if pending_read:
+                value["resource_changes"].append(
+                    {"address": platform["address"], "change": {"actions": ["read"]}}
+                )
+            result.stdout = json.dumps(value)
+        return result
+
+    monkeypatch.setattr(tools, "call", refreshed)
+    if pending_read:
+        with pytest.raises(Refusal, match="unresolved planned read"):
+            installer.terraform()
+    else:
+        installer.terraform()
+        assert installer.receipt["plan_sha256"]
+
+
+@pytest.mark.parametrize("addresses", [["10.0.11.13"], [], ["not-an-address"]])
+def test_database_resolves_in_selected_management_vpc(
+    tmp_path, environment, release, monkeypatch, addresses
+):
+    installer, tools = setup(tmp_path, environment, release, monkeypatch)
+    calls = []
+
+    def dns(*args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(stdout=json.dumps(addresses))
+
+    monkeypatch.setattr(installer, "kube", dns)
+    endpoint = {"Address": "selected.private.example", "Port": 5432}
+    if addresses == ["10.0.11.13"]:
+        assert installer.resolve_database_addresses(endpoint) == addresses
+        assert calls[0][-2:] == (endpoint["Address"], "5432")
+        assert "deployment/bedrockgateway" in calls[0]
+    else:
+        with pytest.raises(Refusal, match="resolve|invalid address"):
+            installer.resolve_database_addresses(endpoint)

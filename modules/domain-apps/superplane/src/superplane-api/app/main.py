@@ -15,23 +15,25 @@ from app.auth import build_domain_policy
 from app.config import settings
 from app.database import async_session_factory
 from app.domain_guard import enforce_domain_authorization
+from app.management import enforce_management_surface, management_only
 from app.middleware.audit import AuditMiddleware
 from app.middleware.quota import QuotaEnforcementMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers import health
-from app.routers.auth import router as auth_router
-from app.routers.orgs import router as orgs_router
-from app.routers.cost import router as cost_router
-from app.routers.heartbeat import router as heartbeat_router
-from app.routers.proxy import router as proxy_router
-from app.routers.research import router as research_router
-from app.routers.events import router as events_router
 from app.routers.accounts import router as accounts_router
-from app.routers.internal import router as internal_router
+from app.routers.auth import router as auth_router
+from app.routers.controller_management import router as controller_management_router
+from app.routers.cost import router as cost_router
+from app.routers.events import router as events_router
+from app.routers.heartbeat import router as heartbeat_router
 from app.routers.installation import router as installation_router
+from app.routers.internal import router as internal_router
+from app.routers.orgs import router as orgs_router
 from app.routers.provider_connections import router as provider_connections_router
 from app.routers.provider_handles import router as provider_handles_router
+from app.routers.proxy import router as proxy_router
 from app.routers.quota import router as quota_router
+from app.routers.research import router as research_router
 from app.routers.users import router as users_router
 from app.routers.workspaces import router as workspaces_router
 from app.services.vault_sync import VaultSyncReconciler
@@ -62,6 +64,27 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle — start/stop background reconcilers."""
     # Reapply if the server or an embedding host replaced handlers after import.
     configure_log_redaction()
+    if management_only():
+        from pathlib import Path
+
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        from app.installation import database_check
+
+        if getattr(app.state, "domain_policy", None) is None:
+            raise RuntimeError("Management service requires strict domain authorization")
+        try:
+            observed = await database_check(verify_role_default=True)
+        except Exception:
+            raise RuntimeError("Management database boundary check failed") from None
+        config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+        config.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "alembic"))
+        if [observed["revision"]] != ScriptDirectory.from_config(config).get_heads():
+            raise RuntimeError("Management database schema does not match the image")
+        logger.info("Starting authenticated management service; workspace execution unavailable")
+        yield
+        return
     if os.environ.get("SUPERPLANE_INSTALLATION_REQUIRED") == "true":
         from app.installation import capabilities_async
 
@@ -96,7 +119,7 @@ app = FastAPI(
     # invisible and ships reachable). See app/domain_guard.py for why this cannot
     # be a Starlette middleware: middleware runs before routing, so it cannot
     # identify the route it is protecting.
-    dependencies=[Depends(enforce_domain_authorization)],
+    dependencies=[Depends(enforce_domain_authorization), Depends(enforce_management_surface)],
 )
 
 # The token policy is built once, at import, and held on app.state. Building it
@@ -105,6 +128,7 @@ app = FastAPI(
 # policy's constructor raises and this process does not serve, rather than
 # serving while admitting every app client in the user pool.
 app.state.domain_policy = build_domain_policy()
+app.include_router(controller_management_router)
 
 # CORS middleware
 app.add_middleware(

@@ -102,6 +102,7 @@ PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         # Liveness/readiness. Probed by kubelet, which holds no credential.
         ("GET", "/health"),
+        ("GET", "/readyz"),
         # API description. Serves no tenant data.
         ("GET", "/openapi.json"),
         ("GET", "/docs"),
@@ -118,6 +119,7 @@ PUBLIC_ROUTES: frozenset[tuple[str, str]] = frozenset(
 INTERNAL_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("GET", "/internal/installation"),
+        ("POST", "/internal/controller/reconcile"),
         ("PATCH", "/internal/clusters/{cluster_id}/resources"),
         ("POST", "/internal/vault-sync/trigger"),
         ("POST", "/internal/workspaces/{workspace_id}/reconcile"),

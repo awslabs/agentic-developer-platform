@@ -51,11 +51,6 @@ from jose import jwt
 from jose.exceptions import JOSEError, JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.config import settings
-from app.endpoint_inventory import Scope
-from app.models.workspace import Workspace
-from app.models.workspace_grant import WorkspaceGrantRecord
 from superplane_auth.policy import (
     TRUSTED_VALIDATION_PATH,
     AuthorizationDeniedError,
@@ -70,6 +65,17 @@ from superplane_auth.policy import (
     expand_permissions,
     strip_identity_headers,
 )
+
+from app.config import settings
+from app.endpoint_inventory import Scope
+from app.models.organization import Organization
+from app.models.organization_grant import (
+    ORGANIZATION_ADMINISTER,
+    ORGANIZATION_READ,
+    OrganizationGrantRecord,
+)
+from app.models.workspace import Workspace
+from app.models.workspace_grant import WorkspaceGrantRecord
 
 logger = logging.getLogger(__name__)
 
@@ -470,7 +476,11 @@ async def authorize_organization_operation(
     treating it as such is how a single-workspace member reaches an org-wide
     collection.
 
-    Organization authority is therefore defined as holding the required
+    Explicit ADP-bound organizations use independent organization grants. They
+    work before the first workspace exists and never confer workspace access.
+    A revoked or absent organization grant cannot fall back to workspace grants.
+
+    For unbound legacy organizations only, authority remains holding the required
     permission on every LIVE workspace in the org — the conservative reading,
     and the only one available without a separate org-grant table. It is
     conservative in the safe direction: it can refuse someone who should be
@@ -504,6 +514,28 @@ async def authorize_organization_operation(
     Null/dangling legacy rows fail closed under strict enforcement.
     """
     org_id = caller.principal.org_id
+    organization = await db.get(Organization, _as_uuid(org_id))
+    org_grant = await db.scalar(
+        select(OrganizationGrantRecord).where(
+            OrganizationGrantRecord.org_id == _as_uuid(org_id),
+            OrganizationGrantRecord.principal == caller.principal.subject,
+        ).execution_options(populate_existing=True)
+    )
+    if org_grant is not None:
+        permitted = org_grant.permission_values()
+        if (
+            org_grant.revoked_at is None
+            and org_grant.principal_type == caller.principal.account_type
+            and (
+                ORGANIZATION_ADMINISTER in permitted
+                or (permission is Permission.READ and ORGANIZATION_READ in permitted)
+            )
+        ):
+            return
+        raise _forbidden("organization grant does not authorize this operation")
+    if organization is not None and organization.adp_org_id is not None:
+        raise _forbidden("endpoint requires an explicit organization grant")
+
     workspace_rows = (
         (
             await db.execute(

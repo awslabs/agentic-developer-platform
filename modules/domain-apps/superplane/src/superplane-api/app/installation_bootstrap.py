@@ -17,6 +17,10 @@ from app.auth import build_domain_policy, verify_access_token
 from app.database import async_session_factory
 from app.models.cluster import Cluster
 from app.models.organization import Organization
+from app.models.organization_grant import (
+    ORGANIZATION_ADMINISTER,
+    OrganizationGrantRecord,
+)
 from app.models.workspace import Workspace
 from app.models.workspace_grant import WorkspaceGrantRecord
 
@@ -66,9 +70,20 @@ async def bootstrap(config, token, *, membership_reader=None):
         return selected[0]
 
     selected = await current_admin()
-    org_id, workspace_id, cluster_id = (
-        uuid.UUID(config[key]) for key in ("org_id", "workspace_id", "cluster_id")
+    control_plane_only = config.get("control_plane_only", False)
+    if not isinstance(control_plane_only, bool):
+        raise ValueError("control_plane_only must be a boolean")
+    org_id = uuid.UUID(config["org_id"])
+    workspace_keys = (
+        "workspace_id", "cluster_id", "workspace_cluster",
+        "workspace_namespace", "workspace_cluster_arn",
     )
+    if control_plane_only and any(key in config for key in workspace_keys):
+        raise ValueError("control-plane bootstrap cannot include workspace bindings")
+    if not control_plane_only and not all(config.get(key) for key in workspace_keys):
+        raise ValueError("workspace bootstrap requires a complete workspace binding")
+    workspace_id = None if control_plane_only else uuid.UUID(config["workspace_id"])
+    cluster_id = None if control_plane_only else uuid.UUID(config["cluster_id"])
     async with async_session_factory() as session, session.begin():
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:binding, 0))"),
@@ -91,6 +106,38 @@ async def bootstrap(config, token, *, membership_reader=None):
                 )
             )
             await session.flush()
+        organization_grant = await session.scalar(
+            select(OrganizationGrantRecord).where(
+                OrganizationGrantRecord.org_id == org_id,
+                OrganizationGrantRecord.principal == principal.subject,
+            ).with_for_update()
+        )
+        if organization_grant is not None:
+            if (
+                organization_grant.revoked_at is not None
+                or organization_grant.principal_type != "human"
+                or ORGANIZATION_ADMINISTER not in organization_grant.permission_values()
+            ):
+                raise ValueError("existing organization grant is revoked or restricted")
+        else:
+            session.add(OrganizationGrantRecord(
+                org_id=org_id,
+                principal=principal.subject,
+                principal_type="human",
+                permissions=ORGANIZATION_ADMINISTER,
+                granted_by=principal.subject,
+            ))
+        if control_plane_only:
+            await session.flush()
+            await current_admin()
+            return {
+                "adp_org_id": principal.org_id,
+                "org_id": str(org_id),
+                "workspace_id": None,
+                "actor": principal.subject,
+                "organization_grant": ORGANIZATION_ADMINISTER,
+                "legacy_migration": False,
+            }
         workspace = await session.get(Workspace, workspace_id, with_for_update=True)
         cluster = await session.get(Cluster, cluster_id, with_for_update=True)
         if workspace is not None and (

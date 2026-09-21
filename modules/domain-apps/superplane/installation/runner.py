@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
+import ipaddress
 import subprocess
 import sys
 import tempfile
@@ -24,6 +26,7 @@ import yaml
 
 from .config import COMPONENTS, LABEL, MODULE, Refusal, digest, identity, image, require
 from .manifests import bootstrap_job, migration_job, render
+from .cluster_probe import ClusterProbe
 
 sys.path.insert(0, str(MODULE / "infra/scripts"))
 from domain_ownership import validate_plan  # noqa: E402
@@ -41,7 +44,11 @@ class Commands:
                 env={
                     k: v
                     for k, v in (os.environ if env is None else env).items()
-                    if k != "SUPERPLANE_VERIFICATION_TOKEN"
+                    if k
+                    not in {
+                        "SUPERPLANE_VERIFICATION_TOKEN",
+                        "SUPERPLANE_DATABASE_ADMIN_URL",
+                    }
                 },
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -68,13 +75,28 @@ def atomic(path: Path, value: dict) -> None:
 
 
 class Installer:
-    def __init__(self, env, lock, directory: Path, commands=None):
+    def __init__(
+        self,
+        env,
+        lock,
+        directory: Path,
+        commands=None,
+        *,
+        control_plane_only: bool = False,
+    ):
         self.env, self.lock, self.directory = env, lock, directory
+        # control_plane_only: skip workspace stages (workspace(), workspace_access secret).
+        # The environment YAML may also declare control_plane_only: true.
+        from .config import control_plane_mode
+
+        self.control_plane_only = control_plane_mode(env, control_plane_only)
+        self.env = dict(env, control_plane_only=self.control_plane_only)
+        env = self.env
         self.commands = commands or Commands()
         self.run_id = uuid.uuid4().hex[:16]
         self.owner = identity(env)
         self.release = digest(lock)
-        self.docs = render(env, lock)
+        self.docs = render(env, lock, control_plane_only=self.control_plane_only)
         self.secret_values = {}
         self.secret_versions = {}
         self.submitter_ids = {}
@@ -94,6 +116,8 @@ class Installer:
             "completed": [],
             "objects": [],
         }
+        if self.control_plane_only:
+            self.receipt["mode"] = "control-plane-only"
         self.receipt_path = directory / "receipt.json"
 
     def aws(self, *args, **kwargs):
@@ -148,20 +172,37 @@ class Installer:
                 sort_keys=False,
             )
         )
-        self.receipt["actions"] = [
-            "verify account/cluster/source/images/production capabilities",
-            "verify database/backup/workspace ownership and gateway support",
-            "review domain Terraform plan",
-            "acquire exclusive installation lock",
-            "apply approved domain Terraform plan",
-            "install domain identities, network boundaries and referenced secrets",
-            "migrate owned schema",
-            "bind fresh domain tenancy to the verified current ADP administrator",
-            "roll out API/controller/monitor/SkyPilot",
-            "verify private services",
-            "register public routing",
-            "verify public authorization, health and existing ADP availability",
-        ]
+        if self.control_plane_only:
+            self.receipt["actions"] = [
+                "verify account/cluster/source/images/production capabilities",
+                "verify database/backup ownership and gateway support",
+                "review domain Terraform plan",
+                "acquire exclusive installation lock",
+                "apply approved domain Terraform plan",
+                "install domain identities, network boundaries and referenced secrets",
+                "migrate owned schema",
+                "bind fresh domain tenancy to the verified current ADP administrator",
+                "roll out API/controller management/monitor/SkyPilot",
+                "verify private services",
+                "register public routing",
+                "verify public authorization, health and existing ADP availability",
+                "workspace activation follows separately with explicit workspace inputs",
+            ]
+        else:
+            self.receipt["actions"] = [
+                "verify account/cluster/source/images/production capabilities",
+                "verify database/backup/workspace ownership and gateway support",
+                "review domain Terraform plan",
+                "acquire exclusive installation lock",
+                "apply approved domain Terraform plan",
+                "install domain identities, network boundaries and referenced secrets",
+                "migrate owned schema",
+                "bind fresh domain tenancy to the verified current ADP administrator",
+                "roll out API/controller/monitor/SkyPilot",
+                "verify private services",
+                "register public routing",
+                "verify public authorization, health and existing ADP availability",
+            ]
         self.save()
         return self.receipt
 
@@ -218,8 +259,36 @@ class Installer:
             ]
         ).stdout.strip()
         require(not status, "Installation requires an unmodified maintained checkout")
+        if verify_source:
+            self.verify_image_sources()
+
+    def verify_image_sources(self):
+        evidence = {}
+        for name in COMPONENTS[:-1]:
+            revision = self.lock["image_sources"][name]["source_revision"]
+            if revision == self.lock["source_revision"]:
+                continue
+            path = "modules/domain-apps/superplane/src/" + name
+            trees = [
+                self.commands.call(
+                    ["git", "-C", str(MODULE), "rev-parse", sha + ":" + path]
+                ).stdout.strip()
+                for sha in (revision, self.lock["source_revision"])
+            ]
+            require(
+                len(trees[0]) == 40 and trees[0] == trees[1],
+                "Image build context differs from installation source: " + name,
+            )
+            evidence[name] = {
+                "built_revision": revision,
+                "build_context_tree": trees[0],
+            }
+        self.receipt["reused_image_sources"] = evidence
+        self.save()
 
     def images(self):
+        if self.env.get("image_execution") == "cluster":
+            return self.cluster_images()
         for name in COMPONENTS[:-1]:
             source = self.lock["image_sources"][name]
             data = self.json(
@@ -242,8 +311,8 @@ class Installer:
             # registry observation, not only a source claim in a local lock file.
             require(
                 any(
-                    tag == self.lock["source_revision"]
-                    or tag == self.lock["source_revision"][:12]
+                    tag == source["source_revision"]
+                    or tag == source["source_revision"][:12]
                     for tag in details[0].get("imageTags", [])
                 ),
                 f"Registry does not bind image to source: {name}",
@@ -263,12 +332,15 @@ class Installer:
                 .get("Config", {})
                 .get("Labels", {})
                 .get("org.opencontainers.image.revision")
-                == self.lock["source_revision"],
+                == source["source_revision"],
                 f"Image OCI provenance does not match source: {name}",
             )
         self.commands.call(
             ["docker", "pull", image(self.lock, "superplane-api")],
             timeout=self.env["timeout_seconds"],
+        )
+        environment = (
+            self.management_probe_environment() if self.control_plane_only else {}
         )
         result = self.commands.call(
             [
@@ -278,13 +350,23 @@ class Installer:
                 "--network=none",
                 "--entrypoint",
                 "python",
+                *[item for key in environment for item in ("--env", key)],
                 image(self.lock, "superplane-api"),
                 "-m",
                 "app.installation",
-                "capabilities",
+                "management-capabilities"
+                if self.control_plane_only
+                else "capabilities",
             ],
+            env=dict(os.environ, **environment),
             allow_failure=True,
         )
+        if self.control_plane_only:
+            require(
+                result.returncode == 0
+                and self.json(result).get("controller_management") is True,
+                "Image does not implement authenticated management mode",
+            )
         capabilities = self.json(result).get("capabilities", {})
         required = {
             "credential_evidence",
@@ -294,7 +376,7 @@ class Installer:
         }
         missing = sorted(key for key in required if capabilities.get(key) is not True)
         require(
-            not missing and result.returncode == 0,
+            self.control_plane_only or (not missing and result.returncode == 0),
             "Production image lacks trusted capabilities: " + ", ".join(missing),
         )
         controller = self.commands.call(
@@ -305,14 +387,128 @@ class Installer:
                 "--network=none",
                 image(self.lock, "superplane-controller"),
                 "--installation-preflight",
+                *(["--management-only"] if self.control_plane_only else []),
             ],
             allow_failure=True,
         )
         require(
             controller.returncode == 0
-            and self.json(controller).get("governed_provisioning") is True,
+            and self.json(controller).get(
+                "controller_management"
+                if self.control_plane_only
+                else "governed_provisioning"
+            )
+            is True,
             "Production controller lacks B's governed execution adapter; direct provisioning is not a fallback",
         )
+
+    def management_probe_environment(self):
+        return {
+            "SUPERPLANE_MANAGEMENT_ONLY": "true",
+            "DOMAIN_AUTH_ENFORCED": "true",
+            "COGNITO_ENABLED": "true",
+            "COGNITO_ISSUER": self.env["auth"]["issuer"],
+            "DOMAIN_AUTH_ALLOWED_CLIENT_IDS": json.dumps(
+                self.env["auth"]["client_ids"]
+            ),
+        }
+
+    def cluster_images(self):
+        for name in COMPONENTS[:-1]:
+            source = self.lock["image_sources"][name]
+            result = self.json(
+                self.aws(
+                    "ecr",
+                    "batch-get-image",
+                    "--repository-name",
+                    source["repository"],
+                    "--image-ids",
+                    "imageDigest=" + self.lock["images"][name],
+                )
+            )
+            require(
+                not result.get("failures") and len(result.get("images", [])) == 1,
+                "Release image is unavailable: " + name,
+            )
+            raw = result["images"][0]["imageManifest"]
+            require(
+                "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+                == self.lock["images"][name],
+                "Registry manifest does not match pinned digest",
+            )
+            manifest = json.loads(raw)
+            config_digest = manifest["config"]["digest"]
+            download = self.json(
+                self.aws(
+                    "ecr",
+                    "get-download-url-for-layer",
+                    "--repository-name",
+                    source["repository"],
+                    "--layer-digest",
+                    config_digest,
+                )
+            )
+            response = httpx.get(
+                download["downloadUrl"], timeout=30, follow_redirects=False
+            )
+            require(
+                response.status_code == 200
+                and "sha256:" + hashlib.sha256(response.content).hexdigest()
+                == config_digest,
+                "Image config content digest differs",
+            )
+            config = response.json()
+            require(
+                config.get("architecture") == "amd64"
+                and config.get("os") == "linux"
+                and config.get("config", {})
+                .get("Labels", {})
+                .get("org.opencontainers.image.revision")
+                == source["source_revision"],
+                "Image OCI provenance does not match source: " + name,
+            )
+        with ClusterProbe(self) as probe:
+            probe.prove_network_policy()
+            probe.isolate()
+            action = (
+                "management-capabilities" if self.control_plane_only else "capabilities"
+            )
+            api = probe.run(
+                "superplane-api",
+                ["python", "-m", "app.installation", action],
+                values=self.management_probe_environment()
+                if self.control_plane_only
+                else None,
+            )
+            observed = self.json(api)
+            require(
+                api.returncode == 0
+                and (
+                    observed.get("controller_management") is True
+                    if self.control_plane_only
+                    else len(observed.get("capabilities", {})) == 4
+                    and all(observed["capabilities"].values())
+                ),
+                "API production capability preflight failed",
+            )
+            controller = probe.run(
+                "superplane-controller",
+                [
+                    "/superplane-controller",
+                    "--installation-preflight",
+                    *(["--management-only"] if self.control_plane_only else []),
+                ],
+            )
+            require(
+                controller.returncode == 0
+                and self.json(controller).get(
+                    "controller_management"
+                    if self.control_plane_only
+                    else "governed_provisioning"
+                )
+                is True,
+                "Controller image lacks the selected runtime integration",
+            )
 
     def secrets(self):
         for kind, name in self.env["secrets"].items():
@@ -341,8 +537,12 @@ class Installer:
                 "controller-signing-key",
                 "skypilot-token",
             },
-            "workspace_access": {"kubeconfig"},
         }
+        if not self.control_plane_only:
+            # workspace_access is only required for full installation; it names the
+            # credential used by the workspace controller and must not be loaded
+            # when the workspace cluster has not yet been provisioned.
+            required["workspace_access"] = {"kubeconfig"}
         for kind, keys in required.items():
             require(
                 set(self.secret_values[kind]) == keys
@@ -367,15 +567,30 @@ class Installer:
                 for g in grants
                 if g.get("credential") == observation[component + "-credential"]
             ]
-            require(
-                len(selected) == 1
-                and selected[0].get("workspaces") == [self.env["workspace_id"]]
-                and selected[0].get("signing_key")
-                == observation[component + "-signing-key"],
-                "Observation grants must match the exact workspace and service credential",
+            if not self.control_plane_only:
+                require(
+                    len(selected) == 1
+                    and selected[0].get("workspaces") == [self.env["workspace_id"]]
+                    and selected[0].get("signing_key")
+                    == observation[component + "-signing-key"],
+                    "Observation grants must match the exact workspace and service credential",
+                )
+            else:
+                # In control-plane-only mode the workspace UUID is not yet selected;
+                # verify only that the credential pair exists and is non-empty.
+                require(
+                    len(selected) == 1
+                    and selected[0].get("workspaces") == []
+                    and selected[0].get("signing_key")
+                    == observation[component + "-signing-key"],
+                    f"Observation secret must contain the {component} credential pair",
+                )
+            self.submitter_ids[component] = (
+                selected[0].get("submitter_id") if selected else None
             )
-            self.submitter_ids[component] = selected[0].get("submitter_id")
             scopes = ["budget_monitor/global"] if component == "monitor" else []
+            if component == "controller" and self.control_plane_only:
+                scopes = [f"controller_management/{self.env['org_id']}"]
             require(
                 selected[0].get("lease_scopes", []) == scopes,
                 "Observation lease scope does not match the service",
@@ -391,50 +606,56 @@ class Installer:
             observation["monitor-credential"] != observation["controller-credential"],
             "Monitor and controller require distinct service identities",
         )
-        # Parse workspace credentials without ever writing an unvalidated exec
-        # plugin to disk. Only static bearer/certificate auth is supported.
-        workspace = yaml.safe_load(self.secret_values["workspace_access"]["kubeconfig"])
-        require(
-            isinstance(workspace, dict)
-            and len(workspace.get("clusters", [])) == 1
-            and len(workspace.get("users", [])) == 1,
-            "Workspace kubeconfig must name one cluster and identity",
-        )
-        user = workspace["users"][0]["user"]
-        require(
-            set(user) <= {"token", "client-certificate-data", "client-key-data"}
-            and (
-                bool(user.get("token"))
-                or bool(
-                    user.get("client-certificate-data") and user.get("client-key-data")
+        if not self.control_plane_only:
+            # Parse workspace credentials without ever writing an unvalidated exec
+            # plugin to disk.  Only static bearer/certificate auth is supported.
+            workspace = yaml.safe_load(
+                self.secret_values["workspace_access"]["kubeconfig"]
+            )
+            require(
+                isinstance(workspace, dict)
+                and len(workspace.get("clusters", [])) == 1
+                and len(workspace.get("users", [])) == 1,
+                "Workspace kubeconfig must name one cluster and identity",
+            )
+            user = workspace["users"][0]["user"]
+            require(
+                set(user) <= {"token", "client-certificate-data", "client-key-data"}
+                and (
+                    bool(user.get("token"))
+                    or bool(
+                        user.get("client-certificate-data")
+                        and user.get("client-key-data")
+                    )
+                ),
+                "Workspace kubeconfig cannot execute plugins or read local files",
+            )
+            cluster = self.json(
+                self.aws(
+                    "eks", "describe-cluster", "--name", self.env["workspace_cluster"]
                 )
-            ),
-            "Workspace kubeconfig cannot execute plugins or read local files",
-        )
-        cluster = self.json(
-            self.aws("eks", "describe-cluster", "--name", self.env["workspace_cluster"])
-        )["cluster"]
-        selected = workspace["clusters"][0]["cluster"]
-        require(
-            set(selected) <= {"server", "certificate-authority-data"},
-            "Workspace kubeconfig cannot override TLS identity or proxy transport",
-        )
-        contexts = workspace.get("contexts", [])
-        require(
-            len(contexts) == 1
-            and workspace.get("current-context") == contexts[0]["name"]
-            and contexts[0]["context"].get("cluster")
-            == workspace["clusters"][0]["name"]
-            and contexts[0]["context"].get("user") == workspace["users"][0]["name"],
-            "Workspace context must bind the checked cluster and identity",
-        )
-        require(
-            selected.get("server") == cluster["endpoint"]
-            and selected.get("certificate-authority-data")
-            == cluster["certificateAuthority"]["data"]
-            and not selected.get("insecure-skip-tls-verify"),
-            "Workspace credential target/TLS does not match the selected EKS cluster",
-        )
+            )["cluster"]
+            selected_kube = workspace["clusters"][0]["cluster"]
+            require(
+                set(selected_kube) <= {"server", "certificate-authority-data"},
+                "Workspace kubeconfig cannot override TLS identity or proxy transport",
+            )
+            contexts = workspace.get("contexts", [])
+            require(
+                len(contexts) == 1
+                and workspace.get("current-context") == contexts[0]["name"]
+                and contexts[0]["context"].get("cluster")
+                == workspace["clusters"][0]["name"]
+                and contexts[0]["context"].get("user") == workspace["users"][0]["name"],
+                "Workspace context must bind the checked cluster and identity",
+            )
+            require(
+                selected_kube.get("server") == cluster["endpoint"]
+                and selected_kube.get("certificate-authority-data")
+                == cluster["certificateAuthority"]["data"]
+                and not selected_kube.get("insecure-skip-tls-verify"),
+                "Workspace credential target/TLS does not match the selected EKS cluster",
+            )
         self.receipt["secret_versions"] = self.secret_versions
         for doc in self.docs:
             if doc["kind"] == "Deployment":
@@ -514,22 +735,60 @@ class Installer:
                 result.stdout.strip() == "yes",
                 "Workspace controller credential lacks required scoped permissions",
             )
-        addon = self.json(
-            self.aws(
-                "eks",
-                "describe-addon",
-                "--cluster-name",
-                self.env["cluster"],
-                "--addon-name",
-                "vpc-cni",
-            )
-        )["addon"]
-        configuration = json.loads(addon.get("configurationValues") or "{}")
-        require(
-            addon.get("status") == "ACTIVE"
-            and configuration.get("enableNetworkPolicy") in (True, "true"),
-            "The supported VPC CNI NetworkPolicy enforcement must be enabled before installation",
+
+    def management_network_policy(self):
+        # Verify NetworkPolicy configuration on the management cluster. The
+        # cluster image executor additionally exercises actual packet enforcement.
+        # - Standard managed VPC CNI: addon ACTIVE with enableNetworkPolicy enabled.
+        # - EKS Auto Mode: no standalone vpc-cni addon (ResourceNotFoundException);
+        #   verify computeConfig.enabled and that the default NodeClass declares
+        #   a networkPolicy spec field, proving enforcement is configured.
+        cni_result = self.aws(
+            "eks",
+            "describe-addon",
+            "--cluster-name",
+            self.env["cluster"],
+            "--addon-name",
+            "vpc-cni",
+            allow_failure=True,
         )
+        if cni_result.returncode == 0:
+            addon = self.json(cni_result)["addon"]
+            configuration = json.loads(addon.get("configurationValues") or "{}")
+            require(
+                addon.get("status") == "ACTIVE"
+                and configuration.get("enableNetworkPolicy") in (True, "true"),
+                "The supported VPC CNI NetworkPolicy enforcement must be enabled before installation",
+            )
+        else:
+            # No managed addon — check whether Auto Mode is active and NetworkPolicy
+            # is configured via the platform NodeClass rather than the VPC CNI addon.
+            cluster_detail = self.json(
+                self.aws("eks", "describe-cluster", "--name", self.env["cluster"])
+            )["cluster"]
+            require(
+                cluster_detail.get("computeConfig", {}).get("enabled") is True,
+                "Management cluster neither has the managed VPC CNI addon"
+                " nor uses EKS Auto Mode; NetworkPolicy enforcement cannot be verified",
+            )
+            node_class_result = self.kube(
+                "get",
+                "nodeclass",
+                "default",
+                "-o",
+                "json",
+                allow_failure=True,
+            )
+            require(
+                node_class_result.returncode == 0,
+                "EKS Auto Mode requires a ready NodeClass default for NetworkPolicy enforcement",
+            )
+            node_class = self.json(node_class_result)
+            require(
+                "networkPolicy" in node_class.get("spec", {}),
+                "EKS Auto Mode NodeClass default does not declare networkPolicy;"
+                " enforcement capability cannot be confirmed",
+            )
 
     def database(self):
         roles = {
@@ -593,28 +852,32 @@ class Installer:
                 SUPERPLANE_EXPECTED_DATABASE=self.env["database"]["database"],
                 SUPERPLANE_DATABASE_CA=self.secret_values["database"]["ca-pem"],
             )
-            result = self.commands.call(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--entrypoint",
-                    "python",
-                    "--env",
-                    "DATABASE_URL",
-                    "--env",
-                    "SUPERPLANE_DB_SCHEMA",
-                    "--env",
-                    "SUPERPLANE_EXPECTED_DATABASE",
-                    "--env",
-                    "SUPERPLANE_DATABASE_CA",
-                    image(self.lock, "superplane-api"),
-                    "-m",
-                    "app.installation",
-                    "database",
-                ],
-                env=runtime,
-            )
+            if self.env.get("image_execution") == "cluster":
+                result = self.cluster_database_probe(runtime, endpoint)
+            else:
+                result = self.commands.call(
+                    [
+                        "docker",
+                        "run",
+                        "--rm",
+                        "--entrypoint",
+                        "python",
+                        "--env",
+                        "DATABASE_URL",
+                        "--env",
+                        "SUPERPLANE_DB_SCHEMA",
+                        "--env",
+                        "SUPERPLANE_EXPECTED_DATABASE",
+                        "--env",
+                        "SUPERPLANE_DATABASE_CA",
+                        image(self.lock, "superplane-api"),
+                        "-m",
+                        "app.installation",
+                        "database",
+                    ],
+                    env=runtime,
+                )
+            require(result.returncode == 0, "Packaged database boundary check failed")
             observed = self.json(result)
             require(
                 observed.get("schema") == schema
@@ -622,6 +885,73 @@ class Installer:
                 "Database observation does not match the declared boundary",
             )
             self.receipt.setdefault("database_observations", {})[key] = observed
+
+    def resolve_database_addresses(self, endpoint):
+        # Private RDS DNS belongs to the selected VPC, not the operator laptop.
+        # The existing ADP API provides a read-only DNS lookup; no credential is read.
+        program = (
+            "import json,socket,sys; "
+            "print(json.dumps(sorted({r[4][0] for r in socket.getaddrinfo("
+            "sys.argv[1],int(sys.argv[2]),type=socket.SOCK_STREAM)})))"
+        )
+        addresses = self.json(
+            self.kube(
+                "exec",
+                "deployment/bedrockgateway",
+                "-n",
+                self.env.get("gateway_namespace", "adp"),
+                "-c",
+                "bedrockgateway",
+                "--",
+                "python",
+                "-c",
+                program,
+                endpoint["Address"],
+                str(endpoint["Port"]),
+            )
+        )
+        require(
+            isinstance(addresses, list) and 0 < len(addresses) <= 16,
+            "Selected database endpoint did not resolve in the management VPC",
+        )
+        try:
+            addresses = sorted(
+                {str(ipaddress.ip_address(a)) for a in addresses if isinstance(a, str)}
+            )
+        except ValueError:
+            raise Refusal("Database DNS returned an invalid address") from None
+        require(bool(addresses), "Database DNS returned no usable address")
+        self.receipt["database_network_target"] = {
+            "host": endpoint["Address"],
+            "addresses": addresses,
+            "source": "management-vpc",
+        }
+        self.save()
+        return addresses
+
+    def cluster_database_probe(self, runtime, endpoint):
+        addresses = self.resolve_database_addresses(endpoint)
+        with ClusterProbe(self) as probe:
+            probe.isolate(
+                database_cidrs=[
+                    address + ("/128" if ":" in address else "/32")
+                    for address in addresses
+                ],
+                database_port=endpoint["Port"],
+            )
+            return probe.run(
+                "superplane-api",
+                ["python", "-m", "app.installation", "database"],
+                values={
+                    key: runtime[key]
+                    for key in (
+                        "DATABASE_URL",
+                        "SUPERPLANE_DB_SCHEMA",
+                        "SUPERPLANE_EXPECTED_DATABASE",
+                        "SUPERPLANE_DATABASE_CA",
+                    )
+                },
+            )
 
     def gateway(self):
         self.check_route_owner()
@@ -663,7 +993,11 @@ class Installer:
             "database_secret_name": self.env["secrets"]["database"],
             "jwt_secret_name": self.env["secrets"]["observation"],
             "cors_allowed_origins": [self.env["origin"]],
-            "workspace_cluster_context": self.env["workspace_cluster"],
+            # workspace_cluster_context is deferred in control-plane-only mode;
+            # the Terraform module must treat an absent/null value as no-op.
+            "workspace_cluster_context": ""
+            if self.control_plane_only
+            else self.env["workspace_cluster"],
         }
         atomic(tf / "installation.auto.tfvars.json", variables)
         prefix = ["terraform", f"-chdir={tf}"]
@@ -675,6 +1009,8 @@ class Installer:
                 f"-backend-config=bucket={self.bucket}",
                 f"-backend-config=key={self.env['environment']}/modules/superplane/terraform.tfstate",
                 f"-backend-config=region={self.env['region']}",
+                "-backend-config=encrypt=true",
+                "-backend-config=dynamodb_table=adp-terraform-locks",
             ]
         )
         self.commands.call(
@@ -691,16 +1027,35 @@ class Installer:
             report.ok and not report.has_destructive_changes,
             "Terraform plan changes unknown ownership or deletes resources; installation refused",
         )
-        platform = next(
-            (
-                entry.get("values", {}).get("outputs", {})
-                for entry in plan.get("planned_values", {})
+        address = "data.terraform_remote_state.platform"
+        resources = (
+            plan.get("planned_values", {}).get("root_module", {}).get("resources", [])
+        )
+        platform_entry = next(
+            (r for r in resources if r.get("address") == address), None
+        )
+        if platform_entry is None:
+            # Terraform can omit unchanged data from planned_values. Its prior_state
+            # is the refreshed state for this plan, usable only without a pending read.
+            changes = [
+                r
+                for r in plan.get("resource_changes", [])
+                if r.get("address") == address
+            ]
+            require(
+                all(r.get("change", {}).get("actions") == ["no-op"] for r in changes),
+                "Platform state has an unresolved planned read",
+            )
+            resources = (
+                plan.get("prior_state", {})
+                .get("values", {})
                 .get("root_module", {})
                 .get("resources", [])
-                if entry.get("address") == "data.terraform_remote_state.platform"
-            ),
-            {},
-        )
+            )
+            platform_entry = next(
+                (r for r in resources if r.get("address") == address), {}
+            )
+        platform = platform_entry.get("values", {}).get("outputs", {})
         require(
             platform.get("eks_cluster_name") == self.env["cluster"]
             and platform.get("eks_cluster_arn")
@@ -718,15 +1073,14 @@ class Installer:
         self.save()
 
     def preflight(self):
-        for name in (
-            "target",
-            "images",
-            "secrets",
-            "workspace",
-            "database",
-            "gateway",
-            "terraform",
-        ):
+        # workspace() checks workspace CRDs, namespace existence and controller
+        # credential scope.  These are deferred in control-plane-only mode because
+        # the workspace cluster does not yet exist at this stage.
+        stages = ["target", "management_network_policy", "images", "secrets"]
+        if not self.control_plane_only:
+            stages.append("workspace")
+        stages.extend(["database", "gateway", "terraform"])
+        for name in stages:
             self.phase(name, getattr(self, name))
         self.receipt["status"] = "preflight-passed"
         self.save()
@@ -843,6 +1197,7 @@ class Installer:
                     "NetworkPolicy",
                     "ConfigMap",
                     "Service",
+                    "PodDisruptionBudget",
                 }
             ]
         )
@@ -869,13 +1224,18 @@ class Installer:
                 "observation",
                 {key: key for key in self.secret_values["observation"]},
             ),
-            (
-                "superplane-workspace-access",
-                self.env["namespace"],
-                "workspace_access",
-                {"kubeconfig": "kubeconfig"},
-            ),
         ]
+        if not self.control_plane_only:
+            # workspace_access secret is only created when the workspace cluster
+            # and its controller credential are both present and verified.
+            mappings.append(
+                (
+                    "superplane-workspace-access",
+                    self.env["namespace"],
+                    "workspace_access",
+                    {"kubeconfig": "kubeconfig"},
+                )
+            )
         for namespace in (self.env["namespace"], self.env["skypilot_namespace"]):
             mappings.append(
                 (
@@ -1034,8 +1394,12 @@ class Installer:
             "job": job["metadata"]["name"],
             "adp_org_id": self.env["adp_org_id"],
             "org_id": self.env["org_id"],
-            "workspace_id": self.env["workspace_id"],
-            "initial_grant_policy": "workspace:administer; existing grants preserved",
+            # workspace_id is absent in control-plane-only mode; recorded as None
+            # so the receipt accurately reflects the deferred workspace activation.
+            "workspace_id": self.env.get("workspace_id"),
+            "initial_grant_policy": "organization:administer; existing grants preserved"
+            if self.control_plane_only
+            else "workspace:administer; existing grants preserved",
             "token_secret_removed": True,
             "legacy_migration": False,
         }
@@ -1102,27 +1466,39 @@ class Installer:
 
     def private_services(self):
         namespace = self.env["namespace"]
-        health = self.json(
-            self.kube(
-                "get",
-                "--raw",
-                f"/api/v1/namespaces/{namespace}/services/superplane-api:8000/proxy/health",
+
+        def service_get(name, port, path):
+            program = (
+                "import httpx; "
+                f"r=httpx.get('http://{name}.{namespace}.svc.cluster.local:{port}/{path}',timeout=15,trust_env=False); "
+                "r.raise_for_status(); print(r.text)"
             )
-        )
+            return self.kube(
+                "exec",
+                "deployment/superplane-api",
+                "-n",
+                namespace,
+                "--",
+                "python",
+                "-c",
+                program,
+            )
+
+        health = self.json(service_get("superplane-api", 8000, "health"))
         require(
             health.get("domain_auth_enforced") is True
             and health.get("cognito_enabled") is True,
             "API is not enforcing the deployed ADP identity policy",
         )
-        for name, port, path in (
+        # Management readiness includes an authenticated registry lease even
+        # when no workspace reconciler can be activated.
+        services_to_check = [
             ("superplane-platform-monitor", 9090, "healthz"),
             ("superplane-controller", 8081, "readyz"),
-        ):
-            self.kube(
-                "get",
-                "--raw",
-                f"/api/v1/namespaces/{namespace}/services/{name}:{port}/proxy/{path}",
-            )
+            ("superplane-api", 8000, "readyz"),
+        ]
+        for name, port, path in services_to_check:
+            service_get(name, port, path)
         self.kube(
             "exec",
             "deployment/skypilot-api",
@@ -1135,6 +1511,30 @@ class Installer:
             "-m",
             "app.skypilot_proxy",
             "--check",
+        )
+        skypilot_database = self.json(
+            self.kube(
+                "exec",
+                "deployment/skypilot-api",
+                "-n",
+                self.env["skypilot_namespace"],
+                "-c",
+                "skypilot-api",
+                "--",
+                "python3",
+                "/skypilot-bootstrap/bootstrap.py",
+                "--check-database",
+            )
+        )
+        require(
+            skypilot_database.get("dialect") == "postgresql"
+            and skypilot_database.get("database") == self.env["database"]["database"]
+            and skypilot_database.get("schema")
+            == self.env["database"]["skypilot_schema"]
+            and skypilot_database.get("tls") is True
+            and skypilot_database.get("config_matches") is True
+            and "clusters" in skypilot_database.get("tables", []),
+            "SkyPilot does not use the verified durable database and configuration",
         )
         database = self.json(
             self.kube(
@@ -1158,15 +1558,12 @@ class Installer:
             "api_adp_auth": True,
             "monitor_authenticated_receiver_read": True,
             "controller_manager_ready": True,
+            "workspace_execution_ready": not self.control_plane_only,
             "skypilot_authenticated_health": True,
+            "skypilot_database": skypilot_database,
             "database": database,
         }
-        expected = {
-            item["submitter_id"]
-            for item in json.loads(self.secret_values["observation"]["submitters"])
-        }
-        deadline = time.monotonic() + self.env["timeout_seconds"]
-        while True:
+        if self.control_plane_only:
             runtime = self.json(
                 self.kube(
                     "exec",
@@ -1181,43 +1578,106 @@ class Installer:
                 )
             )
             require(
-                runtime.get("release_id") == self.release
+                runtime.get("mode") == "management"
+                and runtime.get("release_id") == self.release
                 and runtime.get("source_revision") == self.lock["source_revision"]
-                and runtime.get("domain_auth_enforced") is True
-                and all(runtime.get("capabilities", {}).values())
-                and len(runtime.get("capabilities", {})) == 4,
-                "Running API does not match the release or trusted capability composition",
+                and runtime.get("domain_auth_enforced") is True,
+                "Running management API does not match the release and authorization contract",
             )
-            received = {
-                key: value
-                for key, value in runtime.get("observations", {}).items()
-                if value["workspace"] == self.env["workspace_id"]
-                and value["cluster_id"] == self.env["cluster_id"]
-                and (
-                    value["status"] == "healthy"
-                    or (
-                        key == self.submitter_ids["monitor"]
-                        and value["status"] == "not_checked"
+            program = (
+                "import os,json,httpx; "
+                "grants=json.loads(os.environ['OBSERVATION_SUBMITTERS']); "
+                f"grant=next(g for g in grants if 'controller_management/{self.env['org_id']}' in g.get('lease_scopes',[])); "
+                f"r=httpx.get('http://superplane-controller.{namespace}.svc.cluster.local:8081/statusz',headers={{'Authorization':grant['credential']}},timeout=10,trust_env=False); "
+                "r.raise_for_status(); print(json.dumps(r.json()))"
+            )
+            controller = self.json(
+                self.kube(
+                    "exec",
+                    "deployment/superplane-api",
+                    "-n",
+                    namespace,
+                    "--",
+                    "python",
+                    "-c",
+                    program,
+                )
+            )
+            require(
+                controller.get("mode") == "management"
+                and controller.get("registry_ready") is True
+                and controller.get("governed_provisioning") is False,
+                "Controller has not acquired its authenticated registry lease",
+            )
+            self.receipt["private_verification"]["controller"] = controller
+        if not self.control_plane_only:
+            # In control-plane-only mode the workspace controller is not deployed
+            # and no workspace_id is configured; authenticated observations from a
+            # workspace cannot be expected.  This check runs during workspace
+            # activation instead.
+            expected = {
+                item["submitter_id"]
+                for item in json.loads(self.secret_values["observation"]["submitters"])
+            }
+            deadline = time.monotonic() + self.env["timeout_seconds"]
+            while True:
+                runtime = self.json(
+                    self.kube(
+                        "exec",
+                        "deployment/superplane-api",
+                        "-n",
+                        namespace,
+                        "--",
+                        "python",
+                        "-m",
+                        "app.installation",
+                        "readiness",
                     )
                 )
-                and datetime.fromisoformat(value["reported_at"])
-                >= max(
-                    datetime.fromisoformat(self.receipt["started_at"]),
-                    datetime.now(UTC) - timedelta(seconds=90),
+                require(
+                    runtime.get("release_id") == self.release
+                    and runtime.get("source_revision") == self.lock["source_revision"]
+                    and runtime.get("domain_auth_enforced") is True
+                    and all(runtime.get("capabilities", {}).values())
+                    and len(runtime.get("capabilities", {})) == 4,
+                    "Running API does not match the release or trusted capability composition",
                 )
-                and datetime.fromisoformat(value["reported_at"])
-                <= datetime.now(UTC) + timedelta(seconds=30)
-            }
-            if expected <= set(received):
-                self.receipt["private_verification"][
-                    "authenticated_observation_delivery"
-                ] = received
-                break
-            require(
-                time.monotonic() < deadline,
-                "Monitor/controller have not delivered fresh authenticated observations (controller healthy; unchecked monitor dimensions remain explicit) for this workspace",
-            )
-            time.sleep(2)
+                received = {
+                    key: value
+                    for key, value in runtime.get("observations", {}).items()
+                    if value["workspace"] == self.env["workspace_id"]
+                    and value["cluster_id"] == self.env["cluster_id"]
+                    and (
+                        value["status"] == "healthy"
+                        or (
+                            key == self.submitter_ids["monitor"]
+                            and value["status"] == "not_checked"
+                        )
+                    )
+                    and datetime.fromisoformat(value["reported_at"])
+                    >= max(
+                        datetime.fromisoformat(self.receipt["started_at"]),
+                        datetime.now(UTC) - timedelta(seconds=90),
+                    )
+                    and datetime.fromisoformat(value["reported_at"])
+                    <= datetime.now(UTC) + timedelta(seconds=30)
+                }
+                if expected <= set(received):
+                    self.receipt["private_verification"][
+                        "authenticated_observation_delivery"
+                    ] = received
+                    break
+                require(
+                    time.monotonic() < deadline,
+                    "Monitor/controller have not delivered fresh authenticated observations"
+                    " (controller healthy; unchecked monitor dimensions remain explicit)"
+                    " for this workspace",
+                )
+                time.sleep(2)
+        else:
+            self.receipt["private_verification"][
+                "authenticated_observation_delivery"
+            ] = "deferred: no workspace registered at control-plane install time"
 
     def verify(self, token):
         require(
@@ -1225,67 +1685,157 @@ class Installer:
             "Verification requires an ADP token in SUPERPLANE_VERIFICATION_TOKEN",
         )
         base = self.env["origin"] + "/api/superplane/v1"
-        path = f"/workspaces/{self.env['workspace_id']}"
-        deadline = time.monotonic() + self.env["timeout_seconds"]
-        while True:
-            response = httpx.get(
-                base + path,
-                headers={"Authorization": "Bearer " + token},
-                timeout=20,
-                follow_redirects=False,
-            )
-            if (
-                response.status_code == 200
-                and response.headers.get("X-Superplane-Release") == self.release
-            ):
-                break
-            require(
-                time.monotonic() < deadline,
-                "Public authenticated workspace check failed",
-            )
-            time.sleep(2)
-        for suffix, headers, expected in [
-            (path, {}, {401}),
-            (
-                f"/workspaces/{uuid.uuid4()}",
-                {
-                    "Authorization": "Bearer " + token,
-                    "X-Workspace-Id": self.env["workspace_id"],
-                    "X-Org-Id": self.env["org_id"],
-                },
-                {403},
-            ),
-            (
-                path,
-                {"Authorization": "Bearer invalid", "X-Org-Id": self.env["org_id"]},
-                {401},
-            ),
-            (
-                "/internal/observations/clusters",
-                {"Authorization": "Bearer " + token},
-                {404},
-            ),
-            ("/auth/login", {}, {404}),
-        ]:
-            response = httpx.get(
-                base + suffix, headers=headers, timeout=20, follow_redirects=False
-            )
-            require(
-                response.status_code in expected,
-                "Public authorization/private-route verification failed",
-            )
-        self.gateway()
-        self.receipt["verification"] = {
-            "public_endpoint": base,
-            "workspace_id": self.env["workspace_id"],
-            "release_id": self.release,
-            "route_destination": f"superplane-api.{self.env['namespace']}.svc.cluster.local:8000",
-            "authenticated_status": 200,
-            "authenticated": True,
-            "private_routes_denied": True,
-            "ungranted_workspace_denied": True,
-            "live_workload_parity": "not evaluated",
-        }
+        if not self.control_plane_only:
+            # Full verification: check authenticated workspace access, then deny checks.
+            path = f"/workspaces/{self.env['workspace_id']}"
+            deadline = time.monotonic() + self.env["timeout_seconds"]
+            while True:
+                response = httpx.get(
+                    base + path,
+                    headers={"Authorization": "Bearer " + token},
+                    timeout=20,
+                    follow_redirects=False,
+                )
+                if (
+                    response.status_code == 200
+                    and response.headers.get("X-Superplane-Release") == self.release
+                ):
+                    break
+                require(
+                    time.monotonic() < deadline,
+                    "Public authenticated workspace check failed",
+                )
+                time.sleep(2)
+            for suffix, headers, expected in [
+                (path, {}, {401}),
+                (
+                    f"/workspaces/{uuid.uuid4()}",
+                    {
+                        "Authorization": "Bearer " + token,
+                        "X-Workspace-Id": self.env["workspace_id"],
+                        "X-Org-Id": self.env["org_id"],
+                    },
+                    {403},
+                ),
+                (
+                    path,
+                    {"Authorization": "Bearer invalid", "X-Org-Id": self.env["org_id"]},
+                    {401},
+                ),
+                (
+                    "/internal/observations/clusters",
+                    {"Authorization": "Bearer " + token},
+                    {404},
+                ),
+                ("/auth/login", {}, {404}),
+            ]:
+                response = httpx.get(
+                    base + suffix, headers=headers, timeout=20, follow_redirects=False
+                )
+                require(
+                    response.status_code in expected,
+                    "Public authorization/private-route verification failed",
+                )
+            self.gateway()
+            self.receipt["verification"] = {
+                "public_endpoint": base,
+                "workspace_id": self.env["workspace_id"],
+                "release_id": self.release,
+                "route_destination": (
+                    f"superplane-api.{self.env['namespace']}.svc.cluster.local:8000"
+                ),
+                "authenticated_status": 200,
+                "authenticated": True,
+                "private_routes_denied": True,
+                "ungranted_workspace_denied": True,
+                "live_workload_parity": "not evaluated",
+            }
+        else:
+            deadline = time.monotonic() + self.env["timeout_seconds"]
+            while True:
+                organization = httpx.get(
+                    base + "/orgs/current",
+                    headers={"Authorization": "Bearer " + token},
+                    timeout=20,
+                    follow_redirects=False,
+                )
+                workspaces = httpx.get(
+                    base + "/workspaces",
+                    headers={"Authorization": "Bearer " + token},
+                    timeout=20,
+                    follow_redirects=False,
+                )
+                if (
+                    organization.status_code == workspaces.status_code == 200
+                    and organization.headers.get("X-Superplane-Release") == self.release
+                    and workspaces.headers.get("X-Superplane-Release") == self.release
+                ):
+                    require(
+                        organization.json().get("id") == self.env["org_id"],
+                        "Public organization differs from the selected installation",
+                    )
+                    listing = workspaces.json()
+                    require(
+                        type(listing.get("total")) is int
+                        and isinstance(listing.get("workspaces"), list)
+                        and listing["total"] == len(listing["workspaces"]),
+                        "Public workspace listing is invalid",
+                    )
+                    break
+                require(
+                    time.monotonic() < deadline,
+                    "Public authenticated management checks failed",
+                )
+                time.sleep(2)
+            for suffix, headers, expected in [
+                ("/workspaces", {}, {401}),
+                ("/orgs/current", {"Authorization": "Bearer invalid"}, {401}),
+                (
+                    f"/workspaces/{uuid.uuid4()}",
+                    {
+                        "Authorization": "Bearer " + token,
+                        "X-Org-Id": self.env["org_id"],
+                    },
+                    {403},
+                ),
+                (
+                    f"/workspaces/{uuid.uuid4()}",
+                    {},
+                    {401},
+                ),
+                (
+                    "/internal/observations/clusters",
+                    {"Authorization": "Bearer " + token},
+                    {404},
+                ),
+                ("/auth/login", {}, {404}),
+            ]:
+                response = httpx.get(
+                    base + suffix, headers=headers, timeout=20, follow_redirects=False
+                )
+                require(
+                    response.status_code in expected,
+                    "Public authorization/private-route verification failed",
+                )
+            self.gateway()
+            self.receipt["verification"] = {
+                "public_endpoint": base,
+                "workspace_id": None,
+                "release_id": self.release,
+                "route_destination": (
+                    f"superplane-api.{self.env['namespace']}.svc.cluster.local:8000"
+                ),
+                "authenticated_status": 200,
+                "authenticated": True,
+                "organization_id": self.env["org_id"],
+                "registered_workspaces": listing["total"],
+                "control_plane_ready": True,
+                "workspace_execution_ready": False,
+                "private_routes_denied": True,
+                "ungranted_workspace_denied": True,
+                "live_workload_parity": "not evaluated",
+                "workspace_registration": "observed from the authenticated durable registry",
+            }
 
     def execute(self, approved_plan, token):
         require(
@@ -1320,11 +1870,106 @@ class Installer:
                 self.phase("private-verification", self.private_services)
                 self.phase("public-route", lambda: self.route(True))
                 self.phase("verification", lambda: self.verify(token))
+                if self.control_plane_only:
+                    self.phase(
+                        "restart-verification",
+                        lambda: self.verify_management_restart(token),
+                    )
                 self.receipt["status"] = "installed-and-verified"
                 self.save()
             except BaseException:
                 self.route(False)
                 raise
+
+    def management_pod_uids(self, name):
+        namespace = self.env["namespace"]
+        deployment = self.json(
+            self.kube("get", "Deployment", name, "-n", namespace, "-o", "json")
+        )
+        require(
+            deployment["metadata"].get("labels", {}).get(LABEL) == self.owner,
+            "Management Deployment belongs to another installation",
+        )
+
+        def controlled_by(obj, kind, uids):
+            return any(
+                ref.get("controller") is True
+                and ref.get("kind") == kind
+                and ref.get("uid") in uids
+                for ref in obj["metadata"].get("ownerReferences", [])
+            )
+
+        def selected(kind):
+            return self.json(
+                self.kube(
+                    "get",
+                    kind,
+                    "-n",
+                    namespace,
+                    "-l",
+                    "app.kubernetes.io/name=" + name,
+                    "-o",
+                    "json",
+                )
+            )["items"]
+
+        # Bootstrap/migration Jobs share the API label. Follow the actual
+        # Deployment -> ReplicaSet -> Pod ownership chain, including old
+        # terminating service pods but excluding Jobs and foreign controllers.
+        replicasets = {
+            rs["metadata"]["uid"]
+            for rs in selected("replicasets")
+            if controlled_by(rs, "Deployment", {deployment["metadata"]["uid"]})
+        }
+        return {
+            pod["metadata"]["uid"]
+            for pod in selected("pods")
+            if controlled_by(pod, "ReplicaSet", replicasets)
+        }
+
+    def verify_management_restart(self, token):
+        namespace = self.env["namespace"]
+        expected_org = self.receipt["verification"]["organization_id"]
+        expected_count = self.receipt["verification"]["registered_workspaces"]
+        before = {}
+        for name in ("superplane-api", "superplane-controller"):
+            before[name] = self.management_pod_uids(name)
+            require(bool(before[name]), "No running management pod to verify restart")
+            self.kube("rollout", "restart", "deployment/" + name, "-n", namespace)
+            self.kube(
+                "rollout",
+                "status",
+                "deployment/" + name,
+                "-n",
+                namespace,
+                f"--timeout={self.env['timeout_seconds']}s",
+                timeout=self.env["timeout_seconds"] + 30,
+            )
+            # A completed rollout may still list the terminating old pod.
+            # Wait for actual removal, retaining the original UID-based proof.
+            deadline = time.monotonic() + self.env["timeout_seconds"]
+            while True:
+                uids = self.management_pod_uids(name)
+                if uids and not uids.intersection(before[name]):
+                    break
+                require(
+                    time.monotonic() < deadline,
+                    "Management process replacement not verified",
+                )
+                time.sleep(2)
+            self.receipt.setdefault("management_restart", {})[name] = {
+                "before_pod_uids": sorted(before[name]),
+                "after_pod_uids": sorted(uids),
+            }
+            self.save()
+        self.private_services()
+        self.verify(token)
+        require(
+            self.receipt["verification"]["organization_id"] == expected_org
+            and self.receipt["verification"]["registered_workspaces"] == expected_count,
+            "Durable organization/registrations changed across management restart",
+        )
+        self.receipt["verification"]["restart_persistence_verified"] = True
 
     def resume(self, previous):
         require(
@@ -1421,7 +2066,9 @@ class Installer:
         self.target(verify_source=False)
         self.lock = previous["release_lock"]
         self.release = previous["release_id"]
-        self.docs = render(self.env, self.lock)
+        self.docs = render(
+            self.env, self.lock, control_plane_only=self.control_plane_only
+        )
         self.images()
         self.receipt["secret_versions"] = previous["secret_versions"]
         self.secrets()
@@ -1469,6 +2116,7 @@ class Installer:
             "ConfigMap": ("/api/v1", "configmaps"),
             "NetworkPolicy": ("/apis/networking.k8s.io/v1", "networkpolicies"),
             "ServiceAccount": ("/api/v1", "serviceaccounts"),
+            "PodDisruptionBudget": ("/apis/policy/v1", "poddisruptionbudgets"),
         }
         with self.exclusive():
             self.route(False)
@@ -1480,6 +2128,7 @@ class Installer:
                 "ConfigMap": 3,
                 "ServiceAccount": 4,
                 "NetworkPolicy": 5,
+                "PodDisruptionBudget": 6,
             }
             for entry in sorted(
                 previous.get("objects", []),

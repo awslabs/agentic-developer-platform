@@ -12,6 +12,7 @@ def test_all_tables_registered():
     """All tables from design doc sections 6.1, 15.7, and auth are registered."""
     expected_tables = {
         "organizations",
+        "organization_grants",
         "workspaces",
         "clusters",
         "node_pools",

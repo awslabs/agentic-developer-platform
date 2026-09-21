@@ -174,10 +174,29 @@ async def database_check(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "action", choices=("capabilities", "database", "migrate", "readiness")
+        "action", choices=("capabilities", "management-capabilities", "database", "migrate", "readiness")
     )
     args = parser.parse_args(argv)
     try:
+        if args.action == "management-capabilities":
+            import httpx
+
+            from app.main import app
+            from app.management import management_only
+
+            async def probe_management():
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://image-local") as client:
+                    health = await client.get("/health")
+                    registration = await client.post("/internal/controller/reconcile", json={})
+                    administration = await client.get("/workspaces")
+                    legacy = await client.post("/internal/vault-sync/trigger", json={})
+                    return (management_only() and health.json().get("domain_auth_enforced") is True
+                            and registration.status_code == administration.status_code == 401
+                            and legacy.status_code == 503)
+
+            supported = asyncio.run(probe_management())
+            print(json.dumps({"controller_management": supported, "governed_provisioning": False, "database_verified": False}))
+            return 0 if supported else 2
         if args.action == "readiness":
             import httpx
 

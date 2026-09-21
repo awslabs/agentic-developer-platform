@@ -1,5 +1,6 @@
 """Real PostgreSQL schema/role regression tests; use only a disposable server."""
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -14,14 +15,30 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app import installation
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL"),
-    reason="requires a disposable PostgreSQL database",
+    not os.environ.get("SUPERPLANE_TEST_POSTGRES_URL")
+    and importlib.util.find_spec("pgserver") is None,
+    reason="requires pgserver (installed by domain CI) or a disposable PostgreSQL URL",
 )
 
 
+@pytest.fixture(scope="module")
+def installation_postgres_url(tmp_path_factory):
+    external = os.environ.get("SUPERPLANE_TEST_POSTGRES_URL")
+    if external:
+        yield external
+        return
+    import pgserver
+
+    server = pgserver.get_server(tmp_path_factory.mktemp("superplane-installation-pg"))
+    try:
+        yield server.get_uri().replace("postgresql://", "postgresql+asyncpg://", 1)
+    finally:
+        server.cleanup()
+
+
 @pytest.fixture
-async def isolated_database(monkeypatch):
-    url = os.environ["SUPERPLANE_TEST_POSTGRES_URL"]
+async def isolated_database(monkeypatch, installation_postgres_url):
+    url = installation_postgres_url
     suffix = uuid.uuid4().hex[:16]
     role, schema, foreign = "u23_role_" + suffix, "u23_" + suffix, "core_" + suffix
     admin = create_async_engine(url)
@@ -67,7 +84,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database):
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "015_add_adp_org_binding"
+    assert observed["revision"] == "016_add_organization_grants"
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))
@@ -276,3 +293,80 @@ async def test_bootstrap_rejects_changed_or_invalid_caller(
         )
     async with factory() as session:
         assert await session.scalar(select(func.count()).select_from(Organization)) == 0
+
+
+async def test_control_plane_bootstrap_then_workspace_activation(bootstrap_database):
+    from sqlalchemy import func, select
+
+    from app.models.organization_grant import (
+        ORGANIZATION_ADMINISTER,
+        OrganizationGrantRecord,
+    )
+    from app.models.workspace import Workspace
+    from app.models.workspace_grant import WorkspaceGrantRecord
+
+    bootstrap, factory, config, _claims = bootstrap_database
+    empty_config = {key: config[key] for key in ("org_id", "adp_org_id", "origin")}
+    empty_config["control_plane_only"] = True
+    first = await bootstrap.bootstrap(empty_config, "short-lived", membership_reader=admin_membership)
+    assert first["workspace_id"] is None
+    assert first["organization_grant"] == ORGANIZATION_ADMINISTER
+    assert await bootstrap.bootstrap(empty_config, "short-lived", membership_reader=admin_membership) == first
+    async with factory() as session:
+        assert await session.scalar(select(func.count()).select_from(OrganizationGrantRecord)) == 1
+        assert await session.scalar(select(func.count()).select_from(Workspace)) == 0
+        assert await session.scalar(select(func.count()).select_from(WorkspaceGrantRecord)) == 0
+    await bootstrap.bootstrap(config, "short-lived", membership_reader=admin_membership)
+    async with factory() as session:
+        assert await session.scalar(select(func.count()).select_from(OrganizationGrantRecord)) == 1
+        assert await session.scalar(select(func.count()).select_from(Workspace)) == 1
+        assert await session.scalar(select(func.count()).select_from(WorkspaceGrantRecord)) == 1
+
+
+async def test_revoked_org_grant_is_not_restored_by_bootstrap(bootstrap_database):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.models.organization_grant import OrganizationGrantRecord
+
+    bootstrap, factory, config, _claims = bootstrap_database
+    config = {key: config[key] for key in ("org_id", "adp_org_id", "origin")}
+    config["control_plane_only"] = True
+    await bootstrap.bootstrap(config, "short-lived", membership_reader=admin_membership)
+    async with factory() as session:
+        record = await session.scalar(select(OrganizationGrantRecord))
+        record.revoked_at = datetime.now(timezone.utc)
+        await session.commit()
+    with pytest.raises(ValueError, match="organization grant is revoked"):
+        await bootstrap.bootstrap(config, "short-lived", membership_reader=admin_membership)
+    async with factory() as session:
+        assert (await session.scalar(select(OrganizationGrantRecord))).revoked_at is not None
+
+
+@pytest.mark.parametrize("mutation", ["partial-workspace", "mode-string", "membership-loss"])
+async def test_empty_bootstrap_refuses_ambiguous_or_revoked_authority(bootstrap_database, mutation):
+    from sqlalchemy import func, select
+
+    from app.models.organization_grant import OrganizationGrantRecord
+
+    bootstrap, factory, config, _claims = bootstrap_database
+    config = {key: config[key] for key in ("org_id", "adp_org_id", "origin")}
+    config["control_plane_only"] = True
+    if mutation == "partial-workspace":
+        config["workspace_id"] = str(uuid.uuid4())
+    elif mutation == "mode-string":
+        config["control_plane_only"] = "false"
+    calls = 0
+
+    async def membership():
+        nonlocal calls
+        calls += 1
+        if mutation == "membership-loss" and calls > 1:
+            return {"items": []}
+        return await admin_membership()
+
+    with pytest.raises(ValueError):
+        await bootstrap.bootstrap(config, "short-lived", membership_reader=membership)
+    async with factory() as session:
+        assert await session.scalar(select(func.count()).select_from(OrganizationGrantRecord)) == 0

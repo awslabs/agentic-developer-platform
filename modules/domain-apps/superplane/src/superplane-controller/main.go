@@ -22,6 +22,7 @@ import (
 	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/adapters"
 	superplanev1 "github.com/aws-innovate/AISuperPlane/src/superplane-controller/api/v1"
 	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/controllers"
+	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/management"
 	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/provisioner"
 	"github.com/aws-innovate/AISuperPlane/src/superplane-controller/skypilot"
 )
@@ -39,6 +40,7 @@ func init() {
 func main() {
 	var (
 		installationPreflight bool
+		managementOnly        bool
 		metricsAddr           string
 		healthProbeAddr       string
 		enableLeaderElection  bool
@@ -53,6 +55,7 @@ func main() {
 	)
 
 	flag.BoolVar(&installationPreflight, "installation-preflight", false, "Report installed production integration capabilities without contacting Kubernetes.")
+	flag.BoolVar(&managementOnly, "management-only", false, "Run the authenticated registration manager without workspace execution.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&healthProbeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -79,11 +82,34 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 	if installationPreflight {
+		if managementOnly {
+			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"controller_management": true, "durable_registry": true, "workspace_observation": true, "governed_provisioning": false})
+			return
+		}
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"authenticated_observations": true, "authenticated_skypilot": true, "governed_provisioning": false})
 		os.Exit(2)
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	if managementOnly {
+		manager, err := management.New(management.Config{
+			APIURL:                  controlPlaneAPIURL,
+			OrgID:                   os.Getenv("SUPERPLANE_ORG_ID"),
+			CredentialFile:          os.Getenv("SUPERPLANE_REGISTRY_CREDENTIAL_FILE"),
+			WorkspaceCredentialsDir: os.Getenv("SUPERPLANE_WORKSPACE_CREDENTIALS_DIR"),
+			ManagementAPIServer:     os.Getenv("SUPERPLANE_MANAGEMENT_API_SERVER"),
+		})
+		if err != nil {
+			setupLog.Error(err, "controller management configuration refused")
+			os.Exit(1)
+		}
+		setupLog.Info("starting controller management; workspace execution unavailable")
+		if err := manager.Run(ctrl.SetupSignalHandler(), healthProbeAddr); err != nil {
+			setupLog.Error(err, "controller management stopped")
+			os.Exit(1)
+		}
+		return
+	}
 
 	// A complete installation never starts the legacy unauthenticated path.
 	if os.Getenv("SUPERPLANE_INSTALLATION_REQUIRED") == "true" {

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from superplane_contracts import Submitter
 
 from app.installation import capabilities_async
+from app.management import management_only
 from app.routers.heartbeat import _authenticated_submitter
 
 router = APIRouter(prefix="/internal")
@@ -18,6 +19,7 @@ async def installation_readiness(
     return {
         "release_id": os.environ.get("SUPERPLANE_RELEASE_ID"),
         "source_revision": os.environ.get("SUPERPLANE_SOURCE_REVISION"),
+        "mode": "management" if management_only() else "full",
         "domain_auth_enforced": getattr(request.app.state, "domain_policy", None)
         is not None,
         # Exactly the four booleans, unchanged: the post-rollout recheck asserts

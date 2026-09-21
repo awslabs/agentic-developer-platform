@@ -1,0 +1,54 @@
+version: 1
+# Control-plane-only environment template.
+# Installs the Superplane management surface (API, schemas, auth, networking)
+# without a registered workspace.  Use this to bring up the control plane first,
+# then add workspace clusters through the management surface later.
+#
+# Fields marked "(workspace stage)" are required for workspace activation
+# but must NOT appear in this file — omit them entirely.
+#
+# All account-specific values must be supplied explicitly.  No defaults are
+# inherited from the environment; a different account produces different outputs.
+
+environment: dev                    # Must match the ADP environment label
+account_id: null                    # 12-digit AWS account ID
+region: null                        # e.g. 'us-east-1'
+cluster: null                       # ADP management EKS cluster name
+namespace: superplane
+gateway_namespace: adp-gateway    # Verify against the existing ADP Gateway deployment
+image_execution: cluster         # Packaged checks in a temporary restricted namespace
+skypilot_namespace: skypilot
+origin: null                        # ADP CloudFront HTTPS origin
+org_id: null                        # Domain org UUID (immutable after first install)
+adp_org_id: null                    # ADP organization name, e.g. 'aws-e'
+auth:
+  issuer: null                      # ADP Cognito user pool issuer URL
+  client_ids: []                    # ADP Cognito client IDs
+database:
+  identifier: null                  # RDS instance identifier
+  database: null                    # Database name
+  schema: superplane
+  skypilot_schema: skypilot
+  backup_id: null                   # RDS snapshot ID verified before migration
+  migration_owner: null
+  backup_owner: null
+  restore_owner: null
+secrets:
+  database: null                    # e.g. 'adp/dev/superplane/database'
+  observation: null                 # e.g. 'adp/dev/superplane/observation'
+  # workspace_access is intentionally absent — it is not needed until workspace
+  # activation.  Adding it here will cause a validation failure.
+timeout_seconds: 900
+network_policy_enforced: false      # Set true after verifying enforcement
+
+# Activate control-plane-only mode.
+control_plane_only: true
+
+# (workspace stage) — supply these separately when activating a workspace:
+# workspace_cluster: <eks-cluster-name>
+# workspace_namespace: <namespace>
+# workspace_id: <uuid>
+# cluster_id: <uuid>
+# controller_ownership: single-workspace-controller
+# secrets.workspace_access: adp/dev/superplane/workspace-access
+# control_plane_only: false   (or remove this field)

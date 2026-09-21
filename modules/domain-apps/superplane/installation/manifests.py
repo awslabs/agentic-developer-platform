@@ -6,10 +6,24 @@ import json
 
 import yaml
 
-from .config import LABEL, MODULE, digest, identity, image
+from .config import LABEL, MODULE, control_plane_mode, digest, identity, image
 
 
-def render(env: dict, lock: dict) -> list[dict]:
+def runtime_annotations(release: str) -> dict[str, str]:
+    # CloudWatch auto-monitoring otherwise injects its own Python packages ahead
+    # of the pinned image's dependencies, breaking API and SkyPilot imports.
+    # Explicit values are respected by the operator's insert-only annotator.
+    return {
+        "adp.aws-e.io/release": release,
+        **{
+            f"instrumentation.opentelemetry.io/inject-{language}": "false"
+            for language in ("java", "python", "nodejs", "dotnet")
+        },
+    }
+
+
+def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[dict]:
+    control_plane_only = control_plane_mode(env, control_plane_only)
     ns, sky_ns = env["namespace"], env["skypilot_namespace"]
     owner = identity(env)
     release = digest(lock)
@@ -30,6 +44,8 @@ def render(env: dict, lock: dict) -> list[dict]:
             result["apiVersion"] = "apps/v1"
         if kind == "NetworkPolicy":
             result["apiVersion"] = "networking.k8s.io/v1"
+        if kind == "PodDisruptionBudget":
+            result["apiVersion"] = "policy/v1"
         return result
 
     docs = []
@@ -142,7 +158,7 @@ def render(env: dict, lock: dict) -> list[dict]:
                     "template": {
                         "metadata": {
                             "labels": {**labels, **selector},
-                            "annotations": {"adp.aws-e.io/release": release},
+                            "annotations": runtime_annotations(release),
                         },
                         "spec": pod,
                     },
@@ -184,7 +200,10 @@ def render(env: dict, lock: dict) -> list[dict]:
             "controller-submitter-id",
         ),
     ]
-    deployment("superplane-api", ns, 8000, "/health", api_env)
+    if control_plane_only:
+        api_env.append(variable("SUPERPLANE_MANAGEMENT_ONLY", "true"))
+    api_pod = deployment("superplane-api", ns, 8000, "/health", api_env)
+    api_pod["containers"][0]["readinessProbe"]["httpGet"]["path"] = "/readyz"
     api_url = f"http://superplane-api.{ns}.svc.cluster.local:8000"
     deployment(
         "superplane-platform-monitor",
@@ -207,51 +226,87 @@ def render(env: dict, lock: dict) -> list[dict]:
             },
         ],
     )
-    controller = deployment(
-        "superplane-controller",
-        ns,
-        8081,
-        "/readyz",
-        [
-            variable("KUBECONFIG", "/workspace/kubeconfig"),
-            variable("EKS_CLUSTER_NAME", env["workspace_cluster"]),
-            variable("SUPERPLANE_LEADER_NAMESPACE", env["workspace_namespace"]),
-            variable("CLUSTER_ID", env["cluster_id"]),
-            variable("WORKSPACE_ID", env["workspace_id"]),
-            variable("CONTROL_PLANE_API_URL", api_url),
-            variable(
-                "SKYPILOT_URL", f"http://skypilot-api.{sky_ns}.svc.cluster.local:46580"
-            ),
-            secret(
-                "OBSERVATION_CREDENTIAL",
-                "superplane-observation",
-                "controller-credential",
-            ),
-            secret(
-                "OBSERVATION_SIGNING_KEY",
-                "superplane-observation",
-                "controller-signing-key",
-            ),
-            secret("SKYPILOT_SERVICE_TOKEN", "superplane-skypilot-auth", "token"),
-        ],
-        args=["--leader-elect=true"],
-        volumes=[
-            {
-                "name": "workspace-access",
-                "secret": {
-                    "secretName": "superplane-workspace-access",
-                    "defaultMode": 288,
-                },
-            }
-        ],
-        mounts=[
-            {"name": "workspace-access", "mountPath": "/workspace", "readOnly": True}
-        ],
-    )
-    # No management-cluster RBAC, host access, node joins or GPU requests.
-    controller["containers"][0]["env"].append(
-        variable("SUPERPLANE_INSTALLATION_REQUIRED", "true")
-    )
+    if control_plane_only:
+        controller = deployment(
+            "superplane-controller",
+            ns,
+            8081,
+            "/readyz",
+            [
+                variable("CONTROL_PLANE_API_URL", api_url),
+                variable("SUPERPLANE_ORG_ID", env["org_id"]),
+                variable("SUPERPLANE_REGISTRY_CREDENTIAL_FILE", "/registry/credential"),
+            ],
+            args=["--management-only"],
+            volumes=[
+                {
+                    "name": "registry",
+                    "secret": {
+                        "secretName": "superplane-observation",
+                        "defaultMode": 288,
+                        "items": [
+                            {"key": "controller-credential", "path": "credential"}
+                        ],
+                    },
+                }
+            ],
+            mounts=[{"name": "registry", "mountPath": "/registry", "readOnly": True}],
+        )
+        controller["containers"][0]["livenessProbe"]["httpGet"]["path"] = "/healthz"
+    else:
+        # The workspace controller requires workspace-specific identity fields that
+        # are deferred in control-plane-only mode.  Its deployment is generated only
+        # when those fields are present and workspace activation is authorized.
+        controller = deployment(
+            "superplane-controller",
+            ns,
+            8081,
+            "/readyz",
+            [
+                variable("KUBECONFIG", "/workspace/kubeconfig"),
+                variable("EKS_CLUSTER_NAME", env["workspace_cluster"]),
+                variable("SUPERPLANE_LEADER_NAMESPACE", env["workspace_namespace"]),
+                variable("CLUSTER_ID", env["cluster_id"]),
+                variable("WORKSPACE_ID", env["workspace_id"]),
+                variable("CONTROL_PLANE_API_URL", api_url),
+                variable(
+                    "SKYPILOT_URL",
+                    f"http://skypilot-api.{sky_ns}.svc.cluster.local:46580",
+                ),
+                secret(
+                    "OBSERVATION_CREDENTIAL",
+                    "superplane-observation",
+                    "controller-credential",
+                ),
+                secret(
+                    "OBSERVATION_SIGNING_KEY",
+                    "superplane-observation",
+                    "controller-signing-key",
+                ),
+                secret("SKYPILOT_SERVICE_TOKEN", "superplane-skypilot-auth", "token"),
+            ],
+            args=["--leader-elect=true"],
+            volumes=[
+                {
+                    "name": "workspace-access",
+                    "secret": {
+                        "secretName": "superplane-workspace-access",
+                        "defaultMode": 288,
+                    },
+                }
+            ],
+            mounts=[
+                {
+                    "name": "workspace-access",
+                    "mountPath": "/workspace",
+                    "readOnly": True,
+                }
+            ],
+        )
+        # No management-cluster RBAC, host access, node joins or GPU requests.
+        controller["containers"][0]["env"].append(
+            variable("SUPERPLANE_INSTALLATION_REQUIRED", "true")
+        )
 
     # Retain the tested pinned SkyPilot entrypoint, writable HOME/config mounts,
     # durable PostgreSQL setting and resource envelope from U3.
@@ -268,22 +323,48 @@ def render(env: dict, lock: dict) -> list[dict]:
             if not doc:
                 continue
             doc["metadata"].setdefault("labels", {}).update(labels)
+            if (
+                doc["kind"] == "ConfigMap"
+                and doc["metadata"]["name"] == "skypilot-config"
+            ):
+                config = yaml.safe_load(doc["data"]["config.yaml"])
+                # SkyPilot 0.12 interprets `db` as a URL string, not a backend
+                # mapping. Keep the connection exclusively in the Secret-backed
+                # SKYPILOT_DB_CONNECTION_URI environment variable below.
+                config.pop("db", None)
+                doc["data"]["config.yaml"] = "{}\n"
+                doc["data"]["desired-config.yaml"] = yaml.safe_dump(config)
+                doc["data"]["bootstrap.py"] = (
+                    MODULE / "installation/skypilot_bootstrap.py"
+                ).read_text()
             if doc["kind"] == "Deployment":
                 doc["spec"]["strategy"] = {"type": "Recreate"}
                 pod = doc["spec"]["template"]
                 pod["metadata"].setdefault("labels", {}).update(labels)
-                pod["metadata"]["annotations"] = {"adp.aws-e.io/release": release}
+                pod["metadata"]["annotations"] = runtime_annotations(release)
                 pod["spec"]["automountServiceAccountToken"] = False
                 backend = pod["spec"]["containers"][0]
+                backend["command"] = ["python3", "/skypilot-bootstrap/bootstrap.py"]
                 backend["args"] = [
                     "--host=127.0.0.1" if arg == "--host=0.0.0.0" else arg
                     for arg in backend["args"]
                 ]
                 backend["env"].extend(
                     [
+                        # The pinned image has no passwd entry for non-root UID
+                        # 1000. SkyPilot uses getpass.getuser() during import.
+                        {"name": "USER", "value": "skypilot"},
+                        {"name": "IS_SKYPILOT_SERVER", "value": "true"},
                         {"name": "PGSSLMODE", "value": "verify-full"},
                         {"name": "PGSSLROOTCERT", "value": "/database-ca/ca.pem"},
                     ]
+                )
+                backend["volumeMounts"].append(
+                    {
+                        "name": "sky-config",
+                        "mountPath": "/skypilot-bootstrap",
+                        "readOnly": True,
+                    }
                 )
                 backend["volumeMounts"].append(
                     {
@@ -304,6 +385,7 @@ def render(env: dict, lock: dict) -> list[dict]:
                 backend["ports"] = [{"name": "backend", "containerPort": 46580}]
                 for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
                     backend[probe].pop("httpGet", None)
+                    backend[probe]["timeoutSeconds"] = 10
                     backend[probe]["exec"] = {
                         "command": [
                             "python3",
@@ -344,7 +426,10 @@ def render(env: dict, lock: dict) -> list[dict]:
                                     "--check",
                                 ]
                             },
-                            "periodSeconds": 10,
+                            # The check imports the Python application and has a
+                            # ten-second HTTP timeout. Kubernetes defaults to 1s.
+                            "timeoutSeconds": 15,
+                            "periodSeconds": 20,
                         },
                     }
                 )
@@ -357,12 +442,13 @@ def render(env: dict, lock: dict) -> list[dict]:
 
     # Internal API and callbacks accept only the named domain pods. Gateway can
     # reach the API, whose proxy route inventory excludes internal endpoints.
-    for name, namespace, port in (
+    _np_entries = [
         ("superplane-api", ns, 8000),
         ("superplane-platform-monitor", ns, 9090),
         ("superplane-controller", ns, 8081),
         ("skypilot-api", sky_ns, 46581),
-    ):
+    ]
+    for name, namespace, port in _np_entries:
         peers = [
             {
                 "namespaceSelector": {
@@ -376,7 +462,11 @@ def render(env: dict, lock: dict) -> list[dict]:
             peers.append(
                 {
                     "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": "adp"}
+                        "matchLabels": {
+                            "kubernetes.io/metadata.name": env.get(
+                                "gateway_namespace", "adp"
+                            )
+                        }
                     },
                     "podSelector": {"matchLabels": {"app": "bedrockgateway"}},
                 }
@@ -412,6 +502,8 @@ def render(env: dict, lock: dict) -> list[dict]:
                             "to": peers[:2],
                             "ports": [
                                 {"port": 8000, "protocol": "TCP"},
+                                {"port": 8081, "protocol": "TCP"},
+                                {"port": 9090, "protocol": "TCP"},
                                 {"port": 46581, "protocol": "TCP"},
                             ],
                         },
@@ -434,9 +526,17 @@ def render(env: dict, lock: dict) -> list[dict]:
             )
         )
     for doc in docs:
+        if doc["kind"] == "Service":
+            # AWS network-policy resolution matches peer podSelector labels
+            # against Service selectors before allowing the pre-DNAT ClusterIP.
+            # The original selector is also referenced by the Deployment.
+            # Copy it: mutating it would change an immutable Deployment field
+            # when upgrading an installation created before this service fix.
+            doc["spec"]["selector"] = {**doc["spec"]["selector"], LABEL: owner}
         if (
             doc["kind"] == "ServiceAccount"
             and doc["metadata"]["name"] != "superplane-platform-monitor"
+            and not control_plane_only
         ):
             role = (
                 "skypilot-api"
@@ -446,11 +546,31 @@ def render(env: dict, lock: dict) -> list[dict]:
             doc["metadata"]["annotations"] = {
                 "eks.amazonaws.com/role-arn": f"arn:aws:iam::{env['account_id']}:role/adp-{env['environment']}-superplane-{role}"
             }
+    for deployment_doc in [d for d in docs if d["kind"] == "Deployment"]:
+        name = deployment_doc["metadata"]["name"]
+        docs.append(
+            obj(
+                "PodDisruptionBudget",
+                name,
+                deployment_doc["metadata"]["namespace"],
+                spec={
+                    "minAvailable": 1,
+                    "selector": {
+                        "matchLabels": {"app.kubernetes.io/name": name, LABEL: owner},
+                        # Jobs share API labels. The Deployment controller adds
+                        # this label to service pods, but Job pods lack it.
+                        "matchExpressions": [
+                            {"key": "pod-template-hash", "operator": "Exists"}
+                        ],
+                    },
+                },
+            )
+        )
     return docs
 
 
 def migration_job(env: dict, lock: dict, run_id: str) -> dict:
-    docs = render(env, lock)
+    docs = render(env, lock, control_plane_only=control_plane_mode(env))
     api = next(
         d
         for d in docs
@@ -503,21 +623,25 @@ def bootstrap_job(env: dict, lock: dict, run_id: str) -> dict:
     container = job["spec"]["template"]["spec"]["containers"][0]
     container["name"] = "bootstrap"
     container["command"] = ["python", "-m", "app.installation_bootstrap"]
-    config = {
-        key: env[key]
-        for key in (
-            "adp_org_id",
-            "org_id",
-            "workspace_id",
-            "cluster_id",
-            "workspace_cluster",
-            "workspace_namespace",
-            "origin",
-        )
-    }
-    config["workspace_cluster_arn"] = (
-        f"arn:aws:eks:{env['region']}:{env['account_id']}:cluster/{env['workspace_cluster']}"
+    # In control-plane-only mode, workspace fields are deferred; the bootstrap job
+    # creates a domain org and administrator grant without a workspace binding.
+    # workspace_id, cluster_id, workspace_cluster and workspace_namespace are only
+    # added when present (i.e. full installation mode).
+    cp_only = control_plane_mode(env)
+    always_config_keys = ("adp_org_id", "org_id", "origin")
+    workspace_config_keys = (
+        "workspace_id",
+        "cluster_id",
+        "workspace_cluster",
+        "workspace_namespace",
     )
+    config = {key: env[key] for key in always_config_keys}
+    config["control_plane_only"] = cp_only
+    if not cp_only:
+        config.update({key: env[key] for key in workspace_config_keys})
+        config["workspace_cluster_arn"] = (
+            f"arn:aws:eks:{env['region']}:{env['account_id']}:cluster/{env['workspace_cluster']}"
+        )
     container["env"].extend(
         [
             {"name": "DOMAIN_AUTH_ENFORCED", "value": "true"},

@@ -8,6 +8,11 @@ import yaml
 MODULE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(MODULE))
 
+# Actual 44-char workspace cluster name produced by the workspace Terraform module.
+# Used to verify that EKS_NAME accepts Terraform-generated suffix form without
+# the IDENTIFIER 40-char ceiling blocking preflight.
+ACTUAL_WORKSPACE_CLUSTER = "adp-dev-spw-f67f322455acd6f6df9cb4bec015ffce"
+
 
 @pytest.fixture
 def environment():
@@ -49,6 +54,14 @@ def environment():
         "network_policy_enforced": True,
         "controller_ownership": "single-workspace-controller",
     }
+
+
+@pytest.fixture
+def actual_name_environment(environment):
+    """Environment using the selected 44-char Terraform-generated workspace cluster name."""
+    env = copy.deepcopy(environment)
+    env["workspace_cluster"] = ACTUAL_WORKSPACE_CLUSTER
+    return env
 
 
 @pytest.fixture
