@@ -186,8 +186,15 @@ inventory stop activation. The zero-work checks for continuations, assignments,
 executions, unresolved actions, queued authoring and SQS remain in force. These
 are current observations; repeat preflight before each enabling stage.
 
-Gateway activation waits up to 300 seconds for rollout status, with a 330-second
-request bound for that watch. Ordinary Kubernetes requests retain a 30-second
+Preflight waits up to 300 seconds for rollout status before reading fresh
+deployment and pod snapshots. It emits only pod names, readiness, image references,
+status counts and termination flags alongside the expected image and replica count,
+so startup and digest failures can be distinguished without exposing environment
+values or logs. A failed wait still stops preflight after emitting that projection;
+readiness, replica count and exact image checks remain mandatory.
+
+Gateway activation also waits up to 300 seconds for rollout status, with a 330-second
+request bound for each watch. Ordinary Kubernetes requests retain a 30-second
 bound. Gateway-enable restarts and verifies the full deployment even when the
 sampled pod is already enabled; one pod cannot prove all replicas consumed the
 updated ConfigMap. Rollout completion, flags and unchanged tick wiring are checked.
