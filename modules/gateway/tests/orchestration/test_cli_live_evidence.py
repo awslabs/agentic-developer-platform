@@ -604,14 +604,17 @@ def test_prerequisite_scope_requires_its_entire_set_and_cannot_be_final(cli_evid
 
 
 @pytest.mark.parametrize("owner,count", [(5329, 8), (5331, 7)])
-def test_complete_prerequisite_evidence_attests_only_its_accepted_owner(cli_evidence, owner, count):
+@pytest.mark.parametrize("use_inference", [True, False])
+def test_complete_prerequisite_evidence_attests_only_its_accepted_owner(cli_evidence, owner, count, use_inference):
     data = cli_evidence
     document = data.qualification.model_dump(mode="json")
     document["owner_issue"] = owner
     document["criteria"] = [item for item in document["criteria"] if item["criterion_id"].startswith(f"{owner}/")]
     document["suites"] = [item for item in document["suites"] if item["suite_id"] == "live"]
     first = document["criteria"][0]["cases"][0]
-    first.update(actor_id="admin", requires_inference=True)
+    first.update(actor_id="admin" if use_inference else "member", requires_inference=use_inference)
+    if not use_inference:
+        document["deployment"].update(ordinary_user_id=None, admin_user_id=None)
     data.qualification = Qualification.model_validate(document)
     accepted = {item.criterion_id for item in data.qualification.criteria}
     parent_files = data.archives[(data.qualification.manifest_artifact, data.qualification.manifest_path)][1]
@@ -619,19 +622,74 @@ def test_complete_prerequisite_evidence_attests_only_its_accepted_owner(cli_evid
     request = next(item["requests"] for item in guard["operations"] if item["requests"])
     guard["operations"] = [item for item in guard["operations"] if item["case_id"] in accepted]
     first_operation = next(item for item in guard["operations"] if item["case_id"] == first["case_id"])
-    first_operation.update(actor_id="admin", requests=request)
+    first_operation.update(actor_id=first["actor_id"], requests=request if use_inference else [])
+    if not use_inference:
+        guard.update(requests=0, input_tokens=0, output_tokens=0, max_observed_output_tokens_per_request=0, daily_spend_after_usd="1")
     refresh_record(guard, parent_files)
     child, files = data.archives[("live-{run_attempt}", "report.json")]
     child["cases"] = [item for item in child["cases"] if item["case_id"] in accepted]
     first_case = next(item for item in child["cases"] if item["case_id"] == first["case_id"])
-    first_case["actor_id"] = "admin"
+    first_case["actor_id"] = first["actor_id"]
     refresh_case(first_case, files)
+    for record, proof_files in [(data.manifest["runtime"], parent_files), (child["runtime"], files)]:
+        record["deployment"] = data.qualification.deployment.model_dump(mode="json")
+        refresh_record(record, proof_files)
     child["qualification_sha256"] = data.manifest["qualification_sha256"] = digest(data.qualification.model_dump(mode="json"))
     data.manifest["children"] = [item for item in data.manifest["children"] if item["suite_id"] == "live"]
     refresh_child(data)
     _, criteria = validate(data)
     assert len(criteria) == count and all(item["passed"] for item in criteria)
     assert {item["criterion_id"] for item in criteria} == accepted
+
+
+@pytest.mark.parametrize(
+    "criterion_id",
+    [
+        "5637/CLI-24-AC-03",  # Actual domain operations, not this issue's AC04 regressions.
+        "5628/CLI-15-AC-01",  # Real marked inference; AC04 is output edge cases.
+        "5629/CLI-16-AC-02",  # Hosted live control; AC04 is retry/detach semantics.
+        "5627/CLI-14-AC-02",  # Actual RPM enforcement.
+        "5627/CLI-14-AC-03",  # Real token usage/overlap.
+        "5622/CLI-09-AC-01",  # Tenant selection through local inference/refresh.
+        "5635/CLI-22-AC-01",  # Actual provider approval.
+        "5329/validation-04",  # Live inputs and trusted validation evidence.
+        "5329/validation-08",  # Integrated deployed amendment scenario.
+        "5331/validation-07",  # Deployed hosted-planning smoke.
+    ],
+)
+def test_source_defined_live_criteria_refuse_offline_only_mapping(cli_evidence, criterion_id):
+    document = cli_evidence.qualification.model_dump(mode="json")
+    item = next(item for item in document["criteria"] if item["criterion_id"] == criterion_id)
+    item["phases"] = ["pre"]
+    item["cases"][0].update(phase="pre", suite_id="pre", requires_inference=False)
+    with pytest.raises(ValueError, match="source contract requires live evidence"):
+        Qualification.model_validate(document)
+
+
+@pytest.mark.parametrize("criterion_id", ["5637/CLI-24-AC-04", "5628/CLI-15-AC-04", "5629/CLI-16-AC-04"])
+def test_regression_rows_do_not_acquire_live_or_inference_requirements_from_position(cli_evidence, criterion_id):
+    document = cli_evidence.qualification.model_dump(mode="json")
+    item = next(item for item in document["criteria"] if item["criterion_id"] == criterion_id)
+    item["phases"] = ["pre"]
+    item["cases"][0].update(phase="pre", suite_id="pre", requires_inference=False)
+    accepted = Qualification.model_validate(document)
+    item = next(item for item in accepted.criteria if item.criterion_id == criterion_id)
+    assert item.phases == ["pre"] and not item.cases[0].requires_inference
+
+
+@pytest.mark.parametrize("issue", [5623, 5625])
+def test_shared_story_live_boundary_requires_reviewed_scenario_without_guessing_ac_position(cli_evidence, issue):
+    document = cli_evidence.qualification.model_dump(mode="json")
+    selected = [item for item in document["criteria"] if item["criterion_id"].startswith(f"{issue}/")]
+    for item in selected:
+        item["phases"] = ["pre"]
+        item["cases"][0].update(phase="pre", suite_id="pre", requires_inference=False)
+    with pytest.raises(ValueError, match="source live acceptance boundary"):
+        Qualification.model_validate(document)
+    selected[0]["phases"] = ["live"]
+    selected[0]["cases"][0].update(phase="live", suite_id="live")
+    accepted = Qualification.model_validate(document)
+    assert next(item for item in accepted.criteria if item.criterion_id == selected[-1]["criterion_id"]).phases == ["pre"]
 
 
 @pytest.fixture

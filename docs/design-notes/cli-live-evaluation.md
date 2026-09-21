@@ -46,11 +46,44 @@ phase(s), and case mappings. Original prose and shared/live requirements still
 apply. The configuration reviewer must verify that mapping; the engine checks
 its immutable identity and execution evidence rather than interpreting prose.
 
-#5516 AC05–09, #5589 AC05–10 and CLI08–28 AC04 require live mappings. #5564 is
-strictly pre/live-spend-free implementation evidence. Other phase assignments
-must be explicit and reviewed. #5568 is the profile story, not the integrated
-CLI journey owner. Retained live holds on #5181–#5185, #5199 and #5413 remain
-separate and are not closed by this adapter.
+Phase constraints follow specific source rows, never an AC's position. These
+rows require live mappings:
+
+| Issue | Mandatory live rows | Source requirement |
+| --- | --- | --- |
+| #5516 | AC05–09 | Explicit `Live` phase in its validation table |
+| #5589 | AC05–10 | Real agents, spend-through, recovery and hosted acceptance |
+| #5621 | CLI08 AC04 | Fresh served EC2 capability/readiness |
+| #5622 | CLI09 AC01, AC04 | Tenant retained by local inference; served EC2 context helpers |
+| #5624 | CLI11 AC04 | Live disposable identity lifecycle |
+| #5626 | CLI13 AC04 | Real bounded agent/person-cap evidence |
+| #5627 | CLI14 AC02–04 | Actual RPM, real token/overlap and both real agent binaries |
+| #5628 | CLI15 AC01 | Real local and hosted marked inference/charge lookup |
+| #5629 | CLI16 AC02 | Live pause/resume on real hosted fixture |
+| #5630 | CLI17 AC04 | Installed EC2 and bounded hosted integrated journey |
+| #5631 | CLI18 AC04 | Actual revocation behavior and live fixture cleanup |
+| #5632 | CLI19 AC04 | Real bounded EC2 indexing/cleanup |
+| #5633 | CLI20 AC04 | Real local/hosted inference routing |
+| #5634 | CLI21 AC04 | Real isolated OAuth/repository/webhook continuation |
+| #5635 | CLI22 AC01, AC04 | Real provider approval and isolated live GitLab task |
+| #5636 | CLI23 AC04 | Real local/hosted model-decision evidence |
+| #5637 | CLI24 AC03 | Served EC2 traverses gateway to actual domain create/read/delete |
+| #5638 | CLI25 AC04 | Separately authorized live disposable compute |
+| #5639 | CLI26 AC04 | Live isolated research proposal approval/rejection |
+| #5640 | CLI27 AC04 | Real bounded multi-turn chat through served EC2 |
+| #5641 | CLI28 AC04 | Separately authorized disposable deployment/teardown |
+| #5329 | validation04, validation08 | Authorized live inputs/evidence; deployed integrated scenario |
+| #5331 | validation07 | Authorized deployed CLI/hosted-planning/dispatch smoke |
+
+Every story also retains its source's shared live acceptance boundary. #5623 and
+#5625 do not assign that boundary to one specific table row, so their accepted
+mapping must explicitly choose at least one live scenario. The engine does not
+guess that AC04 is live. #5637 AC04 and #5628/#5629 AC04 can remain offline
+regressions; real provider/domain operations do not inherently require inference.
+Other phase assignments remain explicit and reviewed. #5564 stays strictly
+pre/live-spend-free implementation evidence. #5568 is the profile story, not the
+integrated CLI journey owner. Retained live holds on #5181–#5185, #5199 and #5413
+remain separate and are not closed by this adapter.
 
 ## Accepted source and execution configuration
 
@@ -78,11 +111,16 @@ statement text/hash. A changed source issue requires a new reviewed contract.
 Each mapped case binds suite, phase, actor ID, exact redacted command, typed JSON
 expected result and whether inference is required. Live operations use the
 served `adp` CLI. One shared case cannot claim different contracts for different
-criteria. Both the approved ordinary user and admin identity must be exercised;
-additional service-account actors can be explicitly mapped. At least one live
-case must exercise metered inference. The producer must use real approved
-fixtures with those exact identities; dynamically generated unknown identities
-cannot be substituted after acceptance.
+criteria. Final #5644 qualification requires both approved ordinary/admin
+identities and metered real-agent coverage because those are explicit shared
+requirements of its stories. Prerequisite #5329/#5331 qualification binds each
+case's required actor directly; it does not require unrelated ordinary/admin
+fixture identities or an additional inference case. `requires_inference` is set
+for actual source-defined metered/agent operations, not for a generic "real"
+provider or domain operation. When true, the guard must contain the operation's
+request evidence. Additional service-account actors can be explicitly mapped.
+The producer must use real approved fixtures with those exact identities;
+dynamically generated unknown identities cannot be substituted after acceptance.
 
 Every source issue in the mapping must also have delivered PR/check evidence,
 through a direct story source or an explicit `external_pull_requests` binding.

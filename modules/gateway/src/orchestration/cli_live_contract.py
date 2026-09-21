@@ -25,6 +25,57 @@ REQUIRED_CRITERIA = (
     | {f"5564/AC-{i:02}" for i in range(1, 7)}
 )
 
+# These source rows explicitly require live/deployed/real-provider evidence.
+# Do not infer phase from an AC's position: e.g. CLI-24 AC03 is live, AC04 is
+# the offline contract/regression row. Other phases remain explicitly reviewed.
+MANDATORY_LIVE_CRITERIA = frozenset(
+    {
+        # #5516's Validation table explicitly labels these rows "Live".
+        "5516/AC-05",
+        "5516/AC-06",
+        "5516/AC-07",
+        "5516/AC-08",
+        "5516/AC-09",
+        # #5589's real-agent, spend-through, recovery and hosted evidence rows.
+        "5589/AC-05",
+        "5589/AC-06",
+        "5589/AC-07",
+        "5589/AC-08",
+        "5589/AC-09",
+        "5589/AC-10",
+        "5621/CLI-08-AC-04",  # Fresh served EC2 capability/readiness evidence.
+        "5622/CLI-09-AC-01",  # Selected tenant retained by local agent inference.
+        "5622/CLI-09-AC-04",  # Served EC2 installation of both context helpers.
+        "5624/CLI-11-AC-04",  # Live disposable identity lifecycle.
+        "5626/CLI-13-AC-04",  # Real bounded Claude/Codex person-cap denial/recovery.
+        "5627/CLI-14-AC-02",  # Actual RPM enforcement across gateway workers.
+        "5627/CLI-14-AC-03",  # Real token usage/overlap and TPM/concurrent denial.
+        "5627/CLI-14-AC-04",  # Both real agent binaries and restored fixture limits.
+        "5628/CLI-15-AC-01",  # Real local and hosted marked inference/charge lookup.
+        "5629/CLI-16-AC-02",  # Live pause/resume on a real hosted fixture.
+        "5630/CLI-17-AC-04",  # Installed EC2 + bounded hosted integrated journey.
+        "5631/CLI-18-AC-04",  # Actual behavior after revocation; live fixture cleanup.
+        "5632/CLI-19-AC-04",  # Real bounded EC2 indexing and cleanup.
+        "5633/CLI-20-AC-04",  # Real local/hosted inference and provider/account routing.
+        "5634/CLI-21-AC-04",  # Real isolated OAuth/repository/webhook continuation.
+        "5635/CLI-22-AC-01",  # Provider connect/resume after real approval.
+        "5635/CLI-22-AC-04",  # Isolated live GitLab task, webhook/run/artifact evidence.
+        "5636/CLI-23-AC-04",  # Real local/hosted model-decision evidence.
+        "5637/CLI-24-AC-03",  # Served EC2 -> actual domain create/read/delete/handoff.
+        "5638/CLI-25-AC-04",  # Separately authorized live disposable compute lifecycle.
+        "5639/CLI-26-AC-04",  # Live isolated research proposal approval/rejection.
+        "5640/CLI-27-AC-04",  # Real bounded multi-turn chat through served EC2.
+        "5641/CLI-28-AC-04",  # Separately authorized disposable deployment/teardown.
+        "5329/validation-04",  # Authorized live inputs -> trusted validation evidence.
+        "5329/validation-08",  # Integrated deployed/live amendment acceptance scenario.
+        "5331/validation-07",  # Authorized deployed CLI -> hosted planning -> dispatch smoke.
+    }
+)
+# All 23 story bodies retain a live acceptance boundary. Where the source does
+# not assign that boundary to a particular table row (#5623/#5625), acceptance
+# must explicitly choose a real scenario rather than the engine guessing AC04.
+STORIES_REQUIRING_LIVE_EVIDENCE = {5516, 5589, *range(5621, 5642)}
+
 
 class CliRunner(Runner):
     adapter: Literal["engine-cli-live-evidence-v1"]
@@ -78,10 +129,7 @@ class CriterionBinding(Contract):
             raise ValueError("criterion phases require actual case mappings")
         if len({(case.suite_id, case.case_id) for case in self.cases}) != len(self.cases):
             raise ValueError("criterion cases must be unique")
-        known_live = self.criterion_id.startswith("5516/AC-") and int(self.criterion_id[-2:]) >= 5
-        known_live |= self.criterion_id.startswith("5589/AC-") and int(self.criterion_id[-2:]) >= 5
-        known_live |= "/CLI-" in self.criterion_id and self.criterion_id.endswith("AC-04")
-        if known_live and "live" not in self.phases:
+        if self.criterion_id in MANDATORY_LIVE_CRITERIA and "live" not in self.phases:
             raise ValueError("the source contract requires live evidence for this criterion")
         if self.criterion_id.startswith("5564/") and self.phases != ["pre"]:
             raise ValueError("profile implementation prerequisite does not authorize live spending")
@@ -120,12 +168,12 @@ class Deployment(Contract):
     worker_revisions: dict[Name, Sha] = Field(min_length=1, max_length=32)
     # Actor references are expected identities, never credentials.
     tenant_id: Name
-    ordinary_user_id: Name
-    admin_user_id: Name
+    ordinary_user_id: Name | None = None
+    admin_user_id: Name | None = None
 
     @model_validator(mode="after")
     def identities(self):
-        if self.ordinary_user_id == self.admin_user_id:
+        if self.ordinary_user_id is not None and self.ordinary_user_id == self.admin_user_id:
             raise ValueError("ordinary and admin fixture identities must differ")
         return self
 
@@ -160,10 +208,18 @@ class Qualification(Contract):
         if set(suite for suite, _ in mappings) != suites:
             raise ValueError("unused suites cannot widen qualification authority")
         actors = {case["actor_id"] for case in mappings.values() if case["phase"] == "live"}
-        if not {self.deployment.ordinary_user_id, self.deployment.admin_user_id} <= actors:
+        if self.owner_issue == 5644 and (
+            not self.deployment.ordinary_user_id
+            or not self.deployment.admin_user_id
+            or not {self.deployment.ordinary_user_id, self.deployment.admin_user_id} <= actors
+        ):
             raise ValueError("qualification must exercise separate ordinary and admin identities")
-        if not any(case["requires_inference"] and case["phase"] == "live" for case in mappings.values()):
+        if self.owner_issue == 5644 and not any(case["requires_inference"] and case["phase"] == "live" for case in mappings.values()):
             raise ValueError("qualification must exercise metered live inference")
+        live_issues = {int(item.criterion_id.split("/", 1)[0]) for item in self.criteria if "live" in item.phases}
+        covered_issues = {int(item.criterion_id.split("/", 1)[0]) for item in self.criteria}
+        if not (STORIES_REQUIRING_LIVE_EVIDENCE & covered_issues) <= live_issues:
+            raise ValueError("each story's source live acceptance boundary requires an explicit live scenario")
         bodies = {}
         for item in self.criteria:
             issue = item.criterion_id.split("/", 1)[0]
