@@ -92,12 +92,12 @@ webhook infrastructure hold. It uses the current ARC runner credentials and the
 existing worker role. It does not accept policies, dispatch workers, cancel jobs,
 pause the shared dispatcher, import resources, or edit orchestration rows.
 
-Supply the confirmed account, full reviewed gateway and worker source SHAs, and
-the immutable worker digest. Gateway and tick must already run the selected
-gateway release. Every stage rechecks AWS identity, ECR source/digest, gateway
+For rollout and verification, supply the confirmed account, full reviewed gateway
+and worker source SHAs, and immutable worker digest. Gateway and tick must already
+run the selected gateway release. These stages recheck AWS identity, ECR source/digest, gateway
 pod cohort, migration 064, existing signing material, and shared worker service
-account. The workflow shares `gateway-release-dev` concurrency with normal
-gateway deployment and never cancels another release.
+account and share `gateway-release-dev` concurrency with normal gateway deployment.
+Neither the release lane nor the separate diagnostic lane cancels another run.
 
 | Stage | Only permitted changes |
 | --- | --- |
@@ -106,6 +106,24 @@ gateway deployment and never cancels another release.
 | `gateway-enable` | Worker gateway ConfigMap reporting/continuation true, then restart and verify the gateway. SSM and tick flags remain false during this stage. |
 | `tick-enable` | Worker-runtime SSM wiring reporting/continuation true, then only the tick IAM policy and Lambda configuration. |
 | `verify` | Read-only verification of actual gateway/tick flags, roles, worker image/endpoints, and signing-key equality. No Terraform inputs are generated. |
+| `diagnose` | Selected gateway migration Job, pod, node and ARC event status fields. No runtime changes or image-readiness prerequisite. |
+
+When rollout is incomplete, select `diagnose`, confirm account `879318057152`, and
+leave `execute` and `unlock_known_orphan` false. Revision/digest inputs are unused.
+This stage uses the independent `gateway-diagnostics-dev` concurrency lane and
+`platform/scripts/diagnose-shared-runtime.py`; it can observe a deployment while
+the release lane is occupied. It still needs an ARC runner to start.
+
+The diagnostic helper checks the STS account and EKS cluster ARN, creates a
+temporary kubeconfig, and verifies its context/cluster/server before collection.
+It reads explicit status projections in `adp-gateway`, `arc-runners`, and
+`arc-systems`, plus node health. It never selects environment, Secret/ConfigMap
+data, annotations, command arguments, logs or event/condition message text.
+`diagnostics.json` retains reason codes, timestamps, readiness, restart counts,
+exit codes, node conditions and allocatable capacity. Each collection reports
+truncation beyond 200 records. Denied or timed-out reads remain `unavailable` and
+make the diagnostic step fail while retaining the partial evidence; they are
+never reported as healthy. Identity failure stops before runtime collection.
 
 Every Terraform operation saves a private plan and validates it before applying
 that exact binary. The guard rejects destruction, replacement, import/move
@@ -134,6 +152,13 @@ the matching cancelled job, its log records orphan Terraform termination, and
 its exact runner pod is absent. Any changed evidence stops the unlock. No other
 lock can be removed by this workflow.
 
+The lock lookup projects an explicit `Item` field so a missing DynamoDB item
+returns JSON null instead of the AWS CLI's empty output. Only that explicit null
+means unlocked; malformed or incomplete lock information stops maintenance.
+Failures report a static JSON-source label when available and traceback
+filename/function/line numbers. Exception values, source lines, local variables,
+chained errors and raw provider output are withheld.
+
 Before either enabling stage, the helper reads all organizations' current
 accepted continuations, unfinished SQL report assignments (including JSON null),
 executions, unresolved actions and queued authoring. It also checks non-target
@@ -143,6 +168,13 @@ workers finish and review that work instead of cancelling them. These checks are
 observations, not a global dispatcher pause. Normal legacy scheduling remains
 active, and future legacy dispatches will also acquire the shared reporting
 contract after global activation.
+
+For review, the existing SQL probe also returns at most 20 non-target ready or
+running story nodes: tenant, flow/node IDs, flow/node states, attempts and issue
+reference. A left join preserves missing or mismatched flow evidence as a null
+flow state. Titles, plan content and decisions are excluded. The total count and
+zero-work activation requirement remain unchanged; a truncated sample does not
+reduce that count.
 
 After `verify`, obtain a fresh continuation preview and accept **only CLI**
 (`0737183c-99c4-4e1f-bdb7-e4432b46ca20`, tenant `aws-e`) through the existing API,
