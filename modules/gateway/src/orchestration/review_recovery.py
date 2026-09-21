@@ -41,7 +41,9 @@ async def exited_run(run_id, org_id, resolver=None):
     from .work_claims import compute_liveness
 
     resolver = resolver or await get_run_binding_resolver()
-    run = await resolver.resolve(run_id)
+    # Lifecycle is mutable; the budget resolver's day-long identity cache cannot
+    # establish a current exit. Read the registry consistently at acceptance.
+    run = await resolver.read_current(run_id)
     if (
         not run
         or run.get("tenant_id") != org_id
@@ -49,6 +51,24 @@ async def exited_run(run_id, org_id, resolver=None):
     ):
         raise CycleBlockedError("prior_worker_active_or_unverified")
     return {key: str(run[key]) if run.get(key) is not None else None for key in ("status", "arrived_at", "status_updated_at")}
+
+
+def recorded_worker_exited(data):
+    """Validate the server-observed exit retained in the attributed decision.
+
+    The scheduler consumes this durable evidence with the unchanged report,
+    claim, plan and PR fences. It does not need a second registry-read grant.
+    A new execution requires a new run identity; this authorizes only replacement
+    of the exact exited identity named by the decision.
+    """
+    from .work_claims import compute_liveness
+
+    observed = data.get("worker_exit")
+    return (
+        isinstance(observed, dict)
+        and compute_liveness(observed.get("status"), str(observed.get("arrived_at") or ""), datetime.now(UTC), observed.get("status_updated_at"))
+        == "exited"
+    )
 
 
 async def prepare_recovery(session, *, org_id, node_id, actor_id, actor_role, request, resolver=None):
@@ -259,6 +279,7 @@ async def verify_recovery_decision(session, *, decision_id, context, node, bindi
         or not row.actor_id
         or row.actor_role not in {"owner", "org_admin", "platform_admin"}
         or any(data.get(k) != v for k, v in expected.items())
+        or not recorded_worker_exited(data)
     ):
         raise CycleBlockedError("recovery_authority_changed")
     report = await session.get(OrchestrationRunReport, prior_run_id)
@@ -290,7 +311,6 @@ async def recovery_snapshot(session, context, node, binding, services, dispatche
         return None
     head = await services.head(binding)
     await verify_recovery_decision(session, decision_id=selected.id, context=context, node=node, binding=binding, prior_run_id=active, head_sha=head)
-    await exited_run(active, node.org_id)
     _, _, inputs, _, meter = await services.authorize(session, context, node, binding, active, Action.REVIEW)
     return {
         "active_run_id": active,

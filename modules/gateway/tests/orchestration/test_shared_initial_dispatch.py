@@ -155,7 +155,7 @@ async def test_fresh_story_dispatch_model_handoff_and_review(shared, monkeypatch
         from src.orchestration.stall import _continuation_clock
 
         resolver = SimpleNamespace(
-            resolve=AsyncMock(return_value={"tenant_id": ctx.node.org_id, "status": "failed", "arrived_at": "2026-01-01T00:00:00Z"})
+            read_current=AsyncMock(return_value={"tenant_id": ctx.node.org_id, "status": "failed", "arrived_at": "2026-01-01T00:00:00Z"})
         )
         monkeypatch.setattr("src.orchestration.controls.get_run_binding_resolver", AsyncMock(return_value=resolver))
         body = ReviewRecoveryRequest(

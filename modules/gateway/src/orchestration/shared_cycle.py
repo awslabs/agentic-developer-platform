@@ -479,7 +479,7 @@ class SharedCycleServices(ReviewCycleServices):
                     pass
             recovery_id = detail.get("recovery_decision_id")
             if recovery_id:
-                from .review_recovery import exited_run, verify_recovery_decision
+                from .review_recovery import verify_recovery_decision
 
                 await verify_recovery_decision(
                     session,
@@ -490,7 +490,6 @@ class SharedCycleServices(ReviewCycleServices):
                     prior_run_id=detail["active_run_id"],
                     head_sha=detail["head_sha"],
                 )
-                await exited_run(detail["active_run_id"], node.org_id)
             elif raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
                 raise CycleBlockedError("previous_worker_not_completed")
             if await self.head(binding) != detail["head_sha"]:

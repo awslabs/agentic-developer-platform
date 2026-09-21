@@ -22,7 +22,9 @@ async def recovery(shared, monkeypatch):  # noqa: F811
     assert (await protocol.tick(shared)).effects_succeeded == 1
     envelope = shared.calls[-1]
     run = envelope["message_id"]
-    resolver = SimpleNamespace(resolve=AsyncMock(return_value={"tenant_id": protocol.ORG, "status": "failed", "arrived_at": "2026-01-01T00:00:00Z"}))
+    resolver = SimpleNamespace(
+        read_current=AsyncMock(return_value={"tenant_id": protocol.ORG, "status": "failed", "arrived_at": "2026-01-01T00:00:00Z"})
+    )
     monkeypatch.setattr("src.orchestration.controls.get_run_binding_resolver", AsyncMock(return_value=resolver))
     monkeypatch.setattr(
         "src.orchestration.pr_identity.resolve_pr_identity",
@@ -119,7 +121,7 @@ async def test_fresh_review_recovers_without_fabricating_old_receipts(recovery, 
 
 @pytest.mark.parametrize("status", [None, "in_progress", "pending", "unknown"])
 async def test_missing_or_live_worker_cannot_be_displaced(recovery, status):
-    recovery.resolver.resolve.return_value["status"] = status
+    recovery.resolver.read_current.return_value["status"] = status
     with pytest.raises(CycleBlockedError, match="prior_worker_active_or_unverified"):
         await request(recovery)
     assert len(recovery.ctx.calls) == 1
@@ -145,7 +147,7 @@ async def test_changed_recovery_preview_is_refused(recovery, change):
         await request(recovery, accept=True, role="developer" if change == "role" else "owner")
 
 
-@pytest.mark.parametrize("change", ["actor", "head", "receipt"])
+@pytest.mark.parametrize("change", ["actor", "head", "receipt", "missing_exit", "live_exit"])
 async def test_dispatch_revalidates_owner_decision_and_current_evidence(recovery, change):
     recovery.body.expected_snapshot = (await request(recovery))["snapshot"]
     accepted = await request(recovery, accept=True)
@@ -167,8 +169,43 @@ async def test_dispatch_revalidates_owner_decision_and_current_evidence(recovery
                         reason=original.reason,
                     )
                 )
-            else:
+            elif change == "receipt":
                 (await db.get(OrchestrationRunReport, recovery.run)).terminal_receipt = {"outcome": "complete"}
+            else:
+                decision = await db.get(OrchestrationDecision, accepted["decision_id"])
+                data = json.loads(decision.reason)
+                data["worker_exit"] = None if change == "missing_exit" else {"status": "in_progress"}
+                db.add(
+                    OrchestrationDecision(
+                        org_id=decision.org_id,
+                        flow_id=decision.flow_id,
+                        node_id=decision.node_id,
+                        kind=decision.kind,
+                        actor_id=decision.actor_id,
+                        actor_kind=decision.actor_kind,
+                        actor_role=decision.actor_role,
+                        reason=json.dumps(data),
+                    )
+                )
             await db.commit()
     assert (await protocol.tick(recovery.ctx)).blocked == 1
     assert len(recovery.ctx.calls) == 1
+
+
+async def test_accepted_exit_does_not_require_registry_access_by_scheduler(recovery):
+    recovery.body.expected_snapshot = (await request(recovery))["snapshot"]
+    await request(recovery, accept=True)
+    recovery.resolver.read_current.reset_mock()
+    recovery.resolver.read_current.side_effect = PermissionError("scheduler has no registry query grant")
+    assert (await protocol.tick(recovery.ctx)).effects_succeeded == 1
+    recovery.resolver.read_current.assert_not_called()
+    assert recovery.ctx.calls[-1]["persona"] == "agent-codex-reviewer"
+    assert recovery.ctx.calls[-1]["message_id"] != recovery.run
+
+
+async def test_stale_cached_exit_cannot_authorize_a_live_worker(recovery):
+    recovery.resolver.resolve = AsyncMock(return_value={"tenant_id": protocol.ORG, "status": "complete"})
+    recovery.resolver.read_current.return_value["status"] = "in_progress"
+    with pytest.raises(CycleBlockedError, match="prior_worker_active_or_unverified"):
+        await request(recovery)
+    recovery.resolver.resolve.assert_not_called()
