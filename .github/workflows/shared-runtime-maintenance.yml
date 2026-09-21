@@ -76,8 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install 'pytest==9.0.3'
-          python -m pytest platform/scripts/tests/test_shared_runtime_maintenance.py -q
-          python -m pytest modules/agent-factory/webhook-ingress/tests/test_shared_worker_rollout.py -q
+          python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_maintenance.py -q
+          python -m pytest --import-mode=importlib modules/agent-factory/webhook-ingress/tests/test_shared_worker_rollout.py -q
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: '1.14.6'
