@@ -386,3 +386,53 @@ async def test_platform_budget_increase_reaches_model_path_and_preserves_tenant_
     meter = await read_flow_meter(org_id=assignment.node.org_id, flow_id=assignment.flow.id, policy=model_path.policy)
     assert meter.total_usd == (Decimal("25.02") if tenant_limit is None else Decimal("0"))
     assert not meter.has_pending
+
+
+@pytest.mark.parametrize("verified", [True, False])
+async def test_retry_increase_during_upload_requires_verified_receipt(model_path, shared, session, verified):
+    import json
+
+    from src.orchestration.continuation import digest
+    from src.orchestration.models import OrchestrationDecision
+    from src.orchestration.shared_retry import CONTRACT
+
+    shared.plan.plan_hash = digest(shared.plan.plan_document)
+    await session.flush()
+    added = False
+
+    async def increase():
+        nonlocal added
+        if added:
+            return
+        added = True
+        if verified:
+            session.add(
+                OrchestrationDecision(
+                    org_id=shared.plan.org_id,
+                    flow_id=shared.plan.flow_id,
+                    kind="retry_limit_increased",
+                    actor_id="platform-approver",
+                    actor_kind="human",
+                    actor_role="platform_admin",
+                    reason=json.dumps(
+                        {
+                            "contract": CONTRACT,
+                            "flow_id": shared.plan.flow_id,
+                            "plan_version": shared.plan.version,
+                            "plan_hash": shared.plan.plan_hash,
+                            "original_policy_hash": model_path.policy.policy_hash,
+                            "principal_id": model_path.policy.principal_id,
+                            "max_attempts_per_node": 20,
+                        }
+                    ),
+                )
+            )
+        else:
+            document = json.loads(json.dumps(shared.plan.plan_document))
+            document["execution_policy"]["limits"]["max_attempts_per_node"] = 20
+            shared.plan.plan_document = document
+        await session.flush()
+
+    result = await invoke(model_path, shared, during_upload=increase)
+    assert result.sent[0]["status"] == (200 if verified else 403)
+    assert model_path.calls == int(verified)

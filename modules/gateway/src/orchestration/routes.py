@@ -110,6 +110,7 @@ from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.orchestration.run_report_read import MAX_REPORTS_PER_PAGE, FlowRunReportsResponse, load_flow_run_reports
 from src.orchestration.shared_amendment_routes import router as shared_amendment_router
 from src.orchestration.shared_budget_routes import router as shared_budget_router
+from src.orchestration.shared_retry_routes import router as shared_retry_router
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
@@ -1890,4 +1891,5 @@ async def get_flow_execution(
 router.include_router(continuation_router)
 router.include_router(shared_amendment_router)
 router.include_router(shared_budget_router)
+router.include_router(shared_retry_router)
 router.include_router(evaluation_acceptance_router)

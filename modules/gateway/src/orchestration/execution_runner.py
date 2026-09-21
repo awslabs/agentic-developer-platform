@@ -1070,7 +1070,21 @@ async def _process_one(
         report.bump(initial.org_id, "blocked")
         return
 
-    if initial.attempts >= config.max_attempts:
+    attempt_limit = config.max_attempts
+    if initial.attempts >= attempt_limit:
+        # A human platform approval may lift this flow above the runner default.
+        # Only a verified supplement for this execution's exact plan can do so;
+        # unrelated flows and notification retries retain their configured cap.
+        async with factory() as session:
+            admission = await load_in_force_policy(session, org_id=initial.org_id, flow_id=initial.flow_id)
+            if (
+                admission.refusal is None
+                and admission.policy is not None
+                and admission.plan_version == initial.accepted_plan_version
+                and admission.policy._shared_retry_decision_id
+            ):
+                attempt_limit = admission.policy.limits.max_attempts_per_node
+    if initial.attempts >= attempt_limit:
         await _notify_block(
             factory,
             record=initial,

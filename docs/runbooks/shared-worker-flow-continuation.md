@@ -111,3 +111,32 @@ and new plan version. Other gates and evaluation nodes retain their state. The
 proposed policy remains in the historical draft; it is removed from the new
 version so a later gate answer cannot overwrite the accepted shared transport.
 Ordinary continuation refuses a draft that still carries inert proposed bounds.
+
+## Increase retries on an active shared flow
+
+An authenticated human platform admin with `PLAN_APPROVE` can raise the attempt
+ceiling without replacing the accepted plan:
+
+- `POST /orchestration/flows/{flow_id}/retry/preview`
+- `POST /orchestration/flows/{flow_id}/retry/accept`
+
+Send `expected_plan_version`, `expected_plan_hash`, `max_attempts_per_node`
+(an integer from 1 to 100, greater than the current limit), and an attributed
+`reason`. Accept the same request with the preview's `snapshot` in
+`expected_snapshot`. Acceptance appends a `retry_limit_increased` decision tied
+to the exact accepted plan and original policy hash. Concurrent approvals or a
+changed plan invalidate the preview. A later plan acceptance does not inherit it.
+
+The value is the total attempt ceiling, including attempts already consumed.
+Story dispatch and review/repair admission use it; the verified supplement also
+raises this flow's execution runner ceiling above `ORCH_RUNNER_MAX_ATTEMPTS`.
+Other flows and notification delivery retries retain their configured limits.
+Existing story and execution counters, assignments, claims, expiry, concurrency,
+spending limits, and gates are retained. Failed stories still require normal
+operator resume; active blocked executions are rechecked by the engine.
+
+This approval neither reads nor changes the usage meter. It can be recorded while
+usage is unknown, but budget admission continues to block work until accounting
+is recovered. Financial supplements retain their run and chain limits. In-flight
+model uploads tolerate only verified increases to retry or financial limits;
+other policy changes still refuse the request.

@@ -220,3 +220,53 @@ async def test_different_story_admissions_serialize_before_worker_count(shared, 
         if pending is not None and not pending.done():
             pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("used,approved,allowed", [(3, False, False), (3, True, True), (18, True, True), (19, True, False)])
+async def test_approved_retry_increase_lifts_runner_default_but_preserves_combined_attempts(shared, used, approved, allowed):  # noqa: F811
+    from src.orchestration.compile import ApprovalContext
+    from src.orchestration.continuation import digest
+    from src.orchestration.execution_policy import stamp_policy
+    from src.orchestration.execution_runner import RunnerConfig, run_execution_runner
+    from src.orchestration.models import OrchestrationExecution
+    from src.orchestration.review_cycle import PHASES, ReviewCycleHandler
+    from src.orchestration.shared_retry import RetryIncreaseRequest, accept_retry_increase, preview_retry_increase
+
+    ctx = shared
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        draft = ExecutionPolicy.model_validate(ctx.policy.model_dump(mode="json", exclude={"policy_id", "policy_hash", "principal_id"}))
+        ctx.policy = stamp_policy(draft, principal_id="human", org_id=ctx.node.org_id)
+        plan.plan_document = {**plan.plan_document, "execution_policy": ctx.policy.model_dump(mode="json")}
+        plan.plan_hash = digest(plan.plan_document)
+        execution = await db.get(OrchestrationExecution, ctx.execution.id)
+        execution.attempts = used
+        execution.next_check_at = datetime.now(UTC) - timedelta(seconds=1)
+        await db.flush()
+        if approved:
+            actor = ApprovalContext(org_id=ctx.node.org_id, actor_id="human", actor_role="platform_admin")
+            request = RetryIncreaseRequest(
+                expected_plan_version=plan.version,
+                expected_plan_hash=plan.plan_hash,
+                max_attempts_per_node=20,
+                reason="Owner authorizes twenty attempts for this flow.",
+            )
+            result = await preview_retry_increase(db, flow_id=ctx.flow.id, actor=actor, request=request)
+            await accept_retry_increase(
+                db, flow_id=ctx.flow.id, actor=actor, request=request.model_copy(update={"expected_snapshot": result["snapshot"]})
+            )
+        await db.commit()
+    handler = ReviewCycleHandler(ctx.factory, ctx.service)
+    result = await run_execution_runner(
+        ctx.factory,
+        handlers=dict.fromkeys(PHASES, handler),
+        config=RunnerConfig(enabled=True, max_attempts=3, io_timeout_seconds=10),
+        notifier=AsyncMock(return_value="notice"),
+    )
+    assert not result.errors
+    assert result.effects_succeeded == int(allowed)
+    execution, _, node, actions = await protocol.state(ctx)
+    assert node.attempts == 1 and execution.attempts == used + int(allowed)
+    assert len(ctx.calls) == len(actions) == int(allowed)
+    if not allowed:
+        assert execution.block_code == "attempts_exhausted"

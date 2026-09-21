@@ -453,6 +453,9 @@ class TestOrchestrationRouterIsOperatorPlane:
             # platform administration, budget update and authenticated humanity.
             ("/orchestration/flows/{flow_id}/budget/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/budget/accept", "POST"): "Permission.PLAN_APPROVE",
+            # Retry supplements require platform-admin human plan approval.
+            ("/orchestration/flows/{flow_id}/retry/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/retry/accept", "POST"): "Permission.PLAN_APPROVE",
             # Issue #5301: attributed recovery of a *historically unbound* story —
             # a human asserting which pull request delivered work that no run ever
             # registered. PLAN_APPROVE and nothing weaker, for two reasons.

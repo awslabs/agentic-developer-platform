@@ -202,9 +202,9 @@ class AgentModelIdentityMiddleware:
                     if identity != (assignment.run_id, assignment.org_id, assignment.flow_id, assignment.node_id, assignment.attempt, principal):
                         raise BootstrapRefusedError("model assignment changed during upload")
                     if policy_snapshot != policy.model_dump(mode="json"):
-                        from src.orchestration.shared_budget import only_spend_increased
+                        from src.orchestration.shared_retry import verified_limits_increased
 
-                        if not policy._shared_budget_decision_id or not only_spend_increased(policy_snapshot, policy.model_dump(mode="json")):
+                        if not verified_limits_increased(policy_snapshot, policy):
                             raise BootstrapRefusedError("model policy changed during upload")
                 if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
                     raise AuthorityStoreError("policy budget enforcement unavailable")

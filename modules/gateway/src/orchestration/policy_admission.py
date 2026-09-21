@@ -206,8 +206,10 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
 
     try:
         from .shared_budget import effective_shared_budget
+        from .shared_retry import effective_shared_retry
 
         policy = await effective_shared_budget(session, plan, ExecutionPolicy.model_validate(raw))
+        policy = await effective_shared_retry(session, plan, policy)
         return AdmissionInputs(policy=policy, plan_version=plan.version)
     except ValueError:
         logger.exception(
