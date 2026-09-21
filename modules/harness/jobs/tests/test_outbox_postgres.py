@@ -119,7 +119,7 @@ async def test_the_envelope_carries_no_connection_or_credential(connection):
         "claim_generation",
     }
     for value in vars(envelope).values():
-        assert isinstance(value, (str, int)), (
+        assert isinstance(value, str | int), (
             "an envelope field holds a live object; a worker must receive only data"
         )
     with pytest.raises(Exception):

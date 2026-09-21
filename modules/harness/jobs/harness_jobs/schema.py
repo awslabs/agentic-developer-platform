@@ -60,6 +60,7 @@ rows, which is why the docstring on each says what is lost.
 | 1 | `harness_operations`, `harness_dispatch_outbox` | #5525 (w6-02) |
 | 2 | `harness_approval_consumption` | #5526 (w6-03) |
 | 3 | `harness_admission_intent` | #5526 (w6-03) repair |
+| 4 | leases, provider-call intent, audit, cancellation | #5527 (w6-04) |
 
 Rolling back to 1 has a consequence the DDL does not show: it discards the record of
 which approvals have already been spent, after which replaying one admits a second
@@ -87,7 +88,13 @@ from typing import Protocol
 # 3 adds `harness_admission_intent`, for the same reason stated once more: v2 has by now
 # been applied to databases this code cannot inspect, so extending v2 in place would
 # make the new table's existence depend on deployment order.
-SCHEMA_VERSION = 3
+#
+# 4 adds the execution layer (#5527, w6-04): `harness_operation_leases`,
+# `harness_provider_call_intent`, `harness_execution_audit`, and the
+# cancellation-request columns on `harness_operations`. Same reasoning a third time --
+# v3 has merged, so folding these into it would make them appear only on databases that
+# had not yet applied v3, which is the silent-skip failure the v2 comment describes.
+SCHEMA_VERSION = 6
 
 
 class SupportsExecute(Protocol):
@@ -574,6 +581,349 @@ CREATE INDEX IF NOT EXISTS harness_admission_intent_unresolved_idx
     WHERE stage <> 'resolved'
 """
 
+# ---------------------------------------------------------------------------
+# Version 4: execution, leases, fencing and crash recovery (#5527, w6-04)
+# ---------------------------------------------------------------------------
+#
+# ## What v1-v3 left undone
+#
+# By v3 an operation is durable, adjudicated, budget-bound and delivered at least once
+# to an executor. What no table yet answers is **which executor is entitled to act right
+# now**. `harness_dispatch_outbox.claim_generation` fences the *delivery* of an
+# envelope, and deliberately nothing more: it is released the moment the envelope is
+# handed over (`outbox._mark_delivered`), because its job is "this row was handed to
+# someone once". The provider call happens afterwards, outside any claim, and is where
+# the expensive mutations live.
+#
+# So the hazard v4 closes is the one the delivery claim cannot: a worker that received
+# an envelope, began provisioning, and then stalled -- a long GC pause, a lost network,
+# a frozen VM. Nothing stops a second worker from legitimately taking over, which is
+# required for liveness, and nothing stops the first from waking up and reporting
+# `succeeded` for an operation the second is still running. That report would be
+# accepted by `store.transition`, because the stale worker's `version` may well still be
+# current.
+#
+# The fence token here is what makes that decidable. It is a *separate* counter from the
+# outbox's, and the separation is deliberate: they fence different things over different
+# lifetimes (one envelope hand-off versus one execution attempt), and a single counter
+# serving both would be released at the wrong moment for one of them.
+
+_OPERATION_LEASES_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_operation_leases (
+    -- One lease row per operation, for the whole of its executable life. PRIMARY KEY
+    -- rather than a row per grant, because the question this table answers is
+    -- "who holds it NOW" and a history table cannot answer that without a subquery that
+    -- has a race in it. The history is `harness_execution_audit`, which is append-only
+    -- and is the right shape for a question about the past.
+    operation_id    text        PRIMARY KEY
+                        REFERENCES harness_operations (operation_id)
+                        ON DELETE CASCADE,
+
+    -- Tenant, denormalized for the same reason every other table here denormalizes it:
+    -- the per-tenant concurrency cap is a COUNT over this table, and a cap that had to
+    -- JOIN to the operations table would need read access to every operation's full
+    -- record to answer a question about how many are running.
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+
+    -- THE fence token. Monotonic per operation, incremented by every grant, and never
+    -- reset -- not on release, not on expiry, not on a successful completion.
+    --
+    -- Never reset is the whole property. A counter that restarted would hand a fresh
+    -- holder a token a previous holder had already used, and the refusal rule
+    -- (`superplane_contracts.leases.is_fenced_out`: refuse anything strictly below the
+    -- highest seen) would then accept a stale writer whose token had come back around.
+    --
+    -- `bigint` because it only ever goes up. At one grant per millisecond it overflows
+    -- after roughly 300 million years; at `integer` it would overflow in 25 days of the
+    -- same, and a wrapped fence token is a silently accepted stale write.
+    --
+    -- Starts at 0 meaning "never granted", so the first grant is token 1 and
+    -- `Lease.fence_token >= 1` (the contract's CHECK) holds for every real lease.
+    fence_token     bigint      NOT NULL DEFAULT 0 CHECK (fence_token >= 0),
+
+    -- The current holder, and when its entitlement lapses. Both NULL when the lease is
+    -- free, and the pair is what `acquire` tests.
+    --
+    -- Ownership is required on release (`leases.authorize_release`): without it,
+    -- freeing another worker's lease is an unauthenticated way to create the concurrent
+    -- execution the lease exists to prevent.
+    holder          text,
+    expires_at      timestamptz,
+
+    -- When the CURRENT holder acquired, and the runtime ceiling for this attempt. The
+    -- ceiling is per-attempt rather than per-lease-period because a worker that renews
+    -- forever is indistinguishable, from the outside, from one that never finishes --
+    -- and "renew forever" is exactly what a healthy-but-wedged worker does. Renewal
+    -- extends `expires_at` and must NOT extend this, which is what makes the cap real.
+    acquired_at     timestamptz,
+    runtime_deadline timestamptz,
+
+    -- The attempt the current holder is executing. Stored so a report arriving for a
+    -- previous attempt is identifiable as such even if it somehow carried a live token,
+    -- and so the audit trail can be read per attempt.
+    attempt_id      text,
+
+    -- How many times this operation has been leased for execution, and the bound.
+    -- Incremented at grant time, like `harness_dispatch_outbox.attempts` and for the
+    -- same reason: a counter advanced at hand-out time cannot be skipped by a process
+    -- that dies before recording that it tried, whereas one advanced at completion
+    -- makes a repeatedly-crashing operation immortal.
+    attempts        integer     NOT NULL DEFAULT 0,
+
+    -- Set when the lease will never be granted again: the operation reached a terminal
+    -- state, or execution attempts were exhausted. A closed lease is not acquirable,
+    -- and this is a durable stamp rather than an inference from the operation's state
+    -- so that "may this be executed" is answerable from this table alone -- the
+    -- predicate the concurrency cap and the recovery sweep both need, without either
+    -- having to re-derive terminality.
+    closed_at       timestamptz,
+    closed_reason   text,
+
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+
+    -- A held lease must name its holder, its expiry, its attempt and its deadline; a
+    -- free one must name none of them. Enforced rather than assumed because a row with
+    -- an expiry and no holder would be acquirable-but-not-expired -- a lease nobody
+    -- holds and nobody may take, which is a stuck operation needing an operator.
+    CONSTRAINT harness_operation_leases_held_consistently CHECK (
+        (holder IS NULL AND expires_at IS NULL
+            AND acquired_at IS NULL AND runtime_deadline IS NULL
+            AND attempt_id IS NULL)
+        OR
+        (holder IS NOT NULL AND expires_at IS NOT NULL
+            AND acquired_at IS NOT NULL AND runtime_deadline IS NOT NULL
+            AND attempt_id IS NOT NULL)
+    )
+)
+"""
+
+# The per-tenant concurrency cap's query: live leases for one tenant. Partial, because
+# the cap counts only leases that are held and open -- which is a small fraction of the
+# table once history accumulates, and the cap is evaluated on every acquisition.
+_OPERATION_LEASES_TENANT_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_operation_leases_tenant_idx
+    ON harness_operation_leases (org_id, workspace_id)
+    WHERE holder IS NOT NULL AND closed_at IS NULL
+"""
+
+# The recovery sweep's query: open leases that have lapsed, oldest first. Also partial,
+# and for the reason `harness_admission_intent_unresolved_idx` gives -- a sweep that is
+# expensive gets scheduled rarely, and a recovery that runs rarely is a resource left
+# running and billing.
+_OPERATION_LEASES_EXPIRED_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_operation_leases_expired_idx
+    ON harness_operation_leases (expires_at)
+    WHERE holder IS NOT NULL AND closed_at IS NULL
+"""
+
+# ## Why the provider call needs its own intent table
+#
+# `harness_admission_intent` (v3) makes the LEDGER call recoverable: a row exists before
+# `reserve` is issued, so a hold can only exist if a row describes it. The provider call
+# has exactly the same structure and exactly the same hazard -- a process that dies
+# between "the provider created the VPC" and "the reply arrived" leaves capacity nothing
+# in this database has heard of -- and it is the more expensive of the two, because the
+# thing left behind is billable rather than merely reserved.
+#
+# It is a separate table rather than more columns on the admission intent because the
+# two have different lifetimes and different cardinality: admission intent is one row
+# per approval, written once before anything is spent, and resolved within milliseconds.
+# A provider-call intent is one row per provider mutation per attempt -- an attempt may
+# make several, and a retried operation makes more -- and it is written under a fence
+# token the admission intent knows nothing about.
+_PROVIDER_CALL_INTENT_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_provider_call_intent (
+    -- The idempotency key this call will present to the provider. PRIMARY KEY, so
+    -- recording the intent to make a call is itself the claim on that key: two workers
+    -- cannot both believe they are about to issue the same provider call, because the
+    -- second INSERT conflicts.
+    --
+    -- Caller-supplied rather than generated here, and deliberately so: the value must
+    -- be derivable by a RECOVERING process that has only the operation and attempt to
+    -- go on. A generated key would be unknown after a crash, which is precisely the
+    -- moment it is needed -- the provider must be asked about the call under the same
+    -- key it was made under, or the question is about a different call.
+    idempotency_key text        PRIMARY KEY,
+
+    operation_id    text        NOT NULL
+                        REFERENCES harness_operations (operation_id)
+                        ON DELETE CASCADE,
+
+    -- Tenant and identity, copied. `attempt_id` is here rather than joined because the
+    -- operation's current attempt will have MOVED ON by the time a recovery pass reads
+    -- this row -- that is what recovery means -- so a join would report the wrong
+    -- attempt and reconcile the wrong call.
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+    job_id          text        NOT NULL,
+    attempt_id      text        NOT NULL,
+
+    -- The fence token the calling worker held. This is what makes a late resolution
+    -- refusable: a worker resolving an intent must still hold the token it recorded,
+    -- and one whose lease has since been granted to someone else does not.
+    fence_token     bigint      NOT NULL CHECK (fence_token >= 1),
+
+    -- What the call was going to do, in the provider's own terms, and the target.
+    -- Stored for the operator reading an unresolved row at 3am: "an unresolved call
+    -- exists" is not actionable, "a create_vpc against account X under key K is
+    -- unresolved" is.
+    --
+    -- NOT a credential, NOT a connection string, NOT a vault handle. The same absence
+    -- the outbox's `request_payload` comment states, restated because this table is
+    -- written by the executor and an executor is the process that HAS the credential --
+    -- so this is the boundary where one would most plausibly be logged. Credential
+    -- delivery is #5528's (w6-05); nothing about a secret is recordable here.
+    provider        text        NOT NULL,
+    operation_kind  text        NOT NULL,
+    target          text        NOT NULL,
+
+    -- How far this call is KNOWN to have got. Same discipline as
+    -- `harness_admission_intent.stage`: advanced only after the corresponding external
+    -- effect is known to have happened, so it may lag reality and must never run ahead.
+    --
+    --   intended   -- committed, and the provider has NOT been called, OR was called
+    --                 and the outcome is unknown. One state for both on purpose: after
+    --                 a crash they are indistinguishable from inside this process, and
+    --                 a state claiming to tell them apart is a guess recorded as fact.
+    --   observed   -- a provider reply was received and recorded in `outcome`.
+    --   reconciled -- a recovery pass asked the provider what happened and got an
+    --                 answer. Distinct from `observed` because "the original caller saw
+    --                 this" and "we went back and asked" are different provenance for
+    --                 the same fact, and an auditor of a duplicated spend needs to know
+    --                 which one a row is.
+    --   unresolved -- the provider could not be reached to answer. Terminal for this
+    --                 row and NOT a failure: it is the state in which budget is
+    --                 retained and a human decides. It exists because "we asked and it
+    --                 said no" and "we could not ask" have opposite safe answers, and a
+    --                 schema without a place for the second forces it to be written as
+    --                 the first.
+    stage           text        NOT NULL
+                        CHECK (stage IN (
+                            'intended', 'observed', 'reconciled', 'unresolved'
+                        )),
+
+    -- The provider's answer, once there is one. Free text: the useful content is the
+    -- resource identifier or the provider's error, and an enum would force that into
+    -- categories chosen before the incidents.
+    outcome         text,
+
+    -- The provider-side identifier, when the call created something. Separate from
+    -- `outcome` because this is the value a teardown needs in order to release what a
+    -- reconciled-but-uncertain provision may have left standing, and digging it out of
+    -- free text at that moment is how a cleanup misses a resource.
+    provider_ref    text,
+
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+# The sweep's query: calls that may have happened and have never been resolved, oldest
+# first. `intended` only -- the other three stages are settled, and `unresolved` in
+# particular must NOT be swept again automatically: it is the state that says a human
+# decides, and a sweep that kept retrying it would be overriding that decision on a
+# timer.
+_PROVIDER_CALL_INTENT_UNRESOLVED_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_provider_call_intent_unresolved_idx
+    ON harness_provider_call_intent (created_at)
+    WHERE stage = 'intended'
+"""
+
+# Lookup by operation and attempt, for the report and cleanup paths: given an operation
+# whose outcome is uncertain, find every provider call made on its behalf.
+_PROVIDER_CALL_INTENT_OPERATION_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_provider_call_intent_operation_idx
+    ON harness_provider_call_intent (operation_id, attempt_id)
+"""
+
+# ## The audit trail
+#
+# The issue requires "durable audit without raw credentials". Append-only, and separate
+# from every table above, because the tables above are *current state* -- they are
+# UPDATEd, so they cannot answer "what did the system do, in order". A stale worker's
+# refused write is invisible in current state by construction (it changed nothing), and
+# that refusal is exactly the event an incident review needs to see.
+_EXECUTION_AUDIT_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_execution_audit (
+    id              bigserial   PRIMARY KEY,
+
+    -- No foreign key to harness_operations, deliberately, and it is the one place here
+    -- that omits it. The audit record must outlive its subject: a cascade would mean
+    -- deleting an operation erases the record of what was spent on it, which turns a
+    -- row deletion into the destruction of the evidence. ON DELETE RESTRICT would be
+    -- the other option and is worse -- it makes the audit trail block cleanup, so the
+    -- pressure becomes to delete the audit.
+    operation_id    text        NOT NULL,
+
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+    attempt_id      text,
+
+    -- The fence token in force for the event, when one applies. Nullable because some
+    -- events (a refused acquisition, a cancellation request from a user) happen when
+    -- the actor holds no token at all -- and recording a 0 there would be
+    -- indistinguishable from a real token in a comparison.
+    fence_token     bigint,
+
+    -- What happened, and to whom. `actor` is a resolved principal or a worker identity,
+    -- never a credential.
+    event           text        NOT NULL,
+    actor           text        NOT NULL,
+
+    -- Whether the actor's request was allowed. The refusals are the valuable half of
+    -- this table: a fenced-out worker's attempt to publish success leaves no trace
+    -- anywhere else, because refusing it correctly means changing nothing.
+    allowed         boolean     NOT NULL,
+
+    -- Free-text context. Bounded by the callers rather than by a column type, and
+    -- carrying no secret: same absence as `harness_provider_call_intent.target`, and
+    -- more load-bearing here because an audit writer is the code most tempted to
+    -- "log everything for debugging".
+    detail          text,
+
+    recorded_at     timestamptz NOT NULL DEFAULT now()
+)
+"""
+
+# Read path: one operation's history in order. The audit is written on every execution
+# event, so this index is what keeps "show me what happened to this operation" from
+# scanning a table that grows with total platform activity.
+_EXECUTION_AUDIT_OPERATION_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_execution_audit_operation_idx
+    ON harness_execution_audit (operation_id, id)
+"""
+
+# ## Cancellation, as columns rather than a state
+#
+# `OperationState` is fixed by a contract shared with the domain app
+# (`superplane_contracts.provisioning.OperationState`), and
+# `tests/test_contract_agreement` asserts the two spellings agree. Adding a
+# `cancel_requested` member here would break that agreement, and the drift test is the
+# thing that would catch it -- so the state machine is not where this belongs.
+#
+# It is also not what is true. A cancellation request does not replace the operation's
+# state: an operation that is RUNNING and has a cancellation pending is *both*, and the
+# executor needs both facts to decide what to do at its next safe point. Collapsing them
+# into one column would lose the information that work is still in flight -- which is
+# the information that decides whether the budget may be released or must be retained.
+_OPERATIONS_CANCELLATION_COLUMNS = """
+ALTER TABLE harness_operations
+    ADD COLUMN IF NOT EXISTS cancel_requested_at timestamptz,
+    ADD COLUMN IF NOT EXISTS cancel_requested_by text,
+    ADD COLUMN IF NOT EXISTS cancel_reason       text
+"""
+
+_RECONCILIATION_RETRY_COLUMNS = """
+ALTER TABLE harness_provider_call_intent
+    ADD COLUMN IF NOT EXISTS reconcile_attempts integer NOT NULL DEFAULT 0
+        CHECK (reconcile_attempts >= 0),
+    ADD COLUMN IF NOT EXISTS reconcile_after timestamptz;
+ALTER TABLE harness_operations
+    ADD COLUMN IF NOT EXISTS cleanup_required boolean NOT NULL DEFAULT false
+"""
+
 UPGRADES: dict[int, tuple[str, ...]] = {
     1: (
         _VERSION_TABLE,
@@ -590,9 +940,36 @@ UPGRADES: dict[int, tuple[str, ...]] = {
         _ADMISSION_INTENT_TABLE,
         _ADMISSION_INTENT_UNRESOLVED_INDEX,
     ),
+    4: (
+        _OPERATION_LEASES_TABLE,
+        _OPERATION_LEASES_TENANT_INDEX,
+        _OPERATION_LEASES_EXPIRED_INDEX,
+        _PROVIDER_CALL_INTENT_TABLE,
+        _PROVIDER_CALL_INTENT_UNRESOLVED_INDEX,
+        _PROVIDER_CALL_INTENT_OPERATION_INDEX,
+        _EXECUTION_AUDIT_TABLE,
+        _EXECUTION_AUDIT_OPERATION_INDEX,
+        _OPERATIONS_CANCELLATION_COLUMNS,
+    ),
+    5: (_RECONCILIATION_RETRY_COLUMNS,),
+    6: (
+        """ALTER TABLE harness_operation_leases
+           ADD COLUMN IF NOT EXISTS max_attempts integer NOT NULL DEFAULT 5
+           CHECK (max_attempts > 0)""",
+    ),
 }
 
 DOWNGRADES: dict[int, tuple[str, ...]] = {
+    6: ("ALTER TABLE harness_operation_leases DROP COLUMN IF EXISTS max_attempts",),
+    # Drain reconciliation and resolve pending cleanup before removing their evidence.
+    5: (
+        """
+        ALTER TABLE harness_provider_call_intent
+            DROP COLUMN IF EXISTS reconcile_attempts,
+            DROP COLUMN IF EXISTS reconcile_after;
+        ALTER TABLE harness_operations DROP COLUMN IF EXISTS cleanup_required
+    """,
+    ),
     # Drops both operational tables and every row in them: the admission records and
     # any undelivered outbox rows. An undelivered row dropped here is work that was
     # accepted and will now never be delivered, so this is safe to run only when
@@ -634,6 +1011,51 @@ DOWNGRADES: dict[int, tuple[str, ...]] = {
     # surviving table would be an inert set of rows slowly diverging from the ledger,
     # which is worse than absent because it looks authoritative.
     3: ("DROP TABLE IF EXISTS harness_admission_intent",),
+    # Rolling back to v3 discards the execution layer, and the hazard is the worst of
+    # the four -- worse than DOWNGRADES[3]'s unreclaimable hold, because what is lost
+    # here is the record of things that may be RUNNING.
+    #
+    # Dropping `harness_provider_call_intent` destroys every record of a provider call
+    # whose outcome was never established. Those rows are the only thing naming the
+    # idempotency key a reconciliation must ask the provider about, so after this runs,
+    # a VPC or a cluster that was created by a call nobody heard the reply to is
+    # unreconcilable: it keeps running, it keeps billing, and nothing in this database
+    # knows it might exist. Unlike a reserved-but-unconfirmed hold, that is real money
+    # against a real resource rather than a bookkeeping entry.
+    #
+    # Dropping `harness_operation_leases` resets every fence token to "never granted".
+    # That is the subtler half and it is not merely lost history: a worker still holding
+    # token 7 from before the rollback becomes acceptable again the moment v4 is
+    # re-applied and a new grant issues token 1..7, because the refusal rule compares
+    # against the highest token the row knows about -- and the row now knows about none.
+    # The rollback therefore un-fences workers that were correctly fenced out. This is
+    # exactly the counter-reset the table's `fence_token` comment says must never
+    # happen, reachable through the schema rather than through the code.
+    #
+    # The safe sequence is therefore: drain execution to a standstill and confirm no
+    # `intended` provider-call intents remain (`recovery.list_unresolved_provider_calls`
+    # reports nothing), THEN roll back. If any remain, reconcile or accept them as
+    # abandoned spend FIRST -- there is no recovering them afterwards.
+    #
+    # `harness_execution_audit` is dropped with the rest, which deletes the record of
+    # who did what. Stated plainly rather than quietly: if the audit trail is needed for
+    # an incident review, export it before rolling back, because a rollback is not a
+    # retention policy.
+    #
+    # The cancellation columns are dropped last. A pending-but-unhonoured cancellation
+    # becomes invisible, so an operation a user asked to stop will continue to
+    # completion under v3 code that cannot see the request.
+    4: (
+        "DROP TABLE IF EXISTS harness_execution_audit",
+        "DROP TABLE IF EXISTS harness_provider_call_intent",
+        "DROP TABLE IF EXISTS harness_operation_leases",
+        """
+        ALTER TABLE harness_operations
+            DROP COLUMN IF EXISTS cancel_requested_at,
+            DROP COLUMN IF EXISTS cancel_requested_by,
+            DROP COLUMN IF EXISTS cancel_reason
+        """,
+    ),
 }
 
 

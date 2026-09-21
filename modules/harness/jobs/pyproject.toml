@@ -25,6 +25,11 @@ dev = [
     # without it `pip install .[dev]` fails outright on 3.13 instead of falling back to
     # an external database. Same declaration as `modules/gateway/pyproject.toml:85`.
     "pgserver>=0.1.4; python_version < '3.13'",
+    # Python 3.13+ fallback: pgserver has no 3.13 wheel, so use embedded-postgres
+    # which ships a real PostgreSQL binary for all supported CPython versions.
+    # conftest.py tries pgserver first (for < 3.12 compatibility), then falls back to
+    # embedded_postgres. Both provide get_uri() and cleanup().
+    "embedded-postgres>=18.0; python_version >= '3.13'",
     # Needed only to IMPORT the upstream being compared against, not by this package:
     # `contracts/hitl-ticket/v1/models.py` is a pydantic module, and
     # `test_approval_contract_agreement.py` reads the four HITL result values off it to

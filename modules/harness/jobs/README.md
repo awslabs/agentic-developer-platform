@@ -516,3 +516,152 @@ left as dead code that looks load-bearing.
 implementation and offline verification only. Live release remains behind the named Wave 6
 live gate; the `operation_facade` port's live verifier is the Wave 6 operations evaluator
 (#5540).
+
+
+### Worker execution and recovery boundaries
+
+Trusted service composition retains `OperationExecutor` exclusively in the service
+process. Workers receive `ExecutionClient(socket_path, scoped_run_token)` from
+`harness_jobs.execution_rpc`. The client contains no connection factory, provider hook,
+lease object or callable service implementation. Every message crosses a Unix socket
+and is authenticated by the service's required verifier, which returns an
+`ExecutionGrant` binding the verified principal to one operation/attempt/holder/fence.
+The server rejects arbitrary methods and identity overrides. It executes the owned
+transaction, committed intent, trusted provider hook, observation and audit itself.
+Repeated keys cannot repeat provider mutation. Transport failures remain recoverable.
+The server caps request size, simultaneous handlers and request/provider timeouts;
+exception contents and authentication tokens are never returned.
+
+Run service and worker as separate UIDs/containers. Only the socket and scoped run
+credential are shared; database/provider credentials and the service's composition
+configuration stay in the service container. A same-process object or shared service
+environment is unsupported. The service socket is owner-only by default, or group-only
+for the configured worker GID. The authenticated facade additionally exposes
+`execution_status`, `cancel_operation` and `report_execution`. It resolves permission
+and tenant from verified request context. Cancellation derives its audit actor from
+that principal. `report_execution` retains an authenticated refusal/audit surface;
+worker-supplied terminal reports cannot establish provider truth. Foreign and missing
+operations have identical results.
+
+Recovery takes a finite 60-second claim without increasing execution attempts. It
+holds that claim across provider observation and locks/verifies it again before every
+write. Expired runtime is recoverable even when lease expiry is in the future. A lost
+recovery claim cannot settle a provider call, close a successor, or report completion.
+Retries release the claim for real reacquisition. Already observed calls participate
+in recovery outcomes. `SweepResult.call_dispositions` retains every call's SETTLE,
+RELEASE or RETAIN decision; `budget_disposition` is `mixed` when these differ. The
+owning domain applies those decisions to its ledger. Successful spend is settled,
+never reported as released. Low-level database functions are internal service APIs;
+workers use only the authenticated RPC client.
+
+
+Schema version 5 adds persisted reconciliation attempts/backoff and a durable
+`cleanup_required` flag. Apply the additive migration before deploying this executor;
+the v4-to-v5 migration preserves existing call records. Schema 6 adds the durable
+execution-attempt ceiling: the first grant establishes it, and acquisition/recovery
+use it even after restart with different defaults. Existing v5 leases migrate to the
+prior default of five without resetting attempts. Reconcile pending provider
+calls and resolve cleanup before rolling back these fields.
+
+Transport failures and UNKNOWN hook results remain INTENDED. Recovery commits each
+observation attempt before I/O, using three attempts by default and persisted 30/60/120
+second backoff. Restarts cannot bypass that delay or reset the attempt budget. A
+confirmed observation settles the original key without repeating the mutation;
+exhaustion escalates to UNRESOLVED with budget retained. Orphan recovery uses the same
+retry accounting. `RecoveryReport.deferred` distinguishes scheduled observations from
+completed outcomes or lost-claim skips.
+
+Cancellation is rechecked after provider I/O and atomically at terminal settlement.
+The recorded provider effect is retained; `CancellationPending` carries that call and
+its budget disposition to trusted composition. SUCCEEDED settlement is refused when
+cancellation is pending. CANCELLED settlement requires confirmed absence; existing or
+uncertain effects set `cleanup_required` and recovery records UNKNOWN pending cleanup.
+The domain's authorized cleanup flow consumes the stored provider identity; cancellation
+does not silently authorize extra provider mutations. Recovery claim, observation,
+backoff, retry, lost-claim refusal and settlement events are durably audited with the
+recovery holder and fence token, without serializing provider exception contents.
+
+
+Terminal settlement locks the operation and lease while checking every recorded call.
+SUCCEEDED, FAILED, and CANCELLED refuse INTENDED/UNRESOLVED calls, RETAIN dispositions,
+or pending cleanup. UNKNOWN preserves unresolved effects. CANCELLED additionally
+requires every call to establish absence. A successful explicit `settle` is the trusted
+workflow driver's completion attestation; recorded calls alone are never a complete
+step plan. Recovery therefore reports UNKNOWN after a crash with successful recorded
+steps, preserving their SETTLE dispositions and stating that workflow completion is
+unconfirmed. The composition layer must resolve/resume that incomplete workflow.
+
+If cancellation is observed after intent commit but before provider invocation, the
+executor atomically records ABSENT/RELEASE plus a cancellation audit, then cancels the
+operation only if all its other effects are resolved and absent. `CancellationPending`
+carries the recorded result to the caller, including RELEASE for this no-call case.
+Cancellation after dispatch retains the existing reconciliation/cleanup behavior.
+
+The trusted `acquire` service API owns a transaction (or participates in its caller's
+outer transaction). Every grant and its tenant/holder/attempt/token audit commit or roll
+back together. Refusals for existing operations are audited with their stored tenant,
+the requesting holder/attempt and refusal reason; no other holder or token is exposed.
+Unknown operations produce no operation audit. Rolling back an outer transaction rolls
+back its audit as well; normal standalone refusals commit before raising.
+
+
+Run the trusted process through its maintained entry point:
+
+```sh
+python -m harness_jobs.execution_rpc --socket /run/execution/service.sock \
+  --worker-gid 2000 --composition your_trusted_service:execution_composition
+```
+
+The trusted async context-manager factory must yield `ExecutionRPCServer` with its
+connection factory, provider adapter and current run-credential verifier. There is no
+anonymous/default verifier or credential fallback. #5535 composes the reviewed vault
+adapter and lease registry; #5538 packages that trusted process and isolated worker.
+The runtime does not grant itself scopes or alter the AI-DLC execution policy.
+Workers use `await client.request("execute_step", step_id="...")`, `status`, `cancel`,
+`cancel_requested`, `renew` or `release`; argument
+schemas are the trusted runtime methods, with `duration_seconds` for renewal. Responses
+contain only JSON values; cancellation carries its durable call and budget disposition
+in `ExecutionRPCError.response`. A lost response must be reconciled, never blindly
+retried as a fresh provider mutation.
+
+Verify the actual separate-process boundary without any cloud credential or spend:
+
+```sh
+HARNESS_JOBS_REQUIRE_POSTGRES=1 PYTHONPATH=modules/harness/jobs \
+  python -m pytest modules/harness/jobs/tests/test_execution_service.py -q
+```
+
+Apply schema 6 before startup. Drain workers and recovery before rollback to schema 5;
+that downgrade removes persisted retry policy and requires policy re-establishment
+before any old runtime resumes. No migration is executed by merely importing the API.
+
+
+### Approval-bound provider steps and safe recovery
+
+The admitted request must include `parameters.execution_steps`, a JSON string containing
+an ordered list of 1–16 descriptors, each with exactly `step_id`, `provider`,
+`operation_kind`, and `target`. Step IDs must be unique. The approval covers the entire
+request digest, including these descriptors; production composition must construct and
+authorize them before admission. Missing or malformed plans refuse execution. The service
+reads and verifies the stored payload on every step request. Workers can name only a step
+ID, and cannot substitute a provider, target, kind or idempotency key. Preceding steps must
+have trusted successful observations before a later step is dispatched. Only the service
+records outcomes and completes the operation after every admitted step succeeds; RPC raw
+intent/observation/settlement methods and facade worker terminal reports are refused.
+
+Provider idempotency keys derive from the tenant, operation, approved plan digest and
+step ID, and remain stable across process/attempt changes. Trusted provider adapters
+must honor that key, including transport failures. The service holds an operation-specific
+PostgreSQL advisory lock across provider I/O; recovery cannot claim the operation while
+the hook is in flight. Intent and audit transactions still commit before the call. An
+expired holder cannot be taken over by ordinary acquisition: recovery must first establish
+whether retry is possible. Only an attempt with no provider-call history, no cancellation
+and no cleanup obligation can release a live lease. Historical effects also prevent direct
+acquisition even if an older implementation already cleared the holder.
+
+`cancel_operation` completes an unheld cancellation using the existing atomic creation
+fence and outbox withdrawal path. Untouched queue entries are withdrawn and budget is
+released after commit; previously claimed work or historical effects retain budget.
+Ledger failures leave terminal/fenced database evidence and the original reservation
+identity for an idempotent cancellation retry. Held operations remain the responsibility
+of their executor or recovery sweep; worker release cannot strand their cancellation.

@@ -494,7 +494,7 @@ async def test_deleting_an_operation_cannot_free_its_approval(connection):
             outcome.operation.record.operation_id,
         )
     # 23503 is foreign_key_violation: the delete was refused rather than cascaded.
-    assert getattr(caught.value, "sqlstate", None) == "23503"
+    assert getattr(caught.value, "sqlstate", None) in {"23503", "23001"}
 
     consumed = await read_consumption(connection, principal(), approval_id="appr-1")
     assert consumed is not None

@@ -519,6 +519,115 @@ class OperationFacadeService:
             )
         return _progress(record)
 
+    async def execution_status(self, operation_id: str):
+        """Authenticated tenant-scoped status, including cancellation/cleanup."""
+        from .execution import OperationStatus
+
+        principal = await self._resolve_acting_principal()
+        async with self._connection() as connection:
+            row = await connection.fetchrow(
+                "SELECT state, detail, cleanup_required, "
+                "cancel_requested_at IS NOT NULL AS cancelled "
+                "FROM harness_operations WHERE operation_id=$1 AND org_id=$2 "
+                "AND workspace_id=$3",
+                operation_id,
+                principal.org_id,
+                principal.workspace_id,
+            )
+        if row is None:
+            return None
+        return OperationStatus(
+            operation_id,
+            OperationState(row["state"]),
+            row["cancelled"],
+            row["detail"],
+            row["cleanup_required"],
+        )
+
+    async def cancel_operation(self, operation_id: str, *, reason: str | None = None):
+        """Request cancellation as the resolved principal, never a body actor."""
+        from .recovery import request_cancellation, settle_unheld_cancellation
+
+        principal = await self._resolve_acting_principal()
+        async with self._connection() as connection:
+            requested = await request_cancellation(
+                connection,
+                operation_id=operation_id,
+                principal=principal,
+                reason=reason,
+            )
+            settled = await settle_unheld_cancellation(
+                connection,
+                self.ledger,
+                operation_id=operation_id,
+                principal=principal,
+                reason=reason,
+            )
+            return requested or settled
+
+    async def report_execution(
+        self,
+        operation_id: str,
+        *,
+        attempt_id: str,
+        fence_token: int,
+        state: OperationState,
+        detail: str | None = None,
+    ):
+        """Audit and refuse worker terminal claims; service outcomes alone settle."""
+        from .execution import audit
+        from .leases import read_lease
+
+        principal = await self._resolve_acting_principal()
+        if type(fence_token) is not int or fence_token < 1:
+            raise OperationRefused("Invalid execution fence")
+        async with self._connection() as connection, connection.transaction():
+            # Scope before reading authority so absent and foreign are identical.
+            if await self.store.get(connection, principal, operation_id) is None:
+                return False
+            lease = await read_lease(connection, operation_id=operation_id)
+            matches = lease is not None and (
+                lease.org_id,
+                lease.workspace_id,
+                lease.holder,
+                lease.attempt_id,
+                lease.fence_token,
+            ) == (
+                principal.org_id,
+                principal.workspace_id,
+                principal.subject,
+                attempt_id,
+                fence_token,
+            )
+            if not matches:
+                await audit(
+                    connection,
+                    operation_id=operation_id,
+                    org_id=principal.org_id,
+                    workspace_id=principal.workspace_id,
+                    event="report.refused",
+                    actor=principal.subject,
+                    allowed=False,
+                    attempt_id=attempt_id,
+                    fence_token=fence_token,
+                )
+                return False
+        # A current run credential proves identity, not provider outcomes or that
+        # all admitted steps ran. Only the trusted execution service may settle.
+        async with self._connection() as connection:
+            await audit(
+                connection,
+                operation_id=operation_id,
+                org_id=principal.org_id,
+                workspace_id=principal.workspace_id,
+                event="report.refused",
+                actor=principal.subject,
+                allowed=False,
+                attempt_id=attempt_id,
+                fence_token=fence_token,
+            )
+        return False
+
     async def list_operations(
         self, principal: ResolvedPrincipal, *, limit: int = 50
     ) -> tuple[OperationProgress, ...]:

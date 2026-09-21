@@ -197,18 +197,19 @@ jobs:
       # A green check that tested nothing is worse than no check, so assert on the
       # executed count rather than on the exit code.
       #
-      # The floor is a floor, not the current total (284 collected at the time of
-      # writing, of which 138 need a database). Pinning the exact number would turn every
-      # added test into a CI failure; pinning nothing would let the database half vanish
-      # silently.
+      # The floor is a floor, not the current total (414 collected at the time of
+      # writing, of which 132 are offline-only; the remainder require a database).
+      # Pinning the exact number would turn every added test into a CI failure;
+      # pinning nothing would let the database half vanish silently.
       #
       # It MUST stay above the offline-only count, which is the whole mechanism: a run
       # where every database test skipped executes exactly the offline half, so a floor
       # at or below that number is satisfied by the failure it exists to catch. #5526
       # raised the offline half from 57 to 146 and the old floor of 100 fell below it --
-      # i.e. the guard had silently become vacuous while still reading as a guard. 200 is
-      # above today's offline 146 and below today's total 284. Raise it, with this
-      # sentence in mind, whenever the offline half grows.
+      # i.e. the guard had silently become vacuous while still reading as a guard. #5527
+      # adds execution, leases, recovery and cancellation tests (another ~120 database
+      # tests). 390 is above today's offline 132 and below today's total 414. Raise it,
+      # with this sentence in mind, whenever the offline half grows.
       - name: Assert the run was not vacuous
         if: always()
         working-directory: modules/harness/jobs
@@ -218,7 +219,7 @@ jobs:
           import os, sys, xml.etree.ElementTree as ET
           from pathlib import Path
 
-          FLOOR = 200
+          FLOOR = 390
 
           report = Path("test-results/harness-jobs-junit.xml")
           if not report.is_file():

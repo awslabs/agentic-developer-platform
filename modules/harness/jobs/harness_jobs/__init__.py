@@ -1,7 +1,7 @@
 """Shared durable execution: the operation store, dispatch outbox and admission gate.
 
-Issues #5525 (w6-02) and #5526 (w6-03), EPIC #4910, Wave 6. First implementation behind
-the ``operation_facade`` port published by #5524 (w6-01).
+Issues #5525 (w6-02), #5526 (w6-03), and #5527 (w6-04), EPIC #4910, Wave 6.
+First implementation behind the ``operation_facade`` port published by #5524 (w6-01).
 
 ## What this package is
 
@@ -94,6 +94,23 @@ from .approval import (
     evaluate_approval,
     requires_distinct_approver,
 )
+from .execution import (
+    BudgetDisposition,
+    CallOutcome,
+    CallStage,
+    OperationExecutor,
+    OperationStatus,
+    ProviderCall,
+    ProviderCallRefused,
+    audit,
+    derive_idempotency_key,
+    observe,
+    read_audit,
+    read_call,
+    reconcile,
+    record_intent,
+    unresolved_calls,
+)
 from .facade import (
     PORT_REFUSAL_NAMES,
     ApprovalContext,
@@ -123,6 +140,24 @@ from .identity import (
     forbidden_parameters,
     payload_digest,
 )
+from .leases import (
+    DEFAULT_LEASE_DURATION,
+    DEFAULT_MAX_CONCURRENT_OPERATIONS,
+    DEFAULT_MAX_EXECUTION_ATTEMPTS,
+    MAX_LEASE_DURATION,
+    ExecutionLease,
+    ExpiredLeaseTakeover,
+    LeaseRefusal,
+    LeaseRefused,
+    acquire,
+    close,
+    fence_expired_lease,
+    fenced_update,
+    is_fenced_out,
+    read_lease,
+    release,
+    renew,
+)
 from .outbox import (
     DEFAULT_CLAIM_SECONDS,
     DEFAULT_MAX_ATTEMPTS,
@@ -130,6 +165,15 @@ from .outbox import (
     DispatchEnvelope,
     DispatchExecutor,
     DispatchOutbox,
+)
+from .recovery import (
+    CancellationRecord,
+    RecoveryReport,
+    SweepResult,
+    check_cancel_requested,
+    request_cancellation,
+    sweep_expired_leases,
+    sweep_unresolved_calls,
 )
 from .schema import (
     SCHEMA_VERSION,
@@ -227,4 +271,45 @@ __all__ = [
     "OperationProgress",
     "OperationUnavailable",
     "PrincipalResolver",
+    # leases (#5527)
+    "DEFAULT_LEASE_DURATION",
+    "DEFAULT_MAX_CONCURRENT_OPERATIONS",
+    "DEFAULT_MAX_EXECUTION_ATTEMPTS",
+    "MAX_LEASE_DURATION",
+    "ExecutionLease",
+    "ExpiredLeaseTakeover",
+    "LeaseRefusal",
+    "LeaseRefused",
+    "acquire",
+    "close",
+    "fence_expired_lease",
+    "fenced_update",
+    "is_fenced_out",
+    "read_lease",
+    "release",
+    "renew",
+    # execution (#5527)
+    "BudgetDisposition",
+    "CallOutcome",
+    "CallStage",
+    "OperationExecutor",
+    "OperationStatus",
+    "ProviderCall",
+    "ProviderCallRefused",
+    "audit",
+    "derive_idempotency_key",
+    "observe",
+    "read_audit",
+    "read_call",
+    "reconcile",
+    "record_intent",
+    "unresolved_calls",
+    # recovery and cancellation (#5527)
+    "CancellationRecord",
+    "RecoveryReport",
+    "SweepResult",
+    "check_cancel_requested",
+    "request_cancellation",
+    "sweep_expired_leases",
+    "sweep_unresolved_calls",
 ]
