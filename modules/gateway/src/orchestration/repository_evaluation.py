@@ -172,7 +172,7 @@ async def sources_for(session, node, plan, spec, *, lock=False):
     return sources
 
 
-async def authorize(session, node, plan, spec, binding, provider):
+async def authorize(session, node, plan, spec, binding, provider, *, exclude_current_evaluation=False):
     from . import shared_policy
     from .policy_admission import SpendObservation
 
@@ -209,8 +209,11 @@ async def authorize(session, node, plan, spec, binding, provider):
     context = replace(
         context,
         work_owned_by_policy_flow=True,
-        observed_concurrency=await shared_policy._active_count(
-            session, org_id=node.org_id, flow_id=node.flow_id, initial_runs=marker.get("initial_runs")
+        observed_attempts=max(0, context.observed_attempts - int(exclude_current_evaluation and node.state == "running")),
+        observed_concurrency=max(
+            0,
+            await shared_policy._active_count(session, org_id=node.org_id, flow_id=node.flow_id, initial_runs=marker.get("initial_runs"))
+            - int(exclude_current_evaluation and node.kind == "eval" and node.state == "running"),
         ),
     )
     decision = authorize_action(
@@ -292,6 +295,11 @@ async def _observe_repository_evaluation(session, node, *, provider=None):
         require(node.state == "ready", "node_not_ready")
         flow = await session.get(OrchestrationFlow, node.flow_id)
         require(flow is not None and flow.org_id == node.org_id and flow.state == "running", "flow_not_running")
+        if spec.producer is not None:
+            from .repository_producer import admit_producer
+
+            async with session.begin_nested():
+                return await admit_producer(session, node, provider=provider)
         require(spec.runner.harness_sha256 == harness_digest(), "harness_changed")
         from .dispatch_pass import resolve_installation_id
 

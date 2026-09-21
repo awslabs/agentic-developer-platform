@@ -1,5 +1,8 @@
 name: Security Scan
 
+# S19/S21: the engine's post-merge one-off producer protocol and reusable receipt
+# helper are documented in docs/design-notes/repository-scan-producer.md.
+# Add that protocol with the scanner repairs; it does not authorize these legacy triggers.
 on:
   pull_request:
     branches: [main]

@@ -10,6 +10,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictInt, model_validator
 
+from .repository_producer_contract import RepositoryProducer
+
 Name = Annotated[str, Field(min_length=1, max_length=256)]
 Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -116,6 +118,7 @@ class RepositoryEvaluationSpecification(Contract):
     external_pull_requests: list[ExternalPullRequest] = Field(default_factory=list, max_length=32)
     workflows: list[Workflow] = Field(default_factory=list, max_length=16)
     max_age_seconds: StrictInt = Field(default=86400, ge=60, le=604800)
+    producer: RepositoryProducer | None = None
 
     @model_validator(mode="after")
     def complete(self):
@@ -131,6 +134,12 @@ class RepositoryEvaluationSpecification(Contract):
                     raise ValueError("workflow revision requires a declared direct predecessor")
         if len(set(ids)) != len(ids):
             raise ValueError("criterion identities must be unique")
+        if self.producer is not None:
+            selected = [item for item in self.workflows if item.criterion_id == self.producer.workflow_criterion_id]
+            if len(self.workflows) != 1 or len(selected) != 1 or not selected[0].dispatch_only:
+                raise ValueError("one-off producer requires exactly one dispatch-only workflow")
+            if not any(item.name == self.producer.receipt_artifact and item.path == self.producer.receipt_path for item in selected[0].artifacts):
+                raise ValueError("producer receipt must be an accepted artifact")
         return self
 
 
@@ -206,6 +215,9 @@ def harness_digest():
         "repository_evaluation.py",
         "evaluation_acceptance.py",
         "merge_evidence.py",
+        "repository_producer_contract.py",
+        "repository_producer.py",
+        "repository_producer_controller.py",
     ):
         data = Path(__file__).with_name(name).read_bytes()
         digest.update(name.encode() + b"\0" + data + b"\0")

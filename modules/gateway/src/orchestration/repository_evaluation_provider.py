@@ -171,7 +171,7 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         require(bool(candidates), "workflow_run_missing")
         return max(candidates, key=lambda run: (run.get("run_number", 0), run.get("id", 0)))
 
-    async def workflow(self, binding, workflow, *, revisions, max_age_seconds):
+    async def workflow(self, binding, workflow, *, revisions, max_age_seconds, bound_run=None, producer=None):
         source = workflow.source.revision or revisions[workflow.source.predecessor]
         definition = workflow.definition.revision or revisions[workflow.definition.predecessor]
         blob, content = await self.definition_blob(binding, workflow.path, definition)
@@ -182,12 +182,13 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         events = document.get("on", document.get(True))
         names = set(events) if isinstance(events, dict | list) else {events} if isinstance(events, str) else set()
         require("workflow_dispatch" in names and (not workflow.dispatch_only or names == {"workflow_dispatch"}), "workflow_not_dispatch_only")
-        chosen = await self.latest_workflow_run(binding, workflow.path, source)
+        chosen = {"id": bound_run.run_id} if bound_run is not None else await self.latest_workflow_run(binding, workflow.path, source)
+        expected_head = bound_run.context.workflow_revision if bound_run is not None else source
         run = (await self.request(binding, "GET", f"/repos/{binding.repo}/actions/runs/{int(chosen['id'])}")).json()
         require(
             run.get("repository", {}).get("id") == binding.provider_repository_id
             and run.get("head_repository", {}).get("id") == binding.provider_repository_id
-            and run.get("head_sha") == source
+            and run.get("head_sha") == expected_head
             and run.get("path", "").split("@", 1)[0] == workflow.path
             and run.get("event") == "workflow_dispatch"
             and run.get("id") == chosen["id"]
@@ -200,6 +201,8 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         age = (self.clock() - timestamp(run["updated_at"])).total_seconds()
         require(0 <= age <= max_age_seconds, "workflow_run_stale")
         run_id, attempt = run["id"], run["run_attempt"]
+        if bound_run is not None:
+            require(bound_run.run_attempt == attempt and bound_run.context.source_revision == source, "producer_run_changed")
         jobs = await self.pages(binding, f"/repos/{binding.repo}/actions/runs/{run_id}/attempts/{attempt}/jobs", "jobs")
         job_receipts = []
         for name in workflow.required_jobs:
@@ -227,6 +230,20 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             require(expected.path in files, "artifact_file_missing")
             data = files[expected.path]
             payload = parse_document(data)
+            if producer is not None and (expected.name, expected.path) == (producer.receipt_artifact, producer.receipt_path):
+                from .repository_producer_contract import RepositoryScanReceipt
+
+                scan = RepositoryScanReceipt.model_validate(payload)
+                require(
+                    bound_run is not None
+                    and scan.source_revision == source
+                    and scan.correlation == bound_run.context.correlation
+                    and scan.target == producer.target
+                    and scan.images == producer.images
+                    and scan.coverage_complete
+                    and scan.cleanup_complete,
+                    "scan_scope_coverage_images_or_cleanup_changed",
+                )
             artifact_receipts.append(
                 dict(artifact_id=artifact["id"], name=name, digest=digest, path=expected.path, sha256=hashlib.sha256(data).hexdigest())
             )
@@ -239,8 +256,9 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         )
         # The selected run can remain green while a newer run starts or fails.
         # Re-read selection too; rechecking only this run would accept stale success.
-        latest = await self.latest_workflow_run(binding, workflow.path, source)
-        require(latest.get("id") == run_id and latest.get("run_attempt") == attempt, "workflow_latest_run_changed")
+        if bound_run is None:
+            latest = await self.latest_workflow_run(binding, workflow.path, source)
+            require(latest.get("id") == run_id and latest.get("run_attempt") == attempt, "workflow_latest_run_changed")
         return dict(
             criterion_id=workflow.criterion_id,
             workflow_path=workflow.path,
@@ -266,7 +284,7 @@ class RepositoryEvidenceProvider(WorkflowProvider):
                 await self.client.aclose()
                 self.client = None
 
-    async def _observe(self, binding, spec, sources):
+    async def verify_sources(self, binding, spec, sources):
         repository = (await self.request(binding, "GET", f"/repos/{binding.repo}")).json()
         require(repository.get("id") == spec.runner.repository_id == binding.provider_repository_id, "repository_changed")
         semaphore = asyncio.Semaphore(4)
@@ -312,5 +330,10 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             )
 
         await bounded_reads(ancestry, comparisons)
+        return pulls, revisions
+
+    async def _observe(self, binding, spec, sources):
+        require(spec.producer is None, "producer_requires_durable_execution")
+        pulls, revisions = await self.verify_sources(binding, spec, sources)
         workflows = [await self.workflow(binding, item, revisions=revisions, max_age_seconds=spec.max_age_seconds) for item in spec.workflows]
         return dict(pull_requests=pulls, workflows=workflows, mandatory_passed=all(c["passed"] for row in workflows for c in row["criteria"]))
