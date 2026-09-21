@@ -44,13 +44,13 @@ could not reach are all refusals, not defaults.
 
 :class:`ReviewEvidence` carrying no ``approval_blockers`` means the artifact is
 internally complete and correctly bound to the current revision. It is **not** a
-merge decision and **not** a substitute for the provider-side requirements — an
-approving review from a non-author, required checks, merge state — which
+merge decision and **not** a substitute for the provider-side requirements — a
+verified current-head approval, required checks, merge state — which
 ``pr_bindings.evidence_for_binding`` owns and this module never re-decides. The
 reviewer-is-not-the-author check enforced by the contract is necessary and not
 sufficient; :func:`validate_review_result` re-checks it against *protected* run
 identity rather than the document's claim, and still does not discharge the
-provider's own independent-approval rule.
+repository's configured GitHub review rules. Distinct runs may share one GitHub identity.
 
 ## Scope
 
@@ -283,7 +283,7 @@ class ReviewEvidence:
     the artifact rather than collapsed into a boolean, because the observed failures
     all involved something true-but-insufficient being read as sufficient. A caller
     deciding anything on this object must consult it, and an empty tuple means only
-    that the *artifact* carries no blocker — provider-side independent review,
+    that the *artifact* carries no blocker — provider-side approval,
     required checks and merge state are separate requirements owned by
     ``pr_bindings.evidence_for_binding``.
 
@@ -552,8 +552,7 @@ def validate_review_result(
     if result.lineage.reviewer_run_id == author_run_id:
         raise ReviewEvidenceError(
             ReviewEvidenceRefusal.SELF_REVIEW,
-            "The reviewing run is the run that authored the change. Note that a distinct reviewer run still does "
-            "not satisfy the provider's independent-approval requirement.",
+            "The reviewing run is the run that authored the change. A different run must review it; both runs may share the same GitHub identity.",
         )
     if reviewer_run_id is not None and result.lineage.reviewer_run_id != reviewer_run_id:
         # The self-review check above is necessary and not sufficient: it only proves
@@ -977,7 +976,7 @@ def refusal_explanation(refusal: ReviewEvidenceRefusal) -> str:
         ),
         ReviewEvidenceRefusal.SELF_REVIEW: (
             "The reviewing run is the run that authored the change, so the review is not independent. A different run must review it, "
-            "and the provider's own approving-review-from-a-non-author requirement still applies separately."
+            "but both runs may share the same GitHub identity. Repository review rules still apply."
         ),
         ReviewEvidenceRefusal.UNTRUSTED_ARTIFACT: (
             "The review relies on test or check artifacts that could not be verified, so its conclusions are "

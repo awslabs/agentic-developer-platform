@@ -17,10 +17,9 @@ Deliberately NOT asserted anywhere in this file:
 - that a closing keyword was added, or a title/branch matched, or an issue was
   closed. The issue names all three as not-the-fix; a test that accepted any of
   them would re-encode the bug as the contract.
-- that U11's own flow advanced. Its PR was merged by the reviewer bot after GitHub
-  refused the bot's self-approval, so it carries no independent approval and
-  `test_no_independent_review_holds` pins that it must NOT complete. The
-  reproduction here is a *constructed* flow of the same shape.
+- that a live flow advanced. These are constructed bindings; provider tests cover
+  the shared App's authenticated current-head approval comment. A merge without
+  any verified approval remains held by `test_missing_verified_review_holds`.
 
 Concurrency and transactional claims are in `test_pr_bindings_postgres.py` against
 a real server; SQLite proves semantics only, for the reasons
@@ -201,7 +200,7 @@ def _pr(
 
 
 def _green(**overrides) -> MergeEvidence:
-    """Provider truth for a merged, green, independently-approved PR."""
+    """Provider truth for a merged, green, review-approved PR."""
     fields = {
         "merged": True,
         "provider_repository_id": REPO_ID,
@@ -209,7 +208,7 @@ def _green(**overrides) -> MergeEvidence:
         "merged_at": "2026-09-17T04:19:36Z",
         "head_sha": HEAD,
         "checks_successful": True,
-        "approved_by_non_author": True,
+        "review_approved": True,
         "merge_commit_sha": "6c7370387d5d57a6ff9ebb5a567f0744e7d99d0e",
         "url": f"https://github.com/{REPO}/pull/{PR_NUMBER}",
     }
@@ -240,7 +239,7 @@ async def test_merged_pr_completes_story_with_no_closing_keyword(session):
 
     Nothing in this test mentions issue state, a closing keyword, a title or a
     branch name — which is the point. The story completes because a PR *bound* to it
-    is merged, green and independently approved.
+    is merged, green and reviewed.
     """
     story = await _story(session)
     binding, created = await _bind(session, story)
@@ -418,15 +417,11 @@ async def test_failing_checks_hold(session):
     assert refusal is BindingRefusal.CHECKS_NOT_GREEN
 
 
-async def test_no_independent_review_holds(session):
-    """The U11 merge itself: merged and green, but no approval from a non-author.
-
-    Pinned as a *hold* deliberately. Accepting it would let a bot complete its own
-    story, and the issue explicitly declines to authorize that merge as acceptance.
-    """
+async def test_missing_verified_review_holds(session):
+    """Shared GitHub identity is allowed, but a merged PR still needs review evidence."""
     story = await _story(session)
     binding, _ = await _bind(session, story)
-    url, refusal = evidence_for_binding(binding, _green(approved_by_non_author=False))
+    url, refusal = evidence_for_binding(binding, _green(review_approved=False))
     assert url is None
     assert refusal is BindingRefusal.NO_INDEPENDENT_REVIEW
 

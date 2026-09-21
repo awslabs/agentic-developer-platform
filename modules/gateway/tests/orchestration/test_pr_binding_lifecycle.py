@@ -139,10 +139,10 @@ async def test_observer_persists_changing_holds_and_one_verified_receipt(session
     await observe_results(session, run_store=store, evidence=source)
     assert len(await observations(session, node)) == 1
     binding = await _bind(session, node, dispatch)
-    source.evidence = _green(approved_by_non_author=False)
+    source.evidence = _green(review_approved=False)
     await observe_results(session, run_store=store, evidence=source)
     held = await observations(session, node)
-    assert len(held) == 2 and "reviewer other than the author" in held[-1]["evidence"]
+    assert len(held) == 2 and "no verified approval for its current head" in held[-1]["evidence"]
     source.evidence = _green()
     passed = await observe_results(session, run_store=store, evidence=source)
     assert passed.advanced == 1 and node.state == "passed"

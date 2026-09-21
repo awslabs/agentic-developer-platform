@@ -105,8 +105,8 @@ What a binding cannot do
 
 It authorizes nothing on its own. It transitions no node, approves nothing, and
 completes nothing. Completion still requires provider-verified merge, green
-required checks and a non-author approving review — none of which the registering
-agent can fabricate. That, plus the server-resolved target above, is what makes it
+required checks and a verified approving review — none of which registration
+itself supplies. That, plus the server-resolved target above, is what makes it
 safe for a run to register its own binding under nothing more than its run
 credential (`src/agentauth/pr_binding_routes.py`), instead of an admin permission
 that would have to reach every ordinary user in every tenant to be usable.
@@ -184,7 +184,7 @@ class BindingRefusal(StrEnum):
     NOT_MERGED = "not_merged"  # Bound PR is not merged
     HEAD_MOVED = "head_moved"  # Provider head differs from the bound head
     CHECKS_NOT_GREEN = "checks_not_green"  # Required checks not successful
-    NO_INDEPENDENT_REVIEW = "no_independent_review"  # No non-author approval
+    NO_INDEPENDENT_REVIEW = "no_independent_review"  # No verified current-head approval (stable wire value)
     SUPERSEDED = "superseded"  # Binding was replaced
     SCOPE_CHANGED = "scope_changed"
 
@@ -249,16 +249,15 @@ class MergeEvidence:
     shape from its verified receipt, and `evidence_for_binding` gains a source
     without `results.py` changing.
 
-    `approved_by_non_author` is separate from `approving_review_count` on purpose. A
-    bot that merges its own PR after GitHub refuses its self-approval — the exact
-    U11 shape — produces a merged PR with zero *independent* approvals. Counting
-    reviews without excluding the author would accept it.
+    `review_approved` requires a current-head formal approval or the configured
+    GitHub App's authenticated reviewer verdict. Developer and reviewer may share
+    the same GitHub identity; missing evidence never counts as approval.
     """
 
     merged: bool
     head_sha: str
     checks_successful: bool
-    approved_by_non_author: bool
+    review_approved: bool
     merge_commit_sha: str | None = None
     merged_at: str | None = None
     url: str | None = None
@@ -906,11 +905,9 @@ def evidence_for_binding(
       #5301's "a changed head requires fresh eligibility evidence" means in
       practice.
     * **Required checks successful.** Unchanged from the prior contract.
-    * **An approving review from someone other than the author.** This is the arm
-      the U11 reproduction fails, and deliberately so: its PR was merged by the
-      reviewer bot *after GitHub refused its formal self-approval*, so it carries no
-      independent approval. Accepting it would let a bot complete its own story, and
-      the issue explicitly declines to authorize that merge.
+    * **A verified approving review of the current head.** The configured App's
+      reviewer comment may approve a PR authored by that same App. A worker exit,
+      arbitrary prose, or an approval of an older head is insufficient.
     """
     if evidence is None:
         # No answer from the provider is not a pass. It is also not an error worth
@@ -926,7 +923,7 @@ def evidence_for_binding(
         return None, BindingRefusal.NOT_MERGED
     if not evidence.checks_successful:
         return None, BindingRefusal.CHECKS_NOT_GREEN
-    if not evidence.approved_by_non_author:
+    if not evidence.review_approved:
         return None, BindingRefusal.NO_INDEPENDENT_REVIEW
     return evidence.url or f"https://github.com/{binding.repo}/pull/{binding.pr_number}", None
 
@@ -954,8 +951,8 @@ def hold_explanation(refusal: BindingRefusal) -> str:
         ),
         BindingRefusal.CHECKS_NOT_GREEN: "The bound pull request's required checks have not succeeded.",
         BindingRefusal.NO_INDEPENDENT_REVIEW: (
-            "The bound pull request has no approving review from someone other than its author, so its merge "
-            "is not independently reviewed. A reviewer other than the author must approve it."
+            "The bound pull request has no verified approval for its current head. The reviewer must publish "
+            "an approval with zero blockers for this commit; developer and reviewer may share the configured GitHub App."
         ),
         BindingRefusal.AMBIGUOUS_CANDIDATE: (
             "Several pull requests are bound to this story, so which one delivered it is unknown. An operator must supersede the incorrect binding."

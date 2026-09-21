@@ -204,7 +204,7 @@ def _green(**overrides) -> MergeEvidence:
         "head_sha": HEAD,
         "merge_commit_sha": HEAD,
         "checks_successful": True,
-        "approved_by_non_author": True,
+        "review_approved": True,
         "url": PR_URL,
     }
     fields.update(overrides)
@@ -312,16 +312,16 @@ async def test_moved_head_holds_for_fresh_evidence(session):
     assert "fresh" in hold.lower()
 
 
-async def test_no_independent_review_holds_with_named_reason(session):
-    """The U11 merge shape: merged and green, no approval from a non-author."""
+async def test_missing_verified_review_holds_with_named_reason(session):
+    """The U11 merge shape: merged and green, no verified current-head approval."""
     node, dispatch = await _story(session, binding_marker=True)
     await _bind(session, node, dispatch)
-    source = StubSource(evidence=_green(approved_by_non_author=False))
+    source = StubSource(evidence=_green(review_approved=False))
 
     url, hold = await _story_evidence(session, node=node, dispatch=dispatch, source=source, installation_id=INSTALLATION)
 
     assert url is None
-    assert "reviewer other than the author" in hold
+    assert "no verified approval for its current head" in hold
 
 
 async def test_reviewer_artifact_holds_without_a_provider_call(session):
@@ -437,7 +437,7 @@ async def test_recovery_cannot_complete_a_story_whose_evidence_is_missing(sessio
     """Recording an association is not the same as satisfying the evidence.
 
     The guard that stops recovery from becoming a way to pass work by asserting it.
-    Uses the U11 evidence shape — merged and green, no independent approval — so a
+    Uses the U11 evidence shape — merged and green, no verified current-head approval — so a
     recovery of exactly that PR still holds.
     """
     node, dispatch = await _story(session, binding_marker=True)
@@ -456,9 +456,9 @@ async def test_recovery_cannot_complete_a_story_whose_evidence_is_missing(sessio
         actor_id="operator@example.com",
         reason="attesting the implementing pull request",
     )
-    source = StubSource(evidence=_green(approved_by_non_author=False))
+    source = StubSource(evidence=_green(review_approved=False))
 
     url, hold = await _story_evidence(session, node=node, dispatch=dispatch, source=source, installation_id=INSTALLATION)
 
     assert url is None
-    assert "reviewer other than the author" in hold
+    assert "no verified approval for its current head" in hold

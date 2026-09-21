@@ -61,12 +61,12 @@ async def test_recovered_historical_story_shows_current_hold_then_completed_pr(s
         def get(self, *_):
             return {"tenant_id": node.org_id, "engine_node_id": node.id, "engine_attempt": 1, "status": "complete"}
 
-    source = StubSource(evidence=_green(approved_by_non_author=False))
+    source = StubSource(evidence=_green(review_approved=False))
     report = await observe_results(session, run_store=Store(), evidence=source)
     assert report.errors == 0
     card = client.get(read.route(node.flow_id)).json()["nodes"][0]
     assert card["state"] == "awaiting_merge"
-    assert "approving review" in card["binding_hold"]
+    assert "no verified approval for its current head" in card["binding_hold"]
     assert card["bound_pull_request"]["pr_number"] == PR_NUMBER
     assert source.merged_story_calls == 0
 
@@ -170,14 +170,14 @@ async def test_recovered_story_without_receipt_still_requires_complete_pr_eviden
     client = read.client_for(app_with_router)
     assert client.post(recovery_url(node), json=body()).status_code == 200
 
-    source = StubSource(evidence=_green(approved_by_non_author=False))
+    source = StubSource(evidence=_green(review_approved=False))
     report = await observe_results(session, run_store=MissingRunStore(), evidence=source)
 
     assert report.errors == 0
     assert report.advanced == 0
     card = client.get(read.route(node.flow_id)).json()["nodes"][0]
     assert card["state"] == "awaiting_merge"
-    assert "approving review" in card["binding_hold"]
+    assert "no verified approval for its current head" in card["binding_hold"]
 
 
 async def test_ordinary_binding_cannot_bypass_a_missing_run_receipt(session, app_with_router):

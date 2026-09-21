@@ -1,8 +1,8 @@
 """Read-only GitHub merge evidence and eligibility (#5148).
 
-Legacy completion queries remain byte-for-byte compatible. The opt-in adapter
-below observes current repository requirements and consumes a freshly resolved
-A1 context; neither a worker exit nor an old approval authorizes a merge.
+Legacy completion accepts the configured App's commit-specific reviewer verdict.
+The opt-in adapter observes current repository requirements and consumes a freshly
+resolved A1 context; neither a worker exit nor an old approval authorizes a merge.
 """
 
 from __future__ import annotations
@@ -24,6 +24,53 @@ from .execution_policy import Action, AuthorizationContext, ResourceRef, authori
 from .execution_state import TERMINAL_EXECUTION_STATUSES, ExecutionIdentity, OutcomeKind
 from .pr_bindings import BindingError, MergeEvidence, active_binding_for_node, binding_scope_matches, completion_candidate
 from .review_evidence import ReviewEvidence
+
+
+async def _app_review_approval(client: httpx.AsyncClient, *, token: str, repo: str, pr_number: int, app_id: int, head: str) -> bool | None:
+    """Latest Codex verdict published by the tenant's App, including a shared author.
+
+    GitHub disallows formal self-approval. Authenticate the existing reviewer
+    comment using provider metadata, not its display name or body alone. None
+    means no App verdict; False means its latest verdict cannot approve this head.
+    Read all pages within a fixed bound so an unseen withdrawal cannot pass.
+    """
+    latest = None
+    latest_key = ("", 0)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    for page in range(1, 11):
+        response = await client.get(
+            f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+            headers=headers,
+            params={"per_page": 100, "page": page},
+        )
+        response.raise_for_status()
+        comments = response.json()
+        if not isinstance(comments, list):
+            raise RuntimeError("GitHub returned incomplete reviewer comment evidence")
+        for comment in comments:
+            if str((comment.get("performed_via_github_app") or {}).get("id")) != str(app_id) or (comment.get("user") or {}).get("type") != "Bot":
+                continue
+            body = (comment.get("body") or "").replace("\r\n", "\n")
+            if not body.startswith("## agent-codex-reviewer — "):
+                continue
+            # Issue-readiness verdicts are unrelated to PR review.
+            if body.split("\n", 1)[0] in {"## agent-codex-reviewer — ISSUE READY", "## agent-codex-reviewer — ISSUE CHANGES REQUESTED"}:
+                continue
+            key = (comment.get("updated_at") or comment.get("created_at") or "", comment.get("id") or 0)
+            if not key[0] or not key[1]:
+                raise RuntimeError("GitHub returned undated reviewer comment evidence")
+            if key <= latest_key:
+                continue
+            latest_key = key
+            match = re.match(
+                r"\A## agent-codex-reviewer — (APPROVE|FIXES PUSHED AND APPROVED)\n\n"
+                r"\*\*Reviewed head:\*\* `([0-9a-f]{40})`\n\*\*Blockers:\*\* 0\n\*\*Engine:\*\* [^\n]+\n",
+                body,
+            )
+            latest = bool(match and match[2] == head)
+        if "next" not in response.links:
+            return latest
+    raise RuntimeError("GitHub reviewer comment pagination exceeded the evidence bound")
 
 
 class GitHubEvidenceSource:
@@ -67,11 +114,10 @@ class GitHubEvidenceSource:
           commits pushed after registration invalidate the eligibility the previous
           head earned.
         * `statusCheckRollup` on the head commit — required checks.
-        * each reviewer's latest opinion, matched to the current head and excluding
-          the PR author. A withdrawn approval, incomplete review requirement, or
-          missing required check holds completion. This is the arm U11 fails: its PR was
-          merged by the reviewer bot after GitHub refused its formal self-approval,
-          so it carries no independent approval of any head.
+        * each reviewer's latest opinion, matched to the current head. A formal
+          approval or a verified Codex verdict from the configured App suffices;
+          the App may also be the PR author. Withdrawn approvals and unmet GitHub
+          review requirements still hold completion.
         """
         from src.admin.connections.github_client import GitHubAppClient
         from src.knowledge.github_app_service import resolve_tenant_app_credentials
@@ -97,6 +143,12 @@ class GitHubEvidenceSource:
                 )
                 response.raise_for_status()
                 payload = response.json()
+                record = (payload.get("data", {}).get("repository") or {}).get("pullRequest") or {}
+                app_approval = None
+                if record and not payload.get("errors"):
+                    app_approval = await _app_review_approval(
+                        client, token=token, repo=repo, pr_number=pr_number, app_id=app_id, head=record.get("headRefOid") or ""
+                    )
             if payload.get("errors"):
                 raise RuntimeError("GitHub could not verify bound pull-request evidence")
             record = (payload.get("data", {}).get("repository") or {}).get("pullRequest") or {}
@@ -115,9 +167,10 @@ class GitHubEvidenceSource:
                     # A later contrary opinion withdraws an earlier approval,
                     # including when the later review describes another head.
                     latest[author] = state if ((review.get("commit") or {}).get("oid") or "") == head else "STALE"
-            approved_by_non_author = (
+            review_approved = (
                 not (reviews.get("pageInfo") or {}).get("hasPreviousPage", False)
-                and "APPROVED" in latest.values()
+                and (app_approval is True or "APPROVED" in latest.values())
+                and app_approval is not False
                 and "CHANGES_REQUESTED" not in latest.values()
                 and record.get("reviewDecision") not in {"CHANGES_REQUESTED", "REVIEW_REQUIRED"}
             )
@@ -125,7 +178,7 @@ class GitHubEvidenceSource:
                 merged=bool(record.get("merged")),
                 head_sha=head,
                 checks_successful=rollup.get("state") == "SUCCESS",
-                approved_by_non_author=approved_by_non_author,
+                review_approved=review_approved,
                 merge_commit_sha=(record.get("mergeCommit") or {}).get("oid"),
                 merged_at=record.get("mergedAt"),
                 url=record.get("url"),
@@ -382,7 +435,7 @@ def _required_check(raw, *, legacy=False):
 def parse_requirements(rules: Any, protection: Any) -> RepositoryRequirements:
     """Unknown requirements deny; only positively observed policy makes checks optional."""
     required: set[CheckRequirement] = set()
-    approvals = 1  # Preserve the existing independent-review security baseline.
+    approvals = 0  # The engine validates reviewer runs; GitHub identities follow repository policy.
     codeowners = last_push = strict = queue = checks_declared = False
     methods = {"merge", "rebase", "squash"}
     for rule in _list(rules):

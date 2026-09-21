@@ -227,6 +227,20 @@ async def test_latest_submitted_opinion_wins_even_when_created_earlier():
     assert EligibilityReason.CHANGES_REQUESTED in evaluate_observation(observed).reasons
 
 
+@pytest.mark.parametrize("rules", ["no-review-rule", "zero-approvals"])
+async def test_repository_without_approval_requirement_needs_no_second_github_identity(rules):
+    data = provider_data()
+    data["reviews"] = []
+    data["graphql"]["data"]["repository"]["pullRequest"]["reviewDecision"] = None
+    if rules == "no-review-rule":
+        data["rules"] = data["rules"][:1]
+    else:
+        data["rules"][1]["parameters"]["required_approving_review_count"] = 0
+    observed, _ = await observe(data)
+    assert observed.requirements.required_approvals == 0
+    assert evaluate_observation(observed).eligible
+
+
 async def test_optional_failure_is_ignored_only_when_repository_declared_required_contexts():
     data = provider_data()
     optional = deepcopy(data["checks"]["check_runs"][0])
@@ -445,6 +459,15 @@ async def test_public_adapter_reloads_r1_claim_policy_and_mints_only_scoped_read
     assert kwargs["repositories"] == [merge_subject.row.repo.split("/", 1)[1]]
     assert kwargs["permissions"] and set(kwargs["permissions"].values()) == {"read"}
     assert len(merge_subject.calls) == 10
+
+
+async def test_public_adapter_accepts_verified_reviewer_run_without_formal_github_approval(sessions, merge_subject):
+    data = merge_subject.data
+    data["reviews"] = []
+    data["rules"][1]["parameters"]["required_approving_review_count"] = 0
+    data["graphql"]["data"]["repository"]["pullRequest"]["reviewDecision"] = None
+    result = await invoke_subject(sessions, merge_subject)
+    assert result.eligible, result
 
 
 @pytest.mark.parametrize("change", ["revoked", "missing_context", "stale_context", "human_gate", "unknown_spend", "unknown_scope", "wrong_tenant"])

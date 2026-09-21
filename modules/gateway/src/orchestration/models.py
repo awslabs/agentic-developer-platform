@@ -677,8 +677,8 @@ class OrchestrationPullRequestBinding(Base, TenantMixin):
     ## What this row cannot do
 
     It authorizes nothing. It records an association; completion still requires
-    provider-verified merge, green required checks and a non-author approving
-    review, none of which the registering agent can fabricate. That is why a run
+    provider-verified merge, green required checks and a verified current-head approving
+    review, none of which binding registration itself supplies. That is why a run
     may register its own binding under nothing more than its run credential
     (`src/agentauth/pr_binding_routes.py`) rather than needing an admin permission
     — which would have to be granted to `MEMBER` and so to every ordinary user in

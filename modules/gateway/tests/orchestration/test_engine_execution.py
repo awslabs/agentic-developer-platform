@@ -81,7 +81,7 @@ class Evidence:
             checks_successful=True,
             provider_repository_id=12345,
             provider_pr_node_id=f"PR_{kwargs['pr_number']}",
-            approved_by_non_author=True,
+            review_approved=True,
             merge_commit_sha="b" * 40,
             merged_at="2026-09-17T09:00:00Z" if self.merged else None,
             url=f"https://github.com/{kwargs['repo']}/pull/{kwargs['pr_number']}",

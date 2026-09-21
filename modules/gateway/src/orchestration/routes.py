@@ -645,7 +645,7 @@ async def recover_story_binding(
         bound_pull_request=binding_summary(binding),
         remaining_hold=hold_explanation(refusal)
         if refusal
-        else "Pull request registered; merge, checks and independent review verification are pending.",
+        else "Pull request registered; merge, checks and current-head review verification are pending.",
     )
 
 
@@ -1436,7 +1436,7 @@ async def get_flow_graph(
                     binding_hold = (
                         result.get("evidence")
                         if current_observation
-                        else "Pull request registered; merge, checks and independent review verification are pending."
+                        else "Pull request registered; merge, checks and current-head review verification are pending."
                     )
             else:
                 binding_hold = hold_explanation(BindingRefusal.NO_BINDING)
