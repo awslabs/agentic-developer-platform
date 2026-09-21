@@ -186,6 +186,11 @@ inventory stop activation. The zero-work checks for continuations, assignments,
 executions, unresolved actions, queued authoring and SQS remain in force. These
 are current observations; repeat preflight before each enabling stage.
 
+Gateway activation waits up to 300 seconds for rollout status, with a 330-second
+request bound for that watch. Ordinary Kubernetes requests retain a 30-second
+bound. A gateway-enable retry whose running-pod flags are already enabled skips
+the restart and still verifies rollout completion, flags and unchanged tick wiring.
+
 After `verify`, obtain a fresh continuation preview and accept **only CLI**
 (`0737183c-99c4-4e1f-bdb7-e4432b46ca20`, tenant `aws-e`) through the existing API,
 with the reviewed concurrency-one policy. Let the normal tick choose its ready

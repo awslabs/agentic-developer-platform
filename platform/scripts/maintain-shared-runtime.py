@@ -89,8 +89,8 @@ def aws(*args):
     return decode_json(command(["aws", *args, "--region", REGION, "--output", "json"]), source=source)
 
 
-def kube(*args, stdin=None):
-    return command(["kubectl", "--request-timeout=30s", *args], stdin=stdin)
+def kube(*args, stdin=None, request_timeout="30s"):
+    return command(["kubectl", f"--request-timeout={request_timeout}", *args], stdin=stdin)
 
 
 def snapshot(kind, name, namespace=NAMESPACE):
@@ -350,9 +350,15 @@ def main():
             init(WEBHOOK)
             plan_apply(WEBHOOK, "gateway-enable", context, overlay, scratch, enabled=True, execute=args.execute)
             if args.execute:
-                kube("rollout", "restart", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE)
-                kube("rollout", "status", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "--timeout=300s")
-                require(all(gateway_probe()["flags"].get(flag) == "true" for flag in FLAGS), "gateway flags did not activate")
+                # A retry after successful activation should verify the existing
+                # rollout, not trigger another restart of already-enabled pods.
+                if not all(context["probe"]["flags"].get(flag) == "true" for flag in FLAGS):
+                    kube("rollout", "restart", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE)
+                # The per-request timeout is independent of the rollout watch's
+                # deadline; give this one long watch its full bounded window.
+                kube("rollout", "status", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "--timeout=300s", request_timeout="330s")
+                activated = gateway_probe()
+                require(all(activated["flags"].get(flag) == "true" for flag in FLAGS), "gateway flags did not activate")
                 require(all(decode_json(parameter(WIRING), source="parameter.worker_runtime_wiring").get(flag) is False for flag in WIRING_FLAGS), "gateway stage changed tick wiring")
         elif args.stage == "tick-enable":
             require(parameter(KEY_NAME, decrypt=True) == context["signing_key"], "reporting key differs from gateway key")

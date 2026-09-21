@@ -219,6 +219,44 @@ def test_verify_does_not_emit_false_flag_overlays_or_signing_material(monkeypatc
     assert SIGNING_KEY not in (tmp_path / "verification.json").read_text()
 
 
+def test_only_rollout_wait_can_extend_the_kubernetes_request_timeout(monkeypatch):
+    calls = []
+    monkeypatch.setattr(maintenance, "command", lambda args, **kwargs: calls.append(args) or "")
+    maintenance.kube("get", "pods")
+    maintenance.kube("rollout", "restart", "deployment/bedrockgateway")
+    maintenance.kube("rollout", "status", "deployment/bedrockgateway", "--timeout=300s", request_timeout="330s")
+    assert calls == [
+        ["kubectl", "--request-timeout=30s", "get", "pods"],
+        ["kubectl", "--request-timeout=30s", "rollout", "restart", "deployment/bedrockgateway"],
+        ["kubectl", "--request-timeout=330s", "rollout", "status", "deployment/bedrockgateway", "--timeout=300s"],
+    ]
+
+
+@pytest.mark.parametrize("already_enabled,execute", [(False, True), (True, True), (False, False)])
+def test_gateway_enable_retries_verify_enabled_pods_without_restarting(monkeypatch, tmp_path, already_enabled, execute):
+    context = {"worker_image": "approved-worker", "gateway_image": IMAGE, "tick_overlay": {}, "signing_key": SIGNING_KEY,
+               "probe": {"flags": {k: str(already_enabled).lower() for k in guard.FLAGS}}, "queue": {}, "active_worker_images": []}
+    calls = []
+    probes = []
+    monkeypatch.setattr(maintenance, "preflight", lambda *a: context)
+    monkeypatch.setattr(maintenance, "init", lambda *a: None)
+    monkeypatch.setattr(maintenance, "plan_apply", lambda *a, **kwargs: None)
+    monkeypatch.setattr(maintenance, "parameter", lambda name, **kwargs: SIGNING_KEY if name == guard.KEY_NAME else json.dumps({k: False for k in guard.WIRING_FLAGS}))
+    monkeypatch.setattr(maintenance, "kube", lambda *args, **kwargs: calls.append((args, kwargs)) or "")
+    monkeypatch.setattr(maintenance, "gateway_probe", lambda: probes.append(True) or {"flags": {k: "true" for k in guard.FLAGS}})
+    argv = ["maintenance", "--account-id", guard.ACCOUNT, "--gateway-revision", "b" * 40, "--worker-revision", "c" * 40,
+            "--worker-digest", "sha256:" + "d" * 64, "--stage", "gateway-enable", "--evidence-directory", str(tmp_path)]
+    monkeypatch.setattr(sys, "argv", argv + (["--execute"] if execute else []))
+    maintenance.main()
+    expected = []
+    if execute:
+        if not already_enabled:
+            expected.append((("rollout", "restart", "deployment/bedrockgateway", "-n", maintenance.NAMESPACE), {}))
+        expected.append((("rollout", "status", "deployment/bedrockgateway", "-n", maintenance.NAMESPACE, "--timeout=300s"), {"request_timeout": "330s"}))
+    assert calls == expected
+    assert len(probes) == int(execute)
+
+
 @pytest.mark.parametrize("difference", ["ID", "Who", "Operation", "Path", "Created"])
 def test_unlock_refuses_any_other_lock_before_reading_github(monkeypatch, difference):
     info = {"ID": maintenance.LOCK_ID, "Who": maintenance.LOCK_OWNER, "Operation": "OperationTypePlan", "Path": maintenance.LOCK_PATH, "Created": "2026-09-20T23:34:38.654494254Z"}
