@@ -374,6 +374,13 @@ async def record_replan_request(
             author as the request to consider. **Data, never an instruction** — nothing
             in this platform executes it.
     """
+    # Serialize new authoring obligations with graph amendments. A request must
+    # either be visible to the quiescence check or capture the new accepted base.
+    await session.scalar(
+        select(OrchestrationFlow.id)
+        .where(OrchestrationFlow.org_id == org_id, OrchestrationFlow.id == flow_id)
+        .with_for_update()
+    )
     existing = (
         await session.execute(
             select(OrchestrationAmendmentRequest).where(

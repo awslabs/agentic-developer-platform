@@ -107,6 +107,7 @@ from src.orchestration.pr_bindings import (
 from src.orchestration.pr_identity import PrIdentityError, resolve_pr_identity
 from src.orchestration.proposal import LoopProposal, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
+from src.orchestration.shared_amendment_routes import router as shared_amendment_router
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
@@ -1853,4 +1854,5 @@ async def get_flow_execution(
 
 
 router.include_router(continuation_router)
+router.include_router(shared_amendment_router)
 router.include_router(evaluation_acceptance_router)
