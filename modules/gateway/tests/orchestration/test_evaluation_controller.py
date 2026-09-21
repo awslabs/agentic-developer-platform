@@ -31,6 +31,30 @@ from tests.orchestration.test_deployment_controller import cycle, deployment, fi
 pytestmark = pytest.mark.parametrize("cycle", [{"delivery": True}], indirect=True)
 
 
+@pytest.mark.parametrize("missing", [False, True])
+async def test_machine_evaluation_never_claims_or_dispatches_legacy_worker(evaluation, monkeypatch, missing):
+    from src.orchestration.dispatch_pass import DispatchPassConfig, DispatchPassReport, _dispatch_one
+    from src.orchestration.evaluation_plan import managed_evaluation
+
+    claim = AsyncMock(side_effect=AssertionError("machine observer must not claim an issue lane"))
+    monkeypatch.setattr("src.orchestration.work_admission.admit", claim)
+    async with evaluation.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, evaluation.plan.id)
+        if missing:
+            document = dict(plan.plan_document)
+            document["nodes"] = [{**row, "evaluation": None} for row in document["nodes"]]
+            plan.plan_document = document
+            await db.flush()
+        node = await db.get(OrchestrationNode, evaluation.eval_id)
+        assert await managed_evaluation(db, node)
+        report = DispatchPassReport(enabled=True)
+        await _dispatch_one(db, node, config=DispatchPassConfig(queue_url="queue", repo="o/r"), report=report)
+        assert node.state == "ready" and node.attempts == 0 and report.pending == []
+        claim.assert_not_awaited()
+        refusals = list(await db.scalars(select(OrchestrationDecision).where(OrchestrationDecision.node_id == node.id)))
+        assert any("evaluation_specification_missing" in (row.rejection_reason or "") for row in refusals) is missing
+
+
 @pytest.fixture
 async def evaluation(runtime):  # noqa: F811
     ctx = runtime

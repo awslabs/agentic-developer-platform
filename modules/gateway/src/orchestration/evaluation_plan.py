@@ -38,9 +38,22 @@ async def accepted_evaluation(session, node):
 
 
 async def managed_evaluation(session, node):
+    if node.kind != "eval":
+        return False
     accepted = await accepted_evaluation(session, node)
-    # Unbounded legacy/human flows keep their original worker/control path.
-    return bool(accepted and (accepted[0].plan_document or {}).get("execution_policy"))
+    if accepted and (accepted[0].plan_document or {}).get("execution_policy"):
+        return True
+    # A missing specification is a blocked machine evaluation, never permission
+    # to dispatch a legacy worker whose result would require a human gate.
+    plan = await OrchestrationRepository(session).get_accepted_plan(org_id=node.org_id, flow_id=node.flow_id)
+    policy = (plan.plan_document or {}).get("execution_policy") if plan else None
+    flow = await session.get(OrchestrationFlow, node.flow_id)
+    return bool(
+        policy
+        and flow is not None
+        and flow.org_id == node.org_id
+        and policy.get("evaluation_acceptance", {}).get(graph_address(node, flow_slug=flow.slug)) == "machine"
+    )
 
 
 def identity_for(record):

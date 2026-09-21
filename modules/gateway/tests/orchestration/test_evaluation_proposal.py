@@ -126,6 +126,24 @@ def test_machine_evaluation_matches_declared_policy(evaluation, mismatch, draft)
     assert bool(rules) is (mismatch is not None)
 
 
+@pytest.mark.parametrize("authority", ["active", "proposed", "code_only"])
+def test_missing_machine_spec_cannot_activate_evaluation_but_does_not_block_code_work(authority):
+    from src.orchestration.execution_policy import AcceptanceMode, Action
+    from tests.orchestration.test_execution_policy_acceptance import a_policy
+
+    proposal = valid_proposal()
+    node = next(n for n in proposal.nodes if n.kind == "eval")
+    policy = a_policy().model_copy(update={"evaluation_acceptance": {node.address: AcceptanceMode.MACHINE}})
+    if authority == "code_only":
+        policy = policy.model_copy(update={"allowed_actions": [a for a in policy.allowed_actions if a is not Action.EVALUATE]})
+    if authority == "proposed":
+        proposal.proposed_execution_policy = policy
+    else:
+        proposal.execution_policy = policy
+    rules = {v.rule for v in validate_proposal(proposal)}
+    assert ("evaluation_specification_missing" in rules) is (authority == "active")
+
+
 async def test_accepted_suite_survives_real_authoring_base_round_trip(session, tmp_path):
     from src.orchestration.pending_amendments import accept_amendment, in_force_plan, register_amendment_draft
     from src.orchestration.proposal import LoopProposal
