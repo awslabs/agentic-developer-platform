@@ -28,13 +28,40 @@ from .execution_store import load_execution, prepare_action, record_observation
 from .merge_evidence import EligibilityReason, EligibilityState, observe_merge_eligibility
 from .merge_provider import MergeProvider
 from .merge_review import load_merge_review
-from .models import OrchestrationAction, OrchestrationDecision, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
+from .models import (
+    OrchestrationAcceptedPlan,
+    OrchestrationAction,
+    OrchestrationDecision,
+    OrchestrationFlow,
+    OrchestrationNode,
+    OrchestrationWorkClaim,
+)
 from .pr_bindings import active_binding_for_node, binding_scope_matches
 from .review_cycle import CycleBlockedError, block
 from .state import ActorKind, NodeState, transition
 
 MERGE_KIND = "merge_pull_request"
 PHASES = (ExecutionPhase.MERGE_READY,)
+
+
+async def code_only_delivery(session, context, node):
+    """Only the explicitly accepted delivery contract may end at merged code."""
+    plan = await session.scalar(
+        select(OrchestrationAcceptedPlan).where(
+            OrchestrationAcceptedPlan.org_id == node.org_id,
+            OrchestrationAcceptedPlan.flow_id == node.flow_id,
+            OrchestrationAcceptedPlan.superseded_at.is_(None),
+        )
+    )
+    marker = (plan.plan_document or {}).get("execution_continuation") if plan else None
+    if not isinstance(marker, dict) or marker.get("delivery_mode") is None:
+        return False
+    from .shared_cycle import shared_marker
+
+    accepted, _ = await shared_marker(session, org_id=node.org_id, flow_id=node.flow_id)
+    if accepted.version != context.identity.accepted_plan_version or marker["delivery_mode"] != "code_only":
+        raise CycleBlockedError("code_delivery_contract_changed")
+    return True
 
 
 class MergeReceipt(BaseModel):
@@ -392,7 +419,12 @@ class MergeController:
                     operation_key=latest.operation_key,
                     receipt_ref=f"github/verified-merge/{receipt.merge_sha}",
                     receipt=receipt,
-                    snapshot={"binding_id": binding.id, "binding_revision": binding.revision, "accepted_scope": binding.accepted_scope},
+                    snapshot={
+                        "binding_id": binding.id,
+                        "binding_revision": binding.revision,
+                        "accepted_scope": binding.accepted_scope,
+                        "code_only": await code_only_delivery(session, context, node),
+                    },
                 )
             if not state.open:
                 raise CycleBlockedError("implementation_pr_closed_without_merge", BlockCode.HUMAN_INPUT_REQUIRED)
@@ -438,6 +470,12 @@ class MergeController:
             async def settle(session, current):
                 await settle_merge(session, current, observation.receipt, data)
 
+            if data.get("code_only") is True:
+                return HandlerDecision(
+                    DecisionKind.CONCLUDE,
+                    settlement=settle,
+                    progress_note="Verified code delivery complete. Dependent evaluations retain their separate acceptance requirements.",
+                )
             return HandlerDecision(
                 DecisionKind.ADVANCE,
                 phase=ExecutionPhase.DEPLOYMENT_PENDING,
@@ -535,6 +573,8 @@ async def settle_merge(session, context, receipt, snapshot):
             raise CycleBlockedError("merge_flow_gate_changed")
     elif flow is None or flow.state != "running":
         raise CycleBlockedError("merge_flow_gate_changed")
+    if bool(snapshot.get("code_only")) != await code_only_delivery(session, context, node):
+        raise CycleBlockedError("code_delivery_contract_changed")
     move = transition(NodeState(node.state), NodeState.PASSED, actor_kind=ActorKind.SERVICE, reason="Verified bound PR merge")
     if not move.allowed:
         raise CycleBlockedError("merge_settlement_gate_denied")

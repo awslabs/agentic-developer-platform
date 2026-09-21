@@ -1,0 +1,127 @@
+name: Shared Runtime Maintenance
+
+# Reviewed platform-account maintenance only. This does not invoke either broad
+# infra workflow and does not remove the webhook infrastructure hold.
+on:
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: Confirm the reviewed platform account (879318057152).
+        required: true
+        type: string
+      stage:
+        description: Run one explicit rollout stage; verify is read-only.
+        required: true
+        type: choice
+        options:
+          - prerequisites
+          - worker
+          - gateway-enable
+          - tick-enable
+          - verify
+      gateway_revision:
+        description: Full reviewed commit SHA already deployed to gateway and tick.
+        required: true
+        type: string
+      worker_revision:
+        description: Full reviewed source commit SHA for the worker image.
+        required: true
+        type: string
+      worker_digest:
+        description: Approved sha256 digest of that worker image.
+        required: true
+        type: string
+      execute:
+        description: Apply the exact machine-validated plans or worker patch. False plans only.
+        required: true
+        default: false
+        type: boolean
+      unlock_known_orphan:
+        description: Prerequisites only. Recheck and unlock only cancelled job 106168875014's exact orphan lock.
+        required: true
+        default: false
+        type: boolean
+
+# Same release lane as gateway deploy/infra; never cancel an active release.
+concurrency:
+  group: gateway-release-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  maintain:
+    runs-on: arc-runner-org
+    timeout-minutes: 30
+    env:
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_PAGER: ''
+      GH_TOKEN: ${{ github.token }}
+      TARGET_ACCOUNT: ${{ inputs.account_id }}
+      ROLLOUT_STAGE: ${{ inputs.stage }}
+      GATEWAY_REVISION: ${{ inputs.gateway_revision }}
+      WORKER_REVISION: ${{ inputs.worker_revision }}
+      WORKER_DIGEST: ${{ inputs.worker_digest }}
+      EXECUTE: ${{ inputs.execute }}
+      UNLOCK_KNOWN_ORPHAN: ${{ inputs.unlock_known_orphan }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Run offline maintenance guards before runtime operations
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest==9.0.3'
+          python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_maintenance.py -q
+          python -m pytest --import-mode=importlib modules/agent-factory/webhook-ingress/tests/test_shared_worker_rollout.py -q
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.14.6'
+          terraform_wrapper: false
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.35.0'
+      - name: Install missing runner CLI tools
+        run: |
+          set -euo pipefail
+          if ! command -v curl >/dev/null || ! command -v unzip >/dev/null || ! command -v gh >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends curl unzip gh
+          fi
+          if ! command -v aws >/dev/null; then
+            cli_arch="$(uname -m)"
+            case "$cli_arch" in x86_64|aarch64) ;; *) exit 1 ;; esac
+            cli_dir="$(mktemp -d "$RUNNER_TEMP/adp-awscli.XXXXXX")"
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${cli_arch}.zip" -o "$cli_dir/awscli.zip"
+            unzip -q "$cli_dir/awscli.zip" -d "$cli_dir"
+            sudo "$cli_dir/aws/install"
+            rm -rf "$cli_dir"
+          fi
+          command -v aws
+          command -v kubectl
+          command -v gh
+      - name: Run reviewed maintenance stage
+        run: |
+          set -euo pipefail
+          args=(
+            --account-id "$TARGET_ACCOUNT"
+            --stage "$ROLLOUT_STAGE"
+            --gateway-revision "$GATEWAY_REVISION"
+            --worker-revision "$WORKER_REVISION"
+            --worker-digest "$WORKER_DIGEST"
+            --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence"
+          )
+          if [[ "$EXECUTE" == true ]]; then args+=(--execute); fi
+          if [[ "$UNLOCK_KNOWN_ORPHAN" == true ]]; then args+=(--unlock-known-orphan); fi
+          python platform/scripts/maintain-shared-runtime.py "${args[@]}"
+      - name: Retain sanitized evidence and account-specific inputs
+        uses: actions/upload-artifact@v6
+        with:
+          name: shared-runtime-${{ inputs.stage }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/shared-runtime-evidence/*.json
+          if-no-files-found: error
+          retention-days: 30

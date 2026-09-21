@@ -847,11 +847,23 @@ def _check_declarations(proposal: LoopProposal) -> list[Violation]:
 
 def _check_evaluation_specs(proposal: LoopProposal) -> list[Violation]:
     from .evaluation_contract import specification
-    from .execution_policy import AcceptanceMode
+    from .execution_policy import AcceptanceMode, Action
 
     violations = []
     for node in proposal.nodes:
         if node.evaluation is None:
+            policy = proposal.execution_policy
+            if (
+                node.kind == NodeKind.EVAL.value
+                and policy is not None
+                and Action.EVALUATE in policy.allowed_actions
+                and policy.evaluation_acceptance.get(node.address) is AcceptanceMode.MACHINE
+            ):
+                violations.append(
+                    Violation(
+                        "evaluation_specification_missing", "Active machine evaluation requires an explicit evidence specification", node.address
+                    )
+                )
             continue
         if node.kind != NodeKind.EVAL.value:
             violations.append(Violation("evaluation_node_kind", "Only eval nodes may carry an evaluation specification", node.address))

@@ -4,7 +4,7 @@ Exercise the command flush, real authority writer and snapshot persistence with
 SQLite/moto; no live AWS or model calls.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -108,6 +108,8 @@ async def test_command_flush_persists_requesters_mapping_before_publish(session,
 
 async def test_failed_publish_retries_with_frozen_mapping(session, protected, monkeypatch):
     store, _ = protected
+    first_publish_at = datetime.now(UTC)
+    monkeypatch.setattr("src.orchestration.authoring_dispatch.utcnow", lambda: first_publish_at)
     report, pending = await assignment(session)
     await flush(session, report, FakeSQS(fail=True), monkeypatch)
     before = _snapshot_of(store, tenant_id=ORG_A, invocation_id=pending.author_run_id)
@@ -118,6 +120,9 @@ async def test_failed_publish_retries_with_frozen_mapping(session, protected, mo
     )
     await session.commit()
 
+    # Recovery runs on a later tick. Crossing a second must not change the
+    # protected envelope digest even though the requester's preference changed.
+    monkeypatch.setattr("src.orchestration.authoring_dispatch.utcnow", lambda: first_publish_at + timedelta(minutes=10))
     monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
     monkeypatch.setattr("src.orchestration.dispatch_pass.resolve_installation_id", AsyncMock(return_value=INSTALLATION))
     report = EngineCommandReport()
@@ -131,6 +136,7 @@ async def test_failed_publish_retries_with_frozen_mapping(session, protected, mo
     assert after.to_dict() == before.to_dict()
     assert after.mappings["aidlc"] == OPUS
     assert sqs.calls[0]["MessageDeduplicationId"] == pending.deduplication_id
+    assert sqs.envelope() == pending.envelope
 
 
 @pytest.mark.parametrize("failure", ["policy_read", "snapshot_write", "session_open"])

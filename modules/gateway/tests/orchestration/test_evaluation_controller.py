@@ -31,6 +31,64 @@ from tests.orchestration.test_deployment_controller import cycle, deployment, fi
 pytestmark = pytest.mark.parametrize("cycle", [{"delivery": True}], indirect=True)
 
 
+@pytest.mark.parametrize("missing", [False, True])
+async def test_machine_evaluation_never_claims_or_dispatches_legacy_worker(evaluation, monkeypatch, missing):
+    from src.orchestration.dispatch_pass import DispatchPassConfig, DispatchPassReport, _dispatch_one
+    from src.orchestration.evaluation_plan import managed_evaluation
+
+    claim = AsyncMock(side_effect=AssertionError("machine observer must not claim an issue lane"))
+    monkeypatch.setattr("src.orchestration.work_admission.admit", claim)
+    async with evaluation.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, evaluation.plan.id)
+        if missing:
+            document = dict(plan.plan_document)
+            document["nodes"] = [{**row, "evaluation": None} for row in document["nodes"]]
+            plan.plan_document = document
+            await db.flush()
+        node = await db.get(OrchestrationNode, evaluation.eval_id)
+        assert await managed_evaluation(db, node)
+        report = DispatchPassReport(enabled=True)
+        await _dispatch_one(db, node, config=DispatchPassConfig(queue_url="queue", repo="o/r"), report=report)
+        assert node.state == "ready" and node.attempts == 0 and report.pending == []
+        claim.assert_not_awaited()
+        refusals = list(await db.scalars(select(OrchestrationDecision).where(OrchestrationDecision.node_id == node.id)))
+        assert any("evaluation_specification_missing" in (row.rejection_reason or "") for row in refusals) is missing
+
+
+async def test_pending_machine_evaluation_reports_missing_spec_without_tick_error(evaluation):
+    from src.orchestration.tick import run_tick
+
+    ctx = evaluation
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        plan.plan_document = {**plan.plan_document, "nodes": [{**row, "evaluation": None} for row in plan.plan_document["nodes"]]}
+        node = await db.get(OrchestrationNode, ctx.eval_id)
+        node.state = "pending"
+        await db.commit()
+        report = await run_tick(db)
+        assert report.success and report.errors == 0
+        assert report.blocked[ctx.eval_id] == ["evaluation_specification_missing"]
+        assert node.state == "pending" and node.attempts == 0
+        assert await db.scalar(select(OrchestrationExecution.id).where(OrchestrationExecution.node_id == node.id)) is None
+
+
+async def test_deployed_story_reports_missing_dependent_spec_without_provider_failure(evaluation):
+    ctx = evaluation
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        plan.plan_document = {**plan.plan_document, "nodes": [{**row, "evaluation": None} for row in plan.plan_document["nodes"]]}
+        await db.commit()
+    report = await tick(ctx)
+    assert report.blocked == 1
+    async with ctx.factory() as db:
+        record = await db.scalar(select(OrchestrationExecution).where(OrchestrationExecution.node_id == ctx.node.id))
+        assert record.block_detail == "evaluation_specification_missing"
+        assert record.block_code != "provider_unavailable"
+        evaluation_node = await db.get(OrchestrationNode, ctx.eval_id)
+        assert evaluation_node.state == "ready" and evaluation_node.attempts == 0
+    ctx.evaluation_provider.find.assert_not_awaited()
+
+
 @pytest.fixture
 async def evaluation(runtime):  # noqa: F811
     ctx = runtime

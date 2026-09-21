@@ -1351,9 +1351,28 @@ async def _shared_continuation(session, node) -> bool:
 
 
 async def _dispatch_one(session, node, *, config, report) -> None:
+    from .evaluation_plan import accepted_evaluation, managed_evaluation
     from .work_admission import admit, enabled, require_authority, resolve_repository_id
     from .work_claims import ClaimOwner, OwnerKind, WorkClaimError
 
+    if await managed_evaluation(session, node):
+        if await accepted_evaluation(session, node) is None:
+            await _record_admission_refusal(
+                session,
+                node_id=node.id,
+                org_id=node.org_id,
+                flow_id=node.flow_id,
+                admission=_admission_refused(
+                    "evaluation_specification_missing",
+                    owner="flow-owner",
+                    required_input="accept an explicit machine evidence specification for this evaluation",
+                    detail="Machine evaluation has no executable evidence specification; worker dispatch cannot substitute human acceptance.",
+                ),
+            )
+            report.record(node.org_id, "admission_refused")
+        # The machine controller owns admission. Do not claim its issue lane or
+        # create an operations worker while it is waiting for genuine evidence.
+        return
     if not config.configured:
         await _dispatch_one_unclaimed(session, node, config=config, report=report)
         return

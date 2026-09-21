@@ -29,6 +29,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -65,7 +66,7 @@ ORG_A = "org-alpha"
 ORG_B = "org-beta"
 FLOW = "demo-flow"
 SPEC_REVISION = "issue-4120-r1"
-REPO_A = "repo-alpha"
+REPO_A = "owner/repo-alpha"
 ENV_A = "conn-env-alpha"
 HUMAN = "cognito-sub-123"
 EXPIRY = datetime(2026, 12, 31, tzinfo=UTC)
@@ -167,7 +168,19 @@ def valid_proposal(*, org_id: str = ORG_A, **overrides) -> LoopProposal:
         ],
     }
     payload.update(overrides)
-    return LoopProposal(**payload)
+    proposal = LoopProposal(**payload)
+    # Persistence tests still need a valid machine-evaluation contract before
+    # they can exercise acceptance. This synthetic specification is never run.
+    policy = proposal.execution_policy
+    if policy is not None:
+        golden = Path(__file__).resolve().parents[4] / "contracts/orchestration-evaluation/v1/evaluation-receipt.golden.json"
+        for node in proposal.nodes:
+            if node.kind == "eval" and policy.evaluation_acceptance.get(node.address) is AcceptanceMode.MACHINE:
+                spec = json.loads(golden.read_text())["specification"]
+                spec["runner"]["repository"] = REPO_A
+                spec["environment_connection_id"] = ENV_A
+                node.evaluation = spec
+    return proposal
 
 
 async def accepted_plan(session: AsyncSession, *, version: int | None = None) -> OrchestrationAcceptedPlan:
@@ -517,7 +530,7 @@ class TestAmendmentProducesANewAcceptedVersion:
             reason="Agent-initiated amendment.",
         )
         with pytest.raises(PolicyNotAcceptableError, match="cannot accept an execution policy"):
-            await amend_plan(session, compiled.flow_id, valid_proposal(execution_policy=a_policy()), service_amender)
+            await amend_plan(session, compiled.flow_id, valid_proposal(execution_policy=a_policy(evaluation_acceptance={})), service_amender)
 
     async def test_amendment_may_add_a_policy_to_a_legacy_plan(
         self, session: AsyncSession, approval: ApprovalContext, amender: AmendmentContext

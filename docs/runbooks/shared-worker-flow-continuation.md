@@ -40,7 +40,7 @@ snapshot. Lost-response retries of an accepted request return the same decision
 and execution identities. Acceptance writes a new immutable accepted-plan version
 without rebuilding the graph or resetting story attempts.
 
-The accepted continuation starts a new, explicitly bounded wall-clock window.
+For a legacy flow with no accepted policy, continuation starts a new, explicitly bounded wall-clock window.
 Historical attempt counts remain consumed and reconciled historical spend seeds
 the existing flow meter. Unknown spend is not inferred as zero: the approver must
 provide the reconciliation amount and its evidence. Failed meter initialization
@@ -59,3 +59,45 @@ action, and requires a fresh reviewer run on the new commit. Successful merge
 still requires current structured review evidence, passing required checks, and
 GitHub's configured merge rules. Deployment and live acceptance remain separate
 gates.
+
+An already accepted flow that has **never started** can use the same preview and
+accept endpoints with `preserve_accepted_policy: true`. Copy its in-force
+`execution_policy`, remove only the server-stamped `policy_id`, `policy_hash`, and
+`principal_id`, set `schema_version: 2`, and add the explicitly selected worker
+role in `user_credentials`. Retain every original limit, fixed expiry, repository
+and team scope, action, human gate, and `evaluation_acceptance` entry. Include the
+normal reconciliation evidence and amount; missing spend is never inferred as
+zero. The preview rejects any other policy change.
+
+This operation verifies the original human acceptance and policy hash. Any prior
+nonzero attempt, worker report, dispatch, PR association, work claim, or execution
+record prevents this narrow adoption, including completed or expired history.
+The new version links the original policy and decision, preserves the original
+acceptance time for wall-clock enforcement, and does not reset the expiry,
+attempts, or spend allowance. Its new human acceptance only selects the shared
+worker transport. Existing evaluation mappings are retained; they do not add
+`evaluate` authority or satisfy an evaluation. Human gates and evaluation nodes
+retain their state and completion requirements.
+
+An approver may additionally select `delivery_mode: "code_only"` in the request.
+The preview and accepted continuation marker record this choice: a story can
+finish after verified merge evidence, current structured review, and required
+checks, while separate evaluation nodes retain their original evidence
+requirements. Omitting the field preserves the existing delivery lifecycle.
+Changing this choice requires a new preview; it never grants deployment or
+evaluation authority.
+
+For an inert registered draft, use `accept_draft_policy: true` with
+`delivery_mode: "code_only"` instead of `preserve_accepted_policy`. This explicitly
+accepts its initial gate and shared transport together. Keep the proposed limits,
+fixed expiry, scope, human gates for code actions, and evaluation map. The request
+must contain exactly the proposed code actions; `evaluate`, if proposed, is
+deferred until a real evaluation contract is accepted. No worker or delivery
+history may exist, and the live graph must still match the reviewed draft.
+
+The preview identifies the single structural initial acceptance gate. Acceptance
+records its human approval in the same transaction as the policy, shared meter,
+and new plan version. Other gates and evaluation nodes retain their state. The
+proposed policy remains in the historical draft; it is removed from the new
+version so a later gate answer cannot overwrite the accepted shared transport.
+Ordinary continuation refuses a draft that still carries inert proposed bounds.
