@@ -228,3 +228,84 @@ async def test_historical_adoption_shows_dependency_hold_without_missing_worker(
     assert progress["actor"] == "operator"
     assert progress["automation"] == "reconciliation_only" and progress["next_check_at"] is None
     assert card["run_id"] is None and card["attempts"] == 0
+
+
+@pytest.mark.parametrize("change", [None, "attempt", "plan", "policy", "running", "malformed", "unknown_code"])
+def test_admission_status_is_scoped_to_current_ready_attempt_and_policy(change):
+    from src.orchestration.admission_diagnostics import CONTRACT
+
+    refusal = {
+        "contract": CONTRACT,
+        "attempt": 0,
+        "accepted_plan_version": 3,
+        "policy_hash": "a" * 64,
+        "block_code": "budget_unavailable",
+        "detail": "SECRET PROVIDER PAYLOAD",
+        "observed_at": "2026-09-21T12:00:00Z",
+    }
+    target = node(state="ready", attempts=0)
+    if change in {"attempt", "plan", "policy"}:
+        refusal[{"attempt": "attempt", "plan": "accepted_plan_version", "policy": "policy_hash"}[change]] = -1
+    elif change == "running":
+        target.state = "running"
+    elif change == "malformed":
+        refusal = {"broken": True}
+    elif change == "unknown_code":
+        refusal["block_code"] = "SECRET PROVIDER PAYLOAD"
+    progress = node_progress(
+        node=target,
+        binding=None,
+        dispatch={},
+        result={},
+        policy_enabled=True,
+        plan_version=3,
+        policy_hash="a" * 64,
+        admission_refusal=refusal,
+    )
+    assert "SECRET" not in progress.model_dump_json()
+    assert (progress.blocker == "budget_unavailable") is (change is None)
+    if change is None:
+        assert progress.actor == "platform-operator" and progress.next_action and progress.observed_at == refusal["observed_at"]
+    assert progress.next_check_at is None and progress.scheduled_action is None
+
+
+async def test_graph_reads_durable_admission_and_discards_it_after_dispatch(session, app_with_router):
+    import json
+
+    from src.orchestration.dispatch_pass import _admission_refused, _record_admission_refusal
+
+    flow = await read.seed_flow(session)
+    story = await read.seed_node(session, flow, node_ref="queued", state="ready", attempts=0)
+    await _record_admission_refusal(
+        session,
+        node_id=story.id,
+        org_id=story.org_id,
+        flow_id=flow.id,
+        admission=_admission_refused("budget_unavailable", owner="platform-operator", required_input="Restore meter", detail="SECRET"),
+        scope={"attempt": 0, "accepted_plan_version": 0, "policy_hash": None},
+    )
+    client = read.client_for(app_with_router)
+    response = client.get(read.route(flow.id))
+    assert response.status_code == 200, response.text
+    card = response.json()["nodes"][0]
+    assert card["attempts"] == 0 and card["run_id"] is None
+    assert card["delivery_progress"]["stage"] == "admission"
+    assert card["delivery_progress"]["blocker"] == "budget_unavailable"
+    assert card["delivery_progress"]["actor"] == "platform-operator"
+    assert "SECRET" not in response.text
+    session.add(
+        OrchestrationDecision(
+            org_id=story.org_id,
+            flow_id=flow.id,
+            node_id=story.id,
+            kind="node_dispatched",
+            actor_id="system:orchestration-dispatch",
+            actor_kind="service",
+            actor_role="engine",
+            reason=json.dumps({"attempt": 1, "run_id": "started"}),
+        )
+    )
+    # Even if the node is now ready again, the earlier refusal is historical.
+    await session.flush()
+    card = client.get(read.route(flow.id)).json()["nodes"][0]
+    assert card["delivery_progress"]["blocker"] is None

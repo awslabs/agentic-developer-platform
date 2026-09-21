@@ -1448,7 +1448,20 @@ async def get_flow_graph(
     result_summaries: dict[str, dict] = {}
     gate_decisions: dict[str, GateDecisionSummary] = {}
     observed_at: dict[str, tuple[int, str]] = {}
+    admission_refusals: dict[str, dict] = {}
+    from .admission_diagnostics import ACTOR as ADMISSION_ACTOR
+    from .admission_diagnostics import CONTRACT as ADMISSION_CONTRACT
+
     for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
+        if decision.kind == DecisionKind.TRANSITION_REJECTED.value and decision.actor_id == ADMISSION_ACTOR and decision.actor_kind == "service":
+            try:
+                refusal = json.loads(decision.rejection_reason or "{}")
+                if isinstance(refusal, dict) and refusal.get("contract") == ADMISSION_CONTRACT:
+                    admission_refusals[decision.node_id] = {**refusal, "observed_at": decision.created_at.isoformat()}
+            except (ValueError, TypeError):
+                pass
+        if decision.kind == DecisionKind.NODE_DISPATCHED.value:
+            admission_refusals.pop(decision.node_id, None)
         if decision.kind in (DecisionKind.GATE_APPROVED.value, DecisionKind.GATE_REJECTED.value) and decision.node_id:
             gate_decisions[decision.node_id] = GateDecisionSummary(
                 action="approved" if decision.kind == DecisionKind.GATE_APPROVED.value else "changes_requested",
@@ -1547,6 +1560,8 @@ async def get_flow_graph(
                     execution=executions_by_node.get(node.id),
                     policy_enabled=policy_inputs.policy is not None or policy_inputs.refusal is not None,
                     plan_version=policy_inputs.plan_version,
+                    policy_hash=policy_inputs.policy.policy_hash if policy_inputs.policy else None,
+                    admission_refusal=admission_refusals.get(node.id),
                     observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,
                 ),
                 last_gate_decision=gate_decisions.get(node.id),
