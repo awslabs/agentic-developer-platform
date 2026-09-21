@@ -1,6 +1,7 @@
 """Real K2 attempts and PostgreSQL admission locks at shared-worker limits."""
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from src.agentauth.model_identity import AgentModelIdentityMiddleware
 from src.orchestration.dispatch_pass import _build_envelope, attempt_run_id
 from src.orchestration.execution_policy import ExecutionPolicy
 from src.orchestration.genesis import resolve_engine_genesis
-from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationNode, OrchestrationWorkClaim
+from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationNode, OrchestrationWorkClaim
 from src.orchestration.run_reports import OrchestrationRunReport, prepare_run_report
 from src.orchestration.shared_policy import _active_count, authorize_shared_dispatch
 from src.shared.schemas.auth import TokenContext
@@ -102,6 +103,22 @@ async def test_initial_developer_and_review_use_one_shared_attempt_allowance(sha
             "claim_generation": ctx.identity.claim_generation,
         }
         await prepare_run_report(db, envelope)
+        # Initial model admission verifies the immutable dispatch's human root,
+        # not just the report envelope and current execution fences.
+        db.add(
+            OrchestrationDecision(
+                org_id=ctx.node.org_id,
+                flow_id=ctx.node.flow_id,
+                node_id=ctx.node.id,
+                kind="node_dispatched",
+                actor_id="system:orchestration-dispatch",
+                actor_kind="service",
+                actor_role="engine",
+                reason=json.dumps(
+                    {"run_id": ctx.root, "attempt": ctx.node.attempts, "root_decision_id": envelope["orchestration"]["root_decision_id"]}
+                ),
+            )
+        )
         await db.commit()
     await model_call(ctx, envelope["run_report"]["credential"], monkeypatch)
     await ctx.finish(ctx.root)

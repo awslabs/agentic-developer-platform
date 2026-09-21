@@ -552,7 +552,19 @@ class ProxyService(IProxyService):
         actual_cost = None
         pricing_failed = False
         pricing_decision = None
-        if pricing_capture is not None and pricing_capture.is_claude:
+        rejection = pricing_capture.no_inference_rejection if pricing_capture is not None else None
+        if rejection is not None and status_code >= 400 and input_tokens == output_tokens == 0:
+            # This is a provider rejection receipt, not missing usage interpreted
+            # as zero. Keep the error record and provider identity; do not invent
+            # a successful pricing decision or reset any other request's charge.
+            request_id = pricing_capture.request_id
+            actual_cost = cost_usd = Decimal("0")
+            cache_read_input_tokens = cache_creation_input_tokens = None
+            logger.info(
+                "Settling verified Bedrock rejection before inference",
+                extra={"request_id": request_id, "bedrock_error_code": rejection.code, "operation": rejection.operation},
+            )
+        elif pricing_capture is not None and pricing_capture.is_claude:
             request_id = pricing_capture.request_id
             try:
                 priced = await price_completed_usage(
@@ -784,12 +796,17 @@ class ProxyService(IProxyService):
                 "bedrock.invoke_model",
                 attributes={"bedrock.model_id": model_id},
             ):
-                response = await client.invoke_model(
-                    modelId=model_id,
-                    body=json.dumps(request.model_dump(exclude_none=True)),
-                    contentType="application/json",
-                    accept="application/json",
-                )
+                try:
+                    response = await client.invoke_model(
+                        modelId=model_id,
+                        body=json.dumps(request.model_dump(exclude_none=True)),
+                        contentType="application/json",
+                        accept="application/json",
+                    )
+                except Exception as exc:
+                    if pricing_capture is not None:
+                        pricing_capture.initial_rejection(exc, operation="InvokeModel")
+                    raise
                 response_body = json.loads(response["body"].read())
                 if pricing_capture is not None:
                     pricing_capture.response(response_body, response)
@@ -843,12 +860,17 @@ class ProxyService(IProxyService):
 
         event_stream = None
         try:
-            response = await client.invoke_model_with_response_stream(
-                modelId=model_id,
-                body=json.dumps(request.model_dump(exclude_none=True)),
-                contentType="application/json",
-                accept="application/json",
-            )
+            try:
+                response = await client.invoke_model_with_response_stream(
+                    modelId=model_id,
+                    body=json.dumps(request.model_dump(exclude_none=True)),
+                    contentType="application/json",
+                    accept="application/json",
+                )
+            except Exception as exc:
+                if pricing_capture is not None:
+                    pricing_capture.initial_rejection(exc, operation="InvokeModelWithResponseStream")
+                raise
 
             if pricing_capture is not None:
                 pricing_capture.response({}, response)

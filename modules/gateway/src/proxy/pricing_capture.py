@@ -6,9 +6,20 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urlsplit
 
+from botocore.exceptions import ClientError
+
 from pricing_policy import RoutingEvidence, canonical_billing_model_id, is_anthropic_model
 from pricing_policy.policy import ServiceTier, geography_from_model_prefix
 from src.chat_logging.service import StreamingResponseBuffer
+
+
+@dataclass(frozen=True)
+class NoInferenceRejection:
+    """A provider's definitive rejection of one initial, unretried invocation."""
+
+    operation: str
+    provider_request_id: str
+    code: str = "ResourceNotFoundException"
 
 
 @dataclass
@@ -23,12 +34,59 @@ class PricingCapture:
     buffer: StreamingResponseBuffer = field(default_factory=StreamingResponseBuffer)
     _served_tier_conflict: bool = field(default=False, repr=False)
     provider_request_id: str | None = None
+    _response_started: bool = field(default=False, init=False, repr=False)
+    _no_inference_rejection: NoInferenceRejection | None = field(default=None, init=False, repr=False)
+
+    @property
+    def no_inference_rejection(self) -> NoInferenceRejection | None:
+        if self._response_started or self.raw_usage or self.response_body or self.decision is not None:
+            return None
+        return self._no_inference_rejection
+
+    def initial_rejection(self, error: Exception, *, operation: str) -> None:
+        """Called only around the SDK's initial invocation, before any response.
+
+        A missing model (including a retired/inactive model) cannot perform
+        inference. Require the typed SDK response, its 404 and request identity,
+        and no SDK retries. A later rejection cannot explain an earlier retry's
+        unknown spend. Generic errors, timeouts and stream failures remain unknown.
+        """
+        if (
+            not self.is_claude
+            or self._response_started
+            or self.raw_usage
+            or self.response_body
+            or not isinstance(error, ClientError)
+            or operation not in {"InvokeModel", "InvokeModelWithResponseStream"}
+            or error.operation_name != operation
+        ):
+            return
+        response = error.response
+        metadata = response.get("ResponseMetadata", {})
+        provider_error = response.get("Error", {})
+        if not isinstance(metadata, dict) or not isinstance(provider_error, dict):
+            return
+        request_id = metadata.get("RequestId")
+        retries = metadata.get("RetryAttempts")
+        if (
+            provider_error.get("Code") != "ResourceNotFoundException"
+            or metadata.get("HTTPStatusCode") != 404
+            or type(retries) is not int
+            or retries != 0
+            or not isinstance(request_id, str)
+            or not request_id.strip()
+            or len(request_id) > 255
+        ):
+            return
+        self._no_inference_rejection = NoInferenceRejection(operation, request_id)
+        self.provider_request_id = request_id
 
     @property
     def is_claude(self) -> bool:
         return self.routing is not None and is_anthropic_model(self.routing.billing_model_id)
 
     def forwarded(self, client: Any, model_id: str, *, stream: bool = False) -> None:
+        self._no_inference_rejection = None
         # SimplePool wraps distinct invoke/stream clients. Read metadata from the
         # exact signer used, never the global AWS region or a shadow account.
         actual_client = getattr(client, "_streaming_client" if stream else "_invoke_client", client)
@@ -77,6 +135,8 @@ class PricingCapture:
                 self.routing = replace(self.routing, served_service_tier_raw=raw)
 
     def response(self, body: dict[str, Any], metadata: dict[str, Any]) -> None:
+        self._response_started = True
+        self._no_inference_rejection = None
         response_metadata = metadata.get("ResponseMetadata") or {}
         request_id = response_metadata.get("RequestId")
         if isinstance(request_id, str) and request_id:
@@ -92,6 +152,8 @@ class PricingCapture:
                 self.routing = replace(self.routing, served_service_tier_raw=served)
 
     def chunk(self, chunk: bytes) -> None:
+        self._response_started = True
+        self._no_inference_rejection = None
         try:
             event = json.loads(chunk)
         except (ValueError, TypeError):

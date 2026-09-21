@@ -68,11 +68,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.models.base import utcnow
 
 from .dispatch_pass import attempt_run_id, resolve_installation_id
-from .execution_state import TERMINAL_EXECUTION_STATUSES, BlockCode, ExecutionIdentity, ExecutionStatus, OutcomeKind, PhaseAdvance
+from .execution_state import TERMINAL_EXECUTION_STATUSES, BlockCode, ExecutionIdentity, ExecutionPhase, ExecutionStatus, OutcomeKind, PhaseAdvance
 from .execution_store import advance_execution, load_execution
 from .handoff import current_identity, handoff_required, missing_receipt_hold, outstanding_block, receipt_for
 from .merge_evidence import GitHubEvidenceSource
-from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
+from .models import DecisionKind, NodeKind, OrchestrationAction, OrchestrationDecision, OrchestrationNode, OrchestrationWorkClaim
 from .pr_bindings import (
     BindingError,
     BindingRefusal,
@@ -371,6 +371,7 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 if dispatch.get("attempt") != node.attempts or dispatch.get("run_id") != attempt_run_id(node.id, node.attempts):
                     raise ValueError("dispatch record does not match the current attempt")
                 row = await run_result_for_assignment(session, node=node, dispatch=dispatch)
+                authenticated_assignment = row is not None
                 if row is None:
                     store = run_store if run_store is not None else EngineRunStore.from_env()
                     row = await asyncio.to_thread(store.get, dispatch["run_id"], dispatch["arrived_at"])
@@ -415,14 +416,21 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 if row.get("tenant_id") != node.org_id or row.get("engine_node_id") != node.id or row.get("engine_attempt") != node.attempts:
                     raise ValueError("run record does not match node/tenant/attempt")
                 status = row.get("status")
+                policy_failure = False
                 if node.kind == NodeKind.STORY.value:
                     from .policy_admission import load_in_force_policy
 
                     policy = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
-                    if policy.policy is not None or policy.refusal is not None:
+                    governed = policy.policy is not None or policy.refusal is not None
+                    policy_failure = governed and authenticated_assignment and status == "failed"
+                    if governed and not policy_failure:
                         # The durable handler owns policy-enabled delivery. Neither
                         # worker exit nor a merged PR may bypass review/repair and
                         # the later merge/deployment/evaluation phase handlers.
+                        # An authenticated failure, however, must reach FAILED so
+                        # the existing attributed resume can retry it. Keeping the
+                        # outer node RUNNING strands a terminal run indefinitely.
+                        # Advisory DDB failure alone cannot take this exception.
                         report.waiting += 1
                         continue
                 from .evaluation_plan import managed_evaluation
@@ -495,6 +503,41 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 if locked.state != observed_state or locked.attempts != dispatch["attempt"]:
                     report.waiting += 1
                     continue
+                if policy_failure:
+                    # A continuation can own the same node attempt. Serialize
+                    # with its claim transfer before applying the original run's
+                    # failure, using the existing node -> flow/claim/plan/execution
+                    # lock order. A stale developer cannot fail a live reviewer.
+                    identity = await current_identity(session, org_id=locked.org_id, node_id=locked.id)
+                    current = await load_execution(session, identity=identity, for_update=True) if identity is not None else None
+                    claim = await session.get(OrchestrationWorkClaim, identity.claim_id) if identity is not None else None
+                    if (
+                        identity is None
+                        or identity.cycle != locked.attempts
+                        or current is None
+                        or current.kind is not OutcomeKind.APPLIED
+                        or current.record is None
+                        or current.record.status in TERMINAL_EXECUTION_STATUSES
+                        or current.record.pending_action_key is not None
+                        or claim is None
+                        or claim.active_run_id != dispatch["run_id"]
+                    ):
+                        report.waiting += 1
+                        report.reasons[node.id] = "The failed worker no longer owns the current delivery execution; reconcile its current owner."
+                        continue
+                    successor = await session.scalar(
+                        select(OrchestrationAction.id)
+                        .where(
+                            OrchestrationAction.org_id == locked.org_id,
+                            OrchestrationAction.execution_id == current.record.id,
+                            OrchestrationAction.kind == "review_cycle_dispatch",
+                        )
+                        .limit(1)
+                    )
+                    if successor is not None:
+                        report.waiting += 1
+                        report.reasons[node.id] = "A continuation was recorded for this attempt; reconcile it before retrying the original worker."
+                        continue
                 if node.kind == NodeKind.STORY.value and status == "complete":
                     try:
                         current = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
@@ -584,6 +627,32 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                     )
                 ).rowcount
                 if rows:
+                    if policy_failure:
+                        from .work_claims import Disposition, ReleaseReason, release_work
+
+                        ended = await advance_execution(
+                            session,
+                            identity=identity,
+                            advance=PhaseAdvance(
+                                phase=ExecutionPhase.CONCLUDED,
+                                status=ExecutionStatus.CONCLUDED,
+                                expected_revision=current.record.revision,
+                                progress_note=detail,
+                            ),
+                        )
+                        if ended.kind is not OutcomeKind.APPLIED:
+                            raise ValueError("failed-worker execution changed before settlement")
+                        released = await release_work(
+                            session,
+                            org_id=node.org_id,
+                            claim_id=identity.claim_id,
+                            generation=identity.claim_generation,
+                            reason=ReleaseReason.FAILED,
+                            terminal_evidence=f"authenticated failed run report:{dispatch['run_id']}",
+                        )
+                        if released.disposition not in {Disposition.ADMITTED, Disposition.DUPLICATE}:
+                            raise ValueError("failed-worker claim release refused")
+                        payload["failed_execution_id"] = current.record.id
                     session.add(
                         OrchestrationDecision(
                             org_id=node.org_id,
