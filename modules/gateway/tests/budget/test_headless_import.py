@@ -16,8 +16,12 @@ def run_fresh(code, *, web_key=None):
     if web_key is not None:
         env["BG_TOKEN_SECRET_KEY"] = web_key
     result = subprocess.run(
-        [sys.executable, "-c", code], cwd=GATEWAY, env=env,
-        capture_output=True, text=True, timeout=30,
+        [sys.executable, "-c", code],
+        cwd=GATEWAY,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
 
@@ -49,11 +53,14 @@ else:
 
 
 def test_public_web_router_export_remains_compatible():
-    run_fresh("""
+    run_fresh(
+        """
 from src.budget import budget_router, BudgetService
 from src.budget.routes import router
 from src.budget.service import BudgetService as Service
 assert budget_router is router
 assert BudgetService is Service
 assert router.routes
-""", web_key="headless-import-test-signing-key")
+""",
+        web_key="headless-import-test-signing-key",
+    )
