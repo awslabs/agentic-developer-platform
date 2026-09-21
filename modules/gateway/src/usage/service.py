@@ -268,11 +268,11 @@ class UsageService(IUsageService):
         no attribution had been measured, but not a usable cost answer.
 
         The value comes only from `context._graph_attribution`, a pydantic private
-        attribute that `AgentModelIdentityMiddleware` sets from the assignment
-        `validate_engine_authority` proved against live SQL. Nothing caller-supplied
+        attribute that `AgentModelIdentityMiddleware` sets after protected or
+        shared-run assignment verification against live SQL. Nothing caller-supplied
         reaches this: not `X-Agent-RunId`, not `X-Agent-OrgId`, not a body field,
-        not a hypothetical `X-Graph-Address`, and not the mutable reporting row that
-        also records an address. Private attributes cannot be populated from
+        not a hypothetical `X-Graph-Address`, and not caller-written reporting
+        hints that also contain an address. Private attributes cannot be populated from
         constructor input, so there is no injection path to validate away.
 
         Two properties this function must have, both load-bearing:
@@ -306,7 +306,7 @@ class UsageService(IUsageService):
         # attribute read on an unexpected object would raise here, and — because
         # both callers swallow — would drop the entire usage row rather than
         # surface. Anything that is not a GraphAttribution built inside
-        # `validate_engine_authority` is simply not attribution.
+        # authenticated worker middleware is simply not attribution.
         if not isinstance(attribution, GraphAttribution):
             return None
         if agent_run_id and agent_run_id != attribution.run_id:

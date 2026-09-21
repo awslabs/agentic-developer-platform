@@ -20,7 +20,7 @@ import * as https from 'https';
 import { URL } from 'url';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Hash } from '@smithy/hash-node';
-import { workerAwsCredentialProvider, workerIdentityHeaders, gatewaySigningRegion } from './lib/runIdentity';
+import { workerAwsCredentialProvider, workerIdentityHeaders, readIdentityToken, gatewaySigningRegion } from './lib/runIdentity';
 import { handleKnowledgeBridge } from './lib/knowledgeBridge';
 import { proxyPort } from './lib/proxyPort';
 
@@ -44,7 +44,7 @@ const REGION = get('--region', gatewaySigningRegion(TARGET));
 const STRIP = new Set([
   'authorization', 'x-amz-security-token', 'x-amz-date',
   'x-amz-content-sha256', 'host',
-  'x-adp-run-credential', 'x-adp-workload-token',
+  'x-adp-run-credential', 'x-adp-workload-token', 'x-adp-report-credential',
 ]);
 
 let platformCredentials: Awaited<ReturnType<typeof workerAwsCredentialProvider>>;
@@ -105,6 +105,10 @@ const server = http.createServer(async (req, res) => {
       for (const [name, value] of Object.entries(workerIdentityHeaders())) {
         headers[name.toLowerCase()] = value;
       }
+    } else if (process.env.ADP_RUN_REPORT_CREDENTIAL_FILE) {
+      // Shared-role dispatch uses the same server-owned run assignment for
+      // model attribution. Never forward a local client's chosen capability.
+      headers['x-adp-report-credential'] = readIdentityToken(process.env.ADP_RUN_REPORT_CREDENTIAL_FILE);
     }
     signed = await signer.sign({
       method,

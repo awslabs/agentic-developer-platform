@@ -233,7 +233,7 @@ class RegistrationTarget:
     flow_id: str
     node_id: str
     attempt: int
-    run_id: str
+    run_id: str | None
     repo: str
     issue: int
     installation_id: int
@@ -263,6 +263,13 @@ class MergeEvidence:
     url: str | None = None
     provider_repository_id: int | None = None
     provider_pr_node_id: str | None = None
+
+    # Diagnostic observations only; completion still uses the verified fields above.
+    checks_state: str | None = None
+    review_state: str | None = None
+    draft: bool = False
+    mergeable: str | None = None
+    merge_state: str | None = None
 
 
 def binding_snapshot(binding: OrchestrationPullRequestBinding) -> dict:
@@ -706,6 +713,7 @@ async def register_binding(
         (
             existing.head_sha != pr.head_sha,
             existing.attempt != target.attempt,
+            existing.run_id != target.run_id,
             existing.accepted_scope != scope,
             existing.role != next_role,
             bool(rivals),
@@ -776,6 +784,49 @@ async def register_binding(
     _record_revision(session, binding, actor_id=actor_id, actor_kind=actor_kind)
     await session.flush()
     return binding, True
+
+
+async def carry_forward_binding(
+    session: AsyncSession,
+    *,
+    node: OrchestrationNode,
+    previous_attempt: int,
+    target: RegistrationTarget,
+    pr: PullRequestIdentity,
+    expected_revision: int,
+) -> OrchestrationPullRequestBinding:
+    """Carry the same implementation through an admitted repair transaction.
+
+    The dispatch caller holds the node lock and re-reads provider identity before
+    admitting work. No previous review/check observation carries to the new
+    revision. Limits remain on the node/execution; this only moves the PR pointer.
+    """
+    binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=previous_attempt)
+    if binding is None or binding.revision != expected_revision or completion_candidate(binding):
+        raise BindingError(BindingRefusal.STALE_RUN, "The implementation binding changed while preparing the repair.")
+    if not binding_scope_matches(binding, node):
+        raise BindingError(BindingRefusal.SCOPE_CHANGED, "The story scope changed; explicitly recover the implementation before retrying.")
+    if (
+        node.attempts != previous_attempt + 1
+        or target.attempt != node.attempts
+        or binding.flow_id != node.flow_id
+        or binding.installation_id != target.installation_id
+        or binding.repo.lower() != target.repo.lower()
+        or binding.provider_repository_id != pr.provider_repository_id
+        or binding.provider_pr_node_id != pr.provider_pr_node_id
+        or binding.pr_number != pr.pr_number
+    ):
+        raise BindingError(
+            BindingRefusal.REPOSITORY_MISMATCH, "Repair must retain the same repository, installation and implementation pull request."
+        )
+    current, _ = await register_binding(
+        session,
+        target=target,
+        pr=pr,
+        actor_id="system:orchestration-dispatch",
+        actor_kind=ActorKind.SERVICE,
+    )
+    return current
 
 
 async def recover_binding(

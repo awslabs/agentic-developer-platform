@@ -258,3 +258,113 @@ async def test_binding_snapshots_dispatch_authority_and_accepted_plan(session, m
     assert scope["accepted_plan_hash"] == plan.plan_hash
     assert scope["root_decision_id"] == "accepted-root"
     assert scope["dispatch_decision_id"]
+
+
+async def test_admitted_repairs_carry_same_pr_with_new_revision_and_fence_old_worker(session, monkeypatch):
+    import pytest
+
+    from src.orchestration.pr_bindings import BindingError, BindingRefusal, carry_forward_binding
+
+    monkeypatch.setattr("src.orchestration.pr_bindings.resolve_installation_id", _installation)
+    node, dispatch = await _story(session, binding_marker=True)
+    original = await _bind(session, node, dispatch)
+    original_id = original.id
+    old_target = await resolve_registration_target(session, run_id=dispatch["run_id"])
+    for attempt in (2, 3, 4):
+        node.attempts = attempt
+        current_dispatch = {**dispatch, "attempt": attempt, "run_id": attempt_run_id(node.id, attempt)}
+        session.add(
+            OrchestrationDecision(
+                org_id=node.org_id,
+                flow_id=node.flow_id,
+                node_id=node.id,
+                kind=DecisionKind.NODE_DISPATCHED.value,
+                actor_id="engine",
+                actor_role="service",
+                actor_kind="service",
+                reason=json.dumps(current_dispatch),
+            )
+        )
+        await session.flush()
+        target = await resolve_registration_target(session, run_id=current_dispatch["run_id"])
+        current = await carry_forward_binding(
+            session,
+            node=node,
+            previous_attempt=attempt - 1,
+            target=target,
+            pr=identity(head=f"{attempt:040x}"),
+            expected_revision=attempt - 1,
+        )
+        assert current.id == original_id and current.attempt == attempt and current.revision == attempt
+        assert (await active_binding_for_node(session, org_id=ORG_A, node_id=node.id, attempt=attempt)).id == original_id
+        assert await active_binding_for_node(session, org_id=ORG_A, node_id=node.id, attempt=attempt - 1) is None
+        with pytest.raises(BindingError) as stale:
+            await register_binding(session, target=old_target, pr=identity(), actor_id="late-worker", actor_kind=ActorKind.SERVICE)
+        assert stale.value.code == BindingRefusal.STALE_RUN
+    snapshots = (
+        await session.scalars(
+            select(OrchestrationDecision).where(
+                OrchestrationDecision.node_id == node.id,
+                OrchestrationDecision.kind == DecisionKind.PR_BINDING_CHANGED.value,
+            )
+        )
+    ).all()
+    assert sorted(json.loads(row.reason)["attempt"] for row in snapshots) == [1, 2, 3, 4]
+    assert node.attempts == 4  # Carrying a binding never refunds consumed attempts.
+
+
+async def test_repair_carry_refuses_scope_revision_and_repository_change(session, monkeypatch):
+    from dataclasses import replace
+
+    import pytest
+
+    from src.orchestration.pr_bindings import BindingError, carry_forward_binding
+
+    monkeypatch.setattr("src.orchestration.pr_bindings.resolve_installation_id", _installation)
+    node, dispatch = await _story(session, binding_marker=True)
+    binding = await _bind(session, node, dispatch)
+    target = await resolve_registration_target(session, run_id=dispatch["run_id"])
+    node.attempts = 2
+    await session.flush()
+    target = replace(target, attempt=2, run_id=attempt_run_id(node.id, 2))
+    for override in ({"expected_revision": 999}, {"pr": identity(node_id="other-pr")}):
+        arguments = dict(node=node, previous_attempt=1, target=target, pr=identity(), expected_revision=1)
+        arguments.update(override)
+        with pytest.raises(BindingError):
+            await carry_forward_binding(session, **arguments)
+    node.title = "Changed accepted scope"
+    with pytest.raises(BindingError, match="scope changed"):
+        await carry_forward_binding(session, node=node, previous_attempt=1, target=target, pr=identity(), expected_revision=1)
+    assert binding.attempt == 1 and binding.revision == 1
+
+
+async def test_authenticated_repair_run_in_same_attempt_gets_new_revision_even_without_push(session, monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr("src.orchestration.pr_bindings.resolve_installation_id", _installation)
+    node, dispatch = await _story(session, binding_marker=True)
+    binding = await _bind(session, node, dispatch)
+    target = await resolve_registration_target(session, run_id=dispatch["run_id"])
+    # The run-report adapter authenticates this K2 assignment before constructing
+    # its target. The binding store does not invent a new story attempt for it.
+    repair = replace(target, run_id="continuation:repair-1")
+    current, created = await register_binding(
+        session,
+        target=repair,
+        pr=identity(),
+        actor_id="repair-worker",
+        actor_kind=ActorKind.SERVICE,
+    )
+    assert not created and current.id == binding.id and current.attempt == node.attempts == 1
+    assert current.run_id == repair.run_id and current.revision == 2
+    await register_binding(session, target=repair, pr=identity(), actor_id="repair-worker", actor_kind=ActorKind.SERVICE)
+    assert current.revision == 2
+    rows = (
+        await session.scalars(
+            select(OrchestrationDecision).where(
+                OrchestrationDecision.node_id == node.id,
+                OrchestrationDecision.kind == DecisionKind.PR_BINDING_CHANGED.value,
+            )
+        )
+    ).all()
+    assert {json.loads(row.reason)["run_id"] for row in rows} == {dispatch["run_id"], repair.run_id}

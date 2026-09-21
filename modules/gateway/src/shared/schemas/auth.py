@@ -155,7 +155,8 @@ class TokenContext(BaseModel):
     # degraded registry lookup all reserve no run/chain target and so release
     # none, reconciling exactly as they did before this issue.
     _run_scope_reservations: "list[ReservationTarget]" = PrivateAttr(default_factory=list)
-    # Set only after protected credential, pod, grant and ownership verification.
+    # Set after protected pod/grant verification, or authenticated shared-run
+    # assignment and accepted policy verification in the model middleware.
     # Neither model parsing nor headers can supply a pydantic private attribute.
     _protected_run_binding: "RunBinding | None" = PrivateAttr(default=None)
     # Issue #4898: the graph node this request's model spend is attributable to,

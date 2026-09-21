@@ -644,3 +644,29 @@ def test_review_upload_uses_live_own_run_transport(enabled, http, monkeypatch, r
     assert "Credential=platform-key/" in calls[0]["headers"]["Authorization"]
     assert calls[0]["kwargs"]["allow_redirects"] is False
     assert calls[0]["session"].trust_env is False
+
+
+def test_review_upload_shared_report_transport_checks_exact_byte_receipt(monkeypatch):
+    import hashlib
+    from lib import run_report
+
+    monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "false")
+    monkeypatch.setenv("ADP_TENANT_ID", "tenant")
+    monkeypatch.setenv("ADP_MESSAGE_ID", "reviewer")
+    monkeypatch.setenv("ADP_RUN_ATTEMPT", "1")
+    monkeypatch.setattr(run_report, "enabled", lambda: True)
+    data = b'{"result_id": "review-one"}\n'
+    digest = hashlib.sha256(data).hexdigest()
+    key = f"runs/{hashlib.sha256(b'tenant').hexdigest()}/{hashlib.sha256(b'reviewer').hexdigest()}/attempt-1/review-result/{digest}.json"
+    calls = []
+
+    def report(path, body):
+        calls.append((path, body))
+        return {"key": key, "sha256": digest, "recorded": True}
+
+    monkeypatch.setattr(run_report, "request", report)
+    assert status_gateway_client.upload_review_result(data) == key
+    assert calls == [("/review-result", {"content": data.decode()})]
+    monkeypatch.setattr(run_report, "request", lambda *args: {"key": key, "sha256": "wrong", "recorded": True})
+    with pytest.raises(StatusGatewayError, match="receipt"):
+        status_gateway_client.upload_review_result(data)

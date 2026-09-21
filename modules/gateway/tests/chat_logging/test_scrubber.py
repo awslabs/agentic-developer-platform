@@ -273,3 +273,10 @@ class TestScrubPipeline:
 
         assert "postgresql://" not in scrubbed
         assert "[REDACTED:" in scrubbed
+
+
+def test_shared_run_report_capability_is_never_logged():
+    from src.chat_logging.scrubber import HeaderScrubber
+
+    result = HeaderScrubber().scrub({"X-Adp-Report-Credential": "adprpt1.sensitive", "Content-Type": "application/json"})
+    assert "adprpt1.sensitive" not in str(result)

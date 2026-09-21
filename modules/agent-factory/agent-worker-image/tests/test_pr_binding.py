@@ -106,7 +106,7 @@ class TestPayload:
     def test_sends_immutable_provider_identity(self):
         with (
             patch("lib.pr_binding.subprocess.run", side_effect=_fake_gh()),
-            patch("lib.pr_binding.post_self", return_value={"created": True}) as post,
+            patch("lib.pr_binding.post_self", return_value={"bound": True, "pr_number": PR_NUMBER, "head_sha": HEAD_SHA, "created": True}) as post,
         ):
             register_pull_request(repo=REPO, pr_number=PR_NUMBER)
         path, payload = post.call_args[0]
@@ -125,7 +125,7 @@ class TestPayload:
         """
         with (
             patch("lib.pr_binding.subprocess.run", side_effect=_fake_gh()),
-            patch("lib.pr_binding.post_self", return_value={"created": True}) as post,
+            patch("lib.pr_binding.post_self", return_value={"bound": True, "pr_number": PR_NUMBER, "head_sha": HEAD_SHA, "created": True}) as post,
         ):
             register_pull_request(repo=REPO, pr_number=PR_NUMBER)
         payload = post.call_args[0][1]
@@ -135,7 +135,7 @@ class TestPayload:
     def test_reviewer_artifact_flag_only_when_asked(self):
         with (
             patch("lib.pr_binding.subprocess.run", side_effect=_fake_gh()),
-            patch("lib.pr_binding.post_self", return_value={"created": True}) as post,
+            patch("lib.pr_binding.post_self", return_value={"bound": True, "pr_number": PR_NUMBER, "head_sha": HEAD_SHA, "created": True}) as post,
         ):
             register_pull_request(repo=REPO, pr_number=PR_NUMBER)
             assert "reviewer_artifact" not in post.call_args[0][1]
@@ -194,11 +194,11 @@ class TestFailSoft:
         post.assert_not_called()
         assert "wait" in note.lower()
 
-    def test_no_pull_request_appends_nothing(self):
+    def test_required_missing_pull_request_blocks_completion(self):
         """`transcript_only` and the no-PR path have nothing to bind."""
         for value in ("", None, 0):
             with patch("lib.pr_binding.post_self") as post:
-                assert binding_note(repo=REPO, pr_number=value) == ""
+                assert "pr_candidate_missing" in binding_note(repo=REPO, pr_number=value)
             post.assert_not_called()
 
     def test_unparseable_pr_number_appends_nothing(self):
@@ -213,7 +213,7 @@ class TestSuccessNote:
     def test_created_reports_registration(self):
         with (
             patch("lib.pr_binding.subprocess.run", side_effect=_fake_gh()),
-            patch("lib.pr_binding.post_self", return_value={"created": True, "role": "implementation"}),
+            patch("lib.pr_binding.post_self", return_value={"bound": True, "pr_number": PR_NUMBER, "head_sha": HEAD_SHA, "created": True, "role": "implementation"}),
         ):
             note = binding_note(repo=REPO, pr_number=PR_NUMBER)
         assert f"#{PR_NUMBER}" in note
@@ -224,8 +224,56 @@ class TestSuccessNote:
         """A tick restart re-registers the same PR; that is convergence, not an error."""
         with (
             patch("lib.pr_binding.subprocess.run", side_effect=_fake_gh()),
-            patch("lib.pr_binding.post_self", return_value={"created": False, "role": "implementation"}),
+            patch("lib.pr_binding.post_self", return_value={"bound": True, "pr_number": PR_NUMBER, "head_sha": HEAD_SHA, "created": False, "role": "implementation"}),
         ):
             note = binding_note(repo=REPO, pr_number=PR_NUMBER)
         assert "already registered" in note.lower()
         assert "failed" not in note.lower()
+
+
+class TestAcknowledgedSharedRoleHandoff:
+    @pytest.fixture(autouse=True)
+    def shared_reporting(self, monkeypatch):
+        monkeypatch.setattr("lib.pr_binding.authority_enabled", lambda: False)
+        monkeypatch.setattr("lib.run_report.enabled", lambda: True)
+        monkeypatch.setattr("lib.pr_binding.time.sleep", lambda _: None)
+        monkeypatch.setattr("lib.run_report.spool_candidate", lambda _: None)
+        monkeypatch.setattr("lib.pr_binding.subprocess.run", _fake_gh())
+
+    def snapshot(self):
+        return {"binding_receipt": {"bound": True, "repo": REPO, "pr_number": PR_NUMBER,
+                                    "head_sha": HEAD_SHA, "provider_repository_id": REPOSITORY_ID,
+                                    "provider_pr_node_id": PR_NODE_ID}, "retryable": False}
+
+    def test_lost_response_retries_exact_candidate_and_requires_readback(self, monkeypatch):
+        from lib import run_report
+        from lib.pr_binding import handoff_pending
+        request = MagicMock(side_effect=[run_report.RunReportError("lost_reply"), self.snapshot(), self.snapshot()])
+        monkeypatch.setattr(run_report, "request", request)
+        assert "registered" in binding_note(repo=REPO, pr_number=PR_NUMBER)
+        assert request.call_args_list[0] == request.call_args_list[1]
+        assert request.call_args_list[2].args == ()
+        assert handoff_pending() is False
+
+    def test_unavailable_or_wrong_readback_never_acknowledges(self, monkeypatch):
+        from lib import run_report
+        from lib.pr_binding import handoff_pending
+        wrong = self.snapshot()
+        wrong["binding_receipt"]["head_sha"] = "b" * 40
+        monkeypatch.setattr(run_report, "request", MagicMock(side_effect=[self.snapshot(), wrong]))
+        assert "failed" in binding_note(repo=REPO, pr_number=PR_NUMBER)
+        assert handoff_pending() is True
+
+    def test_redelivered_candidate_retries_reporting_without_pr_discovery(self, monkeypatch):
+        from lib import run_report
+        from lib.pr_binding import resume_handoff
+        pending = {"candidate_pr": self.snapshot()["binding_receipt"], "binding_receipt": None}
+        request = MagicMock(side_effect=[pending, self.snapshot()])
+        monkeypatch.setattr(run_report, "request", request)
+        terminal = MagicMock()
+        monkeypatch.setattr(run_report, "terminal", terminal)
+        discovery = MagicMock(side_effect=AssertionError("Must not rerun PR discovery"))
+        monkeypatch.setattr("lib.pr_binding._pr_identity", discovery)
+        assert resume_handoff() is True
+        terminal.assert_called_once_with("complete")
+        discovery.assert_not_called()

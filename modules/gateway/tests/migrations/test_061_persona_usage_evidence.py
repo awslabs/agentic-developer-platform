@@ -212,7 +212,7 @@ def test_real_postgres_upgrade_downgrade_and_reupgrade(pg_url):
 
     from tests.migrations.conftest_postgres import downgrade, upgrade
 
-    upgrade(pg_url, "head")
+    upgrade(pg_url, INDEX_MIGRATION.revision)
     with psycopg2.connect(pg_url) as conn, conn.cursor() as cursor:
         cursor.execute(
             "SELECT column_name, is_nullable, column_default "
@@ -239,7 +239,7 @@ def test_real_postgres_upgrade_downgrade_and_reupgrade(pg_url):
         cursor.execute("SELECT to_regclass('public.persona_model_retirement_alerts')")
         assert cursor.fetchone()[0] is None
 
-    upgrade(pg_url, "head")
+    upgrade(pg_url, INDEX_MIGRATION.revision)
     with psycopg2.connect(pg_url) as conn, conn.cursor() as cursor:
         cursor.execute("SELECT version_num FROM alembic_version")
         assert cursor.fetchone()[0] == INDEX_MIGRATION.revision

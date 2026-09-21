@@ -215,3 +215,70 @@ describe('bound pull request evidence', () => {
     expect(screen.getByText('Merged — story complete')).toBeVisible();
   });
 });
+
+
+describe('actionable delivery status', () => {
+  const diagnostic: NonNullable<GraphNode['delivery_progress']> = {
+    stage: 'repair', actor: 'developer', detail: 'CI has failed on the current PR revision.',
+    blocker: 'ci_failed', blockers: ['ci_failed', 'changes_requested', 'automation_not_configured'],
+    next_action: 'Repair the failing checks, then request a fresh review.', automation: 'not_configured',
+    checks_state: 'FAILURE', review_state: 'changes_requested',
+    scheduled_action: null, next_check_at: null, observed_at: '2026-09-21T00:00:00Z',
+  };
+
+  it('shows stage, responsible actor, all blockers and next action together', () => {
+    render(card({ ...story, delivery_progress: diagnostic, binding_hold: 'The pull request is not merged yet.', result_summary: 'Old diagnosis' }));
+    expect(screen.getByTestId('node-stage-u1')).toHaveTextContent('Repairs');
+    const status = within(screen.getByRole('region', { name: 'Current delivery status' }));
+    expect(status.getByText('Developer')).toBeVisible();
+    expect(status.getByText('CI failed')).toBeVisible();
+    expect(status.getByText('Review requested changes')).toBeVisible();
+    expect(status.getByText(diagnostic.next_action!)).toBeVisible();
+    expect(status.getByText('No automatic action is scheduled.')).toBeVisible();
+    expect(status.getByText('Automatic review and repair are not configured for this flow.')).toBeVisible();
+    expect(screen.queryByText('The pull request is not merged yet.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Old diagnosis')).not.toBeInTheDocument();
+  });
+
+  it('shows only a recorded controller check and removes it on a stale-execution refresh', () => {
+    const due = '2026-09-21T00:05:00Z';
+    const view = render(card({ ...story, delivery_progress: {
+      ...diagnostic, stage: 'awaiting_review', actor: 'reviewer', automation: 'engine', blockers: [], blocker: null,
+      detail: 'Review is pending.', scheduled_action: 'Reconcile this execution', next_check_at: due,
+    } }));
+    const status = screen.getByRole('region', { name: 'Current delivery status' });
+    expect(within(status).getByText('Scheduled check:')).toBeVisible();
+    expect(status.querySelector(`time[datetime="${due}"]`)).not.toBeNull();
+    expect(screen.queryByText('No automatic action is scheduled.')).not.toBeInTheDocument();
+    view.rerender(card({ ...story, delivery_progress: {
+      ...diagnostic, stage: 'continuation', actor: 'operator', automation: 'paused',
+      blocker: 'execution_stale', blockers: ['execution_stale'], detail: 'The execution belongs to an earlier attempt.',
+    } }));
+    expect(screen.queryByText('Scheduled check:')).not.toBeInTheDocument();
+    expect(screen.getByText('Execution belongs to a previous attempt or plan')).toBeVisible();
+  });
+
+  it('replaces a CI failure with provider unavailability after refresh', () => {
+    const view = render(card({ ...story, delivery_progress: diagnostic }));
+    view.rerender(card({ ...story, delivery_progress: {
+      ...diagnostic, stage: 'provider_unavailable', actor: 'engine', blocker: 'provider_unavailable', blockers: ['provider_unavailable'],
+      detail: 'GitHub evidence could not be verified.', next_action: 'Recheck GitHub evidence.', checks_state: null, review_state: null,
+    } }));
+    expect(screen.getByTestId('node-stage-u1')).toHaveTextContent('GitHub evidence unavailable');
+    expect(screen.queryByText('CI failed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Review requested changes')).not.toBeInTheDocument();
+  });
+
+  it('shows adopted historical delivery without claiming a worker ran or is scheduled', () => {
+    render(card({ ...story, attempts: 0, run_id: null, delivery_progress: {
+      ...diagnostic, stage: 'historical_delivery', actor: 'engine', automation: 'reconciliation_only',
+      blocker: 'predecessor_pending', blockers: ['predecessor_pending'],
+      detail: 'Historical delivery is waiting for predecessor nodes.', next_action: 'Recheck delivery and predecessor requirements.',
+    } }));
+    expect(screen.getByTestId('node-stage-u1')).toHaveTextContent('Historical delivery');
+    expect(screen.getByText('Delivered before engine tracking')).toBeVisible();
+    expect(screen.getByText(/Historical delivery; no worker was dispatched/)).toBeVisible();
+    expect(screen.queryByRole('link', { name: 'View run' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Automatic review and repair are not configured for this flow.')).not.toBeInTheDocument();
+  });
+});

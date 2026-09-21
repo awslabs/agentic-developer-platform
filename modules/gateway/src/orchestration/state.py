@@ -76,10 +76,12 @@ _HUMAN_ONLY = frozenset({ActorKind.HUMAN})
 # plan amendment is normal operation, not an exception path.
 LEGAL_TRANSITIONS: dict[NodeState, dict[NodeState, frozenset[ActorKind]]] = {
     NodeState.PENDING: {
+        NodeState.AWAITING_MERGE: _HUMAN_ONLY,  # Verified historical delivery, no worker
         NodeState.READY: _ENGINE_OR_HUMAN,  # Predecessors satisfied
         NodeState.SUPERSEDED: _ENGINE_OR_HUMAN,  # Amendment
     },
     NodeState.READY: {
+        NodeState.AWAITING_MERGE: _HUMAN_ONLY,  # Verified historical delivery, no worker
         NodeState.RUNNING: _ENGINE_OR_HUMAN,  # Dispatch
         NodeState.SUPERSEDED: _ENGINE_OR_HUMAN,  # Amendment
     },

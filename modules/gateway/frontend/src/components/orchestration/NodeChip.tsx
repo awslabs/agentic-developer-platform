@@ -128,7 +128,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls, executi
           {style && node.kind !== 'story' && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
           {node.kind === 'story' && <StoryJourney node={node} execution={execution} />}
           {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
-          {resultSummary && !node.binding_hold && <p className="mt-1 text-sm">{resultSummary}</p>}
+          {resultSummary && !node.binding_hold && !node.delivery_progress && <p className="mt-1 text-sm">{resultSummary}</p>}
           <div className="mt-1 flex flex-wrap gap-3 text-xs">
             {node.issue_url && (
               <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View issue and evidence</a>

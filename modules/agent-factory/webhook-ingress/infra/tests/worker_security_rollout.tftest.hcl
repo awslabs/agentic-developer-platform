@@ -435,3 +435,30 @@ run "activation_refuses_placeholder_marker_key" {
   }
   expect_failures = [kubernetes_secret.worker_run_services]
 }
+
+run "shared_reporting_preserves_existing_worker_role" {
+  command = plan
+  variables {
+    agent_authority_enabled            = false
+    shared_run_reporting_enabled       = true
+    shared_worker_continuation_enabled = true
+  }
+  assert {
+    condition     = local.agent_worker_sa_name == "agent-scaledjob-sa" && local.worker_gateway_config.ADP_SHARED_RUN_REPORTING_ENABLED == "true" && local.worker_gateway_config.ADP_SHARED_WORKER_CONTINUATION_ENABLED == "true"
+    error_message = "Shared reporting and accepted continuation must use the existing worker service account."
+  }
+  assert {
+    condition     = aws_ssm_parameter.agent_run_reporting_key.type == "SecureString" && aws_ssm_parameter.agent_run_reporting_key.key_id == aws_kms_key.dynamodb.arn
+    error_message = "The shared gateway/tick signing key must use the existing customer-managed encryption key."
+  }
+}
+
+run "continuation_cannot_outrun_reporting" {
+  command = plan
+  variables {
+    agent_authority_enabled            = false
+    shared_run_reporting_enabled       = false
+    shared_worker_continuation_enabled = true
+  }
+  expect_failures = [kubernetes_config_map.worker_gateway]
+}

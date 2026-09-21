@@ -891,6 +891,47 @@ async def _dispatch_one_unclaimed(
             )
             return
 
+    # A repair inherits the implementation identity, not an old approval. Resolve
+    # provider truth before consuming an attempt; failure leaves the node READY.
+    prior_binding = None
+    repair_pr = None
+    prior_revision = None
+    if node.kind == NodeKind.STORY.value and observed_attempts > 0:
+        from .pr_bindings import active_binding_for_node, binding_scope_matches, completion_candidate
+        from .pr_identity import resolve_pr_identity
+
+        prior_binding = await active_binding_for_node(session, org_id=org_id, node_id=node.id, attempt=observed_attempts)
+        if prior_binding is not None:
+            if completion_candidate(prior_binding) or not binding_scope_matches(prior_binding, node):
+                report.record(org_id, "policy_blocked")
+                report.policy_block_reasons["repair_binding_scope_changed"] = 1
+                return
+            if (
+                prior_binding.repo.lower() != config.repo.lower()
+                or prior_binding.provider_repository_id != repository_id
+                or prior_binding.installation_id != installation_id
+            ):
+                report.record(org_id, "policy_blocked")
+                report.policy_block_reasons["repair_binding_repository_changed"] = 1
+                return
+            try:
+                repair_pr = await resolve_pr_identity(
+                    org_id=org_id,
+                    installation_id=installation_id,
+                    repo=prior_binding.repo,
+                    pr_number=prior_binding.pr_number,
+                )
+                if (repair_pr.provider_repository_id, repair_pr.provider_pr_node_id) != (
+                    prior_binding.provider_repository_id,
+                    prior_binding.provider_pr_node_id,
+                ):
+                    raise ValueError("implementation identity changed")
+            except Exception:
+                report.record(org_id, "policy_blocked")
+                report.policy_block_reasons["repair_binding_unverifiable"] = 1
+                return
+            prior_revision = prior_binding.revision
+
     outcome = await dispatch_node(session, node, genesis)
 
     if outcome.status is DispatchStatus.REJECTED:
@@ -982,9 +1023,12 @@ async def _dispatch_one_unclaimed(
         # the node is left `ready`, nothing is published, and the caller records the
         # typed refusal after the rollback (where it can survive).
         raise _AdmissionRefusedError(admission)
-    receipt_required = admission.kind is AdmissionKind.ADMITTED
-    if receipt_required:
-        envelope["handoff_required"] = True
+    execution_admitted = admission.kind is AdmissionKind.ADMITTED
+    shared_continuation = execution_admitted and await _shared_continuation(session, node)
+    receipt_required = execution_admitted and not shared_continuation
+    if execution_admitted:
+        if receipt_required:
+            envelope["handoff_required"] = True
         # #5144 item 1: the fences the worker must see echoed back before it may
         # report an accepted handoff. Dispatch facts for comparison only — the
         # gateway resolves its own authority from protected state and trusts nothing
@@ -1005,6 +1049,9 @@ async def _dispatch_one_unclaimed(
             "claim_id": identity.claim_id,
             "claim_generation": identity.claim_generation,
         }
+        if shared_continuation:
+            envelope["execution_continuation"] = dict(envelope["handoff_expect"])
+            envelope["action"] = Action.REPAIR.value if observed_attempts else Action.DEVELOP.value
 
     session.add(
         OrchestrationDecision(
@@ -1034,6 +1081,32 @@ async def _dispatch_one_unclaimed(
         )
     )
     await session.flush()
+
+    if prior_binding is not None:
+        from .pr_bindings import binding_summary, carry_forward_binding, resolve_registration_target
+
+        current_binding = await carry_forward_binding(
+            session,
+            node=node,
+            previous_attempt=observed_attempts,
+            target=await resolve_registration_target(session, run_id=envelope["message_id"], expected_org_id=org_id),
+            pr=repair_pr,
+            expected_revision=prior_revision,
+        )
+        envelope["bound_pull_request"] = {
+            **binding_summary(current_binding),
+            "provider_repository_id": current_binding.provider_repository_id,
+            "provider_pr_node_id": current_binding.provider_pr_node_id,
+        }
+
+    # Activate only after gateway, worker, migration and signing material have
+    # been verified. The assignment commits atomically with this exact dispatch.
+    from .report_dispatch import reporting_enabled
+
+    if binding_required and reporting_enabled() and os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
+        from .run_reports import prepare_run_report
+
+        await prepare_run_report(session, envelope)
 
     # Queued, not sent. The send happens in `publish_pending` after the caller
     # commits — see the module docstring on commit-then-publish.
@@ -1261,6 +1334,22 @@ class _AdmissionRefusedError(Exception):
         self.admission = admission
 
 
+async def _shared_continuation(session, node) -> bool:
+    if (
+        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").lower() == "true"
+        or os.environ.get("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false").lower() != "true"
+    ):
+        return False
+    from .review_cycle import CycleBlockedError
+    from .shared_policy import shared_inputs
+
+    try:
+        await shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
+        return True
+    except CycleBlockedError:
+        return False
+
+
 async def _dispatch_one(session, node, *, config, report) -> None:
     from .work_admission import admit, enabled, require_authority, resolve_repository_id
     from .work_claims import ClaimOwner, OwnerKind, WorkClaimError
@@ -1268,7 +1357,8 @@ async def _dispatch_one(session, node, *, config, report) -> None:
     if not config.configured:
         await _dispatch_one_unclaimed(session, node, config=config, report=report)
         return
-    if not enabled():
+    shared_continuation = await _shared_continuation(session, node)
+    if not enabled() and not shared_continuation:
         from .policy_admission import load_in_force_policy
 
         inputs = await load_in_force_policy(session, org_id=node.org_id, flow_id=node.flow_id)
@@ -1297,7 +1387,8 @@ async def _dispatch_one(session, node, *, config, report) -> None:
     # after exactly that rollback.
     node_id, org_id, flow_id = node.id, node.org_id, node.flow_id
     try:
-        require_authority()
+        if not shared_continuation:
+            require_authority()
         installation = await resolve_installation_id(session, org_id=node.org_id)
         if installation is None:
             raise WorkClaimError("installation_unresolved", "Ownership requires a tenant installation.")
@@ -1450,6 +1541,14 @@ async def run_dispatch_pass(
             # non-success, keep going.
             logger.exception("orchestration dispatch: failed to dispatch node %s (org %s)", node_id, org_id)
             report.record(org_id, "errors")
+
+    from .report_dispatch import recover_pending_reports
+
+    try:
+        await recover_pending_reports(session, config=cfg, report=report)
+    except Exception:
+        logger.exception("orchestration dispatch: durable report outbox could not be recovered")
+        report.errors += 1
 
     return report
 

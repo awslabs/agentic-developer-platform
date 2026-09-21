@@ -26,7 +26,9 @@ from .pr_bindings import BindingError, MergeEvidence, active_binding_for_node, b
 from .review_evidence import ReviewEvidence
 
 
-async def _app_review_approval(client: httpx.AsyncClient, *, token: str, repo: str, pr_number: int, app_id: int, head: str) -> bool | None:
+async def _app_review_opinion(
+    client: httpx.AsyncClient, *, token: str, repo: str, pr_number: int, app_id: int, head: str
+) -> tuple[bool | None, str | None]:
     """Latest Codex verdict published by the tenant's App, including a shared author.
 
     GitHub disallows formal self-approval. Authenticate the existing reviewer
@@ -35,6 +37,7 @@ async def _app_review_approval(client: httpx.AsyncClient, *, token: str, repo: s
     Read all pages within a fixed bound so an unseen withdrawal cannot pass.
     """
     latest = None
+    latest_state = None
     latest_key = ("", 0)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     for page in range(1, 11):
@@ -68,8 +71,17 @@ async def _app_review_approval(client: httpx.AsyncClient, *, token: str, repo: s
                 body,
             )
             latest = bool(match and match[2] == head)
+            latest_state = (
+                "approved"
+                if latest
+                else "stale"
+                if match
+                else "changes_requested"
+                if body.startswith("## agent-codex-reviewer — REQUEST CHANGES\n")
+                else "unverified"
+            )
         if "next" not in response.links:
-            return latest
+            return latest, latest_state
     raise RuntimeError("GitHub reviewer comment pagination exceeded the evidence bound")
 
 
@@ -129,7 +141,7 @@ class GitHubEvidenceSource:
             token = await app.get_installation_token(installation_id)
             query = """query($owner:String!,$name:String!,$pr:Int!) {
               repository(owner:$owner,name:$name) { databaseId pullRequest(number:$pr) {
-                id url merged mergedAt headRefOid reviewDecision mergeCommit { oid }
+                id url merged mergedAt headRefOid reviewDecision isDraft mergeable mergeStateStatus mergeCommit { oid }
                 author { login }
                 commits(last:1) { nodes { commit { statusCheckRollup { state } } } }
                 reviews(last:100) { pageInfo { hasPreviousPage } nodes { state submittedAt commit { oid } author { login } } }
@@ -145,8 +157,9 @@ class GitHubEvidenceSource:
                 payload = response.json()
                 record = (payload.get("data", {}).get("repository") or {}).get("pullRequest") or {}
                 app_approval = None
+                app_review_state = None
                 if record and not payload.get("errors"):
-                    app_approval = await _app_review_approval(
+                    app_approval, app_review_state = await _app_review_opinion(
                         client, token=token, repo=repo, pr_number=pr_number, app_id=app_id, head=record.get("headRefOid") or ""
                     )
             if payload.get("errors"):
@@ -174,6 +187,24 @@ class GitHubEvidenceSource:
                 and "CHANGES_REQUESTED" not in latest.values()
                 and record.get("reviewDecision") not in {"CHANGES_REQUESTED", "REVIEW_REQUIRED"}
             )
+            if review_approved:
+                review_state = "approved"
+            elif (
+                record.get("reviewDecision") == "CHANGES_REQUESTED"
+                or "CHANGES_REQUESTED" in latest.values()
+                or app_review_state == "changes_requested"
+            ):
+                review_state = "changes_requested"
+            elif (reviews.get("pageInfo") or {}).get("hasPreviousPage", False):
+                review_state = "unverified"
+            elif record.get("reviewDecision") == "REVIEW_REQUIRED":
+                review_state = "required"
+            elif app_review_state in {"stale", "unverified"}:
+                review_state = app_review_state
+            elif "STALE" in latest.values():
+                review_state = "stale"
+            else:
+                review_state = "missing"
             return MergeEvidence(
                 merged=bool(record.get("merged")),
                 head_sha=head,
@@ -184,6 +215,11 @@ class GitHubEvidenceSource:
                 url=record.get("url"),
                 provider_repository_id=(payload.get("data", {}).get("repository") or {}).get("databaseId"),
                 provider_pr_node_id=record.get("id"),
+                checks_state=rollup.get("state") or "MISSING",
+                review_state=review_state,
+                draft=bool(record.get("isDraft")),
+                mergeable=record.get("mergeable"),
+                merge_state=record.get("mergeStateStatus"),
             )
         finally:
             await app.aclose()

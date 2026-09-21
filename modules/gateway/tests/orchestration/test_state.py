@@ -106,8 +106,8 @@ class TestTransitionTable:
         behind it, which no derived check can see.
         """
         assert {state: set(successors) for state, successors in LEGAL_TRANSITIONS.items()} == {
-            NodeState.PENDING: {NodeState.READY, NodeState.SUPERSEDED},
-            NodeState.READY: {NodeState.RUNNING, NodeState.SUPERSEDED},
+            NodeState.PENDING: {NodeState.READY, NodeState.AWAITING_MERGE, NodeState.SUPERSEDED},
+            NodeState.READY: {NodeState.RUNNING, NodeState.AWAITING_MERGE, NodeState.SUPERSEDED},
             NodeState.RUNNING: {
                 NodeState.AWAITING_MERGE,
                 NodeState.AWAITING_GATE,

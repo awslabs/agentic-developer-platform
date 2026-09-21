@@ -1,9 +1,9 @@
-# Gateway-only signing material lives in the gateway namespace, outside the
-# worker's Secrets Manager adp/* read grant. Workers have no Kubernetes Secret
-# read permission. Terraform state is sensitive and remains in the platform
-# backend, which is outside the worker's beads/log/evidence S3 grants.
+# Server-managed signing material is never included in worker payloads. Gateway
+# pods read the Kubernetes Secret; the tick reads the same key from encrypted SSM.
+# Worker role permissions are unchanged. Shared AdministratorAccess does not
+# provide tamper-proof IAM isolation from SSM, Kubernetes or Terraform state.
 resource "random_password" "agent_run_credential" {
-  count   = local.agent_authority_provisioned ? 1 : 0
+  count   = 1
   length  = 64
   special = false
 }
@@ -29,6 +29,8 @@ locals {
     if var.agent_control_publish_both_keys || slot == var.agent_control_signing_key_slot
   }
   agent_authority_key_id = local.agent_authority_provisioned ? substr(sha256(local.agent_control_active_key.public_key_pem), 0, 16) : ""
+  # Reporting needs the existing gateway endpoint in both IAM modes. The
+  # authority flag and pod-proof fields remain protected-mode only.
   agent_authority_env_block = var.agent_authority_enabled ? join("\n", [
     "                  - name: ADP_AGENT_AUTHORITY_ENABLED",
     "                    value: \"true\"",
@@ -40,7 +42,10 @@ locals {
     "                    value: '${jsonencode(local.agent_control_verification_keys)}'",
     "                  - name: ADP_CONTROL_ENVELOPE_KEYS_FILE",
     "                    value: /var/run/adp-control-keys/keys.json",
-  ]) : ""
+    ]) : join("\n", [
+    "                  - name: ADP_AGENT_CONTROL_ENDPOINT",
+    "                    value: ${data.aws_ssm_parameter.gateway_apigw_invoke_url.value}/internal/v1/agent",
+  ])
   agent_authority_mount_block = var.agent_authority_enabled ? join("\n", [
     "                volumeMounts:",
     "                  - name: adp-workload-identity",
@@ -66,15 +71,16 @@ locals {
 }
 
 resource "kubernetes_secret" "agent_authority" {
-  count = local.agent_authority_provisioned ? 1 : 0
+  count = 1
   metadata {
     name      = "agent-authority-signing"
     namespace = var.gateway_namespace
   }
-  data = {
-    run-credential-key   = random_password.agent_run_credential[0].result
+  data = merge({
+    run-credential-key = random_password.agent_run_credential[0].result
+    }, local.agent_authority_provisioned ? {
     envelope-signing-key = local.agent_control_active_key.private_key_pem
-  }
+  } : {})
   lifecycle {
     precondition {
       condition     = !var.agent_authority_enabled || length(var.agent_authority_worker_image_digests) > 0
@@ -174,4 +180,13 @@ resource "aws_ssm_parameter" "agent_authority_key_id" {
   type   = "SecureString"
   key_id = aws_kms_key.dynamodb.arn
   value  = var.agent_authority_enabled ? local.agent_authority_key_id : "disabled"
+}
+
+# The tick reuses the exact gateway key. Only the parameter name is exported in
+# runtime wiring; key plaintext never appears in outputs or Lambda environment.
+resource "aws_ssm_parameter" "agent_run_reporting_key" {
+  name   = "/adp/${var.environment}/gateway/run-report-signing-key"
+  type   = "SecureString"
+  key_id = aws_kms_key.dynamodb.arn
+  value  = random_password.agent_run_credential[0].result
 }

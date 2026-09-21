@@ -33,6 +33,7 @@ from src.orchestration.models import (
 from src.orchestration.pr_bindings import PullRequestIdentity
 from src.orchestration.review_cycle import PHASES, ReviewCycleHandler
 from src.orchestration.review_cycle_dispatch import ReviewCycleServices, continuation_run_id, current_author_run, validate_continuation_assignment
+from src.orchestration.run_reports import OrchestrationRunReport
 from src.shared.models.base import Base
 from tests.agentauth.test_human_dispatch import store  # noqa: F401
 from tests.migrations.conftest_postgres import pg_server, pg_url, to_async_url  # noqa: F401
@@ -54,6 +55,7 @@ async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
         OrchestrationExecution,
         OrchestrationAction,
         OrchestrationPullRequestBinding,
+        OrchestrationRunReport,
     ]
     async with engine.begin() as connection:
         await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=[model.__table__ for model in models]))

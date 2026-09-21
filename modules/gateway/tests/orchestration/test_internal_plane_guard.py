@@ -440,6 +440,8 @@ class TestOrchestrationRouterIsOperatorPlane:
             # that. Asserted on the response body in
             # `test_execution_read.py::test_the_claim_binding_is_never_published`.
             ("/orchestration/flows/{flow_id}/execution", "GET"): "Permission.USAGE_READ",
+            ("/orchestration/flows/{flow_id}/continuation/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/continuation/accept", "POST"): "Permission.PLAN_APPROVE",
             # Issue #5301: attributed recovery of a *historically unbound* story —
             # a human asserting which pull request delivered work that no run ever
             # registered. PLAN_APPROVE and nothing weaker, for two reasons.

@@ -273,8 +273,8 @@ ROOT_PRINCIPAL_SERVICE = "service"
 class RunBinding:
     """A run's server-authoritative identity.
 
-    Every field comes from the ``webhook-events`` row written at ingress. None of
-    it is caller-supplied, which is the entire point of the type.
+    Fields come from a server-written ingress record, protected assignment, or
+    authenticated shared-run assignment. Caller assertions never supply them.
     """
 
     run_id: str
@@ -293,7 +293,7 @@ class RunBinding:
     # ``verify_row_matches_caller``'s admissibility checks reads it — a row does
     # not become bindable or unbindable by claiming a principal kind.
     is_human_rooted: bool | None = None
-    # Only the protected worker middleware supplies an accepted engine flow.
+    # Only authenticated worker middleware supplies an assigned engine flow.
     # Legacy capability lookups must never infer this from an asserted header.
     flow_id: str | None = None
 

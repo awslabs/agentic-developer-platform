@@ -565,7 +565,9 @@ class BudgetEnforcementService:
         row here would let an agent pin its spend on an arbitrary human, which is
         exactly the forgery surface #4187/AD-1 closed.
         """
-        if context.auth_source == "iam" and context.user_id == "authority-worker":
+        if context.auth_source == "iam" and (
+            context.user_id == "authority-worker" or (context.user_id == "scaledjob-worker" and context._protected_run_binding is not None)
+        ):
             binding = context._protected_run_binding
             if binding is None or (run_id is not None and run_id != binding.run_id):
                 raise RunBindingError("unverified_worker", "Protected worker identity is unavailable or mismatched.")

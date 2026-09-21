@@ -886,8 +886,9 @@ def bootstrap_run_identity(envelope: dict) -> RunIdentitySession | None:
         or os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
     )
     if os.environ.get("ADP_AGENT_AUTHORITY_ENABLED", "false").lower() != "true":
-        if claims_required:
-            raise RunIdentityError("Work ownership requires protected worker identity")
+        from lib import run_report
+        if claims_required and not run_report.enabled():
+            raise RunIdentityError("Work ownership requires authenticated worker reporting")
         return None
     identity = RunIdentitySession(envelope=envelope)
     identity.start()

@@ -29,6 +29,17 @@ export function storyJourney(node: GraphNode): { headline: string; steps: Journe
     { id: 'merged', label: 'Merged (Complete)', detail: 'Upcoming', progress: 'upcoming' },
   ];
   const [development, review, fixes, merged] = steps;
+  if (node.attempts === 0 && !node.run_id && node.delivery_progress?.automation === 'reconciliation_only') {
+    development.detail = 'Delivered before engine tracking';
+    development.progress = 'observed';
+    review.detail = node.delivery_progress.review_state === 'approved' ? 'Approval verified' : 'See delivery evidence';
+    review.progress = 'observed';
+    fixes.detail = 'History not recorded';
+    fixes.progress = 'unknown';
+    merged.detail = 'Checking delivery and predecessor requirements';
+    merged.progress = 'current';
+    return { headline: 'Historical delivery', steps };
+  }
   // A retry gets a fresh journey. Do not reuse cached observations from its
   // predecessor, even if the client receives an old/mixed API response.
   if (node.state === 'pending' || node.state === 'ready') {

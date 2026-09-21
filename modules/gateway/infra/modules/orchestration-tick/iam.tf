@@ -229,6 +229,14 @@ resource "aws_iam_role_policy" "tick" {
       # so this cannot reach the platform's own secrets. Without it the tick still
       # applies commands and reports `command_acks_failed`, which forces a
       # non-success tick — visibly degraded rather than silently unacknowledged.
+      var.run_report_key_parameter != "" ? [
+        {
+          Sid      = "ReadRunReportSigningMaterial"
+          Effect   = "Allow"
+          Action   = ["ssm:GetParameter"]
+          Resource = ["arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter${var.run_report_key_parameter}"]
+        }
+      ] : [],
       var.github_app_secret_arn_pattern != "" ? [
         {
           Sid    = "EngineCommandAckCredentials"

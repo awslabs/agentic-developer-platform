@@ -548,6 +548,23 @@ async def authorize_node_dispatch(
     if inputs.policy is None:
         return Decision.permit("no execution policy in force; legacy semantics apply")
 
+    from .shared_policy import authorize_shared_dispatch, is_shared_continuation
+
+    if await is_shared_continuation(session, org_id=node.org_id, flow_id=node.flow_id):
+        if continuing_node:
+            return Decision.block(DenyReason.ACTION_NOT_PERMITTED, "Shared continuation actions use their authenticated execution controller.")
+        if not installation_resolved:
+            return Decision.block(DenyReason.CREDENTIAL_SCOPE_UNAVAILABLE, "The repository installation is unresolved.")
+        return await authorize_shared_dispatch(
+            session,
+            node=node,
+            principal_user_id=principal_user_id,
+            target_repository=target_repository,
+            provider_repository_id=provider_repository_id,
+            expected_invocation_id=expected_invocation_id,
+            action_override=action_override,
+        )
+
     from .runtime_policy import flow_started_at, policy_github_permissions
 
     started = await flow_started_at(session, org_id=node.org_id, flow_id=node.flow_id)

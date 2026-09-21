@@ -198,13 +198,17 @@ resource "aws_lambda_function" "tick" {
       # and no other producer added. All four are read by `dispatch_pass.py` and
       # nothing else. Empty queue URL or repo means nothing is dispatched and the
       # tick reports `dispatch_enabled=false` — visible, not silent.
-      BG_ORCH_DISPATCH_QUEUE_URL    = var.agent_submit_queue_url
-      BG_ORCH_DISPATCH_REPO         = var.dispatch_repo
-      BG_ORCH_DISPATCH_PERSONA      = var.dispatch_persona
-      BG_ORCH_DISPATCH_MAX_PER_TICK = tostring(var.dispatch_max_per_tick)
-      AGENT_AUTHORITY_ENABLED       = tostring(var.agent_authority_enabled)
-      PERSONA_MODEL_MAPPING_ENABLED = tostring(var.persona_model_mapping_enabled)
-      AGENT_AUTHORITY_TABLE         = "${var.name_prefix}-agent-authority"
+      BG_ORCH_DISPATCH_QUEUE_URL             = var.agent_submit_queue_url
+      BG_ORCH_DISPATCH_REPO                  = var.dispatch_repo
+      BG_ORCH_DISPATCH_PERSONA               = var.dispatch_persona
+      BG_ORCH_DISPATCH_MAX_PER_TICK          = tostring(var.dispatch_max_per_tick)
+      AGENT_AUTHORITY_ENABLED                = tostring(var.agent_authority_enabled)
+      ADP_SHARED_RUN_REPORTING_ENABLED       = tostring(var.shared_run_reporting_enabled)
+      ADP_SHARED_WORKER_CONTINUATION_ENABLED = tostring(var.shared_worker_continuation_enabled)
+      AGENT_WORKER_ROLE_ARN                  = var.shared_worker_role_arn
+      AGENT_RUN_CREDENTIAL_KEY_PARAMETER     = var.run_report_key_parameter
+      PERSONA_MODEL_MAPPING_ENABLED          = tostring(var.persona_model_mapping_enabled)
+      AGENT_AUTHORITY_TABLE                  = "${var.name_prefix}-agent-authority"
 
       # Issue #4527 — the GitHub engine-command bridge. NOT BG_-prefixed: both are
       # read with a bare `os.environ.get`, the flag because `engine_commands.py`

@@ -72,6 +72,7 @@ from src.admin.config import Permission
 from src.auth.dependencies import get_current_user
 from src.orchestration.amend import AmendmentContext, FlowNotFoundError, amend_plan
 from src.orchestration.compile import ApprovalContext, ProposalRejectedError, TenantMismatchError, compile_proposal
+from src.orchestration.continuation_routes import router as continuation_router
 from src.orchestration.cost import (
     COST_SCOPE_LABEL,
     AggregateCost,
@@ -107,6 +108,8 @@ from src.orchestration.proposal import LoopProposal, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
+
+from .delivery_progress import DeliveryProgress, current_executions, node_progress
 
 logger = logging.getLogger("bedrockgateway.orchestration")
 
@@ -501,6 +504,7 @@ class RecoverBindingRequest(BaseModel):
     head_sha: str | None = Field(default=None, min_length=7, max_length=64, pattern=r"^[0-9a-fA-F]+$")
     reason: str = Field(min_length=10, max_length=2000)
     replaces_reason: str | None = Field(default=None, min_length=10, max_length=2000)
+    adopt_delivery: bool = False
 
 
 class RecoverBindingResponse(BaseModel):
@@ -568,6 +572,19 @@ async def recover_story_binding(
     if node is None or node.flow_id != flow.id or node.kind != "story":
         raise HTTPException(status_code=404, detail="story not found in this flow")
 
+    adoption_scope = None
+    if body.adopt_delivery:
+        from .dispatch_pass import DispatchPassConfig
+        from .pr_bindings import _accepted_scope
+
+        if node.attempts != 0 or node.state not in {"pending", "ready", "awaiting_merge", "passed"}:
+            raise HTTPException(status_code=409, detail="historical adoption requires a never-dispatched story; recover its current run instead")
+        if body.replaces_reason:
+            raise HTTPException(status_code=409, detail="historical adoption cannot replace an existing implementation")
+        if body.repo.lower() != DispatchPassConfig.from_env().repo.lower():
+            raise HTTPException(status_code=409, detail="historical delivery must use the configured engine repository")
+        adoption_scope = await _accepted_scope(db, node)
+
     # A historical dispatch may lack immutable IDs; preserve any authority it
     # does contain instead of allowing recovery to silently change repository.
     dispatch = {}
@@ -604,6 +621,42 @@ async def recover_story_binding(
         or (dispatch.get("provider_repository_id") is not None and dispatch["provider_repository_id"] != identity.provider_repository_id)
     ):
         raise HTTPException(status_code=409, detail="pull request identity does not match GitHub or the story dispatch")
+
+    if body.adopt_delivery:
+        from .delivery_adoption import adopt_delivery
+        from .merge_evidence import GitHubEvidenceSource
+
+        try:
+            evidence = await GitHubEvidenceSource().bound_pull_request(
+                org_id=current_user.org_id,
+                installation_id=installation_id,
+                repo=body.repo,
+                pr_number=body.pr_number,
+            )
+            binding = await adopt_delivery(
+                db,
+                org_id=current_user.org_id,
+                node_id=node_id,
+                pr=identity,
+                installation_id=installation_id,
+                actor_id=current_user.user_id,
+                reason=body.reason,
+                evidence=evidence,
+                expected_scope=adoption_scope,
+            )
+        except BindingError as exc:
+            raise HTTPException(status_code=409, detail=exc.message) from exc
+        except Exception:
+            logger.exception("Historical delivery evidence unavailable node=%s", node_id)
+            raise HTTPException(status_code=409, detail="historical delivery evidence could not be verified") from None
+        await db.commit()
+        return RecoverBindingResponse(
+            node_id=node_id,
+            bound_pull_request=binding_summary(binding),
+            remaining_hold=None
+            if node.state == "passed"
+            else "Historical delivery verified; waiting for predecessor gates and final reconciliation.",
+        )
 
     try:
         binding = await recover_binding(
@@ -1247,6 +1300,7 @@ class GraphNodeResponse(BaseModel):
     execution_history: StoryExecution | None = None
     issue_url: str | None = None
     result_summary: str | None = None
+    delivery_progress: DeliveryProgress | None = None
     configuration_problem: str | None = None
     last_gate_decision: GateDecisionSummary | None = None
     # True when the most recent stall/halt decision for this node was a stall.
@@ -1374,6 +1428,7 @@ async def get_flow_graph(
     dispatches: dict[str, dict] = {}
     result_summaries: dict[str, dict] = {}
     gate_decisions: dict[str, GateDecisionSummary] = {}
+    observed_at: dict[str, tuple[int, str]] = {}
     for decision in await repo.list_decisions(org_id=current_user.org_id, flow_id=flow.id):
         if decision.kind in (DecisionKind.GATE_APPROVED.value, DecisionKind.GATE_REJECTED.value) and decision.node_id:
             gate_decisions[decision.node_id] = GateDecisionSummary(
@@ -1389,12 +1444,15 @@ async def get_flow_graph(
                 continue
             target = dispatches if decision.kind == DecisionKind.NODE_DISPATCHED.value else result_summaries
             target[decision.node_id] = detail
+            if decision.kind == DecisionKind.RESULT_OBSERVED.value and isinstance(detail.get("attempt"), int):
+                observed_at[decision.node_id] = (detail["attempt"], decision.created_at.isoformat())
         except (ValueError, TypeError):
             continue
 
     # One query for every story's bound PR (#5301), so the journey view can say which
     # pull request a waiting story is waiting on and what is missing from it.
     bindings = await active_bindings_for_flow(db, org_id=current_user.org_id, flow_id=flow.id)
+    executions_by_node = await current_executions(db, org_id=current_user.org_id, flow_id=flow.id)
 
     # Keyed by address because that is what `get_flow_cost` returns them under.
     # Built once rather than searched per node: a linear scan inside the node loop
@@ -1462,6 +1520,16 @@ async def get_flow_graph(
                 run_id=dispatch.get("run_id"),
                 issue_url=issue_url,
                 result_summary=result.get("evidence"),
+                delivery_progress=node_progress(
+                    node=node,
+                    binding=candidate if has_current_binding else None,
+                    dispatch=dispatch,
+                    result=result,
+                    execution=executions_by_node.get(node.id),
+                    policy_enabled=policy_inputs.policy is not None or policy_inputs.refusal is not None,
+                    plan_version=policy_inputs.plan_version,
+                    observed_at=observed_at[node.id][1] if node.id in observed_at and observed_at[node.id][0] == node.attempts else None,
+                ),
                 last_gate_decision=gate_decisions.get(node.id),
                 configuration_problem=(
                     "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
@@ -1781,3 +1849,6 @@ async def get_flow_execution(
             for execution in view.executions
         ],
     )
+
+
+router.include_router(continuation_router)

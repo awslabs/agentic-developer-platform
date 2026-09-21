@@ -54,6 +54,7 @@ UNIT_MODULES = [
     "src.agentauth.knowledge_service",
     "src.agentauth.task_routes",
     "src.agentauth.artifact_service",
+    "src.orchestration.shared_review",
     # #5223: mediated GitHub operations. A separate module from
     # registration_routes even though it shares the /self prefix, because this is
     # the only route on that prefix that reaches an external provider and holds an
@@ -64,6 +65,7 @@ UNIT_MODULES = [
     # #5301: the delivering run binds its own implementation PR to its story,
     # authenticated by the run credential rather than a self-declared run header.
     "src.agentauth.pr_binding_routes",
+    "src.agentauth.run_report_routes",
     "src.agentauth.service_authority",  # Human-only standing service delegation; never on the internal plane.
     "src.proxy.routes",
     "src.admin.routes",

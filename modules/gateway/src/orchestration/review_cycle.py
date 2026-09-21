@@ -59,9 +59,9 @@ class CycleObservation(HandlerObservation):
 class ReviewCycleHandler:
     def __init__(self, factory, services=None):
         if services is None:
-            from .review_cycle_dispatch import ReviewCycleServices
+            from .review_cycle_dispatch import cycle_services
 
-            services = ReviewCycleServices(factory)
+            services = cycle_services(factory)
         self.factory, self.services = factory, services
 
     async def observe(self, context: RunnerContext) -> HandlerObservation:
@@ -82,7 +82,7 @@ class ReviewCycleHandler:
             node = await session.scalar(
                 select(OrchestrationNode).where(OrchestrationNode.id == context.identity.node_id, OrchestrationNode.org_id == context.identity.org_id)
             )
-            if node is None or node.state != NodeState.RUNNING.value or node.attempts != context.identity.cycle:
+            if node is None or node.state not in {NodeState.RUNNING.value, NodeState.AWAITING_MERGE.value} or node.attempts != context.identity.cycle:
                 raise CycleBlockedError("outer_gate_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
             binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
             if binding is None:
@@ -119,7 +119,9 @@ class ReviewCycleHandler:
             if not dispatches:
                 from .results import _delivery_receipt
 
-                if await _delivery_receipt(session, node=node, lock=False) is None:
+                receipt = await _delivery_receipt(session, node=node, lock=False)
+                shared_handoff = getattr(self.services, "has_delivery_handoff", None)
+                if receipt is None and not (shared_handoff and await shared_handoff(session, context, node)):
                     raise CycleBlockedError("development_handoff_missing")
             snapshot = {
                 **facts,

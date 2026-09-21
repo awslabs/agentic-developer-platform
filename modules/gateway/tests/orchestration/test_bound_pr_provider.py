@@ -223,3 +223,32 @@ async def test_edited_older_comment_withdraws_approval(read_provider):
 async def test_incomplete_comments_cannot_pass(read_provider, failure):
     with pytest.raises((RuntimeError, httpx.HTTPStatusError)):
         await read_provider(provider_record(), [app_comment()], endless=failure == "pagination", error=failure == "provider-error")
+
+
+@pytest.mark.parametrize("state", ["FAILURE", "PENDING", "SUCCESS", None])
+async def test_provider_preserves_check_diagnosis_and_mergeability(read_provider, state):
+    record = provider_record()
+    record.update(merged=False, isDraft=False, mergeable="MERGEABLE", mergeStateStatus="CLEAN")
+    record["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = {"state": state} if state else None
+    evidence = await read_provider(record)
+    assert evidence.checks_state == (state or "MISSING")
+    assert evidence.checks_successful == (state == "SUCCESS")
+    assert evidence.review_state == "approved"
+    assert evidence.mergeable == "MERGEABLE" and evidence.merge_state == "CLEAN" and evidence.draft is False
+
+
+@pytest.mark.parametrize(
+    "verdict,expected", [("REQUEST CHANGES", "changes_requested"), ("APPROVE", "approved"), ("stale", "stale"), ("missing", "missing")]
+)
+async def test_provider_preserves_shared_app_review_diagnosis(read_provider, verdict, expected):
+    record = provider_record()
+    record["reviews"]["nodes"] = []
+    record["reviewDecision"] = None
+    comment = app_comment()
+    if verdict == "stale":
+        comment["body"] = comment["body"].replace(HEAD, "f" * 40)
+    elif verdict == "REQUEST CHANGES":
+        comment["body"] = comment["body"].replace("APPROVE", "REQUEST CHANGES")
+    evidence = await read_provider(record, [] if verdict == "missing" else [comment])
+    assert evidence.review_state == expected
+    assert evidence.review_approved == (expected == "approved")

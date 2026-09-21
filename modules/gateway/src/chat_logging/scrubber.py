@@ -81,6 +81,7 @@ REGEX_PATTERNS: dict[str, tuple[str, str]] = {
 # Headers to scrub from logs
 SENSITIVE_HEADERS = {
     "authorization",
+    "x-adp-report-credential",
     "x-api-key",
     "cookie",
     "set-cookie",

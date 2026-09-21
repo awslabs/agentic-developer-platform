@@ -433,3 +433,20 @@ variable "persona_model_mapping_enabled" {
   type        = bool
   default     = false
 }
+
+variable "shared_run_reporting_enabled" {
+  type    = bool
+  default = false
+}
+variable "shared_worker_continuation_enabled" {
+  type    = bool
+  default = false
+}
+variable "shared_worker_role_arn" {
+  type    = string
+  default = ""
+}
+variable "run_report_key_parameter" {
+  type    = string
+  default = ""
+}

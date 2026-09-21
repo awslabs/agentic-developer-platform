@@ -712,8 +712,9 @@ class OrchestrationPullRequestBinding(Base, TenantMixin):
     # attempt counter, so this is what distinguishes "the PR for the current work"
     # from "the PR for a superseded attempt" without deleting either.
     attempt: Mapped[int] = mapped_column(Integer, nullable=False)
-    # The run that registered it, for provenance and duplicate-event convergence.
-    run_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # NULL for attributed historical adoption with no dispatched worker.
+    # Otherwise the registering run, retained in every revision snapshot.
+    run_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # --- Immutable provider identity. See the class docstring. ---
     provider_repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)

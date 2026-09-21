@@ -80,6 +80,22 @@ export interface StoryExecution {
   history_complete: boolean;
 }
 
+export interface DeliveryProgress {
+  stage: string;
+  actor: string;
+  detail: string;
+  blocker?: string | null;
+  blockers: string[];
+  next_action?: string | null;
+  scheduled_action?: string | null;
+  next_check_at?: string | null;
+  observed_at?: string | null;
+  automation: string;
+  head_sha?: string | null;
+  checks_state?: string | null;
+  review_state?: string | null;
+}
+
 export interface GraphNode {
   id: string;
   epic_ref: string;
@@ -112,6 +128,7 @@ export interface GraphNode {
     state: 'active' | 'superseded';
   } | null;
   binding_hold?: string | null;
+  delivery_progress?: DeliveryProgress | null;
   configuration_problem?: string | null;
   last_gate_decision?: {
     action: 'approved' | 'changes_requested';

@@ -2056,3 +2056,45 @@ class TestSavedPersonaMapping:
         else:
             assert report.dispatched == 1
             assert sqs.envelope()["model_resolved"] == "saved-model"
+
+
+async def test_retry_dispatch_carries_provider_verified_pr_before_publish(session, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.orchestration.pr_bindings import PullRequestIdentity, register_binding, resolve_registration_target
+
+    _flow, node, _ = await _ready_story(session)
+    first = await run_dispatch_pass(session, _config())
+    assert first.dispatched == 1
+    pr = PullRequestIdentity(12345, "PR_existing", REPO, 777, "a" * 40)
+    target = await resolve_registration_target(session, run_id=first.pending[0].envelope["message_id"])
+    original, _ = await register_binding(session, target=target, pr=pr, actor_id="worker", actor_kind=ActorKind.SERVICE)
+    node.state = "ready"
+    await session.flush()
+    refreshed = PullRequestIdentity(12345, "PR_existing", REPO, 777, "b" * 40)
+    monkeypatch.setattr("src.orchestration.pr_identity.resolve_pr_identity", AsyncMock(return_value=refreshed))
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 1 and report.success
+    assert node.attempts == 2
+    assert original.attempt == 2 and original.head_sha == "b" * 40 and original.revision == 2
+    assert report.pending[0].envelope["bound_pull_request"]["pr_number"] == 777
+    assert report.pending[0].envelope["bound_pull_request"]["provider_pr_node_id"] == "PR_existing"
+
+
+async def test_unverifiable_retry_pr_does_not_consume_attempt_or_publish(session, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from src.orchestration.pr_bindings import PullRequestIdentity, register_binding, resolve_registration_target
+
+    _flow, node, _ = await _ready_story(session)
+    first = await run_dispatch_pass(session, _config())
+    pr = PullRequestIdentity(12345, "PR_existing", REPO, 777, "a" * 40)
+    target = await resolve_registration_target(session, run_id=first.pending[0].envelope["message_id"])
+    await register_binding(session, target=target, pr=pr, actor_id="worker", actor_kind=ActorKind.SERVICE)
+    node.state = "ready"
+    await session.flush()
+    monkeypatch.setattr("src.orchestration.pr_identity.resolve_pr_identity", AsyncMock(side_effect=RuntimeError("provider unavailable")))
+    report = await run_dispatch_pass(session, _config())
+    assert report.dispatched == 0 and not report.pending
+    assert node.state == "ready" and node.attempts == 1
+    assert report.policy_block_reasons == {"repair_binding_unverifiable": 1}

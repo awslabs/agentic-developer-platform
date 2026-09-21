@@ -665,6 +665,12 @@ class TestModelMigrationParity:
     async def migrated_columns(self):
         engine = await _bare_engine()
         await _upgrade(engine)
+        # The current model also includes the explicit no-worker adoption migration.
+        async with engine.begin() as conn:
+            # Batch reflection resolves the foreign keys that 051 alone does not need.
+            await conn.execute(sa.text("CREATE TABLE orchestration_flows (id VARCHAR(36) PRIMARY KEY)"))
+            await conn.execute(sa.text("CREATE TABLE orchestration_nodes (id VARCHAR(36) PRIMARY KEY)"))
+            await conn.run_sync(lambda c: _run_migration(c, _load_migration("063_pr_binding_adoption.py").upgrade))
         async with engine.connect() as conn:
             cols = await conn.run_sync(lambda c: {x["name"]: x for x in sa_inspect(c).get_columns(TABLE)})
         await engine.dispose()

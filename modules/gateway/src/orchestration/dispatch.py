@@ -177,8 +177,9 @@ class GraphAttribution:
     `usage_logs` by `graph_address`, and until something persisted the column
     every flow reported `unknown` / `no_usage_rows` — honestly, but uselessly.
 
-    **Only `agentauth.engine.validate_engine_authority` may construct one**, and
-    only on the branch where it has just re-read live SQL and proved: the flow is
+    Constructed by `agentauth.engine.validate_engine_authority` or the shared-run
+    branch of `AgentModelIdentityMiddleware`, after live assignment and accepted
+    policy verification. The protected engine branch proves: the flow is
     runnable, its plan approval is not superseded, the assigned node is RUNNING on
     exactly `node_attempt`, and (for a child dispatch) the parent's dispatch
     receipt is committed. The value is therefore a *report of a completed

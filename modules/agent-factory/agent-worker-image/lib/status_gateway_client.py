@@ -284,15 +284,20 @@ def upload_review_result(data: bytes) -> str:
     """Store and observe this run's review through its existing own-run channel."""
     import hashlib
     import re
+    from lib import run_report
 
-    if not authority_enabled() or not 0 < len(data) <= 256 * 1024:
+    if not (authority_enabled() or run_report.enabled()) or not 0 < len(data) <= 256 * 1024:
         raise StatusGatewayError("review upload unavailable (maximum 256 KiB)")
     tenant = os.environ.get("ADP_TENANT_ID", "")
     run = os.environ.get("ADP_MESSAGE_ID", "")
     attempt = os.environ.get("ADP_RUN_ATTEMPT", "")
     if not tenant or not run or not attempt.isdecimal() or int(attempt) < 1:
         raise StatusGatewayError("review upload run identity unavailable")
-    result = _post_bytes("/artifacts/review-result", data, content_type="application/json", timeout_seconds=35)
+    result = (
+        run_report.request("/review-result", {"content": data.decode("utf-8")})
+        if run_report.enabled()
+        else _post_bytes("/artifacts/review-result", data, content_type="application/json", timeout_seconds=35)
+    )
     digest = hashlib.sha256(data).hexdigest()
     expected_key = (
         f"runs/{hashlib.sha256(tenant.encode()).hexdigest()}/"

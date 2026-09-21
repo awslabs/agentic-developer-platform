@@ -43,3 +43,22 @@ run "complete_lambda_vpc_permissions" {
     error_message = "The execution role must include the complete Lambda VPC permission set, including DescribeSubnets."
   }
 }
+
+run "shared_reporting_signing_key_is_parameter_reference_only" {
+  command = plan
+  variables {
+    agent_authority_enabled            = false
+    shared_run_reporting_enabled       = true
+    shared_worker_continuation_enabled = false
+    shared_worker_role_arn             = "arn:aws:iam::123456789012:role/existing-worker"
+    run_report_key_parameter           = "/adp/dev/gateway/run-report-signing-key"
+  }
+  assert {
+    condition     = aws_lambda_function.tick.environment[0].variables.ADP_SHARED_RUN_REPORTING_ENABLED == "true" && aws_lambda_function.tick.environment[0].variables.AGENT_AUTHORITY_ENABLED == "false" && aws_lambda_function.tick.environment[0].variables.AGENT_WORKER_ROLE_ARN == "arn:aws:iam::123456789012:role/existing-worker"
+    error_message = "The tick must enable reporting without enabling protected authority or changing worker roles."
+  }
+  assert {
+    condition     = aws_lambda_function.tick.environment[0].variables.AGENT_RUN_CREDENTIAL_KEY_PARAMETER == "/adp/dev/gateway/run-report-signing-key" && !contains(keys(aws_lambda_function.tick.environment[0].variables), "AGENT_RUN_CREDENTIAL_KEY")
+    error_message = "Lambda configuration may carry a parameter reference, never signing-key plaintext."
+  }
+}

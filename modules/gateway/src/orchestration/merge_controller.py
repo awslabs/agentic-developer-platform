@@ -31,7 +31,6 @@ from .merge_review import load_merge_review
 from .models import OrchestrationAction, OrchestrationDecision, OrchestrationFlow, OrchestrationNode, OrchestrationWorkClaim
 from .pr_bindings import active_binding_for_node, binding_scope_matches
 from .review_cycle import CycleBlockedError, block
-from .review_cycle_dispatch import ReviewCycleServices
 from .state import ActorKind, NodeState, transition
 
 MERGE_KIND = "merge_pull_request"
@@ -95,7 +94,9 @@ class MergeObservation(HandlerObservation):
 class MergeServices:
     def __init__(self, factory, *, authority=None, provider=None, storage=None):
         self.factory = factory
-        self.authority = authority or ReviewCycleServices(factory)
+        from .review_cycle_dispatch import cycle_services
+
+        self.authority = authority or cycle_services(factory)
         self.provider = provider or MergeProvider()
         self.storage = storage
 
@@ -114,7 +115,7 @@ class MergeServices:
         if node is None or node.kind != "story" or node.attempts != context.identity.cycle or node.state not in {"running", "awaiting_merge"}:
             raise CycleBlockedError("merge_outer_gate_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
         flow = await session.get(OrchestrationFlow, node.flow_id)
-        if flow is None or flow.state != "running":
+        if flow is None or (flow.state != "running" and not (flow.state == "pending" and getattr(self.authority, "allows_pending_flow", False))):
             raise CycleBlockedError("merge_flow_not_running", BlockCode.HUMAN_INPUT_REQUIRED)
         binding = await active_binding_for_node(session, org_id=node.org_id, node_id=node.id, attempt=node.attempts)
         if binding is None or binding.role != "implementation" or not binding_scope_matches(binding, node):
@@ -523,7 +524,16 @@ async def settle_merge(session, context, receipt, snapshot):
     ):
         raise CycleBlockedError("merge_settlement_scope_changed")
     flow = await session.get(OrchestrationFlow, node.flow_id)
-    if flow is None or flow.state != "running":
+    if flow is not None and flow.state == "pending":
+        # Legacy flows can retain their original container state while accepted
+        # story work runs. Only an explicit shared continuation admits that
+        # compatibility state, and it must still be this execution's plan.
+        from .shared_cycle import shared_marker
+
+        plan, _ = await shared_marker(session, org_id=node.org_id, flow_id=node.flow_id)
+        if plan.version != context.identity.accepted_plan_version:
+            raise CycleBlockedError("merge_flow_gate_changed")
+    elif flow is None or flow.state != "running":
         raise CycleBlockedError("merge_flow_gate_changed")
     move = transition(NodeState(node.state), NodeState.PASSED, actor_kind=ActorKind.SERVICE, reason="Verified bound PR merge")
     if not move.allowed:

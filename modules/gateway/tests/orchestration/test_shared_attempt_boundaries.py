@@ -1,0 +1,205 @@
+"""Real K2 attempts and PostgreSQL admission locks at shared-worker limits."""
+
+import asyncio
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from src.agentauth.model_identity import AgentModelIdentityMiddleware
+from src.orchestration.dispatch_pass import _build_envelope, attempt_run_id
+from src.orchestration.execution_policy import ExecutionPolicy
+from src.orchestration.genesis import resolve_engine_genesis
+from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationNode, OrchestrationWorkClaim
+from src.orchestration.run_reports import OrchestrationRunReport, prepare_run_report
+from src.orchestration.shared_policy import _active_count, authorize_shared_dispatch
+from src.shared.schemas.auth import TokenContext
+from tests.orchestration import test_review_cycle as protocol
+from tests.orchestration.test_shared_cycle import cycle, pg_server, pg_url, shared, store  # noqa: F401
+
+
+async def set_attempt_limit(ctx, limit):
+    policy = ctx.policy.model_dump(mode="json")
+    policy["limits"]["max_attempts_per_node"] = limit
+    ctx.policy = ExecutionPolicy.model_validate(policy)
+    async with ctx.factory() as db:
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        plan.plan_document = {**plan.plan_document, "execution_policy": policy}
+        await db.commit()
+
+
+async def envelope_for(ctx, db, node):
+    genesis = await resolve_engine_genesis(db, org_id=node.org_id, decision_id=ctx.approval.id)
+    envelope = _build_envelope(
+        node=node,
+        genesis=genesis,
+        graph_address="cycle/E1/W1/N1",
+        installation_id=42,
+        issue=int(node.issue_ref),
+        config=ctx.service.config,
+        user_id="human",
+        cognito_sub="sub",
+    )
+    envelope["source_ref"]["provider_repository_id"] = 123
+    return envelope
+
+
+async def model_call(ctx, credential, monkeypatch):
+    # Exercise actual report authentication, current K2 assignment, shared policy,
+    # and middleware. Provider pricing and reservation have separate real tests.
+    monkeypatch.setattr("src.shared.database.get_session_factory", lambda: ctx.factory)
+    monkeypatch.setattr("src.agentauth.model_identity.quote_request", AsyncMock(return_value=SimpleNamespace(total_usd=Decimal("0.01"))))
+    monkeypatch.setattr("src.agentauth.model_identity.revalidate_quote", AsyncMock())
+    token = TokenContext(
+        user_id="scaledjob-worker",
+        org_id="__platform__",
+        team_id="",
+        department_id="",
+        account_type="service",
+        auth_source="iam",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "scheme": "https",
+        "server": ("gateway.test", 443),
+        "query_string": b"",
+        "path": "/v1/messages",
+        "state": {"token_context": token},
+        "headers": [(b"x-adp-report-credential", credential.encode())],
+    }
+    received, sent = [], []
+
+    async def receive():
+        return {"type": "http.request", "body": b'{"model":"test-model"}', "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def provider(scope, receive, send):
+        received.append(await receive())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    await AgentModelIdentityMiddleware(provider)(scope, receive, send)
+    assert sent[0]["status"] == 200, sent
+    assert len(received) == 1 and token._policy_flow_target is not None
+
+
+@pytest.mark.parametrize("limit", [1, 2])
+async def test_initial_developer_and_review_use_one_shared_attempt_allowance(shared, monkeypatch, limit):  # noqa: F811
+    ctx = shared
+    await set_attempt_limit(ctx, limit)
+    async with ctx.factory() as db:
+        envelope = await envelope_for(ctx, db, ctx.node)
+        envelope["handoff_expect"] = {
+            "execution_id": ctx.execution.id,
+            "accepted_plan_version": 1,
+            "claim_id": ctx.identity.claim_id,
+            "claim_generation": ctx.identity.claim_generation,
+        }
+        await prepare_run_report(db, envelope)
+        await db.commit()
+    await model_call(ctx, envelope["run_report"]["credential"], monkeypatch)
+    await ctx.finish(ctx.root)
+    result = await protocol.tick(ctx)
+    execution, _, node, actions = await protocol.state(ctx)
+    if limit == 1:
+        assert result.effects_succeeded == 0 and ctx.calls == [] and actions == []
+        assert execution.status == "blocked" and execution.block_code == "attempts_exhausted"
+        assert execution.attempts == 0 and node.attempts == 1
+    else:
+        assert result.effects_succeeded == 1 and len(ctx.calls) == 1
+        assert execution.attempts == 1 and node.attempts == 1
+        reviewer = ctx.calls[0]
+        assert reviewer["persona"] == "reviewer"
+        await model_call(ctx, reviewer["run_report"]["credential"], monkeypatch)
+        await protocol.review(ctx, findings=[{"finding_id": "F1", "summary": "Repair", "evidence_refs": []}])
+        result = await protocol.tick(ctx)
+        assert result.effects_succeeded == 0 and len(ctx.calls) == 1
+        execution, _, _, actions = await protocol.state(ctx)
+        assert execution.status == "blocked" and execution.attempts == 1 and len(actions) == 1
+
+
+async def test_different_story_admissions_serialize_before_worker_count(shared, monkeypatch):  # noqa: F811
+    ctx = shared
+    monkeypatch.setattr("src.orchestration.shared_policy._active_count", _active_count)
+    async with ctx.factory() as db:
+        nodes = []
+        for number in (44, 45):
+            node = OrchestrationNode(
+                org_id=protocol.ORG,
+                flow_id=ctx.flow.id,
+                epic_ref="E1",
+                wave_ref="W1",
+                node_ref=f"N{number}",
+                kind="story",
+                state="ready",
+                title=f"Story {number}",
+                issue_ref=str(number),
+                attempts=0,
+            )
+            db.add(node)
+            await db.flush()
+            db.add(
+                OrchestrationWorkClaim(
+                    id=f"claim-{number}",
+                    org_id=protocol.ORG,
+                    provider_repository_id=123,
+                    issue_number=number,
+                    owner_kind="engine_flow",
+                    owner_ref=ctx.flow.id,
+                    state="held",
+                    generation=1,
+                    active_run_id=attempt_run_id(node.id, 1),
+                    claim_event_id=f"claim-{number}",
+                )
+            )
+            nodes.append(node)
+        await db.commit()
+
+    async def admit(db, node):
+        return await authorize_shared_dispatch(
+            db,
+            node=node,
+            principal_user_id="human",
+            target_repository=protocol.REPO,
+            provider_repository_id=123,
+            expected_invocation_id=attempt_run_id(node.id, 1),
+        )
+
+    started = asyncio.Event()
+
+    async def second_admission():
+        async with ctx.factory() as db:
+            node = await db.get(OrchestrationNode, nodes[1].id)
+            started.set()
+            result = await admit(db, node)
+            await db.commit()
+            return result
+
+    pending = None
+    try:
+        async with ctx.factory() as db:
+            first = await db.get(OrchestrationNode, nodes[0].id)
+            assert (await admit(db, first)).permitted
+            pending = asyncio.create_task(second_admission())
+            await asyncio.wait_for(started.wait(), timeout=5)
+            # PostgreSQL must keep the second admission behind the first commit.
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(pending), timeout=0.2)
+            first.state, first.attempts = "running", 1
+            envelope = await envelope_for(ctx, db, first)
+            await prepare_run_report(db, envelope)
+            await db.commit()
+        denied = await asyncio.wait_for(pending, timeout=5)
+        assert not denied.permitted and denied.reason.value == "concurrency_limit_exceeded"
+        async with ctx.factory() as db:
+            assert await db.get(OrchestrationRunReport, envelope["message_id"]) is not None
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)

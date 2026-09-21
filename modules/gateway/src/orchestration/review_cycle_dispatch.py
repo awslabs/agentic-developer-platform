@@ -585,3 +585,15 @@ class ReviewCycleServices:
             events_table=self.writer.events_table,
             event_item={key: serializer.serialize(value) for key, value in event.items()},
         )
+
+
+def cycle_services(factory):
+    """Select a deployed transport; accepted policy still gates each flow."""
+    if (
+        os.environ.get("AGENT_AUTHORITY_ENABLED", "false").strip().lower() != "true"
+        and os.environ.get("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false").strip().lower() == "true"
+    ):
+        from .shared_cycle import SharedCycleServices
+
+        return SharedCycleServices(factory)
+    return ReviewCycleServices(factory)

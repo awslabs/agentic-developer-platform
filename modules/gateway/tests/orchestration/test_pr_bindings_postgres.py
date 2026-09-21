@@ -93,6 +93,9 @@ async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed
         await conn.run_sync(OrchestrationNode.__table__.create)
         await conn.run_sync(OrchestrationDecision.__table__.create)
         await conn.run_sync(OrchestrationPullRequestBinding.__table__.create)
+        from src.orchestration.run_reports import OrchestrationRunReport
+
+        await conn.run_sync(OrchestrationRunReport.__table__.create)
     yield engine
     await engine.dispose()
 
@@ -340,3 +343,143 @@ async def test_provider_read_cannot_complete_a_concurrently_changed_binding(pg_s
         assert len(decisions) == 1
         assert "merge_receipt" not in json.loads(decisions[0].reason)
         assert "binding changed" in json.loads(decisions[0].reason)["evidence"]
+
+
+async def test_carry_forward_transaction_fences_late_old_worker(pg_session_factory):
+    from src.orchestration.pr_bindings import BindingRefusal, carry_forward_binding
+
+    node_id, run_id = await _dispatched_story(pg_session_factory)
+    await _attempt(pg_session_factory, run_id, _pr())
+    async with pg_session_factory() as reader:
+        old_target = await resolve_registration_target(reader, run_id=run_id)
+    dispatch_locked, old_started = asyncio.Event(), asyncio.Event()
+
+    async def repair():
+        async with pg_session_factory() as session:
+            node = await session.scalar(select(OrchestrationNode).where(OrchestrationNode.id == node_id).with_for_update())
+            node.attempts = 2
+            session.add(
+                OrchestrationDecision(
+                    org_id=ORG_A,
+                    flow_id=node.flow_id,
+                    node_id=node.id,
+                    kind=DecisionKind.NODE_DISPATCHED.value,
+                    actor_id="engine",
+                    actor_role="service",
+                    actor_kind="service",
+                    reason=json.dumps({"run_id": attempt_run_id(node_id, 2), "attempt": 2, "repo": REPO, "issue": ISSUE}),
+                )
+            )
+            await session.flush()
+            dispatch_locked.set()
+            await old_started.wait()
+            current = await carry_forward_binding(
+                session,
+                node=node,
+                previous_attempt=1,
+                target=await resolve_registration_target(session, run_id=attempt_run_id(node_id, 2)),
+                pr=_pr(head=NEW_HEAD),
+                expected_revision=1,
+            )
+            await session.commit()
+            return current.id
+
+    async def late_worker():
+        await dispatch_locked.wait()
+        async with pg_session_factory() as session:
+            old_started.set()
+            with pytest.raises(BindingError) as refused:
+                await register_binding(session, target=old_target, pr=_pr(), actor_id="late", actor_kind=ActorKind.SERVICE)
+            assert refused.value.code == BindingRefusal.STALE_RUN
+            await session.rollback()
+
+    binding_id, _ = await asyncio.gather(repair(), late_worker())
+    async with pg_session_factory() as session:
+        current = await active_binding_for_node(session, org_id=ORG_A, node_id=node_id, attempt=2)
+        assert current.id == binding_id and current.revision == 2 and current.head_sha == NEW_HEAD
+        assert await active_binding_for_node(session, org_id=ORG_A, node_id=node_id, attempt=1) is None
+
+
+async def test_attempt_zero_adoption_races_dispatch_without_inventing_worker(pg_engine, pg_session_factory, monkeypatch):
+    from sqlalchemy import update
+
+    from src.orchestration.delivery_adoption import adopt_delivery
+    from src.orchestration.models import OrchestrationWorkClaim
+    from src.orchestration.pr_bindings import _accepted_scope
+    from tests.orchestration.test_story_reconciliation import _green
+
+    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
+
+    async def installation(*args, **kwargs):
+        return 4242
+
+    monkeypatch.setattr("src.orchestration.delivery_adoption.resolve_installation_id", installation)
+    async with pg_engine.begin() as conn:
+        await conn.run_sync(OrchestrationWorkClaim.__table__.create)
+    async with pg_session_factory() as session:
+        flow = OrchestrationFlow(org_id=ORG_A, slug="historical", title="Historical", state="running")
+        session.add(flow)
+        await session.flush()
+        node = OrchestrationNode(
+            org_id=ORG_A,
+            flow_id=flow.id,
+            epic_ref="epic",
+            wave_ref="wave",
+            node_ref="story",
+            kind="story",
+            title="Already delivered",
+            issue_ref=str(ISSUE),
+            state="ready",
+            attempts=0,
+        )
+        session.add(node)
+        await session.flush()
+        node_id, scope = node.id, await _accepted_scope(session, node)
+        await session.commit()
+
+    async def adopt():
+        async with pg_session_factory() as session:
+            try:
+                binding = await adopt_delivery(
+                    session,
+                    org_id=ORG_A,
+                    node_id=node_id,
+                    pr=_pr(),
+                    installation_id=4242,
+                    actor_id="operator",
+                    reason="Verified historical scope",
+                    evidence=_green(),
+                    expected_scope=scope,
+                )
+                await session.commit()
+                return binding.id
+            except BindingError:
+                await session.rollback()
+                return None
+
+    async def dispatch():
+        async with pg_session_factory() as session:
+            rows = (
+                await session.execute(
+                    update(OrchestrationNode)
+                    .where(
+                        OrchestrationNode.id == node_id,
+                        OrchestrationNode.state == "ready",
+                        OrchestrationNode.attempts == 0,
+                    )
+                    .values(state="running", attempts=1)
+                )
+            ).rowcount
+            await session.commit()
+            return rows
+
+    adoption, dispatched = await asyncio.gather(adopt(), dispatch())
+    assert bool(adoption) != bool(dispatched)
+    async with pg_session_factory() as session:
+        node = await session.get(OrchestrationNode, node_id)
+        bindings = (await session.scalars(select(OrchestrationPullRequestBinding))).all()
+        if adoption:
+            assert node.state == "awaiting_merge" and node.attempts == 0
+            assert len(bindings) == 1 and bindings[0].run_id is None
+        else:
+            assert node.state == "running" and node.attempts == 1 and not bindings

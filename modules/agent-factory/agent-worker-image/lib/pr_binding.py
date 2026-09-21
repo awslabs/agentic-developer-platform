@@ -18,20 +18,14 @@ event, so the story waited in ``awaiting_merge`` on evidence that would never
 arrive while its PR sat merged. Sending the association is what closes that.
 
 --------------------------------------------------------------------------------
-Fail-soft, for the same reason `engine_registration` is
+Acknowledgement without rerunning development
 --------------------------------------------------------------------------------
 
-By the time this runs, the branch is pushed and the PR is open — the run's real
-output is already delivered. So a registration failure must cost the run nothing:
-:func:`binding_note` never raises and returns a *string* the caller appends to its
-closing comment. There is no exception for the caller to mishandle and no exit
-code for it to propagate, which is the structural version of "do not let
-bookkeeping destroy delivered work".
-
-A failure is deliberately *visible* rather than silent, though: an unregistered PR
-means the story will hold rather than complete, and the operator needs to know
-that happened at the moment it happened. A silent failure here would reproduce the
-original bug's worst property — a story waiting forever with no stated reason.
+Shared-role dispatch includes a scoped report credential. The gateway persists
+an exact PR candidate before provider I/O and returns a checked binding receipt.
+Transport retries and queue redelivery retry this report, preserving pushed work.
+Advisory comments remain fail-soft; the entrypoint checks ``handoff_pending`` and
+keeps the queue message when its required acknowledgement is absent.
 
 --------------------------------------------------------------------------------
 What is sent, and what is deliberately not
@@ -54,6 +48,9 @@ import json
 import logging
 import os
 import subprocess
+import time
+
+from lib import run_report
 
 from lib.status_gateway_client import (
     StatusGatewayError,
@@ -77,6 +74,45 @@ BINDING_REQUIRED_ENV = "ADP_PR_BINDING_REQUIRED"
 
 _TRUE_SPELLINGS = frozenset({"1", "true", "yes", "on"})
 _GH_TIMEOUT_SECONDS = 30
+_handoff_pending = False
+
+
+def handoff_pending() -> bool:
+    return binding_required() and _handoff_pending
+
+
+def _verified_receipt(snapshot: dict, candidate: dict) -> dict:
+    receipt = snapshot.get("binding_receipt") or {}
+    if receipt.get("bound") is not True or any(receipt.get(key) != candidate.get(key) for key in (
+        "repo", "pr_number", "provider_repository_id", "provider_pr_node_id", "head_sha"
+    )):
+        raise run_report.RunReportError(snapshot.get("block_code") or "pr_binding_unacknowledged",
+                                       retryable=snapshot.get("retryable") is not False)
+    return receipt
+
+
+def resume_handoff() -> bool:
+    """Return true after replaying a persisted delivery; never launch development."""
+    snapshot = run_report.request()
+    if snapshot.get("terminal_receipt"):
+        return True
+    if (snapshot.get("review_receipt") or {}).get("recorded") is True:
+        run_report.terminal("complete")
+        return True
+    candidate = snapshot.get("candidate_pr")
+    if candidate is None:
+        spool = run_report.read_spool()
+        if spool is None:
+            return False
+        if spool["phase"] != "candidate" or not isinstance(spool.get("candidate_pr"), dict):
+            raise run_report.RunReportError("delivery_recovery_required", retryable=False)
+        candidate = spool["candidate_pr"]
+        snapshot = run_report.request("/pull-request", candidate)
+    if not snapshot.get("binding_receipt"):
+        snapshot = run_report.request("/pull-request/retry", {})
+    _verified_receipt(snapshot, candidate)
+    run_report.terminal("complete")
+    return True
 
 
 def binding_required() -> bool:
@@ -158,7 +194,35 @@ def register_pull_request(*, repo: str, pr_number: int, reviewer_artifact: bool 
         # A caller may only ever *downgrade* itself; the gateway ignores an attempt
         # to claim a stronger role than its dispatch already implies.
         payload["reviewer_artifact"] = True
-    return post_self("/pull-request", payload)
+    if run_report.enabled():
+        # Independent existing artifact storage survives a gateway outage. This
+        # is only an assertion to replay, never authority or binding evidence.
+        try:
+            run_report.spool_candidate(payload)
+        except run_report.RunReportError:
+            # Gateway staging may still make it durable. If both fail, the
+            # executing marker forbids rerunning development on redelivery.
+            logger.warning("PR candidate spool unavailable; requiring gateway acknowledgement")
+        error = None
+        for attempt in range(3):
+            try:
+                snapshot = run_report.request("/pull-request", payload)
+                receipt = _verified_receipt(snapshot, payload)
+                # Check durable readback, including the exact run, attempt and PR.
+                _verified_receipt(run_report.request(), payload)
+                return receipt
+            except run_report.RunReportError as exc:
+                error = exc
+                if not exc.retryable:
+                    break
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        raise error
+    result = post_self("/pull-request", payload)
+    if (result.get("bound") is not True or result.get("pr_number") != payload["pr_number"]
+            or result.get("head_sha") != payload["head_sha"]):
+        raise StatusGatewayError("pull-request binding was not acknowledged for the delivered revision")
+    return result
 
 
 def binding_note(*, repo: str, pr_number: str | int | None, reviewer_artifact: bool = False) -> str:
@@ -168,13 +232,19 @@ def binding_note(*, repo: str, pr_number: str | int | None, reviewer_artifact: b
     no PR to bind — so the caller appends nothing and the closing comment is
     unchanged for every pre-existing path.
     """
-    if not binding_required() or not pr_number:
+    global _handoff_pending
+    _handoff_pending = binding_required()
+    if not binding_required():
         return ""
+    if not pr_number:
+        if run_report.enabled():
+            run_report.report_block("pr_candidate_missing")
+        return "> **Story pull-request handoff blocked:** pr_candidate_missing. No completion acknowledgement was recorded."
     try:
         number = int(pr_number)
     except (TypeError, ValueError):
         return ""
-    if not authority_enabled():
+    if not authority_enabled() and not run_report.enabled():
         # The gateway path is how a binding is authenticated; without it there is no
         # way to register one, and the engine will hold the story with a stated
         # reason. Say so rather than failing quietly.
@@ -185,7 +255,7 @@ def binding_note(*, repo: str, pr_number: str | int | None, reviewer_artifact: b
         )
     try:
         result = register_pull_request(repo=repo, pr_number=number, reviewer_artifact=reviewer_artifact)
-    except StatusGatewayError as exc:
+    except (StatusGatewayError, run_report.RunReportError) as exc:
         # Visible, not silent: an unregistered PR means the story holds.
         logger.warning("pull-request binding failed for %s#%s: %s", repo, number, exc)
         return (
@@ -199,6 +269,7 @@ def binding_note(*, repo: str, pr_number: str | int | None, reviewer_artifact: b
             f"> **Story pull-request binding failed** for PR #{number}: the pull request's provider "
             "identity could not be read. The engine will hold this story until the association is recorded."
         )
+    _handoff_pending = False
     role = result.get("role", "implementation")
     if result.get("created"):
         return f"> Registered PR #{number} as this story's {role} pull request."

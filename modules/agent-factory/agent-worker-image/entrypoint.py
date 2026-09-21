@@ -57,6 +57,8 @@ from lib.handoff_client import HANDOFF_EXPECT_ENV, HANDOFF_REQUIRED_ENV
 from lib.handoff_client import handoff_note as delivery_handoff_note
 from lib.pr_binding import BINDING_REQUIRED_ENV as PR_BINDING_REQUIRED_ENV
 from lib.pr_binding import binding_note as pr_binding_note
+from lib.pr_binding import handoff_pending as pr_handoff_pending, resume_handoff as resume_pr_handoff
+from lib import run_report
 from lib.invocation_completion import (
     InvocationCompletionError,
     is_delivery_completed,
@@ -701,6 +703,7 @@ def _invocation_identity_decides_replay(envelope: dict) -> bool:
         envelope.get("work_claim_required") is True
         or os.environ.get("ADP_WORK_CLAIMS_ENABLED", "false").lower() == "true"
         or authority_enabled()
+        or run_report.enabled()
     )
 
 
@@ -1522,6 +1525,24 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         except Exception as exc:
             logger.error("Failed to delete poison message: %s", exc)
         return 1
+
+    # A redelivery with a durable candidate retries reporting only. Do this
+    # before repository setup or the agent runtime can repeat delivered work.
+    try:
+        run_report.configure(envelope)
+        if run_report.enabled() and resume_pr_handoff():
+            receipt = run_report.request().get("terminal_receipt") or {}
+            if receipt.get("outcome") not in {"complete", "failed"}:
+                raise run_report.RunReportError("terminal_report_unacknowledged")
+            update_invocation_status(message_id, arrived_at, receipt["outcome"], summary="Engine delivery report recovered")
+            _delete_message(queue_url, region, receipt_handle)
+            bootstrap_log.close()
+            return 0
+    except run_report.RunReportError as exc:
+        logger.warning("Engine report recovery deferred: %s", exc.code)
+        run_report.report_block(exc.code)
+        bootstrap_log.close()
+        return AGENT_EXIT_RETRYABLE
 
     # AIDLC can merge an intermediate gate and continue on the same branch, and
     # a Codex issue review has no branch/PR terminal state. Legacy workers
@@ -2729,6 +2750,16 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if task_heartbeat is None:
         heartbeat.start()
 
+    try:
+        run_report.begin_delivery()
+    except run_report.RunReportError as exc:
+        logger.warning("Engine delivery start deferred: %s", exc.code)
+        run_report.report_block(exc.code)
+        heartbeat.stop()
+        if proxy_process is not None:
+            _stop_sigv4_proxy(proxy_process)
+        return AGENT_EXIT_RETRYABLE
+
     command = worker_command(persona)
     logger.info(
         "Execing runtime=%s command=%s persona=%s branch=%s",
@@ -2764,6 +2795,12 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         output_lines = (result.stdout or "").strip().splitlines()
         summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
         if result.returncode == 0:
+            if run_report.enabled():
+                try:
+                    run_report.terminal("complete")
+                except run_report.RunReportError as exc:
+                    logger.warning("Codex review handoff deferred: %s", exc.code)
+                    return AGENT_EXIT_RETRYABLE
             update_invocation_status(message_id, arrived_at, "complete", summary=summary)
             if use_completion_receipt:
                 try:
@@ -2910,13 +2947,20 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # and the first attempt produced nothing at all: no commits, no PR, no useful
     # failure comment. Acking that is losing the task. AGENT_EXIT_RETRYABLE is the
     # worker's way of saying so, so we leave the message for redelivery.
-    if not _should_ack_message(result.returncode):
+    if not _should_ack_message(exit_code):
         logger.warning(
             "Worker requested retry (exit_code=%d) — leaving SQS message for "
             "redelivery after the visibility timeout",
-            result.returncode,
+            exit_code,
         )
         return exit_code
+
+    if run_report.enabled():
+        try:
+            run_report.terminal("complete" if exit_code == 0 else "failed")
+        except run_report.RunReportError as exc:
+            logger.warning("Engine terminal report deferred: %s", exc.code)
+            return AGENT_EXIT_RETRYABLE
 
     if use_completion_receipt:
         try:
@@ -3653,7 +3697,7 @@ def _handle_success(
                 )
                 return 1
 
-            self_pr = _find_open_pr(repo, branch)
+            self_pr = run_report.assigned_pull_request(repo) or _find_open_pr(repo, branch)
             if self_pr:
                 _ensure_pr_body_marker(repo, self_pr, branch)
             # The authoring persona reaches this branch on the common path: it
@@ -3697,18 +3741,18 @@ def _handle_success(
             update_invocation_status(
                 message_id,
                 arrived_at,
-                "complete",
+                "in_progress" if pr_handoff_pending() else "complete",
                 summary=f"{persona} — run ended; "
                 + (f"PR #{self_pr} open" if self_pr else "no local changes to push"),
             )
-            return 0
+            return AGENT_EXIT_RETRYABLE if pr_handoff_pending() else 0
 
         if has_unpushed or has_uncommitted:
             run_cmd(["git", "push", "origin", branch], cwd=WORK_DIR)
 
         # Create PR if one doesn't already exist on this branch
-        pr_already_exists = False
-        existing_pr_number = ""
+        existing_pr_number = run_report.assigned_pull_request(repo)
+        pr_already_exists = bool(existing_pr_number)
         transcript_only = False
         try:
             existing_pr = run_cmd(
@@ -3727,7 +3771,7 @@ def _handle_success(
                 ],
                 env={**os.environ},
             )
-            existing_pr_number = existing_pr.stdout.strip()
+            existing_pr_number = existing_pr_number or existing_pr.stdout.strip()
             pr_already_exists = bool(existing_pr_number)
         except subprocess.CalledProcessError:
             pass
@@ -3815,7 +3859,7 @@ def _handle_success(
         update_invocation_status(
             message_id,
             arrived_at,
-            "complete",
+            "in_progress" if pr_handoff_pending() else "complete",
             summary=f"{persona} — run ended; "
             + ("review transcripts pushed" if transcript_only else f"PR on {branch}"),
         )
@@ -3828,7 +3872,7 @@ def _handle_success(
             summary=f"{persona} — post-agent step failed",
         )
         return 1
-    return 0
+    return AGENT_EXIT_RETRYABLE if pr_handoff_pending() else 0
 
 
 def _branch_changes_are_transcript_only(branch: str) -> bool:

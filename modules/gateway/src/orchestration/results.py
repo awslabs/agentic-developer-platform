@@ -84,6 +84,7 @@ from .pr_bindings import (
     evidence_for_binding,
     hold_explanation,
 )
+from .run_reports import run_result_for_assignment
 from .run_store import EngineRunStore
 from .state import ActorKind, NodeState, transition
 
@@ -172,15 +173,26 @@ async def _story_evidence(
         # answer about a different repository of the same name.
         return None, hold_explanation(BindingRefusal.REPOSITORY_MISMATCH)
 
-    provider_evidence: MergeEvidence | None = await asyncio.wait_for(
-        source.bound_pull_request(
-            org_id=node.org_id,
-            installation_id=binding.installation_id or installation_id,
-            repo=binding.repo,
-            pr_number=binding.pr_number,
-        ),
-        timeout=15,
-    )
+    from .delivery_progress import provider_progress
+
+    try:
+        provider_evidence: MergeEvidence | None = await asyncio.wait_for(
+            source.bound_pull_request(
+                org_id=node.org_id,
+                installation_id=binding.installation_id or installation_id,
+                repo=binding.repo,
+                pr_number=binding.pr_number,
+            ),
+            timeout=15,
+        )
+    except Exception:
+        # Persist a distinct diagnosis instead of retaining yesterday's successful
+        # evidence or describing a provider outage as an unmerged PR.
+        provider_evidence = None
+        if observation is not None:
+            observation["provider_unavailable"] = True
+    if observation is not None:
+        observation["delivery_progress"] = provider_progress(binding, provider_evidence)
     url, refusal = evidence_for_binding(binding, provider_evidence)
     if url:
         if observation is not None:
@@ -327,6 +339,19 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
         report.examined += 1
         try:
             async with session.begin_nested():
+                from .delivery_adoption import observe_historical_delivery
+
+                adoption = await observe_historical_delivery(
+                    session,
+                    node=node,
+                    source=evidence if evidence is not None else GitHubEvidenceSource(),
+                )
+                if adoption is not None:
+                    advanced, detail = adoption
+                    report.advanced += int(advanced)
+                    report.waiting += int(not advanced)
+                    report.reasons[node.id] = detail
+                    continue
                 decision = (
                     await session.execute(
                         select(OrchestrationDecision)
@@ -345,8 +370,10 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                 dispatch = json.loads(decision.reason or "{}")
                 if dispatch.get("attempt") != node.attempts or dispatch.get("run_id") != attempt_run_id(node.id, node.attempts):
                     raise ValueError("dispatch record does not match the current attempt")
-                store = run_store if run_store is not None else EngineRunStore.from_env()
-                row = await asyncio.to_thread(store.get, dispatch["run_id"], dispatch["arrived_at"])
+                row = await run_result_for_assignment(session, node=node, dispatch=dispatch)
+                if row is None:
+                    store = run_store if run_store is not None else EngineRunStore.from_env()
+                    row = await asyncio.to_thread(store.get, dispatch["run_id"], dispatch["arrived_at"])
                 recovered_without_run_record = False
                 recovered_from_skipped_run = False
                 recoverable_skipped_run = row is not None and row.get("status") == "skipped" and row.get("skip_reason") == "idempotency_merged_pr"
@@ -441,6 +468,8 @@ async def observe_results(session: AsyncSession, *, run_store: Any | None = None
                             installation_id=installation_id,
                             observation=observation,
                         )
+                        if observation.get("provider_unavailable"):
+                            report.errors += 1
                         if not url:
                             target, detail = NodeState.AWAITING_MERGE, hold
                         else:

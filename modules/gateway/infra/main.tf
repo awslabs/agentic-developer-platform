@@ -1142,8 +1142,8 @@ module "orchestration_tick" {
   # transport, no new route, no credential added to the webhook Lambda. The queue
   # belongs to the webhook-ingress Terraform state, so it is referenced by
   # ARN/URL variables rather than by a resource address.
-  agent_submit_queue_arn = var.orchestration_agent_authority_enabled ? local.worker_queue_arn : var.orchestration_dispatch_queue_arn
-  agent_submit_queue_url = var.orchestration_agent_authority_enabled ? local.worker_queue_url : var.orchestration_dispatch_queue_url
+  agent_submit_queue_arn = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? local.worker_queue_arn : var.orchestration_dispatch_queue_arn
+  agent_submit_queue_url = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? local.worker_queue_url : var.orchestration_dispatch_queue_url
   dispatch_repo          = var.orchestration_dispatch_repo
   dispatch_max_per_tick  = var.orchestration_dispatch_max_per_tick
 
@@ -1155,16 +1155,20 @@ module "orchestration_tick" {
   #
   # All four default to empty/false, which leaves the bridge inert: the pass reads
   # nothing and reports `commands_enabled=false`.
-  engine_enabled           = var.orchestration_engine_enabled
-  agent_authority_enabled  = var.orchestration_agent_authority_enabled
-  persona_model_mapping_enabled = var.persona_model_mapping_enabled
-  agent_authority_prepared = var.orchestration_agent_authority_prepared && local.worker_events_table != "" && local.worker_events_key != ""
+  engine_enabled                     = var.orchestration_engine_enabled
+  agent_authority_enabled            = var.orchestration_agent_authority_enabled
+  shared_run_reporting_enabled       = try(local.worker_runtime_wiring.shared_run_reporting_enabled, false)
+  shared_worker_continuation_enabled = try(local.worker_runtime_wiring.shared_worker_continuation_enabled, false)
+  shared_worker_role_arn             = try(local.worker_runtime_wiring.shared_worker_role_arn, "")
+  run_report_key_parameter           = try(local.worker_runtime_wiring.run_report_key_parameter, "")
+  persona_model_mapping_enabled      = var.persona_model_mapping_enabled
+  agent_authority_prepared           = var.orchestration_agent_authority_prepared && local.worker_events_table != "" && local.worker_events_key != ""
   agent_authority_resources = {
     webhook_events_table_name  = local.worker_events_table
     webhook_events_kms_key_arn = local.worker_events_key
   }
-  webhook_events_table_name     = var.orchestration_agent_authority_enabled ? local.worker_events_table : var.orchestration_webhook_events_table
-  webhook_events_kms_key_arn    = var.orchestration_agent_authority_enabled ? local.worker_events_key : var.orchestration_webhook_events_kms_key_arn
+  webhook_events_table_name     = var.orchestration_agent_authority_enabled || try(local.worker_runtime_wiring.shared_run_reporting_enabled, false) ? local.worker_events_table : var.orchestration_webhook_events_table
+  webhook_events_kms_key_arn    = local.worker_events_key
   github_app_secret_arn_pattern = var.orchestration_github_app_secret_arn_pattern
 
   # Issue #4539: command attribution. The tick verifies the signature the webhook

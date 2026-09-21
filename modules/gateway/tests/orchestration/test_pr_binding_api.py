@@ -236,3 +236,30 @@ async def test_operator_can_explicitly_replace_abandoned_pr(session, app_with_ro
     assert len(rows) == 2
     assert {row.pr_number: row.state for row in rows} == {PR_NUMBER: "superseded", PR_NUMBER + 1: "active"}
     assert "pending" in response.json()["remaining_hold"]
+
+
+async def test_explicit_historical_adoption_never_dispatches_and_reconciles_attempt_zero(session, app_with_router, monkeypatch):
+    from tests.orchestration.test_delivery_adoption import NoWorker, story
+
+    monkeypatch.setenv("BG_ORCH_DISPATCH_REPO", REPO)
+    monkeypatch.setattr("src.orchestration.delivery_adoption.resolve_installation_id", AsyncMock(return_value=INSTALLATION))
+    monkeypatch.setattr("src.orchestration.merge_evidence.GitHubEvidenceSource.bound_pull_request", AsyncMock(return_value=_green()))
+    node = await story(session)
+    client = read.client_for(app_with_router)
+    response = client.post(recovery_url(node), json=body(adopt_delivery=True))
+    assert response.status_code == 200, response.text
+    assert node.state == "awaiting_merge" and node.attempts == 0
+    assert client.post(recovery_url(node), json=body(adopt_delivery=True)).status_code == 200
+    binding = (await session.scalars(select(OrchestrationPullRequestBinding))).one()
+    assert binding.run_id is None
+    report = await observe_results(session, run_store=NoWorker(), evidence=StubSource(evidence=_green()))
+    assert report.advanced == 1 and node.state == "passed" and node.attempts == 0
+    decisions = (await session.scalars(select(OrchestrationDecision))).all()
+    assert not any(row.kind == DecisionKind.NODE_DISPATCHED.value for row in decisions)
+
+
+async def test_historical_adoption_api_refuses_active_attempt_before_provider(session, app_with_router, providers):
+    node, _ = await _story(session, binding_marker=True)
+    response = read.client_for(app_with_router).post(recovery_url(node), json=body(adopt_delivery=True))
+    assert response.status_code == 409
+    providers.assert_not_awaited()

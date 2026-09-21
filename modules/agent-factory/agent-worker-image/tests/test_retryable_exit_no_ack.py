@@ -93,6 +93,6 @@ class TestAckSiteUsesThePredicate:
         )
         # The terminal ack in main() is the _delete_message call preceded by the
         # guard; assert the guard appears before it.
-        guard_pos = src.index("_should_ack_message(result.returncode)")
+        guard_pos = src.index("_should_ack_message(exit_code)")
         ack_pos = src.index("SQS message acked and deleted")
         assert guard_pos < ack_pos

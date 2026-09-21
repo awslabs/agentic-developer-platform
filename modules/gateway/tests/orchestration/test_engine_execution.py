@@ -102,6 +102,16 @@ async def api(session, access, monkeypatch):
 
     activity.get_chain.side_effect = empty_chain
     monkeypatch.setattr("src.orchestration.node_activity._activity_service", lambda: activity)
+
+    # Retried stories now revalidate and retain their provider PR identity.
+    # Keep that read on the same fixture provider as initial registration.
+    async def resolve_pr(**kwargs):
+        from src.orchestration.pr_bindings import PullRequestIdentity
+
+        number = kwargs["pr_number"]
+        return PullRequestIdentity(12345, f"PR_{number}", kwargs["repo"], number, "a" * 40)
+
+    monkeypatch.setattr("src.orchestration.pr_identity.resolve_pr_identity", resolve_pr)
     app = FastAPI()
     app.include_router(routes.router)
     app.include_router(controls.router)

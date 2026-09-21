@@ -7,7 +7,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-test('protected model requests use refreshed supervisor proof and preserve bytes', async () => {
+test.each(['protected', 'shared'])('%s model requests use refreshed supervisor proof and preserve bytes', async (mode) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adp-proxy-identity-'));
   const key = path.join(dir, 'key.pem');
   const cert = path.join(dir, 'cert.pem');
@@ -51,7 +51,9 @@ test('protected model requests use refreshed supervisor proof and preserve bytes
         AWS_ENDPOINT_URL_STS: `https://127.0.0.1:${receiverPort}/sts`,
         ADP_WORKER_IRSA_ROLE_ARN: 'arn:aws:iam::123456789012:role/worker', ADP_WORKER_IRSA_TOKEN_FILE: irsa,
         AWS_ROLE_ARN: '', AWS_PROFILE: '', AWS_EC2_METADATA_DISABLED: 'true',
-        ADP_AGENT_AUTHORITY_ENABLED: 'true', ADP_RUN_CREDENTIAL_FILE: credential, ADP_WORKLOAD_TOKEN_FILE: workload,
+        ADP_AGENT_AUTHORITY_ENABLED: mode === 'protected' ? 'true' : 'false',
+        ADP_RUN_CREDENTIAL_FILE: credential, ADP_WORKLOAD_TOKEN_FILE: workload,
+        ADP_RUN_REPORT_CREDENTIAL_FILE: mode === 'shared' ? credential : '',
         ADP_MESSAGE_ID: 'protected-run', TENANT_ID: 'protected-tenant', NODE_EXTRA_CA_CERTS: cert, NODE_TLS_REJECT_UNAUTHORIZED: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -70,6 +72,7 @@ test('protected model requests use refreshed supervisor proof and preserve bytes
       const req = http.request({ hostname: '127.0.0.1', port, path: '/v1/messages', method: 'POST', headers: {
         'content-type': 'application/json', 'content-length': bytes.length,
         'x-adp-run-credential': 'forged', 'x-adp-workload-token': 'forged', 'x-agent-runid': 'forged',
+        'x-adp-report-credential': 'forged-report',
       } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode!)); });
       req.on('error', reject);
       req.end(bytes);
@@ -78,9 +81,11 @@ test('protected model requests use refreshed supervisor proof and preserve bytes
     if (firstStatus !== 200) throw new Error(`Proxy returned ${firstStatus}: ${proxyErrors}`);
     fs.writeFileSync(credential, 'refreshed-credential\n');
     expect(await request()).toBe(200);
-    expect(captures.map(c => c.headers['x-adp-run-credential'])).toEqual(['current-credential', 'refreshed-credential']);
+    const ownHeader = mode === 'protected' ? 'x-adp-run-credential' : 'x-adp-report-credential';
+    expect(captures.map(c => c.headers[ownHeader])).toEqual(['current-credential', 'refreshed-credential']);
     for (const capture of captures) {
-      expect(capture.headers['x-adp-workload-token']).toBe('current-pod');
+      expect(capture.headers['x-adp-workload-token']).toBe(mode === 'protected' ? 'current-pod' : undefined);
+      expect(capture.headers[mode === 'protected' ? 'x-adp-report-credential' : 'x-adp-run-credential']).toBeUndefined();
       expect(capture.headers['x-agent-runid']).toBe('protected-run');
       expect(capture.headers.authorization).toContain('Credential=LOCAL_PLATFORM_KEY/');
       expect(capture.headers.authorization).toContain('/us-east-1/execute-api/');

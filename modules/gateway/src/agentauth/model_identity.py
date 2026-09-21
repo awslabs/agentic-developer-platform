@@ -40,15 +40,221 @@ class ModelPolicyRefusedError(Exception):
         self.decision = decision
 
 
+async def _known_shared_model_run(session, run_id: str) -> bool:
+    """Lookup the asserted run only to detect a missing required capability.
+
+    Headers never confer authority. A match can only deny the tokenless request;
+    authenticated assignment and policy checks below are required to grant access.
+    """
+    from sqlalchemy import select
+
+    from src.orchestration.models import OrchestrationAcceptedPlan
+    from src.orchestration.policy_admission import load_in_force_policy
+    from src.orchestration.run_reports import OrchestrationRunReport
+
+    assignment = await session.get(OrchestrationRunReport, run_id)
+    if assignment is None:
+        return False
+    inputs = await load_in_force_policy(session, org_id=assignment.org_id, flow_id=assignment.flow_id)
+    if inputs.policy is not None or inputs.refusal is not None:
+        return True
+    plans = await session.scalars(
+        select(OrchestrationAcceptedPlan).where(
+            OrchestrationAcceptedPlan.org_id == assignment.org_id,
+            OrchestrationAcceptedPlan.flow_id == assignment.flow_id,
+            OrchestrationAcceptedPlan.superseded_at.is_(None),
+        )
+    )
+    for plan in plans:
+        marker = (plan.plan_document or {}).get("execution_continuation")
+        if isinstance(marker, dict) and marker.get("mode") == "shared_worker_role":
+            return True
+    return False
+
+
+def _assert_report_headers(request, assignment):
+    if request.headers.get("X-Agent-RunId", assignment.run_id) != assignment.run_id:
+        raise BootstrapRefusedError("model run assertion mismatch")
+    if request.headers.get("X-Agent-OrgId", assignment.org_id) != assignment.org_id:
+        raise BootstrapRefusedError("model tenant assertion mismatch")
+
+
+def _bind_report_context(context, assignment, principal, node, flow):
+    from src.budget.run_binding import RunBinding
+    from src.orchestration.dispatch import GraphAttribution, graph_address
+
+    context.attributed_org_id = assignment.org_id
+    context._protected_run_binding = RunBinding(
+        run_id=assignment.run_id,
+        correlation_id=assignment.flow_id,
+        tenant_id=assignment.org_id,
+        user_id=principal,
+        root_human_id=principal,
+        is_human_rooted=True,
+        flow_id=assignment.flow_id,
+    )
+    context._graph_attribution = GraphAttribution(
+        org_id=assignment.org_id,
+        flow_id=assignment.flow_id,
+        node_id=assignment.node_id,
+        node_attempt=assignment.attempt,
+        address=graph_address(node, flow_slug=flow.slug),
+        run_id=assignment.run_id,
+    )
+
+
 class AgentModelIdentityMiddleware:
     def __init__(self, app):
         self.app = app
+
+    async def _shared_worker(self, scope, receive, send, context):
+        """Bind authenticated platform-run traffic to the accepted flow budget.
+
+        A shared administrator role is not provider-side isolation. A supplied
+        capability never falls back; a known governed run without one is denied.
+        Unrelated legacy traffic retains its existing identity/budget behavior.
+        """
+        from src.orchestration.flow_meter import meter_target
+        from src.orchestration.review_cycle import CycleBlockedError
+        from src.orchestration.run_reports import REPORT_HEADER, RunReportError, authenticate_report_assignment
+        from src.orchestration.shared_policy import authorize_shared_model
+        from src.shared.database import get_session_factory
+
+        request = Request(scope)
+        credential = request.headers.get(REPORT_HEADER, "")
+        asserted_run = request.headers.get("X-Agent-RunId")
+        if REPORT_HEADER not in request.headers:
+            if asserted_run:
+                try:
+                    async with get_session_factory()() as session:
+                        governed = await _known_shared_model_run(session, asserted_run)
+                except Exception:
+                    await JSONResponse({"error": "worker_identity_unavailable"}, status_code=503)(scope, receive, send)
+                    return
+                if governed:
+                    await JSONResponse(
+                        {"error": "worker_identity_refused", "reason": "report_credential_required"},
+                        status_code=403,
+                    )(scope, receive, send)
+                    return
+            await self.app(scope, receive, send)
+            return
+        try:
+            async with get_session_factory()() as session:
+                assignment = await authenticate_report_assignment(session, credential)
+                _assert_report_headers(request, assignment)
+                from src.orchestration.models import OrchestrationFlow, OrchestrationNode
+                from src.orchestration.policy_admission import load_in_force_policy
+
+                inputs = await load_in_force_policy(session, org_id=assignment.org_id, flow_id=assignment.flow_id)
+                legacy_report = inputs.policy is None and inputs.refusal is None and not await _known_shared_model_run(session, assignment.run_id)
+                if legacy_report:
+                    # Reporting ships independently from continuation activation.
+                    # A valid legacy assignment keeps ordinary budgets, without
+                    # inventing a policy or trusting caller-supplied attribution.
+                    node = await session.get(OrchestrationNode, assignment.node_id)
+                    flow = await session.get(OrchestrationFlow, assignment.flow_id)
+                    actor = assignment.dispatch_metadata.get("actor")
+                    principal = actor.get("user_id") if isinstance(actor, dict) else None
+                    if (
+                        assignment.terminal_receipt is not None
+                        or not isinstance(principal, str)
+                        or not principal
+                        or node is None
+                        or node.state not in {"running", "awaiting_merge"}
+                        or flow is None
+                        or flow.state not in {"pending", "running"}
+                    ):
+                        raise BootstrapRefusedError("legacy model assignment is not active or attributable")
+                else:
+                    # A present or malformed policy cannot silently become legacy.
+                    policy, principal, node, flow = await authorize_shared_model(session, assignment)
+                    policy_snapshot = policy.model_dump(mode="json")
+                identity = (assignment.run_id, assignment.org_id, assignment.flow_id, assignment.node_id, assignment.attempt, principal)
+            if legacy_report:
+                _bind_report_context(context, assignment, principal, node, flow)
+            else:
+                if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
+                    raise AuthorityStoreError("policy budget enforcement unavailable")
+
+                # Same bounded quote and byte-for-byte replay contract as the
+                # protected worker branch; existing budget middleware reserves it.
+                frames, chunks, size = [], [], 0
+                while True:
+                    frame = await receive()
+                    if frame["type"] != "http.request":
+                        return
+                    frames.append(frame)
+                    chunk = frame.get("body", b"")
+                    size += len(chunk)
+                    if size > 16 * 1024 * 1024:
+                        raise BootstrapRefusedError("policy request exceeds the bounded input size")
+                    chunks.append(chunk)
+                    if not frame.get("more_body", False):
+                        break
+                body = b"".join(chunks)
+                quote = await quote_request(body, scope["path"])
+                # Upload time cannot extend a run or preserve an obsolete policy.
+                async with get_session_factory()() as session:
+                    assignment = await authenticate_report_assignment(session, credential)
+                    policy, principal, node, flow = await authorize_shared_model(session, assignment)
+                    _assert_report_headers(request, assignment)
+                    if identity != (assignment.run_id, assignment.org_id, assignment.flow_id, assignment.node_id, assignment.attempt, principal):
+                        raise BootstrapRefusedError("model assignment changed during upload")
+                    if policy_snapshot != policy.model_dump(mode="json"):
+                        raise BootstrapRefusedError("model policy changed during upload")
+                if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
+                    raise AuthorityStoreError("policy budget enforcement unavailable")
+                await revalidate_quote(quote, body, scope["path"])
+
+                _bind_report_context(context, assignment, principal, node, flow)
+                context._policy_flow_target = meter_target(org_id=assignment.org_id, flow_id=assignment.flow_id, policy=policy)
+                context._policy_quote = quote
+                context._policy_estimated_cost = quote.total_usd
+                context._policy_request_id = str(uuid4())
+                scope.setdefault("state", {})["request_id"] = context._policy_request_id
+                remaining_frames = iter(frames)
+                upstream_receive = receive
+
+                async def replay():
+                    frame = next(remaining_frames, None)
+                    return frame if frame is not None else await upstream_receive()
+
+                receive = replay
+        except CycleBlockedError as exc:
+            unavailable = exc.reason in {"budget_unavailable", "spend_unknown", "budget_enforcement_unavailable"}
+            exhausted = exc.reason == "spend_limit_exceeded"
+            await JSONResponse(
+                {"error": "budget_exceeded" if exhausted else "execution_policy_refused", "reason": exc.reason, "scope": "flow"},
+                status_code=402 if exhausted else 503 if unavailable else 403,
+            )(scope, receive, send)
+            return
+        except RunReportError as exc:
+            await JSONResponse(
+                {"error": "worker_identity_unavailable" if exc.retryable else "worker_identity_refused", "reason": exc.code},
+                status_code=503 if exc.retryable else 403,
+            )(scope, receive, send)
+            return
+        except (BootstrapRefusedError, QuoteRefusedError):
+            await JSONResponse({"error": "worker_identity_refused"}, status_code=403)(scope, receive, send)
+            return
+        except Exception:
+            logger.warning("Shared worker model identity or budget could not be verified")
+            await JSONResponse({"error": "worker_identity_unavailable"}, status_code=503)(scope, receive, send)
+            return
+        # The capability belongs to this authentication boundary, not to provider
+        # headers or chat/request logging downstream.
+        scope["headers"] = [(name, value) for name, value in scope.get("headers", []) if name.lower() != REPORT_HEADER.lower().encode()]
+        await self.app(scope, receive, send)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or not scope.get("path", "").startswith(ENFORCED_PATHS):
             await self.app(scope, receive, send)
             return
         context = scope.get("state", {}).get("token_context")
+        if context is not None and context.auth_source == "iam" and context.user_id == "scaledjob-worker":
+            await self._shared_worker(scope, receive, send, context)
+            return
         if context is None or context.auth_source != "iam" or context.user_id != "authority-worker":
             await self.app(scope, receive, send)
             return
