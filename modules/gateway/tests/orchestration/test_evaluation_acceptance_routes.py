@@ -59,9 +59,7 @@ async def test_contract_dispatch_contention_returns_retryable_conflict(monkeypat
             flow_id="flow", body=SimpleNamespace(reason="accept exact evidence"), current_user=SimpleNamespace(org_id="org"), db=db
         )
     assert error.value.status_code == 409
-    assert error.value.detail == {
-        "code": "evaluation_dispatch_in_progress", "detail": "evaluation_dispatch_in_progress", "retryable": True
-    }
+    assert error.value.detail == {"code": "evaluation_dispatch_in_progress", "detail": "evaluation_dispatch_in_progress", "retryable": True}
     db.rollback.assert_awaited_once()
     db.commit.assert_not_awaited()
 
