@@ -24,7 +24,17 @@ from urllib.parse import urlsplit
 import httpx
 import yaml
 
-from .config import COMPONENTS, LABEL, MODULE, Refusal, digest, identity, image, require
+from .config import (
+    COMPONENTS,
+    LABEL,
+    MODULE,
+    Refusal,
+    digest,
+    identity,
+    image,
+    require,
+    verify_cluster_dns,
+)
 from .manifests import bootstrap_job, migration_job, render
 from .cluster_probe import ClusterProbe
 
@@ -222,6 +232,7 @@ class Installer:
             cluster["arn"] == expected_arn and cluster["status"] == "ACTIVE",
             "Wrong or inactive management cluster",
         )
+        verify_cluster_dns(self.env, cluster)
         self.aws(
             "eks",
             "update-kubeconfig",
@@ -939,6 +950,8 @@ class Installer:
                 ],
                 database_port=endpoint["Port"],
             )
+            if not self.receipt.get("management_dns", {}).get("verified"):
+                probe.prove_dns(endpoint["Address"])
             return probe.run(
                 "superplane-api",
                 ["python", "-m", "app.installation", "database"],

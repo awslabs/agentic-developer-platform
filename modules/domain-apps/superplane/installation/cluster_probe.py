@@ -11,7 +11,8 @@ import time
 import uuid
 from types import SimpleNamespace
 
-from .config import LABEL, Refusal, image, require
+from .config import LABEL, MODULE, Refusal, image, require
+from .manifests import dns_egress
 
 HTTP_PROBE = """import json,sys,urllib.request,urllib.error
 result={'reachable':False,'denied':False}
@@ -369,21 +370,7 @@ class ClusterProbe:
         egress = []
         if database_cidrs:
             egress = [
-                {
-                    "to": [
-                        {
-                            "namespaceSelector": {
-                                "matchLabels": {
-                                    "kubernetes.io/metadata.name": "kube-system"
-                                }
-                            }
-                        }
-                    ],
-                    "ports": [
-                        {"protocol": "UDP", "port": 53},
-                        {"protocol": "TCP", "port": 53},
-                    ],
-                },
+                dns_egress(self.installer.env),
                 {
                     "to": [{"ipBlock": {"cidr": cidr}} for cidr in database_cidrs],
                     "ports": [{"protocol": "TCP", "port": database_port}],
@@ -394,6 +381,31 @@ class ClusterProbe:
             {"podSelector": {}, "policyTypes": ["Ingress", "Egress"], "egress": egress},
         )
         self.isolated = True
+
+    def prove_dns(self, database_host):
+        names = ["kubernetes.default.svc.cluster.local", database_host]
+        result = self.run(
+            "superplane-api",
+            [
+                "python",
+                "-c",
+                (MODULE / "installation/dns_probe.py").read_text(),
+                self.installer.env.get("cluster_dns_ip", ""),
+                *names,
+            ],
+        )
+        require(
+            result.returncode == 0, "Restricted DNS preflight failed over UDP or TCP"
+        )
+        observed = self.installer.json(result)
+        require(
+            observed.get("verified") is True
+            and observed.get("names") == names
+            and observed.get("protocols") == ["UDP", "TCP"],
+            "Restricted DNS probe did not verify Kubernetes and database resolution",
+        )
+        self.installer.receipt["management_dns"] = observed
+        self.installer.save()
 
     def run(self, component, command, *, values=None):
         require(

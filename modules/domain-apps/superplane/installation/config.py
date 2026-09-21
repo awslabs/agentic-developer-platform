@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import re
 from pathlib import Path
@@ -73,6 +74,48 @@ def control_plane_mode(env: dict, selected: bool = False) -> bool:
     return selected or env.get("control_plane_only", False)
 
 
+def cluster_dns_address(env: dict):
+    """An optional exact native resolver, never an arbitrary DNS egress range."""
+    if "cluster_dns_ip" not in env:
+        return None
+    try:
+        value = env["cluster_dns_ip"]
+        require(isinstance(value, str), "cluster_dns_ip must be an IP address")
+        address = ipaddress.ip_address(value)
+        require(
+            not (
+                address.is_unspecified
+                or address.is_multicast
+                or address.is_loopback
+                or address.is_link_local
+            ),
+            "cluster_dns_ip must be the EKS service-network resolver",
+        )
+        return address
+    except ValueError:
+        raise Refusal(
+            "cluster_dns_ip must be an IP address, without a CIDR prefix"
+        ) from None
+
+
+def verify_cluster_dns(env: dict, cluster: dict) -> None:
+    address = cluster_dns_address(env)
+    if address is None:
+        return
+    network = cluster.get("kubernetesNetworkConfig", {})
+    try:
+        cidr = ipaddress.ip_network(network[f"serviceIpv{address.version}Cidr"])
+    except (KeyError, ValueError):
+        raise Refusal(
+            "Cannot verify cluster_dns_ip against the EKS service network"
+        ) from None
+    require(
+        cluster.get("computeConfig", {}).get("enabled") is True
+        and address == cidr.network_address + 10,
+        "cluster_dns_ip must match the selected EKS Auto Mode resolver",
+    )
+
+
 def validate(
     env: dict,
     lock: dict | None,
@@ -118,11 +161,13 @@ def validate(
         "control_plane_only",
         "image_execution",
         "gateway_namespace",
+        "cluster_dns_ip",
     }
     require(
         set(env) <= allowed,
         "Unknown environment fields; secrets belong in Secrets Manager",
     )
+    cluster_dns_address(env)
     require(
         env.get("image_execution", "docker") in {"docker", "cluster"},
         "image_execution must be docker or cluster",

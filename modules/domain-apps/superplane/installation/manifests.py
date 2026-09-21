@@ -6,7 +6,32 @@ import json
 
 import yaml
 
-from .config import LABEL, MODULE, control_plane_mode, digest, identity, image
+from .config import (
+    LABEL,
+    MODULE,
+    cluster_dns_address,
+    control_plane_mode,
+    digest,
+    identity,
+    image,
+)
+
+
+def dns_egress(env: dict) -> dict:
+    # Auto Mode serves DNS on the node, outside namespace/pod selectors. Keep
+    # traditional DNS peers for standard/mixed clusters and allow only the exact
+    # native resolver address, verified against EKS during target preflight.
+    peers = [
+        {
+            "namespaceSelector": {
+                "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
+            }
+        }
+    ]
+    address = cluster_dns_address(env)
+    if address is not None:
+        peers.append({"ipBlock": {"cidr": f"{address}/{address.max_prefixlen}"}})
+    return {"to": peers, "ports": [{"port": 53, "protocol": p} for p in ("UDP", "TCP")]}
 
 
 def runtime_annotations(release: str) -> dict[str, str]:
@@ -483,21 +508,7 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
                         {"from": peers, "ports": [{"port": port, "protocol": "TCP"}]}
                     ],
                     "egress": [
-                        {
-                            "to": [
-                                {
-                                    "namespaceSelector": {
-                                        "matchLabels": {
-                                            "kubernetes.io/metadata.name": "kube-system"
-                                        }
-                                    }
-                                }
-                            ],
-                            "ports": [
-                                {"port": 53, "protocol": "UDP"},
-                                {"port": 53, "protocol": "TCP"},
-                            ],
-                        },
+                        dns_egress(env),
                         {
                             "to": peers[:2],
                             "ports": [

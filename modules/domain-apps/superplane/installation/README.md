@@ -42,6 +42,25 @@ The release lock must remove the three built images from `pending_images`, suppl
 
 Both managed VPC CNI and EKS Auto Mode are supported when NetworkPolicy enforcement
 is verified. Set `gateway_namespace` to the existing Gateway's actual namespace.
+For native EKS Auto Mode DNS, set `cluster_dns_ip` to the cluster's resolver IP
+(the service CIDR's network address plus 10; verify the pod resolver matches).
+Target preflight checks this address against the selected Auto Mode cluster.
+Workload and database-probe policies then allow UDP/TCP 53 to that exact address,
+in addition to traditional `kube-system` DNS peers. Auto Mode runs CoreDNS as a
+node system service, which cannot be selected by a namespace selector. It does
+not require Superplane to install another CoreDNS Deployment. The cluster image
+execution path checks Kubernetes service and private database DNS over both UDP
+and TCP inside the restricted probe boundary and records `management_dns`.
+Without `cluster_dns_ip`, the existing pod-based DNS policy is retained.
+Mixed clusters must retain traditional CoreDNS for their non-Auto Mode nodes,
+including managed node groups currently scaled to zero and Fargate profiles.
+Removing an existing add-on is a separate platform operation: inventory both
+current nodes and configured non-Auto Mode capacity, verify native DNS with the
+replicas stopped, preserve recovery configuration, then verify DNS and application
+health after removal. A cluster with only Auto Mode nodes today can still require
+the add-on when a dormant node group starts.
+See [AWS's CoreDNS considerations](https://docs.aws.amazon.com/eks/latest/userguide/auto-networking.html).
+
 Full workspace activation requires a distinct cluster, approved CRDs/namespace,
 scoped identity and controller handover. Management-only installation omits these
 workspace inputs and mounts no workspace credential. It does not attach AWS roles

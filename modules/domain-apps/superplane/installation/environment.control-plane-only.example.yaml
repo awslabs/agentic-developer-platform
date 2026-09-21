@@ -14,6 +14,8 @@ environment: dev                    # Must match the ADP environment label
 account_id: null                    # 12-digit AWS account ID
 region: null                        # e.g. 'us-east-1'
 cluster: null                       # ADP management EKS cluster name
+# Native Auto Mode DNS: set to the verified EKS resolver (service CIDR + 10).
+# cluster_dns_ip: 172.20.0.10
 namespace: superplane
 gateway_namespace: adp-gateway    # Verify against the existing ADP Gateway deployment
 image_execution: cluster         # Packaged checks in a temporary restricted namespace
