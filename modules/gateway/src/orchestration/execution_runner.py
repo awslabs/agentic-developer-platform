@@ -462,7 +462,21 @@ async def verify_live_authority(
                 progressed_at=record.progressed_at,
                 detail="current accepted-plan authority does not match the execution ledger",
             )
-        expires_at = admission.policy.expires_at
+        effective_policy = admission.policy
+        if effect.intent.kind == "repository_scan_dispatch":
+            from .repository_producer_controller import producer_effect_policy
+
+            try:
+                effective_policy = await producer_effect_policy(session, record, effect)
+            except Exception:
+                return BlockRecord(
+                    code=BlockCode.AUTHORITY_UNVERIFIABLE,
+                    owner="plan-owner",
+                    required_input="Restore the exact explicitly authorized repository scan contract.",
+                    progressed_at=record.progressed_at,
+                    detail="The repository scan effect authority changed.",
+                )
+        expires_at = effective_policy.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
         if expires_at <= (now or datetime.now(UTC)):
@@ -473,8 +487,8 @@ async def verify_live_authority(
                 progressed_at=record.progressed_at,
                 detail="the accepted execution policy expired before the effect",
             )
-        if not admission.policy.permits(effect.action):
-            code = BlockCode.HUMAN_GATE_REQUIRED if effect.action in admission.policy.human_gates else BlockCode.AUTHORITY_UNVERIFIABLE
+        if not effective_policy.permits(effect.action):
+            code = BlockCode.HUMAN_GATE_REQUIRED if effect.action in effective_policy.human_gates else BlockCode.AUTHORITY_UNVERIFIABLE
             return BlockRecord(
                 code=code,
                 owner="plan-owner",
@@ -482,7 +496,7 @@ async def verify_live_authority(
                 progressed_at=record.progressed_at,
                 detail="the in-force policy does not permit this effect autonomously",
             )
-        if record.attempts >= admission.policy.limits.max_attempts_per_node:
+        if record.attempts >= effective_policy.limits.max_attempts_per_node:
             return BlockRecord(
                 code=BlockCode.ATTEMPTS_EXHAUSTED,
                 owner="plan-owner",

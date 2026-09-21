@@ -478,11 +478,17 @@ class EvaluationServices:
 class EvaluationController:
     def __init__(self, factory, services=None):
         self.services = services or EvaluationServices(factory)
+        from .repository_producer_controller import RepositoryProducerController
+
+        self.repository_producer = RepositoryProducerController(factory)
 
     async def observe(self, context):
         try:
             async with self.services.factory() as session:
                 node = await self.services.node(session, context)
+                accepted = await accepted_evaluation(session, node) if node.kind == "eval" else None
+            if accepted is not None and getattr(accepted[1], "producer", None) is not None:
+                return await self.repository_producer.observe(context)
             return await (self.services.story(context) if node.kind == "story" else self.services.evaluate(context))
         except EvaluationEvidenceError as error:
             return EvaluationObservation(ObservationKind.BLOCKED, block=block(error.reason.value, BlockCode.HUMAN_INPUT_REQUIRED))
@@ -493,12 +499,17 @@ class EvaluationController:
 
     async def perform(self, context, effect):
         from .evaluation_correction_state import CORRECTION_KIND
+        from .repository_producer import PRODUCER_KIND
 
+        if effect.intent.kind == PRODUCER_KIND:
+            return await self.repository_producer.perform(context, effect)
         require(effect.intent.kind == CORRECTION_KIND, "evaluation_effect_unsupported")
         return await self.services.correction_service().perform(context, effect)
 
     def decide(self, context, observation):
         stage = getattr(observation, "stage", "wait")
+        if stage.startswith("repository_"):
+            return self.repository_producer.decide(context, observation)
         if stage.startswith("correction_"):
             return self.services.correction_service().decide(context, observation)
         if observation.kind is ObservationKind.BLOCKED:

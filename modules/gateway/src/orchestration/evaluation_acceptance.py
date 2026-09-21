@@ -31,6 +31,7 @@ class EvaluationAcceptanceRequest(BaseModel):
     expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     specification: dict
     authorize_evaluate: StrictBool = False
+    authorize_workflow_dispatch: StrictBool = False
     reason: str = Field(min_length=8, max_length=4000)
     expected_snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
@@ -112,6 +113,7 @@ async def accepted_contract(session, *, node, plan):
             and (Action.EVALUATE in base.allowed_actions or data["authorize_evaluate"] is True),
             "evaluation_acceptance_unverifiable",
         )
+        require(spec.producer is None or data.get("authorize_workflow_dispatch") is True, "producer_authorization_required")
         return decision, spec, policy
     except (ValueError, KeyError, TypeError):
         raise CycleBlockedError("evaluation_acceptance_unverifiable") from None
@@ -178,6 +180,8 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
     require(Action.EVALUATE not in base.human_gates, "explicit_human_gate_preserved")
     require(Action.EVALUATE in base.allowed_actions or request.authorize_evaluate, "explicit_evaluate_authorization_required")
     spec = RepositoryEvaluationSpecification.model_validate(request.specification)
+    require(spec.producer is None or request.authorize_workflow_dispatch, "explicit_producer_authorization_required")
+    require(spec.producer is not None or not request.authorize_workflow_dispatch, "producer_specification_required")
     require(spec.runner.repository in base.repository_ids, "repository_not_permitted")
     require(spec.runner.harness_sha256 == harness_digest(), "evaluation_harness_mismatch")
     require(len(canonical(spec.model_dump(mode="json"))) <= 256 * 1024, "evaluation_specification_too_large")
@@ -214,6 +218,7 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
         base_policy_hash=base.policy_hash,
         evaluation_policy=policy.model_dump(mode="json"),
         authorize_evaluate=request.authorize_evaluate,
+        authorize_workflow_dispatch=request.authorize_workflow_dispatch,
         reason=request.reason,
     )
     snapshot = digest(
@@ -264,6 +269,7 @@ async def _accept_evaluation_locked(session, *, flow_id, actor, request):
         require(
             content["specification"] == RepositoryEvaluationSpecification.model_validate(request.specification).model_dump(mode="json")
             and content["authorize_evaluate"] == request.authorize_evaluate
+            and content.get("authorize_workflow_dispatch", False) == request.authorize_workflow_dispatch
             and content["reason"] == request.reason,
             "acceptance_identity_conflict",
         )

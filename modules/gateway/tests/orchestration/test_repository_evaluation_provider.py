@@ -338,6 +338,76 @@ async def test_large_flow_checks_each_ancestry_pair_once_with_four_reads_in_flig
     assert provider.workflow.await_count == 2
 
 
+@pytest.mark.parametrize("changed", [None, "source", "account", "image", "provenance", "coverage", "cleanup", "correlation"])
+async def test_bound_scan_artifact_must_match_actual_source_target_images_and_cleanup(evidence, changed):
+    document = evidence.spec.model_dump(mode="json")
+    document["workflows"][0]["artifacts"][0]["predicates"] = [
+        dict(criterion_id="coverage", pointer="/coverage_complete", operation="equals", expected=True)
+    ]
+    document["producer"] = dict(
+        mode="dispatch_once",
+        inputs=dict(expected_account_id="123456789012", region="us-east-1"),
+        workflow_criterion_id="one-off-scan",
+        target=dict(account_id="123456789012", region="us-east-1", resource_kind="repository_scan", resource_id="o/r"),
+        receipt_artifact="evidence-{run_attempt}",
+        receipt_path="evidence.json",
+        images={"controller": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64)},
+    )
+    spec = RepositoryEvaluationSpecification.model_validate(document)
+    receipt = dict(
+        evidence_schema="repository-scan-receipt/v1",
+        source_revision="b" * 40,
+        correlation="c" * 64,
+        target=spec.producer.target.model_dump(mode="json"),
+        images={name: image.model_dump(mode="json") for name, image in spec.producer.images.items()},
+        coverage_complete=True,
+        cleanup_complete=True,
+    )
+    if changed == "source":
+        receipt["source_revision"] = "0" * 40
+    elif changed == "account":
+        receipt["target"]["account_id"] = "999999999999"
+    elif changed in {"image", "provenance"}:
+        receipt["images"]["controller"]["digest" if changed == "image" else "provenance_sha256"] = (
+            "sha256:" if changed == "image" else ""
+        ) + "0" * 64
+    elif changed in {"coverage", "cleanup"}:
+        receipt[changed + "_complete"] = False
+    elif changed == "correlation":
+        receipt["correlation"] = "0" * 64
+    evidence.binary = archive_for(json.dumps(receipt).encode())
+    evidence.responses["/repos/o/r/actions/runs/10/artifacts"]["artifacts"][0]["digest"] = "sha256:" + hashlib.sha256(evidence.binary).hexdigest()
+    # Dispatch may use newer main while the authenticated context pins checkout
+    # to the exact accepted scan revision; no tree-equivalence inference is used.
+    evidence.responses["/repos/o/r/actions/runs/10"]["head_sha"] = "f" * 40
+    bound = SimpleNamespace(
+        run_id=10, run_attempt=2, context=SimpleNamespace(workflow_revision="f" * 40, source_revision="b" * 40, correlation="c" * 64)
+    )
+
+    def transport(request):
+        if request.url.path == "/repos/o/r/actions/artifacts/13/zip":
+            return httpx.Response(200, content=evidence.binary)
+        return httpx.Response(200, json=evidence.responses[request.url.path])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        provider = RepositoryEvidenceProvider(client=client, clock=lambda: evidence.now)
+        provider.token = AsyncMock(return_value="test-read-token")
+        observation = provider.workflow(
+            SimpleNamespace(repo="o/r", provider_repository_id=123),
+            spec.workflows[0],
+            revisions={},
+            max_age_seconds=spec.max_age_seconds,
+            bound_run=bound,
+            producer=spec.producer,
+        )
+        if changed:
+            with pytest.raises(CycleBlockedError, match="scan_scope_coverage_images_or_cleanup_changed"):
+                await observation
+        else:
+            result = await observation
+            assert result["source_revision"] == "b" * 40 and result["run_id"] == 10
+
+
 async def test_shared_app_review_reuses_scoped_read_token_without_minting_broad_token(monkeypatch):
     from src.orchestration.merge_evidence import GitHubEvidenceSource
 
@@ -386,3 +456,117 @@ async def test_shared_app_review_reuses_scoped_read_token_without_minting_broad_
     )
     assert result.review_approved and result.head_sha == "a" * 40
     app.get_installation_token.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", [None, "schedule", "run_name", "cancellation", "unaccepted_input", "correlation"])
+async def test_scan_preflight_refuses_workflows_without_the_recoverable_one_off_protocol(evidence, change):
+    from src.orchestration.deployment_workflow_provider import WorkflowDefinition
+    from src.orchestration.repository_producer import RepositoryScanProvider
+
+    document = evidence.spec.model_dump(mode="json")
+    document["producer"] = dict(
+        mode="dispatch_once",
+        workflow_criterion_id="one-off-scan",
+        inputs=dict(expected_account_id="123456789012", region="us-east-1"),
+        target=dict(account_id="123456789012", region="us-east-1", resource_kind="repository_scan", resource_id="o/r"),
+        receipt_artifact="evidence-{run_attempt}",
+        receipt_path="evidence.json",
+        images={"controller": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64)},
+    )
+    spec = RepositoryEvaluationSpecification.model_validate(document)
+    workflow = {
+        "on": {"workflow_dispatch": {}},
+        "concurrency": {"group": "repository-scan", "cancel-in-progress": False},
+        "run-name": "${{ format('ADP deployment {0}', inputs.adp_correlation) }}",
+    }
+    defaults = dict(adp_correlation="", adp_source_revision="", adp_definition_revision="", **spec.producer.inputs)
+    if change == "schedule":
+        workflow["on"]["schedule"] = []
+    elif change == "run_name":
+        workflow.pop("run-name")
+    elif change == "cancellation":
+        workflow["concurrency"]["cancel-in-progress"] = True
+    elif change == "unaccepted_input":
+        defaults["target"] = "somewhere-unreviewed"
+    elif change == "correlation":
+        defaults.pop("adp_correlation")
+    import yaml
+
+    evidence_provider = SimpleNamespace(
+        verify_sources=AsyncMock(return_value=([], {})), definition_blob=AsyncMock(return_value=("d" * 40, yaml.safe_dump(workflow).encode()))
+    )
+    provider = RepositoryScanProvider(evidence=evidence_provider)
+    provider.definition = AsyncMock(return_value=WorkflowDefinition("b" * 40, "b" * 40, "d" * 40, defaults, True, "main", "b" * 40))
+    if change:
+        with pytest.raises(CycleBlockedError):
+            await provider.preflight(SimpleNamespace(repo="o/r"), spec, [evidence.source])
+    else:
+        result = await provider.preflight(SimpleNamespace(repo="o/r"), spec, [evidence.source])
+        assert result["source_revision"] == "b" * 40
+
+
+@pytest.mark.parametrize("case", ["absent", "found", "missing_context", "duplicate", "wrong_identity", "overflow"])
+async def test_scan_recovery_filters_workflow_and_dispatch_head_before_validating_context(evidence, case):
+    from src.orchestration.deployment_manifest import WorkflowRef
+    from src.orchestration.deployment_workflow_provider import WorkflowContext, WorkflowDefinition
+    from src.orchestration.repository_producer import RepositoryScanProvider
+    from src.orchestration.repository_producer_contract import ScanTarget
+
+    correlation = "c" * 64
+    target = ScanTarget(account_id="123456789012", region="us-east-1", resource_id="o/r")
+    definition = WorkflowDefinition("f" * 40, "b" * 40, "d" * 40, {}, True, "main", "f" * 40)
+    run = dict(evidence.responses["/repos/o/r/actions/runs/10"], head_sha="f" * 40, display_title="ADP deployment " + correlation)
+    if case == "wrong_identity":
+        run["head_sha"] = "b" * 40
+    requested = []
+
+    def transport(request):
+        requested.append(request.url.path)
+        if request.url.path == "/repos/o/r/actions/workflows/scan.yml/runs":
+            assert request.url.params["event"] == "workflow_dispatch"
+            assert request.url.params["head_sha"] == "f" * 40
+            assert request.url.params["per_page"] == "100"
+            rows = [] if case == "absent" else [run, dict(run, id=11)] if case == "duplicate" else [run]
+            if case == "overflow":
+                rows = [dict(run, id=i, display_title="unrelated") for i in range(100)]
+            return httpx.Response(200, json=dict(workflow_runs=rows))
+        # Never enumerate the repository's many thousands of unrelated runs.
+        assert request.url.path == "/repos/o/r/actions/runs/10", request.url.path
+        return httpx.Response(200, json=run)
+
+    context = WorkflowContext(
+        schema_version=1,
+        repository_id=123,
+        run_id=10,
+        run_attempt=2,
+        workflow_path=".github/workflows/scan.yml",
+        workflow_revision="f" * 40,
+        source_revision="b" * 40,
+        inputs={},
+        correlation=correlation,
+        **target.model_dump(),
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        provider = RepositoryScanProvider(client=client)
+        provider.token = AsyncMock(return_value="read-token")
+        provider.context = AsyncMock(return_value=None if case == "missing_context" else (context, 20, "d" * 64))
+        kwargs = dict(
+            workflow=WorkflowRef(path=".github/workflows/scan.yml", definition_revision="f" * 40),
+            definition=definition,
+            target=target,
+            source_revision="b" * 40,
+            inputs={},
+            correlation=correlation,
+        )
+        binding = SimpleNamespace(repo="o/r", provider_repository_id=123)
+        if case in {"duplicate", "wrong_identity", "overflow"}:
+            with pytest.raises(CycleBlockedError):
+                await provider.observe(binding, **kwargs)
+            provider.context.assert_not_awaited()
+        else:
+            observed, incomplete = await provider.observe(binding, **kwargs)
+            assert incomplete == (case == "missing_context")
+            assert (observed is not None) == (case == "found")
+            if observed:
+                assert observed.run_id == 10 and observed.context.source_revision == "b" * 40
+        assert len(requested) == (10 if case == "overflow" else 2 if case in {"found", "missing_context"} else 1)
