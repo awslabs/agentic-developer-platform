@@ -106,6 +106,7 @@ from src.orchestration.pr_bindings import (
 from src.orchestration.pr_identity import PrIdentityError, resolve_pr_identity
 from src.orchestration.proposal import LoopProposal, split_address
 from src.orchestration.repository import OrchestrationRepository, WaveAggregate
+from src.orchestration.run_report_read import MAX_REPORTS_PER_PAGE, FlowRunReportsResponse, load_flow_run_reports
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
@@ -129,6 +130,23 @@ router = APIRouter(prefix="/orchestration", tags=["orchestration"])
 async def get_access_control(db: Annotated[AsyncSession, Depends(get_db)]) -> AccessControl:
     """Get access control instance."""
     return AccessControl(db)
+
+
+@router.get("/flows/{flow_id}/run-reports", response_model=FlowRunReportsResponse)
+async def get_flow_run_reports(
+    flow_id: Annotated[str, Path(min_length=1, max_length=36)],
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=MAX_REPORTS_PER_PAGE)] = MAX_REPORTS_PER_PAGE,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> FlowRunReportsResponse:
+    """Read acknowledged worker reports; neither dispatch success nor merge approval."""
+    await access.check_permission(current_user, Permission.USAGE_READ, target_org_id=current_user.org_id)
+    flow = await OrchestrationRepository(db).get_flow(org_id=current_user.org_id, flow_id=flow_id)
+    if flow is None:
+        raise HTTPException(status_code=404, detail="orchestration flow not found")
+    return await load_flow_run_reports(db, org_id=current_user.org_id, flow_id=flow_id, limit=limit, offset=offset)
 
 
 class AmendmentResponse(BaseModel):

@@ -153,3 +153,23 @@ worker start, model accounting, implementation-PR binding and successful termina
 receipt, followed by ordinary review/repair scheduling. Then obtain a fresh
 preview and accept Security (`a555da26-2724-4f38-b960-8738e10fa88c`). Superplane
 and other existing flows are not accepted or resumed by this maintenance step.
+
+## Read worker acknowledgments with the existing ADP login
+
+`GET /orchestration/flows/{flow_id}/run-reports` uses the same authenticated
+`USAGE_READ` permission and tenant boundary as the graph/execution views. It
+returns at most 200 assignments per page (`limit`/`offset`, with `total`), including
+the run, persona, attempt, assignment time, binding at acknowledgment, and typed
+worker-start, binding, terminal and review acknowledgments. Empty results mean no
+report assignments were observed. A historical attempt is marked explicitly;
+`is_current_attempt` does not claim that every run in that attempt is still active.
+
+Use the graph's current PR binding and delivery progress alongside these reports.
+A terminal acknowledgment records the worker's outcome; it does not establish
+merge readiness or approval. Execution action references such as `dispatch:<run>`
+can acknowledge successful queue publication before a worker has started, so they
+are not substitutes for the worker-start/terminal fields. Binding and review
+receipts that have no stored timestamp return `recorded_at: null` rather than an
+invented time. No capability, ownership nonce, credential hash, dispatch envelope,
+work claim, candidate body, or acceptance identity is exposed. The internal
+`GET /internal/v1/agent/report` remains scoped to the worker's reporting capability.
