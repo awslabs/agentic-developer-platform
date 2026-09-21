@@ -15,7 +15,7 @@ from src.budget.reservations import ReservationStore
 from src.orchestration import flow_budget, shared_policy
 from src.orchestration.execution_policy import Action, DenyReason
 from src.orchestration.flow_meter import meter_target
-from src.orchestration.models import OrchestrationWorkClaim
+from src.orchestration.models import OrchestrationDecision, OrchestrationWorkClaim
 from src.orchestration.review_cycle import CycleBlockedError
 from src.orchestration.run_reports import OrchestrationRunReport
 from src.shared.models.onboarding import TenantMembership
@@ -71,7 +71,11 @@ async def shared(session, monkeypatch):
         user_credentials={"permission_mode": "user_configured", "lifetime": "provider_managed", "aws_role_arns": [ROLE], "actions": actions},
     )
     plan = await _accept_policy(session, flow, policy)
-    decision = await _make_approval(session, flow)
+    decision = OrchestrationDecision(
+        org_id=flow.org_id, flow_id=flow.id, kind="plan_accepted", actor_id=APPROVER, actor_role="org_admin", actor_kind="human", reason="accepted"
+    )
+    session.add(decision)
+    await session.flush()
     plan.accepted_by_decision_id = decision.id
     marker = {
         "contract_version": 1,
@@ -237,6 +241,10 @@ async def test_halted_terminal_nodes_cannot_dispatch(shared, state):
 
 @pytest.fixture
 async def model_assignment(shared):
+    return await _model_assignment(shared)
+
+
+async def _model_assignment(shared, *, root_id=None, dispatch_change=None):
     from src.orchestration.dispatch_pass import attempt_run_id
     from src.orchestration.execution_state import ExecutionIdentity, OutcomeKind
     from src.orchestration.execution_store import create_execution
@@ -252,9 +260,24 @@ async def model_assignment(shared):
     row = await report(shared, shared.node, run_id)
     row.dispatch_metadata = {
         "action": "develop",
-        "orchestration": {"root_decision_id": shared.plan.accepted_by_decision_id},
+        "orchestration": {"root_decision_id": root_id or shared.plan.accepted_by_decision_id},
         "execution_continuation": {"accepted_plan_version": 1, "claim_id": shared.claim.id, "claim_generation": 1, "execution_id": created.record.id},
     }
+    saved = {"run_id": run_id, "attempt": 1, "root_decision_id": root_id or shared.plan.accepted_by_decision_id}
+    if dispatch_change in {"run", "attempt", "root"}:
+        saved[{"run": "run_id", "attempt": "attempt", "root": "root_decision_id"}[dispatch_change]] = "different"
+    decision = OrchestrationDecision(
+        org_id=shared.flow.org_id,
+        flow_id=shared.flow.id,
+        node_id=shared.node.id,
+        kind="node_dispatched",
+        actor_id="unrelated-service" if dispatch_change == "actor" else "system:orchestration-dispatch",
+        actor_role="engine",
+        actor_kind="human" if dispatch_change == "kind" else "service",
+        reason="not-json" if dispatch_change == "malformed" else json.dumps(saved),
+    )
+    if dispatch_change != "missing":
+        shared.session.add(decision)
     await shared.session.flush()
     return row
 
@@ -263,6 +286,62 @@ async def test_initial_model_call_uses_current_sql_assignment(shared, model_assi
     policy, principal, node, flow = await shared_policy.authorize_shared_model(shared.session, model_assignment)
     assert policy.principal_id == principal == APPROVER
     assert node is shared.node and flow is shared.flow
+
+
+async def test_initial_worker_and_model_preserve_later_gate_genesis(shared):
+    from src.orchestration.report_dispatch import validate_report_start
+
+    acceptance = shared.plan.accepted_by_decision_id
+    gate = await _make_approval(shared.session, shared.flow)
+    model_assignment = await _model_assignment(shared, root_id=gate.id)
+    # A subsequent approval cannot rewrite the original run's human root.
+    await _make_approval(shared.session, shared.flow)
+    before = (model_assignment.run_id, model_assignment.attempt, dict(model_assignment.dispatch_metadata), shared.claim.active_run_id)
+
+    await validate_report_start(shared.session, model_assignment)
+    policy, principal, node, flow = await shared_policy.authorize_shared_model(shared.session, model_assignment)
+
+    assert policy.principal_id == principal == APPROVER
+    assert node is shared.node and flow is shared.flow
+    assert shared.plan.accepted_by_decision_id == acceptance != gate.id
+    assert (model_assignment.run_id, model_assignment.attempt, model_assignment.dispatch_metadata, shared.claim.active_run_id) == before
+
+
+@pytest.mark.parametrize("change", ["missing", "run", "attempt", "root", "malformed", "actor", "kind"])
+async def test_initial_report_requires_committed_dispatch_evidence(shared, change):
+    from src.orchestration.run_reports import RunReportError
+
+    model_assignment = await _model_assignment(shared, dispatch_change=change)
+    with pytest.raises(RunReportError, match="execution_assignment_unverifiable"):
+        await shared_policy.authorize_shared_model(shared.session, model_assignment)
+
+
+@pytest.mark.parametrize("change", ["service", "rejection", "other_flow", "missing"])
+async def test_initial_dispatch_root_must_remain_attributed_same_flow_approval(shared, change):
+    from src.orchestration.run_reports import RunReportError
+
+    root = OrchestrationDecision(
+        org_id=shared.flow.org_id,
+        flow_id=shared.flow.id,
+        kind="gate_approved",
+        actor_id=APPROVER,
+        actor_role="org_admin",
+        actor_kind="human",
+        reason="root approval",
+    )
+    if change == "service":
+        root.actor_kind = "service"
+    elif change == "rejection":
+        root.kind = "gate_rejected"
+    elif change == "other_flow":
+        other = await _make_flow(shared.session, slug="other-flow")
+        root.flow_id = other.id
+    if change != "missing":
+        shared.session.add(root)
+        await shared.session.flush()
+    model_assignment = await _model_assignment(shared, root_id=root.id if change != "missing" else "missing-approval")
+    with pytest.raises(RunReportError, match="execution_assignment_unverifiable"):
+        await shared_policy.authorize_shared_model(shared.session, model_assignment)
 
 
 @pytest.mark.parametrize("change", ["terminal", "claim", "attempt", "plan", "lineage", "operation", "node_halted", "flow_halted"])

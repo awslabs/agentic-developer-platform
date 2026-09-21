@@ -269,6 +269,24 @@ async def test_pending_flow_can_accept_current_assignment_and_start_only_once(re
     assert rival.status_code == 409
 
 
+@pytest.mark.parametrize("block", ["execution_assignment_unverifiable", "delivery_recovery_required", "report_spool_unavailable"])
+@pytest.mark.parametrize("existing_receipt", [False, True])
+async def test_start_clears_only_resolved_assignment_or_new_delivery_recovery_block(reports, block, existing_receipt):
+    body = {"ownership_nonce": "a" * 32}
+    if existing_receipt:
+        assert (await reports.client.post(URL + "/started", headers=reports.headers, json=body)).status_code == 200
+    async with reports.sessions() as session:
+        row = await session.get(OrchestrationRunReport, reports.envelope["message_id"])
+        row.block_code, row.retryable = block, True
+        await session.commit()
+    response = await reports.client.post(URL + "/started", headers=reports.headers, json=body)
+    assert response.status_code == 200
+    assert response.json()["worker_receipt"]
+    resolved = block == "execution_assignment_unverifiable" or (block == "delivery_recovery_required" and not existing_receipt)
+    assert response.json()["block_code"] == (None if resolved else block)
+    assert response.json()["retryable"] is not resolved
+
+
 async def test_real_observer_requires_sql_handoff_and_ignores_advisory_completion(reports):
     from unittest.mock import MagicMock
 

@@ -20,7 +20,7 @@ from .execution_policy import Action
 from .execution_runner import EffectOutcome, EffectResult, ObservationKind
 from .execution_state import BlockCode, OutcomeKind
 from .execution_store import load_execution
-from .genesis import resolve_engine_genesis
+from .genesis import GenesisRefusedError, resolve_engine_genesis
 from .models import (
     OrchestrationAcceptedPlan,
     OrchestrationAction,
@@ -112,12 +112,49 @@ async def validate_current_report_assignment(session, row):
             or saved.get("envelope") != {key: value for key, value in metadata.items() if key != "report_nonce"}
         ):
             raise RunReportError("execution_assignment_unverifiable")
-    elif (
-        row.run_id != attempt_run_id(row.node_id, row.attempt)
-        or metadata.get("orchestration", {}).get("root_decision_id") != plan.accepted_by_decision_id
-    ):
-        raise RunReportError("execution_assignment_unverifiable")
+    else:
+        await _validate_initial_report_genesis(session, row)
     return loaded.record, identity
+
+
+async def _validate_initial_report_genesis(session, row):
+    """Keep the dispatch's human root distinct from its accepted plan fence.
+
+    Initial dispatch may follow a gate approval newer than plan acceptance. Its
+    committed dispatch decision records that root; later approvals must neither
+    invalidate it nor silently replace its original human attribution.
+    """
+    from .run_reports import RunReportError
+
+    decision = await session.scalar(
+        select(OrchestrationDecision)
+        .where(
+            OrchestrationDecision.org_id == row.org_id,
+            OrchestrationDecision.flow_id == row.flow_id,
+            OrchestrationDecision.node_id == row.node_id,
+            OrchestrationDecision.kind == "node_dispatched",
+        )
+        .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+        .limit(1)
+    )
+    try:
+        saved = json.loads(decision.reason) if decision else {}
+        root = row.dispatch_metadata.get("orchestration", {}).get("root_decision_id")
+        if (
+            row.run_id != attempt_run_id(row.node_id, row.attempt)
+            or decision is None
+            or decision.actor_kind != "service"
+            or decision.actor_id != "system:orchestration-dispatch"
+            or saved.get("run_id") != row.run_id
+            or saved.get("attempt") != row.attempt
+            or saved.get("root_decision_id") != root
+        ):
+            raise RunReportError("execution_assignment_unverifiable")
+        genesis = await resolve_engine_genesis(session, org_id=row.org_id, decision_id=root)
+    except (GenesisRefusedError, TypeError, ValueError, AttributeError):
+        raise RunReportError("execution_assignment_unverifiable") from None
+    if genesis.flow_id != row.flow_id:
+        raise RunReportError("execution_assignment_unverifiable")
 
 
 async def registration_target_for_report(session, row):

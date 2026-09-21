@@ -209,5 +209,9 @@ async def worker_started(body: WorkerStarted, request: Request):
                 "ownership_nonce": body.ownership_nonce,
                 "recorded_at": utcnow().isoformat(),
             }
-            await session.commit()
+            if row.block_code == "delivery_recovery_required":
+                row.block_code, row.retryable = None, False
+        if row.block_code == "execution_assignment_unverifiable":
+            row.block_code, row.retryable = None, False
+        await session.commit()
         return report_snapshot(row)

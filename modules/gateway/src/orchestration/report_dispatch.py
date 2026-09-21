@@ -108,6 +108,8 @@ async def recover_pending_reports(session, *, config, report) -> None:
             row.block_code, row.retryable = exc.code, exc.retryable
             report.record(row.org_id, "publish_failed")
             continue
+        if row.block_code == "execution_assignment_unverifiable":
+            row.block_code, row.retryable = None, False
         report.pending.append(
             PendingPublish(
                 node_id=row.node_id,
