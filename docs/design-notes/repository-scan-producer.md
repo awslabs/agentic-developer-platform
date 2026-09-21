@@ -114,3 +114,67 @@ scan was cleaned up. Uncertain dispatch likewise retains ownership for recovery.
 Neither this protocol nor the read-only repository receipt closes pending rollout
 or establishes the CLI's full live acceptance. CLI final #5644 and integrated
 journey #5630 still require their actual installed-client/target/release criteria.
+
+## Concrete S19/S21 engine handoff
+
+S19 ([#5618](https://github.com/aws-e/adp/issues/5618)) owns the workflow/scanner
+integration. Reconcile draft [#5594](https://github.com/aws-e/adp/pull/5594), whose
+starting reference at this handoff is `3940a796ee46cd88cb5c42a99103c10e35420548`, rather
+than creating another inventory implementation. That reference adds four-image
+Superplane coverage and dispatch-only triggers, but does not implement this
+producer protocol. In particular, `Security Summary` is still restricted to
+`pull_request`, so its manual run can succeed while skipping reconciliation.
+
+Before handing the workflow to S21, S19 must provide:
+
+- Only `workflow_dispatch`, the exact run-name above, explicit accepted business
+  inputs (including `scan_scope: all` for this whole-repository evaluation), and a
+  shared concurrency group with `cancel-in-progress: false`. A Superplane-only
+  run cannot prove the full S19 inventory or the other scanner criteria.
+- Checkout of `inputs.adp_source_revision` in **every** job that scans, builds,
+  prepares an archive, or assembles evidence. Verify `git rev-parse HEAD` before
+  scanning. Preserve `GITHUB_SHA` as the workflow definition/dispatch identity.
+  The existing `.github/actions/codebuild-run/action.yml` derives its source-key
+  label and `ADP_SOURCE_SHA` from `GITHUB_SHA`; supply a separately verified source
+  revision through a narrowly scoped action input or scan wrapper. CodeBuild's
+  source metadata/provenance must match the actual archived checkout, even when
+  main advances between S21's merge and dispatch. Do not relabel the dispatch SHA
+  as scan evidence or overwrite `GITHUB_SHA` to hide the distinction.
+- An initial successful context job that runs the helper and uploads exactly
+  `adp-deployment-context-security-scan.yml-<run_attempt>` with its single
+  `deployment-context.json`. Scan jobs must depend on this identity check.
+- A final summary/export job that runs for `workflow_dispatch`, verifies all
+  expected tool/image outputs (including all four Superplane targets and pinned
+  SkyPilot), and invokes the helper with real observed results/provenance. Upload
+  `scan-receipt.json` to `adp-repository-scan-<run_attempt>` and sanitized
+  `security-reconciliation.json` to `security-reconciliation-<run_attempt>`. The accepted
+  specification must use these exact names, paths and required job names. Private
+  S3 artifacts alone are not available to the repository evidence reader.
+- Recorded IDs and terminal states for every CodeBuild build and asynchronous
+  scan started by this invocation. The cleanup job must query those actual IDs,
+  stop and recheck outstanding children when needed, and remove invocation-owned
+  temporary resources. Set `cleanup_complete` only after those checks pass.
+  A GitHub job timeout/cancellation, an empty child list caused by missing state,
+  or successful upload is not proof of cleanup. Preserve evidence on failure.
+
+S19's focused validation must cover distinct source/dispatch SHAs, missing tool or
+image outputs, invalid detect-secrets/cfn-nag output, dispatch summary execution,
+rerun artifact names, and unproven child cleanup. The shared CodeBuild action
+change, if needed, must preserve its existing callers' behavior.
+
+S21 ([#5620](https://github.com/aws-e/adp/issues/5620)) integrates the real immutable
+image digests/provenance and prepares the reconciliation inputs in its PR. Keep
+the original requirements explicit: all 33 source-rated occurrences, 16 older
+primary ticket mappings, 860 S20 dispositions, severity disagreements/suppressions,
+the actual AWS Security Agent result for run `35547077368`, and residual rollout
+owners. Preserve the AWS run's own source/target identity; an older result is not
+evidence that the final merged source was scanned. Pending/failed review remains
+unresolved, and unresolved rollout remains owned.
+
+The final E01 evaluation runs the accepted producer **after S21 and every other
+direct predecessor merge**. S21 therefore supplies the validated workflow, pins,
+provenance and reconciliation inputs before that merge; its PR must not invent a
+future scan receipt or declare the dated epic clean. The engine records the actual
+post-merge run and evaluates its artifacts against the accepted per-finding
+criteria. A pre-merge diagnostic run does not replace that final observation.
+No additional workflow or recurring scan is implicitly authorized by this handoff.
