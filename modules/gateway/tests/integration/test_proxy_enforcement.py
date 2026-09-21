@@ -43,6 +43,7 @@ def token_context():
 def mock_budget_service():
     """Create a mock budget enforcement service."""
     service = MagicMock(spec=BudgetEnforcementService)
+    service.prepare_enforcement_context = AsyncMock(return_value=None)
     service.check_budget_hierarchy = AsyncMock(return_value=EnforcementResult(allowed=True))
     service.estimate_request_cost = MagicMock(return_value=Decimal("0.01"))
     # Issue #4392: the real method now returns a "status"-tagged shape, so

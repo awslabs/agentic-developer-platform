@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from src.budget.enforcement_settings import BudgetAccountingGap, BudgetEnforcementSetting
 from src.orchestration.execution_policy import Action
 from src.orchestration.execution_runner import (
     DecisionKind,
@@ -88,6 +89,8 @@ class RacingHandler:
 async def pg_engine(pg_url):  # noqa: F811
     engine = create_async_engine(to_async_url(pg_url), echo=False)
     async with engine.begin() as connection:
+        await connection.run_sync(BudgetEnforcementSetting.__table__.create)
+        await connection.run_sync(BudgetAccountingGap.__table__.create)
         await connection.run_sync(OrchestrationFlow.__table__.create)
         await connection.run_sync(OrchestrationAcceptedPlan.__table__.create)
         await connection.run_sync(OrchestrationNode.__table__.create)

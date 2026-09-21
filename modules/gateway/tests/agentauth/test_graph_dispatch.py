@@ -21,6 +21,7 @@ from src.agentauth.grants import TargetRelationship
 from src.agentauth.routes import AgentRuntime, get_agent_runtime, router
 from src.agentauth.run_credential import CREDENTIAL_KEY_ENV, verify_credential
 from src.agentauth.workload import VerifiedPod
+from src.budget.enforcement_settings import BudgetAccountingGap, BudgetEnforcementSetting
 from src.orchestration.models import (
     DecisionKind,
     OrchestrationAcceptedPlan,
@@ -68,6 +69,8 @@ if os.environ.get("ADP_GRAPH_TEST_DATABASE_URL"):
     async def engine():
         database = create_async_engine(os.environ["ADP_GRAPH_TEST_DATABASE_URL"])
         tables = [
+            BudgetEnforcementSetting.__table__,
+            BudgetAccountingGap.__table__,
             Organization.__table__,
             Department.__table__,
             Team.__table__,

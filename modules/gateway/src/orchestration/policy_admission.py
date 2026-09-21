@@ -51,6 +51,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.budget.enforcement_settings import read_enforcement
 from src.shared.models.base import utcnow
 
 from .cost import CostStatus, get_cost_by_address
@@ -210,6 +211,9 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
 
         policy = await effective_shared_budget(session, plan, ExecutionPolicy.model_validate(raw))
         policy = await effective_shared_retry(session, plan, policy)
+        posture = await read_enforcement(session, org_id=org_id, flow_id=flow_id)
+        policy._budget_enforcement_enabled = posture.enabled
+        policy._budget_accounting_incomplete = posture.accounting_incomplete
         return AdmissionInputs(policy=policy, plan_version=plan.version)
     except ValueError:
         logger.exception(
@@ -663,6 +667,15 @@ async def authorize_node_dispatch(
 
     decision = authorize_action(context, action, resource, inputs.plan_version)
     if not decision.permitted:
+        return decision
+
+    if not inputs.policy._budget_enforcement_enabled:
+        # Fresh flows still establish their accounting baseline when possible.
+        # Failure is informational while OFF; it must not deny admission. This
+        # never resets a previously initialized or already-running flow.
+        from .flow_meter import prepare_flow_meter
+
+        await prepare_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, nodes=flow_nodes)
         return decision
 
     # --- The flow's shared allowance, held transactionally (#5128 step 4). ---

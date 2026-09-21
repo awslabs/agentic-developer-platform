@@ -108,6 +108,12 @@ local now = tonumber(ARGV[3])
 -- classify a DENIAL as transient; they never reduce the admitted denominator.
 local pending_requests = {}
 for i = 1, #KEYS do
+    -- An off-mode request has no upper bound. ON cannot count it as zero,
+    -- even for a legacy run or organization budget without a strict anchor.
+    local fields = redis.call('HKEYS', KEYS[i])
+    for j = 1, #fields do
+        if string.sub(fields[j], 1, 10) == 'unbounded:' then return {-2, i} end
+    end
     if ARGV[3 + (i * 3)] == '1' then
         local anchor = redis.call('HGET', KEYS[i], '__initialized__')
         if not anchor then return {-1, i} end
@@ -226,6 +232,7 @@ for i = 1, #KEYS do
             local ttl = tonumber(ARGV[3 + i])
             redis.call('HSET', KEYS[i], request_id, amount .. ':' .. (now + ttl))
             redis.call('HDEL', KEYS[i], 'pending:' .. request_id)
+            redis.call('HDEL', KEYS[i], 'unbounded:' .. request_id)
             redis.call('EXPIRE', KEYS[i], ttl)
             adjusted = adjusted + 1
         else
@@ -298,6 +305,7 @@ class ReservationOutcome:
     """
 
     admitted: bool
+    usage_unavailable: bool = False
     exhausted: ReservationTarget | None = None
     awaiting_usage: bool = False
 
@@ -417,6 +425,8 @@ class ReservationStore:
             logger.warning(f"Budget reservation unavailable, degrading to settled-ledger check: {exc}")
             return None
 
+        if int(result[0]) == -2:
+            return ReservationOutcome(admitted=False, usage_unavailable=True, exhausted=targets[int(result[1]) - 1])
         if int(result[0]) < 0:
             return None
         admitted = bool(int(result[0]))
@@ -425,6 +435,34 @@ class ReservationStore:
 
         index = int(result[1])
         return ReservationOutcome(admitted=False, exhausted=targets[index - 1], awaiting_usage=len(result) > 2 and bool(int(result[2])))
+
+    async def observe(self, request_id: str, targets: list[ReservationTarget]) -> bool:
+        """Record an unbounded call while enforcement is off, without cap checks.
+
+        The zero field is a placeholder, never a usage receipt: the expired
+        pending marker makes strict reads UNKNOWN until actual usage settles.
+        Preserve all earlier holds and unknown entries, including expired ones.
+        Missing initialization is never manufactured by this path.
+        """
+        if not targets:
+            return True
+        script = """
+        local now = tonumber(ARGV[2])
+        for i = 1, #KEYS do
+            local ttl = tonumber(ARGV[2 + i])
+            redis.call('HSET', KEYS[i], ARGV[1], '0:' .. (now + ttl))
+            redis.call('HSET', KEYS[i], 'unbounded:' .. ARGV[1], '0:' .. now)
+            redis.call('EXPIRE', KEYS[i], ttl)
+        end
+        return 1
+        """
+        try:
+            client = await self._get_client()
+            await client.eval(script, len(targets), *[t.key() for t in targets], request_id, self._clock(), *[self._ttl_for(t) for t in targets])
+            return True
+        except Exception:
+            logger.warning("Budget observation unavailable while enforcement is off")
+            return False
 
     async def snapshot(self, target: ReservationTarget) -> ReservationSnapshot | None:
         """Read an initialized policy accumulator; absence is never zero spend."""

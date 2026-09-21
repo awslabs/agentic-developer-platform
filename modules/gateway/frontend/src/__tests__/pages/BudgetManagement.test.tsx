@@ -1,3 +1,4 @@
+vi.mock('@/components/budget/BudgetEnforcementControl', () => ({ BudgetEnforcementControl: () => <div data-testid="budget-enforcement-control" /> }));
 /**
  * BudgetManagement page tests — Issue #4687.
  *

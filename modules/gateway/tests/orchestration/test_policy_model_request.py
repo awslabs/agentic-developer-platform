@@ -217,10 +217,10 @@ async def test_authoring_rechecks_policy_after_upload(model_path, assignment, se
         await session.flush()
 
     sent, _ = await invoke(model_path, assignment, during_upload=amend_during_upload)
-    assert sent[0]["status"] == (200 if change is None else 503 if change == "budget_disabled" else 403)
-    assert model_path.calls == (1 if change is None else 0)
+    assert sent[0]["status"] == (200 if change in {None, "budget_disabled"} else 403)
+    assert model_path.calls == (1 if change in {None, "budget_disabled"} else 0)
     meter = await read_flow_meter(org_id=assignment.grant.tenant_id, flow_id=assignment.flow.id, policy=model_path.policy)
-    assert meter.total_usd == (Decimal("0.01") if change is None else 0)
+    assert meter.total_usd == (Decimal("0.01") if change in {None, "budget_disabled"} else 0)
     assert not meter.has_pending
 
 

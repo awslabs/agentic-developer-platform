@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from src.budget.enforcement_settings import BudgetAccountingGap, BudgetEnforcementSetting
 from src.orchestration.compile import ApprovalContext
 from src.orchestration.continuation import ContinuationRefusedError, ContinuationRequest, accept_continuation, preview_continuation
 from src.orchestration.dispatch_pass import attempt_run_id
@@ -35,6 +36,8 @@ HEAD = "a" * 40
 async def legacy(pg_url, monkeypatch):  # noqa: F811
     engine = create_async_engine(to_async_url(pg_url))
     models = [
+        BudgetEnforcementSetting,
+        BudgetAccountingGap,
         OrchestrationFlow,
         OrchestrationNode,
         OrchestrationEdge,

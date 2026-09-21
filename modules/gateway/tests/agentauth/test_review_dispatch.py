@@ -9,6 +9,7 @@ from botocore.exceptions import EndpointConnectionError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from src.budget.enforcement_settings import BudgetAccountingGap, BudgetEnforcementSetting
 from src.orchestration.dispatch_pass import attempt_run_id
 from src.orchestration.execution_state import ExecutionIdentity
 from src.orchestration.execution_store import create_execution
@@ -38,6 +39,8 @@ graph_context = graph_context_fixture
 async def engine(pg_url):  # noqa: F811
     database = create_async_engine(to_async_url(pg_url))
     models = (
+        BudgetEnforcementSetting,
+        BudgetAccountingGap,
         graph_tests.Organization,
         graph_tests.Department,
         graph_tests.Team,

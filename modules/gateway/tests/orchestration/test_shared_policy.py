@@ -255,14 +255,12 @@ async def test_reconciled_legacy_excluded_but_new_attempt_counted(shared):
     assert await shared_policy._active_count(shared.session, org_id=shared.flow.org_id, flow_id=shared.flow.id, initial_runs=initial) == 1
 
 
-@pytest.mark.parametrize("mutation", ["role", "acceptance", "budget_scope", "future", "clock", "budget_disabled"])
+@pytest.mark.parametrize("mutation", ["role", "acceptance", "budget_scope", "future", "clock"])
 async def test_acceptance_facts_remain_verifiable(shared, monkeypatch, mutation):
     if mutation == "role":
         monkeypatch.setenv("AGENT_WORKER_ROLE_ARN", ROLE + "changed")
     elif mutation == "acceptance":
         shared.plan.accepted_by_decision_id = None
-    elif mutation == "budget_disabled":
-        monkeypatch.setenv("BUDGET_ENFORCEMENT_ENABLED", "false")
     else:
         marker = dict(shared.marker)
         if mutation == "budget_scope":

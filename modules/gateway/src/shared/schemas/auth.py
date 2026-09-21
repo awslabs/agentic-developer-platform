@@ -193,6 +193,9 @@ class TokenContext(BaseModel):
     # boundary: headers, bodies and ``TokenContext(**caller_data)`` cannot stamp
     # a persona or service principal onto their own usage rows.
     _persona_usage_attribution: "PersonaUsageAttribution | None" = PrivateAttr(default=None)
+    _budget_observation_scope: str | None = PrivateAttr(default=None)
+    _budget_enforcement_enabled: bool = PrivateAttr(default=True)
+    _budget_accounting_incomplete: bool = PrivateAttr(default=False)
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
     _policy_scope_caps: tuple[Decimal, Decimal] | None = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)

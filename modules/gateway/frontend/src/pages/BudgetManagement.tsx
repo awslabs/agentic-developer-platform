@@ -1,3 +1,4 @@
+import { BudgetEnforcementControl } from '@/components/budget/BudgetEnforcementControl';
 /**
  * Budget Management Page
  *
@@ -321,6 +322,7 @@ export function BudgetManagement({ additionalOnly = false }: { additionalOnly?: 
           panel calls enforces `require_platform_admin` server-side. Widening this gate
           would not widen the authority — it would only produce 403s an org admin has no
           way to interpret. */}
+      {!additionalOnly && <BudgetEnforcementControl />}
       {!additionalOnly && callerIsPlatformAdmin && <DefaultPersonLimits />}
 
       {/* Bedrock account routing (#4745, #4692 · R4 §6.3): mounted here because it

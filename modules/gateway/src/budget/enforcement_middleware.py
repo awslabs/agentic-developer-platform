@@ -23,6 +23,7 @@ Issue #4287: the pre-request estimate is model- and size-aware instead of a flat
 
 import json
 from decimal import Decimal
+from uuid import uuid4
 
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -100,8 +101,6 @@ class BudgetEnforcementMiddleware:
 
         timings = get_timings(request)
         with timings.time_segment("budget_check"):
-            estimated_cost = self._estimate_cost(scope, path)
-
             # Issue #249 read the agent-level budget config id from the
             # X-Agent-BudgetConfigId header, which the (now deprecated and
             # unattached) Lambda authorizer was meant to set. Issue #3985
@@ -114,9 +113,15 @@ class BudgetEnforcementMiddleware:
             # Re-adding per-agent budget enforcement requires resolving the
             # config id from the agent registry entry (server-side, keyed off
             # the authenticated identity), not from a request header.
-            result = await self.enforcement_service.check_budget_hierarchy(
+            result = await self.enforcement_service.prepare_enforcement_context(token_context, self._asserted_run_id(scope))
+            if result is None and not token_context._budget_enforcement_enabled:
+                # An uncapped call still needs a server-owned accounting identity.
+                # Caller trace IDs must never replace another request's charge.
+                token_context._policy_request_id = token_context._policy_request_id or str(uuid4())
+                state["request_id"] = token_context._policy_request_id
+            result = result or await self.enforcement_service.check_budget_hierarchy(
                 token_context,
-                estimated_cost,
+                self._estimate_cost(scope, path) if token_context._budget_enforcement_enabled else Decimal(0),
                 # Issue #4287: idempotency key for the live-denominator
                 # reservation, so the proxy can adjust THIS request's reservation
                 # to its real cost once the response lands. Set by

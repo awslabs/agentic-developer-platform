@@ -192,8 +192,12 @@ async def authorize(session, node, plan, spec, binding, provider, *, exclude_cur
     attached = await accepted_contract(session, node=node, plan=plan)
     require(attached is None or attached[1] == spec, "accepted_specification_changed")
     policy = attached[2] if attached is not None else inputs.policy
+    policy._budget_enforcement_enabled = inputs.policy._budget_enforcement_enabled
+    policy._budget_accounting_incomplete = inputs.policy._budget_accounting_incomplete
     meter = await shared_policy.read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
-    require(meter is not None and meter.total_usd >= Decimal(marker["prior_spend_usd"]), "budget_unavailable")
+    require(
+        not policy._budget_enforcement_enabled or (meter is not None and meter.total_usd >= Decimal(marker["prior_spend_usd"])), "budget_unavailable"
+    )
     context = await shared_policy.resolve_authorization_context(
         session,
         policy=policy,
@@ -201,7 +205,7 @@ async def authorize(session, node, plan, spec, binding, provider, *, exclude_cur
         node=node,
         principal_user_id=policy.principal_id,
         credential_scope=CredentialScope.SCOPED,
-        spend=SpendObservation(total_usd=meter.total_usd),
+        spend=SpendObservation(total_usd=meter.total_usd if meter else None),
     )
     flow = await session.get(OrchestrationFlow, node.flow_id)
     address = graph_address(node, flow_slug=flow.slug)

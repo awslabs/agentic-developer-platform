@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from src.budget.enforcement_settings import BudgetAccountingGap, BudgetEnforcementSetting
 from src.orchestration.amend import AmendmentContext, amend_plan
 from src.orchestration.compile import ProposalRejectedError, compile_proposal
 from src.orchestration.continuation import digest
@@ -35,6 +36,8 @@ from tests.orchestration.test_shared_amendment import appendable, preview  # noq
 async def session(pg_url):  # noqa: F811
     engine = create_async_engine(to_async_url(pg_url))
     models = [
+        BudgetEnforcementSetting,
+        BudgetAccountingGap,
         OrchestrationFlow,
         OrchestrationNode,
         OrchestrationEdge,

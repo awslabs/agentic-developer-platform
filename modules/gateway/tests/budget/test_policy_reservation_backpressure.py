@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
 import pytest
@@ -49,7 +50,13 @@ async def request(ledger, *, request_id="next", targets=None, quote=QUOTE, stric
         result = await ledger.service._reserve_or_degrade(request_id, quote, targets or ledger.targets, strict=strict)
         return result or EnforcementResult(allowed=True)
 
-    harness = _Harness(SimpleNamespace(check_budget_hierarchy=check, estimate_cost_from_payload_size=ledger.service.estimate_cost_from_payload_size))
+    harness = _Harness(
+        SimpleNamespace(
+            prepare_enforcement_context=AsyncMock(return_value=None),
+            check_budget_hierarchy=check,
+            estimate_cost_from_payload_size=ledger.service.estimate_cost_from_payload_size,
+        )
+    )
     await harness.post("/model/anthropic.claude-opus-5/invoke-with-response-stream", token_context=_context(), request_id=request_id)
     return harness
 
@@ -141,3 +148,13 @@ async def test_target_order_does_not_change_contention_classification(ledger):
     assert (await request(ledger, request_id="first")).status == 200
     waiting = await request(ledger, targets=list(reversed(ledger.targets)))
     assert waiting.status == 429 and not waiting.app_invoked
+
+
+async def test_reenabling_a_legacy_cap_waits_for_off_mode_usage(ledger):
+    target = ledger.targets[1]
+    assert not target.require_initialization
+    assert await ledger.store.observe("uncapped-call", [target])
+    denied = await request(ledger, targets=[target], strict=False)
+    assert denied.status == 503 and not denied.app_invoked
+    await ledger.store.reconcile("uncapped-call", Decimal("0.12"), [target])
+    assert (await request(ledger, targets=[target], strict=False)).status == 200

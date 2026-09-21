@@ -549,6 +549,8 @@ class ExecutionPolicy(BaseModel):
     # was accepted when it was replaced.
     # Runtime-only financial supplement from an authenticated human decision.
     # These are never accepted from a submitted policy or included in its bytes.
+    _budget_enforcement_enabled: bool = PrivateAttr(default=True)
+    _budget_accounting_incomplete: bool = PrivateAttr(default=False)
     _shared_run_spend_usd: Decimal | None = PrivateAttr(default=None)
     _shared_chain_spend_usd: Decimal | None = PrivateAttr(default=None)
     _shared_budget_decision_id: str | None = PrivateAttr(default=None)
@@ -1332,13 +1334,13 @@ def authorize_action(
 
     # --- Limits: bounded work, on a shared allowance ------------------------
     # Unknown before exceeded, deliberately — see the docstring.
-    if context.observed_spend_usd is None:
+    if policy._budget_enforcement_enabled and (context.observed_spend_usd is None or policy._budget_accounting_incomplete):
         return Decision.block(
             DenyReason.SPEND_UNKNOWN,
             "spend against this flow's allowance could not be determined; new spend is blocked until it is reconciled",
         )
 
-    if context.observed_spend_usd >= policy.limits.max_spend_usd:
+    if policy._budget_enforcement_enabled and context.observed_spend_usd >= policy.limits.max_spend_usd:
         return Decision.block(
             DenyReason.SPEND_LIMIT_EXCEEDED,
             f"reserved plus settled spend has reached the {policy.limits.max_spend_usd} USD this policy authorizes",

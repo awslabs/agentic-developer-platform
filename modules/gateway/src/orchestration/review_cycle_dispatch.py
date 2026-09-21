@@ -273,7 +273,9 @@ class ReviewCycleServices:
             "active_run_id": active,
             "worker_complete": status == "completed",
             "head_sha": await self.head(binding),
-            "remaining_spend_usd": str(inputs.policy.limits.max_spend_usd - meter.total_usd),
+            "remaining_spend_usd": str(inputs.policy.limits.max_spend_usd - meter.total_usd)
+            if inputs.policy._budget_enforcement_enabled and meter
+            else None,
             "remaining_attempts": inputs.policy.limits.max_attempts_per_node - node.attempts - context.execution.attempts,
         }
 

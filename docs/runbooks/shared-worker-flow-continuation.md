@@ -140,3 +140,43 @@ usage is unknown, but budget admission continues to block work until accounting
 is recovered. Financial supplements retain their run and chain limits. In-flight
 model uploads tolerate only verified increases to retry or financial limits;
 other policy changes still refuse the request.
+
+## Switch budget enforcement off
+
+Platform administrators can now switch financial enforcement off without changing
+an accepted plan or increasing its dollar limits:
+
+- **Across ADP:** Budget & Spend → Manage budgets → Global budget enforcement.
+- **One flow:** open the flow page → Flow budget enforcement.
+
+Global off takes precedence over every flow setting. With global enforcement on,
+a flow can independently opt out. The UI shows both the selected flow setting and
+the effective state. Changes apply at the next model request or engine admission;
+they do not restart failed stories, extend expiry, or reset attempts.
+
+Usage and cost reporting continue when enforcement is off. Request observations
+use the existing accounting keys and actual-usage settlement, without budget
+quotes, cap checks, or waits for earlier unsettled requests. Existing usage,
+reservations and unresolved charges are retained. Unbounded in-flight observations
+remain unknown until a trusted usage receipt arrives. Turning enforcement back on
+uses that history and can block again if usage remains unknown or exceeds a cap.
+A failed observation is recorded in `budget_accounting_gaps`; changing a switch
+never clears it. Reconciliation must establish the missing usage before clearing
+such a record; do not delete gaps or reset meters to manufacture headroom.
+
+Authentication, current assignment, membership, repository scope, ownership,
+attempt limits, concurrency, expiry, review, and merge gates remain in force.
+Budget off does not grant permission to perform an action or mark a story passed.
+
+The human API provides `GET` and `POST` at `/budget/enforcement` and
+`/budget/enforcement/flows/{flow_id}`. POST accepts `enabled`,
+`expected_revision` (from GET), and `reason`. Concurrent stale writes return 409.
+Changes require a live human platform-admin session and budget-update authority;
+flow changes also require plan-approval authority. Each change is audited.
+Flow selection on the model path comes from the authenticated server assignment,
+never a flow header. The flow API only addresses flows in the current workspace.
+
+Absent an explicit global setting, `BUDGET_ENFORCEMENT_ENABLED` remains the
+installation default (true when absent). A saved global setting overrides that
+default. Unlike the old flag behavior, off keeps model identity and cost tracking
+active and does not itself produce `budget_unavailable` for governed flows.

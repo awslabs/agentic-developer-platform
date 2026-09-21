@@ -51,6 +51,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from src.budget.enforcement_settings import BudgetAccountingGap, BudgetEnforcementSetting
 from src.orchestration.dispatch_pass import attempt_run_id
 from src.orchestration.execution_state import ExecutionIdentity, ExecutionPhase, OutcomeKind
 from src.orchestration.execution_store import create_execution
@@ -119,6 +120,8 @@ OWN_PREFIX = "runs/9f2c/5ab1/attempt-1/"
 async def pg_engine(pg_url):  # noqa: F811 - pg_url is a fixture, not a shadowed import
     engine = create_async_engine(to_async_url(pg_url), echo=False)
     async with engine.begin() as conn:
+        await conn.run_sync(BudgetEnforcementSetting.__table__.create)
+        await conn.run_sync(BudgetAccountingGap.__table__.create)
         await conn.run_sync(OrchestrationFlow.__table__.create)
         await conn.run_sync(OrchestrationAcceptedPlan.__table__.create)
         await conn.run_sync(OrchestrationNode.__table__.create)

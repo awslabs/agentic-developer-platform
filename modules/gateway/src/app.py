@@ -82,6 +82,7 @@ UNIT_MODULES = [
     "src.admin.onboarding.handler",  # Issue #538: Self-serve onboarding flow
     "src.pool.routes",
     "src.budget.routes",
+    "src.budget.enforcement_routes",
     # Issue #4397: own-scope budget read API (GET /me/budget). A SEPARATE module
     # from src.budget.routes on purpose — that router takes entity_type/entity_id
     # unscoped from the request (open IDOR #4384), so this one takes identity from
@@ -356,9 +357,8 @@ def create_app() -> FastAPI:
         app.add_middleware(RateLimitEnforcementMiddleware)
         logger.info("Rate limit enforcement middleware enabled")
 
-    if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() == "true":
-        app.add_middleware(BudgetEnforcementMiddleware)
-        logger.info("Budget enforcement middleware enabled")
+    app.add_middleware(BudgetEnforcementMiddleware)
+    logger.info("Budget middleware enabled with live enforcement controls")
 
     # Execute after token-context authentication and before budget resolution.
     # Protected workers cannot fall back to a caller-selected run capability.

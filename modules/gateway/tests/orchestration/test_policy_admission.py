@@ -836,3 +836,24 @@ def provider_repository_identity(monkeypatch):
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr("src.orchestration.work_admission.resolve_repository_id", AsyncMock(return_value=12345))
+
+
+async def test_flow_started_with_budgets_off_keeps_its_accounting_baseline(session):
+    from src.budget.enforcement_settings import BudgetEnforcementSetting
+    from src.orchestration.flow_budget import get_flow_reservations
+    from src.orchestration.flow_meter import meter_target, read_flow_meter
+
+    policy = _policy()
+    flow, node = await _fixture(session, policy=policy)
+    setting = BudgetEnforcementSetting(scope_key="global", enabled=False, revision=1, updated_by=APPROVER)
+    session.add(setting)
+    await session.flush()
+    assert (await _authorize(session, node)).permitted
+    store = get_flow_reservations()
+    target = meter_target(org_id=flow.org_id, flow_id=flow.id, policy=policy)
+    assert (await store.snapshot(target)).total_usd == 0
+    assert await store.observe("actual-off-work", [target])
+    await store.reconcile("actual-off-work", Decimal("0.25"), [target])
+    setting.enabled = True
+    await session.flush()
+    assert (await read_flow_meter(org_id=flow.org_id, flow_id=flow.id, policy=policy)).total_usd == Decimal("0.25")

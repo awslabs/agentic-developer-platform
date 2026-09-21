@@ -15,6 +15,7 @@ from sqlalchemy import create_engine, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
+from src.budget.enforcement_settings import BudgetAccountingGap, BudgetEnforcementSetting  # noqa: F401
 from src.shared.models.base import Base
 from src.shared.models.bedrock_routing import BedrockAccountMapping, BedrockDestinationRegistry  # noqa: F401
 from src.shared.models.budget import BudgetConfig, BudgetUsage, PersonBudgetConfig  # noqa: F401

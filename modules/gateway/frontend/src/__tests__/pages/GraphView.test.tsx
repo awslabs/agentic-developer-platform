@@ -1,3 +1,4 @@
+vi.mock('@/components/budget/BudgetEnforcementControl', () => ({ BudgetEnforcementControl: () => <div data-testid="budget-enforcement-control" /> }));
 /**
  * Tests for the delivery-journey graph view — issue #4212.
  *

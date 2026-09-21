@@ -1,3 +1,4 @@
+vi.mock('@/components/budget/BudgetEnforcementControl', () => ({ BudgetEnforcementControl: () => <div data-testid="budget-enforcement-control" /> }));
 /**
  * Integration: the delivery ledger reaching the existing graph page — issue #5145.
  *

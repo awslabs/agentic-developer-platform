@@ -46,8 +46,6 @@ async def shared_inputs(session, *, org_id, flow_id, lock=False):
     """Only an attributed, in-force continuation accepts the configured role."""
     if os.environ.get("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false").lower() != "true":
         _refuse("shared_worker_continuation_disabled")
-    if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
-        _refuse("budget_unavailable", BlockCode.BUDGET_EXHAUSTED)
     # Admission holds this lock through assignment creation. Read-only model and
     # merge rechecks need no new slot and must not lock across provider callbacks.
     query = select(OrchestrationFlow).where(OrchestrationFlow.id == flow_id, OrchestrationFlow.org_id == org_id)
@@ -255,7 +253,7 @@ async def authorize_shared_action(session, context, node, binding, run_id, actio
     if not binding_scope_matches(binding, node):
         _refuse("binding_scope_changed")
     meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
-    if meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"]):
+    if inputs.policy._budget_enforcement_enabled and (meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"])):
         _refuse("budget_unavailable", BlockCode.BUDGET_EXHAUSTED)
     principal = inputs.policy.principal_id
     auth = await resolve_authorization_context(
@@ -265,7 +263,7 @@ async def authorize_shared_action(session, context, node, binding, run_id, actio
         node=node,
         principal_user_id=principal,
         credential_scope=CredentialScope.USER_GRANTED,
-        spend=SpendObservation(total_usd=meter.total_usd),
+        spend=SpendObservation(total_usd=meter.total_usd if meter else None),
         provider_repository_id=binding.provider_repository_id,
         expected_invocation_id=run_id,
     )
@@ -296,7 +294,7 @@ async def authorize_shared_action(session, context, node, binding, run_id, actio
             BlockCode.BUDGET_EXHAUSTED if "spend" in decision.reason.value or "budget" in decision.reason.value else BlockCode.AUTHORITY_UNVERIFIABLE
         )
         _refuse(decision.reason.value, code)
-    if reserve:
+    if reserve and inputs.policy._budget_enforcement_enabled:
         from .flow_budget import reserve_flow_admission
 
         await _release_finished_admissions(session, inputs.policy, node.flow_id, meter.total_usd)
@@ -386,7 +384,7 @@ async def authorize_shared_model(session, assignment):
     # A development request precedes PR binding, so it uses the authoritative
     # assignment's repository and node scope instead of inventing a PR binding.
     meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
-    if meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"]):
+    if inputs.policy._budget_enforcement_enabled and (meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"])):
         _refuse("budget_unavailable", BlockCode.BUDGET_EXHAUSTED)
     auth = await resolve_authorization_context(
         session,
@@ -395,7 +393,7 @@ async def authorize_shared_model(session, assignment):
         node=node,
         principal_user_id=inputs.policy.principal_id,
         credential_scope=CredentialScope.USER_GRANTED,
-        spend=SpendObservation(total_usd=meter.total_usd),
+        spend=SpendObservation(total_usd=meter.total_usd if meter else None),
         provider_repository_id=assignment.provider_repository_id,
         expected_invocation_id=assignment.run_id,
     )
@@ -487,7 +485,7 @@ async def authorize_shared_dispatch(
     if claim is None or str(claim.issue_number) != str(node.issue_ref).lstrip("#"):
         return Decision.block(DenyReason.WORK_NOT_OWNED, "Shared dispatch requires its current server-assigned work claim.")
     meter = await read_flow_meter(org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy)
-    if meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"]):
+    if inputs.policy._budget_enforcement_enabled and (meter is None or meter.total_usd < Decimal(marker["prior_spend_usd"])):
         return Decision.block(DenyReason.BUDGET_UNAVAILABLE, "The accepted shared model budget is unavailable; it cannot be reset.")
     auth = await resolve_authorization_context(
         session,
@@ -496,7 +494,7 @@ async def authorize_shared_dispatch(
         node=node,
         principal_user_id=principal_user_id,
         credential_scope=CredentialScope.USER_GRANTED,
-        spend=SpendObservation(total_usd=meter.total_usd),
+        spend=SpendObservation(total_usd=meter.total_usd if meter else None),
         provider_repository_id=provider_repository_id,
         expected_invocation_id=expected_invocation_id,
     )
@@ -519,7 +517,7 @@ async def authorize_shared_dispatch(
         ),
         inputs.plan_version,
     )
-    if not decision.permitted:
+    if not decision.permitted or not inputs.policy._budget_enforcement_enabled:
         return decision
     from .flow_budget import reserve_flow_admission
 

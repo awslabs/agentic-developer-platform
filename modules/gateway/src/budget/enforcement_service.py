@@ -39,6 +39,7 @@ from src.shared.schemas.budget import (
 )
 
 from .config import budget_config
+from .enforcement_settings import BudgetAccountingGap, flow_key, read_enforcement
 from .grace_window import GraceWindow
 
 # `person_ledger` is a deliberate LEAF (its own docstring): models and shared
@@ -745,6 +746,24 @@ class BudgetEnforcementService:
 
         return targets
 
+    async def prepare_enforcement_context(self, context: TokenContext, run_id: str | None) -> EnforcementResult | None:
+        """Read live controls after run authentication, before any financial check."""
+        try:
+            binding = await self._resolve_run_scope(context, run_id)
+        except RunBindingError as exc:
+            return EnforcementResult(
+                allowed=False, deny_reason=DenyReason.BUDGET_EXCEEDED, blocked_reason=exc.message, enforcement_mode=EnforcementMode.HARD, scope="run"
+            )
+        try:
+            async with self._get_session() as session:
+                posture = await read_enforcement(session, org_id=binding.tenant_id if binding else None, flow_id=binding.flow_id if binding else None)
+                context._budget_observation_scope = flow_key(binding.tenant_id, binding.flow_id) if binding and binding.flow_id else "global"
+                context._budget_enforcement_enabled = posture.enabled
+                context._budget_accounting_incomplete = posture.accounting_incomplete
+        except Exception:
+            return self._policy_budget_unavailable()
+        return None
+
     async def check_budget_hierarchy(
         self,
         context: TokenContext,
@@ -785,6 +804,28 @@ class BudgetEnforcementService:
         Returns:
             EnforcementResult indicating if request is allowed
         """
+        if context._budget_accounting_incomplete and context._budget_enforcement_enabled:
+            return self._policy_budget_unavailable()
+        if not context._budget_enforcement_enabled:
+            try:
+                binding = await self._resolve_run_scope(context, run_id)
+                if binding and binding.root_human_id and context.auth_source == "iam":
+                    object.__setattr__(
+                        context, "attributed_user_id", _qualify_root_principal_id(binding.root_human_id, is_human_rooted=binding.is_human_rooted)
+                    )
+                async with self._get_session() as session:
+                    return await self._observe_without_enforcement(session, context, binding, request_id)
+            except RunBindingError as exc:
+                return EnforcementResult(
+                    allowed=False,
+                    deny_reason=DenyReason.BUDGET_EXCEEDED,
+                    blocked_reason=exc.message,
+                    enforcement_mode=EnforcementMode.HARD,
+                    scope="run",
+                )
+            except Exception:
+                return self._policy_budget_unavailable()
+
         policy_target = context._policy_flow_target
         if policy_target is not None:
             # Issue #5225: the typed quote is required, not merely preferred. An
@@ -1082,6 +1123,39 @@ class BudgetEnforcementService:
 
         return EnforcementResult(allowed=True, warnings=all_warnings)
 
+    async def _observe_without_enforcement(self, session, context, binding, request_id):
+        """Usage writers still run. Maintain accumulators without spending gates."""
+        from uuid import uuid4
+
+        request_id = context._policy_request_id or request_id or str(uuid4())
+        targets = [
+            ReservationTarget(
+                org_id=context.attributed_org_id,
+                entity_type=entity.value,
+                entity_id=entity_id,
+                period_type=period.value,
+                period_start=get_period_start_end(period)[0].isoformat(),
+                headroom_usd=Decimal(0),
+                # Do not lose an off-mode in-flight marker on the short live
+                # counter TTL before a long provider response settles.
+                ttl_seconds=172800,
+            )
+            for entity, entity_id in self._get_entity_hierarchy(context)
+            for period in (PeriodType.DAILY, PeriodType.WEEKLY, PeriodType.MONTHLY)
+        ]
+        scopes = self._scope_targets(binding, Decimal(0), Decimal(0)) if binding else []
+        if context._policy_flow_target is not None:
+            scopes.append(context._policy_flow_target)
+        context._run_scope_reservations = scopes
+        store = self._get_reservations()
+        if not store.enabled or not await store.observe(request_id, targets + scopes):
+            # Persist missing observation so a later ON cannot trust stale totals.
+            # This records no amount and changes no existing reservation.
+            key = flow_key(binding.tenant_id, binding.flow_id) if binding and binding.flow_id else "global"
+            session.add(BudgetAccountingGap(request_id=request_id, scope_key=key))
+            await session.commit()
+        return EnforcementResult(allowed=True)
+
     async def _reserve_or_degrade(
         self,
         request_id: str | None,
@@ -1119,6 +1193,9 @@ class BudgetEnforcementService:
             # denominator, still fail-closed on the ledger itself) and alarm.
             emit_budget_reservation_outcome(outcome="degraded", environment=environment)
             return self._policy_budget_unavailable() if strict else None
+
+        if outcome.usage_unavailable:
+            return self._policy_budget_unavailable()
 
         if outcome.admitted:
             emit_budget_reservation_outcome(outcome="reserved", environment=environment)
@@ -1215,7 +1292,15 @@ class BudgetEnforcementService:
         and fresh runs under the same cap were denied against spend that had
         already stopped.
         """
-        if not budget_config.budget_reservation_enabled:
+        if not context._budget_enforcement_enabled and (not usage_known or (context._policy_flow_target is not None and actual_cost_usd is None)):
+            # Preserve all unbounded markers. No missing receipt becomes $0.
+            async with self._get_session() as session:
+                if await session.get(BudgetAccountingGap, request_id) is None:
+                    session.add(BudgetAccountingGap(request_id=request_id, scope_key=context._budget_observation_scope or "global"))
+                    await session.commit()
+            return
+
+        if budget_config.budget_reservation_enabled is False and context._budget_enforcement_enabled and not context._run_scope_reservations:
             return
 
         store = self._get_reservations()

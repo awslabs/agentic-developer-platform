@@ -219,7 +219,8 @@ async def prepare_append(session, *, flow, plan, actor, request, lock=False):
     require(datetime.now(UTC) < policy.policy.expires_at, "policy_expired")
     meter = await read_flow_meter(org_id=actor.org_id, flow_id=flow.id, policy=policy.policy)
     require(
-        meter is not None and Decimal(marker["prior_spend_usd"]) <= meter.total_usd < policy.policy.limits.max_spend_usd,
+        not policy.policy._budget_enforcement_enabled
+        or (meter is not None and Decimal(marker["prior_spend_usd"]) <= meter.total_usd < policy.policy.limits.max_spend_usd),
         "budget_unavailable_or_exhausted",
     )
     found = await history(session, flow=flow, lock=lock)
@@ -254,7 +255,9 @@ async def prepare_append(session, *, flow, plan, actor, request, lock=False):
         added_edges=[e.model_dump(mode="json") for e in request.added_edges],
         preserved_policy_hash=policy.policy.policy_hash,
         original_accepted_at=marker["accepted_at"],
-        remaining_spend_usd=str(policy.policy.limits.max_spend_usd - meter.total_usd),
+        remaining_spend_usd=str(policy.policy.limits.max_spend_usd - meter.total_usd)
+        if policy.policy._budget_enforcement_enabled and meter
+        else None,
         expires_at=policy.policy.expires_at.isoformat(),
         budget_meter_unchanged=True,
         existing_node_ids_unchanged=True,

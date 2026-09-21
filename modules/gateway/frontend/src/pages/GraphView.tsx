@@ -1,3 +1,4 @@
+import { BudgetEnforcementControl } from '@/components/budget/BudgetEnforcementControl';
 /** Delivery flow: collapsible waves with dependency-ordered parallel groups. */
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
@@ -120,6 +121,8 @@ export function GraphView() {
             <LastUpdated dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
           </div>
         </div>
+
+        <BudgetEnforcementControl key={flowId} flowId={flowId} />
 
         <PlanSummary
           stories={activeNodes.filter((node) => node.kind === 'story').length}

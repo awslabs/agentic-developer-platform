@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.agentauth.engine import EngineAuthorityWriter
+from src.budget.enforcement_settings import BudgetAccountingGap, BudgetEnforcementSetting
 from src.orchestration.dispatch_pass import DispatchPassConfig, PendingPublish, _build_envelope, attempt_run_id
 from src.orchestration.execution_policy import Action, AuthorizationContext, Decision, ExecutionPolicy, PolicyLimits
 from src.orchestration.execution_runner import RunnerConfig, run_execution_runner
@@ -47,6 +48,8 @@ REPO = "org/repo"
 async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
     engine = create_async_engine(to_async_url(pg_url))
     models = [
+        BudgetEnforcementSetting,
+        BudgetAccountingGap,
         OrchestrationFlow,
         OrchestrationAcceptedPlan,
         OrchestrationNode,

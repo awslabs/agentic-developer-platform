@@ -217,8 +217,12 @@ async def test_upload_cannot_keep_old_assignment_or_policy_authority(model_path,
         await session.flush()
 
     result = await invoke(model_path, shared, during_upload=mutate)
-    assert result.sent[0]["status"] in {403, 503} and model_path.calls == 0
-    assert result.token._policy_flow_target is None
+    if change == "budget-disabled":
+        assert result.sent[0]["status"] == 200 and model_path.calls == 1
+        assert result.token._policy_quote is None
+    else:
+        assert result.sent[0]["status"] in {403, 503} and model_path.calls == 0
+        assert result.token._policy_flow_target is None
 
 
 async def test_same_flow_budget_covers_retries_with_legacy_caps_disabled(model_path, shared, assignment, monkeypatch):
@@ -436,3 +440,85 @@ async def test_retry_increase_during_upload_requires_verified_receipt(model_path
     result = await invoke(model_path, shared, during_upload=increase)
     assert result.sent[0]["status"] == (200 if verified else 403)
     assert model_path.calls == int(verified)
+
+
+@pytest.mark.parametrize("scope", ["flow", "global"])
+async def test_budget_off_forwards_without_quote_and_keeps_usage_and_identity(model_path, shared, assignment, session, monkeypatch, scope):
+    from src.budget.enforcement_settings import BudgetEnforcementSetting, flow_key
+
+    key = "global" if scope == "global" else flow_key(assignment.node.org_id, assignment.flow.id)
+    session.add(BudgetEnforcementSetting(scope_key=key, enabled=False, revision=1, updated_by="operator"))
+    await session.flush()
+
+    def estimate(*args):
+        raise AssertionError("Off must not require a pre-request cost estimate")
+
+    monkeypatch.setattr(BudgetEnforcementMiddleware, "_estimate_cost", estimate)
+    quote = AsyncMock(side_effect=AssertionError("Off must not require a budget quote"))
+    monkeypatch.setattr("src.agentauth.model_identity.quote_request", quote)
+    result = await invoke(model_path, shared)
+    assert result.sent[0]["status"] == 200
+    assert model_path.bodies == [result.raw]
+    assert result.token._graph_attribution.flow_id == assignment.flow.id
+    assert result.token.attributed_user_id == model_path.policy.principal_id
+    meter = await read_flow_meter(org_id=assignment.node.org_id, flow_id=assignment.flow.id, policy=model_path.policy)
+    assert meter.total_usd == Decimal("0.01")
+    assert not meter.has_pending
+    quote.assert_not_awaited()
+    denied = await invoke(model_path, shared, headers=[(b"x-agent-runid", shared.row.run_id.encode())])
+    assert denied.sent[0]["status"] == 403 and model_path.calls == 1
+
+
+async def test_off_preserves_old_unknown_holds_and_on_still_refuses_them(model_path, shared, assignment, session):
+    from src.budget.enforcement_settings import BudgetEnforcementSetting, flow_key
+    from src.orchestration.flow_meter import meter_target
+
+    target = meter_target(org_id=assignment.node.org_id, flow_id=assignment.flow.id, policy=model_path.policy)
+    store = model_path.service._reservations
+    await store.reserve("older-unsettled", Decimal("0.5"), [target])
+    await store.mark_unknown("older-unsettled", target)
+    previous = await (await store._get_client()).hgetall(target.key())
+    row = BudgetEnforcementSetting(scope_key=flow_key(assignment.node.org_id, assignment.flow.id), enabled=False, revision=1, updated_by="operator")
+    session.add(row)
+    await session.flush()
+    assert (await invoke(model_path, shared)).sent[0]["status"] == 200
+    after = await (await store._get_client()).hgetall(target.key())
+    assert all(after[k] == v for k, v in previous.items())
+    assert await store.snapshot(target) is None
+    row.enabled = True
+    await session.flush()
+    assert (await invoke(model_path, shared)).sent[0]["status"] == 503
+    assert model_path.calls == 1
+
+
+async def test_off_observation_failure_is_durable_and_does_not_block_provider(model_path, shared, assignment, session, monkeypatch):
+    from src.budget.enforcement_settings import BudgetEnforcementSetting, flow_key, read_enforcement
+
+    row = BudgetEnforcementSetting(scope_key=flow_key(assignment.node.org_id, assignment.flow.id), enabled=False, revision=1, updated_by="operator")
+    session.add(row)
+    await session.flush()
+    monkeypatch.setattr(model_path.service._reservations, "observe", AsyncMock(return_value=False))
+    assert (await invoke(model_path, shared)).sent[0]["status"] == 200
+    posture = await read_enforcement(session, org_id=assignment.node.org_id, flow_id=assignment.flow.id)
+    assert posture.accounting_incomplete
+    row.enabled = True
+    await session.flush()
+    assert (await invoke(model_path, shared)).sent[0]["status"] == 503
+    assert model_path.calls == 1
+
+
+async def test_off_unknown_usage_never_settles_to_zero(model_path, shared, assignment, session):
+    from src.budget.enforcement_settings import BudgetEnforcementSetting, flow_key, read_enforcement
+
+    session.add(
+        BudgetEnforcementSetting(scope_key=flow_key(assignment.node.org_id, assignment.flow.id), enabled=False, revision=1, updated_by="operator")
+    )
+    await session.flush()
+    result = await invoke(model_path, shared, usage_known=False)
+    assert result.sent[0]["status"] == 200
+    assert (await read_enforcement(session, org_id=assignment.node.org_id, flow_id=assignment.flow.id)).accounting_incomplete
+    store = model_path.service._reservations
+    fields = await (await store._get_client()).hgetall(result.token._policy_flow_target.key())
+    assert "unbounded:" + result.token._policy_request_id in fields
+    assert await store.snapshot(result.token._policy_flow_target) is None
+    assert (await invoke(model_path, shared)).sent[0]["status"] == 200

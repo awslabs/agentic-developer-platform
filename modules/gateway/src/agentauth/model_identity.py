@@ -7,7 +7,6 @@ authentication even when legacy budget binding is disabled or in shadow mode.
 
 from __future__ import annotations
 
-import os
 from uuid import uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -174,9 +173,6 @@ class AgentModelIdentityMiddleware:
             if legacy_report:
                 _bind_report_context(context, assignment, principal, node, flow)
             else:
-                if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
-                    raise AuthorityStoreError("policy budget enforcement unavailable")
-
                 # Same bounded quote and byte-for-byte replay contract as the
                 # protected worker branch; existing budget middleware reserves it.
                 frames, chunks, size = [], [], 0
@@ -193,7 +189,7 @@ class AgentModelIdentityMiddleware:
                     if not frame.get("more_body", False):
                         break
                 body = b"".join(chunks)
-                quote = await quote_request(body, scope["path"])
+                quote = await quote_request(body, scope["path"]) if policy._budget_enforcement_enabled else None
                 # Upload time cannot extend a run or preserve an obsolete policy.
                 async with get_session_factory()() as session:
                     assignment = await authenticate_report_assignment(session, credential)
@@ -206,16 +202,19 @@ class AgentModelIdentityMiddleware:
 
                         if not verified_limits_increased(policy_snapshot, policy):
                             raise BootstrapRefusedError("model policy changed during upload")
-                if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
-                    raise AuthorityStoreError("policy budget enforcement unavailable")
-                await revalidate_quote(quote, body, scope["path"])
+                if not policy._budget_enforcement_enabled:
+                    quote = None
+                # If OFF became ON during upload, admission refuses the missing
+                # quote; retry starts with fresh pricing and identity checks.
+                if quote is not None:
+                    await revalidate_quote(quote, body, scope["path"])
 
                 _bind_report_context(context, assignment, principal, node, flow)
                 context._policy_flow_target = meter_target(org_id=assignment.org_id, flow_id=assignment.flow_id, policy=policy)
                 if policy._shared_budget_decision_id:
                     context._policy_scope_caps = (policy._shared_run_spend_usd, policy._shared_chain_spend_usd)
                 context._policy_quote = quote
-                context._policy_estimated_cost = quote.total_usd
+                context._policy_estimated_cost = quote.total_usd if quote else None
                 context._policy_request_id = str(uuid4())
                 scope.setdefault("state", {})["request_id"] = context._policy_request_id
                 remaining_frames = iter(frames)
@@ -322,8 +321,6 @@ class AgentModelIdentityMiddleware:
                             if not decision.permitted:
                                 raise ModelPolicyRefusedError(decision)
                         if inputs.policy is not None:
-                            if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
-                                raise AuthorityStoreError("policy budget enforcement unavailable")
                             context._policy_flow_target = meter_target(org_id=caller.tenant_id, flow_id=grant.flow_id, policy=inputs.policy)
             if context._policy_flow_target is not None:
                 # Buffer only policy-governed requests for a bounded
@@ -344,7 +341,7 @@ class AgentModelIdentityMiddleware:
                         break
                 body = b"".join(chunks)
                 try:
-                    quote = await quote_request(body, scope["path"])
+                    quote = await quote_request(body, scope["path"]) if inputs.policy._budget_enforcement_enabled else None
                 except QuoteRefusedError as exc:
                     # A refusal is a value, not a cost. There is no estimate, no
                     # default model price and no client token count to fall back
@@ -357,7 +354,7 @@ class AgentModelIdentityMiddleware:
                 except (ValueError, KeyError, TypeError, AttributeError):
                     raise BootstrapRefusedError("bounded provider quote unavailable") from None
                 context._policy_quote = quote
-                context._policy_estimated_cost = quote.total_usd
+                context._policy_estimated_cost = quote.total_usd if quote else None
                 remaining_frames = iter(frames)
                 upstream_receive = receive
 
@@ -389,17 +386,20 @@ class AgentModelIdentityMiddleware:
                         current_inputs = await load_in_force_policy(session, org_id=caller.tenant_id, flow_id=grant.flow_id)
                         if current_inputs.refusal is not None:
                             raise ModelPolicyRefusedError(current_inputs.refusal)
-                        if current_inputs.plan_version != inputs.plan_version or current_inputs.policy != inputs.policy:
+                        if (
+                            current_inputs.policy is None
+                            or current_inputs.plan_version != inputs.plan_version
+                            or current_inputs.policy.model_dump() != inputs.policy.model_dump()
+                        ):
                             raise BootstrapRefusedError("authoring model policy changed during upload")
-                        if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
-                            raise AuthorityStoreError("policy budget enforcement unavailable")
                 # The quote is evidence about specific bytes priced at a specific
                 # published revision. Re-verify that binding here — after upload
                 # and reauthentication, immediately before the reservation — so a
                 # rate generation that rolled over, or any divergence between the
                 # quoted and forwarded bytes, requotes instead of spending.
                 try:
-                    await revalidate_quote(quote, body, scope["path"])
+                    if quote is not None:
+                        await revalidate_quote(quote, body, scope["path"])
                 except QuoteRefusedError as exc:
                     logger.info(
                         "Bounded provider quote no longer binds this request",
