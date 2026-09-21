@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
 from shared_runtime_plan_guard import (
@@ -34,6 +35,43 @@ WIRING = "/adp/dev/webhook-ingress/worker-runtime/wiring"
 LOCK_ID = "387a6df1-7b5c-f833-9334-305429bfdac4"
 LOCK_OWNER = "runner@arc-runner-org-wxsd2-runner-d7kth"
 LOCK_PATH = f"adp-terraform-state-{ACCOUNT}/dev/modules/webhook-ingress/terraform.tfstate"
+AWS_JSON_SOURCES = {
+    ("sts", "get-caller-identity"): "aws.sts.identity",
+    ("ecr", "describe-images"): "aws.ecr.images",
+    ("ssm", "get-parameter"): "aws.ssm.parameter",
+    ("lambda", "get-function"): "aws.lambda.function",
+    ("lambda", "get-function-configuration"): "aws.lambda.configuration",
+    ("sqs", "get-queue-attributes"): "aws.sqs.attributes",
+    ("iam", "get-role-policy"): "aws.iam.role_policy",
+    ("dynamodb", "get-item"): "aws.dynamodb.lock_item",
+}
+JSON_SOURCES = frozenset(AWS_JSON_SOURCES.values()) | {
+    "kubernetes.snapshot", "gateway.sql_probe", "kubernetes.gateway_pods",
+    "parameter.worker_runtime_wiring", "kubernetes.worker_pods", "dynamodb.terraform_lock_info",
+    "github.orphan_job", "kubernetes.orphan_owner_pods", "terraform.saved_plan",
+}
+
+
+def decode_json(value, *, source):
+    require(source in JSON_SOURCES, "unregistered JSON source")
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as error:
+        # Only a static call-site label travels out. The exception's document,
+        # message, arguments and provider output remain private.
+        error.maintenance_json_source = source
+        raise
+
+
+def failure_location(error):
+    frames = []
+    cursor = error.__traceback__
+    while cursor is not None:
+        code = cursor.tb_frame.f_code
+        frames.append({"filename": Path(code.co_filename).name, "function": code.co_name, "lineno": cursor.tb_lineno})
+        cursor = cursor.tb_next
+    source = getattr(error, "maintenance_json_source", None)
+    return {"failure_type": type(error).__name__, "json_source": source if isinstance(source, str) and source in JSON_SOURCES else None, "locations": frames}
 
 
 def command(args, *, stdin=None, cwd=None):
@@ -46,7 +84,9 @@ def command(args, *, stdin=None, cwd=None):
 
 
 def aws(*args):
-    return json.loads(command(["aws", *args, "--region", REGION, "--output", "json"]))
+    source = AWS_JSON_SOURCES.get(args[:2])
+    require(source is not None, "unregistered AWS JSON source")
+    return decode_json(command(["aws", *args, "--region", REGION, "--output", "json"]), source=source)
 
 
 def kube(*args, stdin=None):
@@ -54,7 +94,7 @@ def kube(*args, stdin=None):
 
 
 def snapshot(kind, name, namespace=NAMESPACE):
-    return json.loads(kube("get", kind, name, "-n", namespace, "-o", "json"))
+    return decode_json(kube("get", kind, name, "-n", namespace, "-o", "json"), source="kubernetes.snapshot")
 
 
 def parameter(name, *, decrypt=False):
@@ -93,11 +133,12 @@ async def probe():
   actions=await s.scalar(text("SELECT count(*) FROM orchestration_actions WHERE status IN ('prepared','dispatched','unknown')"))
   authoring=await s.scalar(text("SELECT count(*) FROM orchestration_amendment_requests WHERE state IN ('queued','dispatched')"))
   other_ready=await s.scalar(text("SELECT count(*) FROM orchestration_nodes WHERE kind='story' AND state IN ('ready','running') AND flow_id NOT IN ('0737183c-99c4-4e1f-bdb7-e4432b46ca20','a555da26-2724-4f38-b960-8738e10fa88c')"))
+  other_nodes=await s.execute(text("SELECT n.org_id, n.flow_id, f.state AS flow_state, n.id AS node_id, n.state, n.attempts, n.issue_ref FROM orchestration_nodes n LEFT JOIN orchestration_flows f ON f.id=n.flow_id AND f.org_id=n.org_id WHERE n.kind='story' AND n.state IN ('ready','running') AND n.flow_id NOT IN ('0737183c-99c4-4e1f-bdb7-e4432b46ca20','a555da26-2724-4f38-b960-8738e10fa88c') ORDER BY n.org_id, n.flow_id, n.id LIMIT 20"))
   key=os.environ.get('AGENT_RUN_CREDENTIAL_KEY','')
-  print(json.dumps({'schema':version,'key_present':bool(key),'key_matches':hmac.compare_digest(hashlib.sha256(key.encode()).hexdigest(),sys.argv[1]),'shared_continuations':shared,'unfinished_report_assignments':pending,'unfinished_executions':executions,'unresolved_actions':actions,'pending_authoring':authoring,'other_ready_or_running_stories':other_ready,'flags':{k:os.environ.get(k) for k in ['AGENT_AUTHORITY_ENABLED','ADP_SHARED_RUN_REPORTING_ENABLED','ADP_SHARED_WORKER_CONTINUATION_ENABLED','AGENT_WORKER_ROLE_ARN']}}))
+  print(json.dumps({'schema':version,'key_present':bool(key),'key_matches':hmac.compare_digest(hashlib.sha256(key.encode()).hexdigest(),sys.argv[1]),'shared_continuations':shared,'unfinished_report_assignments':pending,'unfinished_executions':executions,'unresolved_actions':actions,'pending_authoring':authoring,'other_ready_or_running_stories':other_ready,'other_ready_or_running_nodes':[dict(row._mapping) for row in other_nodes],'other_ready_or_running_nodes_truncated':other_ready>20,'flags':{k:os.environ.get(k) for k in ['AGENT_AUTHORITY_ENABLED','ADP_SHARED_RUN_REPORTING_ENABLED','ADP_SHARED_WORKER_CONTINUATION_ENABLED','AGENT_WORKER_ROLE_ARN']}}))
 asyncio.run(probe())
 """
-    result = json.loads(kube("exec", "-i", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "-c", DEPLOYMENT, "--", "python", "-", expected_key_hash, stdin=code))
+    result = decode_json(kube("exec", "-i", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "-c", DEPLOYMENT, "--", "python", "-", expected_key_hash, stdin=code), source="gateway.sql_probe")
     require(result.get("key_matches") is True, "running gateway key differs from current signing Secret")
     return result
 
@@ -117,7 +158,7 @@ def preflight(args, scratch):
     require(any(ref.get("configMapRef", {}).get("name") == "adp-worker-authority-config" for ref in container.get("envFrom", [])), "gateway does not consume worker ConfigMap")
     require(any(e.get("name") == "AGENT_RUN_CREDENTIAL_KEY" and e.get("valueFrom", {}).get("secretKeyRef", {}).get("name") == "agent-authority-signing" and e.get("valueFrom", {}).get("secretKeyRef", {}).get("key") == "run-credential-key" for e in container.get("env", [])), "gateway signing-key reference changed")
     selectors = ",".join(f"{k}={v}" for k, v in sorted(deployment["spec"]["selector"]["matchLabels"].items()))
-    pods = json.loads(kube("get", "pods", "-n", NAMESPACE, "-l", selectors, "-o", "json"))["items"]
+    pods = decode_json(kube("get", "pods", "-n", NAMESPACE, "-l", selectors, "-o", "json"), source="kubernetes.gateway_pods")["items"]
     ready = [p for p in pods if not p["metadata"].get("deletionTimestamp")]
     require(len(ready) == deployment["spec"]["replicas"] > 0, "gateway rollout incomplete")
     for pod in ready:
@@ -130,7 +171,7 @@ def preflight(args, scratch):
     require(tick_env.get("AGENT_AUTHORITY_ENABLED", "false") == "false", "tick protected authority is enabled")
     config = snapshot("configmap", "adp-worker-authority-config")["data"]
     require(config.get("AGENT_AUTHORITY_ENABLED") == "false", "gateway protected authority is enabled")
-    wiring = json.loads(parameter(WIRING))
+    wiring = decode_json(parameter(WIRING), source="parameter.worker_runtime_wiring")
     worker = snapshot("scaledjob", "agent-scaledjob", "adp-agents")
     podspec = worker["spec"]["jobTargetRef"]["template"]["spec"]
     require(podspec["serviceAccountName"] == "agent-scaledjob-sa", "shared worker service account changed")
@@ -157,7 +198,7 @@ def preflight(args, scratch):
     if args.stage == "tick-enable":
         require(all(config.get(flag) == "true" and probe["flags"].get(flag) == "true" for flag in FLAGS), "gateway canary stage is incomplete")
     queue = aws("sqs", "get-queue-attributes", "--queue-url", wiring["dispatch_queue_url"], "--attribute-names", "ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible", "ApproximateNumberOfMessagesDelayed")["Attributes"]
-    worker_pods = json.loads(kube("get", "pods", "-n", "adp-agents", "-o", "json"))["items"]
+    worker_pods = decode_json(kube("get", "pods", "-n", "adp-agents", "-o", "json"), source="kubernetes.worker_pods")["items"]
     active_images = [c["image"] for pod in worker_pods if pod.get("status", {}).get("phase") not in {"Succeeded", "Failed"} for c in pod["spec"].get("containers", []) if c["name"] == "agent-worker"]
     print(json.dumps({"runtime_preflight": probe, "queue": queue, "active_worker_images": active_images}))
     if args.stage in {"gateway-enable", "tick-enable"}:
@@ -188,8 +229,18 @@ def init(module):
 
 
 def lock_info():
-    item = aws("dynamodb", "get-item", "--table-name", "adp-terraform-locks", "--key", json.dumps({"LockID": {"S": LOCK_PATH}}), "--consistent-read").get("Item", {})
-    return json.loads(item["Info"]["S"]) if "Info" in item else None
+    # The CLI emits no JSON for a successful missing-item response. Project a
+    # stable object instead of treating an arbitrary empty body as an unlocked
+    # backend. Malformed output still stops maintenance before any unlock/plan.
+    response = aws("dynamodb", "get-item", "--table-name", "adp-terraform-locks", "--key", json.dumps({"LockID": {"S": LOCK_PATH}}), "--consistent-read", "--query", "{Item: Item}")
+    require(isinstance(response, dict) and "Item" in response, "lock lookup response is incomplete")
+    item = response["Item"]
+    if item is None:
+        return None
+    require(isinstance(item, dict) and isinstance(item.get("Info"), dict) and isinstance(item["Info"].get("S"), str), "lock lookup item is malformed")
+    info = decode_json(item["Info"]["S"], source="dynamodb.terraform_lock_info")
+    require(isinstance(info, dict), "lock ownership information is malformed")
+    return info
 
 
 def unlock_known_orphan():
@@ -198,11 +249,11 @@ def unlock_known_orphan():
         print("Known backend is unlocked; no unlock performed")
         return
     require(info.get("ID") == LOCK_ID and info.get("Who") == LOCK_OWNER and info.get("Operation") == "OperationTypePlan" and info.get("Path") == LOCK_PATH and info.get("Created") == "2026-09-20T23:34:38.654494254Z", "lock differs from reviewed orphan")
-    job = json.loads(command(["gh", "api", "repos/aws-e/adp/actions/jobs/106168875014"]))
+    job = decode_json(command(["gh", "api", "repos/aws-e/adp/actions/jobs/106168875014"]), source="github.orphan_job")
     require(job.get("run_id") == 35544870165 and job.get("status") == "completed" and job.get("conclusion") == "cancelled" and job.get("runner_name") == LOCK_OWNER.split("@", 1)[1] and job.get("runner_id") == 76719 and job.get("completed_at"), "lock owner job is not the reviewed cancelled job")
     log = command(["gh", "api", "repos/aws-e/adp/actions/jobs/106168875014/logs"])
     require("Terminate orphan process: pid (258) (terraform)" in log, "orphan process cleanup evidence unavailable")
-    pods = json.loads(kube("get", "pods", "--all-namespaces", "-o", "json"))["items"]
+    pods = decode_json(kube("get", "pods", "--all-namespaces", "-o", "json"), source="kubernetes.orphan_owner_pods")["items"]
     require(not any(p["metadata"]["name"] == job["runner_name"] for p in pods), "lock owner runner pod still exists")
     require(lock_info() == info, "lock changed during ownership verification")
     command(["terraform", "force-unlock", "-force", LOCK_ID], cwd=WEBHOOK)
@@ -220,7 +271,7 @@ def plan_apply(module, stage, context, overlay, scratch, *, enabled, execute):
         targets += ["data.terraform_remote_state.platform", "data.aws_ssm_parameters_by_path.worker_runtime"]
     command(["terraform", "plan", "-input=false", "-lock-timeout=30s", f"-var-file={ROOT}/environments/dev/modules/{name}.tfvars", f"-var-file={path}", f"-out={saved}", *[f"-target={target}" for target in targets]], cwd=module)
     saved.chmod(0o600)
-    plan = json.loads(command(["terraform", "show", "-json", str(saved)], cwd=module))
+    plan = decode_json(command(["terraform", "show", "-json", str(saved)], cwd=module), source="terraform.saved_plan")
     changes = check_plan(plan, stage=stage, enabled=enabled, gateway_image=context["gateway_image"], signing_key=context["signing_key"], kms_key=context["kms_key"])
     digest = hashlib.sha256(saved.read_bytes()).hexdigest()
     print(json.dumps({"stage": stage, "plan_sha256": digest, "changes": changes, "apply": execute}))
@@ -284,7 +335,7 @@ def main():
                 kube("rollout", "restart", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE)
                 kube("rollout", "status", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "--timeout=300s")
                 require(all(gateway_probe()["flags"].get(flag) == "true" for flag in FLAGS), "gateway flags did not activate")
-                require(all(json.loads(parameter(WIRING)).get(flag) is False for flag in WIRING_FLAGS), "gateway stage changed tick wiring")
+                require(all(decode_json(parameter(WIRING), source="parameter.worker_runtime_wiring").get(flag) is False for flag in WIRING_FLAGS), "gateway stage changed tick wiring")
         elif args.stage == "tick-enable":
             require(parameter(KEY_NAME, decrypt=True) == context["signing_key"], "reporting key differs from gateway key")
             init(WEBHOOK)
@@ -308,10 +359,16 @@ def main():
         print(f"Stage {args.stage} complete; sanitized evidence and account-specific inputs retained")
 
 
-if __name__ == "__main__":
+def entrypoint():
     try:
         main()
-    except Refused as exc:
-        raise SystemExit(f"Maintenance refused: {exc}") from None
-    except Exception as exc:
-        raise SystemExit(f"Maintenance stopped: {type(exc).__name__}; raw privileged output withheld") from None
+    except Exception as error:
+        # Do not use traceback formatting: it can include source lines, chained
+        # exception messages and privileged values. Walk only code locations.
+        print(json.dumps({"maintenance_stopped": failure_location(error)}), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(entrypoint())

@@ -1,9 +1,12 @@
 """Offline maintenance scope tests. No test invokes production tools or APIs."""
 
+import ast
+import base64
 import copy
 import importlib.util
 import json
 from pathlib import Path
+import sqlite3
 import sys
 
 import pytest
@@ -222,3 +225,110 @@ def test_unlock_refuses_any_other_lock_before_reading_github(monkeypatch, differ
     monkeypatch.setattr(maintenance, "command", lambda *a, **k: pytest.fail("Other lock must not reach commands"))
     with pytest.raises(guard.Refused, match="reviewed orphan"):
         maintenance.unlock_known_orphan()
+
+
+def test_absent_lock_uses_explicit_nullable_projection_and_never_unlocks(monkeypatch, capsys):
+    calls = []
+
+    def command(args, **kwargs):
+        calls.append(args)
+        assert args[:3] == ["aws", "dynamodb", "get-item"]
+        assert args[args.index("--query") + 1] == "{Item: Item}"
+        assert "--consistent-read" in args
+        # Without this projection, the real AWS CLI prints an empty body for
+        # the same successful missing-item service response.
+        return '{"Item": null}'
+
+    monkeypatch.setattr(maintenance, "command", command)
+    maintenance.unlock_known_orphan()
+    assert len(calls) == 1
+    assert "no unlock performed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("response", ["", "invalid", "{}", '{"Item": []}', '{"Item": {}}',
+                                      '{"Item": {"Info": {"S": ""}}}', '{"Item": {"Info": {"S": "null"}}}',
+                                      '{"Item": {"Info": {"S": "[]"}}}', '{"Item": {"Info": {"S": 7}}}'])
+def test_empty_malformed_or_incomplete_lock_response_is_not_unlocked(monkeypatch, response):
+    calls = []
+    monkeypatch.setattr(maintenance, "command", lambda args, **kwargs: calls.append(args) or response)
+    with pytest.raises((guard.Refused, json.JSONDecodeError)):
+        maintenance.unlock_known_orphan()
+    assert len(calls) == 1 and calls[0][:3] == ["aws", "dynamodb", "get-item"]
+
+
+def test_present_lock_preserves_ownership_information(monkeypatch):
+    info = {"ID": maintenance.LOCK_ID, "Who": maintenance.LOCK_OWNER, "Operation": "OperationTypePlan"}
+    monkeypatch.setattr(maintenance, "command", lambda *a, **k: json.dumps({"Item": {"Info": {"S": json.dumps(info)}}}))
+    assert maintenance.lock_info() == info
+
+
+def test_json_failure_identifies_static_source_and_locations_without_private_data(monkeypatch, capsys):
+    secret = "private-json-document-fixture"
+    monkeypatch.setattr(maintenance, "command", lambda *a, **k: secret)
+    monkeypatch.setattr(maintenance, "main", lambda: maintenance.aws("ssm", "get-parameter", "--name", secret))
+    assert maintenance.entrypoint() == 1
+    output = capsys.readouterr()
+    assert secret not in output.err and output.out == ""
+    result = json.loads(output.err)["maintenance_stopped"]
+    assert result["failure_type"] == "JSONDecodeError"
+    assert result["json_source"] == "aws.ssm.parameter"
+    assert any(frame["filename"] == "maintain-shared-runtime.py" and frame["function"] == "aws" for frame in result["locations"])
+    assert all(set(frame) == {"filename", "function", "lineno"} and isinstance(frame["lineno"], int) for frame in result["locations"])
+
+
+@pytest.mark.parametrize("error_kind", [ValueError, guard.Refused])
+def test_failure_reporting_never_formats_values_source_locals_or_chained_errors(monkeypatch, capsys, error_kind):
+    namespace = {"error_kind": error_kind}
+    # Both the source and a local/exception contain sentinels. A normal Python
+    # traceback or format_exception would reveal them; code locations do not.
+    exec(compile(
+        "def failing():\n"
+        "    private = 'private-local-fixture'\n"
+        "    try:\n"
+        "        raise RuntimeError('private-cause-fixture')\n"
+        "    except RuntimeError as cause:\n"
+        "        raise error_kind(private + 'private-exception-fixture') from cause\n",
+        "/private-directory-fixture/failing.py", "exec",
+    ), namespace)
+    monkeypatch.setattr(maintenance, "main", namespace["failing"])
+    assert maintenance.entrypoint() == 1
+    output = capsys.readouterr()
+    assert "private-" not in output.err and output.out == ""
+    result = json.loads(output.err)["maintenance_stopped"]
+    assert result["locations"][-1] == {"filename": "failing.py", "function": "failing", "lineno": 6}
+    assert result["json_source"] is None
+
+
+def test_untrusted_exception_source_label_is_not_emitted():
+    error = ValueError("private-error-fixture")
+    for value in ["private-source-fixture", {"private": "source"}]:
+        error.maintenance_json_source = value
+        assert maintenance.failure_location(error)["json_source"] is None
+
+
+def test_other_work_context_is_bounded_and_preserves_orphan_and_tenant_mismatch(monkeypatch):
+    scripts = []
+    monkeypatch.setattr(maintenance, "snapshot", lambda *a: {"data": {"run-credential-key": base64.b64encode(b"private-key-fixture").decode()}})
+    monkeypatch.setattr(maintenance, "kube", lambda *a, stdin=None: scripts.append(stdin) or '{"key_matches": true}')
+    maintenance.gateway_probe()
+    literals = [node.value for node in ast.walk(ast.parse(scripts[0])) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    query = next(value for value in literals if value.startswith("SELECT n.org_id"))
+    count_query = next(value for value in literals if value.startswith("SELECT count(*) FROM orchestration_nodes"))
+    assert "SET TRANSACTION READ ONLY" in literals
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript("CREATE TABLE orchestration_flows (id TEXT, org_id TEXT, state TEXT); CREATE TABLE orchestration_nodes (id TEXT, org_id TEXT, flow_id TEXT, state TEXT, attempts INTEGER, issue_ref TEXT, kind TEXT, title TEXT);")
+    connection.executemany("INSERT INTO orchestration_flows VALUES (?, ?, ?)", [("inactive", "other", "failed"), ("mismatch", "wrong-tenant", "running")])
+    rows = [(f"node-{i:02d}", "other", "inactive", "ready", 0, str(100+i), "story", "private-title-fixture") for i in range(22)]
+    rows += [("orphan", "first", "orphan", "running", 1, "500", "story", "private-title-fixture"),
+             ("mismatch", "first", "mismatch", "ready", 0, "501", "story", "private-title-fixture"),
+             ("target", "aws-e", "0737183c-99c4-4e1f-bdb7-e4432b46ca20", "ready", 0, "5621", "story", "private-title-fixture")]
+    connection.executemany("INSERT INTO orchestration_nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    assert connection.execute(count_query).fetchone()[0] == 24
+    actual = [dict(row) for row in connection.execute(query)]
+    assert len(actual) == 20
+    assert all(set(row) == {"org_id", "flow_id", "flow_state", "node_id", "state", "attempts", "issue_ref"} for row in actual)
+    assert {row["node_id"] for row in actual if row["flow_state"] is None} == {"orphan", "mismatch"}
+    assert any(row["flow_state"] == "failed" for row in actual)
+    assert "private-" not in json.dumps(actual)
+    connection.close()

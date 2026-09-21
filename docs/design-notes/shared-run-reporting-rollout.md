@@ -152,6 +152,13 @@ the matching cancelled job, its log records orphan Terraform termination, and
 its exact runner pod is absent. Any changed evidence stops the unlock. No other
 lock can be removed by this workflow.
 
+The lock lookup projects an explicit `Item` field so a missing DynamoDB item
+returns JSON null instead of the AWS CLI's empty output. Only that explicit null
+means unlocked; malformed or incomplete lock information stops maintenance.
+Failures report a static JSON-source label when available and traceback
+filename/function/line numbers. Exception values, source lines, local variables,
+chained errors and raw provider output are withheld.
+
 Before either enabling stage, the helper reads all organizations' current
 accepted continuations, unfinished SQL report assignments (including JSON null),
 executions, unresolved actions and queued authoring. It also checks non-target
@@ -161,6 +168,13 @@ workers finish and review that work instead of cancelling them. These checks are
 observations, not a global dispatcher pause. Normal legacy scheduling remains
 active, and future legacy dispatches will also acquire the shared reporting
 contract after global activation.
+
+For review, the existing SQL probe also returns at most 20 non-target ready or
+running story nodes: tenant, flow/node IDs, flow/node states, attempts and issue
+reference. A left join preserves missing or mismatched flow evidence as a null
+flow state. Titles, plan content and decisions are excluded. The total count and
+zero-work activation requirement remain unchanged; a truncated sample does not
+reduce that count.
 
 After `verify`, obtain a fresh continuation preview and accept **only CLI**
 (`0737183c-99c4-4e1f-bdb7-e4432b46ca20`, tenant `aws-e`) through the existing API,
