@@ -94,9 +94,10 @@ async def shared_inputs(session, *, org_id, flow_id, lock=False):
 async def initialize_shared_meter(*, org_id, flow_id, policy, marker) -> bool:
     """Seed before the acceptance transaction commits; never call at admission.
 
-    A committed accepted plan proves both writes were acknowledged. A Redis loss
-    after acceptance blocks all future admissions rather than reinitializing zero.
-    An aborted acceptance may leave an orphan seed; no governed run can use it.
+    A committed accepted plan proves initialization and historical settlement were
+    acknowledged. A Redis loss after acceptance blocks all future admissions rather
+    than reinitializing zero. An aborted acceptance may leave an orphan seed; no
+    governed run can use it.
     """
     from src.budget.config import budget_config
 
@@ -116,8 +117,14 @@ async def initialize_shared_meter(*, org_id, flow_id, policy, marker) -> bool:
         seed = await store.reserve("__historical_spend__", baseline, [target])
         if seed is None or not seed.admitted:
             return False
+        # This is acknowledged historical usage, not an in-flight provider call.
+        # A strict reservation adds a pending receipt marker with a 61-minute
+        # deadline. Settle the baseline now so that marker cannot later make an
+        # otherwise valid lifetime meter unreadable. Reconcile swallows transport
+        # failures, so require an observed settled snapshot before acceptance.
+        await store.reconcile("__historical_spend__", baseline, [target])
         snapshot = await store.snapshot(target)
-        return snapshot is not None and snapshot.total_usd >= baseline
+        return snapshot is not None and not snapshot.has_pending and snapshot.total_usd >= baseline
     except Exception:
         return False
 
