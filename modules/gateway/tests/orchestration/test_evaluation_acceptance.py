@@ -123,9 +123,7 @@ async def test_acceptance_yields_to_production_dispatch_node_then_flow_locks(con
             candidates = await _fetch_ready_nodes(dispatcher, limit=100)
             node = next(node for node in candidates if node.id == ctx.eval_id)
             with pytest.raises(EvaluationAcceptanceError, match="evaluation_dispatch_in_progress"):
-                await asyncio.wait_for(
-                    accept_evaluation(request_session, flow_id=ctx.flow.id, actor=ctx.actor, request=replacement), timeout=2
-                )
+                await asyncio.wait_for(accept_evaluation(request_session, flow_id=ctx.flow.id, actor=ctx.actor, request=replacement), timeout=2)
             # No caller rollback: the failed acceptance's savepoint must release
             # its flow/plan locks, allowing the real evaluator to finish unchanged.
             assert await asyncio.wait_for(observe_repository_evaluation(dispatcher, node, provider=ctx.provider), timeout=2)
