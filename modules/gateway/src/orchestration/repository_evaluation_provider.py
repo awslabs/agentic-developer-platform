@@ -264,38 +264,46 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         require(repository.get("id") == spec.runner.repository_id == binding.provider_repository_id, "repository_changed")
         semaphore = asyncio.Semaphore(4)
 
-        async def pull(source):
-            async with semaphore:
-                return await self.pull_request(binding, source)
+        async def bounded_reads(operation, values):
+            async def read(value):
+                async with semaphore:
+                    return await operation(value)
 
-        try:
-            async with asyncio.TaskGroup() as group:
-                tasks = [group.create_task(pull(source)) for source in sources]
-        except ExceptionGroup as errors:
-            if all(isinstance(error, CycleBlockedError) for error in errors.exceptions):
-                raise errors.exceptions[0] from None
-            raise
-        pulls = [task.result() for task in tasks]
+            try:
+                async with asyncio.TaskGroup() as group:
+                    tasks = [group.create_task(read(value)) for value in values]
+            except ExceptionGroup as errors:
+                if all(isinstance(error, CycleBlockedError) for error in errors.exceptions):
+                    raise errors.exceptions[0] from None
+                raise
+            return [task.result() for task in tasks]
+
+        async def pull(source):
+            return await self.pull_request(binding, source)
+
+        pulls = await bounded_reads(pull, sources)
         revisions = {source["address"]: source["merge_sha"] for source in sources if source.get("address")}
-        for workflow in spec.workflows:
-            revision = workflow.source.revision or revisions[workflow.source.predecessor]
-            for source in sources:
-                if source["merge_sha"] == revision:
-                    continue
-                comparison = (
-                    await self.request(
-                        binding,
-                        "GET",
-                        f"/repos/{binding.repo}/compare/{source['merge_sha']}...{revision}",
-                        params={"per_page": 1},
-                        max_bytes=MAX_FILE,
-                    )
-                ).json()
-                require(
-                    comparison.get("status") in {"ahead", "identical"}
-                    and comparison.get("base_commit", {}).get("sha") == source["merge_sha"]
-                    and comparison.get("merge_base_commit", {}).get("sha") == source["merge_sha"],
-                    "workflow_missing_delivered_revision",
-                )
+        comparisons = sorted(
+            {
+                (source["merge_sha"], workflow.source.revision or revisions[workflow.source.predecessor])
+                for workflow in spec.workflows
+                for source in sources
+                if source["merge_sha"] != (workflow.source.revision or revisions[workflow.source.predecessor])
+            }
+        )
+
+        async def ancestry(pair):
+            merge, revision = pair
+            comparison = (
+                await self.request(binding, "GET", f"/repos/{binding.repo}/compare/{merge}...{revision}", params={"per_page": 1}, max_bytes=MAX_FILE)
+            ).json()
+            require(
+                comparison.get("status") in {"ahead", "identical"}
+                and comparison.get("base_commit", {}).get("sha") == merge
+                and comparison.get("merge_base_commit", {}).get("sha") == merge,
+                "workflow_missing_delivered_revision",
+            )
+
+        await bounded_reads(ancestry, comparisons)
         workflows = [await self.workflow(binding, item, revisions=revisions, max_age_seconds=spec.max_age_seconds) for item in spec.workflows]
         return dict(pull_requests=pulls, workflows=workflows, mandatory_passed=all(c["passed"] for row in workflows for c in row["criteria"]))

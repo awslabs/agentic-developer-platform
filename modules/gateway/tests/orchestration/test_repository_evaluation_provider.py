@@ -1,5 +1,6 @@
 """Exercise the real provider parser against authenticated API/archive shapes."""
 
+import asyncio
 import base64
 import copy
 import hashlib
@@ -278,6 +279,46 @@ async def test_workflow_revision_must_include_all_verified_source_merges(evidenc
     else:
         with pytest.raises(CycleBlockedError, match="workflow_missing_delivered_revision"):
             await observe(evidence)
+
+
+async def test_large_flow_checks_each_ancestry_pair_once_with_four_reads_in_flight(evidence):
+    provider = RepositoryEvidenceProvider()
+    sources = [{**evidence.source, "merge_sha": f"{number:040x}"} for number in range(1, 22)]
+    document = evidence.spec.model_dump(mode="json")
+    workflow = document["workflows"][0]
+    workflow["source"] = {"revision": "f" * 40}
+    second = copy.deepcopy(workflow)
+    second["criterion_id"] = "another-scan"
+    for artifact in second["artifacts"]:
+        for predicate in artifact["predicates"]:
+            predicate["criterion_id"] += "-second"
+    document["workflows"].append(second)
+    spec = RepositoryEvaluationSpecification.model_validate(document)
+    provider.pull_request = AsyncMock(side_effect=lambda binding, source: source)
+    provider.workflow = AsyncMock(return_value={"criteria": [{"passed": True}]})
+    observed, active, peak = [], 0, 0
+
+    async def request(binding, method, path, **kwargs):
+        nonlocal active, peak
+        if path == "/repos/o/r":
+            return httpx.Response(200, json={"id": 123})
+        assert method == "GET" and path.startswith("/repos/o/r/compare/")
+        observed.append(path)
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0)
+            merge = path.rsplit("/", 1)[1].split("...")[0]
+            return httpx.Response(200, json=dict(status="ahead", base_commit=dict(sha=merge), merge_base_commit=dict(sha=merge)))
+        finally:
+            active -= 1
+
+    provider.request = request
+    result = await provider.observe(SimpleNamespace(repo="o/r", provider_repository_id=123), spec, sources)
+    assert result["mandatory_passed"] and len(result["pull_requests"]) == 21
+    assert len(observed) == len(set(observed)) == 21
+    assert peak == 4 and active == 0
+    assert provider.workflow.await_count == 2
 
 
 async def test_shared_app_review_reuses_scoped_read_token_without_minting_broad_token(monkeypatch):
