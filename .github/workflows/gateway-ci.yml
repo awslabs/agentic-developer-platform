@@ -228,6 +228,15 @@ jobs:
   test-shard:
     name: Test shard ${{ matrix.shard }}
     runs-on: arc-runner-org
+    # `needs: lint` is KEPT, after measuring the alternative. Dropping it saves
+    # one ~1min dispatch hop, but it raises peak concurrency per run from 4
+    # runners to 7 (lint + frontend + smoke + 4 shards all starting at once),
+    # and Gateway CI runs overlap routinely — 3 were concurrent on 2026-09-20
+    # 07:24, i.e. up to 12 shards bursting to 4 CPUs each. arc-runner/main.tf
+    # documents a 2026-08-30 node-saturation incident from exactly this, and the
+    # trial run flaked a timing-sensitive test
+    # (tests/budget/test_pricing_read_timeout.py) while one shard ran 3x slow.
+    # The lint gate staggers startup, which is worth more than the 1min.
     needs: lint
     strategy:
       # Every shard reports independently — one shard failing must not cancel
@@ -300,6 +309,11 @@ jobs:
   # covering all shards — matrix jobs report under per-shard names, and any
   # branch protection or required-check config referencing "Test" would
   # otherwise silently stop gating the moment the job was sharded.
+  #
+  # Nothing depends on this job: `build` waits on test-shard directly, so this
+  # sits BESIDE the critical path rather than in it. Keep it that way — adding it
+  # to any `needs:` list reintroduces ~2min of dispatch latency to run 3s of
+  # shell. It still gates merges, because the check itself goes red.
   test:
     name: Test
     runs-on: arc-runner-org
@@ -340,7 +354,14 @@ jobs:
   build:
     name: Build Container
     runs-on: arc-runner-org
-    needs: [test, frontend-test]
+    # Depends on test-shard directly, NOT on the `test` aggregator. The
+    # aggregator exists only to keep a stable check name for branch protection;
+    # putting it on this path made `build` wait for an extra job dispatch to run
+    # 3 seconds of shell. Measured on run 35470134652: shards finished 21:25:35,
+    # the aggregator did not start until 21:27:32 — 1m57s of dead wall clock for
+    # nothing. `build` now starts as soon as the shards are green, and the
+    # aggregator runs beside it purely as the reported gate.
+    needs: [test-shard, frontend-test]
     steps:
       - uses: actions/checkout@v7
 
