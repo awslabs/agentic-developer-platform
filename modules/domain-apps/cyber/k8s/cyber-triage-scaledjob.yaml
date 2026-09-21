@@ -12,7 +12,8 @@ metadata:
     app.kubernetes.io/part-of: adp-cyber
 spec:
   podIdentity:
-    provider: aws-eks
+    # Use the operator credential chain (IRSA or EKS Pod Identity).
+    provider: aws
     identityOwner: keda
 ---
 # =============================================================================
@@ -41,6 +42,8 @@ spec:
           app.kubernetes.io/name: cyber-triage-worker
           role: triage
       spec:
+        nodeSelector:
+          eks.amazonaws.com/compute-type: auto
         serviceAccountName: cyber-worker
         restartPolicy: Never
         containers:

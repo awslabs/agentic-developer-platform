@@ -18,6 +18,21 @@ resource "aws_iam_role" "cyber_worker" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Auto Mode uses the managed Pod Identity agent. Keep trust bound to
+        # this cluster and worker service account, including transitive tags.
+        Sid       = "CyberWorkerPodIdentity"
+        Effect    = "Allow"
+        Principal = { Service = "pods.eks.amazonaws.com" }
+        Action    = ["sts:AssumeRole", "sts:TagSession"]
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/eks-cluster-arn"            = aws_eks_cluster.cyber.arn
+            "aws:RequestTag/kubernetes-namespace"       = "cyber-workers"
+            "aws:RequestTag/kubernetes-service-account" = "cyber-worker"
+          }
+        }
+      },
+      {
         # IRSA: worker pods assume this role via their ServiceAccount
         Effect = "Allow"
         Principal = {
@@ -46,6 +61,13 @@ resource "aws_iam_role" "cyber_worker" {
     Name      = "${local.name_prefix}-worker-role"
     Component = "cyber-worker"
   }
+}
+
+resource "aws_eks_pod_identity_association" "cyber_worker" {
+  cluster_name    = aws_eks_cluster.cyber.name
+  namespace       = "cyber-workers"
+  service_account = "cyber-worker"
+  role_arn        = aws_iam_role.cyber_worker.arn
 }
 
 # ---------------------------------------------------------------------------

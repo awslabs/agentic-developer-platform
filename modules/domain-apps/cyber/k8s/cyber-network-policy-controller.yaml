@@ -1,0 +1,9 @@
+# Auto Mode supplies the node agent, but policy reconciliation must be enabled
+# separately. Without this switch, the worker NetworkPolicies are not enforced.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amazon-vpc-cni
+  namespace: kube-system
+data:
+  enable-network-policy-controller: "true"

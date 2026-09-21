@@ -3,6 +3,7 @@ name: Cyber Infra Plan
 on:
   pull_request:
     paths:
+      - '.github/workflows/cyber-infra-plan.yml'
       - 'modules/domain-apps/cyber/infra/**'
       - 'environments/dev/modules/cyber-sandbox-backend.tfvars'
     branches:
@@ -50,16 +51,27 @@ jobs:
           aws --version
           terraform version | head -1
 
+      - name: Resolve deployment account
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -backend-config="../../../../${{ env.BACKEND_CONFIG }}" -input=false
+        run: |
+          terraform init \
+            -backend-config="../../../../${{ env.BACKEND_CONFIG }}" \
+            -backend-config="bucket=adp-terraform-state-${ACCOUNT_ID}" \
+            -input=false
 
       - name: Terraform Plan
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          set -e
-          terraform plan -var-file="terraform.tfvars" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
+          set -euo pipefail
+          terraform plan -input=false -var-file="terraform.tfvars" \
+            -var="account_id=${ACCOUNT_ID}" -out=tfplan -no-color 2>&1 | tee /tmp/plan-output.txt
 
       - name: Post or update PR comment
         uses: actions/github-script@v9
