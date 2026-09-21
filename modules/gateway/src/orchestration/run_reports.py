@@ -174,12 +174,19 @@ def report_snapshot(row: OrchestrationRunReport) -> dict:
     }
 
 
+def reviewer_artifact_assignment(row: OrchestrationRunReport) -> bool:
+    """A Codex repair authors the implementation; a review does not."""
+    return row.persona in {"reviewer", "agent-codex-reviewer"} and not (
+        row.persona == "agent-codex-reviewer" and (row.dispatch_metadata.get("review_cycle_input") or {}).get("action") == "repair"
+    )
+
+
 def record_terminal(row: OrchestrationRunReport, outcome: str) -> dict:
     if outcome not in {"complete", "failed"}:
         raise RunReportError("invalid_terminal_outcome")
     if outcome == "complete" and row.dispatch_metadata.get("pr_binding_required"):
         binding = row.binding_receipt
-        expected_role = "reviewer_artifact" if row.persona in {"reviewer", "agent-codex-reviewer"} else "implementation"
+        expected_role = "reviewer_artifact" if reviewer_artifact_assignment(row) else "implementation"
         if (
             not isinstance(binding, dict)
             or binding.get("bound") is not True
@@ -275,10 +282,7 @@ async def run_result_for_assignment(session: AsyncSession, *, node: Orchestratio
                 or binding.get("run_id") != row.run_id
                 or binding.get("attempt") != row.attempt
                 or binding.get("node_id") != row.node_id
-                or (
-                    row.persona not in {"reviewer", "agent-codex-reviewer"}
-                    and (binding.get("role") != "implementation" or binding.get("state") != "active")
-                )
+                or (not reviewer_artifact_assignment(row) and (binding.get("role") != "implementation" or binding.get("state") != "active"))
             ):
                 raise RunReportError("terminal_receipt_missing_binding")
             if metadata.get("review_expect") and (row.review_receipt or {}).get("recorded") is not True:

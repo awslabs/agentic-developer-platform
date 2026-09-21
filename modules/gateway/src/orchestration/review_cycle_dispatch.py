@@ -436,7 +436,7 @@ class ReviewCycleServices:
             genesis = await resolve_engine_genesis(session, org_id=node.org_id, decision_id=parent.authority.reference_id)
             flow = await session.get(OrchestrationFlow, node.flow_id)
             cognito_sub = await resolve_user_entity_id(session, node.org_id, principal)
-            persona = "reviewer" if effect.action is Action.REVIEW else "developer"
+            persona = "agent-codex-reviewer"
             envelope = _build_envelope(
                 node=node,
                 genesis=genesis,
@@ -457,7 +457,10 @@ class ReviewCycleServices:
                 key: detail[key] for key in ("action", "repo", "pr_number", "head_sha", "accepted_scope", "remaining_attempts", "remaining_spend_usd")
             }
             envelope["review_cycle_input"].update(
-                findings=detail.get("findings", []), review_artifact=detail.get("review_artifact"), operation_key=action.operation_key
+                allow_story_repairs=effect.action is Action.REPAIR,
+                findings=detail.get("findings", []),
+                review_artifact=detail.get("review_artifact"),
+                operation_key=action.operation_key,
             )
             if effect.action is Action.REVIEW:
                 envelope["review_expect"] = {

@@ -68,6 +68,22 @@ async def test_shared_review_exact_bytes_acknowledged_and_replay_converges(uploa
     assert (await state(upload.ctx))[0].phase == "merge_ready"
 
 
+async def test_codex_review_repair_evidence_advances_without_developer_handoff(upload):
+    assert upload.envelope["persona"] == "agent-codex-reviewer"
+    assert upload.envelope["review_cycle_input"]["allow_story_repairs"] is True
+    original_head = upload.ctx.head
+    upload.ctx.head = "b" * 40
+    upload.document = json.loads(json.dumps(upload.document).replace(original_head, upload.ctx.head))
+    async with upload.ctx.factory() as db:
+        receipt = await record(upload, db)
+        assert receipt["recorded"], receipt
+        await db.commit()
+    await upload.ctx.finish(upload.envelope["message_id"])
+    await tick(upload.ctx)
+    assert (await state(upload.ctx))[0].phase == "merge_ready"
+    assert len(upload.ctx.calls) == 1
+
+
 @pytest.mark.parametrize("mutation", ["head", "author", "reviewer", "checks"])
 async def test_shared_review_rejects_stale_or_substituted_evidence(upload, mutation):
     if mutation == "head":

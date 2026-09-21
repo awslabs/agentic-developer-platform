@@ -309,13 +309,13 @@ async def test_develop_review_repair_fresh_review_merge_ready(cycle):
     result = await tick(ctx)
     assert result.effects_succeeded == 1, result
     first = ctx.calls[-1]
-    assert first["persona"] == "reviewer"
+    assert first["persona"] == "agent-codex-reviewer"
     assert first["review_expect"]["author_run_id"] == ctx.root
     await review(ctx, findings=[{"finding_id": "F1", "summary": "Repair the failing boundary", "evidence_refs": []}])
     result = await tick(ctx)
     assert result.effects_succeeded == 1, result
     repair = ctx.calls[-1]
-    assert repair["persona"] == "developer"
+    assert repair["persona"] == "agent-codex-reviewer"
     assert repair["review_cycle_input"]["findings"][0]["finding_id"] == "F1"
     assert repair["review_cycle_input"]["head_sha"] == HEAD
     assert repair["review_cycle_input"]["pr_number"] == 77

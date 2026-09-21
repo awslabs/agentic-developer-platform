@@ -377,7 +377,13 @@ async def authorize_shared_model(session, assignment):
     execution, _ = await validate_current_report_assignment(session, assignment)
     if execution.status in {"concluded", "superseded"}:
         _refuse("current_execution_missing")
-    action = {"developer": Action.DEVELOP, "reviewer": Action.REVIEW, "codex": Action.REVIEW, "codex-reviewer": Action.REVIEW}.get(assignment.persona)
+    action = {
+        "developer": Action.DEVELOP,
+        "reviewer": Action.REVIEW,
+        "codex": Action.REVIEW,
+        "codex-reviewer": Action.REVIEW,
+        "agent-codex-reviewer": Action.REVIEW,
+    }.get(assignment.persona)
     declared = assignment.dispatch_metadata.get("action")
     if declared in {Action.DEVELOP.value, Action.REPAIR.value, Action.REVIEW.value}:
         action = Action(declared)

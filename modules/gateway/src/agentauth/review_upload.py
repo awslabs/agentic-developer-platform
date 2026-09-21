@@ -109,7 +109,7 @@ def _reviewer_assignment(record: Any, execution: dict) -> tuple[str, int, int]:
     attempt = int(execution["orchestration_node_attempt"]["N"])
     installation_id = int(execution["installation_id"]["N"])
     persona = execution["persona"]["S"]
-    if persona != "reviewer" or not node_id or attempt < 1 or installation_id < 1:
+    if persona not in {"reviewer", "agent-codex-reviewer"} or not node_id or attempt < 1 or installation_id < 1:
         # Only a dispatched reviewer may file review evidence. A developer run
         # uploading this kind would be recording evidence about its own work, which
         # `review_ingest` would refuse as SELF_REVIEW anyway — refused here as well

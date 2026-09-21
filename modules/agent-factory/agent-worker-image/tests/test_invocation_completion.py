@@ -257,7 +257,7 @@ def worker(delivery, monkeypatch, tmp_path):
         )
         return 0 if success else exit_codes[-1]
 
-    monkeypatch.setattr(entrypoint, "_handle_success", lambda *args: terminal(True))
+    monkeypatch.setattr(entrypoint, "_handle_success", lambda *args, **kwargs: terminal(True))
     monkeypatch.setattr(entrypoint, "_handle_failure", lambda *args: terminal(False))
     return client, envelope, executions, exit_codes, acknowledgements, merged
 
@@ -278,6 +278,35 @@ def test_main_completed_message_runs_once_and_new_answer_runs(worker):
     assert entrypoint.main() == 0
     assert executions == ["gate-answer-1", "gate-answer-2"]
     merged.assert_not_called()
+
+
+def test_shared_codex_engine_uses_report_ownership_not_legacy_dynamodb_receipts(worker, monkeypatch):
+    from lib import codex_review_delivery, review_cycle_input
+
+    client, envelope, executions, _, ack, _ = worker
+    envelope["persona"] = "agent-codex-reviewer"
+    envelope["intent"]["trigger"] = "engine_review_cycle"
+    envelope["review_cycle_input"] = {
+        "action": "review", "repo": envelope["source_ref"]["repo"], "pr_number": 42,
+        "head_sha": "a" * 40, "accepted_scope": "story-revision", "operation_key": "review:1", "findings": [],
+    }
+    seed(client, envelope)
+    monkeypatch.setattr(entrypoint.run_report, "enabled", lambda: True)
+    monkeypatch.setattr(entrypoint, "resume_pr_handoff", lambda: False)
+    started, terminal = MagicMock(), MagicMock()
+    monkeypatch.setattr(entrypoint.run_report, "begin_delivery", started)
+    monkeypatch.setattr(entrypoint.run_report, "terminal", terminal)
+    monkeypatch.setattr(review_cycle_input, "checkout_cycle_input", lambda *args, **kwargs: ("story", "a" * 40))
+    monkeypatch.setattr(codex_review_delivery, "finish_engine_review", lambda *args, **kwargs: "Review evidence recorded")
+    forbidden = MagicMock(side_effect=AssertionError("Shared engine ownership must not read legacy receipts"))
+    monkeypatch.setattr(entrypoint, "is_delivery_completed", forbidden)
+    monkeypatch.setattr(entrypoint, "record_delivery_completed", forbidden)
+    assert entrypoint.main() == 0
+    assert len(executions) == 1
+    started.assert_called_once()
+    terminal.assert_called_once_with("complete")
+    forbidden.assert_not_called()
+    ack.assert_called_once()
 
 
 def test_codex_issue_review_redelivery_runs_adapter_once(worker):

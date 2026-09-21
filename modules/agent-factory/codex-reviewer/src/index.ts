@@ -1,5 +1,6 @@
 import { parseEnvelope } from "./contracts.js";
 import { runReview } from "./reviewer.js";
+import { runEngineReview } from "./engine-review.js";
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -15,11 +16,14 @@ async function main(): Promise<void> {
   const githubToken = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? "";
   if (!githubToken) throw new Error("embedded Codex review requires the worker GitHub token");
   const proxyPort = process.env.SIGV4_PROXY_PORT ?? "9090";
-  const result = await runReview(envelope, {
+  const runtime = {
     workspace: process.cwd(),
     githubToken,
     proxyBaseUrl: `http://127.0.0.1:${proxyPort}/openai/v1`,
-  });
+  };
+  const result = envelope.kind === "codex_engine_review"
+    ? await runEngineReview(envelope, runtime)
+    : await runReview(envelope, runtime);
   console.log(JSON.stringify(result));
 }
 

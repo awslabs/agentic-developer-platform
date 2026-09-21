@@ -259,7 +259,7 @@ async def test_conflict_hands_off_to_real_repair_without_resetting_allowance(mer
     before = (await state(merge))[0].attempts
     result = await review_tick(merge)
     assert result.effects_succeeded == 1, result
-    assert merge.calls[-1]["persona"] == "developer"
+    assert merge.calls[-1]["persona"] == "agent-codex-reviewer"
     assert "merge conflict" in merge.calls[-1]["review_cycle_input"]["findings"][0]["summary"]
     execution, claim, node, _ = await state(merge)
     assert execution.attempts == before + 1 and claim.generation == 5 and node.attempts == 1
@@ -535,7 +535,7 @@ async def test_eligibility_conflict_dispatches_repair_without_merge(merge):
     assert (await state(merge))[0].phase == "repairing"
     result = await review_tick(merge)
     assert result.effects_succeeded == 1 and merge.mutations == []
-    assert merge.calls[-1]["persona"] == "developer"
+    assert merge.calls[-1]["persona"] == "agent-codex-reviewer"
 
 
 async def test_github_second_precision_merge_timestamp_remains_verifiable(merge):

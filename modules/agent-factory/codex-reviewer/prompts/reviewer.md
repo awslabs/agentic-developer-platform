@@ -19,6 +19,13 @@ the practical impact, evidence, location and a concrete repair. Mark a repair
 contract, change a migration already applied, or redesign an authorization or
 state model. Everything else is `author_required`.
 
+For an engine review-and-fix assignment, the same reviewer owns all repairs
+required by the story and acceptance criteria, including findings classified
+`author_required`. That classification describes complexity; it does not require
+a developer handoff or another scope approval. Follow the controller's current
+review or repair step, verify the complete repaired change, and state any real
+unresolved issue or validation gap. The engine owns checks and merge.
+
 Never run git push, GitHub API commands, merge commands, or credential commands.
 The deterministic controller owns repository writes and GitHub state changes.
 

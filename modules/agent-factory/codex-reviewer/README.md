@@ -26,6 +26,23 @@ fixes, and can optionally merge. It does not attempt formal self-approval.
 
 ## Gateway-only model access
 
+Engine review and repair continuations select `agent-codex-reviewer` and use the
+protected `review_cycle_input`, without requiring a webhook payload or an
+`agent/issue-N` branch. Shared-worker flows with repair permission let the reviewer
+fix against the story and acceptance criteria, then review the final child commit
+before an exact-lease push. Reviews with no repair permission remain read-only.
+There is no mechanical file/line limit in this story repair path. It makes at most
+two repair passes within one model deadline, preserving unresolved findings if
+verification fails.
+
+Engine runs never call the adapter's direct merge path or wait for CI in a worker
+slot. Python publishes the exact-head formal verdict and uploads the R1 evidence
+before acknowledging completion. GitHub refusals remain publication blockers.
+The engine validates evidence against the actual PR head and owns subsequent
+checks and merge. Existing in-flight assignments retain their original persona.
+Review reports stay outside the implementation commits. Already merged PRs can
+be reviewed from their retained PR head without recreating deleted branches.
+
 Codex uses the same loopback SigV4 proxy as every other hosted agent. Its SDK
 base URL is `http://127.0.0.1:9090/openai/v1`; the proxy signs and forwards
 `POST /openai/v1/responses` to the ADP gateway `/agent` route. The shared

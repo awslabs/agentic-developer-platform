@@ -18,7 +18,9 @@ def prepare_cycle_input(envelope: dict) -> dict | None:
         not isinstance(value, dict)
         or (envelope.get("intent") or {}).get("trigger") != "engine_review_cycle"
         or value.get("action") not in {"review", "repair"}
-        or envelope.get("persona") != ("reviewer" if value.get("action") == "review" else "developer")
+        or envelope.get("persona") not in {
+            "agent-codex-reviewer", "reviewer" if value.get("action") == "review" else "developer"
+        }
         or value.get("repo") != source.get("repo")
         or type(value.get("pr_number")) is not int
         or value["pr_number"] < 1

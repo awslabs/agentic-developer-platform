@@ -61,7 +61,21 @@ export interface CodexIssueReviewEnvelope extends CodexEnvelopeBase {
   };
 }
 
+export interface CodexEngineReviewEnvelope extends CodexEnvelopeBase {
+  kind: "codex_engine_review";
+  issue_number: number;
+  cycle: {
+    action: "review" | "repair";
+    repo: string;
+    pr_number: number;
+    head_sha: string;
+    findings: unknown[];
+    allow_story_repairs: boolean;
+  };
+}
+
 export type CodexReviewEnvelope =
+  | CodexEngineReviewEnvelope
   | CodexPullRequestReviewEnvelope
   | CodexIssueReviewEnvelope;
 
@@ -96,7 +110,6 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
     throw new Error("unsupported codex reviewer envelope");
   }
   const payload = value.payload as Record<string, unknown> | undefined;
-  if (!payload) throw new Error("payload is required");
   const sourceRef = value.source_ref as Record<string, unknown> | undefined;
   const repository = requiredString(sourceRef?.repo, "repository");
   if (!REPO_RE.test(repository)) throw new Error("repository is invalid");
@@ -115,6 +128,31 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
         ? (value.correlation as CodexReviewEnvelope["correlation"])
         : undefined,
   };
+  if (value.review_cycle_input !== undefined) {
+    const cycle = value.review_cycle_input as Record<string, unknown>;
+    const intent = value.intent as Record<string, unknown> | undefined;
+    if (!cycle || intent?.trigger !== "engine_review_cycle"
+        || !["review", "repair"].includes(String(cycle.action))
+        || cycle.repo !== repository || !SHA_RE.test(String(cycle.head_sha))
+        || !Array.isArray(cycle.findings) || !cycle.operation_key || !cycle.accepted_scope
+        || Buffer.byteLength(JSON.stringify(cycle), "utf8") > 32768) {
+      throw new Error("invalid engine review-cycle input");
+    }
+    return {
+      ...common,
+      kind: "codex_engine_review",
+      issue_number: requiredPositiveInteger(sourceRef?.issue, "issue.number"),
+      cycle: {
+        action: cycle.action as "review" | "repair",
+        repo: repository,
+        pr_number: requiredPositiveInteger(cycle.pr_number, "pull_request.number"),
+        head_sha: cycle.head_sha as string,
+        findings: cycle.findings,
+        allow_story_repairs: cycle.allow_story_repairs === true,
+      },
+    };
+  }
+  if (!payload) throw new Error("payload is required");
   const pr = payload?.pull_request as Record<string, unknown> | undefined;
   if (!pr) {
     const issue = payload.issue as Record<string, unknown> | undefined;

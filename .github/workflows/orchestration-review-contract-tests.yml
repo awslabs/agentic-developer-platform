@@ -6,10 +6,12 @@ on:
     paths:
       - 'contracts/orchestration-review/**'
       - 'modules/agent-factory/agent-worker-image/lib/review*'
+      - 'modules/agent-factory/agent-worker-image/lib/codex_review_delivery.py'
       - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
       - 'modules/agent-factory/agent-worker-image/entrypoint.py'
       - 'modules/agent-factory/agent-worker-image/adp_review/**'
       - 'modules/agent-factory/agent-worker-image/tests/test_review*'
+      - 'modules/agent-factory/agent-worker-image/tests/test_codex_review_delivery.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_entrypoint.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
       - 'modules/gateway/src/orchestration/review*'
@@ -21,10 +23,12 @@ on:
     paths:
       - 'contracts/orchestration-review/**'
       - 'modules/agent-factory/agent-worker-image/lib/review*'
+      - 'modules/agent-factory/agent-worker-image/lib/codex_review_delivery.py'
       - 'modules/agent-factory/agent-worker-image/lib/status_gateway_client.py'
       - 'modules/agent-factory/agent-worker-image/entrypoint.py'
       - 'modules/agent-factory/agent-worker-image/adp_review/**'
       - 'modules/agent-factory/agent-worker-image/tests/test_review*'
+      - 'modules/agent-factory/agent-worker-image/tests/test_codex_review_delivery.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_entrypoint.py'
       - 'modules/agent-factory/agent-worker-image/tests/test_status_gateway_client.py'
       - 'modules/gateway/src/orchestration/review*'
@@ -70,6 +74,7 @@ jobs:
           env['PYTHONPATH'] = str(worker)
           subprocess.run([sys.executable, '-m', 'pytest',
                           'tests/test_review_result_writer.py', 'tests/test_review_delivery.py',
+                          'tests/test_codex_review_delivery.py', 'tests/test_review_cycle_input.py',
                           'tests/test_status_gateway_client.py', 'tests/test_entrypoint.py',
                           '-q', '--tb=short', '--timeout=60'], cwd=worker, env=env, check=True)
           PY

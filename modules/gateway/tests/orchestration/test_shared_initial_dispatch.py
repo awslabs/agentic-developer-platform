@@ -149,6 +149,6 @@ async def test_fresh_story_dispatch_model_handoff_and_review(shared, monkeypatch
     ctx.identity = ExecutionIdentity(ctx.node.org_id, fresh.id, 1, execution.accepted_plan_version, execution.claim_id, execution.claim_generation)
     ctx.execution = SimpleNamespace(id=execution.id)
     assert (await tick(ctx)).effects_succeeded == 1
-    assert ctx.calls[-1]["persona"] == "reviewer"
+    assert ctx.calls[-1]["persona"] == "agent-codex-reviewer"
     assert ctx.calls[-1]["review_expect"]["author_run_id"] == envelope["message_id"]
     assert ctx.calls[-1]["review_expect"]["expected_head_sha"] == new_head

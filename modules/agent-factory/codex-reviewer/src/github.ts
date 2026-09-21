@@ -3,14 +3,15 @@ import type { ReviewVerdict } from "./contracts.js";
 interface PullRequestResponse {
   number: number;
   state: string;
+  merged?: boolean;
   html_url: string;
   title: string;
   body: string | null;
   draft: boolean;
   mergeable: boolean | null;
   mergeable_state: string;
-  head: { ref: string; sha: string };
-  base: { ref: string; sha: string };
+  head: { ref: string; sha: string; repo?: { full_name: string } };
+  base: { ref: string; sha: string; repo?: { full_name: string } };
 }
 
 export function formatFixesPushedComment(

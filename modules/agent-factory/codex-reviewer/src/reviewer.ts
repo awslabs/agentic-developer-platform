@@ -458,7 +458,7 @@ async function runPullRequestReview(
 }
 
 export async function runReview(
-  envelope: CodexReviewEnvelope,
+  envelope: Exclude<CodexReviewEnvelope, { kind: "codex_engine_review" }>,
   runtime: ReviewRuntime,
 ): Promise<ReviewRunResult> {
   if (envelope.kind === "codex_issue_review") {

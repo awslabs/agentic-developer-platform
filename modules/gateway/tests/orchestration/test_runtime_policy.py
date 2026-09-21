@@ -56,6 +56,18 @@ policy_budget_initializers = initializers_fixture
 GITHUB = "/internal/v1/github-installation-token"
 
 
+@pytest.mark.parametrize("action", [Action.REVIEW, Action.REPAIR])
+def test_codex_continuation_uses_engine_action_not_persona_inference(action):
+    execution = {
+        "persona": {"S": "agent-codex-reviewer"},
+        "orchestration_continuation_receipt": {"S": "committed"},
+        "orchestration_continuation_action": {"S": action.value},
+    }
+    assert runtime_action(execution, SimpleNamespace(kind="story", attempts=1)) is action
+    execution["orchestration_continuation_action"] = {"S": "merge"}
+    assert runtime_action(execution, SimpleNamespace(kind="story", attempts=1)) is None
+
+
 async def _assignment(session, *, policy, node_kwargs=None, execution_extra=None):
     """One running, protected assignment: flow + accepted policy + node + grant.
 

@@ -514,6 +514,7 @@ def build_review_result(
     pr_number: int,
     provider_pr_node_id: str,
     reviewed_head_sha: str,
+    repaired_from_sha: str | None = None,
     verdict: str,
     stages: list[StageReport],
     publication: dict[str, object],
@@ -583,7 +584,8 @@ def build_review_result(
     )
 
     expected_head = review_expect.get("expected_head_sha")
-    if isinstance(expected_head, str) and expected_head and expected_head != reviewed_head_sha:
+    if (isinstance(expected_head, str) and expected_head and expected_head != reviewed_head_sha
+            and not (review_expect.get("allow_story_repairs") is True and repaired_from_sha == expected_head)):
         # The dispatch named a head and this run read a different one. Refused rather
         # than recorded: the artifact would be perfectly true and the review would
         # still be about code nobody asked about, which is the defect, not a detail.
@@ -1029,6 +1031,7 @@ def review_result_note(
     pr_number: int,
     provider_pr_node_id: str,
     reviewed_head_sha: str,
+    repaired_from_sha: str | None = None,
     verdict: str,
     stages: list[StageReport],
     publication: dict[str, object],
@@ -1070,6 +1073,7 @@ def review_result_note(
             pr_number=pr_number,
             provider_pr_node_id=provider_pr_node_id,
             reviewed_head_sha=reviewed_head_sha,
+            repaired_from_sha=repaired_from_sha,
             verdict=verdict,
             stages=stages,
             publication=publication,
@@ -1146,6 +1150,7 @@ def reviewer_evidence_note(
     provider_repository_id: int,
     provider_pr_node_id: str,
     reviewed_head_sha: str,
+    repaired_from_sha: str | None = None,
     report_path: str | None = None,
     result_path: str | None = None,
 ) -> str:
@@ -1191,6 +1196,7 @@ def reviewer_evidence_note(
         pr_number=pr_number,
         provider_pr_node_id=provider_pr_node_id,
         reviewed_head_sha=reviewed_head_sha,
+        repaired_from_sha=repaired_from_sha,
         verdict=_narrowed_verdict(
             verdict_from_agent_report(report, stages=stages), publication
         ),

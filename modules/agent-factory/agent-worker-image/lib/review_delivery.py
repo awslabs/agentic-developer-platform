@@ -20,7 +20,7 @@ class ReviewDelivery:
     report_path: Path
     result_path: Path
 
-    def finish(self, *, reviewed_head_sha: str) -> str:
+    def finish(self, *, reviewed_head_sha: str, repaired_from_sha: str | None = None, required: bool = False) -> str:
         """Keep evidence failure visible without erasing the run's delivered review."""
         try:
             note = review_result.reviewer_evidence_note(
@@ -29,10 +29,13 @@ class ReviewDelivery:
                 provider_repository_id=self.expectation.get("provider_repository_id"),
                 provider_pr_node_id=self.expectation.get("provider_pr_node_id", ""),
                 reviewed_head_sha=reviewed_head_sha,
+                repaired_from_sha=repaired_from_sha,
                 report_path=str(self.report_path),
                 result_path=str(self.result_path),
             )
             if not self.result_path.is_file():
+                if required:
+                    raise RuntimeError("Structured review evidence was not produced")
                 return (
                     note or "> **Review evidence not produced.** No structured result was written."
                 )
@@ -41,6 +44,8 @@ class ReviewDelivery:
             key = status_gateway_client.upload_review_result(data)
             return f"{note}\n\n> Review evidence recorded at `{key}`. Recording grants no merge approval."
         except Exception as error:
+            if required:
+                raise
             # Never expose transport exceptions or model-provided document values.
             logger.warning("Review evidence delivery failed (%s)", type(error).__name__)
             detail = (
@@ -65,7 +70,7 @@ def prepare_review_delivery(envelope: dict) -> ReviewDelivery | None:
         os.environ.pop(name, None)
     expectation = envelope.get("review_expect")
     if (
-        envelope.get("persona") != "reviewer"
+        envelope.get("persona") not in {"reviewer", "agent-codex-reviewer"}
         or not isinstance(expectation, dict)
         or not expectation
     ):

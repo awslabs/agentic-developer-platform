@@ -169,7 +169,7 @@ async def registration_target_for_report(session, row):
     receipt = await session.get(OrchestrationDecision, receipt_id(operation)) if operation else None
     saved = json.loads(receipt.reason) if receipt else {}
     if (
-        row.persona != "developer"
+        row.persona not in {"developer", "agent-codex-reviewer"}
         or receipt is None
         or receipt.org_id != row.org_id
         or receipt.flow_id != row.flow_id
@@ -440,6 +440,15 @@ class SharedCycleServices(ReviewCycleServices):
                 await session.commit()
                 return envelope
             raw, _, inputs, principal, _ = await self.authorize(session, context, node, binding, detail["active_run_id"], effect.action, reserve=True)
+            allow_story_repairs = effect.action is Action.REPAIR
+            if effect.action is Action.REVIEW:
+                try:
+                    await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REPAIR, reserve=False)
+                    allow_story_repairs = True
+                except CycleBlockedError:
+                    # A review-only policy still gets its review. It never gains
+                    # repair authority merely by selecting a different runtime.
+                    pass
             if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
                 raise CycleBlockedError("previous_worker_not_completed")
             if await self.head(binding) != detail["head_sha"]:
@@ -453,7 +462,7 @@ class SharedCycleServices(ReviewCycleServices):
                 graph_address=graph_address(node, flow_slug=flow.slug),
                 installation_id=binding.installation_id,
                 issue=int(str(node.issue_ref).lstrip("#")),
-                config=replace(cfg, persona="reviewer" if effect.action is Action.REVIEW else "developer"),
+                config=replace(cfg, persona="agent-codex-reviewer"),
                 user_id=principal,
                 cognito_sub=await resolve_user_entity_id(session, node.org_id, principal),
             )
@@ -473,7 +482,10 @@ class SharedCycleServices(ReviewCycleServices):
                 key: detail[key] for key in ("action", "repo", "pr_number", "head_sha", "accepted_scope", "remaining_attempts", "remaining_spend_usd")
             }
             envelope["review_cycle_input"].update(
-                findings=detail.get("findings", []), review_artifact=detail.get("review_artifact"), operation_key=action.operation_key
+                allow_story_repairs=allow_story_repairs,
+                findings=detail.get("findings", []),
+                review_artifact=detail.get("review_artifact"),
+                operation_key=action.operation_key,
             )
             envelope["execution_continuation"] = {
                 "execution_id": context.execution.id,
@@ -490,6 +502,7 @@ class SharedCycleServices(ReviewCycleServices):
                     "cycle": node.attempts,
                     "author_run_id": detail["author_run_id"],
                     "expected_head_sha": detail["head_sha"],
+                    "allow_story_repairs": allow_story_repairs,
                     "repo": binding.repo,
                     "pr_number": binding.pr_number,
                     "provider_repository_id": binding.provider_repository_id,

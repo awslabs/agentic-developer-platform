@@ -132,7 +132,7 @@ async def test_initial_developer_and_review_use_one_shared_attempt_allowance(sha
         assert result.effects_succeeded == 1 and len(ctx.calls) == 1
         assert execution.attempts == 1 and node.attempts == 1
         reviewer = ctx.calls[0]
-        assert reviewer["persona"] == "reviewer"
+        assert reviewer["persona"] == "agent-codex-reviewer"
         await model_call(ctx, reviewer["run_report"]["credential"], monkeypatch)
         await protocol.review(ctx, findings=[{"finding_id": "F1", "summary": "Repair", "evidence_refs": []}])
         result = await protocol.tick(ctx)

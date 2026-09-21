@@ -1552,7 +1552,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # already binds/retires attempts and must not fall back to direct table I/O.
     use_completion_receipt = (
         persona in PERSONAS_EXTENDING_BRANCH or (is_codex_review and not is_codex_pr_review)
-    ) and not authority_enabled()
+    ) and not authority_enabled() and not run_report.enabled()
     if use_completion_receipt:
         try:
             already_completed = is_delivery_completed(envelope)
@@ -2803,6 +2803,22 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
         output_lines = (result.stdout or "").strip().splitlines()
         summary = output_lines[-1][:1024] if output_lines else "Codex review completed"
         if result.returncode == 0:
+            if cycle_input is not None:
+                from lib.codex_review_delivery import finish_engine_review
+                try:
+                    summary = finish_engine_review(
+                        result.stdout or "", envelope=envelope, delivery=review_delivery,
+                        run=run_cmd, cwd=WORK_DIR,
+                    )
+                except Exception as exc:
+                    logger.warning("Codex engine evidence delivery failed (%s)", type(exc).__name__)
+                    if run_report.enabled():
+                        # A failed receipt is real terminal evidence. A zero exit
+                        # without review evidence must not leave an executing owner.
+                        run_report.terminal("failed")
+                    update_invocation_status(message_id, arrived_at, "failed", error_message="Codex engine evidence delivery failed")
+                    _delete_message(queue_url, region, receipt_handle)
+                    return 1
             if run_report.enabled():
                 try:
                     run_report.terminal("complete")
@@ -2820,6 +2836,10 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             logger.info("Codex review completed and shared queue message was acknowledged")
             return 0
         error = (result.stderr or summary or "Codex review failed")[-1024:]
+        if cycle_input is not None and run_report.enabled():
+            run_report.spool_undelivered_failure()
+            run_report.terminal("failed")
+            _delete_message(queue_url, region, receipt_handle)
         update_invocation_status(message_id, arrived_at, "failed", error_message=error)
         logger.error("Codex review failed; leaving shared queue message for retry: %s", error)
         return result.returncode or 1
@@ -2839,7 +2859,8 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     # Step 11/12: Post-agent actions
     if result.returncode == 0:
         exit_code = _handle_success(
-            repo, issue, branch_name, persona, message_id, arrived_at, check_run_url, **review_options
+            repo, issue, branch_name, persona, message_id, arrived_at, check_run_url,
+            review_only=review_delivery is not None, **review_options
         )
     else:
         exit_code = _handle_failure(
@@ -3636,8 +3657,19 @@ def _handle_success(
     arrived_at: str,
     check_run_url: str = "",
     review_note: str = "",
+    review_only: bool = False,
 ) -> int:
     """Step 11: Commit remaining changes, push branch, create PR if needed."""
+    if review_only:
+        # The review already names its inspected commit. Auto-committing a report
+        # here changes that head and causes an endless fresh-review cycle.
+        if run_report.enabled():
+            try:
+                run_report.terminal("complete")
+            except run_report.RunReportError:
+                return AGENT_EXIT_RETRYABLE
+        update_invocation_status(message_id, arrived_at, "complete", summary="Engine review evidence delivered")
+        return 0
     try:
         # Commit any uncommitted changes the agent left behind.
         # (Agents normally commit their own work; this is a safety net.)

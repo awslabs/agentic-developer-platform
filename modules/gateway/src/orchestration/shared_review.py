@@ -45,7 +45,7 @@ async def record_shared_review(session, *, credential, content, storage):
 
     row = await authenticate_run_report(session, credential, lock=False)
     await validate_current_report_assignment(session, row)
-    if row.persona != "reviewer" or not row.dispatch_metadata.get("review_expect"):
+    if row.persona not in {"reviewer", "agent-codex-reviewer"} or not row.dispatch_metadata.get("review_expect"):
         raise HTTPException(404, "not found")
     expected = row.dispatch_metadata["review_expect"]
     # The accepted assignment, not the document, names author, scope and reviewer.

@@ -15,6 +15,7 @@ from src.orchestration.run_reports import (
     authenticate_run_report,
     record_terminal,
     report_snapshot,
+    reviewer_artifact_assignment,
 )
 
 router = APIRouter(prefix="/internal/v1/agent/report", tags=["agent-reports"], dependencies=[Depends(require_agent_transport)])
@@ -47,7 +48,7 @@ async def register_pull_request(body: BindPullRequestRequest, request: Request):
     async with _sessions()() as session:
         row = await _authenticate(session, request)
         candidate = body.model_dump()
-        if row.dispatch_metadata.get("pr_binding_required") and row.persona not in {"reviewer", "agent-codex-reviewer"} and body.reviewer_artifact:
+        if row.dispatch_metadata.get("pr_binding_required") and not reviewer_artifact_assignment(row) and body.reviewer_artifact:
             raise HTTPException(409, "implementation_binding_required")
         if row.terminal_receipt:
             if row.binding_receipt and row.candidate_pr == candidate:
@@ -116,9 +117,7 @@ async def retry_pull_request(request: Request):
                 pr=pr,
                 actor_id=f"run-report:{row.run_id}",
                 actor_kind=ActorKind.SERVICE,
-                declared_role=BindingRole.REVIEWER_ARTIFACT
-                if row.persona in {"reviewer", "agent-codex-reviewer"} or candidate.get("reviewer_artifact")
-                else None,
+                declared_role=BindingRole.REVIEWER_ARTIFACT if reviewer_artifact_assignment(row) or candidate.get("reviewer_artifact") else None,
             )
             row.binding_receipt = {
                 "bound": True,
