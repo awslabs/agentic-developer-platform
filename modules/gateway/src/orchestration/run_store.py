@@ -10,6 +10,7 @@ import os
 import time
 from typing import Any
 
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -119,11 +120,21 @@ class EngineRunStore:
     def register(self, envelope: dict) -> None:
         item = self.build_item(envelope)
         try:
-            self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(event_id)")
+            self.table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(event_id)",
+                ReturnValuesOnConditionCheckFailure="ALL_OLD",
+            )
         except ClientError as exc:
             if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                 raise
-            existing = self.get(item["event_id"], item["arrived_at"])
+            # Validate the row returned by the conditional write itself. The
+            # scheduler can register UUID continuation IDs, but its separate
+            # GetItem grant covers only orch:* development IDs. No extra read
+            # permission or overwrite is needed to replay an existing assignment.
+            previous = exc.response.get("Item")
+            decoder = TypeDeserializer()
+            existing = {key: decoder.deserialize(value) for key, value in previous.items()} if previous else None
             # A retry must preserve terminal status and cannot rebind identity.
             keys = ("tenant_id", "user_id", "root_human_id", "engine_node_id", "engine_attempt", "repo", "issue_number")
             if existing is None or any(existing.get(k) != item[k] for k in keys):

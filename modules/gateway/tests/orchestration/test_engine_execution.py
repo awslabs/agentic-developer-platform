@@ -50,12 +50,16 @@ class MemoryTable:
     def __init__(self):
         self.items = {}
 
-    def put_item(self, *, Item, ConditionExpression):  # noqa: N803
+    def put_item(self, *, Item, ConditionExpression, ReturnValuesOnConditionCheckFailure="NONE"):  # noqa: N803
+        from boto3.dynamodb.types import TypeSerializer
         from botocore.exceptions import ClientError
 
         key = Item["event_id"], Item["arrived_at"]
         if key in self.items:
-            raise ClientError({"Error": {"Code": "ConditionalCheckFailedException"}}, "PutItem")
+            response = {"Error": {"Code": "ConditionalCheckFailedException"}}
+            if ReturnValuesOnConditionCheckFailure == "ALL_OLD":
+                response["Item"] = {k: TypeSerializer().serialize(v) for k, v in self.items[key].items()}
+            raise ClientError(response, "PutItem")
         self.items[key] = deepcopy(Item)
 
     def get_item(self, *, Key, ConsistentRead):  # noqa: N803
