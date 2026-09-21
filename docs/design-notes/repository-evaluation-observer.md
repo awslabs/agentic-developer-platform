@@ -58,6 +58,12 @@ does not permit evaluation, the reviewed request must explicitly set
 `authorize_evaluate: true`; the machine-mode map and a deferred-action marker
 never imply that permission.
 
+Acceptance uses the flow/plan locks and a non-waiting evaluation-node lock. If
+dispatch already holds that node, acceptance rolls back its savepoint and returns
+HTTP 409 with `code: evaluation_dispatch_in_progress` and `retryable: true`.
+The conflict writes no acceptance and releases the flow/plan locks so dispatch
+can continue. Recheck the current node and refresh preview before retrying.
+
 This records one immutable `evaluation_contract_accepted` decision for the exact
 current plan and evaluation node. It carries only evaluate authority, with the
 same repositories, limits and expiry and the existing budget meter reference.

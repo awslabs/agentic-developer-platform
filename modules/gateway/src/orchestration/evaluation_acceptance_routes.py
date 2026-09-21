@@ -41,8 +41,9 @@ async def call(*, accept, flow_id, body, current_user, access, db):
         return result
     except (EvaluationAcceptanceError, CycleBlockedError) as error:
         await db.rollback()
+        code = error.code if isinstance(error, EvaluationAcceptanceError) else error.reason
         raise HTTPException(
-            409, {"code": error.code if isinstance(error, EvaluationAcceptanceError) else error.reason, "detail": str(error)}
+            409, {"code": code, "detail": str(error), "retryable": code == "evaluation_dispatch_in_progress"}
         ) from None
     except ValueError as error:
         await db.rollback()

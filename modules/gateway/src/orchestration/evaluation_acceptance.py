@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from .compile import ApprovalContext
 from .dispatch import graph_address
@@ -149,7 +150,15 @@ async def current_target(session, *, flow_id, actor, request, lock=False):
         )
         .execution_options(populate_existing=True)
     )
-    node = await session.scalar(query.with_for_update() if lock else query)
+    try:
+        # Production dispatch already holds READY-node locks before it takes the
+        # flow lock. Never wait for its node while holding the flow/plan locks;
+        # acceptance's savepoint releases them before returning a retryable conflict.
+        node = await session.scalar(query.with_for_update(nowait=True) if lock else query)
+    except DBAPIError as error:
+        if lock and (getattr(error.orig, "sqlstate", None) or getattr(error.orig, "pgcode", None)) == "55P03":
+            raise EvaluationAcceptanceError("evaluation_dispatch_in_progress") from error
+        raise
     require(node is not None and node.kind == "eval", "evaluation_not_found")
     return flow, plan, node
 
@@ -216,6 +225,13 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
 
 
 async def accept_evaluation(session, *, flow_id, actor, request):
+    # A contended node must release the preceding flow/plan locks even when a
+    # caller catches the conflict and continues its surrounding transaction.
+    async with session.begin_nested():
+        return await _accept_evaluation_locked(session, flow_id=flow_id, actor=actor, request=request)
+
+
+async def _accept_evaluation_locked(session, *, flow_id, actor, request):
     require(request.expected_snapshot is not None, "preview_snapshot_required")
     _, plan, node = await current_target(session, flow_id=flow_id, actor=actor, request=request, lock=True)
     identity = str(

@@ -1,5 +1,6 @@
 """A reviewed evaluator cannot rewrite running worker authority or reset its meter."""
 
+import asyncio
 from copy import deepcopy
 from dataclasses import replace
 
@@ -7,6 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from src.orchestration.compile import ApprovalContext
+from src.orchestration.dispatch_pass import _fetch_ready_nodes
 from src.orchestration.evaluation_acceptance import (
     ACCEPTANCE_KIND,
     EvaluationAcceptanceError,
@@ -104,6 +106,35 @@ async def test_lost_acceptance_response_replays_after_evaluation_finishes(contra
         node = await db.get(OrchestrationNode, ctx.eval_id)
         assert node.state == "passed" and node.attempts == 1
         assert list(await db.scalars(select(OrchestrationDecision.id))) == before
+
+
+async def test_acceptance_yields_to_production_dispatch_node_then_flow_locks(contract_request):
+    ctx = contract_request
+    async with ctx.factory() as request_session:
+        original, _ = await accept(ctx, request_session)
+        await request_session.commit()
+        replacement = ctx.request.model_copy(update={"reason": "Replace this exact evidence contract after review"})
+        expected = await preview_evaluation(request_session, flow_id=ctx.flow.id, actor=ctx.actor, request=replacement)
+        replacement = replacement.model_copy(update={"expected_snapshot": expected["snapshot"]})
+        await request_session.commit()
+        async with ctx.factory() as dispatcher:
+            # The actual scheduler acquires these READY node locks first. Its
+            # native evaluator only acquires the flow lock later at settlement.
+            candidates = await _fetch_ready_nodes(dispatcher, limit=100)
+            node = next(node for node in candidates if node.id == ctx.eval_id)
+            with pytest.raises(EvaluationAcceptanceError, match="evaluation_dispatch_in_progress"):
+                await asyncio.wait_for(
+                    accept_evaluation(request_session, flow_id=ctx.flow.id, actor=ctx.actor, request=replacement), timeout=2
+                )
+            # No caller rollback: the failed acceptance's savepoint must release
+            # its flow/plan locks, allowing the real evaluator to finish unchanged.
+            assert await asyncio.wait_for(observe_repository_evaluation(dispatcher, node, provider=ctx.provider), timeout=2)
+            assert node.state == "passed" and node.attempts == 1
+            await dispatcher.commit()
+        decisions = list(await request_session.scalars(select(OrchestrationDecision).where(OrchestrationDecision.kind == ACCEPTANCE_KIND)))
+        assert [row.id for row in decisions] == [original["decision_id"]]
+        plan = await request_session.get(OrchestrationAcceptedPlan, ctx.plan.id, populate_existing=True)
+        assert plan.plan_document == ctx.saved_plan and plan.version == ctx.request.expected_plan_version
 
 
 async def test_superseded_acceptance_cannot_replay_as_current(contract_request):

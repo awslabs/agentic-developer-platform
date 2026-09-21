@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from src.admin.config import Permission
 from src.agentauth.bootstrap import BootstrapRefusedError
 from src.orchestration import evaluation_acceptance_routes as routes
+from src.orchestration.evaluation_acceptance import EvaluationAcceptanceError
 
 
 @pytest.mark.parametrize("accept", [False, True])
@@ -43,6 +44,26 @@ async def test_service_session_cannot_accept_contract_even_with_generic_permissi
         )
     assert error.value.status_code == 403
     handler.assert_not_awaited()
+
+
+async def test_contract_dispatch_contention_returns_retryable_conflict(monkeypatch):
+    monkeypatch.setattr(routes, "AccessControl", lambda _: SimpleNamespace(check_permission=AsyncMock()))
+    monkeypatch.setattr(
+        "src.agentauth.human_control.authorize_human_session", AsyncMock(return_value=SimpleNamespace(tenant_id="org", user_id="human"))
+    )
+    monkeypatch.setattr("src.orchestration.routes._resolve_actor_role", AsyncMock(return_value="org_admin"))
+    monkeypatch.setattr(routes, "accept_evaluation", AsyncMock(side_effect=EvaluationAcceptanceError("evaluation_dispatch_in_progress")))
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+    with pytest.raises(HTTPException) as error:
+        await routes.accept_contract(
+            flow_id="flow", body=SimpleNamespace(reason="accept exact evidence"), current_user=SimpleNamespace(org_id="org"), db=db
+        )
+    assert error.value.status_code == 409
+    assert error.value.detail == {
+        "code": "evaluation_dispatch_in_progress", "detail": "evaluation_dispatch_in_progress", "retryable": True
+    }
+    db.rollback.assert_awaited_once()
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.parametrize("accept", [False, True])
