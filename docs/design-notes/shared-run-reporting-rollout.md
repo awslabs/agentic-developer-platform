@@ -50,3 +50,29 @@ it does not erase existing receipts or make them advisory. Keep the matching
 signing key and artifact bucket available for in-flight acknowledgements. Key
 rotation cannot reconstruct envelopes signed with the old key; drain or explicitly
 recover outstanding assignments before rotating it.
+
+When the webhook infrastructure hold is still active, targeting
+`null_resource.keda_scaledjob` can pull unrelated resources and destructive
+changes into its dependency graph. Do not apply that expanded plan. A scoped
+prerequisite plan can instead target `aws_ssm_parameter.agent_run_reporting_key`,
+`aws_ssm_parameter.worker_runtime_wiring`, and
+`kubernetes_config_map.worker_gateway[0]`; inspect every resulting action.
+Gateway restart and tick configuration still require their separate verified
+steps above.
+
+For the worker template, `scripts/plan-shared-worker-rollout.py` under
+`modules/agent-factory/webhook-ingress` prepares an optimistic-concurrency JSON
+patch from a live ScaledJob snapshot, the verified ECR digest, and the existing
+trusted gateway and GitLab SSM URLs. It changes only the worker image and those
+two environment entries. It preserves the service account, admission pause,
+existing Jobs, and all other configuration. It does not apply the patch. Review
+the generated patch, then use `kubectl patch --type=json --patch-file=...` on
+that ScaledJob; a changed resource version requires a fresh snapshot and review.
+
+The same command updates a supplied Terraform JSON overlay with `agent_image`
+and `gitlab_webhook_enabled`. Keep that overlay in the matching
+`environments/<environment>/modules/webhook-ingress.tfvars.json` so a later
+managed rollout retains the image and existing GitLab integration. URLs remain
+deployment-owned SSM inputs, and reporting/continuation flags remain explicit
+separate rollout decisions. This scoped patch does not remove the deployment
+hold or establish whole-module Terraform convergence.
