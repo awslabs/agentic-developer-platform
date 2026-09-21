@@ -18,14 +18,12 @@ from .review_cycle import CycleBlockedError
 router = APIRouter()
 
 
-async def call(*, accept, flow_id, body, current_user, db):
+async def call(*, accept, flow_id, body, current_user, access, db):
     from src.agentauth.bootstrap import BootstrapRefusedError
     from src.agentauth.human_control import authorize_human_session
 
     from .routes import _resolve_actor_role
 
-    access = AccessControl(db)
-    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
     try:
         human = await authorize_human_session(current_user, db)
     except BootstrapRefusedError:
@@ -58,7 +56,9 @@ async def preview_contract(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    return await call(accept=False, flow_id=flow_id, body=body, current_user=current_user, db=db)
+    access = AccessControl(db)
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    return await call(accept=False, flow_id=flow_id, body=body, current_user=current_user, access=access, db=db)
 
 
 @router.post("/flows/{flow_id}/evaluation/accept")
@@ -68,4 +68,6 @@ async def accept_contract(
     current_user: Annotated[TokenContext, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    return await call(accept=True, flow_id=flow_id, body=body, current_user=current_user, db=db)
+    access = AccessControl(db)
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    return await call(accept=True, flow_id=flow_id, body=body, current_user=current_user, access=access, db=db)
