@@ -467,6 +467,8 @@ class BudgetEnforcementService:
         session: AsyncSession,
         org_id: str,
         entity_type: EntityType,
+        *,
+        approved_platform_cap: Decimal | None = None,
     ) -> Decimal:
         """Resolve the effective run or chain cap for a tenant (Issue #4187).
 
@@ -493,6 +495,13 @@ class BudgetEnforcementService:
         has only a ``UniqueConstraint`` — no CHECK pins the enum.
         """
         platform_default = budget_config.budget_run_cap_usd if entity_type == EntityType.RUN else budget_config.budget_chain_cap_usd
+        # Only the authenticated shared-worker path supplies this value, from a
+        # platform-admin receipt bound to its exact flow and accepted plan. It
+        # replaces the platform ceiling, never a tenant-authored tighter limit.
+        if approved_platform_cap is not None:
+            if not approved_platform_cap.is_finite() or approved_platform_cap <= 0:
+                raise ValueError("Invalid approved platform cap")
+            platform_default = approved_platform_cap
 
         try:
             result = await session.execute(
@@ -855,8 +864,13 @@ class BudgetEnforcementService:
                         # the caller-influenced `attributed_org_id` here would mean a
                         # tenant's per-run override could be addressed by a header, and
                         # would desync the cap from the ledger it is applied to.
-                        run_cap = await self._resolve_scope_cap(session, binding.tenant_id, EntityType.RUN)
-                        chain_cap = await self._resolve_scope_cap(session, binding.tenant_id, EntityType.CHAIN)
+                        approved = context._policy_scope_caps if policy_target is not None else None
+                        run_cap = await self._resolve_scope_cap(
+                            session, binding.tenant_id, EntityType.RUN, **({"approved_platform_cap": approved[0]} if approved else {})
+                        )
+                        chain_cap = await self._resolve_scope_cap(
+                            session, binding.tenant_id, EntityType.CHAIN, **({"approved_platform_cap": approved[1]} if approved else {})
+                        )
                         scope_targets = self._scope_targets(binding, run_cap, chain_cap)
                         reservation_targets.extend(scope_targets)
 

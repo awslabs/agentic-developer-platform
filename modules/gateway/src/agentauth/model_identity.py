@@ -202,13 +202,18 @@ class AgentModelIdentityMiddleware:
                     if identity != (assignment.run_id, assignment.org_id, assignment.flow_id, assignment.node_id, assignment.attempt, principal):
                         raise BootstrapRefusedError("model assignment changed during upload")
                     if policy_snapshot != policy.model_dump(mode="json"):
-                        raise BootstrapRefusedError("model policy changed during upload")
+                        from src.orchestration.shared_budget import only_spend_increased
+
+                        if not policy._shared_budget_decision_id or not only_spend_increased(policy_snapshot, policy.model_dump(mode="json")):
+                            raise BootstrapRefusedError("model policy changed during upload")
                 if os.environ.get("BUDGET_ENFORCEMENT_ENABLED", "true").lower() != "true":
                     raise AuthorityStoreError("policy budget enforcement unavailable")
                 await revalidate_quote(quote, body, scope["path"])
 
                 _bind_report_context(context, assignment, principal, node, flow)
                 context._policy_flow_target = meter_target(org_id=assignment.org_id, flow_id=assignment.flow_id, policy=policy)
+                if policy._shared_budget_decision_id:
+                    context._policy_scope_caps = (policy._shared_run_spend_usd, policy._shared_chain_spend_usd)
                 context._policy_quote = quote
                 context._policy_estimated_cost = quote.total_usd
                 context._policy_request_id = str(uuid4())

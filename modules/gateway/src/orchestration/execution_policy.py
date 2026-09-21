@@ -166,7 +166,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_serializer, model_validator
 
 from .address import ADDRESS_PATTERN
 
@@ -547,6 +547,12 @@ class ExecutionPolicy(BaseModel):
     # Not "may leave unset": :func:`stamp_policy` rejects a document that sets any
     # of them rather than overwriting it, so an author is never told their value
     # was accepted when it was replaced.
+    # Runtime-only financial supplement from an authenticated human decision.
+    # These are never accepted from a submitted policy or included in its bytes.
+    _shared_run_spend_usd: Decimal | None = PrivateAttr(default=None)
+    _shared_chain_spend_usd: Decimal | None = PrivateAttr(default=None)
+    _shared_budget_decision_id: str | None = PrivateAttr(default=None)
+
     policy_id: str | None = None
     policy_hash: str | None = None
     # The principal whose authority this policy carries, resolved from the

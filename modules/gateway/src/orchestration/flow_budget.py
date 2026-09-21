@@ -147,7 +147,7 @@ def admission_cost_usd(policy: ExecutionPolicy) -> Decimal:
     """
     from src.budget.config import budget_config
 
-    return budget_config.budget_run_cap_usd
+    return policy._shared_run_spend_usd or budget_config.budget_run_cap_usd
 
 
 def flow_reservation_target(

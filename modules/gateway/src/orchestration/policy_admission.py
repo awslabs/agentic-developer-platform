@@ -205,7 +205,10 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
         return AdmissionInputs(policy=None, plan_version=version)
 
     try:
-        return AdmissionInputs(policy=ExecutionPolicy.model_validate(raw), plan_version=plan.version)
+        from .shared_budget import effective_shared_budget
+
+        policy = await effective_shared_budget(session, plan, ExecutionPolicy.model_validate(raw))
+        return AdmissionInputs(policy=policy, plan_version=plan.version)
     except ValueError:
         logger.exception(
             "orchestration admission: flow %s (org %s) plan v%s has an unparseable execution_policy — refusing admission",

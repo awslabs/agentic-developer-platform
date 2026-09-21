@@ -313,3 +313,76 @@ async def test_missing_proof_with_assignment_lookup_outage_does_not_fall_back(mo
 async def test_explicit_empty_proof_is_invalid_even_without_a_run_assertion(model_path, shared):
     result = await invoke(model_path, shared, headers=[(b"x-adp-report-credential", b"")], enforce=False)
     assert result.sent[0]["status"] == 403 and model_path.calls == 0 and not result.consumed
+
+
+@pytest.mark.parametrize("tenant_limit", [None, "0.01"])
+@pytest.mark.parametrize("during_upload", [False, True])
+async def test_platform_budget_increase_reaches_model_path_and_preserves_tenant_limit(
+    model_path, shared, session, assignment, tenant_limit, during_upload
+):
+    import json
+
+    from src.orchestration.continuation import digest
+    from src.orchestration.models import OrchestrationDecision
+    from src.orchestration.shared_budget import CONTRACT
+    from src.shared.models.budget import BudgetConfig as TenantBudget
+
+    shared.plan.plan_hash = digest(shared.plan.plan_document)
+    await session.flush()
+    if tenant_limit is not None:
+        session.add(
+            TenantBudget(org_id=assignment.node.org_id, entity_type="run", entity_id="*", period_type="run", budget_amount_usd=Decimal(tenant_limit))
+        )
+        await session.flush()
+    original_document = json.loads(json.dumps(shared.plan.plan_document))
+    # Existing settled usage is retained across the new financial approval.
+    first = await invoke(model_path, shared)
+    if tenant_limit is None:
+        assert first.sent[0]["status"] == 200
+        from src.orchestration.flow_meter import meter_target
+
+        targets = [meter_target(org_id=assignment.node.org_id, flow_id=assignment.flow.id, policy=model_path.policy)]
+        targets.extend(model_path.service._scope_targets(first.token._protected_run_binding, Decimal("100"), Decimal("1000")))
+        await model_path.service._reservations.reserve("historical-call", Decimal("25"), targets)
+        await model_path.service._reservations.reconcile("historical-call", Decimal("25"), targets)
+        assert (await invoke(model_path, shared)).sent[0]["status"] == 402
+    else:
+        assert first.sent[0]["status"] == 402
+    added = False
+
+    async def increase():
+        nonlocal added
+        if added:
+            return
+        added = True
+        session.add(
+            OrchestrationDecision(
+                org_id=shared.plan.org_id,
+                flow_id=shared.plan.flow_id,
+                kind="budget_increased",
+                actor_id="platform-approver",
+                actor_kind="human",
+                actor_role="platform_admin",
+                reason=json.dumps(
+                    {
+                        "contract": CONTRACT,
+                        "plan_version": shared.plan.version,
+                        "plan_hash": shared.plan.plan_hash,
+                        "original_policy_hash": model_path.policy.policy_hash,
+                        "principal_id": model_path.policy.principal_id,
+                        "limits": {"max_spend_usd": "1000", "max_run_spend_usd": "100", "max_chain_spend_usd": "1000"},
+                    }
+                ),
+            )
+        )
+        await session.flush()
+
+    if not during_upload:
+        await increase()
+    result = await invoke(model_path, shared, during_upload=increase if during_upload else None)
+    assert result.sent[0]["status"] == (200 if tenant_limit is None else 402)
+    assert result.token._policy_scope_caps == (Decimal("100"), Decimal("1000"))
+    assert shared.plan.plan_document == original_document
+    meter = await read_flow_meter(org_id=assignment.node.org_id, flow_id=assignment.flow.id, policy=model_path.policy)
+    assert meter.total_usd == (Decimal("25.02") if tenant_limit is None else Decimal("0"))
+    assert not meter.has_pending

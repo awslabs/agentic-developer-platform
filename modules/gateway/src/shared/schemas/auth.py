@@ -194,6 +194,7 @@ class TokenContext(BaseModel):
     # a persona or service principal onto their own usage rows.
     _persona_usage_attribution: "PersonaUsageAttribution | None" = PrivateAttr(default=None)
     _policy_flow_target: "ReservationTarget | None" = PrivateAttr(default=None)
+    _policy_scope_caps: tuple[Decimal, Decimal] | None = PrivateAttr(default=None)
     _policy_estimated_cost: Decimal | None = PrivateAttr(default=None)
     _policy_request_id: str | None = PrivateAttr(default=None)
     # Issue #5225: the typed quote whose total became _policy_estimated_cost. Kept
