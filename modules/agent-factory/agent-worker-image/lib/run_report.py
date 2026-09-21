@@ -188,9 +188,8 @@ def read_spool() -> dict | None:
     return body
 
 
-def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = False) -> None:
-    bucket, key = _spool_location()
-    body = {
+def _spool_document(phase: str, candidate: dict | None = None) -> dict:
+    return {
         "contract_version": 1,
         "run_id": _assignment["run_id"],
         "attempt": _assignment["attempt"],
@@ -198,6 +197,27 @@ def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = Fa
         "phase": phase,
         "candidate_pr": candidate,
     }
+
+
+def can_retry_start(spool: dict, snapshot: dict) -> bool:
+    """An exact pre-start marker is reusable only before any acknowledged work.
+
+    The spool records intent before `/started`, so it also survives an explicit
+    refusal or transport failure. It is not execution authority. The gateway's
+    locked ownership receipt still chooses the sole worker allowed to execute.
+    Missing snapshot fields are unknown evidence, not an absent receipt.
+    """
+    return spool == _spool_document("executing") and all(
+        key in snapshot and snapshot[key] is None
+        for key in (
+            "worker_receipt", "candidate_pr", "binding_receipt", "terminal_receipt", "review_receipt"
+        )
+    )
+
+
+def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = False) -> None:
+    bucket, key = _spool_location()
+    body = _spool_document(phase, candidate)
     options = {"IfNoneMatch": "*"} if create else {}
     try:
         _spool_client().put_object(
@@ -224,9 +244,17 @@ def _write_spool(phase: str, candidate: dict | None = None, *, create: bool = Fa
 def begin_delivery() -> None:
     if not enabled():
         return
-    if read_spool() is not None:
-        raise RunReportError("delivery_recovery_required", retryable=False)
-    _write_spool("executing", create=True)
+    spool = read_spool()
+    if spool is None:
+        _write_spool("executing", create=True)
+    else:
+        # Recheck after bootstrap: another worker may have won ownership since
+        # resume_handoff read the same marker. Never rewrite or delete the spool.
+        if not can_retry_start(spool, request()) or read_spool() != spool:
+            raise RunReportError("delivery_recovery_required", retryable=False)
+    # Concurrent retries (including a still-in-flight first request) use distinct
+    # ownership nonces. /started locks the row and acknowledges only its winner;
+    # losers return before the entrypoint can exec the agent subprocess.
     snapshot = request("/started", {"ownership_nonce": _assignment["ownership_nonce"]})
     if (snapshot.get("worker_receipt") or {}).get("ownership_nonce") != _assignment[
         "ownership_nonce"

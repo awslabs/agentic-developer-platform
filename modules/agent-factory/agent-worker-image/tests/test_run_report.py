@@ -1,10 +1,13 @@
 """Durable pending payloads survive outages without authorizing a second run."""
 
 import io
+import importlib.util
 import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
 
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
@@ -94,3 +97,163 @@ def test_wrong_scope_spool_is_refused_and_missing_is_distinct(spool):
     spool[1][key] = json.dumps(body).encode()
     with pytest.raises(run_report.RunReportError, match="report_spool_scope_mismatch"):
         run_report.read_spool()
+
+
+def unstarted_snapshot():
+    return {key: None for key in ("worker_receipt", "candidate_pr", "binding_receipt", "terminal_receipt", "review_receipt")}
+
+
+def failed_start_marker(monkeypatch):
+    def failed(*args):
+        raise run_report.RunReportError("run_report_http_409", retryable=False)
+
+    monkeypatch.setattr(run_report, "request", failed)
+    with pytest.raises(run_report.RunReportError, match="run_report_http_409"):
+        run_report.begin_delivery()
+
+
+def test_refused_start_reuses_exact_marker_without_rewriting_or_new_attempt(spool, monkeypatch):
+    failed_start_marker(monkeypatch)
+    original = dict(spool[1])
+    writes = spool[0].put_object.call_count
+    calls = []
+
+    def request(path="", body=None):
+        calls.append((path, body))
+        if path == "":
+            return unstarted_snapshot()
+        assert path == "/started"
+        return {"worker_receipt": {"ownership_nonce": body["ownership_nonce"]}}
+
+    monkeypatch.setattr(run_report, "request", request)
+    assert resume_handoff() is False
+    run_report.begin_delivery()
+    assert [path for path, body in calls] == ["", "", "/started"]
+    assert spool[0].put_object.call_count == writes
+    assert spool[1] == original
+    assert run_report._assignment["run_id"] == "run-1" and run_report._assignment["attempt"] == 1
+
+
+@pytest.mark.parametrize("receipt", ["worker_receipt", "candidate_pr", "binding_receipt", "terminal_receipt", "review_receipt"])
+def test_any_acknowledged_work_prevents_marker_reuse(spool, monkeypatch, receipt):
+    failed_start_marker(monkeypatch)
+    snapshot = unstarted_snapshot() | {receipt: {"recorded": True}}
+    monkeypatch.setattr(run_report, "request", MagicMock(return_value=snapshot))
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        run_report.begin_delivery()
+    run_report.request.assert_called_once_with()
+
+
+def test_lost_start_response_with_committed_receipt_cannot_restart_execution(spool, monkeypatch):
+    failed_start_marker(monkeypatch)
+    snapshot = unstarted_snapshot() | {"worker_receipt": {"ownership_nonce": "original-winner"}}
+    monkeypatch.setattr(run_report, "request", lambda *args: snapshot)
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        resume_handoff()
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        run_report.begin_delivery()
+
+
+@pytest.mark.parametrize("change", [{"phase": "candidate"}, {"candidate_pr": {}}, {"unrecognized": True}])
+def test_only_exact_executing_null_candidate_marker_can_retry(spool, monkeypatch, change):
+    failed_start_marker(monkeypatch)
+    key = next(iter(spool[1]))
+    spool[1][key] = json.dumps(json.loads(spool[1][key]) | change).encode()
+    request = MagicMock(return_value=unstarted_snapshot())
+    monkeypatch.setattr(run_report, "request", request)
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        run_report.begin_delivery()
+    assert all(call.args != ("/started",) for call in request.mock_calls)
+
+
+@pytest.mark.parametrize("missing", ["worker_receipt", "candidate_pr", "binding_receipt", "terminal_receipt", "review_receipt"])
+def test_missing_snapshot_field_does_not_mean_no_prior_work(spool, monkeypatch, missing):
+    failed_start_marker(monkeypatch)
+    snapshot = unstarted_snapshot()
+    snapshot.pop(missing)
+    monkeypatch.setattr(run_report, "request", lambda *args: snapshot)
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        resume_handoff()
+
+
+def test_ownership_change_during_bootstrap_blocks_retry_before_started(spool, monkeypatch):
+    failed_start_marker(monkeypatch)
+    request = MagicMock(side_effect=[unstarted_snapshot(), unstarted_snapshot() | {"worker_receipt": {"ownership_nonce": "rival"}}])
+    monkeypatch.setattr(run_report, "request", request)
+    assert resume_handoff() is False
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        run_report.begin_delivery()
+    assert request.call_args_list == [(), ()]
+
+
+def test_spool_change_between_read_and_start_refuses(spool, monkeypatch):
+    failed_start_marker(monkeypatch)
+    original = run_report.read_spool()
+    monkeypatch.setattr(run_report, "read_spool", MagicMock(side_effect=[original, original | {"phase": "candidate"}]))
+    request = MagicMock(return_value=unstarted_snapshot())
+    monkeypatch.setattr(run_report, "request", request)
+    with pytest.raises(run_report.RunReportError, match="delivery_recovery_required"):
+        run_report.begin_delivery()
+    request.assert_called_once_with()
+
+
+def test_rival_wins_started_after_empty_recheck_loser_never_acknowledges_start(spool, monkeypatch):
+    failed_start_marker(monkeypatch)
+    request = MagicMock(side_effect=[unstarted_snapshot(), run_report.RunReportError("run_report_http_409", retryable=False)])
+    monkeypatch.setattr(run_report, "request", request)
+    with pytest.raises(run_report.RunReportError, match="run_report_http_409"):
+        run_report.begin_delivery()
+    assert request.call_count == 2
+
+
+def test_rival_receipt_is_rejected_even_if_started_returns_success(spool, monkeypatch):
+    failed_start_marker(monkeypatch)
+    request = MagicMock(side_effect=[unstarted_snapshot(), {"worker_receipt": {"ownership_nonce": "rival"}}])
+    monkeypatch.setattr(run_report, "request", request)
+    with pytest.raises(run_report.RunReportError, match="delivery_start_unacknowledged"):
+        run_report.begin_delivery()
+
+
+def test_two_retries_observe_empty_receipt_but_only_gateway_nonce_winner_can_continue(spool, monkeypatch):
+    failed_start_marker(monkeypatch)
+    original, writes = dict(spool[1]), spool[0].put_object.call_count
+    # Separate modules reproduce separate workers with independent random nonces.
+    # The gateway's locked /started receipt is the shared arbitration boundary.
+    empty_reads = Barrier(2)
+    gateway_lock = Lock()
+    receipt = None
+    workers = []
+    for index in range(2):
+        spec = importlib.util.spec_from_file_location(f"report_rival_{index}", run_report.__file__)
+        worker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(worker)
+        worker._assignment = run_report._assignment | {"ownership_nonce": str(index) * 32}
+        worker._spool_client = lambda: spool[0]
+        workers.append(worker)
+
+    def request_for(worker):
+        def request(path="", body=None):
+            nonlocal receipt
+            if not path:
+                empty_reads.wait(timeout=5)
+                return unstarted_snapshot()
+            assert path == "/started"
+            with gateway_lock:
+                if receipt is not None and receipt["ownership_nonce"] != body["ownership_nonce"]:
+                    raise worker.RunReportError("run_report_http_409", retryable=False)
+                receipt = {"ownership_nonce": body["ownership_nonce"]}
+                return {"worker_receipt": dict(receipt)}
+        return request
+
+    def begin(worker):
+        worker.request = request_for(worker)
+        try:
+            worker.begin_delivery()
+            return "acknowledged"
+        except worker.RunReportError as error:
+            return error.code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(begin, workers))
+    assert sorted(outcomes) == ["acknowledged", "run_report_http_409"]
+    assert spool[1] == original and spool[0].put_object.call_count == writes

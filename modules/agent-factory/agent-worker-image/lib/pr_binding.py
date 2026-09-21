@@ -104,6 +104,8 @@ def resume_handoff() -> bool:
         spool = run_report.read_spool()
         if spool is None:
             return False
+        if run_report.can_retry_start(spool, snapshot):
+            return False
         if spool["phase"] != "candidate" or not isinstance(spool.get("candidate_pr"), dict):
             raise run_report.RunReportError("delivery_recovery_required", retryable=False)
         candidate = spool["candidate_pr"]

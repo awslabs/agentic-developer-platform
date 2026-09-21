@@ -333,6 +333,7 @@ class TestStagePersonasAndSkills:
 
 
 class TestEntrypointMain:
+    @pytest.mark.parametrize("start_refused", [False, True])
     @patch("entrypoint.run_cmd")
     @patch("entrypoint.mint_installation_token")
     @patch("entrypoint.VaultClient")
@@ -349,6 +350,7 @@ class TestEntrypointMain:
         mock_run_cmd,
         monkeypatch,
         tmp_path,
+        start_refused,
     ):
         """Test the full 12-step sequence with a successful agent run."""
         from entrypoint import main
@@ -387,6 +389,14 @@ class TestEntrypointMain:
         monkeypatch.setattr(entrypoint, "WORK_DIR", work_dir)
         monkeypatch.setattr(entrypoint, "PERSONAS_DIR", tmp_path / "personas")
         monkeypatch.setattr(entrypoint, "SKILLS_DIR", tmp_path / "skills")
+
+        if start_refused:
+            monkeypatch.setattr(entrypoint.run_report, "begin_delivery", MagicMock(side_effect=entrypoint.run_report.RunReportError("run_report_http_409", retryable=False)))
+            monkeypatch.setattr(entrypoint.run_report, "report_block", MagicMock())
+            assert main() == entrypoint.AGENT_EXIT_RETRYABLE
+            assert not any(call.args[0][0] in {"node", "claude", "codex"} for call in mock_subprocess_run.call_args_list)
+            entrypoint._delete_message.assert_not_called()
+            return
 
         assert main() == 0
 
