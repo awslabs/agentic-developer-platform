@@ -144,3 +144,124 @@ test("unavailable legacy statuses do not hide accessible check runs", async () =
     globalThis.fetch = originalFetch;
   }
 });
+
+/**
+ * Outbound URL safety (issue #5604, work-package S05).
+ *
+ * Semgrep rated the `fetch` in `request` as SSRF (node_ssrf, result_index
+ * 2418). `request` is private and every caller passes a `/`-rooted template,
+ * so the escape is not reachable today — these tests pin the invariant that
+ * keeps it unreachable, and the origin check on the response.
+ */
+
+test("every GitHub operation stays on the api.github.com origin", async () => {
+  const originalFetch = globalThis.fetch;
+  const requested: string[] = [];
+  globalThis.fetch = async (input) => {
+    requested.push(String(input));
+    const url = String(input);
+    const body = url.includes("/check-runs")
+      ? { check_runs: [] }
+      : url.includes("/status")
+        ? { state: "success", statuses: [] }
+        : url.includes("/merge")
+          ? { merged: true, message: "ok", sha: "c".repeat(40) }
+          : url.includes("/comments")
+            ? []
+            : { number: 1, title: "t", body: null };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    // A repository name is the only caller-supplied part of these paths.
+    const github = new GitHubClient("aws-e/adp", async () => "default-token");
+    await github.getPullRequest(5471);
+    await github.getIssue(5499);
+    await github.comment(5471, "body");
+    await github.commentOnce(5499, "<!-- marker -->", "body");
+    await github.checks("a".repeat(40));
+    await github.merge(5471, "b".repeat(40));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.ok(requested.length >= 6, "expected every operation to issue a request");
+  for (const url of requested) {
+    assert.equal(
+      new URL(url).origin,
+      "https://api.github.com",
+      `request escaped the GitHub origin: ${url}`,
+    );
+  }
+});
+
+test("a request path that is not rooted at / is refused before any fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  // Each of these would otherwise change the origin the token is sent to:
+  //   "@evil.com/x"  -> https://evil.com
+  //   ".evil.com/x"  -> https://api.github.com.evil.com
+  //   ":8080/x"      -> https://api.github.com:8080
+  //   "//evil.com/x" -> protocol-relative, https://evil.com
+  const hostile = ["@evil.com/x", ".evil.com/x", ":8080/x", "//evil.com/x", "repos/a/b"];
+  try {
+    const github = new GitHubClient("aws-e/adp", async () => "default-token");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const request = (github as any).request.bind(github);
+    for (const path of hostile) {
+      await assert.rejects(
+        () => request(path),
+        /must start with "\/"/,
+        `expected ${path} to be refused`,
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(calls, 0, "no hostile path may reach fetch");
+});
+
+test("a response redirected off api.github.com is refused", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    // Node follows the redirect and strips Authorization, so the token is safe —
+    // but this body is the attacker's, and checks() would treat it as the gate.
+    new Response(JSON.stringify({ check_runs: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  try {
+    const response = new Response("{}", { status: 200 });
+    Object.defineProperty(response, "url", { value: "https://evil.example/repos/aws-e/adp" });
+    globalThis.fetch = async () => response;
+    const github = new GitHubClient("aws-e/adp", async () => "default-token");
+    await assert.rejects(() => github.getPullRequest(5471), /redirected off api\.github\.com/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a same-origin redirect, as GitHub issues for renamed repositories, is accepted", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => {
+      const response = new Response(JSON.stringify({ number: 5471, title: "t", body: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+      Object.defineProperty(response, "url", {
+        value: "https://api.github.com/repos/aws-e/adp-renamed/pulls/5471",
+      });
+      return response;
+    };
+    const github = new GitHubClient("aws-e/adp", async () => "default-token");
+    assert.equal((await github.getPullRequest(5471)).number, 5471);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

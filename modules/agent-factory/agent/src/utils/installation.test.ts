@@ -137,4 +137,113 @@ describe('resolveInstallationId', () => {
 
     await expect(resolveInstallationId('jwt')).resolves.toBe(String(OWN_ID));
   });
+
+  /**
+   * Outbound URL safety (issue #5604, work-package S05).
+   *
+   * Semgrep rated `fetch` at lines 61/74 as SSRF. The origin is a constant, so
+   * no owner value can redirect the request off api.github.com — these tests
+   * pin the reachable concern instead: an owner value must not traverse to a
+   * *different GitHub endpoint*, and a response must have actually come from
+   * api.github.com before its body decides which installation we mint against.
+   */
+  describe('outbound GitHub URL safety', () => {
+    it.each([
+      ['path traversal', '../..'],
+      ['trailing traversal', 'org-a/..'],
+      ['percent-encoded separator', '..%2F..'],
+      ['credential-style prefix', '@evil.com'],
+      ['host-style suffix', '.evil.com'],
+      ['port-style suffix', ':8080'],
+      ['embedded slash', 'org-a/installation'],
+      ['query injection', 'org-a?x=1'],
+      ['empty owner segment', ' '],
+    ])('never interpolates a malformed owner (%s) into a request URL', async (_label, owner) => {
+      process.env.REPO_OWNER = owner;
+      mockFetch.mockImplementation(async (url: string) =>
+        /\/app\/installations$/.test(String(url))
+          ? jsonResponse(INSTALLATIONS)
+          : jsonResponse({ message: 'Not Found' }, false)
+      );
+
+      await resolveInstallationId('jwt', { log: jest.fn() });
+
+      // The owner rung is skipped entirely: the only call is the fallback.
+      for (const [requested] of mockFetch.mock.calls) {
+        expect(String(requested)).toBe('https://api.github.com/app/installations');
+      }
+    });
+
+    it('warns and falls back rather than failing when the owner is malformed', async () => {
+      const log = jest.fn();
+      process.env.REPO_OWNER = '../..';
+      mockFetch.mockImplementation(async () => jsonResponse(INSTALLATIONS));
+
+      await expect(resolveInstallationId('jwt', { log })).resolves.toBe(String(FOREIGN_ID));
+      expect(log).toHaveBeenCalledWith('WARN', expect.stringContaining('malformed'));
+    });
+
+    it('still accepts every owner login GitHub can legitimately issue', async () => {
+      for (const owner of ['org-a', 'a', 'My-Org-123', 'a'.repeat(39)]) {
+        mockFetch.mockReset();
+        process.env.REPO_OWNER = owner;
+        mockFetch.mockImplementation(async (url: string) =>
+          String(url) === `https://api.github.com/orgs/${owner}/installation`
+            ? jsonResponse({ id: OWN_ID })
+            : jsonResponse({ message: 'Not Found' }, false)
+        );
+
+        await expect(resolveInstallationId('jwt')).resolves.toBe(String(OWN_ID));
+      }
+    });
+
+    it('keeps the api.github.com origin on both request rungs', async () => {
+      process.env.REPO_OWNER = 'org-a';
+      mockFetch.mockImplementation(async () => jsonResponse({ message: 'Not Found' }, false));
+
+      await resolveInstallationId('jwt', { log: jest.fn() }).catch(() => undefined);
+
+      expect(mockFetch).toHaveBeenCalled();
+      for (const [requested] of mockFetch.mock.calls) {
+        expect(new URL(String(requested)).origin).toBe('https://api.github.com');
+      }
+    });
+
+    it('rejects an owner-lookup body delivered from another origin by redirect', async () => {
+      process.env.REPO_OWNER = 'org-a';
+      const FOREIGN_BODY_ID = 999;
+      mockFetch.mockImplementation(async (url: string) => {
+        if (/\/installation$/.test(String(url))) {
+          // Redirected off-origin: the body is attacker-supplied, not GitHub's.
+          return { ...jsonResponse({ id: FOREIGN_BODY_ID }), url: 'https://evil.example/installation' };
+        }
+        return { ...jsonResponse(INSTALLATIONS), url: 'https://api.github.com/app/installations' };
+      });
+
+      const resolved = await resolveInstallationId('jwt', { log: jest.fn() });
+
+      expect(resolved).not.toBe(String(FOREIGN_BODY_ID));
+      expect(resolved).toBe(String(FOREIGN_ID));
+    });
+
+    it('rejects a fallback listing delivered from another origin by redirect', async () => {
+      mockFetch.mockImplementation(async () => ({
+        ...jsonResponse([{ id: 999 }]),
+        url: 'https://evil.example/app/installations',
+      }));
+
+      await expect(resolveInstallationId('jwt', { log: jest.fn() })).resolves.toBeNull();
+    });
+
+    it('accepts a same-origin redirect, as GitHub issues for renamed owners', async () => {
+      process.env.REPO_OWNER = 'org-a';
+      mockFetch.mockImplementation(async () => ({
+        ...jsonResponse({ id: OWN_ID }),
+        // GitHub redirects /orgs/{old-name}/... to the current name.
+        url: 'https://api.github.com/orgs/org-a-renamed/installation',
+      }));
+
+      await expect(resolveInstallationId('jwt')).resolves.toBe(String(OWN_ID));
+    });
+  });
 });

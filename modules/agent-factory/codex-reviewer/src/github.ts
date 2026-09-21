@@ -103,6 +103,31 @@ class GitHubRequestError extends Error {
   }
 }
 
+/** The only origin this client talks to. */
+const GITHUB_API_ORIGIN = "https://api.github.com";
+
+/**
+ * Every request path must be rooted at `/`.
+ *
+ * `request` builds its URL as `${GITHUB_API_ORIGIN}${path}`, which only stays
+ * on api.github.com while `path` starts with a slash. Without that leading
+ * slash the origin escapes: `@evil.com/x` resolves to `https://evil.com`, and
+ * `.evil.com/x` to `https://api.github.com.evil.com` — and since every request
+ * carries a GitHub installation token, that would be a credential-bearing SSRF.
+ *
+ * All current callers pass a `/`-rooted template, so this rejects nothing that
+ * is sent today; it exists so that a future caller cannot reintroduce the
+ * escape by omitting the slash.
+ *
+ * Expressed with string comparisons rather than a regex: the check is exact,
+ * and it keeps a path-shaped value away from any regex engine.
+ */
+function isRootedPath(path: string): boolean {
+  // A protocol-relative `//host` path is also rejected: it keeps the scheme but
+  // replaces the host, so `//evil.com/x` would resolve to https://evil.com.
+  return path.startsWith("/") && !path.startsWith("//");
+}
+
 export class GitHubClient {
   constructor(
     private readonly repository: string,
@@ -110,8 +135,11 @@ export class GitHubClient {
   ) {}
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    if (!isRootedPath(path)) {
+      throw new Error(`GitHub request path must start with "/": ${path}`);
+    }
     const token = await this.tokenProvider();
-    const response = await fetch(`https://api.github.com${path}`, {
+    const response = await fetch(`${GITHUB_API_ORIGIN}${path}`, {
       ...init,
       headers: {
         accept: "application/vnd.github+json",
@@ -122,6 +150,16 @@ export class GitHubClient {
       },
       signal: init.signal ?? AbortSignal.timeout(30_000),
     });
+    // A cross-origin redirect cannot leak the token (Node strips Authorization
+    // when the origin changes) but it can substitute the response body — and
+    // these bodies drive the merge gate in `checks()`. Confirm the response
+    // actually came from GitHub. Same-origin redirects, which GitHub issues for
+    // renamed repositories, are unaffected.
+    if (response.url && new URL(response.url).origin !== GITHUB_API_ORIGIN) {
+      throw new Error(
+        `GitHub ${init.method ?? "GET"} ${path} was redirected off api.github.com`,
+      );
+    }
     if (!response.ok) {
       throw new GitHubRequestError(
         response.status,
