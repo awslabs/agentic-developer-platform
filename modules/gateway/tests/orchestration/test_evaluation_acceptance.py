@@ -16,7 +16,7 @@ from src.orchestration.evaluation_acceptance import (
     preview_evaluation,
 )
 from src.orchestration.evaluation_plan import accepted_evaluation
-from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationExecution, OrchestrationNode
+from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationExecution, OrchestrationFlow, OrchestrationNode
 from src.orchestration.repository_evaluation import observe_repository_evaluation
 from src.orchestration.review_cycle import CycleBlockedError
 from src.orchestration.state import ActorKind
@@ -82,6 +82,91 @@ async def test_acceptance_is_attributed_idempotent_and_keeps_worker_plan_meter_a
         assert await observe_repository_evaluation(db, node, provider=ctx.provider)
         assert node.state == "passed"
         assert plan.plan_document == ctx.saved_plan
+
+
+async def test_lost_acceptance_response_replays_after_evaluation_finishes(contract_request, monkeypatch):
+    ctx = contract_request
+    async with ctx.factory() as db:
+        result, request = await accept(ctx, db)
+        await db.commit()
+        node = await db.get(OrchestrationNode, ctx.eval_id)
+        assert await observe_repository_evaluation(db, node, provider=ctx.provider)
+        assert node.state == "passed"
+        await db.commit()
+    # Acknowledging this historical write must not need a fresh allowance or
+    # reopen the completed evaluation when runtime authorization is disabled.
+    monkeypatch.setenv("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false")
+    async with ctx.factory() as db:
+        before = list(await db.scalars(select(OrchestrationDecision.id)))
+        replay = await accept_evaluation(db, flow_id=ctx.flow.id, actor=ctx.actor, request=request)
+        assert replay["accepted"] and not replay["created"] and replay["wrote_nothing"]
+        assert replay["decision_id"] == result["decision_id"]
+        node = await db.get(OrchestrationNode, ctx.eval_id)
+        assert node.state == "passed" and node.attempts == 1
+        assert list(await db.scalars(select(OrchestrationDecision.id))) == before
+
+
+async def test_superseded_acceptance_cannot_replay_as_current(contract_request):
+    ctx = contract_request
+    async with ctx.factory() as db:
+        _, original = await accept(ctx, db)
+        replacement = ctx.request.model_copy(update={"reason": "Replace the accepted evidence contract explicitly"})
+        await accept(ctx, db, replacement)
+        await db.commit()
+        with pytest.raises(EvaluationAcceptanceError, match="evaluation_contract_superseded"):
+            await accept_evaluation(db, flow_id=ctx.flow.id, actor=ctx.actor, request=original)
+
+
+async def test_reacceptance_during_observation_prevents_stale_settlement(contract_request):
+    ctx = contract_request
+    async with ctx.factory() as db:
+        await accept(ctx, db)
+        await db.commit()
+    observed = deepcopy(ctx.provider.observe.return_value)
+
+    async def replace_while_observing(*_args):
+        async with ctx.factory() as other:
+            replacement = ctx.request.model_copy(update={"reason": "Reaccept the evidence contract during observation"})
+            await accept(ctx, other, replacement)
+            await other.commit()
+        return observed
+
+    ctx.provider.observe.side_effect = replace_while_observing
+    async with ctx.factory() as db:
+        node = await db.get(OrchestrationNode, ctx.eval_id)
+        assert await observe_repository_evaluation(db, node, provider=ctx.provider)
+        assert node.state == "ready" and node.attempts == 0
+        refusal = await db.scalar(
+            select(OrchestrationDecision.reason)
+            .where(OrchestrationDecision.node_id == node.id, OrchestrationDecision.kind == "transition_rejected")
+            .order_by(OrchestrationDecision.created_at.desc())
+        )
+        assert "evaluation_authority_changed" in refusal
+
+
+@pytest.mark.parametrize("changed", ["node", "plan", "flow"])
+async def test_acceptance_refreshes_previously_loaded_scope_after_lock(contract_request, changed):
+    ctx = contract_request
+    async with ctx.factory() as db:
+        preview = await preview_evaluation(db, flow_id=ctx.flow.id, actor=ctx.actor, request=ctx.request)
+        request = ctx.request.model_copy(update={"expected_snapshot": preview["snapshot"]})
+        # Keep strong references so this session really retains stale identities.
+        node = await db.get(OrchestrationNode, ctx.eval_id)
+        plan = await db.get(OrchestrationAcceptedPlan, ctx.plan.id)
+        flow = await db.get(OrchestrationFlow, ctx.flow.id)
+        await db.commit()
+        async with ctx.factory() as other:
+            if changed == "node":
+                (await other.get(OrchestrationNode, node.id)).state = "running"
+            elif changed == "plan":
+                (await other.get(OrchestrationAcceptedPlan, plan.id)).plan_hash = "f" * 64
+            else:
+                (await other.get(OrchestrationFlow, flow.id)).state = "halted"
+            await other.commit()
+        assert node.state == "ready" and plan.plan_hash == request.expected_plan_hash and flow.state == "running"
+        with pytest.raises(EvaluationAcceptanceError):
+            await accept_evaluation(db, flow_id=ctx.flow.id, actor=ctx.actor, request=request)
+        assert await db.scalar(select(OrchestrationDecision.id).where(OrchestrationDecision.kind == ACCEPTANCE_KIND)) is None
 
 
 @pytest.mark.parametrize("case", ["implicit_authority", "service", "stale_plan", "changed_snapshot", "scope", "running"])

@@ -76,6 +76,7 @@ async def latest_acceptance(session, *, node, plan):
         )
         .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
         .limit(1)
+        .execution_options(populate_existing=True)
     )
 
 
@@ -115,30 +116,49 @@ async def accepted_contract(session, *, node, plan):
         raise CycleBlockedError("evaluation_acceptance_unverifiable") from None
 
 
-async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, request: EvaluationAcceptanceRequest, lock=False):
+async def current_target(session, *, flow_id, actor, request, lock=False):
+    """Refresh the current scope under the same lock order as settlement."""
     require(actor.actor_kind is ActorKind.HUMAN and bool(actor.actor_id), "human_plan_approver_required")
-    flow_query = select(OrchestrationFlow).where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.id == flow_id)
+    flow_query = (
+        select(OrchestrationFlow)
+        .where(OrchestrationFlow.org_id == actor.org_id, OrchestrationFlow.id == flow_id)
+        .execution_options(populate_existing=True)
+    )
     flow = await session.scalar(flow_query.with_for_update() if lock else flow_query)
-    require(flow is not None and flow.state in {"pending", "running"}, "flow_not_active")
-    inputs, _ = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
-    plan = await session.scalar(
-        select(OrchestrationAcceptedPlan).where(
+    require(flow is not None, "flow_not_found")
+    plan_query = (
+        select(OrchestrationAcceptedPlan)
+        .where(
             OrchestrationAcceptedPlan.org_id == actor.org_id,
             OrchestrationAcceptedPlan.flow_id == flow_id,
             OrchestrationAcceptedPlan.superseded_at.is_(None),
         )
+        .execution_options(populate_existing=True)
     )
+    plan = await session.scalar(plan_query.with_for_update() if lock else plan_query)
     require(
         plan is not None and (plan.version, plan.plan_hash) == (request.expected_plan_version, request.expected_plan_hash),
         "accepted_plan_changed",
     )
-    query = select(OrchestrationNode).where(
-        OrchestrationNode.org_id == actor.org_id,
-        OrchestrationNode.flow_id == flow_id,
-        OrchestrationNode.id == request.node_id,
+    query = (
+        select(OrchestrationNode)
+        .where(
+            OrchestrationNode.org_id == actor.org_id,
+            OrchestrationNode.flow_id == flow_id,
+            OrchestrationNode.id == request.node_id,
+        )
+        .execution_options(populate_existing=True)
     )
     node = await session.scalar(query.with_for_update() if lock else query)
-    require(node is not None and node.kind == "eval" and node.state in {"pending", "ready"}, "evaluation_not_pending")
+    require(node is not None and node.kind == "eval", "evaluation_not_found")
+    return flow, plan, node
+
+
+async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, request: EvaluationAcceptanceRequest, lock=False):
+    flow, plan, node = await current_target(session, flow_id=flow_id, actor=actor, request=request, lock=lock)
+    require(flow.state in {"pending", "running"}, "flow_not_active")
+    require(node.state in {"pending", "ready"}, "evaluation_not_pending")
+    inputs, _ = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
     address = graph_address(node, flow_slug=flow.slug)
     nodes = [row for row in (plan.plan_document or {}).get("nodes", []) if row.get("address") == address]
     require(len(nodes) == 1 and {key: nodes[0].get(key) for key in node_scope(node)} == node_scope(node), "accepted_node_changed")
@@ -197,7 +217,7 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
 
 async def accept_evaluation(session, *, flow_id, actor, request):
     require(request.expected_snapshot is not None, "preview_snapshot_required")
-    result = await preview_evaluation(session, flow_id=flow_id, actor=actor, request=request, lock=True)
+    _, plan, node = await current_target(session, flow_id=flow_id, actor=actor, request=request, lock=True)
     identity = str(
         uuid5(
             NAMESPACE_URL,
@@ -211,13 +231,38 @@ async def accept_evaluation(session, *, flow_id, actor, request):
             ),
         )
     )
-    existing = await session.get(OrchestrationDecision, identity)
+    existing = await session.get(OrchestrationDecision, identity, populate_existing=True)
     if existing is not None:
-        require(existing.org_id == actor.org_id and existing.flow_id == flow_id and existing.kind == ACCEPTANCE_KIND, "acceptance_identity_conflict")
-        node = await session.get(OrchestrationNode, request.node_id)
-        latest = await latest_acceptance(session, node=node, plan=None)
-        require(latest is not None and latest.id == existing.id, "evaluation_contract_superseded")
-        return dict(accepted=True, created=False, decision_id=existing.id, **result)
+        require(
+            existing.org_id == actor.org_id
+            and existing.flow_id == flow_id
+            and existing.node_id == request.node_id
+            and existing.kind == ACCEPTANCE_KIND
+            and existing.actor_kind == ActorKind.HUMAN.value
+            and existing.actor_id == actor.actor_id,
+            "acceptance_identity_conflict",
+        )
+        latest = await accepted_contract(session, node=node, plan=plan)
+        require(latest is not None and latest[0].id == existing.id, "evaluation_contract_superseded")
+        content = json.loads(existing.reason)
+        require(
+            content["specification"] == RepositoryEvaluationSpecification.model_validate(request.specification).model_dump(mode="json")
+            and content["authorize_evaluate"] == request.authorize_evaluate
+            and content["reason"] == request.reason,
+            "acceptance_identity_conflict",
+        )
+        # A lost acceptance response remains acknowledgeable after the evaluator
+        # finishes or the original allowance expires. This creates no authority.
+        return dict(
+            accepted=True,
+            created=False,
+            decision_id=existing.id,
+            wrote_nothing=True,
+            content=content,
+            worker_plan_version_unchanged=plan.version,
+            budget_meter_unchanged=True,
+        )
+    result = await preview_evaluation(session, flow_id=flow_id, actor=actor, request=request, lock=True)
     require(result["snapshot"] == request.expected_snapshot, "evaluation_snapshot_changed")
     session.add(
         OrchestrationDecision(
