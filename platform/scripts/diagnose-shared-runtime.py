@@ -35,7 +35,7 @@ def run(args):
     except OSError:
         raise DiagnosticError("tool_unavailable") from None
     if result.returncode:
-        category = next((code for code in ("Forbidden", "Unauthorized", "NotFound") if code in result.stderr), "command_failed")
+        category = next((code for code in ("Forbidden", "Unauthorized", "NotFound", "AccessDenied", "ValidationError") if code in result.stderr), "command_failed")
         raise DiagnosticError(category)
     return result.stdout
 

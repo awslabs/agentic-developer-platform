@@ -1131,6 +1131,15 @@ module "orchestration_tick" {
   db_username           = var.rds_username
   rds_resource_id       = module.rds.db_instance_resource_id
 
+  # Reuse exactly the Redis store and IAM user used by the gateway budget path.
+  redis_enabled           = var.enable_redis
+  redis_host              = var.enable_redis ? module.redis[0].primary_endpoint_address : ""
+  redis_port              = var.redis_port
+  redis_security_group_id = local.redis_security_group_id
+  redis_iam_auth          = var.enable_elasticache_iam_auth
+  redis_username          = var.enable_redis && var.enable_elasticache_iam_auth ? module.redis[0].redis_iam_user_id : ""
+  redis_cache_name        = var.enable_redis ? module.redis[0].replication_group_id : ""
+
   tick_schedule = var.orchestration_tick_schedule
 
   # Issue #4211: stall/halt alert delivery. Empty by default — see the variable's

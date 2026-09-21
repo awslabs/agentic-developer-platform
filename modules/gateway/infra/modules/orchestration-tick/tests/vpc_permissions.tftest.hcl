@@ -62,3 +62,40 @@ run "shared_reporting_signing_key_is_parameter_reference_only" {
     error_message = "Lambda configuration may carry a parameter reference, never signing-key plaintext."
   }
 }
+
+run "redis_disabled_does_not_add_access" {
+  command = plan
+  assert {
+    condition     = length(aws_iam_role_policy.tick_redis) == 0 && length(aws_security_group_rule.redis_from_tick) == 0 && !contains(keys(aws_lambda_function.tick.environment[0].variables), "BG_REDIS_URL")
+    error_message = "A deployment without Redis must not create Redis access or empty connection settings."
+  }
+}
+
+run "reuse_gateway_redis_with_exact_network_and_iam_scope" {
+  command = plan
+  variables {
+    redis_enabled           = true
+    redis_host              = "existing.cache.amazonaws.com"
+    redis_port              = 6379
+    redis_security_group_id = "sg-00000000000000003"
+    redis_iam_auth          = true
+    redis_username          = "existing-user"
+    redis_cache_name        = "existing-cache"
+  }
+  assert {
+    condition     = aws_lambda_function.tick.environment[0].variables.BG_REDIS_URL == "rediss://existing.cache.amazonaws.com:6379/0" && aws_lambda_function.tick.environment[0].variables.BG_REDIS_IAM_AUTH == "true" && aws_lambda_function.tick.environment[0].variables.BG_REDIS_USERNAME == "existing-user" && aws_lambda_function.tick.environment[0].variables.BG_REDIS_CACHE_NAME == "existing-cache"
+    error_message = "The tick must use the exact existing gateway Redis endpoint and IAM identity."
+  }
+  assert {
+    condition     = length(aws_security_group.tick.egress) == 3 && length([for rule in aws_security_group.tick.egress : rule if rule.protocol == "tcp" && rule.from_port == 6379 && rule.to_port == 6379 && rule.security_groups == toset(["sg-00000000000000003"]) && length(coalesce(rule.cidr_blocks, [])) == 0]) == 1
+    error_message = "Add only one Redis-port egress rule to the existing Redis security group."
+  }
+  assert {
+    condition     = aws_security_group_rule.redis_from_tick[0].security_group_id == "sg-00000000000000003" && aws_security_group_rule.redis_from_tick[0].type == "ingress" && aws_security_group_rule.redis_from_tick[0].from_port == 6379 && aws_security_group_rule.redis_from_tick[0].to_port == 6379 && aws_security_group_rule.redis_from_tick[0].protocol == "tcp"
+    error_message = "Reciprocal access must target only the existing Redis port and security group."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.tick_redis[0].policy) == jsondecode(jsonencode({ Version = "2012-10-17", Statement = [{ Sid = "ConnectSharedBudgetRedis", Effect = "Allow", Action = ["elasticache:Connect"], Resource = ["arn:aws:elasticache:us-east-1:123456789012:replicationgroup:existing-cache", "arn:aws:elasticache:us-east-1:123456789012:user:existing-user"] }] }))
+    error_message = "Redis IAM scope must contain only Connect for the gateway replication group and existing IAM user."
+  }
+}
