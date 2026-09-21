@@ -16,6 +16,12 @@ Explicit Deployment replacement still works; deliberate node maintenance must
 coordinate availability or a reviewed temporary budget change. These budgets
 do not provide multiple-replica high availability or prevent involuntary failure.
 
+SkyPilot reserves its full bounded server allocation (1 CPU and 2 GiB), in
+addition to its authenticated sidecar. The scheduler must account for that
+allocation when placing it alongside ADP services. Lower requests can pack the
+server onto small nodes where memory reclaim stalls cause health-check failures
+and repeated restarts even before Kubernetes reports node memory pressure.
+
 ## Inputs and prerequisites
 
 Use Python 3.12 with `PyYAML`, `httpx` and `boto3`, Terraform matching the maintained module,

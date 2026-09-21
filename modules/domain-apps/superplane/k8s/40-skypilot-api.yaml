@@ -225,10 +225,13 @@ spec:
           # These are the API server only — a control-plane process serving a REST API. It
           # requests no GPU, and check_rendered_manifests.py separately requires any GPU
           # container to carry a nodeSelector or affinity so it cannot land here.
+          # Reserve the full bounded server envelope. Smaller requests allowed Auto Mode
+          # to pack the server beside the gateway on a 4Gi node; memory reclaim stalls
+          # then made health checks time out and repeatedly restarted the server.
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: "1"
+              memory: 2Gi
             limits:
               cpu: "1"
               memory: 2Gi
