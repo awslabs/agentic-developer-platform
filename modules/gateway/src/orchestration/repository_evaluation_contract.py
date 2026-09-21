@@ -134,7 +134,7 @@ class RepositoryEvaluationSpecification(Contract):
                     raise ValueError("workflow revision requires a declared direct predecessor")
         if len(set(ids)) != len(ids):
             raise ValueError("criterion identities must be unique")
-        if self.producer is not None:
+        if self.producer is not None and self.evidence_schema == "repository-evaluation/v1":
             selected = [item for item in self.workflows if item.criterion_id == self.producer.workflow_criterion_id]
             if len(self.workflows) != 1 or len(selected) != 1 or not selected[0].dispatch_only:
                 raise ValueError("one-off producer requires exactly one dispatch-only workflow")
@@ -218,10 +218,20 @@ def harness_digest():
         "repository_producer_contract.py",
         "repository_producer.py",
         "repository_producer_controller.py",
+        "cli_live_contract.py",
+        "cli_live_evidence.py",
     ):
         data = Path(__file__).with_name(name).read_bytes()
         digest.update(name.encode() + b"\0" + data + b"\0")
     return digest.hexdigest()
+
+
+def native_specification(value):
+    if isinstance(value, dict) and value.get("evidence_schema") == "cli-live-evaluation/v1":
+        from .cli_live_contract import CliLiveSpecification
+
+        return CliLiveSpecification.model_validate(value)
+    return RepositoryEvaluationSpecification.model_validate(value)
 
 
 def predicate_passes(predicate, document):

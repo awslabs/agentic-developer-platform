@@ -152,6 +152,11 @@ async def sources_for(session, node, plan, spec, *, lock=False):
         )
         sources.append(
             dict(
+                **(
+                    {"issue_number": int(parent.issue_ref)}
+                    if getattr(spec, "qualification", None) is not None and str(parent.issue_ref).isdigit()
+                    else {}
+                ),
                 address=expected.address,
                 node_id=parent.id,
                 attempt=parent.attempts,
@@ -178,6 +183,7 @@ async def authorize(session, node, plan, spec, binding, provider, *, exclude_cur
 
     # This observer uses its own short-lived repository-read token, never an
     # agent's broad role. Minting must really succeed before claiming SCOPED.
+    require(getattr(spec, "qualification", None) is None or node.issue_ref == str(spec.qualification.owner_issue), "cli_qualification_owner_changed")
     await provider.token(binding)
     inputs, marker = await shared_policy.shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id)
     require(inputs.plan_version == plan.version and spec.runner.repository in inputs.policy.repository_ids, "policy_changed")
@@ -284,7 +290,7 @@ async def observe_repository_evaluation(session, node, *, provider=None):
 
 async def _observe_repository_evaluation(session, node, *, provider=None):
     accepted = await accepted_evaluation(session, node)
-    if accepted is None or accepted[1].evidence_schema != "repository-evaluation/v1":
+    if accepted is None or accepted[1].evidence_schema not in {"repository-evaluation/v1", "cli-live-evaluation/v1"}:
         return False
     plan, spec, _ = accepted
     provider = provider or RepositoryEvidenceProvider()
@@ -344,7 +350,7 @@ async def _observe_repository_evaluation(session, node, *, provider=None):
         require(fresh is not None and fresh[1] == spec and node.state == "ready" and flow.state == "running", "scope_changed")
         require(await sources_for(session, node, current, spec, lock=True) == sources, "source_changed")
         require(await authorize(session, node, current, spec, binding, provider) == authority, "evaluation_authority_changed")
-        receipt = RepositoryEvaluationReceipt(
+        receipt = receipt_model(spec)(
             org_id=node.org_id,
             flow_id=node.flow_id,
             node_id=node.id,
@@ -394,3 +400,16 @@ async def _observe_repository_evaluation(session, node, *, provider=None):
             rejection=True,
         )
         return True
+
+
+def receipt_model(spec):
+    if spec.evidence_schema == "cli-live-evaluation/v1":
+        from .cli_live_contract import CliWorkflowReceipt
+
+        class CliLiveEvaluationReceipt(RepositoryEvaluationReceipt):
+            evidence_schema: Literal["cli-live-evaluation-receipt/v1"] = "cli-live-evaluation-receipt/v1"
+            live_attestation: Literal[True] = True
+            workflows: list[CliWorkflowReceipt]
+
+        return CliLiveEvaluationReceipt
+    return RepositoryEvaluationReceipt

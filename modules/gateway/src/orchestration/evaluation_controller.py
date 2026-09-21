@@ -499,9 +499,9 @@ class EvaluationController:
 
     async def perform(self, context, effect):
         from .evaluation_correction_state import CORRECTION_KIND
-        from .repository_producer import PRODUCER_KIND
+        from .repository_producer import CLI_PRODUCER_KIND, PRODUCER_KIND
 
-        if effect.intent.kind == PRODUCER_KIND:
+        if effect.intent.kind in {PRODUCER_KIND, CLI_PRODUCER_KIND}:
             return await self.repository_producer.perform(context, effect)
         require(effect.intent.kind == CORRECTION_KIND, "evaluation_effect_unsupported")
         return await self.services.correction_service().perform(context, effect)

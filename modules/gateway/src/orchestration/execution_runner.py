@@ -463,7 +463,7 @@ async def verify_live_authority(
                 detail="current accepted-plan authority does not match the execution ledger",
             )
         effective_policy = admission.policy
-        if effect.intent.kind == "repository_scan_dispatch":
+        if effect.intent.kind in {"repository_scan_dispatch", "cli_qualification_dispatch"}:
             from .repository_producer_controller import producer_effect_policy
 
             try:
