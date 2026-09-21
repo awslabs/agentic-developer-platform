@@ -99,7 +99,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -227,6 +227,7 @@ class AmendmentRequest:
     base_plan_hash: str | None
     state: str
     author_run_id: str | None
+    created_at: datetime
     created: bool = False
 
 
@@ -281,6 +282,7 @@ def _snapshot(row: OrchestrationAmendmentRequest, *, created: bool) -> Amendment
         base_plan_hash=row.base_plan_hash,
         state=row.state,
         author_run_id=row.author_run_id,
+        created_at=row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at.astimezone(UTC),
         created=created,
     )
 

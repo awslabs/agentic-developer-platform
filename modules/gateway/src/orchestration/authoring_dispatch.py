@@ -273,7 +273,9 @@ def _build_envelope(
         # platform executes this string; it is quoted into the authoring context the
         # same way an issue body is.
         "payload": {"replan_request": request.request_text, "requested_by": request.requested_by, "amendment_base": base_input},
-        "arrived_at": utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # The protected execution seals the whole envelope. Recovery must reuse
+        # this durable timestamp, even when it runs on a later tick.
+        "arrived_at": request.created_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 
