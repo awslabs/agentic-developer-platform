@@ -614,6 +614,21 @@ async def _run() -> TickReport:
         return report
 
 
+async def _run_with_cleanup() -> TickReport:
+    """Close loop-bound clients after all tick work, including failure paths."""
+    from src.orchestration.flow_budget import close_flow_reservations
+
+    try:
+        return await _run()
+    finally:
+        try:
+            await close_flow_reservations()
+        except Exception:
+            # Cleanup must not replace the tick's original result or exception.
+            # The helper already discarded the local client; Redis usage stays.
+            logger.warning("orchestration tick: local flow budget client cleanup failed")
+
+
 def handler(event: dict | None = None, context: object | None = None) -> dict:
     """EventBridge entrypoint. Returns a summary; raises only on total failure.
 
@@ -623,7 +638,7 @@ def handler(event: dict | None = None, context: object | None = None) -> dict:
     invocation error and the EventBridge failure metric fires.
     """
     try:
-        report = asyncio.run(_run())
+        report = asyncio.run(_run_with_cleanup())
     except Exception:
         # Log the token even on total failure: a tick that could not run is
         # exactly what the smoke check needs to be able to see (R-NF3).

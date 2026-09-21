@@ -86,6 +86,7 @@ __all__ = [
     "FlowReservation",
     "admission_cost_usd",
     "admission_request_id",
+    "close_flow_reservations",
     "flow_reservation_target",
     "get_flow_reservations",
     "release_flow_admission",
@@ -223,6 +224,20 @@ class FlowReservation:
 
 
 _reservations: ReservationStore | None = None
+
+
+async def close_flow_reservations() -> None:
+    """Release this process's client before its event loop closes, not its meter.
+
+    The scheduled tick creates a fresh loop for every Lambda invocation. A cached
+    Redis connection cannot cross that boundary. Forget it before closing so a
+    failed close cannot leave a dead client cached for the next invocation.
+    Closing the connection never changes the Redis keys or their balances.
+    """
+    global _reservations
+    store, _reservations = _reservations, None
+    if store is not None:
+        await store.close()
 
 
 def get_flow_reservations() -> ReservationStore:

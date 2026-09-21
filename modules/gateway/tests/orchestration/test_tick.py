@@ -681,7 +681,7 @@ class TestTickReportTokenSurvivesLambdaLogging:
             handler_module = importlib.reload(handler_module)
 
             report = _TickReportStub()
-            monkeypatch.setattr(handler_module, "_run", lambda: report, raising=True)
+            monkeypatch.setattr(handler_module, "_run_with_cleanup", lambda: report, raising=True)
             monkeypatch.setattr(handler_module.asyncio, "run", lambda coro: report, raising=True)
             monkeypatch.setattr(handler_module, "_emit_metrics", lambda _r: None, raising=True)
 
