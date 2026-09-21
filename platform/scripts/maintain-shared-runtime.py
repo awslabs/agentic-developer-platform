@@ -21,7 +21,7 @@ import sys
 import tempfile
 
 from shared_runtime_plan_guard import (
-    ACCOUNT, FLAGS, KEY_NAME, REGION, ROLE, TARGETS, WIRING_FLAGS, Refused, check_iam, check_plan, preserved_tick_inputs, require,
+    ACCOUNT, FLAGS, KEY_NAME, REGION, ROLE, TARGETS, WIRING_FLAGS, Refused, check_iam, check_other_work, check_plan, preserved_tick_inputs, require,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,8 +89,8 @@ def aws(*args):
     return decode_json(command(["aws", *args, "--region", REGION, "--output", "json"]), source=source)
 
 
-def kube(*args, stdin=None):
-    return command(["kubectl", "--request-timeout=30s", *args], stdin=stdin)
+def kube(*args, stdin=None, request_timeout="30s"):
+    return command(["kubectl", f"--request-timeout={request_timeout}", *args], stdin=stdin)
 
 
 def snapshot(kind, name, namespace=NAMESPACE):
@@ -123,6 +123,20 @@ def gateway_probe():
     code = """import asyncio,hashlib,hmac,json,os,sys
 from sqlalchemy import text
 from src.shared.database import get_session_factory
+from src.orchestration.dispatch_pass import routing_blocker_for_node, resolve_installation_id, _latest_approval_decision_id
+from src.orchestration.genesis import GenesisRefusedError, resolve_engine_genesis
+async def dispatch_preflight(s,row):
+ routing=routing_blocker_for_node(kind='story',issue_ref=row['issue_ref'])
+ installation=await resolve_installation_id(s,org_id=row['org_id'])
+ approval=await _latest_approval_decision_id(s,org_id=row['org_id'],flow_id=row['flow_id'])
+ verified=False
+ if approval is not None:
+  try:
+   genesis=await resolve_engine_genesis(s,org_id=row['org_id'],decision_id=approval)
+   verified=genesis.flow_id==row['flow_id']
+  except GenesisRefusedError:
+   pass
+ return {'contract':'shared-runtime-dispatch-preflight/v1','routing_blocker':routing.value if routing else None,'installation_id':installation,'approval_decision_id':approval,'human_approval_verified':verified}
 async def probe():
  async with get_session_factory()() as s:
   await s.execute(text('SET TRANSACTION READ ONLY'))
@@ -134,8 +148,11 @@ async def probe():
   authoring=await s.scalar(text("SELECT count(*) FROM orchestration_amendment_requests WHERE state IN ('queued','dispatched')"))
   other_ready=await s.scalar(text("SELECT count(*) FROM orchestration_nodes WHERE kind='story' AND state IN ('ready','running') AND flow_id NOT IN ('0737183c-99c4-4e1f-bdb7-e4432b46ca20','a555da26-2724-4f38-b960-8738e10fa88c')"))
   other_nodes=await s.execute(text("SELECT n.org_id, n.flow_id, f.state AS flow_state, n.id AS node_id, n.state, n.attempts, n.issue_ref FROM orchestration_nodes n LEFT JOIN orchestration_flows f ON f.id=n.flow_id AND f.org_id=n.org_id WHERE n.kind='story' AND n.state IN ('ready','running') AND n.flow_id NOT IN ('0737183c-99c4-4e1f-bdb7-e4432b46ca20','a555da26-2724-4f38-b960-8738e10fa88c') ORDER BY n.org_id, n.flow_id, n.id LIMIT 20"))
+  other_nodes=[dict(row._mapping) for row in other_nodes]
+  for row in other_nodes:
+   row['dispatch_preflight']=await dispatch_preflight(s,row)
   key=os.environ.get('AGENT_RUN_CREDENTIAL_KEY','')
-  print(json.dumps({'schema':version,'key_present':bool(key),'key_matches':hmac.compare_digest(hashlib.sha256(key.encode()).hexdigest(),sys.argv[1]),'shared_continuations':shared,'unfinished_report_assignments':pending,'unfinished_executions':executions,'unresolved_actions':actions,'pending_authoring':authoring,'other_ready_or_running_stories':other_ready,'other_ready_or_running_nodes':[dict(row._mapping) for row in other_nodes],'other_ready_or_running_nodes_truncated':other_ready>20,'flags':{k:os.environ.get(k) for k in ['AGENT_AUTHORITY_ENABLED','ADP_SHARED_RUN_REPORTING_ENABLED','ADP_SHARED_WORKER_CONTINUATION_ENABLED','AGENT_WORKER_ROLE_ARN']}}))
+  print(json.dumps({'schema':version,'key_present':bool(key),'key_matches':hmac.compare_digest(hashlib.sha256(key.encode()).hexdigest(),sys.argv[1]),'shared_continuations':shared,'unfinished_report_assignments':pending,'unfinished_executions':executions,'unresolved_actions':actions,'pending_authoring':authoring,'other_ready_or_running_stories':other_ready,'other_ready_or_running_nodes':other_nodes,'other_ready_or_running_nodes_truncated':other_ready>20,'flags':{k:os.environ.get(k) for k in ['AGENT_AUTHORITY_ENABLED','ADP_SHARED_RUN_REPORTING_ENABLED','ADP_SHARED_WORKER_CONTINUATION_ENABLED','AGENT_WORKER_ROLE_ARN']}}))
 asyncio.run(probe())
 """
     result = decode_json(kube("exec", "-i", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "-c", DEPLOYMENT, "--", "python", "-", expected_key_hash, stdin=code), source="gateway.sql_probe")
@@ -151,6 +168,13 @@ def preflight(args, scratch):
     command(["aws", "eks", "update-kubeconfig", "--name", CLUSTER, "--region", REGION, "--kubeconfig", os.environ["KUBECONFIG"]])
     gateway_image = checked_image("adp-gateway", args.gateway_revision)
     worker_image = checked_image("adp-agent-runtime", args.worker_revision, args.worker_digest)
+    rollout_failure = None
+    try:
+        kube("rollout", "status", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "--timeout=300s", request_timeout="330s")
+    except Refused as error:
+        # Still capture fresh, safe readiness evidence when the bounded wait
+        # fails. The failure is re-raised below; this never permits activation.
+        rollout_failure = error
     deployment = snapshot("deployment", DEPLOYMENT)
     container = next(c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == DEPLOYMENT)
     accepted_images = {gateway_image, gateway_image.split("@")[0] + ":" + args.gateway_revision}
@@ -159,11 +183,23 @@ def preflight(args, scratch):
     require(any(e.get("name") == "AGENT_RUN_CREDENTIAL_KEY" and e.get("valueFrom", {}).get("secretKeyRef", {}).get("name") == "agent-authority-signing" and e.get("valueFrom", {}).get("secretKeyRef", {}).get("key") == "run-credential-key" for e in container.get("env", [])), "gateway signing-key reference changed")
     selectors = ",".join(f"{k}={v}" for k, v in sorted(deployment["spec"]["selector"]["matchLabels"].items()))
     pods = decode_json(kube("get", "pods", "-n", NAMESPACE, "-l", selectors, "-o", "json"), source="kubernetes.gateway_pods")["items"]
-    ready = [p for p in pods if not p["metadata"].get("deletionTimestamp")]
+    readiness = []
+    for pod in pods:
+        statuses = [s for s in pod.get("status", {}).get("containerStatuses", []) if s["name"] == DEPLOYMENT]
+        spec_images = [c.get("image") for c in pod.get("spec", {}).get("containers", []) if c.get("name") == DEPLOYMENT]
+        readiness.append({"pod": pod["metadata"]["name"], "terminating": bool(pod["metadata"].get("deletionTimestamp")),
+                          "status_count": len(statuses), "ready": statuses[0].get("ready") if len(statuses) == 1 else None,
+                          "spec_image": spec_images[0] if len(spec_images) == 1 else None,
+                          "image_id": statuses[0].get("imageID") if len(statuses) == 1 else None})
+    print(json.dumps({"gateway_pod_readiness": {"expected_image": gateway_image, "desired_replicas": deployment["spec"]["replicas"], "pods": readiness}}))
+    if rollout_failure is not None:
+        raise rollout_failure
+    ready = [row for row in readiness if not row["terminating"]]
     require(len(ready) == deployment["spec"]["replicas"] > 0, "gateway rollout incomplete")
     for pod in ready:
-        statuses = [s for s in pod.get("status", {}).get("containerStatuses", []) if s["name"] == DEPLOYMENT]
-        require(len(statuses) == 1 and statuses[0]["ready"] and statuses[0]["imageID"].endswith(gateway_image), "gateway pod image/readiness differs")
+        require(pod["status_count"] == 1, "gateway pod container status is missing or ambiguous")
+        require(pod["ready"] is True, "gateway pod is not ready")
+        require(isinstance(pod["image_id"], str) and pod["image_id"].endswith(gateway_image), "gateway pod image digest differs")
     tick = aws("lambda", "get-function", "--function-name", TICK)
     require(tick["Code"]["ResolvedImageUri"] == gateway_image, "tick is not running the reviewed gateway image")
     require(tick["Configuration"].get("State") == "Active" and tick["Configuration"].get("LastUpdateStatus") == "Successful", "tick update incomplete")
@@ -202,7 +238,8 @@ def preflight(args, scratch):
     active_images = [c["image"] for pod in worker_pods if pod.get("status", {}).get("phase") not in {"Succeeded", "Failed"} for c in pod["spec"].get("containers", []) if c["name"] == "agent-worker"]
     print(json.dumps({"runtime_preflight": probe, "queue": queue, "active_worker_images": active_images}))
     if args.stage in {"gateway-enable", "tick-enable"}:
-        require(all(probe[k] == 0 for k in ("shared_continuations", "unfinished_report_assignments", "other_ready_or_running_stories", "unfinished_executions", "unresolved_actions", "pending_authoring")), "existing flows or outbox require separate review before global shared activation")
+        require(all(probe[k] == 0 for k in ("shared_continuations", "unfinished_report_assignments", "unfinished_executions", "unresolved_actions", "pending_authoring")), "existing flows or outbox require separate review before global shared activation")
+        check_other_work(probe)
         require(all(int(v) == 0 for v in queue.values()), "shared dispatch queue is not empty; let existing work drain")
         require(all(image == worker_image for image in active_images), "incompatible worker is still active; let it finish before activation")
     if args.stage == "verify":
@@ -332,9 +369,14 @@ def main():
             init(WEBHOOK)
             plan_apply(WEBHOOK, "gateway-enable", context, overlay, scratch, enabled=True, execute=args.execute)
             if args.execute:
+                # A deployment probe samples one pod; it cannot establish that
+                # every replica has consumed the updated ConfigMap.
                 kube("rollout", "restart", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE)
-                kube("rollout", "status", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "--timeout=300s")
-                require(all(gateway_probe()["flags"].get(flag) == "true" for flag in FLAGS), "gateway flags did not activate")
+                # The per-request timeout is independent of the rollout watch's
+                # deadline; give this one long watch its full bounded window.
+                kube("rollout", "status", f"deployment/{DEPLOYMENT}", "-n", NAMESPACE, "--timeout=300s", request_timeout="330s")
+                activated = gateway_probe()
+                require(all(activated["flags"].get(flag) == "true" for flag in FLAGS), "gateway flags did not activate")
                 require(all(decode_json(parameter(WIRING), source="parameter.worker_runtime_wiring").get(flag) is False for flag in WIRING_FLAGS), "gateway stage changed tick wiring")
         elif args.stage == "tick-enable":
             require(parameter(KEY_NAME, decrypt=True) == context["signing_key"], "reporting key differs from gateway key")

@@ -172,9 +172,32 @@ contract after global activation.
 For review, the existing SQL probe also returns at most 20 non-target ready or
 running story nodes: tenant, flow/node IDs, flow/node states, attempts and issue
 reference. A left join preserves missing or mismatched flow evidence as a null
-flow state. Titles, plan content and decisions are excluded. The total count and
-zero-work activation requirement remain unchanged; a truncated sample does not
-reduce that count.
+flow state. Each row also carries the actual dispatch helpers' issue-routing
+blocker, resolved installation ID, latest approval decision ID and verified human
+genesis result. Titles, plan content, decision bodies and approver identities are
+excluded.
+
+Every non-target running story still stops activation. A ready story can remain
+only when the probe proves a hard early dispatch refusal: missing/malformed issue
+routing, no unambiguous installation, or no authorized human approval. A pending
+flow or absent execution policy is not such a refusal; legacy dispatch may still
+run it. Missing/unknown evidence, duplicate IDs, count mismatches or a truncated
+inventory stop activation. The zero-work checks for continuations, assignments,
+executions, unresolved actions, queued authoring and SQS remain in force. These
+are current observations; repeat preflight before each enabling stage.
+
+Preflight waits up to 300 seconds for rollout status before reading fresh
+deployment and pod snapshots. It emits only pod names, readiness, image references,
+status counts and termination flags alongside the expected image and replica count,
+so startup and digest failures can be distinguished without exposing environment
+values or logs. A failed wait still stops preflight after emitting that projection;
+readiness, replica count and exact image checks remain mandatory.
+
+Gateway activation also waits up to 300 seconds for rollout status, with a 330-second
+request bound for each watch. Ordinary Kubernetes requests retain a 30-second
+bound. Gateway-enable restarts and verifies the full deployment even when the
+sampled pod is already enabled; one pod cannot prove all replicas consumed the
+updated ConfigMap. Rollout completion, flags and unchanged tick wiring are checked.
 
 After `verify`, obtain a fresh continuation preview and accept **only CLI**
 (`0737183c-99c4-4e1f-bdb7-e4432b46ca20`, tenant `aws-e`) through the existing API,
@@ -185,3 +208,23 @@ worker start, model accounting, implementation-PR binding and successful termina
 receipt, followed by ordinary review/repair scheduling. Then obtain a fresh
 preview and accept Security (`a555da26-2724-4f38-b960-8738e10fa88c`). Superplane
 and other existing flows are not accepted or resumed by this maintenance step.
+
+## Read worker acknowledgments with the existing ADP login
+
+`GET /orchestration/flows/{flow_id}/run-reports` uses the same authenticated
+`USAGE_READ` permission and tenant boundary as the graph/execution views. It
+returns at most 200 assignments per page (`limit`/`offset`, with `total`), including
+the run, persona, attempt, assignment time, binding at acknowledgment, and typed
+worker-start, binding, terminal and review acknowledgments. Empty results mean no
+report assignments were observed. A historical attempt is marked explicitly;
+`is_current_attempt` does not claim that every run in that attempt is still active.
+
+Use the graph's current PR binding and delivery progress alongside these reports.
+A terminal acknowledgment records the worker's outcome; it does not establish
+merge readiness or approval. Execution action references such as `dispatch:<run>`
+can acknowledge successful queue publication before a worker has started, so they
+are not substitutes for the worker-start/terminal fields. Binding and review
+receipts that have no stored timestamp return `recorded_at: null` rather than an
+invented time. No capability, ownership nonce, credential hash, dispatch envelope,
+work claim, candidate body, or acceptance identity is exposed. The internal
+`GET /internal/v1/agent/report` remains scoped to the worker's reporting capability.

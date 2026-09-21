@@ -3,11 +3,13 @@
 import ast
 import base64
 import copy
+import asyncio
 import importlib.util
 import json
 from pathlib import Path
 import sqlite3
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -217,6 +219,105 @@ def test_verify_does_not_emit_false_flag_overlays_or_signing_material(monkeypatc
     assert SIGNING_KEY not in (tmp_path / "verification.json").read_text()
 
 
+def test_only_rollout_wait_can_extend_the_kubernetes_request_timeout(monkeypatch):
+    calls = []
+    monkeypatch.setattr(maintenance, "command", lambda args, **kwargs: calls.append(args) or "")
+    maintenance.kube("get", "pods")
+    maintenance.kube("rollout", "restart", "deployment/bedrockgateway")
+    maintenance.kube("rollout", "status", "deployment/bedrockgateway", "--timeout=300s", request_timeout="330s")
+    assert calls == [
+        ["kubectl", "--request-timeout=30s", "get", "pods"],
+        ["kubectl", "--request-timeout=30s", "rollout", "restart", "deployment/bedrockgateway"],
+        ["kubectl", "--request-timeout=330s", "rollout", "status", "deployment/bedrockgateway", "--timeout=300s"],
+    ]
+
+
+@pytest.mark.parametrize("already_enabled,execute", [(False, True), (True, True), (False, False)])
+def test_gateway_enable_waits_for_full_rollout_even_if_one_pod_is_enabled(monkeypatch, tmp_path, already_enabled, execute):
+    context = {"worker_image": "approved-worker", "gateway_image": IMAGE, "tick_overlay": {}, "signing_key": SIGNING_KEY,
+               "probe": {"flags": {k: str(already_enabled).lower() for k in guard.FLAGS}}, "queue": {}, "active_worker_images": []}
+    calls = []
+    probes = []
+    monkeypatch.setattr(maintenance, "preflight", lambda *a: context)
+    monkeypatch.setattr(maintenance, "init", lambda *a: None)
+    monkeypatch.setattr(maintenance, "plan_apply", lambda *a, **kwargs: None)
+    monkeypatch.setattr(maintenance, "parameter", lambda name, **kwargs: SIGNING_KEY if name == guard.KEY_NAME else json.dumps({k: False for k in guard.WIRING_FLAGS}))
+    monkeypatch.setattr(maintenance, "kube", lambda *args, **kwargs: calls.append((args, kwargs)) or "")
+    monkeypatch.setattr(maintenance, "gateway_probe", lambda: probes.append(True) or {"flags": {k: "true" for k in guard.FLAGS}})
+    argv = ["maintenance", "--account-id", guard.ACCOUNT, "--gateway-revision", "b" * 40, "--worker-revision", "c" * 40,
+            "--worker-digest", "sha256:" + "d" * 64, "--stage", "gateway-enable", "--evidence-directory", str(tmp_path)]
+    monkeypatch.setattr(sys, "argv", argv + (["--execute"] if execute else []))
+    maintenance.main()
+    expected = []
+    if execute:
+        expected.append((("rollout", "restart", "deployment/bedrockgateway", "-n", maintenance.NAMESPACE), {}))
+        expected.append((("rollout", "status", "deployment/bedrockgateway", "-n", maintenance.NAMESPACE, "--timeout=300s"), {"request_timeout": "330s"}))
+    assert calls == expected
+    assert len(probes) == int(execute)
+
+
+@pytest.mark.parametrize("case", ["replacement_ready", "not_ready", "wrong_digest", "missing_status", "extra_pod", "wait_failed"])
+def test_preflight_waits_before_fresh_snapshots_and_reports_safe_readiness(monkeypatch, tmp_path, capsys, case):
+    calls = []
+    state = {"waited": False}
+    container = {"name": maintenance.DEPLOYMENT, "image": IMAGE,
+                 "envFrom": [{"configMapRef": {"name": "adp-worker-authority-config"}}],
+                 "env": [{"name": "AGENT_RUN_CREDENTIAL_KEY", "valueFrom": {"secretKeyRef": {"name": "agent-authority-signing", "key": "run-credential-key"}}},
+                         {"name": "PRIVATE", "value": "private-env-fixture"}]}
+    deployment = {"spec": {"replicas": 1, "selector": {"matchLabels": {"app": "gateway"}}, "template": {"spec": {"containers": [container]}}}}
+    pod = {"metadata": {"name": "replacement-pod"}, "spec": {"containers": [container]},
+           "status": {"containerStatuses": [{"name": maintenance.DEPLOYMENT, "ready": False, "imageID": "containerd://" + IMAGE}],
+                      "private-log": "private-log-fixture"}}
+    def aws(*args):
+        if args[:2] == ("sts", "get-caller-identity"):
+            return {"Account": guard.ACCOUNT, "Arn": "reviewed-maintenance-role"}
+        calls.append("after-pod-checks")
+        raise RuntimeError("reached later preflight checks")
+    def snapshot(*args):
+        assert state["waited"], "deployment snapshot must be refreshed after the wait"
+        calls.append("deployment-snapshot")
+        return copy.deepcopy(deployment)
+    def kube(*args, **kwargs):
+        if args[:2] == ("rollout", "status"):
+            calls.append("rollout-wait")
+            assert args[-1] == "--timeout=300s" and kwargs == {"request_timeout": "330s"}
+            state["waited"] = True
+            pod["status"]["containerStatuses"][0]["ready"] = case != "not_ready"
+            if case == "wait_failed":
+                raise guard.Refused("rollout wait failed")
+            return "rollout complete"
+        assert args[:2] == ("get", "pods") and state["waited"]
+        calls.append("pod-snapshot")
+        if case == "wrong_digest":
+            pod["status"]["containerStatuses"][0]["imageID"] = "containerd://" + IMAGE[:-1] + "b"
+        if case == "missing_status":
+            pod["status"]["containerStatuses"] = []
+        pods = [pod]
+        if case == "extra_pod":
+            pods.append({**pod, "metadata": {"name": "unexpected-second-pod"}})
+        return json.dumps({"items": pods})
+    monkeypatch.setattr(maintenance, "aws", aws)
+    monkeypatch.setattr(maintenance, "command", lambda *a, **k: "")
+    monkeypatch.setattr(maintenance, "checked_image", lambda *a, **k: IMAGE)
+    monkeypatch.setattr(maintenance, "snapshot", snapshot)
+    monkeypatch.setattr(maintenance, "kube", kube)
+    args = SimpleNamespace(account_id=guard.ACCOUNT, stage="gateway-enable", gateway_revision="b" * 40,
+                           worker_revision="c" * 40, worker_digest="sha256:" + "d" * 64)
+    errors = {"replacement_ready": "reached later preflight checks", "not_ready": "gateway pod is not ready",
+              "wrong_digest": "gateway pod image digest differs", "missing_status": "container status is missing",
+              "extra_pod": "gateway rollout incomplete", "wait_failed": "rollout wait failed"}
+    with pytest.raises(RuntimeError if case == "replacement_ready" else guard.Refused, match=errors[case]):
+        maintenance.preflight(args, tmp_path)
+    assert calls[:3] == ["rollout-wait", "deployment-snapshot", "pod-snapshot"]
+    assert ("after-pod-checks" in calls) is (case == "replacement_ready")
+    output = capsys.readouterr().out
+    assert "private-" not in output
+    projection = json.loads(output.splitlines()[-1])["gateway_pod_readiness"]
+    assert projection["expected_image"] == IMAGE and projection["desired_replicas"] == 1
+    assert projection["pods"][0]["pod"] == "replacement-pod" and projection["pods"][0]["spec_image"] == IMAGE
+    assert set(projection["pods"][0]) == {"pod", "terminating", "status_count", "ready", "spec_image", "image_id"}
+
+
 @pytest.mark.parametrize("difference", ["ID", "Who", "Operation", "Path", "Created"])
 def test_unlock_refuses_any_other_lock_before_reading_github(monkeypatch, difference):
     info = {"ID": maintenance.LOCK_ID, "Who": maintenance.LOCK_OWNER, "Operation": "OperationTypePlan", "Path": maintenance.LOCK_PATH, "Created": "2026-09-20T23:34:38.654494254Z"}
@@ -332,3 +433,126 @@ def test_other_work_context_is_bounded_and_preserves_orphan_and_tenant_mismatch(
     assert any(row["flow_state"] == "failed" for row in actual)
     assert "private-" not in json.dumps(actual)
     connection.close()
+
+
+def other_work(**overrides):
+    facts = {"contract": "shared-runtime-dispatch-preflight/v1", "routing_blocker": None,
+             "installation_id": 42, "approval_decision_id": "approval", "human_approval_verified": True}
+    facts.update(overrides)
+    row = {"org_id": "other", "flow_id": "legacy", "node_id": "node", "flow_state": "pending",
+           "state": "ready", "attempts": 0, "issue_ref": "4213", "dispatch_preflight": facts}
+    return {"other_ready_or_running_stories": 1, "other_ready_or_running_nodes": [row],
+            "other_ready_or_running_nodes_truncated": False}
+
+
+@pytest.mark.parametrize("blocker", [dict(routing_blocker="missing_issue_ref"), dict(routing_blocker="malformed_issue_ref"),
+                                   dict(installation_id=None), dict(approval_decision_id=None, human_approval_verified=False),
+                                   dict(human_approval_verified=False)])
+def test_ready_work_requires_a_proven_early_dispatch_blocker(blocker):
+    guard.check_other_work(other_work(**blocker))
+
+
+def test_pending_flow_or_missing_policy_is_not_an_early_blocker():
+    probe = other_work()
+    probe["other_ready_or_running_nodes"][0]["execution_policy"] = None
+    with pytest.raises(guard.Refused, match="may dispatch"):
+        guard.check_other_work(probe)
+
+
+@pytest.mark.parametrize("blocker", [dict(routing_blocker="missing_issue_ref"), dict(installation_id=None), dict(human_approval_verified=False)])
+def test_running_work_is_never_ignored_when_its_dispatch_authority_disappears(blocker):
+    probe = other_work(**blocker)
+    probe["other_ready_or_running_nodes"][0]["state"] = "running"
+    with pytest.raises(guard.Refused, match="running work"):
+        guard.check_other_work(probe)
+
+
+@pytest.mark.parametrize("case", ["truncated", "missing_count", "boolean_count", "count_mismatch", "missing_rows", "duplicate", "unknown_attempt",
+                                 "missing_scope", "missing_facts", "unknown_contract", "missing_approval", "unknown_routing",
+                                 "bad_installation", "bad_approval_flag", "contradictory_approval"])
+def test_incomplete_or_unknown_dispatch_evidence_stops_activation(case):
+    probe = other_work(installation_id=None)
+    rows = probe["other_ready_or_running_nodes"]
+    facts = rows[0]["dispatch_preflight"]
+    if case == "truncated":
+        probe["other_ready_or_running_nodes_truncated"] = True
+    elif case == "missing_count":
+        probe.pop("other_ready_or_running_stories")
+    elif case == "boolean_count":
+        probe["other_ready_or_running_stories"] = True
+    elif case == "count_mismatch":
+        probe["other_ready_or_running_stories"] = 2
+    elif case == "missing_rows":
+        probe.pop("other_ready_or_running_nodes")
+    elif case == "duplicate":
+        rows.append(copy.deepcopy(rows[0]))
+        probe["other_ready_or_running_stories"] = 2
+    elif case == "missing_scope":
+        rows[0].pop("org_id")
+    elif case == "unknown_attempt":
+        rows[0]["attempts"] = None
+    elif case == "missing_facts":
+        rows[0].pop("dispatch_preflight")
+    elif case == "unknown_contract":
+        facts["contract"] = "unknown"
+    elif case == "missing_approval":
+        facts.pop("human_approval_verified")
+    elif case == "unknown_routing":
+        facts["routing_blocker"] = "unknown"
+    elif case == "bad_installation":
+        facts["installation_id"] = "unknown"
+    elif case == "bad_approval_flag":
+        facts["human_approval_verified"] = "false"
+    else:
+        facts["approval_decision_id"] = None
+    with pytest.raises(guard.Refused):
+        guard.check_other_work(probe)
+
+
+def test_empty_inventory_is_explicit_and_complete():
+    guard.check_other_work({"other_ready_or_running_stories": 0, "other_ready_or_running_nodes": [],
+                           "other_ready_or_running_nodes_truncated": False})
+
+
+@pytest.mark.parametrize("approval_state", ["missing", "refused", "authorized", "different_flow", "unavailable"])
+def test_probe_invokes_dispatch_helpers_with_actual_tenant_and_flow(monkeypatch, approval_state):
+    scripts = []
+    monkeypatch.setattr(maintenance, "snapshot", lambda *a: {"data": {"run-credential-key": base64.b64encode(b"private-key-fixture").decode()}})
+    monkeypatch.setattr(maintenance, "kube", lambda *a, stdin=None: scripts.append(stdin) or '{"key_matches": true}')
+    maintenance.gateway_probe()
+    definition = next(node for node in ast.parse(scripts[0]).body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dispatch_preflight")
+    calls = []
+    class GenesisRefusedError(Exception):
+        pass
+    def routing(**kwargs):
+        calls.append(("routing", kwargs))
+        return SimpleNamespace(value="missing_issue_ref")
+    async def installation(session, **kwargs):
+        calls.append(("installation", session, kwargs))
+        return None
+    async def approval(session, **kwargs):
+        calls.append(("approval", session, kwargs))
+        return None if approval_state == "missing" else "decision"
+    async def genesis(session, **kwargs):
+        calls.append(("genesis", session, kwargs))
+        if approval_state == "unavailable":
+            raise RuntimeError("unavailable")
+        if approval_state == "refused":
+            raise GenesisRefusedError("unattributed approval")
+        return SimpleNamespace(flow_id="other" if approval_state == "different_flow" else "legacy")
+    namespace = {"routing_blocker_for_node": routing, "resolve_installation_id": installation,
+                 "_latest_approval_decision_id": approval, "resolve_engine_genesis": genesis, "GenesisRefusedError": GenesisRefusedError}
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), "probe", "exec"), namespace)
+    operation = namespace["dispatch_preflight"]("session", {"org_id": "tenant", "flow_id": "legacy", "issue_ref": None})
+    if approval_state == "unavailable":
+        with pytest.raises(RuntimeError, match="unavailable"):
+            asyncio.run(operation)
+        return
+    result = asyncio.run(operation)
+    assert result["routing_blocker"] == "missing_issue_ref" and result["installation_id"] is None
+    assert result["human_approval_verified"] is (approval_state == "authorized")
+    assert calls[:3] == [("routing", {"kind": "story", "issue_ref": None}),
+                         ("installation", "session", {"org_id": "tenant"}),
+                         ("approval", "session", {"org_id": "tenant", "flow_id": "legacy"})]
+    if approval_state != "missing":
+        assert calls[-1] == ("genesis", "session", {"org_id": "tenant", "decision_id": "decision"})
