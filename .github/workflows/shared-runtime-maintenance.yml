@@ -21,16 +21,17 @@ on:
           - verify
           - diagnose
           - redis-diagnose
+          - tick-redis
       gateway_revision:
-        description: Full reviewed gateway/tick SHA. Required except for diagnose.
+        description: Full reviewed gateway/tick SHA. Required except for diagnose, redis-diagnose, and tick-redis.
         required: false
         type: string
       worker_revision:
-        description: Full reviewed worker source SHA. Required except for diagnose.
+        description: Full reviewed worker source SHA. Required except for diagnose, redis-diagnose, and tick-redis.
         required: false
         type: string
       worker_digest:
-        description: Approved worker sha256 digest. Required except for diagnose.
+        description: Approved worker sha256 digest. Required except for diagnose, redis-diagnose, and tick-redis.
         required: false
         type: string
       execute:
@@ -77,6 +78,8 @@ jobs:
           set -euo pipefail
           if [[ "$ROLLOUT_STAGE" == diagnose || "$ROLLOUT_STAGE" == redis-diagnose ]]; then
             [[ "$EXECUTE" == false && "$UNLOCK_KNOWN_ORPHAN" == false ]]
+          elif [[ "$ROLLOUT_STAGE" == tick-redis ]]; then
+            [[ "$UNLOCK_KNOWN_ORPHAN" == false ]]
           else
             [[ "$GATEWAY_REVISION" =~ ^[0-9a-f]{40}$ ]]
             [[ "$WORKER_REVISION" =~ ^[0-9a-f]{40}$ ]]
@@ -89,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install 'pytest==9.0.3'
-          python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_diagnostics.py platform/scripts/tests/test_tick_redis.py -q
+          python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_diagnostics.py platform/scripts/tests/test_tick_redis.py platform/scripts/tests/test_tick_redis_plan.py -q
           python -m pytest --import-mode=importlib platform/scripts/tests/test_shared_runtime_maintenance.py -q
           # These pure patch-generator tests need no Lambda/AWS fixture setup.
           python -m pytest --noconftest --import-mode=importlib modules/agent-factory/webhook-ingress/tests/test_shared_worker_rollout.py -q
@@ -123,6 +126,12 @@ jobs:
       - name: Run reviewed maintenance stage
         run: |
           set -euo pipefail
+          if [[ "$ROLLOUT_STAGE" == tick-redis ]]; then
+            redis_args=(--account-id "$TARGET_ACCOUNT" --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence")
+            if [[ "$EXECUTE" == true ]]; then redis_args+=(--execute); fi
+            python platform/scripts/maintain-tick-redis.py "${redis_args[@]}"
+            exit 0
+          fi
           if [[ "$ROLLOUT_STAGE" == redis-diagnose ]]; then
             python platform/scripts/tick_redis.py \
               --account-id "$TARGET_ACCOUNT" \

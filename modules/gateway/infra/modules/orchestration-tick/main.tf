@@ -62,6 +62,17 @@ resource "aws_security_group" "tick" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  dynamic "egress" {
+    for_each = var.redis_enabled ? [1] : []
+    content {
+      description     = "Redis budget access to the existing gateway store"
+      from_port       = var.redis_port
+      to_port         = var.redis_port
+      protocol        = "tcp"
+      security_groups = [var.redis_security_group_id]
+    }
+  }
+
   tags = merge(var.common_tags, {
     Name    = "${local.tick_name}-sg"
     Service = "lambda"
@@ -138,6 +149,10 @@ resource "time_sleep" "tick_iam_ready" {
 resource "aws_lambda_function" "tick" {
   lifecycle {
     precondition {
+      condition     = !var.redis_enabled || (var.redis_host != "" && var.redis_security_group_id != "" && var.redis_port > 0 && var.redis_port <= 65535 && (!var.redis_iam_auth || (var.redis_username != "" && var.redis_cache_name != "")))
+      error_message = "Redis budget admission requires the existing store endpoint, network identity, and configured IAM user."
+    }
+    precondition {
       condition     = !var.agent_authority_enabled || (var.webhook_events_table_name != "" && var.webhook_events_kms_key_arn != "")
       error_message = "Protected engine dispatch requires the webhook events table and its KMS key."
     }
@@ -176,7 +191,7 @@ resource "aws_lambda_function" "tick" {
   }
 
   environment {
-    variables = {
+    variables = merge(local.redis_environment, {
       # BG_ prefix: src/shared/config.py Settings uses env_prefix = "BG_".
       BG_RDS_IAM_AUTH   = "true"
       BG_RDS_HOST       = var.db_host
@@ -236,7 +251,7 @@ resource "aws_lambda_function" "tick" {
       # trust a row whose authority fields could have been authored rather than
       # delivered.
       ENGINE_COMMAND_SIGNING_KEY_SECRET_ARN = var.engine_command_signing_key_secret_arn
-    }
+    })
   }
 
   tags = merge(var.common_tags, {
@@ -247,6 +262,8 @@ resource "aws_lambda_function" "tick" {
 
   depends_on = [
     time_sleep.tick_iam_ready,
+    aws_iam_role_policy.tick_redis,
+    aws_security_group_rule.redis_from_tick,
     aws_cloudwatch_log_group.tick,
     aws_security_group_rule.tick_to_rds,
     aws_security_group_rule.tick_to_vpc_endpoints,
