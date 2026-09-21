@@ -158,6 +158,53 @@ async def test_initial_dispatch_uses_shared_role_and_current_claim(shared):
     assert (await dispatch(shared)).reason == DenyReason.WORK_NOT_OWNED
 
 
+@pytest.mark.parametrize("evidence", ["failed", "passed", "running", "missing", "stale", "successor", "unknown_meter", "wrong_receipt", "other_flow"])
+async def test_finished_story_releases_only_its_admission_hold(shared, monkeypatch, evidence):
+    # $20 historical usage + one $20 finished hold leaves no room for a second
+    # $20 action under the real $50 policy. Terminal evidence must release only
+    # the redundant admission hold, never the model-spend accumulator.
+    monkeypatch.setattr(budget_config, "budget_run_cap_usd", Decimal(20))
+    old = await _make_node(
+        shared.session, shared.flow, node_ref="finished", state="running" if evidence == "running" else "failed", attempts=1, issue_ref="999"
+    )
+    if evidence == "passed":
+        old.state = "passed"
+    if evidence != "missing":
+        receipt = await report(shared, old, "finished-worker")
+        receipt.terminal_receipt = {
+            "contract_version": 1,
+            "run_id": receipt.run_id,
+            "attempt": 1,
+            "outcome": "complete" if evidence == "passed" else "failed",
+        }
+        if evidence == "stale":
+            old.attempts = 2
+        if evidence == "successor":
+            await report(shared, old, "pending-successor")
+        if evidence == "wrong_receipt":
+            receipt.terminal_receipt = {**receipt.terminal_receipt, "run_id": "someone-else"}
+        if evidence == "other_flow":
+            receipt.flow_id = "another-flow"
+    await shared.session.flush()
+    assert (
+        await flow_budget.reserve_flow_admission(
+            org_id=old.org_id, flow_id=old.flow_id, policy=shared.policy, settled_usd=Decimal(20), node_id=old.id
+        )
+    ).admitted
+    admission = flow_budget.flow_reservation_target(org_id=old.org_id, flow_id=old.flow_id, policy=shared.policy, settled_usd=Decimal(20))
+    original_models = await shared.client.hgetall(shared.target.key())
+    if evidence == "unknown_meter":
+        assert (await shared.store.reserve("unsettled-provider", Decimal(1), [shared.target])).admitted
+        await shared.store.mark_unknown("unsettled-provider", shared.target)
+        original_models = await shared.client.hgetall(shared.target.key())
+    decision = await dispatch(shared)
+    assert decision.permitted == (evidence in {"failed", "passed"})
+    holds = await shared.client.hgetall(admission.key())
+    old_amount = Decimal(holds[flow_budget.admission_request_id(old.id)].split(":", 1)[0])
+    assert old_amount == (0 if decision.permitted else 20)
+    assert await shared.client.hgetall(shared.target.key()) == original_models
+
+
 async def test_lost_meter_never_reinitializes_from_accepted_plan(shared):
     await shared.client.flushdb()
     assert (await dispatch(shared)).reason == DenyReason.BUDGET_UNAVAILABLE

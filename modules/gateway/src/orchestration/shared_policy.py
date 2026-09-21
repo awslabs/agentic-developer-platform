@@ -299,12 +299,62 @@ async def authorize_shared_action(session, context, node, binding, run_id, actio
     if reserve:
         from .flow_budget import reserve_flow_admission
 
+        await _release_finished_admissions(session, inputs.policy, node.flow_id, meter.total_usd)
         reservation = await reserve_flow_admission(
             org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, settled_usd=meter.total_usd, node_id=node.id
         )
         if reservation is None or not reservation.admitted:
             _refuse("budget_unavailable" if reservation is None or reservation.degraded else "spend_limit_exceeded", BlockCode.BUDGET_EXHAUSTED)
     return inputs, principal, meter, auth
+
+
+async def _release_finished_admissions(session, policy, flow_id, metered_usd):
+    """Release stopped shared stories' redundant admission holds under the flow lock.
+
+    The caller has already read the existing model meter successfully. That meter
+    retains actual charges and outstanding provider reservations; it is never
+    modified here. Require both engine-owned terminal state and authenticated
+    terminal reports for the current attempt. A queued or active successor keeps
+    the hold. Initial and continuation admissions share this flow lock, so a new
+    worker cannot be admitted between this check and its replacement reservation.
+    """
+    from .flow_budget import release_flow_admission
+    from .run_reports import OrchestrationRunReport
+
+    nodes = list(
+        await session.scalars(
+            select(OrchestrationNode).where(
+                OrchestrationNode.org_id == policy.org_id,
+                OrchestrationNode.flow_id == flow_id,
+                OrchestrationNode.kind == "story",
+                OrchestrationNode.state.in_({"passed", "failed", "halted", "superseded"}),
+                OrchestrationNode.attempts > 0,
+            )
+        )
+    )
+    if not nodes:
+        return
+    reports = list(
+        await session.scalars(
+            select(OrchestrationRunReport).where(
+                OrchestrationRunReport.org_id == policy.org_id,
+                OrchestrationRunReport.flow_id == flow_id,
+                OrchestrationRunReport.node_id.in_([node.id for node in nodes]),
+            )
+        )
+    )
+    for stopped in nodes:
+        current = [report for report in reports if report.node_id == stopped.id and report.attempt == stopped.attempts]
+        if not current or any(
+            not isinstance(report.terminal_receipt, dict)
+            or report.terminal_receipt.get("contract_version") != 1
+            or report.terminal_receipt.get("run_id") != report.run_id
+            or report.terminal_receipt.get("attempt") != stopped.attempts
+            or report.terminal_receipt.get("outcome") not in {"complete", "failed"}
+            for report in current
+        ):
+            continue
+        await release_flow_admission(org_id=policy.org_id, flow_id=flow_id, policy=policy, settled_usd=metered_usd, node_id=stopped.id)
 
 
 async def authorize_shared_model(session, assignment):
@@ -473,6 +523,7 @@ async def authorize_shared_dispatch(
         return decision
     from .flow_budget import reserve_flow_admission
 
+    await _release_finished_admissions(session, inputs.policy, node.flow_id, meter.total_usd)
     reservation = await reserve_flow_admission(
         org_id=node.org_id, flow_id=node.flow_id, policy=inputs.policy, settled_usd=meter.total_usd, node_id=node.id
     )
