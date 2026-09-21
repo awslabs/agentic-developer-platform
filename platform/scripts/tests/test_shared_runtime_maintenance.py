@@ -3,11 +3,13 @@
 import ast
 import base64
 import copy
+import asyncio
 import importlib.util
 import json
 from pathlib import Path
 import sqlite3
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -332,3 +334,126 @@ def test_other_work_context_is_bounded_and_preserves_orphan_and_tenant_mismatch(
     assert any(row["flow_state"] == "failed" for row in actual)
     assert "private-" not in json.dumps(actual)
     connection.close()
+
+
+def other_work(**overrides):
+    facts = {"contract": "shared-runtime-dispatch-preflight/v1", "routing_blocker": None,
+             "installation_id": 42, "approval_decision_id": "approval", "human_approval_verified": True}
+    facts.update(overrides)
+    row = {"org_id": "other", "flow_id": "legacy", "node_id": "node", "flow_state": "pending",
+           "state": "ready", "attempts": 0, "issue_ref": "4213", "dispatch_preflight": facts}
+    return {"other_ready_or_running_stories": 1, "other_ready_or_running_nodes": [row],
+            "other_ready_or_running_nodes_truncated": False}
+
+
+@pytest.mark.parametrize("blocker", [dict(routing_blocker="missing_issue_ref"), dict(routing_blocker="malformed_issue_ref"),
+                                   dict(installation_id=None), dict(approval_decision_id=None, human_approval_verified=False),
+                                   dict(human_approval_verified=False)])
+def test_ready_work_requires_a_proven_early_dispatch_blocker(blocker):
+    guard.check_other_work(other_work(**blocker))
+
+
+def test_pending_flow_or_missing_policy_is_not_an_early_blocker():
+    probe = other_work()
+    probe["other_ready_or_running_nodes"][0]["execution_policy"] = None
+    with pytest.raises(guard.Refused, match="may dispatch"):
+        guard.check_other_work(probe)
+
+
+@pytest.mark.parametrize("blocker", [dict(routing_blocker="missing_issue_ref"), dict(installation_id=None), dict(human_approval_verified=False)])
+def test_running_work_is_never_ignored_when_its_dispatch_authority_disappears(blocker):
+    probe = other_work(**blocker)
+    probe["other_ready_or_running_nodes"][0]["state"] = "running"
+    with pytest.raises(guard.Refused, match="running work"):
+        guard.check_other_work(probe)
+
+
+@pytest.mark.parametrize("case", ["truncated", "missing_count", "boolean_count", "count_mismatch", "missing_rows", "duplicate", "unknown_attempt",
+                                 "missing_scope", "missing_facts", "unknown_contract", "missing_approval", "unknown_routing",
+                                 "bad_installation", "bad_approval_flag", "contradictory_approval"])
+def test_incomplete_or_unknown_dispatch_evidence_stops_activation(case):
+    probe = other_work(installation_id=None)
+    rows = probe["other_ready_or_running_nodes"]
+    facts = rows[0]["dispatch_preflight"]
+    if case == "truncated":
+        probe["other_ready_or_running_nodes_truncated"] = True
+    elif case == "missing_count":
+        probe.pop("other_ready_or_running_stories")
+    elif case == "boolean_count":
+        probe["other_ready_or_running_stories"] = True
+    elif case == "count_mismatch":
+        probe["other_ready_or_running_stories"] = 2
+    elif case == "missing_rows":
+        probe.pop("other_ready_or_running_nodes")
+    elif case == "duplicate":
+        rows.append(copy.deepcopy(rows[0]))
+        probe["other_ready_or_running_stories"] = 2
+    elif case == "missing_scope":
+        rows[0].pop("org_id")
+    elif case == "unknown_attempt":
+        rows[0]["attempts"] = None
+    elif case == "missing_facts":
+        rows[0].pop("dispatch_preflight")
+    elif case == "unknown_contract":
+        facts["contract"] = "unknown"
+    elif case == "missing_approval":
+        facts.pop("human_approval_verified")
+    elif case == "unknown_routing":
+        facts["routing_blocker"] = "unknown"
+    elif case == "bad_installation":
+        facts["installation_id"] = "unknown"
+    elif case == "bad_approval_flag":
+        facts["human_approval_verified"] = "false"
+    else:
+        facts["approval_decision_id"] = None
+    with pytest.raises(guard.Refused):
+        guard.check_other_work(probe)
+
+
+def test_empty_inventory_is_explicit_and_complete():
+    guard.check_other_work({"other_ready_or_running_stories": 0, "other_ready_or_running_nodes": [],
+                           "other_ready_or_running_nodes_truncated": False})
+
+
+@pytest.mark.parametrize("approval_state", ["missing", "refused", "authorized", "different_flow", "unavailable"])
+def test_probe_invokes_dispatch_helpers_with_actual_tenant_and_flow(monkeypatch, approval_state):
+    scripts = []
+    monkeypatch.setattr(maintenance, "snapshot", lambda *a: {"data": {"run-credential-key": base64.b64encode(b"private-key-fixture").decode()}})
+    monkeypatch.setattr(maintenance, "kube", lambda *a, stdin=None: scripts.append(stdin) or '{"key_matches": true}')
+    maintenance.gateway_probe()
+    definition = next(node for node in ast.parse(scripts[0]).body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dispatch_preflight")
+    calls = []
+    class GenesisRefusedError(Exception):
+        pass
+    def routing(**kwargs):
+        calls.append(("routing", kwargs))
+        return SimpleNamespace(value="missing_issue_ref")
+    async def installation(session, **kwargs):
+        calls.append(("installation", session, kwargs))
+        return None
+    async def approval(session, **kwargs):
+        calls.append(("approval", session, kwargs))
+        return None if approval_state == "missing" else "decision"
+    async def genesis(session, **kwargs):
+        calls.append(("genesis", session, kwargs))
+        if approval_state == "unavailable":
+            raise RuntimeError("unavailable")
+        if approval_state == "refused":
+            raise GenesisRefusedError("unattributed approval")
+        return SimpleNamespace(flow_id="other" if approval_state == "different_flow" else "legacy")
+    namespace = {"routing_blocker_for_node": routing, "resolve_installation_id": installation,
+                 "_latest_approval_decision_id": approval, "resolve_engine_genesis": genesis, "GenesisRefusedError": GenesisRefusedError}
+    exec(compile(ast.Module(body=[definition], type_ignores=[]), "probe", "exec"), namespace)
+    operation = namespace["dispatch_preflight"]("session", {"org_id": "tenant", "flow_id": "legacy", "issue_ref": None})
+    if approval_state == "unavailable":
+        with pytest.raises(RuntimeError, match="unavailable"):
+            asyncio.run(operation)
+        return
+    result = asyncio.run(operation)
+    assert result["routing_blocker"] == "missing_issue_ref" and result["installation_id"] is None
+    assert result["human_approval_verified"] is (approval_state == "authorized")
+    assert calls[:3] == [("routing", {"kind": "story", "issue_ref": None}),
+                         ("installation", "session", {"org_id": "tenant"}),
+                         ("approval", "session", {"org_id": "tenant", "flow_id": "legacy"})]
+    if approval_state != "missing":
+        assert calls[-1] == ("genesis", "session", {"org_id": "tenant", "decision_id": "decision"})

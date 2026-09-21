@@ -172,9 +172,19 @@ contract after global activation.
 For review, the existing SQL probe also returns at most 20 non-target ready or
 running story nodes: tenant, flow/node IDs, flow/node states, attempts and issue
 reference. A left join preserves missing or mismatched flow evidence as a null
-flow state. Titles, plan content and decisions are excluded. The total count and
-zero-work activation requirement remain unchanged; a truncated sample does not
-reduce that count.
+flow state. Each row also carries the actual dispatch helpers' issue-routing
+blocker, resolved installation ID, latest approval decision ID and verified human
+genesis result. Titles, plan content, decision bodies and approver identities are
+excluded.
+
+Every non-target running story still stops activation. A ready story can remain
+only when the probe proves a hard early dispatch refusal: missing/malformed issue
+routing, no unambiguous installation, or no authorized human approval. A pending
+flow or absent execution policy is not such a refusal; legacy dispatch may still
+run it. Missing/unknown evidence, duplicate IDs, count mismatches or a truncated
+inventory stop activation. The zero-work checks for continuations, assignments,
+executions, unresolved actions, queued authoring and SQS remain in force. These
+are current observations; repeat preflight before each enabling stage.
 
 After `verify`, obtain a fresh continuation preview and accept **only CLI**
 (`0737183c-99c4-4e1f-bdb7-e4432b46ca20`, tenant `aws-e`) through the existing API,

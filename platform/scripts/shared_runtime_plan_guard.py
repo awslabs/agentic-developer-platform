@@ -38,6 +38,42 @@ def require(condition, reason):
         raise Refused(reason)
 
 
+def check_other_work(probe):
+    """Ignore only ready stories with a proven early dispatch refusal.
+
+    Reporting also applies to legacy flows. A pending flow, absent execution
+    policy, empty queue, or zero current workers cannot prove non-eligibility.
+    Running stories always block, even if their installation/approval is gone.
+    """
+    count = probe.get("other_ready_or_running_stories")
+    rows = probe.get("other_ready_or_running_nodes")
+    require(type(count) is int and 0 <= count <= 20, "other work inventory is unavailable or unbounded")
+    require(isinstance(rows, list) and len(rows) == count and probe.get("other_ready_or_running_nodes_truncated") is False,
+            "other work inventory is incomplete")
+    seen = set()
+    for row in rows:
+        require(isinstance(row, dict), "other work record is invalid")
+        identity = row.get("node_id")
+        require(isinstance(identity, str) and identity and identity not in seen, "other work identity is missing or duplicated")
+        require(all(isinstance(row.get(key), str) and row[key] for key in ("org_id", "flow_id")), "other work scope is missing")
+        require(type(row.get("attempts")) is int and row["attempts"] >= 0, "other work attempt is unknown")
+        seen.add(identity)
+        require(row.get("state") == "ready", "other running work requires separate review before global shared activation")
+        facts = row.get("dispatch_preflight")
+        require(isinstance(facts, dict) and facts.get("contract") == "shared-runtime-dispatch-preflight/v1"
+                and {"routing_blocker", "installation_id", "approval_decision_id", "human_approval_verified"} <= facts.keys(),
+                "other ready work lacks dispatch eligibility evidence")
+        require((facts["routing_blocker"] is None or isinstance(facts["routing_blocker"], str))
+                and facts["routing_blocker"] in {None, "missing_issue_ref", "malformed_issue_ref"}
+                and type(facts["human_approval_verified"]) is bool
+                and (facts["installation_id"] is None or type(facts["installation_id"]) is int)
+                and (facts["approval_decision_id"] is None or isinstance(facts["approval_decision_id"], str))
+                and (not facts["human_approval_verified"] or bool(facts["approval_decision_id"])),
+                "other ready work has invalid dispatch eligibility evidence")
+        require(facts["routing_blocker"] is not None or facts["installation_id"] is None or not facts["human_approval_verified"],
+                "other ready work may dispatch; separate review is required before global shared activation")
+
+
 def normalized(value):
     if isinstance(value, dict):
         return {k: normalized(v) for k, v in sorted(value.items())}
