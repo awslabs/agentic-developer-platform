@@ -11,9 +11,9 @@ from .execution_runner import DecisionKind, EffectOutcome, EffectRequest, Effect
 from .execution_state import ActionIntent, BlockCode, ExecutionIdentity, OutcomeKind
 from .execution_store import load_execution
 from .models import OrchestrationAction
-from .repository_evaluation import RepositoryEvaluationReceipt, authorize, record
+from .repository_evaluation import authorize, receipt_model, record
 from .repository_evaluation_provider import require
-from .repository_producer import PRODUCER_KIND, RepositoryScanProvider, digest, producer_state, workflow_ref
+from .repository_producer import CLI_PRODUCER_KIND, PRODUCER_KIND, RepositoryScanProvider, digest, producer_kind, producer_state, workflow_ref
 from .review_cycle import CycleBlockedError, block
 from .state import ActorKind, NodeState, transition
 from .work_claims import Disposition, ReleaseReason, release_work
@@ -35,7 +35,7 @@ class RepositoryProducerController:
             if authorize_effect:
                 authority = await authorize(session, node, plan, spec, binding, self.provider.evidence, exclude_current_evaluation=True)
                 require(authority == (accepted[0].id, admission["evaluation_policy_hash"]), "producer_authority_changed")
-            key = OperationIdentity.from_context(context, PRODUCER_KIND, accepted[0].id, admission["source_snapshot_hash"]).key
+            key = OperationIdentity.from_context(context, producer_kind(spec), accepted[0].id, admission["source_snapshot_hash"]).key
             row = await session.scalar(
                 select(OrchestrationAction).where(
                     OrchestrationAction.execution_id == context.execution.id,
@@ -48,7 +48,7 @@ class RepositoryProducerController:
             prepared = await self.provider.preflight(binding, spec, sources)
             # WorkflowRef holds frozen allowlists; persist ordinary JSON, not Python sets.
             prepared["workflow"]["allowed_inputs"] = {key: sorted(values) for key, values in prepared["workflow"]["allowed_inputs"].items()}
-            saved = dict(**admission, **prepared, correlation=digest(key), operation_key=key)
+            saved = dict(**admission, **prepared, correlation=digest(key), operation_key=key, producer_kind=producer_kind(spec))
         require(
             saved["acceptance_decision_id"] == accepted[0].id and saved["source_snapshot_hash"] == admission["source_snapshot_hash"],
             "producer_intent_changed",
@@ -77,11 +77,15 @@ class RepositoryProducerController:
             if run is None:
                 if incomplete or data.get("dispatch_started"):
                     return EvaluationObservation(
-                        ObservationKind.UNCERTAIN, stage="repository_wait", detail="One-off scan dispatch is unresolved; no duplicate will be sent."
+                        ObservationKind.UNCERTAIN,
+                        stage="repository_wait",
+                        detail="Evaluation workflow dispatch is unresolved; no duplicate will be sent.",
                     )
                 return EvaluationObservation(ObservationKind.READY, stage="repository_dispatch", snapshot=data)
             if run.status != "completed":
-                return EvaluationObservation(ObservationKind.WAITING, stage="repository_wait", detail="The correlated one-off scan is still running.")
+                return EvaluationObservation(
+                    ObservationKind.WAITING, stage="repository_wait", detail="The correlated evaluation workflow is still running."
+                )
             if run.conclusion != "success":
                 return EvaluationObservation(
                     ObservationKind.BLOCKED,
@@ -91,7 +95,13 @@ class RepositoryProducerController:
             node, plan, spec, accepted, admission, sources, binding = state
             pulls, revisions = await self.provider.evidence.verify_sources(binding, spec, sources)
             workflow = await self.provider.evidence.workflow(
-                binding, spec.workflows[0], revisions=revisions, max_age_seconds=spec.max_age_seconds, bound_run=run, producer=spec.producer
+                binding,
+                spec.workflows[0],
+                revisions=revisions,
+                max_age_seconds=spec.max_age_seconds,
+                bound_run=run,
+                producer=spec.producer,
+                qualification=getattr(spec, "qualification", None),
             )
             # Revalidate correlation and context after the artifact read as well.
             fresh, _ = await self.observed_run(state, data)
@@ -101,7 +111,7 @@ class RepositoryProducerController:
                 == {key: value for key, value in run_data(run).items() if key != "observed_at"},
                 "producer_run_changed_during_evidence",
             )
-            receipt = RepositoryEvaluationReceipt(
+            receipt = receipt_model(spec)(
                 org_id=node.org_id,
                 flow_id=node.flow_id,
                 node_id=node.id,
@@ -171,12 +181,12 @@ class RepositoryProducerController:
     async def perform(self, context, effect):
         started = False
         try:
-            require(effect.intent.kind == PRODUCER_KIND and effect.action is Action.EVALUATE, "producer_effect_changed")
+            require(effect.intent.kind in {PRODUCER_KIND, CLI_PRODUCER_KIND} and effect.action is Action.EVALUATE, "producer_effect_changed")
             state, data = await self.snapshot(context, authorize_effect=True)
-            require(data["operation_key"] == effect.intent.operation_key, "producer_effect_changed")
+            require(data["operation_key"] == effect.intent.operation_key and effect.intent.kind == producer_kind(state[2]), "producer_effect_changed")
             run, incomplete = await self.observed_run(state, data)
             if run is not None or incomplete or data.get("dispatch_started"):
-                return EffectResult(EffectOutcome.UNCERTAIN, detail="Reconcile the existing scan; no additional dispatch.")
+                return EffectResult(EffectOutcome.UNCERTAIN, detail="Reconcile the existing evaluation workflow; no additional dispatch.")
             fresh = await self.provider.preflight(state[-1], state[2], state[-2])
             require(fresh["definition"] == data["definition"] and fresh["source_revision"] == data["source_revision"], "producer_definition_changed")
 
@@ -208,7 +218,7 @@ class RepositoryProducerController:
         # Identity, accepted scope, source and claim fences still apply, while a
         # later expiry or exhausted spend allowance cannot prevent truthful
         # settlement. Effect authorization belongs only at the dispatch boundary.
-        receipt = RepositoryEvaluationReceipt.model_validate(snapshot["receipt"]) if snapshot.get("receipt") else None
+        receipt = receipt_model(spec).model_validate(snapshot["receipt"]) if snapshot.get("receipt") else None
         if receipt is not None:
             require(
                 receipt.org_id == node.org_id
@@ -227,7 +237,7 @@ class RepositoryProducerController:
         passed = receipt is not None and receipt.mandatory_passed
         target = NodeState.PASSED if passed else NodeState.FAILED
         require(
-            transition(node.state, target, actor_kind=ActorKind.SERVICE, reason="Authenticated one-off scan outcome").allowed,
+            transition(node.state, target, actor_kind=ActorKind.SERVICE, reason="Authenticated evaluation workflow outcome").allowed,
             "producer_transition_refused",
         )
         node.state = target.value
@@ -254,7 +264,8 @@ class RepositoryProducerController:
         if observation.stage == "repository_dispatch":
             data = observation.snapshot
             return HandlerDecision(
-                DecisionKind.EFFECT, effect=EffectRequest(ActionIntent(data["operation_key"], PRODUCER_KIND, detail=data), Action.EVALUATE)
+                DecisionKind.EFFECT,
+                effect=EffectRequest(ActionIntent(data["operation_key"], data.get("producer_kind", PRODUCER_KIND), detail=data), Action.EVALUATE),
             )
         if observation.stage == "repository_settle":
 
@@ -262,20 +273,21 @@ class RepositoryProducerController:
                 await self.settle(session, current, observation.snapshot)
 
             return HandlerDecision(
-                DecisionKind.CONCLUDE, settlement=settle, progress_note="One-off scan finished; recorded evidence determines acceptance."
+                DecisionKind.CONCLUDE, settlement=settle, progress_note="Evaluation workflow finished; recorded evidence determines acceptance."
             )
         return HandlerDecision(DecisionKind.WAIT, next_check_at=context.now + timedelta(seconds=30), progress_note=observation.detail)
 
 
 async def producer_effect_policy(session, record, effect):
     """The runner may use only this exact accepted extension for a scan effect."""
-    require(effect.intent.kind == PRODUCER_KIND and effect.action is Action.EVALUATE, "producer_effect_changed")
+    require(effect.intent.kind in {PRODUCER_KIND, CLI_PRODUCER_KIND} and effect.action is Action.EVALUATE, "producer_effect_changed")
     from .execution_runner import RunnerContext
 
     identity = ExecutionIdentity(record.org_id, record.node_id, record.cycle, record.accepted_plan_version, record.claim_id, record.claim_generation)
     state = await producer_state(session, RunnerContext(identity, record, datetime.now(UTC)))
     require(
-        effect.intent.detail["acceptance_decision_id"] == state[3][0].id
+        effect.intent.kind == producer_kind(state[2])
+        and effect.intent.detail["acceptance_decision_id"] == state[3][0].id
         and effect.intent.detail["evaluation_policy_hash"] == state[3][2].policy_hash,
         "producer_effect_authority_changed",
     )

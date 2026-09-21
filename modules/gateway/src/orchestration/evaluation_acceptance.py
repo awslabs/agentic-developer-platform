@@ -14,7 +14,7 @@ from .compile import ApprovalContext
 from .dispatch import graph_address
 from .execution_policy import _STAMPED_FIELDS, AcceptanceMode, Action, ExecutionPolicy, stamp_policy
 from .models import OrchestrationAcceptedPlan, OrchestrationDecision, OrchestrationEdge, OrchestrationFlow, OrchestrationNode
-from .repository_evaluation_contract import RepositoryEvaluationSpecification, canonical, harness_digest
+from .repository_evaluation_contract import canonical, harness_digest, native_specification
 from .review_cycle import CycleBlockedError
 from .shared_policy import shared_inputs
 from .state import ActorKind
@@ -32,6 +32,7 @@ class EvaluationAcceptanceRequest(BaseModel):
     specification: dict
     authorize_evaluate: StrictBool = False
     authorize_workflow_dispatch: StrictBool = False
+    authorize_cli_qualification_dispatch: StrictBool = False
     reason: str = Field(min_length=8, max_length=4000)
     expected_snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
@@ -97,7 +98,7 @@ async def accepted_contract(session, *, node, plan):
         address = data["address"]
         flow = await session.get(OrchestrationFlow, node.flow_id)
         require(flow is not None and address == graph_address(node, flow_slug=flow.slug), "evaluation_address_changed")
-        spec = RepositoryEvaluationSpecification.model_validate(data["specification"])
+        spec = native_specification(data["specification"])
         policy = evaluation_policy(base, actor_id=decision.actor_id, address=address)
         require(
             decision.actor_kind == ActorKind.HUMAN.value
@@ -113,7 +114,9 @@ async def accepted_contract(session, *, node, plan):
             and (Action.EVALUATE in base.allowed_actions or data["authorize_evaluate"] is True),
             "evaluation_acceptance_unverifiable",
         )
-        require(spec.producer is None or data.get("authorize_workflow_dispatch") is True, "producer_authorization_required")
+        is_cli = spec.evidence_schema == "cli-live-evaluation/v1"
+        grant = "authorize_cli_qualification_dispatch" if is_cli else "authorize_workflow_dispatch"
+        require(spec.producer is None or data.get(grant) is True, "producer_authorization_required")
         return decision, spec, policy
     except (ValueError, KeyError, TypeError):
         raise CycleBlockedError("evaluation_acceptance_unverifiable") from None
@@ -174,14 +177,30 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
     nodes = [row for row in (plan.plan_document or {}).get("nodes", []) if row.get("address") == address]
     require(len(nodes) == 1 and {key: nodes[0].get(key) for key in node_scope(node)} == node_scope(node), "accepted_node_changed")
     original = nodes[0].get("evaluation")
-    require(original is None or original.get("evidence_schema") == "repository-evaluation/v1", "live_contract_cannot_be_replaced")
+    require(
+        original is None or original.get("evidence_schema") in {"repository-evaluation/v1", "cli-live-evaluation/v1"},
+        "live_contract_cannot_be_replaced",
+    )
     base = inputs.policy
     require(base.evaluation_acceptance.get(address) is AcceptanceMode.MACHINE, "machine_acceptance_not_in_plan")
     require(Action.EVALUATE not in base.human_gates, "explicit_human_gate_preserved")
     require(Action.EVALUATE in base.allowed_actions or request.authorize_evaluate, "explicit_evaluate_authorization_required")
-    spec = RepositoryEvaluationSpecification.model_validate(request.specification)
-    require(spec.producer is None or request.authorize_workflow_dispatch, "explicit_producer_authorization_required")
-    require(spec.producer is not None or not request.authorize_workflow_dispatch, "producer_specification_required")
+    spec = native_specification(request.specification)
+    attached = await accepted_contract(session, node=node, plan=plan)
+    require(
+        not (
+            (original or {}).get("evidence_schema") == "cli-live-evaluation/v1"
+            or (attached and attached[1].evidence_schema == "cli-live-evaluation/v1")
+        )
+        or spec.evidence_schema == "cli-live-evaluation/v1",
+        "live_contract_cannot_be_replaced",
+    )
+    is_cli = spec.evidence_schema == "cli-live-evaluation/v1"
+    require(not is_cli or node.issue_ref == str(spec.qualification.owner_issue), "cli_qualification_owner_changed")
+    grant = request.authorize_cli_qualification_dispatch if is_cli else request.authorize_workflow_dispatch
+    require(not (request.authorize_workflow_dispatch if is_cli else request.authorize_cli_qualification_dispatch), "wrong_producer_dispatch_grant")
+    require(spec.producer is None or grant, "explicit_producer_authorization_required")
+    require(spec.producer is not None or not grant, "producer_specification_required")
     require(spec.runner.repository in base.repository_ids, "repository_not_permitted")
     require(spec.runner.harness_sha256 == harness_digest(), "evaluation_harness_mismatch")
     require(len(canonical(spec.model_dump(mode="json"))) <= 256 * 1024, "evaluation_specification_too_large")
@@ -219,6 +238,7 @@ async def preview_evaluation(session, *, flow_id, actor: ApprovalContext, reques
         evaluation_policy=policy.model_dump(mode="json"),
         authorize_evaluate=request.authorize_evaluate,
         authorize_workflow_dispatch=request.authorize_workflow_dispatch,
+        authorize_cli_qualification_dispatch=request.authorize_cli_qualification_dispatch,
         reason=request.reason,
     )
     snapshot = digest(
@@ -267,9 +287,10 @@ async def _accept_evaluation_locked(session, *, flow_id, actor, request):
         require(latest is not None and latest[0].id == existing.id, "evaluation_contract_superseded")
         content = json.loads(existing.reason)
         require(
-            content["specification"] == RepositoryEvaluationSpecification.model_validate(request.specification).model_dump(mode="json")
+            content["specification"] == native_specification(request.specification).model_dump(mode="json")
             and content["authorize_evaluate"] == request.authorize_evaluate
             and content.get("authorize_workflow_dispatch", False) == request.authorize_workflow_dispatch
+            and content.get("authorize_cli_qualification_dispatch", False) == request.authorize_cli_qualification_dispatch
             and content["reason"] == request.reason,
             "acceptance_identity_conflict",
         )

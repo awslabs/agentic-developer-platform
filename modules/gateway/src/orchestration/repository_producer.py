@@ -26,6 +26,15 @@ from .work_claims import ClaimBinding, ClaimOwner, Disposition, OwnerKind, claim
 
 CONTEXT_KIND = "repository_scan_context"
 PRODUCER_KIND = "repository_scan_dispatch"
+CLI_PRODUCER_KIND = "cli_qualification_dispatch"
+
+
+def producer_kind(spec):
+    return CLI_PRODUCER_KIND if spec.evidence_schema == "cli-live-evaluation/v1" else PRODUCER_KIND
+
+
+def context_kind(spec):
+    return "cli_qualification_context" if spec.evidence_schema == "cli-live-evaluation/v1" else CONTEXT_KIND
 
 
 def digest(value):
@@ -98,7 +107,14 @@ class RepositoryScanProvider(WorkflowProvider):
         document = yaml.safe_load(content)
         events = document.get("on", document.get(True)) if isinstance(document, dict) else None
         names = set(events) if isinstance(events, dict | list) else {events} if isinstance(events, str) else set()
-        require(names == {"workflow_dispatch"}, "producer_not_dispatch_only")
+        expected_events = (
+            {"workflow_dispatch", "schedule", "pull_request"} if spec.evidence_schema == "cli-live-evaluation/v1" else {"workflow_dispatch"}
+        )
+        require(names == expected_events, "producer_workflow_events_changed")
+        if spec.evidence_schema == "cli-live-evaluation/v1":
+            from .cli_live_contract import NIGHTLY_SCHEDULE
+
+            require(isinstance(events, dict) and events["schedule"] == NIGHTLY_SCHEDULE, "cli_nightly_schedule_changed")
         concurrency = document.get("concurrency")
         require(
             isinstance(concurrency, dict)
@@ -143,7 +159,7 @@ async def producer_state(session, context):
             .where(
                 OrchestrationAction.org_id == node.org_id,
                 OrchestrationAction.execution_id == context.execution.id,
-                OrchestrationAction.kind == CONTEXT_KIND,
+                OrchestrationAction.kind == context_kind(spec),
                 OrchestrationAction.status == "succeeded",
             )
             .limit(2)
@@ -226,7 +242,7 @@ async def admit_producer(session, node, *, provider=None):
         select(OrchestrationAction.id)
         .where(
             OrchestrationAction.org_id == node.org_id,
-            OrchestrationAction.kind == CONTEXT_KIND,
+            OrchestrationAction.kind == context_kind(spec),
             OrchestrationAction.detail["acceptance_decision_id"].as_string() == fresh[0].id,
         )
         .limit(1)
@@ -259,7 +275,7 @@ async def admit_producer(session, node, *, provider=None):
     )
     require(created.kind is OutcomeKind.APPLIED, "producer_execution_conflict")
     context = RunnerContext(identity, created.record, datetime.now(UTC))
-    key = OperationIdentity.from_context(context, CONTEXT_KIND, fresh[0].id).key
+    key = OperationIdentity.from_context(context, context_kind(spec), fresh[0].id).key
     data = dict(
         acceptance_decision_id=fresh[0].id,
         specification_hash=digest(spec.model_dump(mode="json")),
@@ -269,7 +285,7 @@ async def admit_producer(session, node, *, provider=None):
         evaluation_policy_hash=authority[1],
     )
     require(
-        (await prepare_action(session, identity=identity, intent=ActionIntent(key, CONTEXT_KIND, detail=data))).kind is OutcomeKind.APPLIED,
+        (await prepare_action(session, identity=identity, intent=ActionIntent(key, context_kind(spec), detail=data))).kind is OutcomeKind.APPLIED,
         "producer_context_conflict",
     )
     require(

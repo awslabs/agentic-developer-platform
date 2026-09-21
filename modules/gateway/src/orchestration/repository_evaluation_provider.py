@@ -18,7 +18,7 @@ from src.knowledge.github_app_service import mint_installation_token_with_expiry
 
 from .deployment_workflow_provider import WorkflowProvider
 from .merge_evidence import GitHubEvidenceSource
-from .repository_evaluation_contract import predicate_passes
+from .repository_evaluation_contract import canonical, predicate_passes
 from .review_cycle import CycleBlockedError
 
 MAX_ARCHIVE = 16 * 1024 * 1024
@@ -156,22 +156,22 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         require(blob == record.get("sha"), "workflow_blob_digest")
         return blob, content
 
-    async def latest_workflow_run(self, binding, workflow_path, source):
+    async def latest_workflow_run(self, binding, workflow_path, source, *, events=frozenset({"workflow_dispatch"})):
         path = quote(workflow_path.rsplit("/", 1)[1], safe="")
         response = await self.request(
             binding,
             "GET",
             f"/repos/{binding.repo}/actions/workflows/{path}/runs",
-            params={"event": "workflow_dispatch", "head_sha": source, "per_page": 20},
+            params={**({"event": "workflow_dispatch"} if events == {"workflow_dispatch"} else {}), "head_sha": source, "per_page": 20},
         )
         candidates = response.json().get("workflow_runs")
         require(isinstance(candidates, list) and len(candidates) <= 20, "workflow_runs")
         # Never skip a newer failed/pending attempt to select an older green run.
-        candidates = [run for run in candidates if run.get("head_sha") == source and run.get("event") == "workflow_dispatch"]
+        candidates = [run for run in candidates if run.get("head_sha") == source and run.get("event") in events]
         require(bool(candidates), "workflow_run_missing")
         return max(candidates, key=lambda run: (run.get("run_number", 0), run.get("id", 0)))
 
-    async def workflow(self, binding, workflow, *, revisions, max_age_seconds, bound_run=None, producer=None):
+    async def workflow(self, binding, workflow, *, revisions, max_age_seconds, bound_run=None, producer=None, qualification=None):
         source = workflow.source.revision or revisions[workflow.source.predecessor]
         definition = workflow.definition.revision or revisions[workflow.definition.predecessor]
         blob, content = await self.definition_blob(binding, workflow.path, definition)
@@ -182,7 +182,19 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         events = document.get("on", document.get(True))
         names = set(events) if isinstance(events, dict | list) else {events} if isinstance(events, str) else set()
         require("workflow_dispatch" in names and (not workflow.dispatch_only or names == {"workflow_dispatch"}), "workflow_not_dispatch_only")
-        chosen = {"id": bound_run.run_id} if bound_run is not None else await self.latest_workflow_run(binding, workflow.path, source)
+        if qualification is not None:
+            from .cli_live_contract import NIGHTLY_SCHEDULE
+
+            require(
+                isinstance(events, dict) and names == {"workflow_dispatch", "schedule", "pull_request"} and events["schedule"] == NIGHTLY_SCHEDULE,
+                "cli_nightly_schedule_changed",
+            )
+        allowed_events = {"workflow_dispatch", "schedule"} if qualification is not None and bound_run is None else {"workflow_dispatch"}
+        chosen = (
+            {"id": bound_run.run_id}
+            if bound_run is not None
+            else await self.latest_workflow_run(binding, workflow.path, source, events=allowed_events)
+        )
         expected_head = bound_run.context.workflow_revision if bound_run is not None else source
         run = (await self.request(binding, "GET", f"/repos/{binding.repo}/actions/runs/{int(chosen['id'])}")).json()
         require(
@@ -190,7 +202,7 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             and run.get("head_repository", {}).get("id") == binding.provider_repository_id
             and run.get("head_sha") == expected_head
             and run.get("path", "").split("@", 1)[0] == workflow.path
-            and run.get("event") == "workflow_dispatch"
+            and run.get("event") in allowed_events
             and run.get("id") == chosen["id"]
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
@@ -214,7 +226,7 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             )
             job_receipts.append(dict(name=name, job_id=job["id"]))
         artifacts = await self.pages(binding, f"/repos/{binding.repo}/actions/runs/{run_id}/artifacts", "artifacts")
-        artifact_receipts, outcomes = [], []
+        artifact_receipts, outcomes, archives = [], [], {}
         for expected in workflow.artifacts:
             # An attempt suffix prevents a rerun reusing a prior attempt's archive.
             name = expected.name.replace("{run_id}", str(run_id)).replace("{run_attempt}", str(attempt))
@@ -230,7 +242,13 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             require(expected.path in files, "artifact_file_missing")
             data = files[expected.path]
             payload = parse_document(data)
-            if producer is not None and (expected.name, expected.path) == (producer.receipt_artifact, producer.receipt_path):
+            if qualification is not None:
+                archives[(expected.name, expected.path)] = payload, files
+            if (
+                producer is not None
+                and qualification is None
+                and (expected.name, expected.path) == (producer.receipt_artifact, producer.receipt_path)
+            ):
                 from .repository_producer_contract import RepositoryScanReceipt
 
                 scan = RepositoryScanReceipt.model_validate(payload)
@@ -248,6 +266,19 @@ class RepositoryEvidenceProvider(WorkflowProvider):
                 dict(artifact_id=artifact["id"], name=name, digest=digest, path=expected.path, sha256=hashlib.sha256(data).hexdigest())
             )
             outcomes.extend(dict(criterion_id=item.criterion_id, passed=predicate_passes(item, payload)) for item in expected.predicates)
+        qualified = None
+        if qualification is not None:
+            from .cli_live_evidence import validate_qualification
+
+            qualified, criteria = validate_qualification(
+                qualification,
+                run=run,
+                jobs=jobs,
+                archives=archives,
+                correlation=bound_run.context.correlation if bound_run is not None else None,
+                now=self.clock(),
+            )
+            outcomes.extend(criteria)
         # Rerun/replacement while downloading invalidates this entire observation.
         current = (await self.request(binding, "GET", f"/repos/{binding.repo}/actions/runs/{run_id}")).json()
         require(
@@ -257,7 +288,7 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         # The selected run can remain green while a newer run starts or fails.
         # Re-read selection too; rechecking only this run would accept stale success.
         if bound_run is None:
-            latest = await self.latest_workflow_run(binding, workflow.path, source)
+            latest = await self.latest_workflow_run(binding, workflow.path, source, events=allowed_events)
             require(latest.get("id") == run_id and latest.get("run_attempt") == attempt, "workflow_latest_run_changed")
         return dict(
             criterion_id=workflow.criterion_id,
@@ -267,10 +298,11 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             workflow_blob_sha=blob,
             run_id=run_id,
             run_attempt=attempt,
-            event="workflow_dispatch",
+            event=run["event"],
             jobs=job_receipts,
             artifacts=artifact_receipts,
             criteria=outcomes,
+            **({"qualification": qualified} if qualification is not None else {}),
         )
 
     async def observe(self, binding, spec, sources):
@@ -306,6 +338,10 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         async def pull(source):
             return await self.pull_request(binding, source)
 
+        qualification = getattr(spec, "qualification", None)
+        if qualification is not None:
+            required_issues = {int(item.criterion_id.split("/", 1)[0]) for item in qualification.criteria}
+            require(required_issues <= {source.get("issue_number") for source in sources}, "cli_prerequisite_delivery_sources_missing")
         pulls = await bounded_reads(pull, sources)
         revisions = {source["address"]: source["merge_sha"] for source in sources if source.get("address")}
         comparisons = sorted(
@@ -316,6 +352,74 @@ class RepositoryEvidenceProvider(WorkflowProvider):
                 if source["merge_sha"] != (workflow.source.revision or revisions[workflow.source.predecessor])
             }
         )
+        qualification = getattr(spec, "qualification", None)
+        if qualification is not None:
+            workflow = spec.workflows[0]
+            source = workflow.source.revision or revisions[workflow.source.predecessor]
+            _, content = await self.definition_blob(binding, spec.runner.qualification_config_path, source)
+            from .cli_live_contract import Qualification
+
+            require(
+                canonical(Qualification.model_validate(parse_document(content)).model_dump(mode="json"))
+                == canonical(qualification.model_dump(mode="json")),
+                "cli_accepted_configuration_missing_or_changed",
+            )
+            _, requirements = await self.definition_blob(binding, spec.runner.requirements_path, source)
+            require(hashlib.sha256(requirements).hexdigest() == qualification.requirements_sha256, "cli_requirements_snapshot_changed")
+            requirements = parse_document(requirements)
+            require(
+                isinstance(requirements, dict)
+                and set(requirements) == {"evidence_schema", "criteria"}
+                and requirements["evidence_schema"] == "cli-live-requirements/v1"
+                and isinstance(requirements["criteria"], list),
+                "cli_requirements_snapshot_invalid",
+            )
+            require(
+                all(
+                    isinstance(item, dict)
+                    and set(item) == {"criterion_id", "source_text"}
+                    and isinstance(item["criterion_id"], str)
+                    and isinstance(item["source_text"], str)
+                    for item in requirements["criteria"]
+                ),
+                "cli_requirements_snapshot_invalid",
+            )
+            statements = {item["criterion_id"]: item["source_text"] for item in requirements["criteria"]}
+            require(
+                len(statements) == len(requirements["criteria"]) and set(statements) == {item.criterion_id for item in qualification.criteria},
+                "cli_requirements_coverage_changed",
+            )
+            bodies = {(item.criterion_id.split("/", 1)[0], item.source_body_sha256) for item in qualification.criteria}
+
+            async def requirements_body(item):
+                issue, expected = item
+                document = (await self.request(binding, "GET", f"/repos/{binding.repo}/issues/{issue}", max_bytes=MAX_FILE)).json()
+                require(
+                    document.get("number") == int(issue)
+                    and isinstance(document.get("body"), str)
+                    and hashlib.sha256(document["body"].encode()).hexdigest() == expected,
+                    "cli_requirement_body_changed",
+                )
+                for criterion in qualification.criteria:
+                    if criterion.criterion_id.split("/", 1)[0] == issue:
+                        statement = statements[criterion.criterion_id]
+                        require(
+                            isinstance(statement, str)
+                            and bool(statement)
+                            and statement in document["body"]
+                            and hashlib.sha256(statement.encode()).hexdigest() == criterion.requirement_sha256,
+                            "cli_requirement_statement_changed",
+                        )
+
+            await bounded_reads(requirements_body, sorted(bodies))
+            comparisons = sorted(
+                set(comparisons)
+                | {
+                    (source["merge_sha"], qualification.deployment.gateway_revision)
+                    for source in sources
+                    if source["merge_sha"] != qualification.deployment.gateway_revision
+                }
+            )
 
         async def ancestry(pair):
             merge, revision = pair
@@ -335,5 +439,14 @@ class RepositoryEvidenceProvider(WorkflowProvider):
     async def _observe(self, binding, spec, sources):
         require(spec.producer is None, "producer_requires_durable_execution")
         pulls, revisions = await self.verify_sources(binding, spec, sources)
-        workflows = [await self.workflow(binding, item, revisions=revisions, max_age_seconds=spec.max_age_seconds) for item in spec.workflows]
+        workflows = [
+            await self.workflow(
+                binding,
+                item,
+                revisions=revisions,
+                max_age_seconds=spec.max_age_seconds,
+                **({"qualification": spec.qualification} if getattr(spec, "qualification", None) is not None else {}),
+            )
+            for item in spec.workflows
+        ]
         return dict(pull_requests=pulls, workflows=workflows, mandatory_passed=all(c["passed"] for row in workflows for c in row["criteria"]))

@@ -37,7 +37,9 @@ async def accepted_evaluation(session, node):
     raw = rows[0].get("evaluation")
     marker = (plan.plan_document or {}).get("execution_continuation") or {}
     attached = None
-    if marker.get("mode") == "shared_worker_role" and (raw is None or raw.get("evidence_schema") == "repository-evaluation/v1"):
+    if marker.get("mode") == "shared_worker_role" and (
+        raw is None or raw.get("evidence_schema") in {"repository-evaluation/v1", "cli-live-evaluation/v1"}
+    ):
         from .evaluation_acceptance import accepted_contract
 
         attached = await accepted_contract(session, node=node, plan=plan)
