@@ -117,6 +117,7 @@ LEGAL_TRANSITIONS: dict[NodeState, dict[NodeState, frozenset[ActorKind]]] = {
     },
     NodeState.FAILED: {
         NodeState.READY: _HUMAN_ONLY,  # Resume/retry (R-O4b); increments attempts
+        NodeState.RUNNING: _HUMAN_ONLY,  # Resume the same verified continuation after an outer timeout
     },
     NodeState.HALTED: {
         NodeState.READY: _HUMAN_ONLY,  # Human override only (R-Q9c)

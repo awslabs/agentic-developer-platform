@@ -91,6 +91,24 @@ def decisions_route(flow_id: str) -> str:
     return f"/orchestration/flows/{flow_id}/decisions"
 
 
+@pytest.mark.parametrize("case,status", [("permission", 403), ("service", 403), ("spoof", 422)])
+async def test_continuation_recovery_requires_human_approval(app_with_router, monkeypatch, case, status):
+    from unittest.mock import AsyncMock
+
+    from src.agentauth.bootstrap import BootstrapRefusedError
+
+    mutate = AsyncMock()
+    monkeypatch.setattr("src.orchestration.controls.resume_continuation", mutate)
+    monkeypatch.setattr("src.agentauth.human_control.authorize_human_session", AsyncMock(side_effect=BootstrapRefusedError("human required")))
+    body = {"expected_attempt": 1, "expected_plan_version": 3, "expected_run_id": "run", "reason": "Resume the existing review."}
+    if case == "spoof":
+        body["actor_kind"] = "human"
+    with client_for(app_with_router, permitted=case != "permission") as client:
+        response = client.post("/orchestration/nodes/node/resume-continuation", json=body)
+    assert response.status_code == status
+    mutate.assert_not_awaited()
+
+
 @pytest.fixture
 async def session():
     """In-memory SQLite session with working SAVEPOINTs. See test_read_api.py."""

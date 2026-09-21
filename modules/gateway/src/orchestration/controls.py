@@ -94,6 +94,7 @@ from src.shared.schemas.auth import TokenContext
 from .adapters.github_comments import GateAnswerStatus, InputPath, apply_gate_answer_for_context
 from .execution_state import BlockCode, BlockRecord
 from .handoff import outstanding_block
+from .lifecycle_recovery import RecoveryRefusedError, ResumeContinuationRequest, resume_continuation
 from .models import DecisionKind, OrchestrationNode
 from .repository import OrchestrationRepository
 from .state import ActorKind, NodeState, transition
@@ -654,6 +655,40 @@ async def reject_gate(
         db=db,
         expected_plan_hash=body.expected_plan_hash,
     )
+
+
+@router.post("/nodes/{node_id}/resume-continuation")
+async def resume_current_continuation(
+    node_id: Annotated[str, Path(min_length=1, max_length=36)],
+    body: ResumeContinuationRequest,
+    current_user: Annotated[TokenContext, Depends(get_current_user)],
+    access: Annotated[AccessControl, Depends(get_access_control)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    from src.agentauth.bootstrap import BootstrapRefusedError
+    from src.agentauth.human_control import authorize_human_session
+
+    from .review_cycle import CycleBlockedError
+
+    await access.check_permission(current_user, Permission.PLAN_APPROVE, target_org_id=current_user.org_id)
+    try:
+        human = await authorize_human_session(current_user, db)
+    except BootstrapRefusedError:
+        raise HTTPException(403, "An authenticated human plan approver is required.") from None
+    try:
+        result = await resume_continuation(
+            db,
+            org_id=human.tenant_id,
+            node_id=node_id,
+            actor_id=human.user_id,
+            actor_role=(await access.get_user_role(current_user))[0].value,
+            request=body,
+        )
+        await db.commit()
+        return result
+    except (RecoveryRefusedError, CycleBlockedError) as error:
+        await db.rollback()
+        raise HTTPException(404 if str(error) == "node_not_found" else 409, str(error)) from None
 
 
 @router.post("/nodes/{node_id}/resume", response_model=ResumeResponse)

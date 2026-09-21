@@ -216,7 +216,7 @@ async def _active_count(session, *, org_id, flow_id, exclude_run_id=None, initia
     return count + (legacy or 0)
 
 
-async def authorize_shared_action(session, context, node, binding, run_id, action, *, reserve=False):
+async def authorize_shared_action(session, context, node, binding, run_id, action, *, reserve=False, observation=False):
     """Recheck membership, scope, claim, revision, clock, spend, and shared limits."""
     inputs, marker = await shared_inputs(session, org_id=node.org_id, flow_id=node.flow_id, lock=reserve)
     if action not in CODE_ACTIONS or node.kind != "story":
@@ -272,9 +272,11 @@ async def authorize_shared_action(session, context, node, binding, run_id, actio
     auth = replace(
         auth,
         observed_attempts=max(0, used),
-        observed_concurrency=await _active_count(
-            session, org_id=node.org_id, flow_id=node.flow_id, exclude_run_id=run_id, initial_runs=marker.get("initial_runs")
-        ),
+        # Reading/reconciling an admitted execution does not start another worker.
+        # Actual dispatch and replay retain the shared admission check below.
+        observed_concurrency=0
+        if observation and not reserve
+        else await _active_count(session, org_id=node.org_id, flow_id=node.flow_id, exclude_run_id=run_id, initial_runs=marker.get("initial_runs")),
         work_owned_by_policy_flow=True,
     )
     flow = await session.get(OrchestrationFlow, node.flow_id)

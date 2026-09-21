@@ -125,7 +125,7 @@ class TestTransitionTable:
             },
             NodeState.PASSED: {NodeState.SUPERSEDED},
             NodeState.REJECTED_AT_GATE: {NodeState.READY},
-            NodeState.FAILED: {NodeState.READY},
+            NodeState.FAILED: {NodeState.READY, NodeState.RUNNING},
             NodeState.HALTED: {NodeState.READY},
             NodeState.SUPERSEDED: set(),
         }

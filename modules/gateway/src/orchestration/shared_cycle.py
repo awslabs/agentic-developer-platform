@@ -331,7 +331,9 @@ class SharedCycleServices(ReviewCycleServices):
             raise CycleBlockedError("authenticated_assignment_missing", BlockCode.AUTHORITY_UNVERIFIABLE)
         from .shared_policy import authorize_shared_action
 
-        inputs, principal, meter, auth = await authorize_shared_action(session, context, node, binding, run_id, action, reserve=False)
+        inputs, principal, meter, auth = await authorize_shared_action(
+            session, context, node, binding, run_id, action, reserve=False, observation=True
+        )
         return raw, None, inputs, principal, meter, auth
 
     async def authorize(self, session, context, node, binding, run_id, action, *, reserve=False):

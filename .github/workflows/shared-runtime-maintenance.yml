@@ -139,6 +139,9 @@ jobs:
             exit 0
           fi
           if [[ "$ROLLOUT_STAGE" == diagnose ]]; then
+            python platform/scripts/diagnose-flow-recovery.py \
+              --account-id "$TARGET_ACCOUNT" \
+              --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence"
             python platform/scripts/diagnose-shared-runtime.py \
               --account-id "$TARGET_ACCOUNT" \
               --evidence-directory "$RUNNER_TEMP/shared-runtime-evidence"

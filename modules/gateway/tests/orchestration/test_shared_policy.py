@@ -244,6 +244,17 @@ async def test_current_run_does_not_consume_second_concurrency_slot(shared):
     await report(shared, other, "run-other")
     with pytest.raises(CycleBlockedError, match="concurrency_limit_exceeded"):
         await shared_policy.authorize_shared_action(shared.session, context, shared.node, binding, "run-current", Action.REPAIR)
+    # Full capacity cannot prevent observing/reconciling the existing execution,
+    # but it still prevents either a fresh successor or an admission replay.
+    assert await shared_policy.authorize_shared_action(shared.session, context, shared.node, binding, "run-current", Action.REPAIR, observation=True)
+    with pytest.raises(CycleBlockedError, match="concurrency_limit_exceeded"):
+        await shared_policy.authorize_shared_action(
+            shared.session, context, shared.node, binding, "run-current", Action.REPAIR, observation=True, reserve=True
+        )
+    shared.claim.active_run_id = "superseded"
+    await shared.session.flush()
+    with pytest.raises(CycleBlockedError, match="active_claim_changed"):
+        await shared_policy.authorize_shared_action(shared.session, context, shared.node, binding, "run-current", Action.REPAIR, observation=True)
 
 
 async def test_reconciled_legacy_excluded_but_new_attempt_counted(shared):

@@ -39,10 +39,24 @@ def checkout_cycle_input(value, *, run, cwd):
     """Use the existing PR, with no canonical-branch creation/reset or WIP push."""
     metadata = json.loads(run(
         ["gh", "pr", "view", str(value["pr_number"]), "--repo", value["repo"],
-         "--json", "headRefName,isCrossRepository"], cwd=cwd, timeout=120,
+         "--json", "headRefName,isCrossRepository,state"], cwd=cwd, timeout=120,
     ).stdout)
     if not isinstance(metadata, dict) or type(metadata.get("isCrossRepository")) is not bool:
         raise RuntimeError("Review-cycle PR branch metadata is unavailable")
+    if metadata.get("state") == "MERGED" and value["action"] == "review":
+        # GitHub retains the PR head ref after deleting its source branch. gh's
+        # same-repository checkout still fetches that deleted branch (including
+        # with --detach). Review the exact retained commit on a local-only branch;
+        # never recreate or push the deleted provider branch.
+        run(["git", "fetch", "--no-tags", "origin", f"refs/pull/{value['pr_number']}/head"], cwd=cwd, timeout=120)
+        sha = run(["git", "rev-parse", "FETCH_HEAD"], cwd=cwd, timeout=30).stdout.strip()
+        if sha != value["head_sha"]:
+            raise RuntimeError("Review-cycle PR head changed before worker startup")
+        branch = f"adp-review/pr-{value['pr_number']}-{sha[:12]}"
+        run(["git", "checkout", "-b", branch, sha], cwd=cwd, timeout=30)
+        return branch, sha
+    if metadata.get("state") != "OPEN":
+        raise RuntimeError("Review-cycle repair or unmerged review requires an open PR")
     if not metadata["isCrossRepository"]:
         branch = metadata.get("headRefName")
         if not isinstance(branch, str) or not branch:

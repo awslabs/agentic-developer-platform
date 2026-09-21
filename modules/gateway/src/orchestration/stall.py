@@ -601,6 +601,15 @@ async def _examine(
         )
         return
 
+    if state is NodeState.RUNNING:
+        managed, worker_since = await _continuation_clock(session, candidate)
+        if managed:
+            # The execution runner owns a completed worker's next phase. Applying
+            # the initial developer's pod deadline here kills review/merge work.
+            if worker_since is None:
+                return
+            elapsed = int((now - max(candidate.since, worker_since)).total_seconds())
+
     if state in STALLABLE_STATES and elapsed > config.stall_threshold_seconds:
         await _propose(
             session,
@@ -621,6 +630,53 @@ async def _examine(
             detected_counter="stalls_detected",
             notify_config=notify_config,
         )
+
+
+async def _continuation_clock(session, candidate):
+    """Measure the current assigned worker, never a previous worker's start."""
+    from .models import OrchestrationAcceptedPlan, OrchestrationExecution, OrchestrationWorkClaim
+    from .run_reports import OrchestrationRunReport
+
+    row = (
+        await session.execute(
+            select(OrchestrationRunReport)
+            .join(OrchestrationWorkClaim, OrchestrationWorkClaim.active_run_id == OrchestrationRunReport.run_id)
+            .join(OrchestrationExecution, OrchestrationExecution.claim_id == OrchestrationWorkClaim.id)
+            .join(OrchestrationAcceptedPlan, OrchestrationAcceptedPlan.flow_id == OrchestrationExecution.flow_id)
+            .where(
+                OrchestrationRunReport.org_id == candidate.org_id,
+                OrchestrationRunReport.flow_id == candidate.flow_id,
+                OrchestrationRunReport.node_id == candidate.node_id,
+                OrchestrationRunReport.attempt == candidate.attempts,
+                OrchestrationWorkClaim.org_id == candidate.org_id,
+                OrchestrationWorkClaim.owner_kind == "engine_flow",
+                OrchestrationWorkClaim.owner_ref == candidate.flow_id,
+                OrchestrationWorkClaim.state == "held",
+                OrchestrationWorkClaim.generation == OrchestrationExecution.claim_generation,
+                OrchestrationExecution.org_id == candidate.org_id,
+                OrchestrationExecution.node_id == candidate.node_id,
+                OrchestrationExecution.cycle == candidate.attempts,
+                OrchestrationExecution.status.not_in({"concluded", "superseded"}),
+                OrchestrationAcceptedPlan.org_id == candidate.org_id,
+                OrchestrationAcceptedPlan.version == OrchestrationExecution.accepted_plan_version,
+                OrchestrationAcceptedPlan.superseded_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return False, None
+    if (row.terminal_receipt or {}).get("outcome") in {"complete", "failed"}:
+        return True, None
+    since = row.created_at
+    started = (row.worker_receipt or {}).get("recorded_at")
+    if started:
+        try:
+            since = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return False, None
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+    return True, since
 
 
 async def detect_stalls(

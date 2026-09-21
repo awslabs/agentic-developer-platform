@@ -190,6 +190,26 @@ def sqs(monkeypatch, journal):
     return client
 
 
+async def test_existing_execution_runs_after_controls_commit_before_new_dispatch(session_factory, protected_store, sqs, monkeypatch, journal):
+    from src.orchestration.execution_runner import RunnerReport
+
+    node_id = await _seed_ready_story(session_factory)
+    journal.clear()
+
+    async def existing_work(factory):
+        # The command/observation transaction is committed, and the ready story
+        # has not yet been admitted. This is the capacity-allocation boundary.
+        assert journal[-1] == "commit"
+        async with factory() as db:
+            assert (await db.get(OrchestrationNode, node_id)).state == "ready"
+        journal.append("existing-execution")
+        return RunnerReport(enabled=True)
+
+    monkeypatch.setattr(tick_handler_module, "run_execution_runner", existing_work)
+    await tick_handler_module._run()
+    assert journal.index("existing-execution") < journal.index("provision") < journal.index("publish")
+
+
 async def _seed_ready_story(factory, *, approved: bool = True, kind: str = NodeKind.STORY.value) -> str:
     async with factory() as session:
         session.add(Organization(id=ORG, name="Tick Org", github_installation_ids=[str(INSTALLATION)]))

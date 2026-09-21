@@ -56,7 +56,6 @@ async def recover_pending_reports(session, *, config, report) -> None:
         await session.scalars(
             select(OrchestrationRunReport)
             .where(
-                OrchestrationRunReport.run_id.like("orch:%"),
                 OrchestrationRunReport.expires_at > utcnow(),
                 or_(OrchestrationRunReport.worker_receipt.is_(None), OrchestrationRunReport.worker_receipt == JSON.NULL),
                 or_(OrchestrationRunReport.terminal_receipt.is_(None), OrchestrationRunReport.terminal_receipt == JSON.NULL),
@@ -71,12 +70,25 @@ async def recover_pending_reports(session, *, config, report) -> None:
         node = await session.get(OrchestrationNode, row.node_id)
         if (
             node is None
-            or node.state != "running"
+            or node.state not in {"running", "awaiting_merge"}
             or row.org_id != node.org_id
             or row.flow_id != node.flow_id
             or row.attempt != node.attempts
-            or row.run_id != attempt_run_id(node.id, node.attempts)
         ):
+            continue
+        if row.dispatch_metadata.get("review_cycle_input"):
+            try:
+                pending = await _recover_continuation(session, row, node, config)
+            except RunReportError as exc:
+                row.block_code, row.retryable = exc.code, exc.retryable
+                report.record(row.org_id, "publish_failed")
+                continue
+            report.pending.append(pending)
+            pending_ids.add(row.run_id)
+            if len(report.pending) >= config.max_dispatches_per_tick:
+                break
+            continue
+        if row.run_id != attempt_run_id(node.id, node.attempts):
             continue
         decision = (
             await session.scalars(
@@ -125,3 +137,54 @@ async def recover_pending_reports(session, *, config, report) -> None:
         pending_ids.add(row.run_id)
         if len(report.pending) >= config.max_dispatches_per_tick:
             break
+
+
+async def _recover_continuation(session, row, node, config):
+    """Republish an unstarted reviewer/repair with the original run and fences.
+
+    An acknowledged SQS send is not an acknowledged worker start. The immutable
+    dispatch receipt, current claim, accepted plan and PR head must all still
+    agree before reusing that existing assignment. No attempt is admitted here.
+    """
+    from .dispatch_pass import PendingPublish
+    from .genesis import resolve_engine_genesis
+    from .pr_bindings import active_binding_for_node, binding_scope_matches
+    from .pr_identity import PrIdentityError, resolve_pr_identity
+    from .shared_cycle import validate_current_report_assignment
+
+    execution, identity = await validate_current_report_assignment(session, row)
+    if execution.status in {"concluded", "superseded"} or config.repo != row.repo:
+        raise RunReportError("execution_assignment_superseded")
+    binding = await active_binding_for_node(session, org_id=row.org_id, node_id=row.node_id, attempt=row.attempt)
+    cycle = row.dispatch_metadata["review_cycle_input"]
+    if (
+        binding is None
+        or not binding_scope_matches(binding, node)
+        or binding.repo != row.repo
+        or binding.provider_repository_id != row.provider_repository_id
+        or binding.pr_number != cycle.get("pr_number")
+    ):
+        raise RunReportError("repair_binding_changed")
+    await validate_report_start(session, row)
+    try:
+        remote = await resolve_pr_identity(org_id=row.org_id, installation_id=row.installation_id, repo=row.repo, pr_number=binding.pr_number)
+    except PrIdentityError:
+        raise RunReportError("pr_head_unavailable", retryable=True) from None
+    if remote.head_sha != cycle.get("head_sha") or remote.provider_pr_node_id != binding.provider_pr_node_id:
+        raise RunReportError("head_changed_before_dispatch")
+    envelope = {key: value for key, value in row.dispatch_metadata.items() if key != "report_nonce"}
+    genesis = await resolve_engine_genesis(session, org_id=row.org_id, decision_id=envelope["orchestration"]["root_decision_id"])
+    if genesis.flow_id != row.flow_id:
+        raise RunReportError("report_assignment_scope_mismatch")
+    await prepare_run_report(session, envelope)
+    row.block_code, row.retryable = None, False
+    return PendingPublish(
+        node_id=row.node_id,
+        org_id=row.org_id,
+        node_attempt=row.attempt,
+        node_kind=node.kind,
+        envelope=envelope,
+        genesis=genesis,
+        group_id=f"review-cycle-{identity.claim_id}",
+        deduplication_id=row.run_id,
+    )

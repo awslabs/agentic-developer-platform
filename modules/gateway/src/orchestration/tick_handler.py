@@ -523,6 +523,15 @@ async def _run() -> TickReport:
             # (#4403). Read per invocation, so retuning the knob takes effect on the
             # next tick without waiting for a cold start.
             stall_report = await detect_stalls(session, config=StallConfig.from_env())
+            # Commit human controls and observations before any external effect.
+            # Give existing review/repair work first use of released capacity;
+            # otherwise new development can starve a completed PR at limit one.
+            await session.commit()
+            try:
+                execution_runner_report = await run_execution_runner(factory)
+            except Exception:
+                logger.exception("orchestration execution runner: pass failed; prior controls and observations are committed")
+                execution_runner_report = RunnerReport(enabled=True, errors=1)
             dispatch_report = await run_dispatch_pass(session)
             # Last, so the rendered snapshot reflects every transition this
             # invocation made — including the dispatch just above, which is the
@@ -580,15 +589,6 @@ async def _run() -> TickReport:
         # Mutates the report in place and never raises: a failed consume or ack is
         # counted, which forces a non-success report.
         await flush_engine_commands(engine_command_report)
-
-        # Recover durable execution-ledger work through this existing scheduled
-        # tick. The runner owns its short transactions so intent is committed
-        # before provider I/O; no second cron or resident coordinator is created.
-        try:
-            execution_runner_report = await run_execution_runner(factory)
-        except Exception:
-            logger.exception("orchestration execution runner: pass failed; earlier tick work is already committed")
-            execution_runner_report = RunnerReport(enabled=True, errors=1)
 
         # Last of the post-commit steps, and deliberately after the durable work and
         # every other flush: projecting progress onto a GitHub issue is a display

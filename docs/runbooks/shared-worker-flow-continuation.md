@@ -180,3 +180,32 @@ Absent an explicit global setting, `BUDGET_ENFORCEMENT_ENABLED` remains the
 installation default (true when absent). A saved global setting overrides that
 default. Unlike the old flag behavior, off keeps model identity and cost tracking
 active and does not itself produce `budget_unavailable` for governed flows.
+## Recovering a timed-out review
+
+The scheduled tick retries an unstarted review or repair using its immutable
+assignment, run ID, PR head and start-once reporting capability. It validates the
+current accepted plan and claim before sending. Started or terminal assignments
+are not restarted by this outbox. Reviews get capacity before new development.
+The stall clock follows the currently assigned worker; a completed developer's
+old pod deadline does not fail its review or merge phase.
+
+For an existing story marked failed by `node_stalled`, a human plan approver can
+restore its **same** continuation through
+`POST /orchestration/nodes/{node_id}/resume-continuation` with:
+
+```json
+{
+  "expected_attempt": 1,
+  "expected_plan_version": 3,
+  "expected_run_id": "the-current-assigned-run",
+  "reason": "Startup problem repaired; resume the existing review assignment."
+}
+```
+
+Read the current run reports, execution and bound PR first. This operation keeps
+the attempt, claim generation, PR, receipts, usage and accepted policy unchanged.
+It refuses worker failures, halted nodes, expired authority and superseded runs.
+It neither reports completion nor approves a review. Verify an acknowledged
+worker start and then actual review evidence after recovery. A worker that exited
+without a terminal receipt still requires evidenced ownership/effect recovery;
+absence of activity is not permission to replace it.
