@@ -2273,9 +2273,15 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     wip_sha: str = ""
     work_branch_ready = False
     if cycle_input is not None:
-        if _mediated_run:
-            raise RuntimeError("Review-cycle checkout requires scoped GitHub credentials")
-        branch_name, wip_sha = checkout_cycle_input(cycle_input, run=run_cmd, cwd=WORK_DIR)
+        try:
+            if _mediated_run:
+                raise RuntimeError("Review-cycle checkout requires scoped GitHub credentials")
+            branch_name, wip_sha = checkout_cycle_input(cycle_input, run=run_cmd, cwd=WORK_DIR)
+        except Exception as exc:
+            bootstrap_log.step_error(7, "review_cycle_branch", exc)
+            _fail_bootstrap_status(message_id, arrived_at, "could not check out the assigned review-cycle PR")
+            bootstrap_log.close()
+            raise
         work_branch_ready = True
         bootstrap_log.step_success(7, "review_cycle_branch", sha=wip_sha[:7])
     elif is_codex_review:

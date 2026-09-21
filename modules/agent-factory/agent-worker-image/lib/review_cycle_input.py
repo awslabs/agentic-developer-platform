@@ -37,11 +37,26 @@ def prepare_cycle_input(envelope: dict) -> dict | None:
 
 def checkout_cycle_input(value, *, run, cwd):
     """Use the existing PR, with no canonical-branch creation/reset or WIP push."""
-    run(["gh", "pr", "checkout", str(value["pr_number"]), "--repo", value["repo"]], cwd=cwd)
-    sha = run(["git", "rev-parse", "HEAD"], cwd=cwd).stdout.strip()
+    metadata = json.loads(run(
+        ["gh", "pr", "view", str(value["pr_number"]), "--repo", value["repo"],
+         "--json", "headRefName,isCrossRepository"], cwd=cwd, timeout=120,
+    ).stdout)
+    if not isinstance(metadata, dict) or type(metadata.get("isCrossRepository")) is not bool:
+        raise RuntimeError("Review-cycle PR branch metadata is unavailable")
+    if not metadata["isCrossRepository"]:
+        branch = metadata.get("headRefName")
+        if not isinstance(branch, str) or not branch:
+            raise RuntimeError("Review-cycle PR branch metadata is unavailable")
+        run(["git", "check-ref-format", "--branch", branch], cwd=cwd, timeout=30)
+        # Bootstrap's depth-limited clone only maps main. gh fetches the PR ref
+        # but git cannot establish its upstream without this exact branch map.
+        # Preserve gh's existing fork handling; origin belongs to the base repo.
+        run(["git", "remote", "set-branches", "--add", "origin", branch], cwd=cwd, timeout=30)
+    run(["gh", "pr", "checkout", str(value["pr_number"]), "--repo", value["repo"]], cwd=cwd, timeout=120)
+    sha = run(["git", "rev-parse", "HEAD"], cwd=cwd, timeout=30).stdout.strip()
     if sha != value["head_sha"]:
         raise RuntimeError("Review-cycle PR head changed before worker startup")
-    branch = run(["git", "branch", "--show-current"], cwd=cwd).stdout.strip()
+    branch = run(["git", "branch", "--show-current"], cwd=cwd, timeout=30).stdout.strip()
     if not branch:
         raise RuntimeError("Review-cycle PR has no working branch")
     return branch, sha

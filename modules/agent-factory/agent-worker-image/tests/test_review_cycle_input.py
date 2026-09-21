@@ -42,13 +42,69 @@ def test_checkout_uses_bound_pr_without_creating_or_resetting_branch():
     calls = []
     def run(command, **kwargs):
         calls.append(command)
+        if command[:3] == ["gh", "pr", "view"]:
+            return SimpleNamespace(stdout=json.dumps({"headRefName": "existing-pr-branch", "isCrossRepository": False}))
         return SimpleNamespace(stdout="a" * 40 if command == ["git", "rev-parse", "HEAD"] else "existing-pr-branch")
     branch, head = checkout_cycle_input(envelope()["review_cycle_input"], run=run, cwd="/isolated")
     assert branch == "existing-pr-branch" and head == "a" * 40
-    assert calls == [["gh", "pr", "checkout", "77", "--repo", "org/repo"], ["git", "rev-parse", "HEAD"],
+    assert calls == [["gh", "pr", "view", "77", "--repo", "org/repo", "--json", "headRefName,isCrossRepository"],
+        ["git", "check-ref-format", "--branch", "existing-pr-branch"],
+        ["git", "remote", "set-branches", "--add", "origin", "existing-pr-branch"],
+        ["gh", "pr", "checkout", "77", "--repo", "org/repo"], ["git", "rev-parse", "HEAD"],
         ["git", "branch", "--show-current"]]
 
 
 def test_moved_head_refuses_before_model_exec():
+    def run(command, **kwargs):
+        return SimpleNamespace(stdout=json.dumps({"headRefName": "existing-pr-branch", "isCrossRepository": False})
+            if command[:3] == ["gh", "pr", "view"] else "b" * 40)
     with pytest.raises(RuntimeError, match="head changed"):
-        checkout_cycle_input(envelope()["review_cycle_input"], run=lambda *a, **k: SimpleNamespace(stdout="b" * 40), cwd="/isolated")
+        checkout_cycle_input(envelope()["review_cycle_input"], run=run, cwd="/isolated")
+
+
+def test_shallow_clone_tracks_only_the_assigned_pr_branch(tmp_path):
+    import subprocess
+
+    def git(*args, cwd):
+        return subprocess.run(["git", *args], cwd=cwd, text=True, capture_output=True, check=True, timeout=30)
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git("init", "-b", "main", cwd=origin)
+    git("config", "user.name", "Test", cwd=origin)
+    git("config", "user.email", "test@example.test", cwd=origin)
+    git("commit", "--allow-empty", "-m", "main", cwd=origin)
+    git("checkout", "-b", "agent/issue-77", cwd=origin)
+    (origin / "implementation.txt").write_text("existing implementation\n")
+    git("add", "implementation.txt", cwd=origin)
+    git("commit", "-m", "implementation", cwd=origin)
+    head = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
+    clone = tmp_path / "clone"
+    git("clone", "--depth=20", "--branch", "main", origin.as_uri(), str(clone), cwd=tmp_path)
+
+    def gh_checkout():
+        git("fetch", "origin", "+refs/heads/agent/issue-77:refs/remotes/origin/agent/issue-77", cwd=clone)
+        return git("checkout", "-b", "agent/issue-77", "--track", "origin/agent/issue-77", cwd=clone)
+
+    # gh's checkout sequence reproduces the live failure on a real shallow clone.
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        gh_checkout()
+    assert "not a branch" in failure.value.stderr
+
+    def run(command, **kwargs):
+        assert kwargs["timeout"] in {30, 120}
+        if command[:3] == ["gh", "pr", "view"]:
+            return SimpleNamespace(stdout=json.dumps({"headRefName": "agent/issue-77", "isCrossRepository": False}))
+        if command[:3] == ["gh", "pr", "checkout"]:
+            return gh_checkout()
+        return subprocess.run(command, text=True, capture_output=True, check=True, **kwargs)
+
+    value = {**envelope()["review_cycle_input"], "head_sha": head}
+    assert checkout_cycle_input(value, run=run, cwd=clone) == ("agent/issue-77", head)
+    assert git("rev-parse", "@{upstream}", cwd=clone).stdout.strip() == head
+    assert git("rev-parse", "HEAD", cwd=origin).stdout.strip() == head
+    assert git("status", "--porcelain", cwd=clone).stdout == ""
+    assert git("config", "--get-all", "remote.origin.fetch", cwd=clone).stdout.splitlines() == [
+        "+refs/heads/main:refs/remotes/origin/main",
+        "+refs/heads/agent/issue-77:refs/remotes/origin/agent/issue-77",
+    ]
