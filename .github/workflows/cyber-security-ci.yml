@@ -18,6 +18,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
+      - name: Install native worker test prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential libmagic1 libseccomp2 binutils
       - name: Install worker dependencies for real Linux probes
         run: |
           python -m venv /tmp/cyber-kernel-tests
