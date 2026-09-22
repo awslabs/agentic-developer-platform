@@ -42,7 +42,7 @@ def _utc(value):
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
-async def shared_inputs(session, *, org_id, flow_id, lock=False):
+async def shared_inputs(session, *, org_id, flow_id, lock=False, allow_elapsed_window=False):
     """Only an attributed, in-force continuation accepts the configured role."""
     if os.environ.get("ADP_SHARED_WORKER_CONTINUATION_ENABLED", "false").lower() != "true":
         _refuse("shared_worker_continuation_disabled")
@@ -84,7 +84,7 @@ async def shared_inputs(session, *, org_id, flow_id, lock=False):
             raise ValueError("invalid baseline")
     except (KeyError, ValueError, TypeError, InvalidOperation):
         _refuse("continuation_baseline_unverifiable")
-    if (datetime.now(UTC) - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
+    if not allow_elapsed_window and (datetime.now(UTC) - started).total_seconds() >= inputs.policy.limits.max_wall_clock_seconds:
         _refuse("wall_clock_limit_exceeded", BlockCode.ATTEMPTS_EXHAUSTED)
     return inputs, marker
 

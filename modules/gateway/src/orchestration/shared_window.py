@@ -1,7 +1,7 @@
 """Attributed expiry renewal for an exact accepted shared-worker plan.
 
-Only the policy expiry and execution deadlines capped by that expiry may advance.
-The original wall-clock allowance, claims, attempts, scope and spend are retained.
+Expiry may advance, with an explicit optional increase of the elapsed-time ceiling.
+The elapsed time, claims, attempts, scope and spend are retained.
 """
 
 from __future__ import annotations
@@ -31,16 +31,19 @@ class WindowRenewalRequest(BaseModel):
     expected_plan_version: int = Field(strict=True, gt=0)
     expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     expires_at: AwareDatetime
+    max_wall_clock_seconds: int | None = Field(default=None, strict=True, gt=0, le=604_800)
     resume_expired: bool = Field(default=False, strict=True)
     reason: str = Field(min_length=8, max_length=4000)
     expected_snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
-def apply_window(policy, limit, decision_id):
+def apply_window(policy, limit, decision_id, wall_clock=None):
     # Copy private financial attributes as well as the public policy. Rebuilding
     # from model_dump would discard the already verified run/chain ceilings.
     draft = policy.model_copy(deep=True)
     draft.expires_at = limit
+    if wall_clock is not None:
+        draft.limits = draft.limits.model_copy(update={"max_wall_clock_seconds": wall_clock})
     draft.policy_id = draft.policy_hash = draft.principal_id = None
     effective = stamp_policy(draft, principal_id=policy.principal_id, org_id=policy.org_id)
     effective._shared_window_decision_id = decision_id
@@ -83,6 +86,15 @@ async def effective_shared_window(session, plan, policy):
     if data["plan_version"] < plan.version:
         return policy  # A later graph acceptance requires its own approval.
     original = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
+    wall_clock = data.get("max_wall_clock_seconds")
+    prior_wall_clock = data.get("before_wall_clock_seconds", original.limits.max_wall_clock_seconds)
+    if wall_clock is not None and (
+        type(wall_clock) is not int
+        or type(prior_wall_clock) is not int
+        or not original.limits.max_wall_clock_seconds <= prior_wall_clock <= wall_clock <= 604_800
+        or wall_clock - prior_wall_clock > 86_400
+    ):
+        raise WindowRenewalError("window_wall_clock_receipt_unverifiable")
     if (
         decision.actor_kind != "human"
         or decision.actor_role != "platform_admin"
@@ -101,7 +113,7 @@ async def effective_shared_window(session, plan, policy):
         raise WindowRenewalError("window_receipt_unverifiable")
     if limit <= policy.expires_at:
         raise WindowRenewalError("window_receipt_reduces_limit")
-    return apply_window(policy, limit, decision.id)
+    return apply_window(policy, limit, decision.id, wall_clock)
 
 
 async def prepare_renewal(session, *, flow_id, actor, request):
@@ -115,7 +127,9 @@ async def prepare_renewal(session, *, flow_id, actor, request):
         raise WindowRenewalError("accepted_plan_changed")
     if plan.plan_hash != digest(plan.plan_document):
         raise WindowRenewalError("accepted_document_hash_changed")
-    inputs, _ = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
+    inputs, marker = await shared_inputs(
+        session, org_id=actor.org_id, flow_id=flow_id, allow_elapsed_window=request.max_wall_clock_seconds is not None
+    )
     policy = inputs.policy
     now = datetime.now(UTC)
     if policy.expires_at <= now and not request.resume_expired:
@@ -126,7 +140,14 @@ async def prepare_renewal(session, *, flow_id, actor, request):
         raise WindowRenewalError("original_principal_required")
     if flow.state not in {"pending", "running"}:
         raise WindowRenewalError("flow_not_running")
-    deadlines = await capped_deadlines(session, flow, plan, policy.expires_at, request.expires_at, policy.limits.max_wall_clock_seconds)
+    current_wall_clock = policy.limits.max_wall_clock_seconds
+    wall_clock = request.max_wall_clock_seconds or current_wall_clock
+    if request.max_wall_clock_seconds is not None and not current_wall_clock < wall_clock <= min(604_800, current_wall_clock + 86_400):
+        raise WindowRenewalError("wall_clock_must_increase_by_at_most_24_hours")
+    started = datetime.fromisoformat(marker["accepted_at"].replace("Z", "+00:00"))
+    if started + timedelta(seconds=wall_clock) <= now:
+        raise WindowRenewalError("renewed_wall_clock_already_elapsed")
+    deadlines = await capped_deadlines(session, flow, plan, policy.expires_at, request.expires_at, current_wall_clock, wall_clock)
     document = {
         "contract": CONTRACT,
         "flow_id": flow.id,
@@ -139,7 +160,11 @@ async def prepare_renewal(session, *, flow_id, actor, request):
         "before": policy.expires_at.isoformat(),
         "resume_expired": request.resume_expired,
         "expires_at": request.expires_at.isoformat(),
-        "unchanged_limits": policy.limits.model_dump(mode="json"),
+        "before_wall_clock_seconds": current_wall_clock,
+        "max_wall_clock_seconds": wall_clock,
+        "wall_clock_started_at": started.isoformat(),
+        "unchanged_limits": policy.limits.model_dump(mode="json", exclude={"max_wall_clock_seconds"} if wall_clock != current_wall_clock else set()),
+        "resulting_limits": {**policy.limits.model_dump(mode="json"), "max_wall_clock_seconds": wall_clock},
         "deadlines": deadlines,
     }
     return document, {"snapshot": digest(document), **document, "attempts_preserved": True, "budget_meter_unchanged": True}
@@ -198,7 +223,7 @@ def aware(moment):
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
-async def capped_deadlines(session, flow, plan, before, after, max_seconds):
+async def capped_deadlines(session, flow, plan, before, after, max_seconds, renewed_seconds=None):
     rows = list(
         await session.scalars(
             select(OrchestrationExecution)
@@ -207,7 +232,6 @@ async def capped_deadlines(session, flow, plan, before, after, max_seconds):
                 OrchestrationExecution.flow_id == flow.id,
                 OrchestrationExecution.accepted_plan_version == plan.version,
                 OrchestrationExecution.status.not_in({"concluded", "superseded"}),
-                OrchestrationExecution.deadline_at == before,
             )
             .order_by(OrchestrationExecution.id)
             .limit(1001)
@@ -217,9 +241,12 @@ async def capped_deadlines(session, flow, plan, before, after, max_seconds):
         raise WindowRenewalError("renewal_history_limit")
     result = []
     for row in rows:
-        deadline = min(after, aware(row.created_at) + timedelta(seconds=max_seconds))
-        if deadline > before:
-            result.append({"execution_id": row.id, "before": before.isoformat(), "after": deadline.isoformat()})
+        old_cap = aware(row.created_at) + timedelta(seconds=max_seconds)
+        if row.deadline_at is None or aware(row.deadline_at) not in {before, old_cap}:
+            continue
+        deadline = min(after, aware(row.created_at) + timedelta(seconds=renewed_seconds or max_seconds))
+        if deadline > aware(row.deadline_at):
+            result.append({"execution_id": row.id, "before": aware(row.deadline_at).isoformat(), "after": deadline.isoformat()})
     return result
 
 

@@ -381,7 +381,7 @@ class PolicyLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # Shared wall-clock ceiling from the flow's first committed dispatch.
-    max_wall_clock_seconds: int = Field(gt=0, le=86_400)
+    max_wall_clock_seconds: int = Field(gt=0, le=604_800)
     # Total spend this policy authorizes, reserved plus settled, across every
     # descendant. NOT per run and NOT per child — see `flow_budget_binding` for why
     # the allowance has to be shared to mean anything.

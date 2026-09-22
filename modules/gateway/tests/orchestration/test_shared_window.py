@@ -298,3 +298,71 @@ async def test_route_requires_plan_permission(monkeypatch):
     with pytest.raises(HTTPException):
         await shared_window_routes.accept_window(flow_id="flow", body=None, current_user=SimpleNamespace(org_id="org"), db=None)
     acceptor.assert_not_awaited()
+
+
+async def test_explicit_wall_clock_increase_retains_elapsed_time_and_consumed_work(window):
+    from src.orchestration.shared_policy import shared_inputs
+
+    b = window
+    before = (await effective(b)).policy
+    started = datetime.now(UTC) - timedelta(seconds=before.limits.max_wall_clock_seconds + 60)
+    document = copy.deepcopy(b.s.plan.plan_document)
+    document["execution_continuation"]["accepted_at"] = started.isoformat()
+    b.s.plan.plan_document = document
+    b.s.plan.plan_hash = digest(document)
+    b.execution.created_at = started
+    b.execution.deadline_at = started + timedelta(seconds=before.limits.max_wall_clock_seconds)
+    await b.s.session.flush()
+    b.request = b.request.model_copy(update={"expected_plan_hash": b.s.plan.plan_hash})
+    with pytest.raises(CycleBlockedError, match="wall_clock_limit_exceeded"):
+        await preview(b)
+    original_deadline = b.execution.deadline_at
+    b.request = b.request.model_copy(update={"max_wall_clock_seconds": before.limits.max_wall_clock_seconds + 10_800})
+    receipt, _ = await accept(b)
+    inputs, marker = await shared_inputs(b.s.session, org_id=b.s.flow.org_id, flow_id=b.s.flow.id)
+    assert inputs.policy.limits.max_wall_clock_seconds == b.request.max_wall_clock_seconds
+    assert marker["accepted_at"] == started.isoformat()
+    assert b.s.plan.plan_document == document
+    assert b.s.node.attempts == 2 and b.execution.attempts == 2
+    assert b.s.claim.active_run_id == "run-current"
+    assert b.execution.deadline_at > original_deadline
+    assert b.execution.deadline_at <= started + timedelta(seconds=b.request.max_wall_clock_seconds)
+    assert verified_limits_increased(before.model_dump(mode="json"), inputs.policy)
+    row = await b.s.session.get(OrchestrationDecision, receipt["decision_id"])
+    evidence = json.loads(row.reason)
+    assert evidence["wall_clock_started_at"] == started.isoformat()
+    assert evidence["before_wall_clock_seconds"] == before.limits.max_wall_clock_seconds
+    assert evidence["max_wall_clock_seconds"] == b.request.max_wall_clock_seconds
+
+
+@pytest.mark.parametrize("delta", [-1, 0, 86_401])
+async def test_wall_clock_increase_requires_positive_bounded_explicit_ceiling(window, delta):
+    b = window
+    before = (await effective(b)).policy
+    b.request = b.request.model_copy(update={"max_wall_clock_seconds": before.limits.max_wall_clock_seconds + delta})
+    with pytest.raises(WindowRenewalError, match="wall_clock_must_increase"):
+        await accept(b)
+    assert (await effective(b)).policy.limits == before.limits
+
+
+async def test_later_expiry_renewal_retains_previously_authorized_wall_clock(window):
+    b = window
+    before = (await effective(b)).policy
+    ceiling = before.limits.max_wall_clock_seconds + 3600
+    b.request = b.request.model_copy(update={"max_wall_clock_seconds": ceiling})
+    await accept(b)
+    b.request = b.request.model_copy(update={"max_wall_clock_seconds": None, "expires_at": b.request.expires_at + timedelta(hours=1)})
+    await accept(b)
+    assert (await effective(b)).policy.limits.max_wall_clock_seconds == ceiling
+
+
+@pytest.mark.parametrize("value", [True, 0, 604_801])
+def test_wall_clock_request_rejects_invalid_ceiling(value):
+    with pytest.raises(ValidationError):
+        WindowRenewalRequest(
+            expected_plan_version=1,
+            expected_plan_hash="a" * 64,
+            expires_at="2026-09-23T01:00:00Z",
+            reason="Owner renewal",
+            max_wall_clock_seconds=value,
+        )
