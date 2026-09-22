@@ -1076,8 +1076,7 @@ class FlowSummaryResponse(BaseModel):
     # is both stalled and gated reports `attention_needed`, and the card still has
     # to be able to say "1 waiting on you".
     awaiting_gate_count: int
-    # Decision-derived (latest `node_stalled` wins), NOT the count of `failed`
-    # nodes — a stall and a plain failure share an engine state.
+    # Current attention count, identical to display_counts.stalled.
     stalled_count: int
     display_counts: FlowDisplayCountsResponse
     total_nodes: int
@@ -1085,6 +1084,7 @@ class FlowSummaryResponse(BaseModel):
     gate_count: int
     eval_count: int
     changes_requested_count: int
+    completed_story_count: int
     epic_count: int
     wave_count: int
     current_wave_ref: str | None
@@ -1232,6 +1232,7 @@ async def list_flows_route(
                 gate_count=aggregate.gate_count,
                 eval_count=aggregate.eval_count,
                 changes_requested_count=aggregate.changes_requested_count,
+                completed_story_count=aggregate.completed_story_count,
                 epic_count=aggregate.epic_count,
                 wave_count=len(aggregate.waves),
                 current_wave_ref=aggregate.current_wave_ref,
@@ -1316,6 +1317,7 @@ class GraphNodeResponse(BaseModel):
     node_ref: str
     kind: str
     state: str
+    display_state: str | None = None
     title: str
     issue_ref: str | None
     attempts: int
@@ -1445,6 +1447,7 @@ async def get_flow_graph(
     # without a superseded version ever being shown as current.
     policy_inputs = await load_in_force_policy(db, org_id=current_user.org_id, flow_id=flow.id)
     aggregate = await get_flow_cost(db, org_id=current_user.org_id, flow=flow, nodes=nodes)
+    display_states = await repo.node_display_states(org_id=current_user.org_id, flow_id=flow.id)
     stalled_node_ids = await _stalled_node_ids(repo, org_id=current_user.org_id, flow_id=flow.id)
 
     # Only committed dispatch records can produce run links. Older attempts
@@ -1573,7 +1576,8 @@ async def get_flow_graph(
                 configuration_problem=(
                     "Link an evaluation issue in the plan before this evaluation can run." if node.kind == "eval" and not node.issue_ref else None
                 ),
-                stalled=node.id in stalled_node_ids,
+                display_state=display_states[node.id],
+                stalled=node.state == "failed" and node.id in stalled_node_ids,
                 bound_pull_request=bound_pull_request,
                 binding_hold=binding_hold,
                 # `get_flow_cost` returns one entry per node passed in, so the

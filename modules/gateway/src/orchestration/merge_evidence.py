@@ -612,8 +612,9 @@ def evaluate_observation(observation: PullRequestObservation) -> MergeEligibilit
         blocked.append(EligibilityReason.REVIEW_REQUIRED)
     if (req.code_owner_review or req.last_push_review) and observation.review_decision != "APPROVED":
         blocked.append(EligibilityReason.REVIEW_REQUIRED)
-    if not observation.checks:
-        blocked.append(EligibilityReason.REQUIRED_CHECK_MISSING)
+    # An empty, complete provider response is valid for paths with no applicable
+    # CI and no required checks. Only a named requirement can be missing; inventing
+    # one here strands reviewed documentation/tooling changes indefinitely.
     if not req.allowed_merge_methods:
         blocked.append(EligibilityReason.UNSUPPORTED_RULE)
     checks_to_require = req.checks if req.checks_declared else tuple(CheckRequirement(c.name, c.app_id) for c in observation.checks)

@@ -22,6 +22,48 @@ security = HTTPBearer()
 optional_security = HTTPBearer(auto_error=False)
 
 
+class JWTSecretKeyMissing(RuntimeError):
+    """No signing key was supplied for the legacy org-scoped token path.
+
+    Issue #5683 (A04). Raised rather than defaulted: `app/config.py` used to ship a
+    hardcoded placeholder key, so a deployment that never set JWT_SECRET_KEY signed
+    and accepted tokens under a value committed to this repository. Both halves
+    matter — an attacker who knows the key can forge a token, and the server
+    verifying with it cannot tell a forged token from a real one.
+
+    The removed value is deliberately not quoted here. Any environment still running
+    on it remains forgeable until it is rotated, so restating it in a shipping file
+    would re-publish a live credential to make a historical point.
+    """
+
+
+def require_jwt_secret_key() -> str:
+    """The configured signing key, or refuse.
+
+    Every sign and verify call routes through here, which is what makes the check
+    unavoidable: a future code path that reads `settings.jwt_secret_key` directly
+    would reintroduce the fallback, so there is exactly one reader.
+
+    An empty key is treated as "unset" rather than as a key, because
+    `jose.jwt.encode` will sign with an empty string — see the note in
+    `app/config.py` for why that makes an empty default no safer than the
+    placeholder it replaced.
+
+    The message names the variable to set and never includes the value, so a
+    startup failure in a shared log does not become the credential disclosure the
+    check exists to prevent.
+    """
+    key = settings.jwt_secret_key
+    if not key or not key.strip():
+        raise JWTSecretKeyMissing(
+            "JWT_SECRET_KEY is not set. The org-scoped token path cannot sign or "
+            "verify without it, and this deployment must supply it by reference "
+            "from its secret store. Refusing rather than using a built-in default: "
+            "a committed key is forgeable by anyone who can read the source."
+        )
+    return key
+
+
 def create_access_token(
     org_id: uuid.UUID,
     user_id: uuid.UUID | None = None,
@@ -49,7 +91,7 @@ def create_access_token(
     if role is not None:
         payload["role"] = role
     token = jwt.encode(
-        payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
+        payload, require_jwt_secret_key(), algorithm=settings.jwt_algorithm
     )
     return token, expires_in
 
@@ -59,11 +101,16 @@ def decode_token(token: str) -> TokenPayload:
 
     Raises:
         HTTPException 401 if the token is invalid or expired.
+        JWTSecretKeyMissing if no signing key is configured.
     """
+    # Resolved BEFORE the try, deliberately. Inside it, the missing-key refusal
+    # would be indistinguishable from a bad token and answered with 401 — telling
+    # an operator "invalid or expired token" when the real fault is that the
+    # deployment has no signing key, which is the hardest possible way to diagnose
+    # a total login outage. A configuration fault is not an authentication result.
+    key = require_jwt_secret_key()
     try:
-        payload = jwt.decode(
-            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
-        )
+        payload = jwt.decode(token, key, algorithms=[settings.jwt_algorithm])
         return TokenPayload(
             sub=payload["sub"],
             org_id=uuid.UUID(payload["org_id"]),

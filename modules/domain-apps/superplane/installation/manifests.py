@@ -218,6 +218,22 @@ def render(env: dict, lock: dict, *, control_plane_only: bool = False) -> list[d
         variable("SUPERPLANE_INSTALLATION_REQUIRED", "true"),
         secret("DATABASE_URL", "superplane-db", "runtime-url"),
         secret("SUPERPLANE_DATABASE_CA", "superplane-db", "ca-pem"),
+        # The org-scoped token signing key (issue #5683, A04). Injected by
+        # reference, like every other secret here, so the material never enters a
+        # manifest, a plan, an argv or a log.
+        #
+        # WHY THIS LINE IS PART OF THE A04 FIX RATHER THAN A SEPARATE CHANGE.
+        # `app/config.py` used to default `jwt_secret_key` to a committed
+        # placeholder, and this renderer never set JWT_SECRET_KEY — so this
+        # deployment ran on that placeholder, which is exactly the defect. Now that
+        # a missing key is a startup refusal, NOT setting it here would turn a
+        # silent weakness into a failed rollout. The two halves have to land
+        # together.
+        #
+        # `optional: False` (the default in `secret()` above) is the fail-closed
+        # half: if the key is absent from the secret, the pod never starts, rather
+        # than starting with the variable unset and refusing every login.
+        secret("JWT_SECRET_KEY", "superplane-observation", "jwt-signing-key"),
         secret("OBSERVATION_SUBMITTERS", "superplane-observation", "submitters"),
         secret(
             "CONTROLLER_OBSERVATION_SUBMITTER_ID",

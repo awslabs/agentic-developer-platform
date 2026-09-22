@@ -106,10 +106,23 @@ Three environment-scoped Secrets Manager references contain these exact JSON str
 | Reference | Fields |
 |---|---|
 | `secrets.database` | `runtime-url`, `migration-url`, `skypilot-url`: distinct scoped `postgresql://` role URLs with no query parameters, all bound to the selected RDS endpoint/database; `ca-pem`: trusted PEM certificate bundle for that RDS endpoint |
-| `secrets.observation` | `submitters` (serialized JSON array), `monitor-credential`, `monitor-signing-key`, `controller-credential`, `controller-signing-key`, `skypilot-token` (at least 32 characters) |
+| `secrets.observation` | `submitters` (serialized JSON array), `monitor-credential`, `monitor-signing-key`, `controller-credential`, `controller-signing-key`, `skypilot-token` (at least 32 characters), `jwt-signing-key` (at least 32 characters) |
 | `secrets.workspace_access` | `kubeconfig`: one workspace cluster and one static bearer/certificate identity; no exec plugins, local file references, impersonation or proxy/TLS overrides |
 
 The submitter array has exactly two entries with distinct `submitter_id` and credentials, matching the two named credential/key pairs and the exact immutable workspace UUID. Only the monitor has `lease_scopes: ["budget_monitor/global"]`; the controller has no global lease scope. The installer reads values into memory, supplies Kubernetes Secret objects through stdin, and records only secret **version IDs**. Version changes restart the consuming pods. Output does not contain credentials.
+
+`jwt-signing-key` signs and verifies the org-scoped tokens the API's `/auth/login`
+issues. It is **required, and an installation refuses to start without it** (issue
+#5683): the API previously fell back to a placeholder default committed to this
+repository, so a deployment that never supplied a key ran on a value any reader of
+the source could forge tokens with. The field check is set equality, so an
+**existing** `secrets.observation` secret that predates this requirement is refused
+until the field is added — add it before the next installer run. Generate at least
+32 characters of random material; a short HS256 key can be recovered offline from a
+single captured token, which would leave the tokens forgeable while appearing
+fixed. Replacing this value invalidates tokens issued under the previous one, so
+for an environment already running on the removed placeholder follow
+[the rotation and cutover runbook](../../../../docs/runbooks/superplane-jwt-and-db-credential-rotation.md).
 
 For a fresh installation, `adp_org_id` names the actual ADP organization (for example `aws-e`); the three UUIDs identify the new domain organization, workspace and cluster. After migration, a one-shot bootstrap Job verifies the signed ADP access token and current `org_admin` membership through `/api/auth/workspaces`, checks both again before commit, and stores an explicit organization binding and one initial `administer` workspace grant for that human subject. The policy defines the permissions implied by this grant. Resume is idempotent and never restores a revoked grant, rebinds an existing organization, or adopts an unbound legacy organization. The temporary token Secret is deleted with UID preconditions after terminal bootstrap success; an interrupted or failed Job requires recovery inspection. U21's historical identity mapping, migration and cutover remain separate.
 
@@ -151,7 +164,9 @@ modules/domain-apps/superplane/deploy.sh \
 
 This requires `image_execution: cluster`. It verifies target/source/image/backup,
 creates or reuses installation-owned Secrets Manager values, and creates separate
-migration/runtime/SkyPilot roles and schemas in one transaction. Existing unowned
+migration/runtime/SkyPilot roles and schemas in one transaction. A fresh observation
+secret includes independently generated service credentials, service signing keys, a
+SkyPilot token and an API JWT signing key; none has a deployed fallback. Existing unowned
 roles, schemas or secrets are refused. All three roles must authenticate over TLS
 with their stored passwords and pass the schema boundary checks before preparation
 succeeds. Credentials never enter argv, rendered manifests or receipt files. The

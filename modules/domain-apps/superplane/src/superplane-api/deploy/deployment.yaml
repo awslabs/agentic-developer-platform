@@ -71,12 +71,27 @@ spec:
                 name: superplane-api-config
                 optional: true
           env:
+            # `optional: false` on both (issue #5683, A04). These were `true`, which
+            # is a fail-OPEN reference: a missing or misnamed Secret let the pod start
+            # with the variable simply unset. For the database that surfaces as a
+            # confusing connection error; for the signing key it used to mean falling
+            # back to the placeholder default in app/config.py and serving traffic on
+            # a key committed to this repository.
+            #
+            # With `false`, a missing Secret is a pod that never starts and says why,
+            # which is the failure an operator can act on.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: superplane-api-db
                   key: DATABASE_URL
-                  optional: true
+                  optional: false
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-api-secrets
+                  key: JWT_SECRET_KEY
+                  optional: false
           ports:
             - name: http
               containerPort: 8000

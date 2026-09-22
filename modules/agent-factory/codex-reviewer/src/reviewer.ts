@@ -18,6 +18,7 @@ import {
   GitHubClient,
 } from "./github.js";
 import { run } from "./process.js";
+import { runResumableTurn } from "./turn.js";
 
 const SDK_VERSION = "0.155.1";
 /**
@@ -135,7 +136,7 @@ async function codexVerdict(
     webSearchMode: "disabled",
     threadSource: "adp-agent-codex-reviewer",
   });
-  const turn = await thread.run(prompt, {
+  const turn = await runResumableTurn(thread, prompt, {
     outputSchema: reviewOutputSchema,
     signal: AbortSignal.timeout(
       Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000),
@@ -159,7 +160,7 @@ async function applyMechanicalFixes(
     webSearchMode: "disabled",
     threadSource: "adp-agent-codex-reviewer-fix",
   });
-  await thread.run(fixPrompt(findings), {
+  await runResumableTurn(thread, fixPrompt(findings), {
     signal: AbortSignal.timeout(
       Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000),
     ),

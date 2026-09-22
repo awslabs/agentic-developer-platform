@@ -387,7 +387,9 @@ class SharedCycleServices(ReviewCycleServices):
         except CycleBlockedError as error:
             if error.reason != "concurrency_limit_exceeded":
                 raise
-            return CycleObservation(ObservationKind.WAITING, detail="Waiting for a shared worker slot; no dispatch attempt consumed.")
+            from .progress_projection import CAPACITY_WAIT_NOTE
+
+            return CycleObservation(ObservationKind.WAITING, detail=CAPACITY_WAIT_NOTE)
         return None
 
     async def dispatch(self, context, effect):

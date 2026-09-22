@@ -351,7 +351,7 @@ describe('a flow card', () => {
     // `status` is first-match-wins, so this flow reports only `attention_needed` —
     // and the gate still needs answering. Surfacing only the status would drop it.
     mockListFlows.mockResolvedValue(
-      makeList({ flows: [makeFlow({ status: 'attention_needed', awaiting_gate_count: 1, stalled_count: 2 })] })
+      makeList({ flows: [makeFlow({ status: 'attention_needed', awaiting_gate_count: 1, stalled_count: 2, display_counts: { queued: 0, in_progress: 0, gate: 1, stalled: 2, complete: 0 } })] })
     );
     renderFlowsList();
 
@@ -361,6 +361,21 @@ describe('a flow card', () => {
     // unscoped query matches both and says nothing about what the card reports.
     const card = screen.getByTestId(`flow-card-${makeFlow().id}`);
     expect(within(card).getByText('Needs attention')).toBeInTheDocument();
+  });
+
+  it('uses the rollup stall count and distinguishes completed stories from gates', async () => {
+    mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({
+      status: 'attention_needed', stalled_count: 9, completed_story_count: 4,
+      story_count: 24, total_nodes: 26,
+      display_counts: { queued: 14, in_progress: 4, gate: 0, stalled: 3, complete: 5 },
+    })] }));
+    renderFlowsList();
+    await waitFor(() => expect(screen.getByTestId('story-completion-count')).toHaveTextContent('4 of 24 stories complete'));
+    expect(screen.getByTestId('stalled-count')).toHaveTextContent('3 stalled');
+    expect(screen.getByTestId('legend-stalled')).toHaveTextContent('3');
+    expect(screen.getByTestId('legend-in_progress')).toHaveTextContent('4');
+    expect(screen.getByTestId('legend-complete')).toHaveTextContent('5');
+    expect(screen.getByText('All 26 work items, including stories, gates and evaluations')).toBeVisible();
   });
 
   it('shows neither affordance when nothing needs a human', async () => {

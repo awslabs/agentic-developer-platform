@@ -27,6 +27,10 @@ on:
         description: 'Deployment environment.'
         required: false
         default: 'dev'
+      target:
+        description: 'Optional Terraform address to scope the apply, e.g. module.arc_runner. Empty = whole module (~61 resources).'
+        required: false
+        default: ''
 
 concurrency:
   group: tf-apply-agent-factory-${{ inputs.customer_account_id || inputs.account_id || 'default' }}
@@ -130,11 +134,31 @@ jobs:
       - name: Terraform Plan (destroy-safety check)
         id: plan
         working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TARGET: ${{ inputs.target }}
         run: |
           set -e
           set -o pipefail
           EXIT_CODE=0
-          terraform plan -var-file="terraform.tfvars" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
+          # Optional -target. This module holds ~61 resources across chat-agent,
+          # gateway-intake, KMS, runner-RBAC and the ARC scale set, so an
+          # unscoped apply reconciles all of them — including anything that was
+          # live-patched by hand since the last apply (there is a precedent
+          # recorded in arc-runner/main.tf: maxRunners was live-patched on
+          # 2026-07-03 and had to be written back into code so "the next apply
+          # doesn't revert it"). Targeting keeps a one-module change from
+          # carrying unrelated reconciliation with it.
+          #
+          # -target is applied to the PLAN, and `terraform apply tfplan` below
+          # replays exactly that saved plan, so the scope shown in the plan is
+          # the scope that gets applied. The destroy-safety gate below still
+          # runs either way.
+          TARGET_ARGS=()
+          if [ -n "$TARGET" ]; then
+            echo "::warning::Targeted apply: scope limited to '$TARGET'. State will be only partially converged; run an unscoped apply when convenient."
+            TARGET_ARGS=(-target="$TARGET")
+          fi
+          terraform plan -var-file="terraform.tfvars" "${TARGET_ARGS[@]}" -out=tfplan -detailed-exitcode -no-color 2>&1 | tee /tmp/plan-output.txt || EXIT_CODE=$?
           echo "detailed_exitcode=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           if [ "$EXIT_CODE" -eq 1 ]; then
             echo "::error::Terraform plan failed."
@@ -182,3 +206,11 @@ jobs:
           echo "- **Module**: ${{ env.MODULE_NAME }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Status**: ${{ steps.apply.outcome == 'success' && 'applied' || 'failed' }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Working dir**: ${{ env.TF_WORKING_DIR }}" >> "$GITHUB_STEP_SUMMARY"
+          # Record scope explicitly: a targeted apply leaves the rest of the
+          # module unconverged, and that has to be visible afterwards rather
+          # than only in the dispatch inputs.
+          if [ -n "${{ inputs.target }}" ]; then
+            echo "- **Scope**: TARGETED — \`${{ inputs.target }}\` only. Remaining resources in this module were NOT reconciled." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Scope**: full module (all resources reconciled)" >> "$GITHUB_STEP_SUMMARY"
+          fi

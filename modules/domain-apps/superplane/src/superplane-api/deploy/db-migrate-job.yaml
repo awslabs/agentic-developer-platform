@@ -22,8 +22,22 @@ spec:
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
           command: ['python', '-m', 'alembic', 'upgrade', 'head']
           env:
+            # Resolved at runtime from a Secret, never written here (issue #5683, A04).
+            # This field previously held a connection URI with the username and
+            # password inline. Because this file is applied, that value would come to
+            # exist in a cluster, in shell history and in CI logs, and rotating it
+            # would mean rotating every one of those copies.
+            #
+            # `optional: false` is deliberate: without the Secret the Job must fail to
+            # start rather than run with DATABASE_URL unset and produce a confusing
+            # connection error. See docs/runbooks/superplane-jwt-and-db-credential-rotation.md
+            # for how the Secret is created.
             - name: DATABASE_URL
-              value: "postgresql+asyncpg://superplane:superplane@postgres.superplane.svc.cluster.local:5432/superplane"
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-api-db
+                  key: DATABASE_URL
+                  optional: false
           resources:
             requests:
               cpu: 100m

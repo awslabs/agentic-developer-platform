@@ -18,11 +18,10 @@ matches no `COUNT(*) FILTER` predicate. There is deliberately no
 `state != 'superseded'` clause anywhere — a predicate is something a later edit
 can drop, whereas absence from the mapping cannot be dropped by accident.
 
-**`stalled` is not readable from `state`.** Stall detection leaves the node in
-`failed` and records a `node_stalled` decision beside it (`stall.py`), so a stall
-and an ordinary failure are the same engine state. The flows list therefore
-counts stalls from the decisions table (latest-wins) and adds them on top of the
-state-derived buckets — see `repository.list_flows_page_with_aggregates`.
+Current delivery execution can override the base state: a blocked reviewer may
+leave its node `running`, and a capacity wait is queued. `progress_projection.py`
+applies those facts before list, wave and graph aggregation. Historical stall
+decisions remain audit records and do not add to current counts.
 """
 
 from enum import StrEnum
