@@ -187,12 +187,25 @@ class TestUploadToken:
 
 
 class TestUploadComplete:
+    @staticmethod
+    def _reserve_session(handler) -> None:
+        with patch.object(handler.s3_client, "generate_presigned_url",
+                          return_value="https://s3.example.com/presigned"):
+            result = handler.lambda_handler(_make_ws_event({
+                "action": "upload-token",
+                "session_id": "sess-1",
+                "task_id": "task-1",
+                "filename": "doc.pdf",
+            }), None)
+        assert result["statusCode"] == 200
+
     def test_writes_catalog_row(self, mocked_aws):
         handler = _import_handler()
 
         handler._persist_connection_claims("conn-123", {
             "claims": {"sub": "user-1", "custom:org_id": "org-1", "custom:team_id": "team-A"},
         })
+        self._reserve_session(handler)
 
         event = _make_ws_event({
             "action": "upload-complete",
@@ -217,6 +230,7 @@ class TestUploadComplete:
         handler._persist_connection_claims("conn-123", {
             "claims": {"sub": "user-1", "custom:org_id": "org-1", "custom:team_id": "team-A"},
         })
+        self._reserve_session(handler)
 
         # First upload
         event1 = _make_ws_event({
@@ -235,12 +249,12 @@ class TestUploadComplete:
         first_id = body1["artifact_id"]
         assert body1["deduplicated"] is False
 
-        # Second upload with same checksum
+        # Retry the exact same server-derived upload with the same checksum.
         event2 = _make_ws_event({
             "action": "upload-complete",
             "session_id": "sess-1",
-            "task_id": "task-2",
-            "s3_key": "o/org-1/t/team-A/u/user-1/s/sess-1/task-2/in/doc.pdf",
+            "task_id": "task-1",
+            "s3_key": "o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf",
             "filename": "doc.pdf",
             "content_type": "application/pdf",
             "size_bytes": 2048,
