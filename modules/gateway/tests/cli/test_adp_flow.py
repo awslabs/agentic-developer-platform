@@ -343,6 +343,30 @@ def test_approval_bound_to_the_current_revision_succeeds(server):
     assert "same transaction" in result["next_action"]
 
 
+def test_an_expired_policy_refusal_tells_the_operator_to_derive_and_review_a_new_plan(server):
+    engine_on(server)
+    _gate_lookup(server)
+    route(
+        server,
+        "POST",
+        f"/api/orchestration/gates/{GATE_ID}/approve",
+        {
+            "detail": {
+                "error": "execution_policy_expired",
+                "message": "the execution policy this plan proposes expired",
+            }
+        },
+        status=409,
+    )
+
+    code, result = run_cli(["gate", "approve", GATE_ID, "--yes"])
+
+    assert code == 5
+    assert result["error"]["code"] == "execution_policy_expired"
+    assert "newly derived plan" in result["error"]["message"]
+    assert "exact revision" in result["error"]["message"]
+
+
 def test_a_stale_revision_is_refused_without_sending_the_approval(server):
     """A guard that refuses after the write is not a guard."""
     engine_on(server)

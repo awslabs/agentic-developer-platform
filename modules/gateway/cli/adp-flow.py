@@ -683,6 +683,26 @@ def check_plan_revision(api, flow, expected_hash):
         )
 
 
+def request_gate_answer(api, gate_id, *, approve, body):
+    """Submit a gate answer and make an expired reviewed policy actionable."""
+    try:
+        return api.request(
+            "POST",
+            f"{GATES}/{segment(gate_id)}/{'approve' if approve else 'reject'}",
+            body,
+        )
+    except CliError as exc:
+        if exc.code == "execution_policy_expired":
+            raise CliError(
+                "The reviewed execution policy has expired, so nothing was approved. "
+                "Continue planning or request a newly derived plan, review its new revision and policy, then approve that exact revision.",
+                exc.code,
+                exc.exit_code,
+                status_code=exc.status_code,
+            ) from None
+        raise
+
+
 def answer_gate(args, api):
     """Approve or reject one gate, showing what it is attached to first."""
     command = "flow gate " + args.gate_action
@@ -748,11 +768,7 @@ def answer_gate(args, api):
         # is the enforcement point: it is compared inside the same transaction that
         # moves the gate, which is the part no client re-read can do.
         body["expected_plan_hash"] = args.expect_plan_hash
-    result = api.request(
-        "POST",
-        f"{GATES}/{segment(args.gate_id)}/{'approve' if approving else 'reject'}",
-        body,
-    )
+    result = request_gate_answer(api, args.gate_id, approve=approving, body=body)
     detail = dict(
         context,
         status=result.get("status"),
@@ -1407,13 +1423,14 @@ def register_preview_accept(api, document, *, verb, reason, assume_yes, expected
         "and the approval is recorded against your identity.",
         assume_yes,
     )
-    answer = api.request(
-        "POST",
-        f"{GATES}/{segment(gate_id)}/approve",
+    answer = request_gate_answer(
+        api,
+        gate_id,
+        approve=True,
         # The binding, server-enforced. Sent even under --yes: a script that
         # accepts whatever is live is the concurrent-edit hole, and the hash it
         # sends is the one this run previewed.
-        {"reason": reason, "expected_plan_hash": plan_hash},
+        body={"reason": reason, "expected_plan_hash": plan_hash},
     )
     detail["acceptance"] = {
         "gate_id": gate_id,

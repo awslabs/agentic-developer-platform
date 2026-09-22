@@ -51,7 +51,7 @@ from src.orchestration.adapters.github_comments import (
     InputPath,
     apply_gate_answer_for_context,
 )
-from src.orchestration.compile import ApprovalContext, PolicyNotAcceptableError, accept_execution_policy, plan_hash
+from src.orchestration.compile import ApprovalContext, PolicyNotAcceptableError, accept_execution_policy, compile_proposal, plan_hash
 from src.orchestration.execution_policy import (
     Action,
     AuthorizationContext,
@@ -82,6 +82,27 @@ registrar = _reg.registrar
 access = _reg.access
 autonomy_default_unset = _reg.autonomy_default_unset
 provider_repository_identity = _reg.provider_repository_identity
+
+
+@pytest.fixture
+def controls_app(session, access):
+    from fastapi import FastAPI
+
+    from src.auth.dependencies import get_current_user
+    from src.orchestration.controls import get_access_control, router
+    from src.shared.database import get_db
+
+    app = FastAPI()
+    app.include_router(router)
+
+    async def override_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = lambda: token_context(ORG_A, user_id=HUMAN_USER_ID)
+    app.dependency_overrides[get_access_control] = lambda: access
+    return app
+
 
 ORG_A = _reg.ORG_A
 FLOW = _reg.FLOW
@@ -887,6 +908,29 @@ class TestBoundsAlreadyExpiredAreNotGranted:
             "the gate did not stay answerable, so the approver cannot retry after re-deriving the plan"
         )
 
+    async def test_expired_gate_approval_is_a_409_and_rolls_back_every_write(self, session, registrar, access, controls_app):
+        from fastapi.testclient import TestClient
+
+        await register_policy_bearing_draft(session, registrar, policy=self._expired_policy())
+        await session.commit()
+        gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
+        flow_id = await flow_id_of(session)
+        reviewed_hash = (await in_force(session)).plan_hash
+        decisions_before = len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=flow_id))
+
+        with TestClient(controls_app, raise_server_exceptions=False) as client:
+            response = client.post(
+                f"/orchestration/gates/{gate.id}/approve",
+                json={"expected_plan_hash": reviewed_hash},
+            )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["error"] == "execution_policy_expired"
+        assert "request a new plan" in response.json()["detail"]["message"]
+        assert (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF].state == _reg.NodeState.AWAITING_GATE.value
+        assert len(await plan_versions(session)) == 1
+        assert len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=flow_id)) == decisions_before
+
     async def test_the_refusal_names_the_remedy(self, session, registrar, access):
         """A refusal an operator cannot act on is an outage.
 
@@ -923,6 +967,66 @@ class TestBoundsAlreadyExpiredAreNotGranted:
                 decision_kind=DecisionKind.PLAN_ACCEPTED,
             )
 
+    async def test_direct_acceptance_retry_returns_committed_result_after_expiry(self, session, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        from src.orchestration import compile as compile_module
+
+        expires_at = datetime.now(tz=UTC) + timedelta(minutes=5)
+        submitted = gateless_proposal().model_copy(update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)})
+        approval = ApprovalContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+        )
+        first = await compile_proposal(session, submitted, approval)
+        await session.commit()
+        monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at + timedelta(seconds=1))
+
+        replay = await compile_proposal(session, submitted, approval)
+
+        assert replay.already_compiled is True
+        assert replay.flow_id == first.flow_id
+        assert replay.plan_version == first.plan_version
+        assert replay.decision_id == first.decision_id
+        assert len(await plan_versions(session)) == 1
+
+    async def test_amendment_retry_returns_committed_result_after_expiry(self, session, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        from src.orchestration import compile as compile_module
+        from src.orchestration.amend import AmendmentContext, amend_plan
+
+        approval = ApprovalContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+        )
+        original = await compile_proposal(session, gateless_proposal(), approval)
+        expires_at = datetime.now(tz=UTC) + timedelta(minutes=5)
+        submitted = gateless_proposal(title="Delivery loop with amended bounds").model_copy(
+            update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)}
+        )
+        amender = AmendmentContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+            reason="Accept bounded execution.",
+        )
+        first = await amend_plan(session, original.flow_id, submitted, amender)
+        await session.commit()
+        monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at + timedelta(seconds=1))
+
+        replay = await amend_plan(session, original.flow_id, submitted, amender)
+
+        assert replay.already_amended is True
+        assert replay.plan_version == first.plan_version
+        assert replay.decision_id == first.decision_id
+        assert len(await plan_versions(session)) == 2
+
     def test_unexpired_bounds_are_still_accepted(self):
         """The scope of the refusal, from the other side.
 
@@ -944,9 +1048,7 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         from datetime import UTC, datetime, timedelta
 
         future_naive_expiry = (datetime.now(tz=UTC) + timedelta(hours=1)).replace(tzinfo=None)
-        submitted = gateless_proposal().model_copy(
-            update={"execution_policy": policy_for_these_fixtures(expires_at=future_naive_expiry)}
-        )
+        submitted = gateless_proposal().model_copy(update={"execution_policy": policy_for_these_fixtures(expires_at=future_naive_expiry)})
 
         granted = accept_execution_policy(
             submitted,

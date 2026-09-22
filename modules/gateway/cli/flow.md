@@ -206,8 +206,10 @@ that can still be exercised. Requesting a plan on a conversation that has been i
 close to the full 24 hours is refused (`planning_session_idle`) instead of producing
 a grant that expires before it could be used — continue the conversation, then ask
 for the plan again. An acceptance of bounds that have nonetheless already expired is
-refused rather than re-clocked, because the expiry is part of what was approved;
-derive a new plan and accept that.
+refused rather than re-clocked, because the expiry is part of what was approved.
+The gate endpoint returns HTTP 409 with `execution_policy_expired`; the CLI tells
+operators to derive a new plan, review its new revision and policy, then approve
+that exact revision.
 
 This does **not** complete story #5331's full inception journey. Automatic issue
 materialization, the canonical multi-stage inception gates, conversational graph

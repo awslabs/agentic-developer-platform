@@ -63,10 +63,11 @@ from .compile import (
     ApprovalContext,
     ProposalRejectedError,
     TenantMismatchError,
-    accept_execution_policy,
     address_of,
     plan_hash,
+    prepare_execution_policy,
     require_evaluation_acceptor,
+    require_unexpired_execution_policy,
     upsert_edges,
     upsert_nodes,
 )
@@ -232,16 +233,11 @@ async def amend_plan(
     # An amendment producing a new accepted version IS how a policy is amended, so
     # a re-submitted policy is re-stamped here and the new version carries it.
     #
-    # The same `accept_execution_policy` the original path uses, imported rather
-    # than reimplemented, for the same reason this module already shares
-    # `validate_proposal` and `upsert_nodes` (AC-29 parity): a second acceptance
-    # rule here would be free to accept a policy `compile_proposal` refuses, and
-    # the amendment path is the *easier* one to reach. In particular this is what
-    # stops an amendment from being the way a SERVICE actor gets a policy accepted.
-    #
-    # Before the hash, so the stamp is inside what idempotency compares — see
-    # `compile.plan_hash` on why the policy is hashed at all.
-    proposal = accept_execution_policy(proposal, decision=actor.to_approval(), decision_kind=DecisionKind.PLAN_AMENDED)
+    # The same deterministic preparation the original path uses, imported rather
+    # than reimplemented. It runs before the hash so the stamp is inside what
+    # idempotency compares; the time-dependent expiry check runs only after the
+    # locked replay check below.
+    proposal = prepare_execution_policy(proposal, decision=actor.to_approval(), decision_kind=DecisionKind.PLAN_AMENDED)
 
     document = proposal.model_dump(mode="json")
     document_hash = plan_hash(proposal)
@@ -281,6 +277,10 @@ async def amend_plan(
                 node_ids={address_of(flow.slug, node): node.id for node in existing},
                 already_amended=True,
             )
+
+        # A response-lost retry is identified under the flow lock before time is
+        # consulted. Only a genuinely new version must still have live bounds.
+        require_unexpired_execution_policy(proposal)
 
         require_evaluation_acceptor(proposal, actor.to_approval(), in_force)
         superseded_version = in_force.version if in_force is not None else None
