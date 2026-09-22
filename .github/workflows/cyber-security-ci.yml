@@ -11,15 +11,16 @@ permissions:
   contents: read
 jobs:
   kernel-isolation:
-    runs-on: ubuntu-24.04
+    runs-on: arc-runner-org
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - name: Build exact worker runtime with isolation probes
-        run: docker build --target security-test -t cyber-isolation-test -f modules/domain-apps/cyber/workers/Dockerfile modules/domain-apps/cyber
-      - name: Enforce isolation with the production container restrictions
-        run: >-
-          docker run --rm --network none --read-only
-          --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777
-          --cap-drop ALL --security-opt no-new-privileges
-          --memory 4g --pids-limit 256 cyber-isolation-test
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install worker dependencies for real Linux probes
+        run: |
+          python -m venv /tmp/cyber-kernel-tests
+          /tmp/cyber-kernel-tests/bin/pip install -r modules/domain-apps/cyber/workers/requirements.txt pytest==8.3.5
+      - name: Exercise actual kernel confinement and native parsers
+        run: /tmp/cyber-kernel-tests/bin/python -m pytest -q modules/domain-apps/cyber/workers/tests/test_isolation.py

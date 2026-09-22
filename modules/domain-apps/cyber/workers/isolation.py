@@ -138,7 +138,7 @@ def run_isolated(command: list[str], inputs: list[Path], *, timeout: float = TIM
         root = Path(td)
         scratch = root / "scratch"
         scratch.mkdir(mode=0o700)
-        reads = [str(code_root), str(Path(sys.base_prefix).resolve()), *map(str, inputs)]
+        reads = [str(code_root), str(Path(sys.base_prefix).resolve()), str(Path(sys.prefix).resolve()), *map(str, inputs)]
         reads += [p for p in ("/usr", "/lib", "/lib64", "/bin", "/etc/ld.so.cache", "/dev/null") if Path(p).exists()]
         for p in ("/rules", "/opt/yara-rules"):
             if Path(p).is_dir():
