@@ -886,10 +886,16 @@ def _process_start(pid):
     # boot. Parsed from the LAST ')' because a process name may contain ')'.
     try:
         stat_line = Path(f"/proc/{pid}/stat").read_text()
-        return "proc:" + stat_line[stat_line.rindex(")") + 2 :].split()[19]
+        fields = stat_line[stat_line.rindex(")") + 2 :].split()
+        if fields[0] == "Z":
+            return None
+        return "proc:" + fields[19]
     except (OSError, ValueError, IndexError):
         pass
     try:
+        state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        if state.returncode != 0 or not state.stdout.strip() or state.stdout.lstrip().startswith("Z"):
+            return None
         result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
         return "ps:" + result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
     except (OSError, subprocess.SubprocessError):

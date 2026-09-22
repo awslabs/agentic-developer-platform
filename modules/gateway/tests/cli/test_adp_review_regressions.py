@@ -447,16 +447,15 @@ def test_codex_launch_pins_complete_provider_without_global_setup(installed):
             os.kill(identity["pid"], signal.SIGINT)
 
 
-def test_daemons_have_separate_labels_pinned_context_and_saved_ports(installed):
-    run, _, stores, home, prefix, _ = installed
-    for name, body in (("uname", "echo Darwin"), ("launchctl", "exit 0")):
-        script = prefix / name
-        script.write_text("#!/bin/sh\n" + body + "\n")
-        script.chmod(0o755)
+def test_daemons_have_separate_labels_pinned_context_and_saved_ports(installed, fake_launchd_factory):
+    run, env, stores, home, prefix, _ = installed
+    fake_launchd_factory(prefix)
+    # Real local readiness probes are required now that launchctl starts proxies.
+    local_env = {"PATH": env["PATH"].split(":", 1)[1]}
     paths = []
     for name, store in stores.items():
         assert run("--deployment", name, "codex", "setup").returncode == 0
-        result = run("--deployment", name, "daemon", "install")
+        result = run("--deployment", name, "daemon", "install", extra=local_env)
         assert result.returncode == 0, result.stderr
         path = home / "Library/LaunchAgents" / f"com.adp.gateway-proxy.{store.name}.plist"
         paths.append(path)
@@ -465,8 +464,17 @@ def test_daemons_have_separate_labels_pinned_context_and_saved_ports(installed):
         assert plist["EnvironmentVariables"]["ADP_DEPLOYMENT_URL"] == f"https://{name}.example.test/api"
         assert plist["ProgramArguments"][-1] == str(json.loads((store / "runtime/setup-port.json").read_text())["port"])
     result = run("deployment", "remove", "integration")
+    assert result.returncode != 0 and "in use" in result.stderr
+    # Even after the real process exits, its installed daemon must prevent removal.
+    subprocess.run(
+        [str(prefix / "launchctl"), "unload", str(paths[1])],
+        env={**env, **local_env},
+        check=True,
+        timeout=5,
+    )
+    result = run("deployment", "remove", "integration")
     assert result.returncode != 0 and "always-on proxy" in result.stderr
-    assert run("--deployment", "integration", "daemon", "uninstall").returncode == 0
+    assert run("--deployment", "integration", "daemon", "uninstall", extra=local_env).returncode == 0
     assert paths[0].exists() and not paths[1].exists()
 
 

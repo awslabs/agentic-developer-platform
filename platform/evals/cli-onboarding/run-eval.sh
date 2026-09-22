@@ -1044,9 +1044,19 @@ run_phase_c() {
     return 0
   fi
 
+  # The proxy publishes its capability (#5686) just AFTER it binds, so an open
+  # port is not proof the credential is readable yet. Waiting for the port alone
+  # would let Codex race in and get a 403 that looks like a guard bug.
+  waited=0
+  while [ "$waited" -lt 20 ]; do
+    laptop test -s "$POD_HOME/.bedrock-gateway/proxy.json" && break
+    sleep 1; waited=$((waited + 1))
+  done
+
   # Config per cli/README.md §"Using Codex". env_key names a var Codex requires
-  # to exist but never validates — the proxy discards it and injects the real
-  # token, which is the whole point of the zero-touch path.
+  # to exist; since #5686 the proxy requires its value to be the capability it
+  # published, then discards it and injects the real token — the zero-touch path
+  # with the browser-origin hole closed.
   cat > "$WORKDIR/codex-config.toml" <<TOML
 model = "${EVAL_CODEX_MODEL}"
 model_provider = "adp-gateway"
@@ -1063,9 +1073,22 @@ env_key = "ADP_GATEWAY_DUMMY"
 TOML
   laptop_put_file "$WORKDIR/codex-config.toml" "$POD_HOME/.codex/config.toml" 644
 
+  # Since #5686 the proxy requires the capability it published after binding, not
+  # a placeholder: loopback alone does not prove a caller may spend the user's
+  # token, since any web page the user visits can also reach 127.0.0.1.
+  #
+  # Resolved INSIDE the pod and never interpolated into this argv: as the header
+  # of this file notes, anything in an exec'd command line is visible in the exec
+  # API and the runner's process table, and the capability is a credential for the
+  # proxy. `adp codex` reads the same 0600 file. An absent capability leaves the
+  # var empty and C10 fails with 403 proxy_unauthorized, which is the correct
+  # signal rather than a silent pass.
+  # The sentinel is passed as a positional arg to `sh -c` rather than embedded in
+  # the script text, so it cannot be re-interpreted by the pod's shell.
   local codex_out
-  if codex_out="$(laptop env ADP_GATEWAY_DUMMY=unused codex exec --skip-git-repo-check \
-      "Reply with exactly: ${SENTINEL}" 2>"$WORKDIR/codex.err")"; then
+  # shellcheck disable=SC2016  # $HOME/$1 are expanded by the pod's shell, not ours
+  if codex_out="$(laptop sh -c 'ADP_GATEWAY_DUMMY="$(jq -r ".capability // empty" "$HOME/.bedrock-gateway/proxy.json")" \
+      codex exec --skip-git-repo-check "Reply with exactly: $1"' _ "${SENTINEL}" 2>"$WORKDIR/codex.err")"; then
     assert_sentinel "C10 Codex via the local auth proxy" "$codex_out"
   else
     fail "C10 codex exec failed: $(tail -3 "$WORKDIR/codex.err" | tr '\n' ' ')"

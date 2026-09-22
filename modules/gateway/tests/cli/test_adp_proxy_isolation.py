@@ -129,6 +129,16 @@ class RunningProxy:
     def base(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
+    @property
+    def capability(self) -> str:
+        """The local capability this proxy published for entitled callers (#5686)."""
+        return str(self.identity[proxy_module.IDENTITY_CAPABILITY_KEY])
+
+    @property
+    def auth_headers(self) -> dict[str, str]:
+        """Headers an entitled CLI caller sends. Relayed requests need these."""
+        return {"Authorization": f"Bearer {self.capability}"}
+
     def stop(self) -> None:
         if self.process and self.process.poll() is None:
             self.process.send_signal(signal.SIGINT)
@@ -193,6 +203,12 @@ class TestThreeProxiesCoexist:
         serialized = json.dumps(identity).lower()
         for forbidden in ("token", "authorization", "bearer", "secret", "password", "refresh"):
             assert forbidden not in serialized, f"identity leaked {forbidden!r}"
+
+        # The local capability (#5686) is published to the 0600 FILE but must never
+        # appear in this response: the route answers without a capability, so
+        # echoing it here would hand the secret to exactly the callers it excludes.
+        assert proxy_module.IDENTITY_CAPABILITY_KEY not in identity
+        assert dev.capability not in json.dumps(identity)
 
 
 class TestPublishedIdentityIsTrustworthy:
@@ -289,7 +305,15 @@ class TestNoRequestReachesTheWrongGateway:
                 token="TOKEN-MINTED-FOR-INTEGRATION",
             )
 
-            request = urllib.request.Request(f"{dev.base}/openai/v1/responses", data=b"{}", method="POST")  # noqa: S310
+            # The capability is required since #5686, so an entitled caller sends
+            # it. Without it this request would be refused with 403 before any
+            # upstream was opened, and the assertions below would pass vacuously.
+            request = urllib.request.Request(  # noqa: S310
+                f"{dev.base}/openai/v1/responses",
+                data=b"{}",
+                method="POST",
+                headers=dev.auth_headers,
+            )
             with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - loopback literal
                 assert response.status == 200
 

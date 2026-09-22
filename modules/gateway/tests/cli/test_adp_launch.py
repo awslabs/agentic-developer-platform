@@ -24,8 +24,10 @@ The proxy runs on a per-test free port (`ADP_PROXY_PORT`) so a developer's own
 proxy on 9191 neither breaks these tests nor is disturbed by them.
 """
 
+import http.client
 import json
 import os
+import plistlib
 import re
 import signal
 import socket
@@ -239,14 +241,40 @@ class TestCodexStartsProxy:
     def test_sets_the_dummy_env_var_itself(self, launch, adp_home: Path) -> None:
         """The `ADP_GATEWAY_DUMMY=unused codex` prefix users had to remember.
 
-        Codex refuses to start a provider whose env_key names an unset variable but
-        never validates the value — the proxy discards it and injects the real token.
+        Codex refuses to start a provider whose env_key names an unset variable.
+        Since #5686 the value is not a placeholder but the capability the proxy
+        published: the proxy requires it, because binding to loopback does not stop
+        a web page the user visits from driving the proxy and spending their token.
+        The launcher reads it from the proxy's 0600 identity file, which is the
+        boundary a page cannot cross.
+
+        The old literal `unused` must NOT appear — it is printed in our own README,
+        so a capability equal to it would be public knowledge and no protection.
         """
         _seed_valid_session(adp_home)
 
         launch(["codex"])
 
-        assert launch.record.dummy_env == ["unused"]
+        published = json.loads((adp_home / ".bedrock-gateway" / "proxy.json").read_text())["capability"]
+        assert launch.record.dummy_env == [published]
+        assert published != "unused"
+        assert len(published) >= 16
+
+    def test_a_stale_placeholder_in_the_users_shell_is_overridden(self, launch, adp_home: Path) -> None:
+        """A shell that still exports the pre-#5686 placeholder must not win.
+
+        Users were told for months to put `export ADP_GATEWAY_DUMMY=unused` in their
+        shell config, and many did. If the launcher deferred to whatever the shell
+        already exported, those users' Codex would present a value printed in our
+        README — guessable by any web page — and the capability check would be
+        decorative for exactly the population most likely to have followed the docs.
+        """
+        _seed_valid_session(adp_home)
+
+        launch(["codex"], extra_env={"ADP_GATEWAY_DUMMY": "unused"})
+
+        published = json.loads((adp_home / ".bedrock-gateway" / "proxy.json").read_text())["capability"]
+        assert launch.record.dummy_env == [published], "the stale shell export was not overridden"
 
     def test_waits_for_readiness_before_launching(self, launch, adp_home: Path) -> None:
         """Codex's first request must not race the proxy's bind, or it 502s."""
@@ -308,6 +336,27 @@ class TestCodexReusesProxy:
         assert launch.pidfile.read_text().strip() == pid_after_first
         assert len(_listening_lines(launch.proxy_log)) == starts_after_first == 1
         assert "Starting the auth proxy" not in second.stderr
+
+    def test_replaces_a_verified_legacy_proxy_without_a_capability(self, launch, adp_home: Path) -> None:
+        """An upgraded CLI must never preserve a pre-#5686 vulnerable process."""
+        _seed_valid_session(adp_home)
+        first = launch(["codex"])
+        assert first.returncode == 0, first.stderr
+
+        identity_file = adp_home / ".bedrock-gateway" / "proxy.json"
+        legacy_identity = json.loads(identity_file.read_text())
+        old_pid = legacy_identity["pid"]
+        legacy_identity.pop("capability")
+        identity_file.write_text(json.dumps(legacy_identity))
+
+        second = launch(["codex"])
+
+        assert second.returncode == 0, second.stderr
+        secured_identity = json.loads(identity_file.read_text())
+        assert secured_identity["pid"] != old_pid
+        assert len(secured_identity["capability"]) >= 16
+        assert launch.record.dummy_env[-1] == secured_identity["capability"]
+        assert "Replacing an insecure legacy auth proxy" in second.stderr
 
     def test_two_concurrent_launches_start_exactly_one_proxy(
         self, adp_bin: Path, adp_home: Path, stub_tools: Path, proxy_port: int, tmp_path: Path
@@ -581,6 +630,11 @@ class TestVerbRouting:
 _ON_MACOS = os.uname().sysname == "Darwin"
 
 
+@pytest.fixture
+def fake_launchd(stub_tools: Path, fake_launchd_factory) -> Path:
+    return fake_launchd_factory(stub_tools)
+
+
 class TestDaemonOnLinux:
     """Not silently broken off macOS: launchd is macOS-only and says so."""
 
@@ -614,15 +668,48 @@ class TestDaemonOnLinux:
         assert "install" in result.stderr
 
 
-@pytest.mark.skipif(not _ON_MACOS, reason="launchd LaunchAgents are macOS-only")
-class TestDaemonOnMacOS:
+class TestDaemonInstall:
     """install/uninstall must round-trip cleanly — an orphan agent is a stray process."""
 
     @staticmethod
     def _plist(home: Path) -> Path:
         return home / "Library" / "LaunchAgents" / "com.adp.gateway-proxy.plist"
 
-    def test_install_writes_the_plist_and_the_rc_export(self, launch, adp_home: Path) -> None:
+    @staticmethod
+    def _proxy_status(port: int, capability: str) -> int:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            connection.request(
+                "POST",
+                "/openai/v1/responses",
+                body=b"{}",
+                headers={"Authorization": f"Bearer {capability}", "Content-Type": "application/json"},
+            )
+            return connection.getresponse().status
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _seed_named_deployment(launch, home: Path, name: str, gateway_port: int) -> tuple[Path, str]:
+        added = launch(["deployment", "add", name, "--url", f"http://127.0.0.1:{gateway_port}/api"])
+        assert added.returncode == 0, added.stderr
+        registry = json.loads((home / ".adp" / "deployments.json").read_text())
+        deployment_id = registry["deployments"][name]["id"]
+        root = home / ".adp" / "deployments" / deployment_id
+        (root / "config.json").write_text(json.dumps({"gateway_url": f"http://127.0.0.1:{gateway_port}/api"}))
+        (root / "tokens.json").write_text(
+            json.dumps(
+                {
+                    "id_token": "id-token",
+                    "access_token": f"token-for-{name}",
+                    "refresh_token": "refresh-token",
+                    "expires_at": int(time.time()) + 3600,
+                }
+            )
+        )
+        return root, deployment_id
+
+    def test_install_writes_the_plist_and_the_rc_export(self, launch, adp_home: Path, fake_launchd: Path) -> None:
         _seed_valid_session(adp_home)
         rc = adp_home / ".zshrc"
         rc.write_text("# my shell config\nexport EDITOR=vim\n")
@@ -630,27 +717,151 @@ class TestDaemonOnMacOS:
         result = launch(["daemon", "install"], extra_env={"SHELL": "/bin/zsh"})
 
         assert result.returncode == 0, result.stderr
-        plist = self._plist(adp_home).read_text()
-        assert "com.adp.gateway-proxy" in plist
-        assert "<key>KeepAlive</key>" in plist
-        assert f"<string>{launch.port}</string>" in plist
+        plist = plistlib.loads(self._plist(adp_home).read_bytes())
+        capability_file = adp_home / ".adp" / "daemon-capability"
+        capability = capability_file.read_text()
+        assert plist["Label"] == "com.adp.gateway-proxy"
+        assert plist["KeepAlive"] is True
+        assert plist["ProgramArguments"][-1] == str(launch.port)
+        assert plist["EnvironmentVariables"]["ADP_GATEWAY_DUMMY"] == capability
+        assert len(capability) >= 16
+        assert capability_file.stat().st_mode & 0o777 == 0o600
+        assert capability not in result.stdout
+        assert capability not in result.stderr
         # Bare `codex` needs the variable from the shell — no launcher sets it there.
-        assert "export ADP_GATEWAY_DUMMY=unused" in rc.read_text()
+        assert "daemon-capability" in rc.read_text()
+        assert capability not in rc.read_text(), "the capability must not be embedded in a normally-readable rc file"
         assert "export EDITOR=vim" in rc.read_text(), "must not clobber the user's rc"
 
-    def test_install_is_idempotent(self, launch, adp_home: Path) -> None:
+    def test_install_replaces_an_existing_on_demand_proxy(self, launch, adp_home: Path, fake_launchd: Path) -> None:
+        _seed_valid_session(adp_home)
+
+        started = launch(["codex"])
+        assert started.returncode == 0, started.stderr
+        first_identity = json.loads((adp_home / ".bedrock-gateway" / "proxy.json").read_text())
+
+        installed = launch(["daemon", "install"], extra_env={"SHELL": "/bin/zsh"})
+
+        assert installed.returncode == 0, installed.stderr
+        replacement = json.loads((adp_home / ".bedrock-gateway" / "proxy.json").read_text())
+        durable = (adp_home / ".adp" / "daemon-capability").read_text()
+        assert replacement["pid"] != first_identity["pid"]
+        assert replacement["capability"] == durable
+        old_state = subprocess.run(["ps", "-o", "stat=", "-p", str(first_identity["pid"])], capture_output=True, text=True, timeout=5).stdout.strip()
+        assert not old_state or old_state.startswith("Z"), f"old proxy is still running with state {old_state}"
+
+        bare = subprocess.run(
+            ["bash", "-c", '. "$HOME/.zshrc"; codex'],
+            env={
+                "HOME": str(adp_home),
+                "PATH": f"{fake_launchd}:{os.environ.get('PATH', '')}",
+                "STUB_INVOCATION_LOG": str(launch.record._log),
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert bare.returncode == 0, bare.stderr
+        assert launch.record.dummy_env[-1] == durable
+        assert self._proxy_status(replacement["port"], first_identity["capability"]) == 403
+        assert self._proxy_status(replacement["port"], durable) != 403
+
+    def test_install_is_idempotent_and_restart_stable(self, launch, adp_home: Path, fake_launchd: Path) -> None:
         _seed_valid_session(adp_home)
         rc = adp_home / ".zshrc"
         rc.write_text("export EDITOR=vim\n")
 
         launch(["daemon", "install"], extra_env={"SHELL": "/bin/zsh"})
         first = rc.read_text()
+        first_capability = (adp_home / ".adp" / "daemon-capability").read_text()
         launch(["daemon", "install"], extra_env={"SHELL": "/bin/zsh"})
 
         assert rc.read_text() == first, "a second install must not stack rc lines"
         assert rc.read_text().count("ADP_GATEWAY_DUMMY") == 1
+        assert (adp_home / ".adp" / "daemon-capability").read_text() == first_capability
+        plist = plistlib.loads(self._plist(adp_home).read_bytes())
+        assert plist["EnvironmentVariables"]["ADP_GATEWAY_DUMMY"] == first_capability
 
-    def test_uninstall_removes_both_the_plist_and_the_rc_export(self, launch, adp_home: Path) -> None:
+    def test_rc_export_matches_the_verified_first_process(self, launch, adp_home: Path, fake_launchd: Path) -> None:
+        _seed_valid_session(adp_home)
+
+        result = launch(["daemon", "install"], extra_env={"SHELL": "/bin/zsh"})
+        assert result.returncode == 0, result.stderr
+        identity = json.loads((adp_home / ".bedrock-gateway" / "proxy.json").read_text())
+
+        shell = subprocess.run(
+            ["bash", "-c", '. "$HOME/.zshrc"; printf %s "$ADP_GATEWAY_DUMMY"'],
+            env={"HOME": str(adp_home), "PATH": os.environ.get("PATH", "")},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert shell.returncode == 0, shell.stderr
+        assert shell.stdout == (adp_home / ".adp" / "daemon-capability").read_text()
+        assert shell.stdout == identity["capability"]
+
+    def test_multiple_deployments_share_one_capability_through_switch_and_uninstall(self, launch, adp_home: Path, fake_launchd: Path) -> None:
+        dev_root, dev_id = self._seed_named_deployment(launch, adp_home, "dev", 1)
+        integration_root, integration_id = self._seed_named_deployment(launch, adp_home, "integration", 2)
+        rc = adp_home / ".zshrc"
+        environment = {"ADP_PROXY_PORT": "", "SHELL": "/bin/zsh"}
+
+        dev_install = launch(["--deployment", "dev", "daemon", "install"], extra_env=environment)
+        integration_install = launch(["--deployment", "integration", "daemon", "install"], extra_env=environment)
+
+        assert dev_install.returncode == 0, dev_install.stderr
+        assert integration_install.returncode == 0, integration_install.stderr
+        durable_file = adp_home / ".adp" / "daemon-capability"
+        durable = durable_file.read_text()
+        dev_identity = json.loads((dev_root / "runtime" / "proxy.json").read_text())
+        integration_identity = json.loads((integration_root / "runtime" / "proxy.json").read_text())
+        launch_agents = adp_home / "Library" / "LaunchAgents"
+        dev_plist = plistlib.loads((launch_agents / f"com.adp.gateway-proxy.{dev_id}.plist").read_bytes())
+        integration_plist = plistlib.loads((launch_agents / f"com.adp.gateway-proxy.{integration_id}.plist").read_bytes())
+        assert dev_identity["capability"] == integration_identity["capability"] == durable
+        assert dev_plist["EnvironmentVariables"]["ADP_GATEWAY_DUMMY"] == durable
+        assert integration_plist["EnvironmentVariables"]["ADP_GATEWAY_DUMMY"] == durable
+        assert rc.read_text().count("ADP_GATEWAY_DUMMY") == 1
+
+        switched = launch(["deployment", "use", "integration"])
+        assert switched.returncode == 0, switched.stderr
+        shell = subprocess.run(
+            ["bash", "-c", '. "$HOME/.zshrc"; printf %s "$ADP_GATEWAY_DUMMY"'],
+            env={"HOME": str(adp_home), "PATH": os.environ.get("PATH", "")},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert shell.stdout == durable
+        assert self._proxy_status(dev_identity["port"], durable) != 403
+        assert self._proxy_status(integration_identity["port"], durable) != 403
+
+        integration_uninstall = launch(["--deployment", "integration", "daemon", "uninstall"], extra_env=environment)
+        assert integration_uninstall.returncode == 0, integration_uninstall.stderr
+        assert durable_file.read_text() == durable
+        assert "ADP_GATEWAY_DUMMY" in rc.read_text()
+        assert (launch_agents / f"com.adp.gateway-proxy.{dev_id}.plist").exists()
+        assert not (launch_agents / f"com.adp.gateway-proxy.{integration_id}.plist").exists()
+        assert self._proxy_status(dev_identity["port"], durable) != 403
+
+        dev_uninstall = launch(["--deployment", "dev", "daemon", "uninstall"], extra_env=environment)
+        assert dev_uninstall.returncode == 0, dev_uninstall.stderr
+        assert not durable_file.exists()
+        assert "ADP_GATEWAY_DUMMY" not in rc.read_text()
+
+    def test_install_migrates_the_marked_legacy_placeholder(self, launch, adp_home: Path, fake_launchd: Path) -> None:
+        _seed_valid_session(adp_home)
+        rc = adp_home / ".zshrc"
+        rc.write_text("# user setting\n# Added by adp daemon install\nexport ADP_GATEWAY_DUMMY=unused\n")
+
+        result = launch(["daemon", "install"], extra_env={"SHELL": "/bin/zsh"})
+
+        assert result.returncode == 0, result.stderr
+        assert "unused" not in rc.read_text()
+        assert "daemon-capability" in rc.read_text()
+        assert "# user setting" in rc.read_text()
+
+    def test_uninstall_removes_both_the_plist_and_the_rc_export(self, launch, adp_home: Path, fake_launchd: Path) -> None:
         _seed_valid_session(adp_home)
         rc = adp_home / ".zshrc"
         rc.write_text("export EDITOR=vim\n")
@@ -660,10 +871,11 @@ class TestDaemonOnMacOS:
 
         assert result.returncode == 0, result.stderr
         assert not self._plist(adp_home).exists()
+        assert not (adp_home / ".adp" / "daemon-capability").exists()
         assert "ADP_GATEWAY_DUMMY" not in rc.read_text()
         assert "export EDITOR=vim" in rc.read_text()
 
-    def test_uninstall_without_an_install_is_not_an_error(self, launch, adp_home: Path) -> None:
+    def test_uninstall_without_an_install_is_not_an_error(self, launch, adp_home: Path, fake_launchd: Path) -> None:
         """Idempotent both ways, so it is safe in a teardown script."""
         _seed_valid_session(adp_home)
 
@@ -671,7 +883,7 @@ class TestDaemonOnMacOS:
 
         assert result.returncode == 0, result.stderr
 
-    def test_uninstall_leaves_a_users_own_dummy_export_alone(self, launch, adp_home: Path) -> None:
+    def test_uninstall_leaves_a_users_own_dummy_export_alone(self, launch, adp_home: Path, fake_launchd: Path) -> None:
         """Only OUR marked line is removed — an unmarked one is the user's."""
         _seed_valid_session(adp_home)
         rc = adp_home / ".zshrc"

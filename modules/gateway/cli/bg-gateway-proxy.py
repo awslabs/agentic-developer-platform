@@ -34,6 +34,41 @@ Design constraints (from Issue #4154)
 * **No secrets in logs.** One line per request (method, path, status) on stderr.
   Never the token, never headers, never bodies.
 
+Who is allowed to use it (Issue #5686)
+--------------------------------------
+Binding to loopback decides *which machines* can reach this proxy. It does NOT
+decide *which callers* may spend the user's token, and those are different
+questions. Two callers reach loopback without being Codex:
+
+1. **Any other process on the machine** — loopback is not a permission boundary
+   between local processes.
+2. **Any web page the user visits while the proxy runs** — a browser will happily
+   issue ``fetch('http://127.0.0.1:9191/...')`` from ``https://evil.example``.
+   The page cannot *read* the token (it is injected here, never sent to the
+   client), but it does not need to: it makes the proxy spend the token on its
+   behalf and reads the gateway's answer. A ``simple request`` (e.g.
+   ``Content-Type: text/plain``) is not even preflighted, so a CORS policy alone
+   would not stop the request from being *sent* and relayed.
+
+So entitlement is proven, not assumed, by three independent checks:
+
+* **A capability token** (``CAPABILITY_ENV_VAR``). Minted per process, published
+  only into the 0600 identity file, and required on every relayed request. A web
+  page cannot read that file, and neither can another user. This is the check
+  that actually carries the security property; the two below are defence in
+  depth for when a capability leaks.
+* **Origin / Sec-Fetch-Site rejection.** Markers a browser attaches and a CLI
+  never does. ``null`` (sandboxed/`file:` pages) is rejected like any other.
+* **Host validation.** Defeats DNS rebinding, where ``evil.example`` resolves to
+  127.0.0.1 so the packet legitimately arrives on loopback. The address a packet
+  came from cannot distinguish that case; the name the caller *asked for* can.
+
+Refusals happen BEFORE any token is obtained, so a refused request never reaches
+the gateway and never spends anything. Nothing here ever emits an
+``Access-Control-Allow-*`` header: there is no browser origin this proxy wants to
+grant access to, so preflights are answered locally with a refusal rather than
+being forwarded upstream.
+
 stdlib only, single file: macOS and Linux both ship a usable python3, so the
 helper keeps its zero-install property.
 """
@@ -42,9 +77,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hmac
 import http.client
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -96,10 +133,76 @@ HOP_BY_HOP_HEADERS = frozenset(
     }
 )
 
-# Client-supplied credentials are dropped, not merged: whatever placeholder
-# Codex was configured with (``env_key`` is mandatory in its config) must never
-# reach the gateway and must never win over the token we inject.
+# Client-supplied credentials are dropped, not merged: whatever Codex was
+# configured with (``env_key`` is mandatory in its config) must never reach the
+# gateway and must never win over the token we inject. Since #5686 that value is
+# the capability rather than a placeholder, which makes dropping it doubly
+# important: the capability authenticates the caller TO this proxy and is
+# meaningless to the gateway, so forwarding it would leak a local secret.
 CLIENT_AUTH_HEADERS = frozenset({"authorization", "x-api-key", "api-key"})
+
+# The env var Codex reads its credential from, and therefore how the capability
+# reaches us. Codex requires `env_key` to name a set variable but never validates
+# the value, so this was historically a placeholder ("unused") that we discarded.
+# Reusing it means the capability needs no new client-side plumbing: the launcher
+# exports it, Codex sends it as `Authorization: Bearer <capability>`, and a user
+# whose shell still exports the old placeholder gets a clear 403 rather than a
+# silent success. Env var, not a CLI flag: `ps` is world-readable on both macOS
+# and Linux, so a capability on the command line would be readable by any local
+# user — the exact audience the capability exists to exclude.
+CAPABILITY_ENV_VAR = "ADP_GATEWAY_DUMMY"
+
+# Values that must never be accepted as a capability, however they arrive.
+#
+# This matters because the variable had a previous life as a placeholder: the
+# docs, the /setup page and many users' shell rc files export
+# `ADP_GATEWAY_DUMMY=unused`. The proxy inherits its environment from the shell
+# that started it, so honouring an inherited value verbatim would quietly set the
+# capability to a word printed in the README — guessable by any web page, which
+# is the whole vulnerability. A placeholder is therefore discarded and a real
+# secret minted instead.
+PLACEHOLDER_CAPABILITIES = frozenset({"unused", "dummy", "none", "placeholder", "changeme", "x"})
+
+# Floor on an externally-supplied capability. Anything shorter is a placeholder
+# by another name and is brute-forceable by a page that can issue requests in a
+# loop, so it is discarded in favour of a minted secret.
+MIN_CAPABILITY_LENGTH = 16
+
+# Key under which the capability is published into the 0600 identity file. Only
+# the launcher (running as the owner) can read it back. Deliberately NOT part of
+# the IDENTITY_PATH response body — that route is answered without a capability,
+# so echoing it there would hand the secret to precisely the callers it excludes.
+IDENTITY_CAPABILITY_KEY = "capability"
+
+# 256 bits of urandom, url-safe so it survives an env var and a header value
+# unescaped. Minted per process and held only in memory: a capability that
+# outlived the proxy would be a persistent credential on disk for no benefit,
+# since a new proxy publishes a new one.
+CAPABILITY_BYTES = 32
+
+# Browsers set `Origin` on cross-origin requests (and on all POSTs); CLI clients
+# do not. `null` is included explicitly because a sandboxed iframe, a `file://`
+# page and a redirected request all send the literal string "null" — treating a
+# missing value and "null" the same way is the point, since "null" is an origin
+# we trust least, not an absent one.
+#
+# Any Origin at all is refused rather than matched against an allowlist: there is
+# no web page that should be driving this proxy, so there is nothing to allow.
+BROWSER_ORIGIN_HEADER = "origin"
+
+# Fetch metadata: set by the browser, unforgeable by page JavaScript (it is a
+# forbidden header name). `same-origin` and `none` are what a same-site page or a
+# direct navigation sends; `cross-site` and `same-site` mean another site caused
+# the request. Absent on CLI clients, which is why absence cannot be an error.
+FETCH_SITE_HEADER = "sec-fetch-site"
+FORBIDDEN_FETCH_SITES = frozenset({"cross-site", "same-site"})
+
+# Host values that genuinely name this machine's loopback interface. A request
+# whose Host is anything else — `evil.example` resolving to 127.0.0.1 — is the
+# DNS-rebinding signal: the packet arrives on loopback legitimately, so only the
+# requested name distinguishes it. An ABSENT Host is tolerated (a minimal CLI
+# client may omit it); a PRESENT and unrecognised one is refused.
+ALLOWED_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 # ``host`` is set by the upstream connection; ``content-length`` is recomputed
 # from the body we actually read.
@@ -108,6 +211,40 @@ DROPPED_REQUEST_HEADERS = HOP_BY_HOP_HEADERS | CLIENT_AUTH_HEADERS | {"host", "c
 
 class TokenError(RuntimeError):
     """The auth helper could not produce a usable access token."""
+
+
+def mint_capability() -> str:
+    """A fresh default capability proving a caller may spend the token."""
+    return secrets.token_urlsafe(CAPABILITY_BYTES)
+
+
+def usable_capability(supplied: str | None) -> str:
+    """An externally-supplied capability, or "" if it must not be trusted.
+
+    Rejects the legacy ``unused`` placeholder and anything too short to resist
+    guessing, so an inherited shell export cannot silently weaken the proxy to a
+    value published in the docs. Returning "" tells the caller to mint instead.
+    """
+    value = (supplied or "").strip()
+    if len(value) < MIN_CAPABILITY_LENGTH or value.lower() in PLACEHOLDER_CAPABILITIES:
+        return ""
+    return value
+
+
+def presented_capability(header_value: str | None) -> str:
+    """Extract the capability from an ``Authorization`` header value.
+
+    Accepts the ``Bearer <value>`` form Codex sends, and a bare value for a
+    hand-rolled client using curl. Returns "" when there is nothing usable, so
+    the caller compares against a non-empty secret and fails closed.
+    """
+    if not header_value:
+        return ""
+    value = header_value.strip()
+    scheme, _, remainder = value.partition(" ")
+    if scheme.lower() == "bearer":
+        return remainder.strip()
+    return value
 
 
 class TokenSource:
@@ -180,6 +317,8 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
     deployment_id: str = ""
     deployment_name: str = ""
     gateway_url: str = ""
+    # The per-process secret a caller must present to spend the user's token.
+    capability: str = ""
 
     def do_GET(self) -> None:
         if self.path.split("?", 1)[0] == IDENTITY_PATH:
@@ -203,7 +342,23 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
         self._proxy()
 
     def do_OPTIONS(self) -> None:
-        self._proxy()
+        """Answer CORS preflights here; never forward them.
+
+        A preflight is a browser asking "may this page call you?". The answer is
+        always no, and it is ours to give: forwarding it would spend a round trip
+        to have the gateway answer a question about *this* proxy's policy, and a
+        permissive gateway CORS policy would then be inherited as our own.
+
+        Refused with 403 and, critically, with no ``Access-Control-Allow-*``
+        header at all. A preflight without those headers fails closed in every
+        browser, so the actual request is never sent.
+        """
+        self.log_message("OPTIONS %s -> 403 (preflight refused)", self._log_path())
+        self._send_error_body(
+            403,
+            "proxy_forbidden_origin",
+            "This proxy does not serve browsers. It is a local credential helper for CLI tools.",
+        )
 
     # -- logging ---------------------------------------------------------
     #
@@ -222,7 +377,85 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
 
     # -- proxying --------------------------------------------------------
 
+    # -- entitlement -----------------------------------------------------
+
+    def _browser_refusal(self) -> tuple[str, str] | None:
+        """Why this request looks browser-driven, or None if it does not.
+
+        Checked on the actual request as well as the preflight: a ``simple
+        request`` is never preflighted, so a policy enforced only at preflight
+        time would not stop the request that does the damage.
+        """
+        origin = (self.headers.get(BROWSER_ORIGIN_HEADER) or "").strip()
+        if origin:
+            # Includes the literal "null" from sandboxed/file: pages. No origin
+            # is allowlisted, so the value itself is never echoed back.
+            return ("proxy_forbidden_origin", "This proxy does not serve browsers; it has no permitted web origin.")
+
+        fetch_site = (self.headers.get(FETCH_SITE_HEADER) or "").strip().lower()
+        if fetch_site in FORBIDDEN_FETCH_SITES:
+            return ("proxy_forbidden_origin", "This proxy does not serve cross-site browser requests.")
+        return None
+
+    def _host_refusal(self) -> tuple[str, str] | None:
+        """Why the requested Host is not this loopback interface, or None.
+
+        Absent Host is allowed (a minimal CLI client may omit it on HTTP/1.0);
+        a present-but-foreign one is the DNS-rebinding signal.
+        """
+        host = (self.headers.get("Host") or "").strip()
+        if not host:
+            return None
+
+        # Strip the port: splitting on the LAST colon would corrupt a bare IPv6
+        # literal, so bracketed forms are handled before the generic split.
+        hostname = host
+        if hostname.startswith("["):
+            hostname = hostname.partition("]")[0] + "]"
+        elif hostname.count(":") == 1:
+            hostname = hostname.partition(":")[0]
+
+        if hostname.lower() in ALLOWED_HOSTNAMES:
+            return None
+        return (
+            "proxy_forbidden_host",
+            "Request Host is not this machine's loopback interface. Point your client at 127.0.0.1.",
+        )
+
+    def _capability_refusal(self) -> tuple[str, str] | None:
+        """Why the caller is not entitled to spend the user's token, or None."""
+        presented = presented_capability(self.headers.get("Authorization"))
+        # compare_digest, not ==: a short-circuiting comparison leaks the length
+        # of the matching prefix to a local attacker who can time many attempts.
+        if presented and hmac.compare_digest(presented, self.capability):
+            return None
+        return (
+            "proxy_unauthorized",
+            f"Missing or invalid local capability. Launch your tool with 'adp codex', which sets {CAPABILITY_ENV_VAR} for you.",
+        )
+
+    def _refuse_unentitled(self) -> bool:
+        """Refuse a caller that has not proven entitlement. True if refused.
+
+        Ordered cheapest-and-most-specific first so the log line names the most
+        actionable reason, and run entirely before the token is fetched: a
+        refused request must never reach the gateway or spend anything.
+        """
+        for refusal in (self._browser_refusal(), self._host_refusal(), self._capability_refusal()):
+            if refusal is None:
+                continue
+            code, message = refusal
+            # The offending Origin/Host/capability is deliberately not logged:
+            # this line is written to a file the user may paste into an issue.
+            self.log_message("%s %s -> 403 (%s)", self.command, self._log_path(), code)
+            self._send_error_body(403, code, message)
+            return True
+        return False
+
     def _proxy(self) -> None:
+        if self._refuse_unentitled():
+            return
+
         try:
             token = self.token_source.token()
         except TokenError as exc:
@@ -377,7 +610,26 @@ class GatewayProxyHandler(BaseHTTPRequestHandler):
         connection and makes no network call, so a launcher can ask it cheaply
         before deciding to reuse this proxy. The body carries only what the user
         already typed — a deployment id, its name and its gateway URL.
+
+        Answered WITHOUT a capability, deliberately: a launcher for deployment B
+        must be able to ask a running proxy for deployment A "whose are you?" in
+        order to decline to reuse it, and it cannot know A's capability. That is
+        the whole point of the route (#5413).
+
+        It is still not open to the web. The browser and Host guards apply, so a
+        page cannot read which gateway the user is pointed at, and the response
+        never includes the capability (see IDENTITY_CAPABILITY_KEY) — otherwise
+        this uncapability-gated route would hand out the secret that protects
+        every other route.
         """
+        for refusal in (self._browser_refusal(), self._host_refusal()):
+            if refusal is None:
+                continue
+            code, message = refusal
+            self.log_message("GET %s -> 403 (%s)", IDENTITY_PATH, code)
+            self._send_error_body(403, code, message)
+            return
+
         payload = json.dumps(
             {
                 "proxy": "adp-gateway-proxy",
@@ -444,6 +696,17 @@ def serve(
         sys.stderr.write(f"[proxy] gateway_url is not a usable http(s) URL: {gateway_url}\n")
         return 1
 
+    # Selected before the bind so the value published after it is the one enforced.
+    # A caller learns it from the identity file, which only the owner can read.
+    #
+    # A parent that already knows the capability may pass it in through the
+    # environment instead (never a CLI flag — `ps` is world-readable). The daemon
+    # uses that path to keep one mode-0600 capability stable across launchd
+    # restarts; direct invocation can use it to hand the same value to proxy and
+    # client. The env var is cleared once read, so the auth-helper child never
+    # inherits it.
+    capability = usable_capability(os.environ.pop(CAPABILITY_ENV_VAR, None)) or mint_capability()
+
     handler = type(
         "BoundGatewayProxyHandler",
         (GatewayProxyHandler,),
@@ -456,6 +719,7 @@ def serve(
             "deployment_id": deployment_id,
             "deployment_name": deployment_name,
             "gateway_url": gateway_url,
+            "capability": capability,
         },
     )
 
@@ -470,6 +734,11 @@ def serve(
             from adp_deployments import _process_start
 
             # The bind succeeded, so the port below is real and reachable.
+            #
+            # The capability rides in this same 0600 record because the launcher
+            # already reads it to find the port, and the file's permissions are
+            # exactly the boundary the capability needs: readable by this user,
+            # unreadable by a web page or another local account.
             write_identity(
                 identity_file,
                 {
@@ -480,6 +749,7 @@ def serve(
                     "deployment_id": deployment_id,
                     "deployment": deployment_name,
                     "gateway_url": gateway_url,
+                    IDENTITY_CAPABILITY_KEY: capability,
                 },
             )
         try:

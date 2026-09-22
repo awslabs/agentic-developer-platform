@@ -217,6 +217,23 @@ def _wait_until_listening(port: int, deadline_seconds: float = 20.0) -> None:
     raise AssertionError(f"proxy never started listening on 127.0.0.1:{port}")
 
 
+def _wait_for_capability(identity_file: Path, deadline_seconds: float = 20.0) -> None:
+    """Block until the identity file carries a capability (#5686).
+
+    The proxy binds and then publishes; a client that raced in between would be
+    refused for having no capability rather than for the behaviour under test.
+    """
+    deadline = time.monotonic() + deadline_seconds
+    while time.monotonic() < deadline:
+        try:
+            if json.loads(identity_file.read_text()).get("capability"):
+                return
+        except (OSError, json.JSONDecodeError):
+            pass
+        time.sleep(0.05)
+    raise AssertionError(f"proxy never published a capability to {identity_file}")
+
+
 def _dead_pid() -> int:
     """A pid that has certainly exited — what a killed proxy leaves behind.
 
@@ -237,13 +254,30 @@ def _free_port() -> int:
 class RunningProxy:
     """A live `serve` process plus the output it produced."""
 
-    def __init__(self, port: int, process: subprocess.Popen) -> None:
+    def __init__(self, port: int, process: subprocess.Popen, identity_file: Path) -> None:
         self.port = port
         self.process = process
+        self.identity_file = identity_file
 
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def capability(self) -> str:
+        """The per-process capability `serve` published for this proxy (#5686).
+
+        Loopback is not entitlement: the proxy refuses any request that cannot
+        prove it is the local tool the user launched. The proof lives in the
+        0600 identity file, so reading it here is exactly what the real launcher
+        does — these tests are a legitimate CLI client, not a drive-by caller.
+        """
+        identity = json.loads(self.identity_file.read_text())
+        return str(identity["capability"])
+
+    @property
+    def auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.capability}"}
 
 
 @pytest.fixture
@@ -281,7 +315,9 @@ def start_proxy(bg_cognito_auth_script: Path, mock_aws_cli: Path, cognito_home: 
         )
         started.append(process)
         _wait_until_listening(chosen_port)
-        return RunningProxy(chosen_port, process)
+        identity_file = cognito_home / ".bedrock-gateway" / "proxy.json"
+        _wait_for_capability(identity_file)
+        return RunningProxy(chosen_port, process, identity_file)
 
     yield _start
 
@@ -374,7 +410,7 @@ class TestServeStartup:
         (config_dir / "proxy.pid").write_text(f"{_dead_pid()}\n")
 
         proxy = start_proxy(upstream.url)
-        status, _ = _post_json(f"{proxy.url}/echo", {"ok": True})
+        status, _ = _post_json(f"{proxy.url}/echo", {"ok": True}, headers=proxy.auth_headers)
         assert status == 200
         _drain(proxy.process)
 
@@ -397,24 +433,28 @@ class TestTokenInjection:
 
     def test_request_arrives_with_bearer_token(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
-        status, echoed = _post_json(f"{proxy.url}/echo", {"prompt": "hello"})
+        status, echoed = _post_json(f"{proxy.url}/echo", {"prompt": "hello"}, headers=proxy.auth_headers)
 
         assert status == 200
         assert echoed["authorization"] == f"Bearer {SEEDED_ACCESS_TOKEN}"
         _drain(proxy.process)
 
     def test_client_supplied_authorization_is_replaced(self, start_proxy, upstream: UpstreamGateway) -> None:
-        """Codex requires an env_key, so it sends a placeholder — it must not win."""
+        """The client's Authorization never reaches the gateway.
+
+        Since #5686 that header is how Codex proves entitlement (it carries the
+        capability, not a placeholder), which makes replacing it doubly load
+        bearing: the gateway must receive the Cognito token, and the capability
+        must stop at the proxy rather than travelling to a remote service that
+        has no business holding it.
+        """
         proxy = start_proxy(upstream.url)
-        status, echoed = _post_json(
-            f"{proxy.url}/echo",
-            {"prompt": "hi"},
-            headers={"Authorization": "Bearer client-supplied-placeholder"},
-        )
+        capability = proxy.capability
+        status, echoed = _post_json(f"{proxy.url}/echo", {"prompt": "hi"}, headers=proxy.auth_headers)
 
         assert status == 200
         assert echoed["authorization"] == f"Bearer {SEEDED_ACCESS_TOKEN}"
-        assert "client-supplied-placeholder" not in json.dumps(echoed)
+        assert capability not in json.dumps(echoed)
         _drain(proxy.process)
 
     def test_client_supplied_api_key_header_is_stripped(self, start_proxy, upstream: UpstreamGateway) -> None:
@@ -422,7 +462,7 @@ class TestTokenInjection:
         status, echoed = _post_json(
             f"{proxy.url}/echo",
             {"prompt": "hi"},
-            headers={"x-api-key": "client-supplied-key"},
+            headers={"x-api-key": "client-supplied-key", **proxy.auth_headers},
         )
 
         assert status == 200
@@ -438,7 +478,7 @@ class TestTokenInjection:
             extra_env={"MOCK_AWS_LOG": str(log)},
         )
 
-        status, echoed = _post_json(f"{proxy.url}/echo", {"prompt": "hi"})
+        status, echoed = _post_json(f"{proxy.url}/echo", {"prompt": "hi"}, headers=proxy.auth_headers)
 
         assert status == 200
         assert "--auth-flow REFRESH_TOKEN_AUTH" in log.read_text()
@@ -452,7 +492,7 @@ class TestTokenInjection:
         proxy = start_proxy(upstream.url, extra_env={"MOCK_AWS_LOG": str(log)})
 
         for _ in range(3):
-            status, _ = _post_json(f"{proxy.url}/echo", {"prompt": "hi"})
+            status, _ = _post_json(f"{proxy.url}/echo", {"prompt": "hi"}, headers=proxy.auth_headers)
             assert status == 200
 
         assert not log.exists() or log.read_text().strip() == ""
@@ -467,7 +507,7 @@ class TestTokenInjection:
         )
 
         with pytest.raises(urllib.error.HTTPError) as excinfo:
-            _post_json(f"{proxy.url}/echo", {"prompt": "hi"})
+            _post_json(f"{proxy.url}/echo", {"prompt": "hi"}, headers=proxy.auth_headers)
 
         assert excinfo.value.code == 502
         body = json.loads(excinfo.value.read().decode("utf-8"))
@@ -488,7 +528,7 @@ class TestForwarding:
 
     def test_method_path_query_and_body_are_preserved(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
-        status, echoed = _post_json(f"{proxy.url}/echo?stream=true", {"prompt": "keep me"})
+        status, echoed = _post_json(f"{proxy.url}/echo?stream=true", {"prompt": "keep me"}, headers=proxy.auth_headers)
 
         assert status == 200
         assert echoed["method"] == "POST"
@@ -498,7 +538,7 @@ class TestForwarding:
 
     def test_unrelated_client_headers_pass_through(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
-        status, echoed = _post_json(f"{proxy.url}/echo", {"a": 1}, headers={"x-custom-header": "kept"})
+        status, echoed = _post_json(f"{proxy.url}/echo", {"a": 1}, headers={"x-custom-header": "kept", **proxy.auth_headers})
 
         assert status == 200
         assert echoed["custom"] == "kept"
@@ -509,7 +549,7 @@ class TestForwarding:
         with UpstreamGateway(base_path="/api") as gateway:
             proxy = start_proxy(gateway.url)
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                _post_json(f"{proxy.url}/echo", {"a": 1})
+                _post_json(f"{proxy.url}/echo", {"a": 1}, headers=proxy.auth_headers)
             # The mock upstream has no /api/echo route, which is exactly the proof.
             assert excinfo.value.code == 404
             assert gateway.requests[-1]["path"] == "/api/echo"
@@ -519,7 +559,7 @@ class TestForwarding:
         proxy = start_proxy(upstream.url)
 
         with pytest.raises(urllib.error.HTTPError) as excinfo:
-            _post_json(f"{proxy.url}/boom", {"a": 1})
+            _post_json(f"{proxy.url}/boom", {"a": 1}, headers=proxy.auth_headers)
 
         assert excinfo.value.code == 503
         body = json.loads(excinfo.value.read().decode("utf-8"))
@@ -531,7 +571,7 @@ class TestForwarding:
         proxy = start_proxy(f"http://127.0.0.1:{dead_port}")
 
         with pytest.raises(urllib.error.HTTPError) as excinfo:
-            _post_json(f"{proxy.url}/echo", {"a": 1})
+            _post_json(f"{proxy.url}/echo", {"a": 1}, headers=proxy.auth_headers)
 
         assert excinfo.value.code == 502
         assert json.loads(excinfo.value.read().decode("utf-8"))["error"] == "proxy_upstream_error"
@@ -539,7 +579,8 @@ class TestForwarding:
 
     def test_get_requests_are_proxied(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
-        with urllib.request.urlopen(f"{proxy.url}/echo", timeout=20) as response:  # noqa: S310 - loopback test URL
+        request = urllib.request.Request(f"{proxy.url}/echo", headers=proxy.auth_headers, method="GET")
+        with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - loopback test URL
             echoed = json.loads(response.read().decode("utf-8"))
         assert echoed["method"] == "GET"
         assert echoed["authorization"] == f"Bearer {SEEDED_ACCESS_TOKEN}"
@@ -560,11 +601,11 @@ class TestModelNormalization:
     switching models inside Codex does not 400 every subsequent request.
     """
 
-    def _post_raw(self, url: str, raw: bytes) -> dict[str, Any]:
+    def _post_raw(self, url: str, raw: bytes, headers: dict[str, str] | None = None) -> dict[str, Any]:
         request = urllib.request.Request(
             url,
             data=raw,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **(headers or {})},
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - loopback test URL
@@ -575,6 +616,7 @@ class TestModelNormalization:
         status, echoed = _post_json(
             f"{proxy.url}/openai/v1/echo",
             {"model": "gpt-5.6-sol", "input": "hi", "stream": True},
+            headers=proxy.auth_headers,
         )
 
         assert status == 200
@@ -589,7 +631,7 @@ class TestModelNormalization:
         """No rewrite means no re-serialization: the exact client bytes arrive."""
         proxy = start_proxy(upstream.url)
         raw = b'{"model": "openai.gpt-5.6-sol",\n  "input": "hi"}'
-        echoed = self._post_raw(f"{proxy.url}/openai/v1/echo", raw)
+        echoed = self._post_raw(f"{proxy.url}/openai/v1/echo", raw, headers=proxy.auth_headers)
         assert echoed["body"].encode("utf-8") == raw
         _drain(proxy.process)
 
@@ -597,14 +639,14 @@ class TestModelNormalization:
         """Bedrock/Anthropic model ids must never be prefixed."""
         proxy = start_proxy(upstream.url)
         raw = b'{"model": "global.anthropic.claude-opus-4-6-v1"}'
-        echoed = self._post_raw(f"{proxy.url}/echo", raw)
+        echoed = self._post_raw(f"{proxy.url}/echo", raw, headers=proxy.auth_headers)
         assert echoed["body"].encode("utf-8") == raw
         _drain(proxy.process)
 
     def test_non_json_body_on_openai_route_passes_through(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
         raw = b"model=gpt-5.6-sol&not=json"
-        echoed = self._post_raw(f"{proxy.url}/openai/v1/echo", raw)
+        echoed = self._post_raw(f"{proxy.url}/openai/v1/echo", raw, headers=proxy.auth_headers)
         assert echoed["body"].encode("utf-8") == raw
         _drain(proxy.process)
 
@@ -614,6 +656,7 @@ class TestModelNormalization:
         status, _ = _post_json(
             f"{proxy.url}/openai/v1/echo",
             {"model": "gpt-5.6-sol", "input": "SENTINEL-PROMPT-CONTENT"},
+            headers=proxy.auth_headers,
         )
         assert status == 200
 
@@ -633,7 +676,7 @@ class TestStreaming:
     def test_sse_chunks_arrive_incrementally(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
 
-        request = urllib.request.Request(f"{proxy.url}/sse", data=b"{}", method="POST")
+        request = urllib.request.Request(f"{proxy.url}/sse", data=b"{}", headers=proxy.auth_headers, method="POST")
         arrivals: list[tuple[float, bytes]] = []
         start = time.monotonic()
         with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - loopback test URL
@@ -661,7 +704,7 @@ class TestStreaming:
     def test_streaming_response_does_not_forward_upstream_transfer_encoding(self, start_proxy, upstream: UpstreamGateway) -> None:
         """We relay a decoded body, so upstream framing headers must be dropped."""
         proxy = start_proxy(upstream.url)
-        request = urllib.request.Request(f"{proxy.url}/sse", data=b"{}", method="POST")
+        request = urllib.request.Request(f"{proxy.url}/sse", data=b"{}", headers=proxy.auth_headers, method="POST")
         with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - loopback test URL
             assert response.headers.get("Transfer-Encoding") is None
             response.read()
@@ -716,7 +759,7 @@ class TestSecurityProperties:
 
     def test_token_never_appears_in_proxy_output(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
-        status, _ = _post_json(f"{proxy.url}/echo?api_key=should-not-be-logged", {"prompt": "hi"})
+        status, _ = _post_json(f"{proxy.url}/echo?api_key=should-not-be-logged", {"prompt": "hi"}, headers=proxy.auth_headers)
         assert status == 200
 
         stdout, stderr = _drain(proxy.process)
@@ -730,7 +773,7 @@ class TestSecurityProperties:
     def test_token_not_leaked_when_refresh_fails(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url, expires_at=1, extra_env={"MOCK_COGNITO_RESULT": "notauthorized"})
         with pytest.raises(urllib.error.HTTPError):
-            _post_json(f"{proxy.url}/echo", {"prompt": "hi"})
+            _post_json(f"{proxy.url}/echo", {"prompt": "hi"}, headers=proxy.auth_headers)
 
         stdout, stderr = _drain(proxy.process)
         assert SEEDED_ACCESS_TOKEN not in stdout + stderr
@@ -738,7 +781,7 @@ class TestSecurityProperties:
 
     def test_request_bodies_are_never_logged(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
-        status, _ = _post_json(f"{proxy.url}/echo", {"prompt": "SENTINEL-PROMPT-CONTENT"})
+        status, _ = _post_json(f"{proxy.url}/echo", {"prompt": "SENTINEL-PROMPT-CONTENT"}, headers=proxy.auth_headers)
         assert status == 200
 
         stdout, stderr = _drain(proxy.process)
@@ -747,7 +790,7 @@ class TestSecurityProperties:
     def test_one_log_line_per_request_with_method_path_status(self, start_proxy, upstream: UpstreamGateway) -> None:
         proxy = start_proxy(upstream.url)
         for _ in range(2):
-            _post_json(f"{proxy.url}/echo", {"a": 1})
+            _post_json(f"{proxy.url}/echo", {"a": 1}, headers=proxy.auth_headers)
 
         stderr = _drain(proxy.process)[1]
         request_lines = [line for line in stderr.splitlines() if "POST /echo" in line]

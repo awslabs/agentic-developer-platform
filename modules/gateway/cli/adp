@@ -75,6 +75,14 @@ PROXY_PID_FILE="${CONFIG_DIR}/proxy.pid"
 # deployment's traffic, with this deployment's token, to the wrong gateway.
 PROXY_IDENTITY_FILE="${CONFIG_DIR}/proxy.json"
 
+# Every daemon owned by this user shares one restart-stable capability. Bare
+# Codex has one global ADP_GATEWAY_DUMMY export, so per-deployment capabilities
+# cannot work when more than one named daemon is installed. The mode-0600 file
+# lets shell startup and every launchd agent read the same value without
+# embedding it in a normally world-readable rc file.
+DAEMON_CAPABILITY_FILE="${ADP_HOME:-${HOME}/.adp}/daemon-capability"
+LEGACY_DAEMON_CAPABILITY_FILE="${CONFIG_DIR}/daemon-capability"
+
 # Guards the proxy spawn so two concurrent `adp codex` calls cannot both start
 # one. Deliberately NOT the core's refresh.lock: the proxy we spawn calls
 # `token`, which takes that lock, so sharing it would deadlock the readiness
@@ -223,6 +231,8 @@ resolve_deployment() {
     PROXY_LOG_FILE="${ADP_LOG_DIR}/proxy.log"
     PROXY_PID_FILE="${ADP_RUNTIME_DIR}/proxy.pid"
     PROXY_IDENTITY_FILE="${ADP_RUNTIME_DIR}/proxy.json"
+    DAEMON_CAPABILITY_FILE="${ADP_HOME:-${HOME}/.adp}/daemon-capability"
+    LEGACY_DAEMON_CAPABILITY_FILE="${ADP_RUNTIME_DIR}/daemon-capability"
     PROXY_SPAWN_LOCK_DIR="${ADP_RUNTIME_DIR}/proxy-spawn.lock"
     if [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
         LAUNCH_AGENT_LABEL="com.adp.gateway-proxy.${ADP_DEPLOYMENT_ID}"
@@ -407,6 +417,38 @@ published_proxy_port() {
     printf '%s' "${port}"
 }
 
+# The local capability the running proxy requires on every relayed request
+# (Issue #5686), or empty if the record does not carry one.
+#
+# The proxy refuses callers that cannot present this, because binding to loopback
+# does not stop a web page the user visits from driving the proxy and spending
+# their token. We can read it and a web page cannot: it lives in the identity
+# file, which is mode 0600.
+#
+# Empty means the record is not safe to reuse. A proxy from an older CLI
+# publishes no capability and must be replaced before Codex is launched.
+published_proxy_capability() {
+    [ -f "${PROXY_IDENTITY_FILE}" ] || return 0
+    local capability
+    capability="$(jq -r '.capability // empty' "${PROXY_IDENTITY_FILE}" 2>/dev/null || true)"
+    if proxy_capability_is_usable "${capability}"; then
+        printf '%s' "${capability}"
+    fi
+    return 0
+}
+
+# Keep this acceptance rule aligned with bg-gateway-proxy.py: documented legacy
+# placeholders and values shorter than 16 characters are not capabilities.
+proxy_capability_is_usable() {
+    local capability="${1:-}" lowered
+    [ "${#capability}" -ge 16 ] || return 1
+    lowered="$(printf '%s' "${capability}" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    case "${lowered}" in
+        unused|dummy|none|placeholder|changeme|x) return 1 ;;
+    esac
+    return 0
+}
+
 # Confirm the thing listening on this port is THIS deployment's proxy.
 #
 # `proxy_listening` only proves that SOMETHING accepted a TCP connection. With
@@ -548,18 +590,72 @@ ensure_proxy() {
         return 0
     fi
 
-    # A verified process may still be running on a different selected port, or
-    # may be temporarily unresponsive. Report that before waiting for another
-    # startup; an unrelated process with a recycled PID is never ownership.
+    # A verified process may still be running on a different selected port, be
+    # temporarily unresponsive, or predate the capability guard. Only the last
+    # case is safe to terminate automatically, and only after proxy-owner has
+    # matched its durable process identity and deployment metadata.
     if [ -f "${PROXY_IDENTITY_FILE}" ]; then
-        local existing_pid
+        local existing_pid capability current_pid
         existing_pid=$(deployments proxy-owner "${ADP_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${ADP_DEPLOYMENT_URL:-}")
         if [ -n "${existing_pid}" ]; then
-            _release_proxy_spawn_lock
-            print_error "An auth proxy is already running (pid ${existing_pid}), but is not reachable on the selected port."
-            print_warning "Stop the original proxy session, or re-run 'adp codex setup' to use its port."
-            exit 1
+            capability="$(published_proxy_capability)"
+            if [ -z "${capability}" ]; then
+                print_warning "Replacing an insecure legacy auth proxy (pid ${existing_pid}) that has no capability guard."
+                if ! kill -TERM "${existing_pid}" 2>/dev/null; then
+                    _release_proxy_spawn_lock
+                    print_error "Could not stop the insecure legacy auth proxy (pid ${existing_pid})."
+                    print_warning "Stop that proxy session, then run 'adp codex' again."
+                    exit 1
+                fi
+                local stop_wait=0
+                while [ "${stop_wait}" -lt 50 ]; do
+                    current_pid=$(deployments proxy-owner "${ADP_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${ADP_DEPLOYMENT_URL:-}")
+                    [ "${current_pid}" != "${existing_pid}" ] && break
+                    sleep 0.1
+                    stop_wait=$((stop_wait + 1))
+                done
+                if [ "${current_pid-${existing_pid}}" = "${existing_pid}" ]; then
+                    _release_proxy_spawn_lock
+                    print_error "The insecure legacy auth proxy (pid ${existing_pid}) did not stop."
+                    print_warning "Stop that proxy session, then run 'adp codex' again."
+                    exit 1
+                fi
+
+                # launchd KeepAlive may already have replaced the old process.
+                # Reuse that secured restart rather than racing it with a second
+                # proxy. A manually-started proxy has no agent and falls through
+                # immediately to the normal on-demand start below.
+                if [ -f "${LAUNCH_AGENT_FILE}" ]; then
+                    if found="$(_wait_for_proxy)" && [ -n "${found}" ]; then
+                        _release_proxy_spawn_lock
+                        ADP_ACTIVE_PROXY_PORT="${found}"
+                        print_success "Auth proxy restarted securely on 127.0.0.1:${found}."
+                        return 0
+                    fi
+                    _release_proxy_spawn_lock
+                    print_error "The always-on auth proxy did not restart securely within ${PROXY_READY_TIMEOUT_SECONDS}s."
+                    print_warning "Run 'adp daemon install' to refresh it, then try again."
+                    exit 1
+                fi
+            else
+                _release_proxy_spawn_lock
+                print_error "An auth proxy is already running (pid ${existing_pid}), but is not reachable on the selected port."
+                print_warning "Stop the original proxy session, or re-run 'adp codex setup' to use its port."
+                exit 1
+            fi
         fi
+    fi
+
+    # Very old legacy proxies expose the identity route but have no durable
+    # identity record, so ownership cannot be established strongly enough to
+    # signal them. Fail closed with a direct repair instead of reusing them or
+    # timing out after a doomed bind attempt.
+    if { [ -z "${ADP_DEPLOYMENT_ID:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; } \
+       && proxy_listening "${CODEX_PROXY_PORT}" && proxy_identity_matches "${CODEX_PROXY_PORT}"; then
+        _release_proxy_spawn_lock
+        print_error "An insecure legacy auth proxy is running without verifiable ownership."
+        print_warning "Stop the original proxy session, then run 'adp codex' again."
+        exit 1
     fi
 
     mkdir -p "${ADP_LOG_DIR}" 2>/dev/null || true
@@ -618,30 +714,27 @@ ensure_proxy() {
 # Two ways in, for the two kinds of deployment:
 #   * a named deployment binds an OS-assigned port, so the only way to find it is
 #     the identity file it published after binding;
-#   * the legacy deployment has always used the fixed port, and a proxy started by
-#     an older CLI publishes no identity file at all — so the fixed port is probed
-#     too, and accepted when its identity route agrees it is legacy.
-# Either way the identity is confirmed before the port is returned.
+# A proxy without a capability-bearing identity record is intentionally not
+# returned: its identity route can prove which proxy it is, but not that it has
+# the browser-origin capability guard required by #5686.
 #
 # An EXPLICIT ADP_PROXY_PORT narrows this to that one port. A user (or the test
 # suite) who names a port has made a request, and quietly satisfying it with a
 # proxy on some other port is the same class of substitution this change refuses
 # for --deployment: it must be honoured or fail, never silently swapped.
 _discover_proxy() {
-    local port
+    local port capability owner_pid record_pid
     port="$(published_proxy_port)"
+    capability="$(published_proxy_capability)"
+    owner_pid=$(deployments proxy-owner "${ADP_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${ADP_DEPLOYMENT_URL:-}")
+    record_pid="$(jq -r '.pid // empty' "${PROXY_IDENTITY_FILE}" 2>/dev/null || true)"
     if [ -n "${port}" ] && [ -n "${ADP_PROXY_PORT:-}" ] && [ "${port}" != "${ADP_PROXY_PORT}" ]; then
         port=""
     fi
-    if [ -n "${port}" ] && proxy_listening "${port}" && proxy_identity_matches "${port}"; then
+    if [ -n "${port}" ] && [ -n "${capability}" ] && [ -n "${owner_pid}" ] && [ "${owner_pid}" = "${record_pid}" ] \
+       && proxy_listening "${port}" && proxy_identity_matches "${port}"; then
         printf '%s' "${port}"
         return 0
-    fi
-    if [ -z "${ADP_DEPLOYMENT_ID:-}" ] || [ "${ADP_DEPLOYMENT_SOURCE:-}" = "legacy" ]; then
-        if proxy_listening "${CODEX_PROXY_PORT}" && proxy_identity_matches "${CODEX_PROXY_PORT}"; then
-            printf '%s' "${CODEX_PROXY_PORT}"
-            return 0
-        fi
     fi
     return 0
 }
@@ -665,11 +758,25 @@ cmd_codex_launch() {
     require_live_session "Codex"
     ensure_proxy
 
-    # Codex refuses to start a model provider whose env_key names an unset
-    # variable, but never validates the VALUE — the proxy drops whatever arrives
-    # and injects the real token. So this is a placeholder, not a credential,
-    # and setting it here is what removes it from the user's command line.
-    export ADP_GATEWAY_DUMMY="${ADP_GATEWAY_DUMMY:-unused}"
+    # Codex sends this variable's value as its bearer token, and since #5686 the
+    # proxy requires it to be the capability it published after binding. The
+    # proxy still drops it before calling the gateway and injects the real
+    # Cognito token, so this authenticates Codex TO THE PROXY and goes no further.
+    #
+    # This is what stops a web page the user visits from driving the proxy: a page
+    # can reach 127.0.0.1, but it cannot read the 0600 file this value comes from.
+    #
+    # Any value the user's shell already exports is deliberately overridden — the
+    # historical placeholder ("unused") is printed in our own README, so honouring
+    # it would make the capability public knowledge. ensure_proxy refuses to return
+    # until a strong capability is published, so there is no insecure fallback.
+    local capability
+    capability="$(published_proxy_capability)"
+    if [ -z "${capability}" ]; then
+        print_error "The auth proxy did not publish a usable local capability."
+        exit 1
+    fi
+    export ADP_GATEWAY_DUMMY="${capability}"
 
     local pinned=()
     if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_SOURCE:-}" != "legacy" ]; then
@@ -1112,6 +1219,107 @@ daemon_remove_rc_export() {
     print_success "Removed the ADP_GATEWAY_DUMMY export from ${rc}."
 }
 
+# Replace the export in our marked block without touching any unmarked user
+# export. Writing back through the existing inode preserves the rc file's mode.
+daemon_set_rc_export() {
+    local rc="$1" rc_export="$2"
+    if [ -f "${rc}" ] && grep -Fq "${DAEMON_RC_MARKER}" "${rc}"; then
+        local tmp
+        tmp=$(mktemp "${rc}.XXXXXX")
+        awk -v marker="${DAEMON_RC_MARKER}" -v replacement="${rc_export}" '
+            index($0, marker) { print; managed = 1; next }
+            managed && $0 ~ /^export ADP_GATEWAY_DUMMY=/ { print replacement; managed = 0; next }
+            managed { print replacement; managed = 0 }
+            { print }
+            END { if (managed) print replacement }
+        ' "${rc}" > "${tmp}"
+        cat "${tmp}" > "${rc}"
+        rm -f "${tmp}"
+        return 0
+    fi
+    {
+        echo ""
+        echo "${DAEMON_RC_MARKER}"
+        echo "${rc_export}"
+    } >> "${rc}"
+}
+
+# Provision the user-wide daemon capability before launchd is loaded. Reusing a
+# strong existing value keeps already-open terminals valid across KeepAlive
+# restarts and across installing another deployment's daemon. A strong value in
+# the former per-deployment location is adopted during upgrade.
+ensure_daemon_capability() {
+    local capability=""
+    if [ -f "${DAEMON_CAPABILITY_FILE}" ]; then
+        capability="$(cat "${DAEMON_CAPABILITY_FILE}" 2>/dev/null || true)"
+    fi
+    if proxy_capability_is_usable "${capability}"; then
+        chmod 600 "${DAEMON_CAPABILITY_FILE}"
+        printf '%s' "${capability}"
+        return 0
+    fi
+
+    if [ -f "${LEGACY_DAEMON_CAPABILITY_FILE}" ]; then
+        capability="$(cat "${LEGACY_DAEMON_CAPABILITY_FILE}" 2>/dev/null || true)"
+    fi
+    if ! proxy_capability_is_usable "${capability}"; then
+        capability="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    fi
+
+    mkdir -p "$(dirname "${DAEMON_CAPABILITY_FILE}")"
+    local tmp
+    tmp=$(mktemp "${DAEMON_CAPABILITY_FILE}.XXXXXX")
+    chmod 600 "${tmp}"
+    printf '%s' "${capability}" > "${tmp}"
+    mv -f "${tmp}" "${DAEMON_CAPABILITY_FILE}"
+    printf '%s' "${capability}"
+}
+
+# Stop only a process whose pid, process birth time, deployment id and gateway
+# URL all match the selected deployment's private identity record. This is used
+# when launchd takes ownership from an on-demand `adp codex` proxy; signalling a
+# PID from the pidfile alone would risk killing an unrelated recycled process.
+stop_owned_proxy_for_daemon() {
+    local existing_pid current_pid stop_wait=0
+    existing_pid=$(deployments proxy-owner "${ADP_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${ADP_DEPLOYMENT_URL:-}")
+    [ -n "${existing_pid}" ] || return 0
+
+    print_info "Stopping the existing auth proxy (pid ${existing_pid}) before enabling launchd..."
+    if ! kill -TERM "${existing_pid}" 2>/dev/null; then
+        print_error "Could not stop the existing auth proxy (pid ${existing_pid})."
+        return 1
+    fi
+    while [ "${stop_wait}" -lt 50 ]; do
+        current_pid=$(deployments proxy-owner "${ADP_RUNTIME_DIR}" "${ADP_DEPLOYMENT_ID:-}" "${ADP_DEPLOYMENT_URL:-}")
+        [ "${current_pid}" != "${existing_pid}" ] && return 0
+        sleep 0.1
+        stop_wait=$((stop_wait + 1))
+    done
+    print_error "The existing auth proxy (pid ${existing_pid}) did not stop."
+    return 1
+}
+
+# A successful `launchctl load` only means launchd accepted the plist. Do not
+# claim installation succeeded until the replacement process publishes a
+# securely-owned identity carrying the exact durable daemon capability.
+wait_for_daemon_proxy() {
+    local expected_capability="$1" waited_tenths=0
+    local limit_tenths=$((PROXY_READY_TIMEOUT_SECONDS * 10))
+    local found capability
+    while [ "${waited_tenths}" -lt "${limit_tenths}" ]; do
+        if found="$(_discover_proxy)" && [ -n "${found}" ]; then
+            capability="$(published_proxy_capability)"
+            if [ "${capability}" = "${expected_capability}" ]; then
+                printf '%s' "${found}"
+                return 0
+            fi
+        fi
+        sleep 0.2
+        waited_tenths=$((waited_tenths + 2))
+    done
+    return 1
+}
+
 cmd_daemon_install() {
     require_launchd
     require_session
@@ -1125,17 +1333,24 @@ cmd_daemon_install() {
 
     mkdir -p "$(dirname "${LAUNCH_AGENT_FILE}")" "${ADP_LOG_DIR}"
 
+    # This exists before launchctl load, so every daemon and newly-opened shell
+    # receive the same capability even on the first startup.
+    local daemon_capability
+    daemon_capability="$(ensure_daemon_capability)"
+
     local daemon_port="${CODEX_PROXY_PORT}"
     if [ -n "${ADP_DEPLOYMENT_ID:-}" ] && [ "${ADP_DEPLOYMENT_ID}" != "default" ]; then
         daemon_port="$(deployments setup-port)"
     fi
-    python3 - "${LAUNCH_AGENT_FILE}" "${LAUNCH_AGENT_LABEL}" "${core_path}" "${daemon_port}" "${PROXY_LOG_FILE}" <<'PYPLIST'
+    DAEMON_CAPABILITY_FILE="${DAEMON_CAPABILITY_FILE}" python3 - "${LAUNCH_AGENT_FILE}" "${LAUNCH_AGENT_LABEL}" "${core_path}" "${daemon_port}" "${PROXY_LOG_FILE}" <<'PYPLIST'
 import os, plistlib, sys
 path, label, core, port, log = sys.argv[1:]
 keys = ("ADP_DEPLOYMENT_ID", "ADP_DEPLOYMENT_NAME", "ADP_DEPLOYMENT_URL", "ADP_LEGACY_CONFIG_DIR", "ADP_HOME",
         "BG_CONFIG_DIR", "ADP_STATE_DIR", "ADP_RUNTIME_DIR", "ADP_LOG_DIR", "BG_AWS_PROFILE")
 env = {key: os.environ[key] for key in keys if key in os.environ}
 env["ADP_DEPLOYMENT_SOURCE"] = "daemon"
+with open(os.environ["DAEMON_CAPABILITY_FILE"], encoding="utf-8") as capability_file:
+    env["ADP_GATEWAY_DUMMY"] = capability_file.read().strip()
 with open(path, "wb") as output:
     plistlib.dump({"Label": label, "ProgramArguments": ["/bin/bash", core, "serve", "--port", port],
                   "EnvironmentVariables": env, "RunAtLoad": True, "KeepAlive": True,
@@ -1143,30 +1358,54 @@ with open(path, "wb") as output:
 os.chmod(path, 0o600)
 PYPLIST
 
-    # Unload first so a re-run picks up a changed plist instead of leaving the
-    # old definition loaded. Failure is expected when nothing is loaded yet.
-    launchctl unload "${LAUNCH_AGENT_FILE}" 2>/dev/null || true
-    if ! launchctl load "${LAUNCH_AGENT_FILE}" 2>/dev/null; then
-        print_warning "Wrote ${LAUNCH_AGENT_FILE} but launchctl load failed."
-        print_warning "Load it at next login, or run: launchctl load ${LAUNCH_AGENT_FILE}"
+    # Exclude an on-demand launcher while ownership is transferred to launchd.
+    if ! _acquire_proxy_spawn_lock; then
+        print_error "Could not acquire the proxy start lock within ${PROXY_SPAWN_LOCK_MAX_WAIT_SECONDS}s."
+        exit 1
     fi
+
+    # Unload first so a re-run picks up a changed plist. Then stop a verified
+    # on-demand proxy that launchd did not own; otherwise the new service exits
+    # on its occupied pid/port and KeepAlive retries forever.
+    launchctl unload "${LAUNCH_AGENT_FILE}" 2>/dev/null || true
+    if ! stop_owned_proxy_for_daemon; then
+        _release_proxy_spawn_lock
+        print_warning "Stop the proxy session, then run 'adp daemon install' again."
+        exit 1
+    fi
+    if ! launchctl load "${LAUNCH_AGENT_FILE}" 2>/dev/null; then
+        _release_proxy_spawn_lock
+        print_error "Wrote ${LAUNCH_AGENT_FILE}, but launchctl could not start it."
+        print_warning "Run 'adp daemon install' again after resolving the launchd error."
+        exit 1
+    fi
+    local daemon_proxy_port
+    if ! daemon_proxy_port="$(wait_for_daemon_proxy "${daemon_capability}")"; then
+        launchctl unload "${LAUNCH_AGENT_FILE}" 2>/dev/null || true
+        _release_proxy_spawn_lock
+        print_error "The launchd auth proxy did not publish the configured capability within ${PROXY_READY_TIMEOUT_SECONDS}s."
+        print_warning "Check ${PROXY_LOG_FILE}, then run 'adp daemon install' again."
+        exit 1
+    fi
+    _release_proxy_spawn_lock
+    rm -f "${LEGACY_DAEMON_CAPABILITY_FILE}"
 
     # Bare `codex` gets ADP_GATEWAY_DUMMY from the shell, since no launcher is
     # involved to set it. Marked and idempotent so a re-run does not stack lines.
-    local rc
+    #
+    # Read from the user-wide, restart-stable mode-0600 capability file rather
+    # than a per-process or per-deployment record. The file exists before launchd
+    # is loaded, so shell startup cannot race identity publication, KeepAlive
+    # restarts remain valid, and installing another daemon cannot invalidate it.
+    local rc rc_export
     rc="$(daemon_rc_file)"
+    rc_export="export ADP_GATEWAY_DUMMY=\"\$(cat '${DAEMON_CAPABILITY_FILE}' 2>/dev/null || true)\""
     if [ -z "${rc}" ]; then
         print_warning "Unknown shell — add this to your shell config yourself:"
-        printf '\n    export ADP_GATEWAY_DUMMY=unused\n\n' >&2
-    elif [ -f "${rc}" ] && grep -Fq "${DAEMON_RC_MARKER}" "${rc}"; then
-        print_success "${rc} already exports ADP_GATEWAY_DUMMY."
+        printf '\n    %s\n\n' "${rc_export}" >&2
     else
-        {
-            echo ""
-            echo "${DAEMON_RC_MARKER}"
-            echo "export ADP_GATEWAY_DUMMY=unused"
-        } >> "${rc}"
-        print_success "Added the ADP_GATEWAY_DUMMY export to ${rc}."
+        daemon_set_rc_export "${rc}" "${rc_export}"
+        print_success "Configured the ADP_GATEWAY_DUMMY export in ${rc}."
     fi
 
     print_success "Always-on auth proxy installed (${LAUNCH_AGENT_LABEL})."
@@ -1190,11 +1429,12 @@ cmd_daemon_uninstall() {
         print_success "Removed ${LAUNCH_AGENT_FILE}."
         removed=1
     fi
-
-    # Other deployments' daemons still need the shared bare-Codex placeholder.
+    # Other deployments' daemons use the same capability and shell export. Keep
+    # both until the final managed daemon is removed.
     local remaining_daemons
     remaining_daemons=$(find "${HOME}/Library/LaunchAgents" -name 'com.adp.gateway-proxy*.plist' -print 2>/dev/null || true)
     if [ -z "${remaining_daemons}" ]; then
+        rm -f "${DAEMON_CAPABILITY_FILE}"
         daemon_remove_rc_export "$(daemon_rc_file)"
     fi
 

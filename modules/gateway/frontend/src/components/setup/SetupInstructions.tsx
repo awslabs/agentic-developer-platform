@@ -500,11 +500,14 @@ export function SetupInstructions() {
             per request.
           </p>
           <p className="text-gray-500 dark:text-gray-400">
-            Codex requires <code className={CODE}>env_key</code> to name an existing env var but
-            never validates its value, so <code className={CODE}>ADP_GATEWAY_DUMMY</code> is a
-            placeholder rather than a credential — the proxy discards whatever arrives and injects the
-            real token. <code className={CODE}>adp codex</code> sets it for you; nothing secret ever
-            reaches your shell history.
+            Codex sends <code className={CODE}>ADP_GATEWAY_DUMMY</code> as its bearer token, and the
+            proxy requires it to be the one-per-session capability it publishes to{' '}
+            <code className={CODE}>~/.bedrock-gateway/proxy.json</code> (readable only by you). That
+            is what stops a website you visit from driving the proxy: a web page can reach{' '}
+            <code className={CODE}>127.0.0.1</code>, but it cannot read that file. The proxy discards
+            the capability and injects your real token, so it never reaches the gateway.{' '}
+            <code className={CODE}>adp codex</code> handles this for you; nothing secret ever reaches
+            your shell history.
           </p>
           <RawScriptFallback
             baseUrl={baseUrl}
@@ -512,7 +515,8 @@ export function SetupInstructions() {
             configPath="~/.codex/config.toml"
             configBody={codexConfigToml}
             runCommand={`~/bin/bg-cognito-auth.sh serve          # foreground; Ctrl-C to stop
-ADP_GATEWAY_DUMMY=unused codex         # in a second terminal`}
+# in a second terminal — each 'serve' publishes a new capability:
+ADP_GATEWAY_DUMMY="$(jq -r .capability ~/.bedrock-gateway/proxy.json)" codex`}
           />
         </>
       ),

@@ -12,6 +12,7 @@ that returns fake successful responses.
 import base64
 import json
 import os
+import signal
 import stat
 import subprocess
 import threading
@@ -98,6 +99,84 @@ def adp_home(tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     return home
+
+
+@pytest.fixture
+def fake_launchd_factory(adp_home: Path):
+    """Install a launchctl substitute that starts real plist programs and cleans up."""
+
+    def install(stub_tools: Path) -> Path:
+        uname = stub_tools / "uname"
+        uname.write_text("#!/bin/sh\necho Darwin\n")
+        uname.chmod(0o755)
+        launchctl = stub_tools / "launchctl"
+        launchctl.write_text(
+            """#!/usr/bin/env python3
+import os
+import plistlib
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+action, plist_path = sys.argv[1:3]
+with open(plist_path, "rb") as source:
+    plist = plistlib.load(source)
+state_dir = Path.home() / ".fake-launchd"
+state_dir.mkdir(exist_ok=True)
+pidfile = state_dir / f"{plist['Label']}.pid"
+
+def stop():
+    try:
+        pid = int(pidfile.read_text())
+    except (FileNotFoundError, ValueError):
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    pidfile.unlink(missing_ok=True)
+
+if action == "unload":
+    stop()
+elif action == "load":
+    stop()
+    environment = os.environ.copy()
+    environment.update(plist.get("EnvironmentVariables", {}))
+    log_path = Path(plist["StandardOutPath"])
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "ab", buffering=0) as log:
+        process = subprocess.Popen(
+            plist["ProgramArguments"],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            env=environment,
+            start_new_session=True,
+        )
+    pidfile.write_text(str(process.pid))
+else:
+    raise SystemExit(2)
+"""
+        )
+        launchctl.chmod(0o755)
+        return stub_tools
+
+    yield install
+
+    state_dir = adp_home / ".fake-launchd"
+    for pidfile in state_dir.glob("*.pid") if state_dir.exists() else ():
+        try:
+            os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+        except (OSError, ValueError):
+            pass
 
 
 @pytest.fixture

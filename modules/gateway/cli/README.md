@@ -385,8 +385,10 @@ model_provider = "adp-gateway"
 name = "ADP Gateway (local auth proxy)"
 base_url = "http://127.0.0.1:9191/openai/v1"
 wire_api = "responses"
-# Codex requires env_key to name an existing env var but never validates its
-# value — the proxy discards whatever arrives and injects the real token.
+# Codex sends this variable's value as its bearer token. The proxy requires it to
+# be the local capability the proxy published (see "Who may use the proxy" below),
+# then discards it and injects the real Cognito token — so it authenticates Codex
+# to the proxy and never reaches the gateway.
 env_key = "ADP_GATEWAY_DUMMY"
 ```
 
@@ -402,21 +404,28 @@ env_key = "ADP_GATEWAY_DUMMY"
 ~/bin/bg-cognito-auth.sh serve          # foreground; Ctrl-C to stop
 ```
 
-In another terminal:
+In another terminal, pass the capability the proxy just published:
 
 ```bash
-ADP_GATEWAY_DUMMY=unused codex
+ADP_GATEWAY_DUMMY="$(jq -r .capability ~/.bedrock-gateway/proxy.json)" codex
 ```
 
 That's it. Leave the proxy running as long as you like — token refresh happens
 per request, behind the scenes.
+
+> **Why not `ADP_GATEWAY_DUMMY=unused` any more?** The proxy now requires a
+> capability rather than a placeholder, because any website you visit can send
+> requests to `127.0.0.1` and would otherwise be able to spend your token (see
+> below). Each `serve` publishes a new capability, so read it from the file rather
+> than hardcoding it. `adp codex` does this for you.
 
 > **With `adp` installed this is one command: `adp codex`.** It health-checks the
 > proxy, starts it in the background if needed, sets `ADP_GATEWAY_DUMMY` itself
 > and hands you into Codex — one terminal, no prefix to remember. The two steps
 > above are what it automates, and remain the path for a hand-installed setup with
 > no `adp`. To make the bare `codex` command work, `adp daemon install` keeps the
-> proxy always-on (macOS); `adp daemon uninstall` reverts it. Claude Code needs
+> proxy always-on (macOS) and provisions a mode-0600 capability that remains valid
+> across launchd restarts; `adp daemon uninstall` reverts it. Claude Code needs
 > none of this — `apiKeyHelper` refreshes per request, so bare `claude` works and
 > `adp claude` is only a fail-fast login check.
 
@@ -426,6 +435,10 @@ per request, behind the scenes.
 codex  ──POST http://127.0.0.1:9191/openai/v1/responses
    │
    └─ bg-gateway-proxy.py (loopback only)
+        ├─ refuses the caller unless it presents the published capability,
+        │    and refuses anything carrying browser markers (Origin /
+        │    Sec-Fetch-Site) or a non-loopback Host  ← all before any token
+        │    is fetched, so a refused request never reaches the gateway
         ├─ calls `bg-cognito-auth.sh token`  ← the ONE refresh implementation
         │    └─ reuses the cached JWT, or renews ~5 min before the 60-min expiry
         ├─ drops any client Authorization / x-api-key
@@ -453,6 +466,27 @@ material differs — Cognito JWTs here, SigV4 there.
 - **Loopback only.** The proxy binds `127.0.0.1` and there is no flag to widen
   it. A listener that injects your credential must never be reachable from the
   LAN, so the bind address is a hardcoded literal, enforced by a test.
+- **Entitlement is proven, not assumed** (Issue #5686). Loopback decides which
+  *machines* can connect; it does not decide which *callers* may spend your
+  token. Any other process on your machine can reach `127.0.0.1`, and so can
+  **any website you visit** — browsers allow a page to `fetch()` your loopback
+  address. Such a page never sees your token, but it doesn't need to: it can make
+  the proxy spend it and read the reply. So every relayed request must present the
+  capability the proxy published, and requests carrying browser markers (`Origin`,
+  including the `null` origin sent by sandboxed pages, or a cross-site
+  `Sec-Fetch-Site`) are refused outright. CORS preflights are answered locally
+  with `403` and no `Access-Control-Allow-*` header.
+- **DNS rebinding is refused.** An attacker domain can be made to resolve to
+  `127.0.0.1`, so the packet arrives on loopback legitimately. The proxy checks
+  the `Host` you asked for, not just the address it arrived on, and accepts only
+  loopback names.
+- **The capability never travels where it could leak.** It is minted per proxy
+  process, held in memory, published only into the mode-`0600`
+  `~/.bedrock-gateway/proxy.json`, and passed to Codex via an environment variable
+  — never on a command line (`ps` is world-readable), never in a URL, and never in
+  the log. It is dropped before the upstream call, so the gateway never sees it.
+  The local identity route `/_adp/proxy` answers without it (a launcher must be
+  able to ask an *other* deployment's proxy whose it is) and never discloses it.
 - **No secrets in output.** One line per request (method, path, status) on
   stderr — never the token, never headers, never bodies, never query strings.
 - **One refresh implementation.** The proxy shells out to `bg-cognito-auth.sh
@@ -470,6 +504,9 @@ material differs — Cognito JWTs here, SigV4 there.
 | `Proxy script not found` | `bg-gateway-proxy.py` not beside `bg-cognito-auth.sh` | Copy both files to the same directory |
 | `A gateway proxy is already running (pid N)` | A proxy from a previous session is live | `kill N`, then re-run `serve` |
 | `502 proxy_token_error` | Refresh token expired (30 days) or Cognito rejected it | `bg-cognito-auth.sh status`, then `import`/`login` again |
+| `403 proxy_unauthorized` | `ADP_GATEWAY_DUMMY` is unset, still the old `unused` placeholder, or from a previous proxy process | Use `adp codex`, or re-export it: `ADP_GATEWAY_DUMMY="$(jq -r .capability ~/.bedrock-gateway/proxy.json)"`. A stale `export ADP_GATEWAY_DUMMY=unused` in your `~/.zshrc` or `~/.bash_profile` is the usual cause |
+| `403 proxy_forbidden_origin` | Something sent an `Origin`/`Sec-Fetch-Site` header — usually a browser, i.e. the abuse this blocks | Expected. Drive the proxy from a CLI tool, not a web page or a browser tab |
+| `403 proxy_forbidden_host` | The request's `Host` was not a loopback name (a DNS-rebinding signal) | Point your client at `127.0.0.1`, not a hostname that resolves there |
 | `502 proxy_upstream_error` | Gateway unreachable from your machine | Check the `gateway_url` in `config.json` and your network |
 | Codex hangs with no output | `base_url` port ≠ `--port` | Make them match (default `9191`) |
 | Codex: connection refused | Proxy not running | Start `serve` in another terminal |
