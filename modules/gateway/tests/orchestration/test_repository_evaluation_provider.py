@@ -174,6 +174,24 @@ async def test_real_provider_observation_binds_checks_workflow_attempt_and_diges
     assert {item["criterion_id"] for item in workflow["criteria"]} == {"coverage", "inventory"}
 
 
+async def test_workflow_definition_requires_matching_content_even_when_blob_ids_match(evidence):
+    provider = RepositoryEvidenceProvider()
+    provider.definition_blob = AsyncMock(
+        side_effect=[
+            ("d" * 40, b"on:\n  workflow_dispatch:\n"),
+            ("d" * 40, b"on:\n  schedule: []\n"),
+        ]
+    )
+
+    with pytest.raises(CycleBlockedError, match="repository_evaluation_workflow_definition_changed"):
+        await provider.workflow(
+            SimpleNamespace(repo="o/r", provider_repository_id=123),
+            evidence.spec.workflows[0],
+            revisions={},
+            max_age_seconds=evidence.spec.max_age_seconds,
+        )
+
+
 @pytest.mark.parametrize(
     "case",
     [
