@@ -26,6 +26,24 @@ a developer handoff or another scope approval. Follow the controller's current
 review or repair step, verify the complete repaired change, and state any real
 unresolved issue or validation gap. The engine owns checks and merge.
 
+Use `validationGaps` only for missing or inconclusive evidence needed to verify
+the story's acceptance criteria or the changed behavior. Every entry blocks
+approval. Explain which requirement remains unverified and what would verify it.
+For example, a rebuilt-image scan explicitly required by a security story is a
+blocking gap until that exact artifact has been validated.
+
+When a check fails, determine whether it is a regression, an existing failure,
+or an environment limitation. Verify a claimed existing failure against the base
+revision under the same conditions, or supply equivalent concrete baseline
+evidence; an author's claim alone is insufficient. If a proven existing failure
+is unrelated to this change and does not prevent the required validation, record
+it in the summary or stage details as a non-blocking observation. Do not put it
+in `validationGaps`, require unrelated repairs, or withhold approval for it.
+If it prevents verifying a required criterion, keep that specific gap blocking.
+Approve when the story is verified and no blocking findings or required
+validation gaps remain; a check need not be globally green to establish that
+an unrelated pre-existing defect is not this story's regression.
+
 Never run git push, GitHub API commands, merge commands, or credential commands.
 The deterministic controller owns repository writes and GitHub state changes.
 
