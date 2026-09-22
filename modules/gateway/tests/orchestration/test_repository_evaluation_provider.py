@@ -369,11 +369,16 @@ async def test_bound_scan_artifact_must_match_actual_source_target_images_and_cl
         target=dict(account_id="123456789012", region="us-east-1", resource_kind="repository_scan", resource_id="o/r"),
         receipt_artifact="evidence-{run_attempt}",
         receipt_path="evidence.json",
-        images={"controller": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64)},
+        images={
+            "controller": {
+                "grype": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64),
+                "syft": dict(digest="sha256:" + "f" * 64, provenance_sha256="1" * 64),
+            }
+        },
     )
     spec = RepositoryEvaluationSpecification.model_validate(document)
     receipt = dict(
-        evidence_schema="repository-scan-receipt/v1",
+        evidence_schema="repository-scan-receipt/v2",
         source_revision="b" * 40,
         correlation="c" * 64,
         target=spec.producer.target.model_dump(mode="json"),
@@ -386,7 +391,7 @@ async def test_bound_scan_artifact_must_match_actual_source_target_images_and_cl
     elif changed == "account":
         receipt["target"]["account_id"] = "999999999999"
     elif changed in {"image", "provenance"}:
-        receipt["images"]["controller"]["digest" if changed == "image" else "provenance_sha256"] = (
+        receipt["images"]["controller"]["grype"]["digest" if changed == "image" else "provenance_sha256"] = (
             "sha256:" if changed == "image" else ""
         ) + "0" * 64
     elif changed in {"coverage", "cleanup"}:
@@ -489,7 +494,12 @@ async def test_scan_preflight_refuses_workflows_without_the_recoverable_one_off_
         target=dict(account_id="123456789012", region="us-east-1", resource_kind="repository_scan", resource_id="o/r"),
         receipt_artifact="evidence-{run_attempt}",
         receipt_path="evidence.json",
-        images={"controller": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64)},
+        images={
+            "controller": {
+                "grype": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64),
+                "syft": dict(digest="sha256:" + "f" * 64, provenance_sha256="1" * 64),
+            }
+        },
     )
     spec = RepositoryEvaluationSpecification.model_validate(document)
     workflow = {
