@@ -766,12 +766,6 @@ class GitHubMergeObserver:
         repository_settings = _object(await self.get(root, kind="repository_settings"))
         if repository_settings.get("id") != repository_id or _text(repository_settings.get("full_name")).lower() != repo.lower():
             _refuse(EligibilityReason.SCOPE_CHANGED)
-        permitted_methods = {
-            method
-            for method in ("merge", "squash", "rebase")
-            if _boolean(repository_settings.get("allow_merge_commit" if method == "merge" else f"allow_{method}_merge"))
-        }
-        requirements = replace(requirements, allowed_merge_methods=tuple(sorted(set(requirements.allowed_merge_methods) & permitted_methods)))
         check_runs = await self.pages(f"{root}/commits/{head}/check-runs", kind="check_runs", key="check_runs", params={"filter": "latest"})
         statuses = await self.pages(f"{root}/commits/{head}/statuses", kind="statuses")
         reviews = await self.pages(f"{path}/reviews", kind="reviews")
@@ -779,7 +773,7 @@ class GitHubMergeObserver:
         opinions = self._reviews(reviews)
         owner, name = repo.split("/", 1)
         query = """query($owner:String!,$name:String!,$pr:Int!) {
-          repository(owner:$owner,name:$name) { databaseId pullRequest(number:$pr) {
+          repository(owner:$owner,name:$name) { databaseId mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed pullRequest(number:$pr) {
             id headRefOid baseRefOid baseRef { name target { oid } } reviewDecision
           } }
         }"""
@@ -796,6 +790,21 @@ class GitHubMergeObserver:
         record = _object(repository.get("pullRequest"))
         if repository.get("databaseId") != repository_id or record.get("id") != pr_node_id:
             _refuse(EligibilityReason.SCOPE_CHANGED)
+        # REST omits allow_* settings for read-only installation tokens. GraphQL
+        # explicitly exposes the same repository settings without write access.
+        # Cross-check REST when present; absence never implies permission to merge.
+        permitted_methods = set()
+        for method, field, rest_field in (
+            ("merge", "mergeCommitAllowed", "allow_merge_commit"),
+            ("squash", "squashMergeAllowed", "allow_squash_merge"),
+            ("rebase", "rebaseMergeAllowed", "allow_rebase_merge"),
+        ):
+            allowed = _boolean(repository.get(field))
+            if rest_field in repository_settings and _boolean(repository_settings[rest_field]) != allowed:
+                _refuse()
+            if allowed:
+                permitted_methods.add(method)
+        requirements = replace(requirements, allowed_merge_methods=tuple(sorted(set(requirements.allowed_merge_methods) & permitted_methods)))
         if record.get("headRefOid") != head:
             _refuse(EligibilityReason.HEAD_CHANGED)
         live_base = _object(record.get("baseRef"))

@@ -90,6 +90,9 @@ def provider_data():
             "data": {
                 "repository": {
                     "databaseId": 42,
+                    "mergeCommitAllowed": True,
+                    "squashMergeAllowed": True,
+                    "rebaseMergeAllowed": True,
                     "pullRequest": {
                         "id": "PR_12",
                         "headRefOid": HEAD,
@@ -177,6 +180,42 @@ async def test_saved_pr_base_can_lag_the_current_merge_target():
     assert evaluate_observation(observed).eligible
     assert observed.base_sha == tip
     assert data["pr"]["base"]["sha"] == BASE
+
+
+async def test_read_only_rest_projection_uses_explicit_graphql_merge_settings():
+    data = provider_data()
+    data["repository"] = {"id": 42, "full_name": REPO}
+    data["graphql"]["data"]["repository"].update(mergeCommitAllowed=False, rebaseMergeAllowed=False)
+    observed, calls = await observe(data)
+    assert evaluate_observation(observed).eligible
+    assert observed.requirements.allowed_merge_methods == ("squash",)
+    assert len(calls) == 11
+
+
+@pytest.mark.parametrize("defect", ["missing", "null", "string", "contradiction", "rest_null"])
+async def test_unverified_merge_settings_refuse_even_with_passing_review_and_checks(defect):
+    data = provider_data()
+    repository = data["graphql"]["data"]["repository"]
+    if defect == "missing":
+        del repository["mergeCommitAllowed"]
+    elif defect in {"null", "string"}:
+        repository["mergeCommitAllowed"] = None if defect == "null" else "true"
+    elif defect == "contradiction":
+        repository["mergeCommitAllowed"] = False
+    else:
+        data["repository"]["allow_merge_commit"] = None
+    with pytest.raises(EvidenceUnavailableError) as exc:
+        await observe(data)
+    assert exc.value.reason is EligibilityReason.INCOMPLETE_OBSERVATION
+
+
+async def test_all_merge_methods_disabled_remains_blocked_for_read_only_token():
+    data = provider_data()
+    data["repository"] = {"id": 42, "full_name": REPO}
+    data["graphql"]["data"]["repository"].update(mergeCommitAllowed=False, rebaseMergeAllowed=False, squashMergeAllowed=False)
+    observed, _ = await observe(data)
+    assert observed.requirements.allowed_merge_methods == ()
+    assert EligibilityReason.UNSUPPORTED_RULE in evaluate_observation(observed).reasons
 
 
 def unavailable_rules_data():

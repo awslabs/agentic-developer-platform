@@ -194,6 +194,12 @@ async def merge_actions(ctx):
         return list((await db.scalars(select(OrchestrationAction).where(OrchestrationAction.kind == MERGE_KIND))).all())
 
 
+async def test_read_only_repository_projection_merges_and_completes(merge):
+    for key in ("allow_merge_commit", "allow_squash_merge", "allow_rebase_merge"):
+        del merge.remote["repository"][key]
+    await test_engine_expected_head_merge_then_verified_code_completion(merge, True, False)
+
+
 @pytest.mark.parametrize("saved_base_is_behind", [False, True])
 @pytest.mark.parametrize("rest_rules_available", [False, True])
 async def test_engine_expected_head_merge_then_verified_code_completion(merge, saved_base_is_behind, rest_rules_available):
