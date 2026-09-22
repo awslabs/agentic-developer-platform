@@ -52,7 +52,14 @@ from src.orchestration.adapters.github_comments import (
     apply_gate_answer_for_context,
 )
 from src.orchestration.compile import ApprovalContext, PolicyNotAcceptableError, accept_execution_policy, plan_hash
-from src.orchestration.execution_policy import Action, DenyReason, ResourceRef
+from src.orchestration.execution_policy import (
+    Action,
+    AuthorizationContext,
+    CredentialScope,
+    DenyReason,
+    ResourceRef,
+    authorize_action,
+)
 from src.orchestration.models import DecisionKind, OrchestrationAcceptedPlan, OrchestrationDecision
 from src.orchestration.policy_admission import authorize_node_dispatch, load_in_force_policy
 from src.orchestration.registration import (
@@ -932,6 +939,41 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         )
 
         assert granted.execution_policy is not None and granted.execution_policy.policy_id
+
+    def test_a_future_naive_expiry_is_normalized_for_runtime_authorization(self):
+        from datetime import UTC, datetime, timedelta
+
+        future_naive_expiry = (datetime.now(tz=UTC) + timedelta(hours=1)).replace(tzinfo=None)
+        submitted = gateless_proposal().model_copy(
+            update={"execution_policy": policy_for_these_fixtures(expires_at=future_naive_expiry)}
+        )
+
+        granted = accept_execution_policy(
+            submitted,
+            decision=ApprovalContext(org_id=ORG_A, actor_id=HUMAN_USER_ID, actor_role="org_admin", actor_kind=ActorKind.HUMAN),
+            decision_kind=DecisionKind.PLAN_ACCEPTED,
+        )
+
+        policy = granted.execution_policy
+        assert policy is not None and policy.expires_at.tzinfo is UTC
+        decision = authorize_action(
+            AuthorizationContext(
+                policy=policy,
+                accepted_plan_version=1,
+                in_force_plan_version=1,
+                principal_id=HUMAN_USER_ID,
+                member_org_id=ORG_A,
+                principal_can_authorize=True,
+                now=datetime.now(tz=UTC),
+                credential_scope=CredentialScope.SCOPED,
+                observed_spend_usd=0,
+            ),
+            Action.DEVELOP,
+            ResourceRef(repository_id="aws-e/adp", org_id=ORG_A, node_address=f"{FLOW}/epic-1/wave-1/story-1"),
+            policy_version=1,
+        )
+
+        assert decision.permitted
 
 
 class TestTenantIsolationOfAGrant:

@@ -386,6 +386,7 @@ def accept_execution_policy(
             f"(it is now {now.isoformat()}). Accepting it would arm the plan with bounds every dispatch is then denied "
             "under. The expiry is part of what was reviewed and is not extended here: request a new plan and accept that."
         )
+    policy = policy.model_copy(update={"expires_at": expires_at})
 
     try:
         stamped = stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)
