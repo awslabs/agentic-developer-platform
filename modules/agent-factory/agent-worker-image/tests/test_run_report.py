@@ -60,6 +60,36 @@ def test_start_is_durable_and_redelivery_never_runs_development_again(spool, mon
     assert "credential" not in next(iter(spool[1].values())).decode()
 
 
+@pytest.mark.parametrize("has_spool", [False, True])
+def test_explicit_server_retirement_preserves_spool_and_never_reports_success(spool, monkeypatch, has_spool):
+    if has_spool:
+        run_report.begin_delivery()
+        run_report.spool_candidate({"head_sha": "a" * 40})
+    before = dict(spool[1])
+    monkeypatch.setattr(run_report, "request", MagicMock(return_value={
+        "block_code": "execution_assignment_superseded", "retryable": False,
+        "candidate_pr": {"head_sha": "a" * 40},
+    }))
+    terminal = MagicMock()
+    monkeypatch.setattr(run_report, "terminal", terminal)
+    with pytest.raises(run_report.SupersededDelivery):
+        resume_handoff()
+    run_report.request.assert_called_once_with()
+    terminal.assert_not_called()
+    assert spool[1] == before
+
+
+@pytest.mark.parametrize("snapshot", [
+    {"block_code": "execution_assignment_superseded"},
+    {"block_code": "execution_assignment_superseded", "retryable": True},
+    {"block_code": "execution_assignment_unverifiable", "retryable": False},
+    {"block_code": "delivery_recovery_required", "retryable": False},
+])
+def test_unknown_or_retryable_status_does_not_retire_delivery(spool, monkeypatch, snapshot):
+    monkeypatch.setattr(run_report, "request", lambda: snapshot)
+    assert resume_handoff() is False
+
+
 def test_gateway_outage_candidate_replays_from_existing_artifact(spool, monkeypatch):
     candidate = {
         "repo": "org/repo",

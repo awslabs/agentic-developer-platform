@@ -27,6 +27,13 @@ class RunReportError(Exception):
         super().__init__(code)
 
 
+class SupersededDelivery(RunReportError):
+    """An authenticated report explicitly retired this delivery permanently."""
+
+    def __init__(self):
+        super().__init__("execution_assignment_superseded", retryable=False)
+
+
 def configure(envelope: dict) -> None:
     global _assignment
     report = envelope.get("run_report")

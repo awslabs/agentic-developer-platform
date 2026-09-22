@@ -1538,6 +1538,15 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
             _delete_message(queue_url, region, receipt_handle)
             bootstrap_log.close()
             return 0
+    except run_report.SupersededDelivery:
+        # A recovered successor uses the same FIFO group. Keeping the retired
+        # message here prevents that successor from ever reaching a worker.
+        # Preserve the prior status, reports and spool; acknowledgement is not
+        # successful story delivery and must not manufacture a terminal receipt.
+        logger.info("Acknowledging server-retired engine delivery %s", message_id)
+        bootstrap_log.close()
+        _delete_message(queue_url, region, receipt_handle)
+        return 0
     except run_report.RunReportError as exc:
         logger.warning("Engine report recovery deferred: %s", exc.code)
         run_report.report_block(exc.code)

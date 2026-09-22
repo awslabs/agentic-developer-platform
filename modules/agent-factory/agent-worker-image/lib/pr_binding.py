@@ -94,6 +94,12 @@ def _verified_receipt(snapshot: dict, candidate: dict) -> dict:
 def resume_handoff() -> bool:
     """Return true after replaying a persisted delivery; never launch development."""
     snapshot = run_report.request()
+    # request() authenticates the reporting capability and checks run/attempt
+    # identity. Only this explicit permanent server decision retires a queue
+    # delivery; HTTP errors, expiry and unknown ownership do not prove retirement.
+    if (snapshot.get("block_code") == "execution_assignment_superseded"
+            and snapshot.get("retryable") is False):
+        raise run_report.SupersededDelivery()
     if snapshot.get("terminal_receipt"):
         return True
     if (snapshot.get("review_receipt") or {}).get("recorded") is True:

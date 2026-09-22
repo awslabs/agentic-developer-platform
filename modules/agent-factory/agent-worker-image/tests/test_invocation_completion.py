@@ -309,6 +309,41 @@ def test_shared_codex_engine_uses_report_ownership_not_legacy_dynamodb_receipts(
     ack.assert_called_once()
 
 
+def test_server_retired_delivery_acknowledges_without_bootstrap_or_receipt_changes(worker, monkeypatch):
+    client, envelope, executions, _, ack, _ = worker
+    seed(client, envelope, status="failed")
+    original = row(client, envelope)
+    monkeypatch.setattr(entrypoint.run_report, "enabled", lambda: True)
+    monkeypatch.setattr(entrypoint.run_report, "request", MagicMock(return_value={
+        "block_code": "execution_assignment_superseded", "retryable": False,
+    }))
+    forbidden = MagicMock(side_effect=AssertionError("Retirement must not touch delivery evidence"))
+    monkeypatch.setattr(entrypoint.run_report, "read_spool", forbidden)
+    monkeypatch.setattr(entrypoint.run_report, "terminal", forbidden)
+    ack.side_effect = [RuntimeError("queue acknowledgement lost"), None]
+    with pytest.raises(RuntimeError, match="queue acknowledgement lost"):
+        entrypoint.main()
+    assert entrypoint.main() == 0
+    assert ack.call_count == 2
+    assert executions == []
+    assert row(client, envelope) == original
+    entrypoint.VaultClient.assert_not_called()
+    forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 409, 429, 502])
+def test_report_http_failure_never_acknowledges_a_potentially_current_delivery(worker, monkeypatch, status):
+    _, _, executions, _, ack, _ = worker
+    monkeypatch.setattr(entrypoint.run_report, "enabled", lambda: True)
+    monkeypatch.setattr(entrypoint.run_report, "request", MagicMock(
+        side_effect=entrypoint.run_report.RunReportError(f"run_report_http_{status}", retryable=status >= 500),
+    ))
+    assert entrypoint.main() == entrypoint.AGENT_EXIT_RETRYABLE
+    assert executions == []
+    ack.assert_not_called()
+    entrypoint.VaultClient.assert_not_called()
+
+
 def test_codex_issue_review_redelivery_runs_adapter_once(worker):
     client, envelope, executions, _, ack, merged = worker
     envelope["persona"] = "agent-codex-reviewer"
