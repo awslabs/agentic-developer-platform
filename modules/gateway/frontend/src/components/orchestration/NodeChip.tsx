@@ -55,10 +55,12 @@ export interface NodeChipProps {
  * loses the only information that tells an operator what to actually do.
  */
 function reasonBadge(node: GraphNode): string | null {
+  if (node.state === 'passed' || node.state === 'superseded') return null;
   if (node.state === 'halted') return 'Halted';
   if (node.stalled) return 'Stalled';
   if (node.state === 'rejected_at_gate') return 'Changes requested at gate';
   if (node.state === 'failed') return 'Failed';
+  if (node.display_state === 'stalled') return 'Blocked';
   return null;
 }
 

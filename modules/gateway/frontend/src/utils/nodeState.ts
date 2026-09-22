@@ -58,7 +58,7 @@ export interface DisplayStateStyle {
  */
 export const DISPLAY_STATES: Record<DisplayState, DisplayStateStyle> = {
   queued: {
-    label: 'Queued (waiting on dependencies)',
+    label: 'Queued',
     glyph: '○',
     fill: '#c3c2b7',
     text: '#52514e',
@@ -102,7 +102,10 @@ export const DISPLAY_STATE_ORDER: DisplayState[] = ['queued', 'in_progress', 'ga
  * too — both need intervention — but the two are told apart by the badge the node
  * chip renders, not by collapsing them here.
  */
-export function toDisplayState(node: Pick<GraphNode, 'state' | 'stalled'>): DisplayState | null {
+export function toDisplayState(node: Pick<GraphNode, 'state' | 'stalled' | 'display_state'>): DisplayState | null {
+  // Completion and supersession cannot be undone by an old stall flag.
+  if (node.state === 'passed' || node.state === 'superseded') return engineStateToDisplayState(node.state);
+  if (node.display_state !== undefined) return node.display_state;
   if (node.stalled) return 'stalled';
   return engineStateToDisplayState(node.state);
 }
@@ -149,9 +152,9 @@ export function engineStateToDisplayState(state: NodeEngineState): DisplayState 
  * *at* that gate, and an operator asking "where are we" needs that answered
  * whether or not a model is burning tokens at that instant.
  */
-export function isCurrentPosition(node: Pick<GraphNode, 'state' | 'stalled'>): boolean {
-  if (node.stalled) return false;
-  return node.state === 'running' || node.state === 'awaiting_merge' || node.state === 'awaiting_gate';
+export function isCurrentPosition(node: Pick<GraphNode, 'state' | 'stalled' | 'display_state'>): boolean {
+  const display = toDisplayState(node);
+  return display === 'in_progress' || display === 'gate';
 }
 
 /** Count nodes per display state, skipping those that occupy no segment. */

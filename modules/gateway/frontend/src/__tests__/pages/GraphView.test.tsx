@@ -129,6 +129,26 @@ describe('a failed execution read is visible and non-blocking', () => {
    * precisely the symptom a tenant-scoping failure would produce, which is the same
    * defect the backend's own tenant-predicate test guards from the other end.
    */
+  it('uses current display states for both graph nodes and rollup counts', async () => {
+    mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
+      makeNode({ node_ref: 'active', state: 'running', display_state: 'in_progress' }),
+      makeNode({ node_ref: 'blocked', state: 'running', display_state: 'stalled' }),
+      makeNode({ node_ref: 'capacity', state: 'running', display_state: 'queued' }),
+      makeNode({ node_ref: 'delivered', state: 'passed', stalled: true, display_state: 'stalled' }),
+      makeNode({ node_ref: 'gate-done', kind: 'gate', state: 'passed' }),
+    ] }));
+    renderGraph();
+    await waitFor(() => expect(screen.getByTestId('story-completion-count')).toHaveTextContent('1 of 4 stories complete'));
+    for (const [state, count] of Object.entries({ in_progress: 1, stalled: 1, queued: 1, complete: 2 })) {
+      expect(screen.getAllByTestId(`rollup-segment-${state}`)[0]).toHaveAttribute('data-count', String(count));
+    }
+    expect(screen.getByTestId('node-blocked')).toHaveAttribute('data-display-state', 'stalled');
+    expect(screen.getByTestId('node-blocked')).not.toHaveAttribute('aria-current');
+    expect(screen.getByTestId('node-capacity')).toHaveAttribute('data-display-state', 'queued');
+    expect(screen.getByTestId('node-delivered')).toHaveAttribute('data-display-state', 'complete');
+    expect(within(screen.getByTestId('node-delivered')).queryByText('Stalled')).not.toBeInTheDocument();
+  });
+
   it('says execution progress is unavailable rather than silently omitting it', async () => {
     renderGraph();
 
@@ -562,7 +582,7 @@ describe('accessibility: the bar is described in render order (§9.4)', () => {
     renderGraph();
 
     const legend = await screen.findByTestId('rollup-legend');
-    for (const label of ['Complete', 'In progress', 'Waiting on a gate', 'Stalled — needs help', 'Queued (waiting on dependencies)']) {
+    for (const label of ['Complete', 'In progress', 'Waiting on a gate', 'Stalled — needs help', 'Queued']) {
       expect(within(legend).getByText(new RegExp(label.replace(/[.*+?^${}()|[\]\\—]/g, '\\$&')))).toBeInTheDocument();
     }
   });
