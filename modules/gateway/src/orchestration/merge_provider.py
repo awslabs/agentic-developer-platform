@@ -10,7 +10,7 @@ import httpx
 from src.agentauth.github_provider import BoundMergeAssignment, GitHubProvider, ProviderUnavailableError
 from src.knowledge.github_app_service import mint_installation_token_with_expiry, resolve_tenant_app_credentials
 
-from .merge_evidence import _boolean, _integer, _sha, _text
+from .merge_evidence import _boolean, _integer, _object, _sha, _text
 from .review_cycle import CycleBlockedError
 
 
@@ -65,7 +65,7 @@ class MergeProvider:
                 json={
                     "query": (
                         "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){"
-                        "databaseId pullRequest(number:$number){id headRefOid baseRefOid merged mergeQueueEntry{id}}}}"
+                        "databaseId pullRequest(number:$number){id headRefOid baseRefOid baseRef{name target{oid}} merged mergeQueueEntry{id}}}}"
                     ),
                     "variables": {"owner": owner, "name": name, "number": binding.pr_number},
                 },
@@ -88,6 +88,16 @@ class MergeProvider:
             if "mergeQueueEntry" not in current or (queue is not None and not isinstance(queue, dict)):
                 raise ProviderUnavailableError("merge queue state incomplete")
             merged = _boolean(pull["merged"])
+            # baseRefOid agrees with the REST PR snapshot, but can lag main.
+            # Open-PR mutation fences must use the current branch target instead.
+            live_base = current.get("baseRef")
+            if merged and live_base is None:
+                base_sha = _sha(base["sha"])
+            else:
+                live_base = _object(live_base)
+                if live_base.get("name") != base["ref"]:
+                    raise ProviderUnavailableError("PR base branch changed during merge observation")
+                base_sha = _sha(_object(live_base.get("target")).get("oid"))
             merged_at = pull.get("merged_at")
             if merged:
                 when = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
@@ -97,7 +107,7 @@ class MergeProvider:
                 raise ProviderUnavailableError("PR state unavailable")
             return MergeState(
                 _sha(head["sha"]),
-                _sha(base["sha"]),
+                base_sha,
                 _text(head["ref"]),
                 _text(base["ref"]),
                 merged,

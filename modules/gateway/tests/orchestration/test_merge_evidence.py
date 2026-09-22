@@ -88,7 +88,16 @@ def provider_data():
         "reviews": [{"id": 7, "state": "APPROVED", "commit_id": HEAD, "user": {"id": 2}, "submitted_at": NOW.isoformat()}],
         "graphql": {
             "data": {
-                "repository": {"databaseId": 42, "pullRequest": {"id": "PR_12", "headRefOid": HEAD, "baseRefOid": BASE, "reviewDecision": "APPROVED"}}
+                "repository": {
+                    "databaseId": 42,
+                    "pullRequest": {
+                        "id": "PR_12",
+                        "headRefOid": HEAD,
+                        "baseRefOid": BASE,
+                        "baseRef": {"name": "main", "target": {"oid": BASE}},
+                        "reviewDecision": "APPROVED",
+                    },
+                }
             }
         },
     }
@@ -109,7 +118,11 @@ def transport(data, calls, on_request=None):
         if path == "/graphql":
             assert request.method == "POST"
             assert json.loads(request.content)["query"].lstrip().startswith("query(")
-            key = "graphql"
+            key = (
+                "capability"
+                if "rulesets(first:100,includeParents:true)" in json.loads(request.content)["query"] and "capability" in data
+                else "graphql"
+            )
         else:
             assert request.method == "GET", "No repository mutation is permitted"
             if path.endswith("/rules/branches/main"):
@@ -149,10 +162,97 @@ async def test_current_review_and_explicit_repository_checks_pass_without_writes
     observed, calls = await observe()
     decision = evaluate_observation(observed)
     assert decision.eligible
-    assert len(observed.sources) == len(calls) == 10
+    assert len(observed.sources) == len(calls) == 11
     assert observed.requirements.allowed_merge_methods == ("merge", "rebase", "squash")
     assert all(source.payload_sha256 and source.observed_at == NOW for source in observed.sources)
     assert bounded_merge_summary(decision.ledger_detail()) == decision.summary()
+
+
+async def test_saved_pr_base_can_lag_the_current_merge_target():
+    data = provider_data()
+    tip = "c" * 40
+    data["branch"]["commit"]["sha"] = tip
+    data["graphql"]["data"]["repository"]["pullRequest"]["baseRef"]["target"]["oid"] = tip
+    observed, _ = await observe(data)
+    assert evaluate_observation(observed).eligible
+    assert observed.base_sha == tip
+    assert data["pr"]["base"]["sha"] == BASE
+
+
+def unavailable_rules_data():
+    data = provider_data()
+    captured = json.loads((FIXTURES / "main-rules.json").read_text())
+    data["rules"] = httpx.Response(403, json=captured["response"])
+    data["capability"] = {
+        "data": {
+            "repository": {
+                "databaseId": 42,
+                "rulesets": {"totalCount": 0, "nodes": [], "pageInfo": {"hasNextPage": False}},
+                "ref": {"name": "main", "target": {"oid": BASE}, "branchProtectionRule": None},
+            }
+        }
+    }
+    return data
+
+
+async def test_plan_unavailable_rules_require_positive_empty_graphql_evidence():
+    observed, _ = await observe(unavailable_rules_data())
+    assert evaluate_observation(observed).eligible
+    assert observed.requirements.required_approvals == 0
+    assert any(source.kind == "rules_capability_verification" for source in observed.sources)
+
+
+@pytest.mark.parametrize(
+    "defect", ["permission_denied", "protected", "repository", "base", "retargeted", "legacy_rule", "ruleset", "partial", "missing", "graphql_error"]
+)
+async def test_rules_capability_fallback_refuses_unverified_or_configured_rules(defect):
+    data = unavailable_rules_data()
+    repository = data["capability"]["data"]["repository"]
+    if defect == "permission_denied":
+        data["rules"] = httpx.Response(403, json={"message": "Resource not accessible by integration"})
+    elif defect == "protected":
+        data["branch"]["protected"] = True
+    elif defect == "repository":
+        repository["databaseId"] = 43
+    elif defect == "base":
+        repository["ref"]["target"]["oid"] = "c" * 40
+    elif defect == "retargeted":
+        repository["ref"]["name"] = "other"
+    elif defect == "legacy_rule":
+        repository["ref"]["branchProtectionRule"] = {"id": "legacy"}
+    elif defect == "ruleset":
+        repository["rulesets"].update(totalCount=1, nodes=[{"id": "inherited"}])
+    elif defect == "partial":
+        repository["rulesets"]["pageInfo"]["hasNextPage"] = True
+    elif defect == "missing":
+        del repository["ref"]["branchProtectionRule"]
+    else:
+        data["capability"]["errors"] = [{"message": "unavailable"}]
+    with pytest.raises(EvidenceUnavailableError) as exc:
+        await observe(data)
+    assert exc.value.reason is EligibilityReason.RULES_UNAVAILABLE
+
+
+@pytest.mark.parametrize("change", ["tip", "branch", "deleted", "protection", "late_tip"])
+async def test_current_base_change_during_observation_refuses(change):
+    data = provider_data()
+
+    def mutate(request):
+        if request.url.path == "/graphql":
+            live = data["graphql"]["data"]["repository"]["pullRequest"]
+            if change == "tip":
+                live["baseRef"]["target"]["oid"] = "c" * 40
+            elif change == "branch":
+                live["baseRef"]["name"] = "other"
+            elif change == "deleted":
+                live["baseRef"] = None
+            elif change == "protection":
+                data["branch"]["protected"] = True
+            elif change == "late_tip":
+                data["branch"]["commit"]["sha"] = "c" * 40
+
+    with pytest.raises(EvidenceUnavailableError):
+        await observe(data, on_request=mutate)
 
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "neutral", "timed_out", "action_required", "stale"])
@@ -458,7 +558,7 @@ async def test_public_adapter_reloads_r1_claim_policy_and_mints_only_scoped_read
     kwargs = merge_subject.mint.call_args.kwargs
     assert kwargs["repositories"] == [merge_subject.row.repo.split("/", 1)[1]]
     assert kwargs["permissions"] and set(kwargs["permissions"].values()) == {"read"}
-    assert len(merge_subject.calls) == 10
+    assert len(merge_subject.calls) == 11
 
 
 async def test_public_adapter_accepts_verified_reviewer_run_without_formal_github_approval(sessions, merge_subject):

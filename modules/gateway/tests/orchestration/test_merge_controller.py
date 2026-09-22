@@ -24,7 +24,7 @@ from src.orchestration.merge_controller import MERGE_KIND, PHASES, MergeControll
 from src.orchestration.merge_provider import MergeProvider
 from src.orchestration.models import OrchestrationAction, OrchestrationNode, OrchestrationPullRequestBinding
 from src.orchestration.review_evidence import record_review_evidence, validate_review_result
-from tests.orchestration.test_merge_evidence import provider_data
+from tests.orchestration.test_merge_evidence import provider_data, unavailable_rules_data
 from tests.orchestration.test_review_cycle import cycle, pg_server, pg_url, state, store  # noqa: F401
 from tests.orchestration.test_review_cycle import tick as review_tick
 from tests.orchestration.test_review_evidence import APPROVE, _all_refs
@@ -123,6 +123,8 @@ async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40):
             return httpx.Response(200, json={"merged": True, "sha": merge_sha})
         if path == "/graphql":
             body = json.loads(request.content)
+            if "rulesets(first:100,includeParents:true)" in body["query"] and "capability" in data:
+                return httpx.Response(200, json=data["capability"])
             if body["query"].startswith("mutation"):
                 mutations.append(body)
                 assert body["variables"]["input"]["expectedHeadOid"] == ctx.head
@@ -147,7 +149,7 @@ async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40):
             key = "repository"
         else:
             pytest.fail(f"Unexpected request {request.method} {path}")
-        return httpx.Response(404 if data[key] is None else 200, json=data[key])
+        return data[key] if isinstance(data[key], httpx.Response) else httpx.Response(404 if data[key] is None else 200, json=data[key])
 
     credentials = AsyncMock(return_value=("app", "test-key"))
     mint = AsyncMock(return_value=("scoped-test-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()))
@@ -192,8 +194,17 @@ async def merge_actions(ctx):
         return list((await db.scalars(select(OrchestrationAction).where(OrchestrationAction.kind == MERGE_KIND))).all())
 
 
-async def test_engine_expected_head_merge_then_verified_code_completion(merge):
+@pytest.mark.parametrize("saved_base_is_behind", [False, True])
+@pytest.mark.parametrize("rest_rules_available", [False, True])
+async def test_engine_expected_head_merge_then_verified_code_completion(merge, saved_base_is_behind, rest_rules_available):
     ctx = merge
+    if not rest_rules_available:
+        unavailable = unavailable_rules_data()
+        ctx.remote.update(rules=unavailable["rules"], capability=unavailable["capability"])
+        ctx.remote["capability"]["data"]["repository"]["databaseId"] = ctx.binding.provider_repository_id
+    if saved_base_is_behind:
+        ctx.remote["pr"]["base"]["sha"] = "d" * 40
+        ctx.remote["graphql"]["data"]["repository"]["pullRequest"]["baseRefOid"] = "d" * 40
     first = await tick(ctx)
     assert first.effects_succeeded == 1, (first, [(row.detail or {}).get("observation") for row in await merge_actions(ctx)])
     assert (await state(ctx))[2].state == "running"
@@ -205,6 +216,7 @@ async def test_engine_expected_head_merge_then_verified_code_completion(merge):
     assert claim.state == "held" and claim.generation == 5
     receipt = MergeReceipt.model_validate((await merge_actions(ctx))[0].detail["merge_receipt"])
     assert receipt.merge_sha == "c" * 40 and not receipt.adopted
+    assert receipt.reviewed_base_sha == "b" * 40
     assert receipt.reviewed_head_sha == ctx.head and receipt.review_ref.startswith("s3://review-test/")
     assert bounded_receipt_summary({"merge_receipt": receipt.model_dump(mode="json")})["merge_sha"] == receipt.merge_sha
     await tick(ctx)
@@ -494,7 +506,7 @@ async def test_non_story_cannot_receive_code_acceptance(merge):
     assert result.blocked == 1 and merge.mutations == []
 
 
-@pytest.mark.parametrize("failure", ["provider_identity", "write_credential", "rules_withdrawn"])
+@pytest.mark.parametrize("failure", ["provider_identity", "write_credential", "rules_withdrawn", "base_moved", "base_deleted", "base_retargeted"])
 async def test_final_provider_preconditions_refuse_mutation(merge, failure):
     original = merge.mint.return_value
 
@@ -504,6 +516,13 @@ async def test_final_provider_preconditions_refuse_mutation(merge, failure):
                 raise RuntimeError("scoped credential unavailable")
             if failure == "rules_withdrawn":
                 merge.remote["rules"][1]["parameters"]["required_approving_review_count"] = 2
+            if failure == "base_moved":
+                merge.remote["branch"]["commit"]["sha"] = "d" * 40
+                merge.remote["graphql"]["data"]["repository"]["pullRequest"]["baseRef"]["target"]["oid"] = "d" * 40
+            if failure == "base_deleted":
+                merge.remote["graphql"]["data"]["repository"]["pullRequest"]["baseRef"] = None
+            if failure == "base_retargeted":
+                merge.remote["graphql"]["data"]["repository"]["pullRequest"]["baseRef"]["name"] = "other"
         return original
 
     merge.mint.side_effect = mint

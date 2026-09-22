@@ -645,9 +645,21 @@ class GitHubMergeObserver:
         self.clock = clock
         self.sources: list[SourceEvidence] = []
         self.has_next_page = False
+        self.rules_capability_unavailable = False
 
     def _decode(self, response, *, kind: str, url: str, rules=False):
         if response.status_code != 200:
+            if rules and response.status_code == 403 and len(response.content) <= MAX_RESPONSE_BYTES:
+                try:
+                    message = response.json().get("message")
+                except (ValueError, AttributeError):
+                    message = None
+                if message in {
+                    "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+                    "Upgrade to GitHub Team or make this repository public to enable this feature.",
+                }:
+                    self.rules_capability_unavailable = True
+                    self.sources.append(SourceEvidence(kind, url, self.clock(), hashlib.sha256(response.content).hexdigest()))
             _refuse(EligibilityReason.RULES_UNAVAILABLE if rules else EligibilityReason.PROVIDER_UNAVAILABLE)
         if len(response.content) > MAX_RESPONSE_BYTES:
             _refuse()
@@ -690,6 +702,42 @@ class GitHubMergeObserver:
                 return items
         _refuse()
 
+    async def verify_no_configured_rules(self, binding, base_ref, base_sha):
+        """Positive alternate evidence when REST rules require a paid plan."""
+        owner, name = binding.repo.split("/", 1)
+        query = """query($owner:String!,$name:String!,$base:String!) {
+          repository(owner:$owner,name:$name) { databaseId
+            rulesets(first:100,includeParents:true) { totalCount nodes { id } pageInfo { hasNextPage } }
+            ref(qualifiedName:$base) { name target { oid } branchProtectionRule { id } }
+          }
+        }"""
+        response = await self.client.post(
+            "https://api.github.com/graphql",
+            headers=self.headers,
+            follow_redirects=False,
+            json={"query": query, "variables": {"owner": owner, "name": name, "base": "refs/heads/" + base_ref}},
+        )
+        try:
+            payload = _object(self._decode(response, kind="rules_capability_verification", url="https://api.github.com/graphql", rules=True))
+            if payload.get("errors"):
+                _refuse()
+            repository = _object(_object(payload.get("data")).get("repository"))
+            rulesets = _object(repository.get("rulesets"))
+            ref = _object(repository.get("ref"))
+            if (
+                repository.get("databaseId") != binding.provider_repository_id
+                or ref.get("name") != base_ref
+                or _sha(_object(ref.get("target")).get("oid")) != base_sha
+                or "branchProtectionRule" not in ref
+                or ref["branchProtectionRule"] is not None
+                or _integer(rulesets.get("totalCount")) != 0
+                or _list(rulesets.get("nodes")) != []
+                or _boolean(_object(rulesets.get("pageInfo")).get("hasNextPage"))
+            ):
+                _refuse()
+        except EvidenceUnavailableError:
+            _refuse(EligibilityReason.RULES_UNAVAILABLE)
+
     async def observe(self, binding) -> PullRequestObservation:
         repo = binding.repo
         if not isinstance(repo, str) or not _REPO.fullmatch(repo) or any(p in {".", ".."} for p in repo.split("/")):
@@ -697,15 +745,23 @@ class GitHubMergeObserver:
         root = f"/repos/{repo}"
         path = f"{root}/pulls/{binding.pr_number}"
         pr = _object(await self.get(path, kind="pull_request"))
-        head, base, base_ref, repository_id, pr_node_id = self._identity(pr, binding)
+        head, pull_base, base_ref, repository_id, pr_node_id = self._identity(pr, binding)
         branch = _object(await self.get(f"{root}/branches/{quote(base_ref, safe='')}", kind="base_branch", rules=True))
         protected = _boolean(branch.get("protected"))
-        if _sha(_object(branch.get("commit")).get("sha")) != base:
-            _refuse(EligibilityReason.BASE_CHANGED)
-        rules = await self.pages(f"{root}/rules/branches/{quote(base_ref, safe='')}", kind="branch_rules", rules=True)
-        protection = await self.get(
-            f"{root}/branches/{quote(base_ref, safe='')}/protection", kind="branch_protection", rules=True, absent=not protected
-        )
+        # GitHub keeps the PR's base.sha/baseRefOid as a saved PR snapshot.
+        # The branch and GraphQL baseRef.target identify the current merge target.
+        base = _sha(_object(branch.get("commit")).get("sha"))
+        rules = None
+        try:
+            rules = await self.pages(f"{root}/rules/branches/{quote(base_ref, safe='')}", kind="branch_rules", rules=True)
+            protection = await self.get(
+                f"{root}/branches/{quote(base_ref, safe='')}/protection", kind="branch_protection", rules=True, absent=not protected
+            )
+        except EvidenceUnavailableError:
+            if protected or not self.rules_capability_unavailable or rules not in (None, []):
+                raise
+            await self.verify_no_configured_rules(binding, base_ref, base)
+            rules, protection = [], None
         requirements = parse_requirements(rules, protection)
         repository_settings = _object(await self.get(root, kind="repository_settings"))
         if repository_settings.get("id") != repository_id or _text(repository_settings.get("full_name")).lower() != repo.lower():
@@ -724,7 +780,7 @@ class GitHubMergeObserver:
         owner, name = repo.split("/", 1)
         query = """query($owner:String!,$name:String!,$pr:Int!) {
           repository(owner:$owner,name:$name) { databaseId pullRequest(number:$pr) {
-            id headRefOid baseRefOid reviewDecision
+            id headRefOid baseRefOid baseRef { name target { oid } } reviewDecision
           } }
         }"""
         response = await self.client.post(
@@ -742,7 +798,8 @@ class GitHubMergeObserver:
             _refuse(EligibilityReason.SCOPE_CHANGED)
         if record.get("headRefOid") != head:
             _refuse(EligibilityReason.HEAD_CHANGED)
-        if record.get("baseRefOid") != base:
+        live_base = _object(record.get("baseRef"))
+        if record.get("baseRefOid") != pull_base or live_base.get("name") != base_ref or _sha(_object(live_base.get("target")).get("oid")) != base:
             _refuse(EligibilityReason.BASE_CHANGED)
         if "reviewDecision" not in record or record["reviewDecision"] not in {None, "APPROVED", "REVIEW_REQUIRED", "CHANGES_REQUESTED"}:
             _refuse()
@@ -750,7 +807,10 @@ class GitHubMergeObserver:
         after_head, after_base, after_ref, _, _ = self._identity(after, binding)
         if after_head != head:
             _refuse(EligibilityReason.HEAD_CHANGED)
-        if after_base != base or after_ref != base_ref:
+        if after_base != pull_base or after_ref != base_ref:
+            _refuse(EligibilityReason.BASE_CHANGED)
+        branch_after = _object(await self.get(f"{root}/branches/{quote(base_ref, safe='')}", kind="base_branch_recheck", rules=True))
+        if _sha(_object(branch_after.get("commit")).get("sha")) != base or _boolean(branch_after.get("protected")) != protected:
             _refuse(EligibilityReason.BASE_CHANGED)
         if after.get("state") not in {"open", "closed"}:
             _refuse()

@@ -129,7 +129,7 @@ async def test_shared_review_merge_observer_and_verified_completion(shared, monk
         ctx.remote["protection"] = None
         ctx.remote["reviews"] = []
         ctx.remote["graphql"]["data"]["repository"]["pullRequest"]["reviewDecision"] = None
-        await merge_protocol.test_engine_expected_head_merge_then_verified_code_completion(ctx)
+        await merge_protocol.test_engine_expected_head_merge_then_verified_code_completion(ctx, saved_base_is_behind=False, rest_rules_available=True)
 
 
 async def test_shared_repair_registration_proves_current_dispatch(shared):
