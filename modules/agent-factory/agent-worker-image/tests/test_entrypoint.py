@@ -4736,8 +4736,10 @@ def test_review_is_produced_and_uploaded_before_terminal_handlers(monkeypatch, t
         output = HEAD if cmd[:3] == ["git", "rev-parse", "HEAD"] else ""
         if cmd == ["git", "branch", "--show-current"]:
             output = "bound-pr-branch"
-        if cmd[:3] == ["gh", "pr", "view"] and cmd[-2:] == ["--json", "headRefName,isCrossRepository,state"]:
-            output = json.dumps({"headRefName": "bound-pr-branch", "isCrossRepository": False, "state": "OPEN"})
+        if cmd == ["git", "rev-parse", "--is-shallow-repository"]:
+            output = "false"
+        if cmd[:3] == ["gh", "pr", "view"] and cmd[-2:] == ["--json", "headRefName,isCrossRepository,state,baseRefOid"]:
+            output = json.dumps({"headRefName": "bound-pr-branch", "isCrossRepository": False, "state": "OPEN", "baseRefOid": "b" * 40})
         return MagicMock(stdout=output, returncode=0)
     monkeypatch.setattr(entrypoint, "run_cmd", command)
     events = []

@@ -43,20 +43,25 @@ def test_checkout_uses_bound_pr_without_creating_or_resetting_branch():
     def run(command, **kwargs):
         calls.append(command)
         if command[:3] == ["gh", "pr", "view"]:
-            return SimpleNamespace(stdout=json.dumps({"headRefName": "existing-pr-branch", "isCrossRepository": False, "state": "OPEN"}))
+            return SimpleNamespace(stdout=json.dumps({"headRefName": "existing-pr-branch", "isCrossRepository": False, "state": "OPEN", "baseRefOid": "b" * 40}))
+        if command == ["git", "rev-parse", "--is-shallow-repository"]:
+            return SimpleNamespace(stdout="false")
         return SimpleNamespace(stdout="a" * 40 if command == ["git", "rev-parse", "HEAD"] else "existing-pr-branch")
     branch, head = checkout_cycle_input(envelope()["review_cycle_input"], run=run, cwd="/isolated")
     assert branch == "existing-pr-branch" and head == "a" * 40
-    assert calls == [["gh", "pr", "view", "77", "--repo", "org/repo", "--json", "headRefName,isCrossRepository,state"],
+    assert calls == [["gh", "pr", "view", "77", "--repo", "org/repo", "--json", "headRefName,isCrossRepository,state,baseRefOid"],
         ["git", "check-ref-format", "--branch", "existing-pr-branch"],
         ["git", "remote", "set-branches", "--add", "origin", "existing-pr-branch"],
         ["gh", "pr", "checkout", "77", "--repo", "org/repo"], ["git", "rev-parse", "HEAD"],
-        ["git", "branch", "--show-current"]]
+        ["git", "branch", "--show-current"],
+        ["git", "rev-parse", "--is-shallow-repository"],
+        ["git", "fetch", "--no-tags", "origin", "b" * 40],
+        ["git", "cat-file", "-e", "b" * 40 + "^{commit}"]]
 
 
 def test_moved_head_refuses_before_model_exec():
     def run(command, **kwargs):
-        return SimpleNamespace(stdout=json.dumps({"headRefName": "existing-pr-branch", "isCrossRepository": False, "state": "OPEN"})
+        return SimpleNamespace(stdout=json.dumps({"headRefName": "existing-pr-branch", "isCrossRepository": False, "state": "OPEN", "baseRefOid": "b" * 40})
             if command[:3] == ["gh", "pr", "view"] else "b" * 40)
     with pytest.raises(RuntimeError, match="head changed"):
         checkout_cycle_input(envelope()["review_cycle_input"], run=run, cwd="/isolated")
@@ -73,6 +78,10 @@ def test_shallow_clone_tracks_only_the_assigned_pr_branch(tmp_path):
     git("init", "-b", "main", cwd=origin)
     git("config", "user.name", "Test", cwd=origin)
     git("config", "user.email", "test@example.test", cwd=origin)
+    (origin / "inventory.json").write_text('{"pinned_evidence": true}\n')
+    git("add", "inventory.json", cwd=origin)
+    git("commit", "-m", "pinned inventory", cwd=origin)
+    inventory = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
     git("commit", "--allow-empty", "-m", "main", cwd=origin)
     git("checkout", "-b", "agent/issue-77", cwd=origin)
     (origin / "implementation.txt").write_text("existing implementation\n")
@@ -80,7 +89,13 @@ def test_shallow_clone_tracks_only_the_assigned_pr_branch(tmp_path):
     git("commit", "-m", "implementation", cwd=origin)
     head = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
     clone = tmp_path / "clone"
-    git("clone", "--depth=20", "--branch", "main", origin.as_uri(), str(clone), cwd=tmp_path)
+    git("clone", "--depth=1", "--branch", "main", origin.as_uri(), str(clone), cwd=tmp_path)
+    with pytest.raises(subprocess.CalledProcessError):
+        git("cat-file", "-e", f"{inventory}^{{commit}}", cwd=clone)
+    # The provider's base can also advance after the worker clone was created.
+    git("checkout", "main", cwd=origin)
+    git("commit", "--allow-empty", "-m", "new base", cwd=origin)
+    base = git("rev-parse", "HEAD", cwd=origin).stdout.strip()
 
     def gh_checkout():
         git("fetch", "origin", "+refs/heads/agent/issue-77:refs/remotes/origin/agent/issue-77", cwd=clone)
@@ -94,7 +109,7 @@ def test_shallow_clone_tracks_only_the_assigned_pr_branch(tmp_path):
     def run(command, **kwargs):
         assert kwargs["timeout"] in {30, 120}
         if command[:3] == ["gh", "pr", "view"]:
-            return SimpleNamespace(stdout=json.dumps({"headRefName": "agent/issue-77", "isCrossRepository": False, "state": "OPEN"}))
+            return SimpleNamespace(stdout=json.dumps({"headRefName": "agent/issue-77", "isCrossRepository": False, "state": "OPEN", "baseRefOid": git("rev-parse", "main", cwd=origin).stdout.strip()}))
         if command[:3] == ["gh", "pr", "checkout"]:
             return gh_checkout()
         return subprocess.run(command, text=True, capture_output=True, check=True, **kwargs)
@@ -102,7 +117,11 @@ def test_shallow_clone_tracks_only_the_assigned_pr_branch(tmp_path):
     value = {**envelope()["review_cycle_input"], "head_sha": head}
     assert checkout_cycle_input(value, run=run, cwd=clone) == ("agent/issue-77", head)
     assert git("rev-parse", "@{upstream}", cwd=clone).stdout.strip() == head
-    assert git("rev-parse", "HEAD", cwd=origin).stdout.strip() == head
+    assert git("rev-parse", "agent/issue-77", cwd=origin).stdout.strip() == head
+    assert git("rev-parse", "HEAD", cwd=origin).stdout.strip() == base
+    assert git("rev-parse", "--is-shallow-repository", cwd=clone).stdout.strip() == "false"
+    assert git("show", f"{inventory}:inventory.json", cwd=clone).stdout == '{"pinned_evidence": true}\n'
+    assert git("cat-file", "-t", base, cwd=clone).stdout.strip() == "commit"
     assert git("status", "--porcelain", cwd=clone).stdout == ""
     assert git("config", "--get-all", "remote.origin.fetch", cwd=clone).stdout.splitlines() == [
         "+refs/heads/main:refs/remotes/origin/main",
@@ -137,7 +156,7 @@ def test_merged_pr_with_deleted_branch_uses_exact_retained_head(tmp_path, action
 
     def run(command, **kwargs):
         if command[:3] == ["gh", "pr", "view"]:
-            return SimpleNamespace(stdout=json.dumps({"headRefName": "agent/issue-77", "isCrossRepository": False, "state": "MERGED"}))
+            return SimpleNamespace(stdout=json.dumps({"headRefName": "agent/issue-77", "isCrossRepository": False, "state": "MERGED", "baseRefOid": head}))
         return subprocess.run(command, text=True, capture_output=True, check=True, **kwargs)
 
     value = {**envelope()["review_cycle_input"], "action": action, "head_sha": "0" * 40 if moved else head}
