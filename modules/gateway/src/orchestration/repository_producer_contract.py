@@ -12,9 +12,14 @@ class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ImageEvidence(Contract):
+class ScannerEvidence(Contract):
     digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     provenance_sha256: Digest
+
+
+class ImageEvidence(Contract):
+    grype: ScannerEvidence
+    syft: ScannerEvidence
 
 
 class ScanTarget(Contract):
@@ -45,7 +50,7 @@ class RepositoryProducer(Contract):
 
 
 class RepositoryScanReceipt(Contract):
-    evidence_schema: Literal["repository-scan-receipt/v1"]
+    evidence_schema: Literal["repository-scan-receipt/v2"]
     source_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     correlation: Digest
     target: ScanTarget

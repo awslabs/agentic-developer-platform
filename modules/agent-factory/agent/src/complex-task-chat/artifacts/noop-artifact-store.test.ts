@@ -16,7 +16,7 @@ describe('NoopArtifactStore', () => {
   });
 
   it('fetch is a no-op', async () => {
-    await expect(store.fetch('any-id', '/tmp/dest')).resolves.toBeUndefined();
+    await expect(store.fetch('any-id', '/tmp/dest', 'sess-1')).resolves.toBeUndefined();
   });
 
   it('listBySession returns empty', async () => {

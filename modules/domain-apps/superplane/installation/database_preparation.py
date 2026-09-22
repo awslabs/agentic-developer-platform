@@ -67,6 +67,49 @@ def prepare(installer, admin_url):
         return _prepare_owned(installer, admin_url)
 
 
+def observation_secret_value(installer):
+    env = installer.env
+    result = {
+        key: secrets.token_urlsafe(40)
+        for key in (
+            "monitor-signing-key",
+            "controller-signing-key",
+            "skypilot-token",
+            "jwt-signing-key",
+        )
+    }
+    result.update(
+        {
+            key: "Bearer " + secrets.token_urlsafe(40)
+            for key in ("monitor-credential", "controller-credential")
+        }
+    )
+    grants = []
+    for component in ("monitor", "controller"):
+        scopes = (
+            ["budget_monitor/global"]
+            if component == "monitor"
+            else (
+                [f"controller_management/{env['org_id']}"]
+                if installer.control_plane_only
+                else []
+            )
+        )
+        grants.append(
+            {
+                "submitter_id": installer.owner + "-" + component,
+                "credential": result[component + "-credential"],
+                "signing_key": result[component + "-signing-key"],
+                "workspaces": []
+                if installer.control_plane_only
+                else [env["workspace_id"]],
+                "lease_scopes": scopes,
+            }
+        )
+    result["submitters"] = json.dumps(grants)
+    return result
+
+
 def _prepare_owned(installer, admin_url):
     env = installer.env
     db = env["database"]
@@ -172,47 +215,9 @@ def _prepare_owned(installer, admin_url):
             "Owned database preparation did not complete",
         )
 
-    def observations():
-        result = {
-            key: secrets.token_urlsafe(40)
-            for key in (
-                "monitor-signing-key",
-                "controller-signing-key",
-                "skypilot-token",
-            )
-        }
-        result.update(
-            {
-                key: "Bearer " + secrets.token_urlsafe(40)
-                for key in ("monitor-credential", "controller-credential")
-            }
-        )
-        grants = []
-        for component in ("monitor", "controller"):
-            scopes = (
-                ["budget_monitor/global"]
-                if component == "monitor"
-                else (
-                    [f"controller_management/{env['org_id']}"]
-                    if installer.control_plane_only
-                    else []
-                )
-            )
-            grants.append(
-                {
-                    "submitter_id": installer.owner + "-" + component,
-                    "credential": result[component + "-credential"],
-                    "signing_key": result[component + "-signing-key"],
-                    "workspaces": []
-                    if installer.control_plane_only
-                    else [env["workspace_id"]],
-                    "lease_scopes": scopes,
-                }
-            )
-        result["submitters"] = json.dumps(grants)
-        return result
-
-    _, observation_version = owned_secret(installer, "observation", observations)
+    _, observation_version = owned_secret(
+        installer, "observation", lambda: observation_secret_value(installer)
+    )
     installer.receipt["secret_versions"] = {
         "database": db_version,
         "observation": observation_version,

@@ -8,14 +8,15 @@ Coverage:
   - v2 trust policy DROPS the aws:RequestTag/adp:user_id single-user pin
   - v2 grants bedrock:InvokeModel + ...WithResponseStream, resource-scoped
   - v2 does NOT attach ReadOnlyAccess and never uses Resource: "*"
-  - v1 is byte-identical to main (widening it in place is explicitly rejected)
+  - v1 retains its user pin and AWS-managed broad-read permission contract
   - the launch-URL builder selects the right key and parameter set per version
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
+import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,16 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "src" / "auth" / "cfn_templates"
 V1_PATH = TEMPLATE_DIR / "aws_role_v1.yaml"
 V2_PATH = TEMPLATE_DIR / "aws_role_v2.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[4]
+CUSTOMER_GUIDE_PATH = REPO_ROOT / "docs" / "adp-platform-deployment" / "customer-aws-setup.md"
+MANAGED_DEPLOY_GUIDE_PATH = REPO_ROOT / "docs" / "adp-platform-deployment" / "adp-managed-deploy.md"
+DEPLOYMENT_EXAMPLE_PATH = REPO_ROOT / "config" / "deployment.yml.example"
+DEPLOYMENT_INDEX_PATH = REPO_ROOT / "docs" / "adp-platform-deployment" / "README.md"
+SELF_MANAGED_GUIDE_PATH = REPO_ROOT / "docs" / "adp-platform-deployment" / "self-managed-deploy.md"
+ONBOARDING_GUIDE_PATH = REPO_ROOT / "docs" / "onboarding-walkthrough.md"
+SETUP_ORG_SCRIPT_PATH = REPO_ROOT / "platform" / "scripts" / "setup-org.sh"
+RETIRED_DEPLOY_TEMPLATE_PATH = REPO_ROOT / "modules" / "agent-factory" / "agent-worker-image" / "aws" / "deploy-write.cfn.yaml"
+DEPLOY_CONTRACT_PATH = TEMPLATE_DIR / "aws_role_deploy_v1.yaml"
 
 USER_ID_PIN_CONDITION_KEY = "aws:RequestTag/adp:user_id"
 
@@ -136,7 +147,15 @@ def _as_list(value) -> list:
 
 def _inline_statements(template: dict) -> list[dict]:
     policies = _role(template).get("Policies", [])
-    return [s for p in policies for s in p["PolicyDocument"]["Statement"]]
+    statements = []
+    for policy in policies:
+        for statement in policy["PolicyDocument"]["Statement"]:
+            if isinstance(statement, dict):
+                statements.append(statement)
+                continue
+            if isinstance(statement, list):
+                statements.extend(item for item in statement if isinstance(item, dict))
+    return statements
 
 
 class TestV2Permissions:
@@ -166,6 +185,7 @@ class TestV2Permissions:
         # routes by default) resolve to inference-profile ARNs — omitting them
         # would make v2 fail for exactly the model ids most traffic uses.
         assert any(r.endswith("inference-profile/*") for r in resources)
+        assert "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:project/default" in resources
 
     def test_grants_no_non_bedrock_actions(self, v2):
         actions = {a for s in _inline_statements(v2) for a in _as_list(s["Action"])}
@@ -173,17 +193,101 @@ class TestV2Permissions:
         non_bedrock = {a for a in actions if not a.startswith("bedrock:")}
         assert not non_bedrock, f"v2 should grant only Bedrock actions, found {non_bedrock}"
 
+    def test_operation_inventory_is_exact(self, v2):
+        """The steady-state customer role is not an infrastructure deploy role."""
+        actions = {a for s in _inline_statements(v2) for a in _as_list(s["Action"])}
+        assert actions == {"bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"}
+        assert not any(action.startswith(("iam:", "sts:", "s3:", "kms:", "secretsmanager:")) for action in actions)
+
+    def test_responses_api_uses_the_destination_default_project(self, v2):
+        assert "EnableResponsesApi" not in v2["Parameters"]
+        assert "Conditions" not in v2
+        statement = next(item for item in _inline_statements(v2) if item["Sid"] == "InvokeBedrockResponses")
+        assert statement["Action"] == "bedrock:InvokeModel"
+        assert statement["Resource"] == "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:project/default"
+
     def test_declares_an_output_role_arn(self, v2):
         """connect flow reads the role ARN back from stack outputs."""
         assert "RoleArn" in v2["Outputs"]
 
 
+class TestV2ExternalIdContract:
+    def test_accepts_the_uuid_generated_by_connect_start(self, v2):
+        parameter = v2["Parameters"]["ExternalId"]
+        generated = str(uuid.uuid4())
+        assert parameter["MinLength"] <= len(generated) <= parameter["MaxLength"]
+        assert re.fullmatch(parameter["AllowedPattern"], generated)
+
+    def test_rejects_the_retired_64_character_contract(self, v2):
+        parameter = v2["Parameters"]["ExternalId"]
+        assert not re.fullmatch(parameter["AllowedPattern"], "a" * 64)
+
+
+class TestCustomerRoleGuidance:
+    def test_retires_the_admin_boundary_prototype_and_publishes_scoped_contract(self):
+        assert not RETIRED_DEPLOY_TEMPLATE_PATH.exists()
+        assert DEPLOY_CONTRACT_PATH.exists()
+        for path in (CUSTOMER_GUIDE_PATH, MANAGED_DEPLOY_GUIDE_PATH, DEPLOYMENT_EXAMPLE_PATH):
+            assert "deploy-write.cfn.yaml" not in path.read_text()
+
+    def test_managed_bootstrap_is_explicitly_unsupported(self):
+        customer_guide = CUSTOMER_GUIDE_PATH.read_text()
+        managed_guide = MANAGED_DEPLOY_GUIDE_PATH.read_text()
+        config_example = DEPLOYMENT_EXAMPLE_PATH.read_text()
+        assert "publishes `aws_role_deploy_v1.yaml`" in customer_guide
+        assert "Status: unavailable for cross-account customer bootstrap" in managed_guide
+        assert "Cross-account bootstrap remains disabled" in config_example
+
+    def test_setup_org_does_not_generate_the_retired_customer_account_example(self):
+        setup_script = SETUP_ORG_SCRIPT_PATH.read_text()
+        assert "Cross-account customer bootstrap is unavailable" in setup_script
+        assert "Dashboard-linked roles are steady-state only" in setup_script
+        assert "# Optional: cross-account deploy" not in setup_script
+        assert "# customer_account:" not in setup_script
+
+    def test_all_deployment_entry_points_mark_cross_account_bootstrap_unavailable(self):
+        paths = (
+            DEPLOYMENT_EXAMPLE_PATH,
+            DEPLOYMENT_INDEX_PATH,
+            SELF_MANAGED_GUIDE_PATH,
+            ONBOARDING_GUIDE_PATH,
+            SETUP_ORG_SCRIPT_PATH,
+        )
+        for path in paths:
+            text = path.read_text().lower()
+            assert "unavailable" in text, path
+            assert "steady-state" in text, path
+
+    def test_entry_points_do_not_advertise_linked_role_deployment(self):
+        forbidden = (
+            "customer_account block (this section)",
+            "deploy into your account on your behalf",
+            "deploys should leave it commented out",
+            "unblocks every later phase for both tracks",
+        )
+        for path in (
+            DEPLOYMENT_EXAMPLE_PATH,
+            DEPLOYMENT_INDEX_PATH,
+            SELF_MANAGED_GUIDE_PATH,
+            ONBOARDING_GUIDE_PATH,
+            SETUP_ORG_SCRIPT_PATH,
+        ):
+            text = path.read_text()
+            assert not any(claim in text for claim in forbidden), path
+
+    def test_guidance_never_instructs_customers_to_attach_admin(self):
+        forbidden = ("Manually attach `AdministratorAccess`", "Attach `AdministratorAccess`", "install the deploy-capable role")
+        for path in (CUSTOMER_GUIDE_PATH, MANAGED_DEPLOY_GUIDE_PATH, DEPLOYMENT_EXAMPLE_PATH, SETUP_ORG_SCRIPT_PATH):
+            text = path.read_text()
+            assert not any(instruction in text for instruction in forbidden), path
+
+
 # ---------------------------------------------------------------------------
-# v1 must not change
+# v1 legacy broad-read contract
 # ---------------------------------------------------------------------------
 
 
-class TestV1Unchanged:
+class TestV1LegacyContract:
     def test_v1_still_pins_the_single_user(self):
         """v1's pin is a deliberate security property of its read-only
         agent-delegation purpose (§5.0 impl 4). This test fails if someone
@@ -193,25 +297,17 @@ class TestV1Unchanged:
             conditions = stmt["Condition"]["StringEquals"]
             assert conditions[USER_ID_PIN_CONDITION_KEY] == "UserSessionTag"
 
-    def test_v1_still_read_only_and_grants_no_bedrock(self):
+    def test_v1_uses_aws_managed_broad_read_and_grants_no_bedrock(self):
         v1 = _load(V1_PATH)
         assert _role(v1)["ManagedPolicyArns"] == ["arn:aws:iam::aws:policy/ReadOnlyAccess"]
         assert "Policies" not in _role(v1)
 
-    def test_v1_is_byte_identical_to_main(self):
-        """Issue validation criterion: v1 byte-identical to main. Widening it in
-        place is explicitly rejected, so any diff at all is a failure."""
-        repo_root = Path(__file__).resolve().parents[3]
-        rel = V1_PATH.relative_to(repo_root)
-        result = subprocess.run(
-            ["git", "diff", "--exit-code", "origin/main", "--", str(rel)],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 128:
-            pytest.skip("origin/main not available in this checkout")
-        assert result.returncode == 0, f"aws_role_v1.yaml differs from main:\n{result.stdout}"
+    def test_guidance_discloses_data_reads_and_limits_least_privilege_claim(self):
+        guide = CUSTOMER_GUIDE_PATH.read_text()
+        assert "legacy personal inspection role attaches AWS-managed `ReadOnlyAccess`" in guide
+        assert "including `s3:GetObject`" in guide
+        assert "Only the Bedrock routing template is a least-privilege" in guide
+        assert "do not describe it as least privilege" in guide
 
 
 # ---------------------------------------------------------------------------

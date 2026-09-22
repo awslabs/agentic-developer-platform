@@ -16,15 +16,51 @@ spec:
       initContainers:
         - name: wait-for-db
           image: public.ecr.aws/docker/library/postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
           command: ['sh', '-c', 'until pg_isready -h postgres.superplane.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
       containers:
         - name: seed
           image: public.ecr.aws/docker/library/postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+          env:
+            # Resolved at runtime from a Secret (issue #5683, A04). The psql
+            # invocation below previously carried a connection URI with the username
+            # and password inline; `psql "$DATABASE_URL"` keeps the credential out of
+            # this file and out of the container's argv, where `ps` and any process
+            # listing would expose it to every other process in the pod.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-api-db
+                  key: DATABASE_URL
+                  optional: false
           command:
             - sh
             - -c
             - |
-              psql "postgresql://superplane:superplane@postgres.superplane.svc.cluster.local:5432/superplane" <<'EOSQL'
+              set -eu
+              # The shared Secret holds the SQLAlchemy form (`postgresql+asyncpg://`)
+              # because that is what the API and Alembic need. libpq does not
+              # understand the `+driver` suffix and psql would fail to parse it, so
+              # the scheme is normalized here. Normalized rather than stored twice:
+              # two copies of one password in a Secret is a rotation hazard, and this
+              # keeps a single source of truth.
+              #
+              # `sed` rather than `${VAR/a/b}`: this container's shell is busybox ash,
+              # where bash pattern substitution is a "Bad substitution" error (checked
+              # — it fails under dash too).
+              #
+              # Scope of what this fixes, stated precisely: the credential is no longer
+              # in this FILE, which is the A04 finding. It is still passed to psql as an
+              # argument, so it remains visible to a process listing inside this
+              # container for the life of the Job. That is a smaller exposure than a
+              # committed literal (it is not in Git, CI logs or shell history, and it
+              # rotates with the Secret), but it is not zero, and libpq offers no
+              # environment variable that accepts a full connection URI.
+              PGURL=$(printf '%s' "$DATABASE_URL" | sed -e 's|^postgresql+asyncpg://|postgresql://|')
+              psql "$PGURL" <<'EOSQL'
               -- Integration test seed data
               -- Test organization
               INSERT INTO organizations (id, name, billing_plan)

@@ -116,6 +116,17 @@ async def broker(session, assignment, monkeypatch):
         vault_proxy_require_https=True,
         vault_proxy_host_allowlist="api.example.test",
         vault_enforce_credential_host_binding=False,
+        # Issue #5653 (A01): this fixture models a real agent worker reaching
+        # /internal/* through API Gateway, which is why it stubs
+        # extract_iam_identity_from_headers to return a resolved internal identity
+        # below. The provenance gate asks whether the edge vouched for
+        # X-Caller-Identity, so the fixture has to state that transport or every
+        # request 403s at the gate before reaching the authority logic under test.
+        # This states the premise; it does not weaken an assertion — forged and
+        # untrusted-transport assertions are asserted REJECTED in
+        # tests/auth/test_caller_provenance.py.
+        trust_apigw_headers=True,
+        apigw_provenance_secret="authority-edge-provenance",
     )
     identity = SimpleNamespace(scope="internal", user_id="worker-identity", credential_scopes=["credential:raw-read", "credential:materialize"])
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
@@ -124,6 +135,14 @@ async def broker(session, assignment, monkeypatch):
     monkeypatch.setattr("src.shared.config.get_settings", lambda: settings)
     for module in (credential_routes, assume_role_routes, task_credentials):
         monkeypatch.setitem(module.verify_internal_or_irsa.__globals__, "extract_iam_identity_from_headers", lambda _: identity)
+        # Issue #5653 (A01): patch get_settings in the SAME globals dict, not via
+        # "src.internal.auth_deps.get_settings". verify_internal_or_irsa is reached
+        # here as a live function object, and after a module reload elsewhere in the
+        # suite it closes over the pre-reload module dict — so patching the
+        # importable path reaches a module this function no longer reads. Doing it
+        # this way is what makes these tests pass in a full-suite run and not only
+        # in isolation.
+        monkeypatch.setitem(module.verify_internal_or_irsa.__globals__, "get_settings", lambda: settings)
     for module in (credential_routes, assume_role_routes):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
         monkeypatch.setattr(
@@ -149,6 +168,7 @@ async def broker(session, assignment, monkeypatch):
         sm=sm,
         headers={
             "X-Caller-Identity": "worker",
+            "X-Adp-Edge-Provenance": "authority-edge-provenance",
             "X-Adp-Run-Credential": "proof",
             "X-Adp-Workload-Token": "pod",
             "X-Agent-Scopes": "credential:raw-read,credential:materialize",

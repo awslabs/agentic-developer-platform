@@ -154,6 +154,31 @@ resource "kubernetes_namespace" "bedrockgw" {
   ]
 }
 
+# Root-based clean-room eval pods are isolated from the gateway namespace so
+# restricted Pod Security Admission can be enforced there without breaking the
+# stock-image provisioning those evals perform at runtime.
+resource "kubernetes_namespace" "gateway_evals" {
+  metadata {
+    name = "adp-gateway-evals"
+    labels = {
+      "app.kubernetes.io/managed-by"               = "terraform"
+      "app.kubernetes.io/part-of"                  = "adp"
+      "app.kubernetes.io/component"                = "gateway-evals"
+      "pod-security.kubernetes.io/enforce"         = "baseline"
+      "pod-security.kubernetes.io/enforce-version" = "latest"
+      "pod-security.kubernetes.io/warn"            = "restricted"
+      "pod-security.kubernetes.io/warn-version"    = "latest"
+      "pod-security.kubernetes.io/audit"           = "restricted"
+      "pod-security.kubernetes.io/audit-version"   = "latest"
+    }
+  }
+
+  depends_on = [
+    aws_eks_cluster.main,
+    time_sleep.wait_for_access_entry,
+  ]
+}
+
 # IRSA Role for Gateway Service — trusts the EKS OIDC provider
 # This role is created here (not in the IAM module) because it depends on
 # the OIDC provider which is created after the EKS cluster.
@@ -749,3 +774,18 @@ resource "kubernetes_config_map" "amazon_vpc_cni" {
 # CI runner EKS access is managed in the workflow pre-apply step
 # to avoid chicken-and-egg: runner needs access to run Terraform,
 # but Terraform would create the access entry
+
+# Conditional Superplane route registration. No Terraform state reads or writes.
+resource "aws_iam_role_policy" "gateway_superplane_route_read" {
+  name = "${var.name_prefix}-policy-gateway-superplane-route-read"
+  role = aws_iam_role.gateway_service_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/domain-routes/${var.environment}/superplane/public-route.json"
+    }]
+  })
+}

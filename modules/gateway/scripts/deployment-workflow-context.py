@@ -15,7 +15,7 @@ def context(env, read):
     if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (source, revision)):
         raise ValueError("immutable source and definition required")
     account = read(["sts", "get-caller-identity"])["Account"]
-    if account != (env.get("CUSTOMER_ACCOUNT_ID") or env["ACCOUNT_ID"]):
+    if account != env["ACCOUNT_ID"]:
         raise ValueError("deployment credential account differs from configuration")
     region = env["AWS_REGION"]
     cluster = env.get("EKS_CLUSTER") or f"adp-{env['ENVIRONMENT']}-eks-cluster"

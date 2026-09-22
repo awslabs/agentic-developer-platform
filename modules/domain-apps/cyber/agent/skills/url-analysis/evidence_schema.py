@@ -3,7 +3,7 @@ Evidence schema for url-analysis skill.
 
 Defines the structured data contract between the agent-written orchestration
 script and the deterministic verdict/report logic. The agent populates Evidence
-by whatever means (CDP, InvokeBrowser, Playwright); verdict.py consumes it.
+through the guarded browser facade; verdict.py consumes it.
 """
 
 from __future__ import annotations

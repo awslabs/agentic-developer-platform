@@ -63,6 +63,19 @@ class ScrubbingMetadata(BaseModel):
     pii_types_found: list[str] = Field(default_factory=list, description="Types of PII detected and redacted")
     regex_patterns_matched: list[str] = Field(default_factory=list, description="Regex patterns that matched")
     headers_scrubbed: list[str] = Field(default_factory=list, description="Headers that were scrubbed")
+    # Issue #5672: `level` records what was CONFIGURED. When Comprehend is
+    # unavailable the record would otherwise claim "standard" without recording
+    # that transcript content was replaced by fail-closed placeholders. This flag
+    # makes the record self-describing, so a downstream audit of the transcript
+    # store can tell protected records from degraded ones without correlating
+    # against application logs that may have already aged out.
+    pii_detection_failed: bool = Field(
+        default=False,
+        description=(
+            "True when scrub level was 'standard' but Comprehend PII detection could not run, "
+            "so affected content was replaced by fail-closed placeholders"
+        ),
+    )
 
 
 class ChatLog(BaseModel):

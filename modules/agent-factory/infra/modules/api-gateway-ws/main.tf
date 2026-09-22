@@ -126,6 +126,7 @@ resource "aws_lambda_permission" "ws_default" {
 }
 
 resource "aws_cloudwatch_log_group" "ws" {
+  #checkov:skip=CKV_AWS_338: Agent WebSocket logs use an explicitly bounded 30-day operational retention.
   name              = "/aws/apigateway/${var.name_prefix}-gateway-ws"
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn

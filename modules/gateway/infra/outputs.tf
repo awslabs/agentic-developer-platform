@@ -117,6 +117,11 @@ output "cognito_agent_client_id" {
   value       = module.cognito.agent_client_id
 }
 
+output "agent_clients_table_name" {
+  description = "DynamoDB table containing dynamically provisioned Cognito machine clients"
+  value       = module.cognito.agent_clients_table_name
+}
+
 output "cognito_agent_credentials_secret_arn" {
   description = "ARN of the Secrets Manager secret containing agent credentials"
   value       = module.cognito.agent_credentials_secret_arn

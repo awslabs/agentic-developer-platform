@@ -18,7 +18,7 @@ def output(*args, cwd=None):
 root = Path(__file__).resolve().parents[3]
 infra = root / "modules/agent-factory/webhook-ingress/infra"
 identity = json.loads(output("aws", "sts", "get-caller-identity", "--output", "json"))
-expected = os.environ.get("CUSTOMER_ACCOUNT_ID") or os.environ["ACCOUNT_ID"]
+expected = os.environ["ACCOUNT_ID"]
 if expected != "879318057152" or identity["Account"] != expected or os.environ.get("ENVIRONMENT") != "dev":
     raise SystemExit("Stage 1 prerequisite planning is restricted to the authorized embark1 dev account")
 digest = output(

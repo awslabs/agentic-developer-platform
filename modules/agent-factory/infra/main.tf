@@ -210,7 +210,7 @@ resource "aws_eks_access_policy_association" "runner_edit" {
 
   access_scope {
     type       = "namespace"
-    namespaces = ["adp-gateway", "adp-gateway-agents", "adp-agents", "arc-systems", "arc-runners", "agent-context", "keda"]
+    namespaces = ["adp-gateway", "adp-gateway-evals", "adp-gateway-agents", "adp-agents", "arc-systems", "arc-runners", "agent-context", "keda"]
   }
 
   depends_on = [aws_eks_access_entry.runner]

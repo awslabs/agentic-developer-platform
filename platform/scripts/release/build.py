@@ -48,6 +48,9 @@ def packages(destination):
     entries = tree(frontend / 'dist')
     for version in ('v1', 'v2'):
         entries[f'cfn-templates/aws_role_{version}.yaml'] = gateway / 'src/auth/cfn_templates' / f'aws_role_{version}.yaml'
+    entries['cfn-templates/aws_role_deploy_v1.yaml'] = (
+        gateway / 'src/auth/cfn_templates/aws_role_deploy_v1.yaml'
+    )
     zip_files(destination / 'frontend.zip', entries)
 
 

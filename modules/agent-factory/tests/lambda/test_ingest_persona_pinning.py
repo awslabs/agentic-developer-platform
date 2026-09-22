@@ -262,6 +262,7 @@ class TestPersonaPinning:
         tasks = _drain_queue(mocked_aws_services["sqs"])
         assert len(tasks) == 1
         assert tasks[0]["agent_type"] == "intent-refinement"
+        assert tasks[0]["owner_principal"] == '["test-tenant","","","user-pin","webchat"]'
 
         # The classifier is skipped entirely — it has nothing left to decide and
         # would add Bedrock latency to an already cold-start-heavy path.
@@ -329,6 +330,9 @@ class TestPersonaPinning:
         mocked_aws_services["table"].put_item(
             Item={
                 "session_id": "sess-pin",
+                "owner_principal": '["test-tenant","","","user-pin","webchat"]',
+                "owner_user_id": "user-pin",
+                "tenant_id": "test-tenant",
                 "user_workspace": "user-pin#webchat",
                 "connection_id": "conn-pin",
                 "channel": "webchat",

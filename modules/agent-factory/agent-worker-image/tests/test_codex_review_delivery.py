@@ -130,3 +130,24 @@ def test_review_report_finalizer_never_commits_or_pushes(monkeypatch):
     monkeypatch.setattr(entrypoint, "update_invocation_status", Mock())
     assert entrypoint._handle_success("org/repo", 1, "story", "reviewer", "run", "now", review_only=True) == 0
     run.assert_not_called()
+
+
+def test_owned_repair_publishes_evidence_without_new_reviewer(setup, monkeypatch):
+    setup.envelope["review_cycle_input"].update(action="repair", reviewer_owned_delivery=True)
+    setup.result.update(sha="b" * 40, repair_base_sha=HEAD)
+    setup.submit.return_value["commit_id"] = "b" * 40
+    register = Mock()
+    monkeypatch.setattr(finalizer.pr_binding, "register_pull_request", register)
+    assert "Review evidence recorded" in finish(setup, parent="c" * 40)
+    register.assert_not_called()
+    assert setup.uploaded[0]["lineage"]["author_run_id"] == EXPECT["author_run_id"]
+
+
+def test_owned_no_progress_repair_keeps_real_findings_instead_of_runtime_error(setup, monkeypatch):
+    setup.envelope["review_cycle_input"].update(action="repair", reviewer_owned_delivery=True)
+    setup.result["report"].update(verdict="request-changes", findings=[{
+        "finding_id": "external", "stage": "functional", "severity": "blocking",
+        "disposition": "open", "summary": "External dependency unavailable"}])
+    monkeypatch.setattr(finalizer.pr_binding, "register_pull_request", Mock())
+    finish(setup)
+    assert setup.uploaded[0]["verdict"] == "request-changes"

@@ -68,6 +68,7 @@ def evidence():
         GITHUB_RUN_ID="42",
         GITHUB_RUN_ATTEMPT="1",
         ACCOUNT_ID="123456789012",
+        CUSTOMER_ACCOUNT_ID="999999999999",
         AWS_REGION="us-east-1",
         ENVIRONMENT="dev",
         INPUT_ACCOUNT_ID="",

@@ -460,7 +460,7 @@ class TestDirectResponseNoInvocationRow:
             user_id="user-1",
             user_name="eve",
             text="Hello!",
-            platform_data={"connection_id": "conn-1"},
+            platform_data={"connection_id": "conn-1", "tenant_id": "test-tenant"},
         )
 
         result = handler.handle_unified_message(message)

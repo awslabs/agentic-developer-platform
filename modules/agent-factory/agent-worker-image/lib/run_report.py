@@ -49,6 +49,7 @@ def configure(envelope: dict) -> None:
         target.write(report["credential"])
     os.environ["ADP_RUN_REPORT_CREDENTIAL_FILE"] = path
     os.environ["ADP_RUN_ATTEMPT"] = "1"
+    os.environ["ADP_ORCHESTRATION_ATTEMPT"] = str(envelope["orchestration"]["attempt"])
     atexit.register(lambda: Path(path).unlink(missing_ok=True))
     _assignment = {
         "credential": report["credential"],
@@ -75,7 +76,7 @@ def enabled() -> bool:
     return _assignment is not None
 
 
-def request(path: str = "", body: dict | None = None) -> dict:
+def request(path: str = "", body: dict | None = None, *, timeout: int = 15) -> dict:
     if _assignment is None:
         raise RunReportError("run_report_unconfigured", retryable=False)
     base = os.environ.get("ADP_AGENT_CONTROL_ENDPOINT", "").rstrip("/")
@@ -117,7 +118,7 @@ def request(path: str = "", body: dict | None = None) -> dict:
                 url,
                 data=data,
                 headers=dict(signed.headers),
-                timeout=15,
+                timeout=timeout,
                 allow_redirects=False,
                 stream=True,
             ) as response:

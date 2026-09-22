@@ -111,12 +111,21 @@ class ClusterProbe:
 
     def __exit__(self, *ignored):
         if self.uid:
-            current = self.installer.json(
-                self.kube("get", "namespace", self.namespace, "-o", "json")
+            result = self.kube(
+                "get", "namespace", self.namespace, "--ignore-not-found", "-o", "json"
             )
+            if not result.stdout.strip():
+                self.installer.receipt["temporary_preflight"]["cleanup_required"] = (
+                    False
+                )
+                self.installer.save()
+                return
+            current = self.installer.json(result)
             require(
                 current["metadata"]["uid"] == self.uid
-                and current["metadata"]["labels"].get(LABEL) == self.installer.owner,
+                and current["metadata"].get("labels", {}).get(LABEL)
+                == self.installer.owner
+                and current["metadata"].get("resourceVersion"),
                 "Preflight namespace ownership changed; cleanup refused",
             )
             self.kube(
@@ -129,7 +138,10 @@ class ClusterProbe:
                     {
                         "apiVersion": "v1",
                         "kind": "DeleteOptions",
-                        "preconditions": {"uid": self.uid},
+                        "preconditions": {
+                            "uid": self.uid,
+                            "resourceVersion": current["metadata"]["resourceVersion"],
+                        },
                     }
                 ),
             )
@@ -153,6 +165,20 @@ class ClusterProbe:
             )
             self.installer.receipt["temporary_preflight"]["cleanup_required"] = False
             self.installer.save()
+
+    @classmethod
+    def recover(cls, installer):
+        probe = cls(installer)
+        recorded = installer.receipt.get("temporary_preflight", {})
+        require(
+            recorded.get("namespace") == probe.namespace
+            and isinstance(recorded.get("uid"), str)
+            and recorded["uid"]
+            and recorded.get("cleanup_required") is True,
+            "Temporary preflight receipt has invalid ownership scope",
+        )
+        probe.uid = recorded["uid"]
+        probe.__exit__()
 
     def pod(self, name, component, command, *, values=None, deadline_seconds=300):
         environment = []

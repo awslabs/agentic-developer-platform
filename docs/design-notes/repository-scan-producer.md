@@ -89,16 +89,17 @@ rerun must have its own context artifact.
 
 After actual scanner and cleanup checks finish, the scanner supplies a JSON file
 with exactly `source_revision`, boolean `coverage_complete`, boolean
-`cleanup_complete`, and `images`. Each image has its actual immutable `digest`
-and a relative `provenance_path` into the evidence directory. The helper computes
-the provenance digest from those real bytes; missing files, traversal, unpinned
+`cleanup_complete`, and `images`. Each image has separate `grype` and `syft`
+observations containing that build's actual immutable `digest` and a relative
+`provenance_path` into the evidence directory. The helper computes each provenance
+digest from those real bytes; missing files, traversal, unpinned
 images, source mismatch and non-boolean status are refused. False status stays
 false. Do not construct successful results merely to satisfy this interface.
 
 Run the same helper with `--results <observed-results.json> --provenance-dir
 <evidence-directory>`. It writes
 `$RUNNER_TEMP/adp-repository-scan/scan-receipt.json` using
-`repository-scan-receipt/v1`. Upload this file and the actual source/provenance
+`repository-scan-receipt/v2`. Upload this file and the actual source/provenance
 evidence in the artifact named by the accepted specification. Upload the full
 S21 finding/disposition reconciliation as another accepted JSON file in that run.
 Its predicates must cover all required occurrences, old tickets, unrated records,

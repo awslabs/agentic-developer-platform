@@ -62,6 +62,7 @@ locals {
 # Retain the existing group and its retention policy. Security Agent's per-job
 # groups are service-created; CreateLogGroup supports their scoped ARN prefix.
 resource "aws_cloudwatch_log_group" "securityagent_nightly" {
+  #checkov:skip=CKV_AWS_338: Nightly scanner logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = local.securityagent_log_group_name
   retention_in_days = var.securityagent_log_retention_days
 

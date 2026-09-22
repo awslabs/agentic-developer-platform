@@ -2,8 +2,8 @@
 Example orchestration script: Redirect chain tracking (link shorteners,
 cloaking, exploit-kit hops).
 
-Hooks `page.on("response", ...)` + `page.on("framenavigated", ...)` to
-capture every hop from target URL to final landing page — HTTP 3xx,
+Uses the broker's response and frame-navigation capture to record hops from the
+target URL to final landing page — HTTP 3xx,
 meta-refresh, and JS-driven `location.href=` redirects. Detects TLD
 and hostname drift across the chain which is a strong cloaking signal.
 
@@ -11,17 +11,15 @@ Expected verdict: suspicious when the chain crosses 2+ different
 registered domains, or lands on a different TLD than it started.
 """
 
-import base64
 import sys
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from bedrock_agentcore.tools.browser_client import BrowserClient
-from playwright.sync_api import sync_playwright
+from browser_client import analyze_url
+from browser_guard import DestinationRefused
 
 # -- Config --
 URL = sys.argv[1] if len(sys.argv) > 1 else "https://bit.ly/example"
-REGION = "us-east-1"
 
 
 def iso_now() -> str:
@@ -31,7 +29,7 @@ def iso_now() -> str:
 def host_of(u: str) -> str:
     try:
         return urlparse(u).hostname or ""
-    except Exception:
+    except ValueError:
         return ""
 
 
@@ -43,66 +41,39 @@ def reg_domain(host: str) -> str:
 
 # -- Main --
 run_started_at = iso_now()
-bc = BrowserClient(region=REGION)
-session_id = None
 hops: list[dict] = []  # {from_url, to_url, status_code, method}
 
 try:
-    session_id = bc.start()
-    ws_url, headers = bc.generate_ws_headers()
-
-    with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(ws_url, headers=headers)
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = context.pages[0] if context.pages else context.new_page()
-
-        # Hook HTTP 3xx redirects
-        def on_response(resp):
-            if 300 <= resp.status < 400:
-                loc = resp.headers.get("location", "")
-                hops.append(
-                    {
-                        "from_url": resp.url,
-                        "to_url": loc or "(no Location header)",
-                        "status_code": resp.status,
-                        "method": "http",
-                    }
-                )
-
-        # Hook frame-level navigation events (catches meta-refresh + JS)
-        last_url = [URL]
-
-        def on_framenavigated(frame):
-            if frame == page.main_frame and frame.url != last_url[0]:
-                # If we already recorded this transition as HTTP, skip
-                recent_http = any(
-                    h["to_url"] == frame.url and h["method"] == "http"
-                    for h in hops[-3:]
-                )
-                if not recent_http:
-                    hops.append(
-                        {
-                            "from_url": last_url[0],
-                            "to_url": frame.url,
-                            "status_code": 0,
-                            "method": "js",  # meta-refresh shows up here too
-                        }
-                    )
-                last_url[0] = frame.url
-
-        page.on("response", on_response)
-        page.on("framenavigated", on_framenavigated)
-
-        response = page.goto(URL, wait_until="networkidle", timeout=30000)
-        final_url = page.url
-        http_status = response.status if response else 0
-        page_title = page.title()
-
-        screenshot_b64 = base64.b64encode(page.screenshot(full_page=True)).decode()
-        visible_text = page.inner_text("body")
-
-        page.close()
-        browser.close()
+    result = analyze_url(URL)
+    session_id = result["session_id"]
+    final_url = result["final_url"]
+    http_status = result["http_status"]
+    page_title = result["page_title"]
+    screenshot_b64 = result["screenshot_base64"]
+    visible_text = result["visible_text"]
+    hops.extend(
+        {
+            "from_url": redirect["from_url"],
+            "to_url": redirect["location"] or "(no Location header)",
+            "status_code": redirect["status"],
+            "method": "http",
+        }
+        for redirect in result["redirects"]
+    )
+    last_url = URL
+    for navigation in result["frame_navigations"]:
+        if navigation != last_url and not any(
+            hop["to_url"] == navigation and hop["method"] == "http" for hop in hops[-3:]
+        ):
+            hops.append(
+                {
+                    "from_url": last_url,
+                    "to_url": navigation,
+                    "status_code": 0,
+                    "method": "js",
+                }
+            )
+        last_url = navigation
 
     run_completed_at = iso_now()
 
@@ -120,11 +91,7 @@ try:
 
     start_tld = urlparse(URL).hostname or ""
     end_tld = urlparse(final_url).hostname or ""
-    if (
-        start_tld
-        and end_tld
-        and start_tld.split(".")[-1] != end_tld.split(".")[-1]
-    ):
+    if start_tld and end_tld and start_tld.split(".")[-1] != end_tld.split(".")[-1]:
         anti_analysis_signals.append(
             f"tld_drift:{start_tld.split('.')[-1]}->{end_tld.split('.')[-1]}"
         )
@@ -168,9 +135,6 @@ try:
     print(f"  Chain: {' -> '.join(chain_hosts)}")
     print(f"  Signals: {anti_analysis_signals}")
 
-finally:
-    try:
-        bc.stop()
-        print(f"Session stopped: {session_id}")
-    except Exception:
-        print(f"Session cleanup failed (will auto-terminate): {session_id}")
+except DestinationRefused as refusal:
+    print(f"REFUSED [{refusal.reason_code}]: {refusal.reason}")
+    raise SystemExit(0) from refusal

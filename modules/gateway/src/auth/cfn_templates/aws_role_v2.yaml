@@ -15,6 +15,16 @@ Description: ADP - cross-account role for Bedrock model routing
 #
 # See docs/design-notes/4692-per-principal-bedrock-account-routing.md
 # sections 5.0 and 5.0b.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Required connection settings
+        Parameters:
+          - Nickname
+          - ExternalId
+          - GatewayRolePrincipal
+          - GatewayAccountId
 Parameters:
   Nickname:
     Type: String
@@ -27,6 +37,10 @@ Parameters:
       Per-connection secret issued by ADP. Confused-deputy protection: with the
       single-user session-tag condition gone (see below), this is the
       load-bearing authorization condition on this role.
+    MinLength: 36
+    MaxLength: 36
+    AllowedPattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    ConstraintDescription: Must be the UUID issued by the ADP connection flow.
   GatewayRolePrincipal:
     Type: String
     Description: ARN of ADP's gateway pod IRSA role

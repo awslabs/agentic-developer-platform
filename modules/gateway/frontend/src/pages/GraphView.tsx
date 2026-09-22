@@ -131,7 +131,10 @@ export function GraphView() {
           evaluations={activeNodes.filter((node) => node.kind === 'eval').length}
           policy={data.execution_policy}
         />
-        <RollupBar counts={counts} total={segmented} />
+        <RollupBar counts={counts} total={segmented} stories={{
+          complete: activeNodes.filter((node) => node.kind === 'story' && node.state === 'passed').length,
+          total: activeNodes.filter((node) => node.kind === 'story').length,
+        }} />
       </header>
 
       {changesRequested.length > 0 && (

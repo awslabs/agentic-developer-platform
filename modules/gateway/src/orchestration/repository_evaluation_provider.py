@@ -152,7 +152,8 @@ class RepositoryEvidenceProvider(WorkflowProvider):
             record.get("type") == "file" and record.get("encoding") == "base64" and 0 < record.get("size", 0) <= 256 * 1024, "workflow_definition"
         )
         content = base64.b64decode(record["content"], validate=False)
-        blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+        # Git's blob object ID, not a security digest — see deployment_workflow_provider.definition.
+        blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content, usedforsecurity=False).hexdigest()
         require(blob == record.get("sha"), "workflow_blob_digest")
         return blob, content
 
@@ -175,8 +176,8 @@ class RepositoryEvidenceProvider(WorkflowProvider):
         source = workflow.source.revision or revisions[workflow.source.predecessor]
         definition = workflow.definition.revision or revisions[workflow.definition.predecessor]
         blob, content = await self.definition_blob(binding, workflow.path, definition)
-        source_blob, _ = await self.definition_blob(binding, workflow.path, source)
-        require(blob == source_blob, "workflow_definition_changed")
+        source_blob, source_content = await self.definition_blob(binding, workflow.path, source)
+        require((blob, content) == (source_blob, source_content), "workflow_definition_changed")
         document = yaml.safe_load(content)
         require(isinstance(document, dict), "workflow_events")
         events = document.get("on", document.get(True))

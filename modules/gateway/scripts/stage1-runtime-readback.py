@@ -20,7 +20,7 @@ def kubernetes(kind, name, namespace):
 
 
 identity = json.loads(run("aws", "sts", "get-caller-identity", "--output", "json"))
-expected = os.environ.get("CUSTOMER_ACCOUNT_ID") or os.environ["ACCOUNT_ID"]
+expected = os.environ["ACCOUNT_ID"]
 if identity["Account"] != expected:
     raise SystemExit("Refused: runner identity does not match deployment target")
 run("aws", "eks", "update-kubeconfig", "--name", "adp-dev-eks-cluster", "--region", "us-east-1")

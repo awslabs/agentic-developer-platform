@@ -56,7 +56,9 @@ async def provider(monkeypatch):
         correlation="",
     )
     run = dict(id=42, run_attempt=1, head_sha=SOURCE, repository={"id": 17}, path=PATH, event="push", status="completed", conclusion="success")
-    ctx = SimpleNamespace(binding=binding, workflow=workflow, target=target, document=document, run=run, missing=False, changed=False, calls=[])
+    ctx = SimpleNamespace(
+        binding=binding, workflow=workflow, target=target, document=document, run=run, missing=False, changed=False, forged=False, calls=[]
+    )
     mint = AsyncMock(return_value=("scoped-token", (datetime.now(UTC) + timedelta(hours=1)).isoformat()))
     monkeypatch.setattr("src.orchestration.deployment_workflow_provider.resolve_tenant_app_credentials", AsyncMock(return_value=("app", "key")))
     monkeypatch.setattr("src.orchestration.deployment_workflow_provider.mint_installation_token_with_expiry", mint)
@@ -84,7 +86,7 @@ async def provider(monkeypatch):
                     encoding="base64",
                     size=len(content),
                     content=base64.b64encode(content).decode(),
-                    sha=hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest(),
+                    sha="0" * 40 if ctx.forged else hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest(),
                 ),
             )
         if path.endswith("/actions/runs"):
@@ -150,6 +152,20 @@ async def test_changed_workflow_bytes_are_not_the_approved_definition(provider):
     provider.changed = True
     with pytest.raises(CycleBlockedError, match="deployment_workflow_revision_mismatch"):
         await provider.provider.definition(provider.binding, provider.workflow, SOURCE)
+
+
+async def test_definition_bytes_must_hash_to_the_git_object_id_the_provider_named(provider):
+    # The blob digest is Git's object ID (not a security credential), but it must still
+    # fail closed: content that does not hash to the reported `sha` is never a definition.
+    provider.forged = True
+    with pytest.raises(CycleBlockedError, match="deployment_workflow_blob_mismatch"):
+        await provider.provider.definition(provider.binding, provider.workflow, SOURCE)
+
+
+async def test_definition_blob_sha_is_the_git_blob_object_id_of_the_definition(provider):
+    # Pins the Git object-ID formula independently of the provider's own implementation:
+    # `usedforsecurity=False` must not perturb the digest Git and the GitHub API agree on.
+    assert provider.definition.blob_sha == hashlib.sha1(b"blob " + str(len(YAML)).encode() + b"\0" + YAML).hexdigest()
 
 
 async def test_missing_context_leaves_matching_run_unverifiable(provider):

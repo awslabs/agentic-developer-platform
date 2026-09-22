@@ -900,6 +900,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     CORS_ORIGINS="${FRONTEND_URL},https://${CF_DOMAIN},http://localhost:5173"
   fi
   AGENT_REGISTRY_TABLE=$(terraform output -raw agent_registry_table_name 2>/dev/null || echo "")
+  AGENT_CLIENTS_TABLE=$(terraform output -raw agent_clients_table_name 2>/dev/null || echo "bedrockgw-${ENVIRONMENT}-agent-clients")
   # Gateway IRSA role ARN lives in the platform layer; read it from IAM rather
   # than cross-layer terraform_remote_state. Deterministic given name_prefix.
   GATEWAY_ROLE_ARN=$(aws iam get-role --role-name "adp-${ENVIRONMENT}-role-gateway-service" --query 'Role.Arn' --output text 2>/dev/null || echo "")
@@ -923,7 +924,21 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     CHAT_LOGGING_ENABLED="false"
     warn "Chat-logs bucket not found in SSM — chat logging disabled (set /adp/$ENVIRONMENT/gateway/chat-logs-bucket to enable)"
   fi
-  CHAT_LOGGING_SCRUB_LEVEL="basic"
+  # #5672: chat-transcript redaction level. This was the literal "basic", which
+  # silently overrode the application's own default of "standard" in every
+  # environment — so customer content pasted into a prompt (names, emails, phone
+  # numbers, identity numbers, addresses, payment details) was stored in S3
+  # exactly as typed.
+  #
+  # Now per-environment and fail-closed: unset means "standard", the strongest
+  # level. An environment that genuinely needs something weaker sets the
+  # parameter, which leaves a review trail, rather than the choice being a
+  # constant buried in this script. The app also resolves an unrecognised value
+  # up to "standard" (see modules/gateway/src/chat_logging/config.py).
+  CHAT_LOGGING_SCRUB_LEVEL=$(_get_ssm "/adp/$ENVIRONMENT/gateway/chat-logging-scrub-level" "standard")
+  if [ -z "$CHAT_LOGGING_SCRUB_LEVEL" ] || [ "$CHAT_LOGGING_SCRUB_LEVEL" = "None" ]; then
+    CHAT_LOGGING_SCRUB_LEVEL="standard"
+  fi
 
   # #3182/#3477: Credential binding enforcement. Default "true" (safe-by-default
   # for fresh accounts). Existing deployments pin via SSM param; dev stays in
@@ -944,6 +959,17 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-enforce-credential-host-binding" "false")
   if [ "$VAULT_ENFORCE_CREDENTIAL_HOST_BINDING" = "None" ]; then VAULT_ENFORCE_CREDENTIAL_HOST_BINDING="false"; fi
 
+  # #5653 (A01): whether the pod may believe X-Caller-Identity, which it treats as
+  # proof of identity (resolved against the agent registry to a privileged
+  # internal/platform context). Was hard-coded "true" below, overriding the
+  # application's safe default on every deploy. The param is published by the
+  # api-gateway Terraform module — the same one that blanks the header on every
+  # non-AWS_IAM route — so "true" means the edge control making that claim sound is
+  # actually deployed here. Default "false" keeps a forged assertion inert in an
+  # environment that has not applied it.
+  TRUST_APIGW_HEADERS=$(_get_ssm "/adp/$ENVIRONMENT/gateway/trust-apigw-headers" "false")
+  if [ -z "$TRUST_APIGW_HEADERS" ] || [ "$TRUST_APIGW_HEADERS" = "None" ]; then TRUST_APIGW_HEADERS="false"; fi
+
   # Issue #1158: Vault proxy host allowlist (SSRF mitigation, FAIL-CLOSED when empty)
   VAULT_PROXY_HOST_ALLOWLIST=$(_get_ssm "/adp/$ENVIRONMENT/gateway/vault-proxy-host-allowlist" "api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com")
   if [ "$VAULT_PROXY_HOST_ALLOWLIST" = "None" ]; then VAULT_PROXY_HOST_ALLOWLIST="api.github.com,api.openai.com,api.anthropic.com,*.atlassian.net,api.stripe.com,slack.com"; fi
@@ -957,7 +983,9 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   EFFECTIVE_ACCOUNT="${ADP_CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
   AGENT_RUN_LOGS_BUCKET="adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}"
   cd "$ROOT_DIR/modules/gateway"
-  kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
+  # Preserve restricted Pod Security Admission labels on upgrades. Applying a
+  # generated label-free Namespace would remove them until the rollout finished.
+  kubectl get namespace adp-gateway >/dev/null 2>&1 || kubectl create namespace adp-gateway
   # Issue #1008: Create bedrockgateway-secrets K8s Secret from Secrets Manager
   SM_SECRET_NAME="adp/${ENVIRONMENT}/gateway/token-secret-key"
   TOKEN_SECRET=$(aws secretsmanager get-secret-value \
@@ -994,11 +1022,22 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       --secret-string "$INTERNAL_API_KEY" \
       --region "${AWS_REGION}"
   fi
+  APIGW_PROVENANCE_SECRET=$(aws ssm get-parameter \
+    --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
+    --with-decryption --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
+  if [ "$TRUST_APIGW_HEADERS" = "true" ] && { [ -z "$APIGW_PROVENANCE_SECRET" ] || [ "$APIGW_PROVENANCE_SECRET" = "None" ]; }; then
+    echo "ERROR: API Gateway header trust is enabled but its provenance secret is unavailable" >&2
+    exit 1
+  fi
   kubectl create secret generic bedrockgateway-secrets \
     --from-literal=token-secret-key="$TOKEN_SECRET" \
     --from-literal=internal-api-key="$INTERNAL_API_KEY" \
+    --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
     -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -
   COGNITO_CLI_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
+  COGNITO_AGENT_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-agent-client-id" "")
+  COGNITO_GITLAB_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gitlab/oidc-client-id" "")
+  COGNITO_PENTEST_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-pentest-client-id" "")
   BEDROCK_ROUTING_SHADOW_MODE=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/bedrock-routing-shadow-mode" "true")
 
   # PMM-03 / D3: render the same production org/team allowlist source as the
@@ -1056,6 +1095,10 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__REDIS_IAM_AUTH__|$([ -n "$REDIS_IAM_USERNAME" ] && [ -n "$REDIS_CACHE_NAME" ] && echo true || echo false)|g" \
       -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
       -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
+      -e "s|__COGNITO_AGENT_CLIENT_ID__|${COGNITO_AGENT_CLIENT_ID}|g" \
+      -e "s|__AGENT_CLIENTS_TABLE__|${AGENT_CLIENTS_TABLE}|g" \
+      -e "s|__COGNITO_GITLAB_CLIENT_ID__|${COGNITO_GITLAB_CLIENT_ID}|g" \
+      -e "s|__COGNITO_PENTEST_CLIENT_ID__|${COGNITO_PENTEST_CLIENT_ID}|g" \
       -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
       -e "s|__CORS_ALLOWED_ORIGINS__|${CORS_ORIGINS}|g" \
       -e "s|__GATEWAY_BASE_URL__|${FRONTEND_URL}|g" \
@@ -1064,7 +1107,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       -e "s|__CHAT_LOGGING_ENABLED__|${CHAT_LOGGING_ENABLED}|g" \
       -e "s|__CHAT_LOGGING_BUCKET__|${CHAT_LOGS_BUCKET}|g" \
       -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|${CHAT_LOGGING_SCRUB_LEVEL}|g" \
-      -e "s|__TRUST_APIGW_HEADERS__|true|g" \
+      -e "s|__TRUST_APIGW_HEADERS__|${TRUST_APIGW_HEADERS}|g" \
       -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
       -e "s|__ENFORCE_CREDENTIAL_BINDING__|${ENFORCE_CREDENTIAL_BINDING}|g" \
       -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
@@ -1100,8 +1143,13 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   for f in k8s/*.yaml; do
     case "$(basename "$f")" in
       configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
-      *) kubectl apply -f "$f" -n adp-gateway ;;
     esac
+    if kubectl create --dry-run=client --validate=false -f "$f" \
+         -o jsonpath='{.kind}{"\n"}{range .items[*]}{.kind}{"\n"}{end}' \
+         | grep -qx Namespace; then
+      continue
+    fi
+    kubectl apply -f "$f" -n adp-gateway
   done
 
   # Render deployment settings as well as the ConfigMap. Applying the raw
@@ -1143,6 +1191,11 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     kubectl set image deployment/bedrockgateway bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
     kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || fail "Gateway rollout not complete"
   fi
+
+  # Enforce the restricted namespace policy only after the hardened image and
+  # pod spec are Ready, then prove the API server rejects a privileged pod.
+  kubectl apply -f k8s/namespace.yaml
+  scripts/verify-restricted-admission.sh adp-gateway
 
   PRICING_RELEASE_IMAGE="${GATEWAY_IMAGE}"
   python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" migrate \
@@ -1394,6 +1447,21 @@ EOF
   else
     terraform apply -var-file=terraform.tfvars -auto-approve
     ok "Agent-factory deployed"
+  fi
+
+  if [ "$DEPLOY_GATEWAY" = true ] && [ "$ENVIRONMENT" = "dev" ]; then
+    COGNITO_PENTEST_CLIENT_ID=$(terraform output -raw pentest_actor_client_id 2>/dev/null || echo "")
+    if [ -z "$COGNITO_PENTEST_CLIENT_ID" ] || [ "$COGNITO_PENTEST_CLIENT_ID" = "None" ]; then
+      fail "Agent-factory deployed without publishing the dev pentest Cognito client ID"
+    fi
+    PENTEST_CLIENT_PATCH=$(PENTEST_CLIENT_ID="$COGNITO_PENTEST_CLIENT_ID" python3 -c \
+      'import json, os; print(json.dumps({"data": {"BG_COGNITO_PENTEST_CLIENT_ID": os.environ["PENTEST_CLIENT_ID"]}}))')
+    kubectl patch configmap bedrockgateway-config -n adp-gateway \
+      --type merge --patch "$PENTEST_CLIENT_PATCH"
+    kubectl rollout restart deployment/bedrockgateway -n adp-gateway
+    kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s \
+      || fail "Gateway rollout failed after adding the dev pentest Cognito client"
+    ok "Gateway reconciled with the dev pentest Cognito client"
   fi
 
   # --- Agent Gateway build + deploy (part of agent-factory) ---

@@ -294,12 +294,52 @@ async def test_current_base_change_during_observation_refuses(change):
         await observe(data, on_request=mutate)
 
 
-@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "neutral", "timed_out", "action_required", "stale"])
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out", "action_required", "stale"])
 async def test_required_check_non_success_never_passes(conclusion):
     data = provider_data()
     data["checks"]["check_runs"][0]["conclusion"] = conclusion
     observed, _ = await observe(data)
     assert EligibilityReason.REQUIRED_CHECK_FAILED in evaluate_observation(observed).reasons
+
+
+@pytest.mark.parametrize("declared_empty", [False, True])
+async def test_no_applicable_checks_does_not_invent_a_repository_requirement(declared_empty):
+    data = provider_data()
+    if declared_empty:
+        data["rules"][0]["parameters"]["required_status_checks"] = []
+    else:
+        data["rules"] = data["rules"][1:]
+    data["checks"] = {"total_count": 0, "check_runs": []}
+    observed, _ = await observe(data)
+    assert observed.requirements.complete
+    assert not observed.requirements.checks
+    assert evaluate_observation(observed).eligible
+
+
+async def test_no_required_checks_still_enforces_reported_ci_failures():
+    data = provider_data()
+    data["rules"] = data["rules"][1:]
+    data["checks"]["check_runs"][0]["conclusion"] = "failure"
+    observed, _ = await observe(data)
+    assert EligibilityReason.REQUIRED_CHECK_FAILED in evaluate_observation(observed).reasons
+
+
+async def test_empty_checks_cannot_make_incomplete_requirements_eligible():
+    data = provider_data()
+    data["rules"] = data["rules"][1:]
+    data["checks"] = {"total_count": 0, "check_runs": []}
+    observed, _ = await observe(data)
+    incomplete = replace(observed, requirements=replace(observed.requirements, complete=False))
+    assert EligibilityReason.RULES_UNAVAILABLE in evaluate_observation(incomplete).reasons
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "neutral"])
+async def test_github_successful_check_conclusions_do_not_block_merge(conclusion):
+    data = provider_data()
+    data["checks"]["check_runs"][0]["conclusion"] = conclusion
+    observed, _ = await observe(data)
+    assert evaluate_observation(observed).eligible
+    assert observed.checks[0].state == conclusion
 
 
 @pytest.mark.parametrize(

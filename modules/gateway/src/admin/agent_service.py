@@ -69,9 +69,12 @@ class AgentService:
 
         # Configuration
         self.user_pool_id = user_pool_id or settings.cognito_user_pool_id
+        configured_agent_clients_table = getattr(settings, "agent_clients_table", "")
+        if not isinstance(configured_agent_clients_table, str):
+            configured_agent_clients_table = ""
         self.table_name = table_name or os.environ.get(
             "AGENT_CLIENTS_TABLE",
-            f"{os.environ.get('BG_NAME_PREFIX', 'bedrockgw')}-agent-clients",
+            configured_agent_clients_table or f"{os.environ.get('BG_NAME_PREFIX', 'bedrockgw')}-agent-clients",
         )
 
         # Build token endpoint

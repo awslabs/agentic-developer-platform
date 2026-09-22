@@ -174,6 +174,24 @@ async def test_real_provider_observation_binds_checks_workflow_attempt_and_diges
     assert {item["criterion_id"] for item in workflow["criteria"]} == {"coverage", "inventory"}
 
 
+async def test_workflow_definition_requires_matching_content_even_when_blob_ids_match(evidence):
+    provider = RepositoryEvidenceProvider()
+    provider.definition_blob = AsyncMock(
+        side_effect=[
+            ("d" * 40, b"on:\n  workflow_dispatch:\n"),
+            ("d" * 40, b"on:\n  schedule: []\n"),
+        ]
+    )
+
+    with pytest.raises(CycleBlockedError, match="repository_evaluation_workflow_definition_changed"):
+        await provider.workflow(
+            SimpleNamespace(repo="o/r", provider_repository_id=123),
+            evidence.spec.workflows[0],
+            revisions={},
+            max_age_seconds=evidence.spec.max_age_seconds,
+        )
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -351,11 +369,16 @@ async def test_bound_scan_artifact_must_match_actual_source_target_images_and_cl
         target=dict(account_id="123456789012", region="us-east-1", resource_kind="repository_scan", resource_id="o/r"),
         receipt_artifact="evidence-{run_attempt}",
         receipt_path="evidence.json",
-        images={"controller": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64)},
+        images={
+            "controller": {
+                "grype": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64),
+                "syft": dict(digest="sha256:" + "f" * 64, provenance_sha256="1" * 64),
+            }
+        },
     )
     spec = RepositoryEvaluationSpecification.model_validate(document)
     receipt = dict(
-        evidence_schema="repository-scan-receipt/v1",
+        evidence_schema="repository-scan-receipt/v2",
         source_revision="b" * 40,
         correlation="c" * 64,
         target=spec.producer.target.model_dump(mode="json"),
@@ -368,7 +391,7 @@ async def test_bound_scan_artifact_must_match_actual_source_target_images_and_cl
     elif changed == "account":
         receipt["target"]["account_id"] = "999999999999"
     elif changed in {"image", "provenance"}:
-        receipt["images"]["controller"]["digest" if changed == "image" else "provenance_sha256"] = (
+        receipt["images"]["controller"]["grype"]["digest" if changed == "image" else "provenance_sha256"] = (
             "sha256:" if changed == "image" else ""
         ) + "0" * 64
     elif changed in {"coverage", "cleanup"}:
@@ -471,7 +494,12 @@ async def test_scan_preflight_refuses_workflows_without_the_recoverable_one_off_
         target=dict(account_id="123456789012", region="us-east-1", resource_kind="repository_scan", resource_id="o/r"),
         receipt_artifact="evidence-{run_attempt}",
         receipt_path="evidence.json",
-        images={"controller": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64)},
+        images={
+            "controller": {
+                "grype": dict(digest="sha256:" + "d" * 64, provenance_sha256="e" * 64),
+                "syft": dict(digest="sha256:" + "f" * 64, provenance_sha256="1" * 64),
+            }
+        },
     )
     spec = RepositoryEvaluationSpecification.model_validate(document)
     workflow = {

@@ -887,12 +887,11 @@ and opens a PR (proves webhook → SQS → KEDA → worker → gateway → Bedro
 > post-deploy activation steps (image build, migrations, vuln-scan cron, Neptune
 > wiring) — see the agent-context module docs.
 
-> **ADP-managed (pipeline) equivalent.** The same Phases 1–10 can be run as
-> GitHub Actions workflows (`platform-infra-apply.yml`, `gateway-infra-apply.yml`,
-> `gateway-deploy.yml`, `github-auth-broker-deploy.yml`, `webhook-ingress-deploy.yml`)
-> instead of the local scripts above — that's the per-deploy-instance runbook
-> (e.g. issue #1320). Same phase sequence, different execution mechanism; pick one
-> track per deploy, don't interleave.
+> **Hosted cross-account execution is unavailable.** Do not pass
+> `customer_account_id`, `customer_aws_label`, or `customer_user_id` to the
+> workflows. The shared config action rejects those inputs before plan, apply,
+> or destroy. Use this self-managed sequence with customer-controlled temporary
+> credentials. See [ADP-Managed Deploy](./adp-managed-deploy.md) for status.
 
 **`deploy-all.sh` shortcut:** chains bootstrap → preflight → platform infra →
 gateway infra → backend build → k8s deploy → ALB wire → frontend → broker (6c) →
@@ -937,7 +936,7 @@ Items marked *(fixed on `main`)* only bite on older checkouts.
 
 ## Teardown
 
-### Primary: `undeploy.sh` (self-managed) / `undeploy.yml` (ADP-managed)
+### Primary: `undeploy.sh` (self-managed)
 
 ```bash
 # Self-managed — interactive, typed-account-ID gate
@@ -950,12 +949,10 @@ Items marked *(fixed on `main`)* only bite on older checkouts.
 ./platform/scripts/undeploy.sh --bootstrap
 ```
 
-For ADP-managed environments, dispatch `.github/workflows/undeploy.yml` via the
-Actions UI (requires typed 12-digit account ID input).
-
-Both paths destroy in reverse dependency order: agent-context → webhook-ingress →
-agent-factory → gateway → platform. Both support `--dry-run` / `dry_run`, phase
-skipping, and optional state-backend destruction.
+The `undeploy.yml` workflow is not a supported customer cross-account path.
+Supplying any legacy customer-account input fails in the shared config action
+before a destroy step. `undeploy.sh` destroys in reverse dependency order:
+agent-context → webhook-ingress → agent-factory → gateway → platform.
 
 ### Legacy path (retained)
 
@@ -965,7 +962,7 @@ skipping, and optional state-backend destruction.
 ```
 
 > `deploy-all.sh --destroy` is retained for backward compatibility but is no
-> longer recommended. Use `undeploy.sh` or `undeploy.yml` instead.
+> longer recommended. Use `undeploy.sh` instead.
 
 ### Resources that survive by design
 

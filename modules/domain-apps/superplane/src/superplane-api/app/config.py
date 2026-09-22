@@ -17,9 +17,7 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Database
-    database_url: str = (
-        "postgresql+asyncpg://superplane:superplane@localhost:5432/superplane"
-    )
+    database_url: str = ""
     # Explicit domain schema for asyncpg (PGOPTIONS is a libpq setting, ignored
     # by this driver). Empty preserves the existing database-owned search_path.
     superplane_db_schema: str = ""
@@ -62,7 +60,28 @@ class Settings(BaseSettings):
     cognito_enabled: bool = False
 
     # JWT Auth
-    jwt_secret_key: str = "CHANGE-ME-IN-PRODUCTION"
+    #
+    # There is deliberately NO default signing key (issue #5683, A04). The value
+    # shipped here until now was a committed placeholder, which is a credential in
+    # the repository: this key both signs and verifies the org-scoped tokens that
+    # `/auth/login` issues, so anyone able to read this file could mint a token the
+    # server accepts as an authenticated organization. It was accepted at runtime
+    # rather than rejected, so a deployment that simply never set JWT_SECRET_KEY
+    # ran on the published value without any signal that it had.
+    #
+    # WHY THE DEFAULT IS EMPTY RATHER THAN "A SAFER KEY", AND WHY EMPTY IS NOT
+    # ITSELF THE FIX. `jose.jwt.encode` signs happily with an empty string — it
+    # raises only on a non-string key. So an empty default is not "no key", it is a
+    # key every reader can guess, which is the same defect with a shorter value.
+    # Empty here means "unset", and the refusal is enforced by
+    # `require_jwt_secret_key()` in app/middleware/auth.py, which every sign and
+    # verify path goes through, plus a startup check in app/main.py so a
+    # misconfigured deployment fails to start instead of failing at first login.
+    #
+    # Deployments supply the real value by reference from their secret store; see
+    # `installation/manifests.py`, which injects JWT_SECRET_KEY as a secretKeyRef
+    # alongside the other runtime secrets. Nothing in this file holds a real value.
+    jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
 
@@ -133,3 +152,18 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+class DatabaseURLMissing(RuntimeError):
+    """No managed database URL was supplied to this process."""
+
+
+def require_database_url() -> str:
+    """Return the configured database URL, or fail without exposing its contents."""
+    url = settings.database_url
+    if not url or not url.strip():
+        raise DatabaseURLMissing(
+            "DATABASE_URL is not set. Supply it by reference from the deployment's "
+            "managed secret; no built-in database credential is available."
+        )
+    return url

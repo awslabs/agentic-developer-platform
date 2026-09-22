@@ -1,27 +1,57 @@
 name: Security Scan
+run-name: ${{ format('ADP deployment {0}', inputs.adp_correlation) }}
 
-# S19/S21: the engine's post-merge one-off producer protocol and reusable receipt
-# helper are documented in docs/design-notes/repository-scan-producer.md.
-# Add that protocol with the scanner repairs; it does not authorize these legacy triggers.
+# Authenticated, dispatch-only one-off producer. The accepted transport and
+# evidence contract is docs/design-notes/repository-scan-producer.md.
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  schedule:
-    - cron: '0 2 * * *'
   workflow_dispatch:
+    inputs:
+      adp_correlation:
+        description: 'Engine correlation (64 lowercase hexadecimal characters)'
+        type: string
+        required: true
+      adp_source_revision:
+        description: 'Immutable repository revision to scan'
+        type: string
+        required: true
+      adp_definition_revision:
+        description: 'Immutable workflow definition revision used for dispatch'
+        type: string
+        required: true
+      expected_account_id:
+        description: 'Accepted 12-digit AWS target account'
+        type: string
+        required: true
+      region:
+        description: 'Accepted AWS target region'
+        type: string
+        required: true
+      scan_scope:
+        description: 'All checks, or only Superplane container vulnerability scans and SBOMs'
+        type: choice
+        options: [all, superplane]
+        default: all
+        required: true
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
-  group: security-scan-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: true
+  group: security-scan-one-off
+  cancel-in-progress: false
 
 env:
   ENVIRONMENT: dev
+  EXPECTED_SOURCE_REVISION: ${{ inputs.adp_source_revision }}
+  EXPECTED_DEFINITION_REVISION: ${{ inputs.adp_definition_revision }}
+  EXPECTED_ACCOUNT_ID: ${{ inputs.expected_account_id }}
+  ADP_CORRELATION: ${{ inputs.adp_correlation }}
+  AWS_REGION: ${{ inputs.region }}
+  SECURITY_IMAGE_SCOPE: ${{ inputs.scan_scope }}
+  SECURITY_SCANS_BUCKET: adp-dev-security-scans-${{ inputs.expected_account_id }}
+  STATE_BUCKET: adp-terraform-state-${{ inputs.expected_account_id }}
+  RENDEZVOUS_PREFIX: findings/${{ github.run_id }}/${{ github.run_attempt }}
+  EVIDENCE_PREFIX: repository-scans/${{ github.run_id }}/${{ github.run_attempt }}
   CHECKOV_VERSION: "3.2.346"
   SEMGREP_VERSION: "1.80.0"
   DETECT_SECRETS_VERSION: "1.5.0"
@@ -31,27 +61,111 @@ env:
   CFN_NAG_VERSION: "0.8.10"
 
 jobs:
+  context:
+    name: Authenticate Scan Context
+    runs-on: arc-runner-org
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify definition, source, target, and correlation
+        env:
+          CONTEXT_WORKFLOW: .github/workflows/security-scan.yml
+          CONTEXT_SOURCE: ${{ inputs.adp_source_revision }}
+          CONTEXT_REVISION: ${{ inputs.adp_definition_revision }}
+          CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
+          CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
+          SCAN_EXPECTED_ACCOUNT: ${{ inputs.expected_account_id }}
+          SCAN_EXPECTED_ROLE: adp-dev-agent-runner-role
+          SCAN_INPUTS_JSON: ${{ format('{{"expected_account_id":"{0}","region":"{1}","scan_scope":"{2}"}}', inputs.expected_account_id, inputs.region, inputs.scan_scope) }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_SHA" = "$EXPECTED_DEFINITION_REVISION" || {
+            echo "::error::Dispatch revision does not match the accepted workflow definition"
+            exit 1
+          }
+          python3 modules/gateway/scripts/repository-scan-receipt.py
+
+      - name: Upload authenticated context
+        uses: actions/upload-artifact@v6
+        with:
+          name: adp-deployment-context-security-scan.yml-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
+          if-no-files-found: error
+          retention-days: 14
+
   # ---------- Dynamic discovery for container scanning ----------
   discover-dockerfiles:
     name: Discover Dockerfiles
     runs-on: arc-runner-org
+    needs: [context]
     outputs:
       matrix: ${{ steps.find.outputs.matrix }}
+      image_count: ${{ steps.find.outputs.image_count }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install inventory parser
+        run: python3 -m pip install --quiet PyYAML==6.0.3
 
       - name: Find Dockerfiles
         id: find
         run: |
           python3 .github/scripts/discover_dockerfiles.py >> "$GITHUB_OUTPUT"
+          COUNT=$(python3 codebuild/security_image_targets.py --scope "$SECURITY_IMAGE_SCOPE" --format count)
+          echo "image_count=$COUNT" >> "$GITHUB_OUTPUT"
+          python3 codebuild/security_image_targets.py --scope "$SECURITY_IMAGE_SCOPE"
 
   # ---------- Job 1: Checkov (IaC) ----------
   checkov:
+    if: inputs.scan_scope != 'superplane'
+    needs: [context]
     name: Checkov (IaC)
     runs-on: arc-runner-org
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -69,38 +183,41 @@ jobs:
             --baseline .github/security/checkov-baseline.json \
             --output sarif \
             --output-file checkov-results.sarif \
-            --soft-fail \
-            || true
-
-      - name: Resolve account ID
-        if: always()
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
-
-      - name: Upload SARIF to S3
-        if: always()
-        uses: ./.github/actions/upload-sarif-s3
-        with:
-          sarif-file: checkov-results.sarif
-          tool-name: checkov
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+            --soft-fail
 
       - name: Publish findings to S3 rendezvous
-        if: always()
         uses: ./.github/actions/publish-findings-s3
         with:
           path: checkov-results.sarif
           tool-name: checkov
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          bucket: ${{ env.SECURITY_SCANS_BUCKET }}
+          source-revision: ${{ inputs.adp_source_revision }}
+          dest-prefix: ${{ env.RENDEZVOUS_PREFIX }}/checkov/
 
   # ---------- Job 2: Semgrep (SAST) ----------
   semgrep:
+    if: inputs.scan_scope != 'superplane'
+    needs: [context]
     name: Semgrep (SAST)
     runs-on: arc-runner-org
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -130,43 +247,55 @@ jobs:
 
       - name: Run Semgrep
         run: |
+          set +e
           semgrep scan \
             --config /tmp/semgrep-rules-all.yaml \
             --config .github/security/semgrep.yml \
             --sarif \
             --output semgrep-results.sarif \
-            --error \
-            || true
-
-      - name: Resolve account ID
-        if: always()
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
-
-      - name: Upload SARIF to S3
-        if: always()
-        uses: ./.github/actions/upload-sarif-s3
-        with:
-          sarif-file: semgrep-results.sarif
-          tool-name: semgrep
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+            --error
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -gt 1 ]; then
+            echo "::error::Semgrep failed with exit code $STATUS"
+            exit "$STATUS"
+          fi
 
       - name: Publish findings to S3 rendezvous
-        if: always()
         uses: ./.github/actions/publish-findings-s3
         with:
           path: semgrep-results.sarif
           tool-name: semgrep
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          bucket: ${{ env.SECURITY_SCANS_BUCKET }}
+          source-revision: ${{ inputs.adp_source_revision }}
+          dest-prefix: ${{ env.RENDEZVOUS_PREFIX }}/semgrep/
 
   # ---------- Job 3: detect-secrets ----------
   detect-secrets:
+    if: inputs.scan_scope != 'superplane'
+    needs: [context]
     name: detect-secrets
     runs-on: arc-runner-org
-    continue-on-error: true
+    # No continue-on-error: the validity guards below are the whole point. A
+    # scanner that cannot produce usable output must not read as a clean pass.
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -176,59 +305,138 @@ jobs:
       - name: Install detect-secrets
         run: pip install detect-secrets==${{ env.DETECT_SECRETS_VERSION }}
 
+      # Two separate defects made this job's artifacts useless while it reported
+      # success (#5618):
+      #
+      #   1. `--list-all-plugins` makes detect-secrets print its *detector
+      #      names* ("AWSKeyDetector", ...) and exit 0. The artifact was a
+      #      newline-separated word list, not JSON at all.
+      #   2. `scan --baseline FILE` writes the updated results INTO that file and
+      #      prints nothing to stdout, so redirecting stdout captured 0 bytes
+      #      even without the plugin flag.
+      #
+      # Scan into a copy of the baseline, then read the results back out of it.
+      # `--baseline` is what applies the committed filters/allowlists, so it is
+      # kept; the copy keeps the committed baseline itself unmodified.
       - name: Run detect-secrets
         run: |
+          set -euo pipefail
+          cp -f .github/security/.secrets.baseline detect-secrets-results.json
           detect-secrets scan \
-            --baseline .github/security/.secrets.baseline \
-            --list-all-plugins \
-            > detect-secrets-results.json \
-            || true
+            --baseline detect-secrets-results.json \
+            --exclude-files '^\.github/security/\.secrets\.baseline$' \
+            --exclude-files '^detect-secrets-results\.json$'
 
+          # Assert the artifact is valid, meaningful JSON. An unparseable or
+          # results-less file is a broken scanner, not a clean repository.
+          python3 - <<'PY'
+          import json, sys
+          from pathlib import Path
+
+          raw = Path("detect-secrets-results.json").read_text()
+          try:
+              report = json.loads(raw)
+          except json.JSONDecodeError as exc:
+              sys.exit(f"::error::detect-secrets output is not valid JSON: {exc}")
+          if not isinstance(report, dict) or "results" not in report:
+              sys.exit("::error::detect-secrets output has no 'results' key — "
+                       f"got keys {sorted(report) if isinstance(report, dict) else type(report).__name__}")
+          if not report.get("plugins_used"):
+              sys.exit("::error::detect-secrets output lists no plugins_used — the scan did not run")
+          flagged = sum(len(v) for v in report["results"].values())
+          print(f"detect-secrets: {len(report['plugins_used'])} plugins, "
+                f"{len(report['results'])} file(s), {flagged} flagged secret(s)")
+          PY
+
+      # Audit the updated current-run scan, not the committed baseline. Auditing
+      # the baseline would return no records for newly detected candidates and
+      # make a real secret look absent from the audit artifact.
       - name: Audit for new secrets
         run: |
-          detect-secrets audit --report --json .github/security/.secrets.baseline \
-            > detect-secrets-audit.json 2>/dev/null \
-            || true
+          set -euo pipefail
+          detect-secrets audit --report --json detect-secrets-results.json \
+            > detect-secrets-audit.json
 
-      - name: Resolve account ID
-        if: always()
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import json, sys
+          from collections import Counter
+          from pathlib import Path
+
+          raw = Path("detect-secrets-audit.json").read_text().strip()
+          if not raw:
+              sys.exit("::error::detect-secrets audit produced an empty report")
+          report = json.loads(raw)
+          results = report.get("results")
+          if not isinstance(results, list):
+              sys.exit("::error::detect-secrets audit report has no results list")
+
+          scan = json.loads(Path("detect-secrets-results.json").read_text())
+          scan_candidates = {
+              (entry.get("filename") or filename, entry.get("type"), str(entry.get("line_number", 0)))
+              for filename, entries in scan.get("results", {}).items()
+              for entry in entries
+              if entry.get("is_secret") is not False
+          }
+          audit_candidates = {
+              (record.get("filename"), finding_type, str(line_number))
+              for record in results
+              if record.get("category") != "FALSE_POSITIVE"
+              for finding_type in record.get("types", [])
+              for line_number in (record.get("lines") or {"0": ""})
+          }
+          missing = scan_candidates - audit_candidates
+          if missing:
+              sys.exit(f"::error::detect-secrets audit omitted {len(missing)} current scan candidate(s)")
+
+          categories = Counter(record.get("category", "UNKNOWN") for record in results)
+          category_counts = ", ".join(
+              f"{category}={count}" for category, count in sorted(categories.items())
+          ) or "none"
+          print(f"detect-secrets audit: {len(results)} record(s); categories: {category_counts}")
+          PY
 
       - name: Collect detect-secrets findings
-        if: always()
         run: |
           mkdir -p detect-secrets-findings
-          cp -f detect-secrets-results.json detect-secrets-findings/ 2>/dev/null || true
-          cp -f detect-secrets-audit.json detect-secrets-findings/ 2>/dev/null || true
+          cp -f detect-secrets-results.json detect-secrets-findings/
+          cp -f detect-secrets-audit.json detect-secrets-findings/
 
       - name: Publish findings to S3 rendezvous
-        if: always()
         uses: ./.github/actions/publish-findings-s3
         with:
           path: detect-secrets-findings
           tool-name: detect-secrets
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          bucket: ${{ env.SECURITY_SCANS_BUCKET }}
+          source-revision: ${{ inputs.adp_source_revision }}
+          dest-prefix: ${{ env.RENDEZVOUS_PREFIX }}/detect-secrets/
 
   # ---------- Job 4: Grype (CVE scan via CodeBuild) ----------
   grype:
     name: Grype (CodeBuild)
     runs-on: arc-runner-org
-    needs: [discover-dockerfiles]
-    continue-on-error: true
-    timeout-minutes: 30
+    needs: [context, discover-dockerfiles]
+    timeout-minutes: 105
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
 
-      - name: Resolve deploy vars
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> $GITHUB_ENV
-          echo "STATE_BUCKET=adp-terraform-state-${ACCOUNT_ID}" >> $GITHUB_ENV
-          echo "AWS_REGION=${AWS_REGION:-us-east-1}" >> $GITHUB_ENV
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
+
+      - name: Set scan date
+        run: echo "SECURITY_SCAN_DATE=$(date -u +%Y/%m/%d)" >> "$GITHUB_ENV"
 
       - name: Run grype scan via CodeBuild
         id: grype_build
@@ -237,43 +445,66 @@ jobs:
           project_name: adp-${{ env.ENVIRONMENT }}-grype-scan
           region: ${{ env.AWS_REGION }}
           state_bucket: ${{ env.STATE_BUCKET }}
-          environment_variables: '"name=GRYPE_VERSION,value=${{ env.GRYPE_VERSION }},type=PLAINTEXT"'
+          source_revision: ${{ inputs.adp_source_revision }}
+          child_state_uri: s3://${{ env.STATE_BUCKET }}/${{ env.EVIDENCE_PREFIX }}/children/grype.json
+          environment_variables: '"name=GRYPE_VERSION,value=${{ env.GRYPE_VERSION }},type=PLAINTEXT" "name=SECURITY_IMAGE_SCOPE,value=${{ env.SECURITY_IMAGE_SCOPE }},type=PLAINTEXT" "name=SECURITY_SCAN_DATE,value=${{ env.SECURITY_SCAN_DATE }},type=PLAINTEXT" "name=SECURITY_SCANS_BUCKET,value=${{ env.SECURITY_SCANS_BUCKET }},type=PLAINTEXT" "name=SECURITY_EVIDENCE_PREFIX,value=${{ env.EVIDENCE_PREFIX }}/grype,type=PLAINTEXT"'
           poll_interval: '30'
 
       - name: Pull SARIFs from S3 for Summary job
-        if: always()
         run: |
           BUILD_ID="${{ steps.grype_build.outputs.build_id }}"
-          DATE=$(date -u +%Y/%m/%d)
+          DATE="$SECURITY_SCAN_DATE"
           BUILD_RUN_ID="${BUILD_ID##*:}"
           mkdir -p grype-findings
           aws s3 sync \
-            "s3://adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}/sarif/${DATE}/${BUILD_RUN_ID}/grype/" \
-            grype-findings/ || true
+            "s3://${{ env.SECURITY_SCANS_BUCKET }}/sarif/${DATE}/${BUILD_RUN_ID}/grype/" \
+            grype-findings/
 
-          # Surface partial-count but don't fail the job
+          # Require the complete expected inventory. A shortfall used to be a
+          # warning, which is how 8/17 images read as a green run (#5618). The
+          # artifacts the Summary job diffs come from here, so a short pull means
+          # the diff would silently cover fewer images than it claims.
           COUNT=$(find grype-findings -name '*.sarif' | wc -l)
-          EXPECTED=$(find . -name Dockerfile -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.terraform/*' | wc -l)
+          EXPECTED="${{ needs.discover-dockerfiles.outputs.image_count }}"
           echo "Pulled ${COUNT}/${EXPECTED} SARIFs from S3"
           if [ "${COUNT}" -lt "${EXPECTED}" ]; then
-            echo "::warning::Grype SARIF count (${COUNT}) is below Dockerfile count (${EXPECTED}). Some scans may have failed — see CodeBuild logs."
+            echo "::error::Grype SARIF count (${COUNT}) is below the expected image count (${EXPECTED}). Some image scans produced no result — see the CodeBuild coverage.json and logs. Refusing to report partial coverage as a complete scan."
+            exit 1
           fi
 
       - name: Publish findings to S3 rendezvous
-        if: always()
         uses: ./.github/actions/publish-findings-s3
         with:
           path: grype-findings
           tool-name: grype
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          bucket: ${{ env.SECURITY_SCANS_BUCKET }}
+          source-revision: ${{ inputs.adp_source_revision }}
+          dest-prefix: ${{ env.RENDEZVOUS_PREFIX }}/grype/
 
   # ---------- Job 5: Bandit (Python SAST) ----------
   bandit:
+    if: inputs.scan_scope != 'superplane'
+    needs: [context]
     name: Bandit (Python)
     runs-on: arc-runner-org
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -290,38 +521,43 @@ jobs:
             -x './modules/gateway/tests,./modules/agent-factory/tests,./modules/agent-factory/agent-worker-image/tests,./modules/agent-factory/webhook-ingress/lambda/common/tests,./modules/agent-factory/webhook-ingress/lambda/github/tests,./modules/gateway/lambda/github-auth-broker/tests,./modules/agent-context/tests' \
             --format sarif \
             --output bandit-results.sarif \
-            --exit-zero \
-            || true
-
-      - name: Resolve account ID
-        if: always()
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
-
-      - name: Upload SARIF to S3
-        if: always()
-        uses: ./.github/actions/upload-sarif-s3
-        with:
-          sarif-file: bandit-results.sarif
-          tool-name: bandit
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+            --exit-zero
 
       - name: Publish findings to S3 rendezvous
-        if: always()
         uses: ./.github/actions/publish-findings-s3
         with:
           path: bandit-results.sarif
           tool-name: bandit
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          bucket: ${{ env.SECURITY_SCANS_BUCKET }}
+          source-revision: ${{ inputs.adp_source_revision }}
+          dest-prefix: ${{ env.RENDEZVOUS_PREFIX }}/bandit/
 
   # ---------- Job 6: cfn-nag (CloudFormation) ----------
   cfn-nag:
+    if: inputs.scan_scope != 'superplane'
+    needs: [context]
     name: cfn-nag (CloudFormation)
     runs-on: arc-runner-org
-    continue-on-error: true
+    # No continue-on-error: a parse abort must surface. All three templates
+    # aborted unscanned on 2026-09-21 and the job still reported success.
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
 
       - name: Install Ruby + cfn-nag
         run: |
@@ -334,43 +570,101 @@ jobs:
 
       - name: Run cfn-nag
         run: |
+          # No --deny-list-path. There are no GLOBAL suppressions: every accepted
+          # finding is suppressed per-resource inline in the template's
+          # Metadata.cfn_nag.rules_to_suppress. cfn_nag cannot express an empty
+          # global deny-list -- DenyListLoader raises 'Missing RulesToSuppress key
+          # in deny list' on an empty list, and 'Deny list is malformed' on a
+          # comments-only file -- and each raise becomes a FATAL that aborts every
+          # template. Passing no deny-list makes the filter a documented no-op
+          # (ViolationFiltering#filter_violations_by_deny_list returns early on
+          # nil), which is exactly the intended "suppress nothing globally".
+          # See .github/security/cfn-nag-suppressions.yml for the full rationale.
+          set +e
           cfn_nag_scan \
             --input-path modules/agent-factory/agent-worker-image/aws/ \
-            --deny-list-path .github/security/cfn-nag-suppressions.yml \
             --output-format json \
-            > cfn-nag-results.json \
-            || true
-
-          # Fail on FATAL parse errors. cfn-nag emits a per-file "FATAL"
-          # violation (malformed deny-list, non-ASCII bytes, unparseable
-          # template) but still exits 0, so the job would otherwise report
-          # green while scanning nothing (issue #3587). Any FATAL means a
-          # template got zero coverage — treat it as a hard failure.
-          if grep -q '"type"[[:space:]]*:[[:space:]]*"FATAL"' cfn-nag-results.json; then
-            echo "::error::cfn-nag hit FATAL parse errors — templates were not scanned:"
-            grep -B2 '"type"[[:space:]]*:[[:space:]]*"FATAL"' cfn-nag-results.json || true
-            exit 1
+            > cfn-nag-results.json
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -gt 1 ]; then
+            echo "::error::cfn-nag failed with exit code $STATUS"
+            exit "$STATUS"
           fi
 
-      - name: Resolve account ID
-        if: always()
+      - name: Assert cfn-nag actually scanned the templates
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          # cfn-nag reports a parse abort as a per-file violation and still exits
+          # 0, so a broken run reads as green while scanning nothing (#3587).
+          #
+          # The previous guard grepped for a *type* of "FATAL" and could never
+          # match: Violation.fatal_violation builds `id: 'FATAL'` with
+          # `type: Violation::FAILING_VIOLATION`, and FAILING_VIOLATION == 'FAIL'.
+          # So the real record is {"id":"FATAL","type":"FAIL"}. On 2026-09-21 all
+          # three templates aborted this way and the job still passed.
+          #
+          # Match on id, parsed as JSON rather than grepped, and also require that
+          # every expected template appears in the results.
+          python3 - <<'PY'
+          import json, os, sys
+          from pathlib import Path
+
+          # Overridable so the gate in
+          # .github/scripts/tests/test_security_scan_tool_invocations.py can
+          # exercise the FATAL logic on a single fixture template.
+          EXPECTED = set(
+              os.environ.get(
+                  "CFN_NAG_EXPECTED_TEMPLATES",
+                  "full-admin.cfn.yaml,readonly.cfn.yaml,scoped-write.cfn.yaml",
+              ).split(",")
+          )
+
+          raw = Path("cfn-nag-results.json").read_text().strip()
+          if not raw:
+              sys.exit("::error::cfn-nag produced no output at all")
+          try:
+              results = json.loads(raw)
+          except json.JSONDecodeError as exc:
+              sys.exit(f"::error::cfn-nag output is not valid JSON: {exc}")
+
+          fatal, scanned = [], set()
+          for entry in results:
+              scanned.add(Path(entry.get("filename", "")).name)
+              for violation in entry.get("file_results", {}).get("violations", []):
+                  # id=FATAL is the abort marker; type is 'FAIL' for these.
+                  if violation.get("id") == "FATAL":
+                      fatal.append((entry.get("filename"), violation.get("message")))
+
+          for filename, message in fatal:
+              print(f"::error file={filename}::cfn-nag FATAL: {message}")
+          if fatal:
+              sys.exit(f"::error::cfn-nag hit {len(fatal)} FATAL error(s) — those templates "
+                       "were NOT scanned. Refusing to report a clean result.")
+
+          missing = EXPECTED - scanned
+          if missing:
+              sys.exit(f"::error::cfn-nag returned no result for {sorted(missing)} — "
+                       f"expected {sorted(EXPECTED)}, got {sorted(scanned)}")
+
+          total = sum(len(e.get("file_results", {}).get("violations", [])) for e in results)
+          print(f"cfn-nag scanned {len(scanned)} template(s), {total} violation(s)")
+          PY
 
       - name: Publish findings to S3 rendezvous
-        if: always()
         uses: ./.github/actions/publish-findings-s3
         with:
           path: cfn-nag-results.json
           tool-name: cfn-nag
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          bucket: ${{ env.SECURITY_SCANS_BUCKET }}
+          source-revision: ${{ inputs.adp_source_revision }}
+          dest-prefix: ${{ env.RENDEZVOUS_PREFIX }}/cfn-nag/
 
   # ---------- Job 7: npm audit ----------
   npm-audit:
+    if: inputs.scan_scope != 'superplane'
+    needs: [context]
     name: npm audit (${{ matrix.package_dir }})
     runs-on: arc-runner-org
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -379,6 +673,22 @@ jobs:
           - modules/agent-factory/agent
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -388,7 +698,15 @@ jobs:
       - name: Run npm audit
         working-directory: ${{ matrix.package_dir }}
         run: |
-          npm audit --json --audit-level=high > npm-audit-results.json 2>/dev/null || true
+          set +e
+          npm audit --json --audit-level=high > npm-audit-results.json
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -gt 1 ]; then
+            echo "::error::npm audit failed with exit code $STATUS"
+            exit "$STATUS"
+          fi
+          python3 -c 'import json; r=json.load(open("npm-audit-results.json")); assert isinstance(r.get("auditReportVersion"), int) and isinstance(r.get("vulnerabilities"), dict)'
 
       - name: Set package slug
         id: name
@@ -396,46 +714,49 @@ jobs:
           NAME=$(echo "${{ matrix.package_dir }}" | sed 's|/|-|g')
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve account ID
-        if: always()
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
-
       - name: Stage npm-audit findings
-        if: always()
         run: |
           # Matrix legs share the npm-audit tool prefix; rename per-package so
           # they don't overwrite each other in the S3 rendezvous.
           cp -f "${{ matrix.package_dir }}/npm-audit-results.json" \
-            "npm-audit-${{ steps.name.outputs.name }}.json" 2>/dev/null || true
+            "npm-audit-${{ steps.name.outputs.name }}.json"
 
       - name: Publish findings to S3 rendezvous
-        if: always()
         uses: ./.github/actions/publish-findings-s3
         with:
           path: npm-audit-${{ steps.name.outputs.name }}.json
           tool-name: npm-audit
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          bucket: ${{ env.SECURITY_SCANS_BUCKET }}
+          source-revision: ${{ inputs.adp_source_revision }}
+          dest-prefix: ${{ env.RENDEZVOUS_PREFIX }}/npm-audit/
 
   # ---------- Job 8: Syft (SBOM via CodeBuild) ----------
   syft:
     name: Syft (CodeBuild)
     runs-on: arc-runner-org
-    needs: [discover-dockerfiles]
-    continue-on-error: true
-    timeout-minutes: 30
+    needs: [context, discover-dockerfiles]
+    timeout-minutes: 105
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
 
-      - name: Resolve deploy vars
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> $GITHUB_ENV
-          echo "STATE_BUCKET=adp-terraform-state-${ACCOUNT_ID}" >> $GITHUB_ENV
-          echo "AWS_REGION=${AWS_REGION:-us-east-1}" >> $GITHUB_ENV
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
+
+      - name: Set scan date
+        run: echo "SECURITY_SCAN_DATE=$(date -u +%Y/%m/%d)" >> "$GITHUB_ENV"
 
       - name: Run syft scan via CodeBuild
         id: syft_build
@@ -444,42 +765,114 @@ jobs:
           project_name: adp-${{ env.ENVIRONMENT }}-syft-scan
           region: ${{ env.AWS_REGION }}
           state_bucket: ${{ env.STATE_BUCKET }}
-          environment_variables: '"name=SYFT_VERSION,value=${{ env.SYFT_VERSION }},type=PLAINTEXT"'
+          source_revision: ${{ inputs.adp_source_revision }}
+          child_state_uri: s3://${{ env.STATE_BUCKET }}/${{ env.EVIDENCE_PREFIX }}/children/syft.json
+          environment_variables: '"name=SYFT_VERSION,value=${{ env.SYFT_VERSION }},type=PLAINTEXT" "name=SECURITY_IMAGE_SCOPE,value=${{ env.SECURITY_IMAGE_SCOPE }},type=PLAINTEXT" "name=SECURITY_SCAN_DATE,value=${{ env.SECURITY_SCAN_DATE }},type=PLAINTEXT" "name=SECURITY_SCANS_BUCKET,value=${{ env.SECURITY_SCANS_BUCKET }},type=PLAINTEXT" "name=SECURITY_EVIDENCE_PREFIX,value=${{ env.EVIDENCE_PREFIX }}/syft,type=PLAINTEXT"'
           poll_interval: '30'
 
       - name: Pull SBOMs from S3
-        if: always()
         run: |
           BUILD_ID="${{ steps.syft_build.outputs.build_id }}"
-          DATE=$(date -u +%Y/%m/%d)
+          DATE="$SECURITY_SCAN_DATE"
           BUILD_RUN_ID="${BUILD_ID##*:}"
           mkdir -p sbom-findings
           aws s3 sync \
-            "s3://adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}/sbom/${DATE}/${BUILD_RUN_ID}/" \
-            sbom-findings/ || true
+            "s3://${{ env.SECURITY_SCANS_BUCKET }}/sbom/${DATE}/${BUILD_RUN_ID}/" \
+            sbom-findings/
 
-          # Surface partial-count but don't fail the job
+          # Require the complete expected inventory — see the Grype job above.
+          # 6/17 SBOMs previously read as a successful run (#5618).
           COUNT=$(find sbom-findings -name '*.cdx.json' | wc -l)
-          EXPECTED=$(find . -name Dockerfile -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/.terraform/*' | wc -l)
+          EXPECTED="${{ needs.discover-dockerfiles.outputs.image_count }}"
           echo "Pulled ${COUNT}/${EXPECTED} SBOMs from S3"
           if [ "${COUNT}" -lt "${EXPECTED}" ]; then
-            echo "::warning::Syft SBOM count (${COUNT}) is below Dockerfile count (${EXPECTED}). Some scans may have failed — see CodeBuild logs."
+            echo "::error::Syft SBOM count (${COUNT}) is below the expected image count (${EXPECTED}). Some image scans produced no result — see the CodeBuild coverage.json and logs. Refusing to report partial coverage as a complete scan."
+            exit 1
           fi
 
       - name: Publish findings to S3 rendezvous
-        if: always()
         uses: ./.github/actions/publish-findings-s3
         with:
           path: sbom-findings
           tool-name: syft
-          bucket: adp-${{ env.ENVIRONMENT }}-security-scans-${{ env.ACCOUNT_ID }}
+          bucket: ${{ env.SECURITY_SCANS_BUCKET }}
+          source-revision: ${{ inputs.adp_source_revision }}
+          dest-prefix: ${{ env.RENDEZVOUS_PREFIX }}/syft/
 
-  # ---------- Summary job ----------
+  # ---------- Asynchronous child cleanup ----------
+  cleanup:
+    name: Cleanup Scan Children
+    runs-on: arc-runner-org
+    if: always() && needs.context.result == 'success'
+    needs: [context, grype, syft]
+    outputs:
+      cleanup_complete: ${{ steps.cleanup.outputs.cleanup_complete }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
+
+      - name: Pull recorded child IDs
+        run: |
+          mkdir -p child-state
+          aws s3 sync \
+            "s3://${{ env.STATE_BUCKET }}/${{ env.EVIDENCE_PREFIX }}/children/" \
+            child-state/ \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Stop outstanding children and remove source archives
+        id: cleanup
+        run: |
+          set +e
+          python3 .github/scripts/reconcile_security_scan.py cleanup-children \
+            --state-dir child-state \
+            --region "${{ env.AWS_REGION }}" \
+            --state-bucket "${{ env.STATE_BUCKET }}" \
+            --output cleanup.json
+          STATUS=$?
+          set -e
+          COMPLETE=$(python3 -c 'import json; print(str(json.load(open("cleanup.json"))["cleanup_complete"]).lower())')
+          echo "cleanup_complete=$COMPLETE" >> "$GITHUB_OUTPUT"
+          exit "$STATUS"
+
+      - name: Preserve cleanup evidence
+        if: always()
+        run: |
+          test -s cleanup.json
+          aws s3 cp cleanup.json \
+            "s3://${{ env.STATE_BUCKET }}/${{ env.EVIDENCE_PREFIX }}/cleanup.json" \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Upload cleanup evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: adp-repository-scan-cleanup-${{ github.run_attempt }}
+          path: cleanup.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------- Summary and typed producer evidence ----------
   summary:
     name: Security Summary
     runs-on: arc-runner-org
-    if: always() && github.event_name == 'pull_request'
+    if: always() && inputs.scan_scope == 'all' && needs.context.result == 'success'
     needs:
+      - context
       - checkov
       - semgrep
       - detect-secrets
@@ -488,132 +881,165 @@ jobs:
       - cfn-nag
       - npm-audit
       - syft
+      - cleanup
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.adp_source_revision }}
+          fetch-depth: 1
+
+      - name: Verify checked-out scan source
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
+
+      - name: Verify approved AWS scan identity
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          ARN=$(aws sts get-caller-identity --query Arn --output text)
+          test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
+          case "$ARN" in
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
+          esac
 
       - name: Setup Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
-      - name: Pull findings from S3 rendezvous
+      - name: Install inventory parser
+        run: python3 -m pip install --quiet PyYAML==6.0.3
+
+      - name: Require every scanner and cleanup job
+        env:
+          SCAN_JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          expected = {
+              "checkov", "semgrep", "detect-secrets", "grype", "bandit",
+              "cfn-nag", "npm-audit", "syft", "cleanup",
+          }
+          needs = json.loads(os.environ["SCAN_JOB_RESULTS"])
+          failed = {name: needs.get(name, {}).get("result") for name in expected if needs.get(name, {}).get("result") != "success"}
+          if failed:
+              sys.exit(f"::error::Required scan jobs did not succeed: {failed}")
+          PY
+
+      - name: Pull current-attempt findings
+        run: |
           mkdir -p findings
           aws s3 sync \
-            "s3://adp-${{ env.ENVIRONMENT }}-security-scans-${ACCOUNT_ID}/findings/${{ github.run_id }}/" \
-            findings/
-
-          # Fail loud: an empty rendezvous means the pipeline is broken
-          # (upload path misconfigured, every scanner crashed, IAM denied).
-          # Reporting "0 findings" in that case is a false all-clear — the exact
-          # failure mode this job is meant to surface. Require at least one
-          # diffable tool's output before trusting the diff.
-          FOUND=$(find findings -type f \( -name '*.sarif' -o -name '*.json' \) | wc -l)
-          echo "Pulled ${FOUND} findings file(s) from the rendezvous prefix"
-          if [ "${FOUND}" -eq 0 ]; then
-            echo "::error::No findings files found under findings/${{ github.run_id }}/ in S3. The scan pipeline did not publish results — refusing to report a false '0 findings'. Check the scanner jobs' 'Publish findings to S3' steps."
-            exit 1
-          fi
+            "s3://${{ env.SECURITY_SCANS_BUCKET }}/${{ env.RENDEZVOUS_PREFIX }}/" \
+            findings/ \
+            --region "${{ env.AWS_REGION }}"
+          python3 codebuild/security_image_targets.py --scope all --format json > expected-images.json
+          python3 .github/scripts/reconcile_security_scan.py validate-findings \
+            --findings-dir findings \
+            --inventory expected-images.json
 
       - name: Diff findings against baseline
         run: |
-          # Advisory diff (never fails here) — produces summary.json for the PR
-          # comment. The hard gate runs as a separate step AFTER the comment so
-          # the author always sees the details even when the gate fails.
           python3 .github/scripts/diff_security_findings.py \
             --findings-dir findings/ \
             --baseline-dir .github/security/ \
             --output summary.json
 
-      - name: Post PR comment
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - name: Pull image, provenance, and cleanup evidence
         run: |
-          python3 .github/scripts/post_security_pr_comment.py \
+          mkdir -p scanner-evidence
+          aws s3 sync \
+            "s3://${{ env.SECURITY_SCANS_BUCKET }}/${{ env.EVIDENCE_PREFIX }}/" \
+            scanner-evidence/ \
+            --region "${{ env.AWS_REGION }}"
+          aws s3 cp \
+            "s3://${{ env.STATE_BUCKET }}/${{ env.EVIDENCE_PREFIX }}/cleanup.json" \
+            scanner-evidence/cleanup.json \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Export authenticated scan receipt
+        env:
+          CONTEXT_WORKFLOW: .github/workflows/security-scan.yml
+          CONTEXT_SOURCE: ${{ inputs.adp_source_revision }}
+          CONTEXT_REVISION: ${{ inputs.adp_definition_revision }}
+          CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
+          CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
+          SCAN_EXPECTED_ACCOUNT: ${{ inputs.expected_account_id }}
+          SCAN_EXPECTED_ROLE: adp-dev-agent-runner-role
+          SCAN_INPUTS_JSON: ${{ format('{{"expected_account_id":"{0}","region":"{1}","scan_scope":"{2}"}}', inputs.expected_account_id, inputs.region, inputs.scan_scope) }}
+        run: |
+          CLEANUP_COMPLETE=$(python3 -c 'import json; print(str(json.load(open("scanner-evidence/cleanup.json"))["cleanup_complete"]).lower())')
+          python3 .github/scripts/reconcile_security_scan.py observed-results \
+            --evidence-dir scanner-evidence \
+            --provenance-output receipt-provenance \
+            --inventory expected-images.json \
+            --source-revision "$EXPECTED_SOURCE_REVISION" \
+            --cleanup-complete "$CLEANUP_COMPLETE" \
+            --output observed-results.json
+          python3 modules/gateway/scripts/repository-scan-receipt.py \
+            --results observed-results.json \
+            --provenance-dir receipt-provenance
+          RECEIPT_EVIDENCE="${RUNNER_TEMP}/adp-repository-scan/evidence"
+          mkdir -p "$RECEIPT_EVIDENCE/grype" "$RECEIPT_EVIDENCE/syft"
+          cp scanner-evidence/cleanup.json expected-images.json observed-results.json \
+            "$RECEIPT_EVIDENCE/"
+          cp scanner-evidence/grype/coverage.json "$RECEIPT_EVIDENCE/grype/"
+          cp scanner-evidence/syft/coverage.json "$RECEIPT_EVIDENCE/syft/"
+          cp -R scanner-evidence/grype/provenance "$RECEIPT_EVIDENCE/grype/"
+          cp -R scanner-evidence/syft/provenance "$RECEIPT_EVIDENCE/syft/"
+
+      - name: Upload typed scan receipt
+        uses: actions/upload-artifact@v6
+        with:
+          name: adp-repository-scan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/adp-repository-scan/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish private detailed summary
+        run: |
+          aws s3 cp summary.json \
+            "s3://${{ env.SECURITY_SCANS_BUCKET }}/${{ env.RENDEZVOUS_PREFIX }}/summary/summary.json" \
+            --region "${{ env.AWS_REGION }}"
+          python3 - <<'PY'
+          import json
+          summary = json.load(open("summary.json"))
+          for tool, result in sorted(summary.items()):
+              print(f"{tool}: {result['new_count']} new, {result['resolved_count']} resolved, "
+                    f"{result.get('new_unrated_count', 0)} unrated")
+          PY
+
+      - name: Export sanitized reconciliation
+        run: |
+          python3 .github/scripts/reconcile_security_scan.py sanitize-summary \
             --summary summary.json \
-            --repo "${{ github.repository }}" \
-            --pr "${{ github.event.pull_request.number }}"
+            --output security-reconciliation.json \
+            --source-revision "$EXPECTED_SOURCE_REVISION" \
+            --correlation "$ADP_CORRELATION"
+
+      - name: Upload sanitized reconciliation
+        uses: actions/upload-artifact@v6
+        with:
+          name: security-reconciliation-${{ github.run_attempt }}
+          path: security-reconciliation.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Security gate (fail on new critical/high)
         run: |
-          # Hard gate (issue #3587): any NEW critical/high finding fails the
-          # check. Suppressed findings are excluded by the diff script, and the
-          # baseline is 0/0 as of #3581, so this only fires on genuinely new
-          # crit/high introduced by a PR. Nightly baseline-refresh stays
-          # advisory (no --fail-on).
           python3 .github/scripts/diff_security_findings.py \
             --findings-dir findings/ \
             --baseline-dir .github/security/ \
             --output /tmp/gate-summary.json \
             --fail-on critical,high
 
-  # ---------- Baseline update (nightly only) ----------
-  update-baseline:
-    name: Update Baselines
-    runs-on: arc-runner-org
-    if: github.event_name == 'schedule'
-    needs:
-      - checkov
-      - semgrep
-      - detect-secrets
-      - grype
-      - bandit
-      - cfn-nag
-      - npm-audit
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-
-      - name: Pull findings from S3 rendezvous
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          mkdir -p findings
-          aws s3 sync \
-            "s3://adp-${{ env.ENVIRONMENT }}-security-scans-${ACCOUNT_ID}/findings/${{ github.run_id }}/" \
-            findings/
-          FOUND=$(find findings -type f \( -name '*.sarif' -o -name '*.json' \) | wc -l)
-          echo "Pulled ${FOUND} findings file(s) from the rendezvous prefix"
-          if [ "${FOUND}" -eq 0 ]; then
-            echo "::error::No findings files in S3 rendezvous; refusing to overwrite baselines with empty data."
-            exit 1
-          fi
-
-      - name: Update baseline files
-        id: update
-        run: |
-          python3 .github/scripts/diff_security_findings.py \
-            --findings-dir findings/ \
-            --baseline-dir .github/security/ \
-            --update-baselines \
-            --output baseline-diff.json
-
-          if git diff --quiet .github/security/; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create baseline PR
-        if: steps.update.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH="chore/security-baseline-$(date +%Y%m%d)"
-          git checkout -b "$BRANCH"
-          git add .github/security/
-          git commit -m "chore(security): refresh baselines $(date +%Y-%m-%d)"
-          git push origin "$BRANCH"
-          gh pr create \
-            --title "chore(security): refresh baselines $(date +%Y-%m-%d)" \
-            --body "Automated baseline refresh from nightly security scan. Review and merge to update the known-findings baseline." \
-            --base main \
-            --head "$BRANCH"
+  # ---------- Baseline update ----------
+  # REMOVED (S19, #5618): the `update-baseline` job was gated on
+  # `github.event_name == 'schedule'`. This workflow is dispatch-only, so the job
+  # was unreachable dead code that would blanket-refresh every baseline from a
+  # single run's output if a schedule were ever restored -- making unresolved
+  # findings disappear instead of being dispositioned. Baseline and global
+  # scanner-disposition changes are owned by S21 (#5620) and must be deliberate,
+  # per-finding and reviewed. Do not reintroduce an automated refresh here.

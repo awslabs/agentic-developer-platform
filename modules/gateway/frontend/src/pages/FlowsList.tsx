@@ -354,7 +354,7 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
         {/* The two calls to action, surfaced separately from `status`. `status` is
             first-match-wins, so a flow that is both stalled and gated reports only
             `attention_needed` — and the gate still needs answering. */}
-        {(flow.awaiting_gate_count > 0 || flow.stalled_count > 0) && (
+        {(flow.awaiting_gate_count > 0 || flow.display_counts.stalled > 0) && (
           <div className="mt-2 flex flex-wrap gap-2">
             {flow.awaiting_gate_count > 0 && (
               <span
@@ -365,13 +365,13 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
                 {flow.awaiting_gate_count} waiting on you
               </span>
             )}
-            {flow.stalled_count > 0 && (
+            {flow.display_counts.stalled > 0 && (
               <span
                 data-testid="stalled-count"
                 className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-900 dark:bg-orange-900 dark:text-orange-100"
               >
                 <span aria-hidden="true">⚠</span>
-                {flow.stalled_count} stalled
+                {flow.display_counts.stalled} stalled
               </span>
             )}
           </div>
@@ -390,7 +390,13 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           {/* The same five-value rollup the graph page draws, from the same
               component — a second bar is how a legend ends up describing a fill
               the graph no longer uses. */}
-          <RollupBar counts={flow.display_counts} total={flow.total_nodes} />
+          <RollupBar
+            counts={flow.display_counts}
+            total={flow.total_nodes}
+            stories={flow.completed_story_count !== undefined && flow.story_count !== undefined
+              ? { complete: flow.completed_story_count, total: flow.story_count }
+              : undefined}
+          />
           <WaveRail flow={flow} />
           {/* Last: the design loop is how this plan came to exist, which matters
               less at a glance than what it is doing now. Renders nothing at all when

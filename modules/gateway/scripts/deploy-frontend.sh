@@ -11,8 +11,8 @@ set -euo pipefail
 #      a broken app: "GitHub sign-in is not configured" + Cognito unconfigured),
 #   2. syncs dist/ to the frontend bucket, EXCLUDING cfn-templates/* so the
 #      --delete doesn't wipe the template uploaded next,
-#   3. uploads the CloudFormation role templates (cfn-templates/aws_role_v1.yaml
-#      and, per #4742, cfn-templates/aws_role_v2.yaml) — REQUIRED for the "Add AWS
+#   3. uploads the CloudFormation role templates (inspection, routing, and the
+#      disabled-by-default deploy contract) — REQUIRED for the "Add AWS
 #      account" flow; the gateway pre-signs a GET for them, and without them the
 #      flow fails "S3 error: The specified key does not exist." (The paired
 #      gateway-infra grant — s3:ListBucket/GetObject on cfn-templates/* — must
@@ -35,6 +35,7 @@ CFN_TEMPLATE="${MODULE_ROOT}/src/auth/cfn_templates/aws_role_v1.yaml"
 # single-user trust pin). Both versions ship — v1 still backs the personal
 # read-only connect flow.
 CFN_TEMPLATE_V2="${MODULE_ROOT}/src/auth/cfn_templates/aws_role_v2.yaml"
+CFN_TEMPLATE_DEPLOY="${MODULE_ROOT}/src/auth/cfn_templates/aws_role_deploy_v1.yaml"
 
 ENVIRONMENT="${ADP_ENV:-dev}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
@@ -133,6 +134,8 @@ else
   ok "Uploaded cfn-templates/aws_role_v1.yaml"
   run "aws s3 cp '${CFN_TEMPLATE_V2}' 's3://${BUCKET}/cfn-templates/aws_role_v2.yaml' --content-type text/yaml --region '${AWS_REGION}'"
   ok "Uploaded cfn-templates/aws_role_v2.yaml"
+  run "aws s3 cp '${CFN_TEMPLATE_DEPLOY}' 's3://${BUCKET}/cfn-templates/aws_role_deploy_v1.yaml' --content-type text/yaml --region '${AWS_REGION}'"
+  ok "Uploaded cfn-templates/aws_role_deploy_v1.yaml"
 fi
 
 # -----------------------------------------------------------------------------

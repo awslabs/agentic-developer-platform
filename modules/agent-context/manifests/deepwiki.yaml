@@ -25,6 +25,8 @@ spec:
       containers:
       - name: deepwiki
         image: ${DEEPWIKI_IMAGE}
+        securityContext:
+          allowPrivilegeEscalation: false
         ports:
         - containerPort: ${DEEPWIKI_PORT}
           name: api

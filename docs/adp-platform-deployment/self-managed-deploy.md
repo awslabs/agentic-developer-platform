@@ -82,7 +82,10 @@ environment: dev
 github_org: your-org
 ```
 
-**Note**: the `customer_account` block in the example file is for the **ADP-managed** track only (where ADP's platform pods deploy into a customer-linked account on the customer's behalf). Self-managed deploys should leave it commented out.
+Do not add a `customer_account` block. Cross-account ADP-managed bootstrap is
+unavailable because linked roles are steady-state roles, not Terraform
+provisioning identities. Use the top-level `account_id` and temporary,
+customer-controlled credentials for this self-managed deployment.
 
 ## What Gets Deployed
 
@@ -347,8 +350,9 @@ Bedrock usage is pay-per-token on top of infrastructure costs.
 Destroy order: agent-context → webhook-ingress → agent-factory → gateway → platform.
 Maintains `.adp-undeploy-state.json` for resume. Retries failed phases up to 2×.
 
-For ADP-managed environments, use `.github/workflows/undeploy.yml` (workflow_dispatch)
-which provides the same capabilities via GitHub Actions.
+The `.github/workflows/undeploy.yml` workflow can tear down an account only when
+its runner already has customer-controlled credentials for that account. A linked
+ADP inspection or Bedrock-routing role cannot authorize teardown.
 
 ### Legacy path (retained)
 

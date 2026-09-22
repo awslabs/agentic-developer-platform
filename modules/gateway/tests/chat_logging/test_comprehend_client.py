@@ -4,7 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.chat_logging.comprehend_client import ComprehendPiiDetector
+from src.chat_logging.comprehend_client import (
+    PII_DETECTION_FAILED_PLACEHOLDER,
+    ComprehendPiiDetector,
+    PiiDetectionResult,
+)
 
 
 class TestComprehendPiiDetector:
@@ -281,6 +285,33 @@ class TestComprehendPiiDetector:
             assert "Hello world" in result_data["message"]
 
     @pytest.mark.asyncio
+    async def test_numeric_personal_data_uses_path_context(self, detector):
+        data = {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "input": {
+                        "ssn": {"value": 123456789},
+                        "card_number": [4111111111111111],
+                        "status_code": 200,
+                    },
+                }
+            ],
+            "usage": {"input_tokens": 123456789},
+        }
+
+        with patch.object(detector, "detect_and_redact", return_value=PiiDetectionResult(content="tool_use")):
+            result_data, result = await detector.detect_and_redact_dict(data)
+
+        tool_input = result_data["content"][0]["input"]
+        assert tool_input["ssn"]["value"] == "[REDACTED:NATIONAL_ID]"
+        assert tool_input["card_number"] == ["[REDACTED:PAYMENT_CARD]"]
+        assert tool_input["status_code"] == 200
+        assert result_data["usage"]["input_tokens"] == 123456789
+        assert result.redactions_count == 2
+        assert set(result.pii_types_found) == {"SSN", "CREDIT_CARD"}
+
+    @pytest.mark.asyncio
     async def test_error_handling(self, detector):
         """Test error handling when Comprehend fails."""
         text = "Some text to analyze"
@@ -292,10 +323,11 @@ class TestComprehendPiiDetector:
 
             result = await detector.detect_and_redact(text)
 
-            # On error, original text should be returned
-            assert result.content == text
+            assert result.content == PII_DETECTION_FAILED_PLACEHOLDER
+            assert text not in result.content
+            assert result.redactions_count == 1
             assert result.error is not None
-            assert "Error" in result.error
+            assert result.error == "PII detection error: Exception"
 
     @pytest.mark.asyncio
     async def test_text_truncation(self, detector):

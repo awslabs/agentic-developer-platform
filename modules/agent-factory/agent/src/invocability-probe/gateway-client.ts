@@ -77,16 +77,35 @@ export class SigV4ProbeGateway implements ProbeGateway {
 
   constructor(gatewayEndpoint = process.env.ADP_GATEWAY_ENDPOINT ?? '') {
     if (!gatewayEndpoint) throw new Error('ADP_GATEWAY_ENDPOINT is required for invocability probes');
+    // Same destination policy as the other own-run Gateway callers (artifactGateway,
+    // knowledgeBridge): the probe endpoint is an operator-configured API Gateway origin,
+    // so require https and reject inline credentials, query and fragment. A base path is
+    // preserved deliberately — API Gateway stage URLs carry one (e.g. /dev).
+    let parsed: URL;
+    try {
+      parsed = new URL(gatewayEndpoint);
+    } catch {
+      throw new Error('ADP_GATEWAY_ENDPOINT is not a valid URL');
+    }
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+      throw new Error('ADP_GATEWAY_ENDPOINT must be an https URL without credentials, query or fragment');
+    }
     this.root = `${gatewayEndpoint.replace(/\/+$/, '')}${BASE_PATH}`;
   }
 
   private async post<T>(path: string, payload: unknown): Promise<T> {
     const endpoint = `${this.root}${path}`;
     const body = JSON.stringify(payload);
+    // endpoint is the configured Gateway origin validated in the constructor (https only,
+    // no inline credentials/query/fragment) plus a static probe path. redirect:'error'
+    // stops the Gateway from relocating the call: the SigV4 headers include
+    // x-amz-security-token, which fetch() forwards across origins on a redirect (#5603).
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: await signedHeaders(endpoint, body),
       body,
+      redirect: 'error',
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {

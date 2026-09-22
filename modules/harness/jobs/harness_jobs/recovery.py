@@ -39,6 +39,7 @@ and it does not release or retain budget directly (that is the caller's, via the
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import uuid4
@@ -321,6 +322,61 @@ ProviderObserver = Callable[
     Awaitable[tuple[CallOutcome, str | None, str | None]],
 ]
 
+# A timed-out hook may refuse cancellation. Retain a bounded number of tasks until
+# they actually exit, preventing duplicate observation of that intent in this loop.
+# Hooks receive only provider identifiers, never the recovery database connection.
+_MAX_OBSERVER_TASKS = 50
+_observer_tasks: dict[tuple[asyncio.AbstractEventLoop, str], asyncio.Task] = {}
+
+
+async def _observe_with_deadline(observer, key, provider, kind, target, seconds):
+    identity = (asyncio.get_running_loop(), key)
+    previous = _observer_tasks.get(identity)
+    if previous is not None and previous.done():
+        _observer_tasks.pop(identity)
+        previous = None
+    if previous is not None or len(_observer_tasks) >= _MAX_OBSERVER_TASKS:
+        raise TimeoutError("Provider observation still active or capacity exhausted")
+
+    async def observe():
+        return await observer(key, provider, kind, target)
+
+    task = asyncio.create_task(observe())
+    _observer_tasks[identity] = task
+
+    def completed(finished):
+        if _observer_tasks.get(identity) is finished:
+            _observer_tasks.pop(identity)
+        # Observe late failures without publishing a late provider result.
+        if not finished.cancelled():
+            finished.exception()
+
+    task.add_done_callback(completed)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=seconds)
+        if not done:
+            raise TimeoutError("Provider observation deadline exceeded")
+        if task.cancelled():
+            # Cancellation inside the child is an inconclusive observation. Parent
+            # cancellation still propagates directly from asyncio.wait above.
+            raise TimeoutError("Provider observer cancelled itself")
+        return task.result()
+    finally:
+        if not task.done():
+            # Do not await cancellation: a broken hook may suppress it indefinitely.
+            task.cancel()
+
+
+def _validate_observation_timeout(seconds: float) -> None:
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, int | float)
+        or not 0 < seconds <= 30
+    ):
+        raise ContractViolation(
+            "observation_timeout_seconds must be finite and in (0, 30]"
+        )
+
 
 async def sweep_expired_leases(
     connection: Connection,
@@ -329,6 +385,7 @@ async def sweep_expired_leases(
     max_operations: int = 50,
     max_attempts: int = DEFAULT_MAX_EXECUTION_ATTEMPTS,
     max_reconcile_attempts: int = 3,
+    observation_timeout_seconds: float = 30,
 ) -> RecoveryReport:
     """Settle operations whose executor lease has lapsed.
 
@@ -359,6 +416,7 @@ async def sweep_expired_leases(
         raise ContractViolation("max_attempts must be a positive integer")
     if type(max_reconcile_attempts) is not int or not 1 <= max_reconcile_attempts <= 10:
         raise ContractViolation("max_reconcile_attempts must be between 1 and 10")
+    _validate_observation_timeout(observation_timeout_seconds)
     expired = await connection.fetch(
         """
         SELECT operation_id FROM harness_operation_leases
@@ -382,6 +440,7 @@ async def sweep_expired_leases(
             observe_call=observe_call,
             max_attempts=max_attempts,
             max_reconcile_attempts=max_reconcile_attempts,
+            observation_timeout_seconds=observation_timeout_seconds,
         )
         results.append(result)
         if result.action == "retried":
@@ -482,6 +541,7 @@ async def _recover_one(
     observe_call: ProviderObserver | None,
     max_attempts: int,
     max_reconcile_attempts: int,
+    observation_timeout_seconds: float,
 ) -> SweepResult:
     """Hold a finite recovery claim and persist bounded provider observation retries."""
     takeover = await fence_expired_lease(connection, operation_id=operation_id)
@@ -516,11 +576,13 @@ async def _recover_one(
             outcome, detail, provider_ref = CallOutcome.UNKNOWN, None, None
             if observe_call is not None and not exhausted:
                 try:
-                    outcome, detail, provider_ref = await observe_call(
+                    outcome, detail, provider_ref = await _observe_with_deadline(
+                        observe_call,
                         call.idempotency_key,
                         call.provider,
                         call.operation_kind,
                         call.target,
+                        observation_timeout_seconds,
                     )
                     if not isinstance(outcome, CallOutcome):
                         raise ContractViolation("Observer must return CallOutcome")
@@ -682,6 +744,7 @@ async def sweep_unresolved_calls(
     observe_call: ProviderObserver,
     max_calls: int = 50,
     max_reconcile_attempts: int = 3,
+    observation_timeout_seconds: float = 30,
 ) -> int:
     """Reconcile orphaned intents with durable attempt/backoff and successor fencing.
 
@@ -697,6 +760,7 @@ async def sweep_unresolved_calls(
         raise ContractViolation("max_calls must be a positive integer")
     if type(max_reconcile_attempts) is not int or not 1 <= max_reconcile_attempts <= 10:
         raise ContractViolation("max_reconcile_attempts must be between 1 and 10")
+    _validate_observation_timeout(observation_timeout_seconds)
     if connection.is_in_transaction():
         raise ContractViolation("Recovery must own its transaction boundaries")
     rows = await connection.fetch(
@@ -762,11 +826,13 @@ async def sweep_unresolved_calls(
             outcome, detail, provider_ref = CallOutcome.UNKNOWN, None, None
             if not exhausted:
                 try:
-                    outcome, detail, provider_ref = await observe_call(
+                    outcome, detail, provider_ref = await _observe_with_deadline(
+                        observe_call,
                         row["idempotency_key"],
                         row["provider"],
                         row["operation_kind"],
                         row["target"],
+                        observation_timeout_seconds,
                     )
                     if not isinstance(outcome, CallOutcome):
                         raise ContractViolation("Observer must return CallOutcome")

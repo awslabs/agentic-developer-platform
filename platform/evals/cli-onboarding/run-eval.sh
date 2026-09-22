@@ -74,7 +74,7 @@
 #   EVAL_RUN_ID       unique suffix for throwaway resources (default: local-$$)
 #   EVAL_WORKDIR      scratch dir (default: mktemp -d)
 #   EVAL_ORG_ID       org to approve the throwaway user into (default: discovered)
-#   EVAL_POD_NAMESPACE  namespace for the laptop pod (default: adp-gateway)
+#   EVAL_POD_NAMESPACE  namespace for the laptop pod (default: adp-gateway-evals)
 #   EVAL_POD_IMAGE    laptop pod image (default: node:20-bookworm)
 # =============================================================================
 
@@ -129,10 +129,10 @@ EVAL_ADMIN_USERNAME="${EVAL_USER_PREFIX}-admin-${EVAL_RUN_ID}@example.com"
 # The laptop pod — the clean room (#4171)
 # -----------------------------------------------------------------------------
 # The pod lives in the SAME namespace the harness already has RBAC for
-# (adp-gateway: pods create/delete + pods/exec create), so this needs no new
+# (adp-gateway-evals: pods create/delete + pods/exec create), so this needs no new
 # permissions. It is labelled so a leaked pod from a crashed run can be swept by
 # selector without knowing its run id — that sweep is what --cleanup-only does.
-POD_NAMESPACE="${EVAL_POD_NAMESPACE:-adp-gateway}"
+POD_NAMESPACE="${EVAL_POD_NAMESPACE:-adp-gateway-evals}"
 POD_IMAGE="${EVAL_POD_IMAGE:-node:20-bookworm}"
 POD_LABEL_APP="$EVAL_USER_PREFIX"
 # RFC 1123 for the name, and the label-value charset for the label: the run id

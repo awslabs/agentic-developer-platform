@@ -72,6 +72,22 @@ resource "kubernetes_network_policy" "agent_scaledjob_egress" {
       }
     }
 
+    # The browser broker is the sole URL-analysis browsing boundary. Workers
+    # can submit a URL for a guarded capture but cannot access AgentCore itself.
+    egress {
+      to {
+        pod_selector {
+          match_labels = {
+            "app.kubernetes.io/name" = "url-analysis-browser-broker"
+          }
+        }
+      }
+      ports {
+        port     = 8765
+        protocol = "TCP"
+      }
+    }
+
     # NO in-cluster path to the gateway. Deliberate, and load-bearing.
     #
     # Issue #3960: a rule here previously claimed to allow agent pods → gateway on

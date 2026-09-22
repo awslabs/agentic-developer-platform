@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
@@ -25,7 +26,7 @@ from .execution_runner import (
 )
 from .execution_state import ActionIntent, BlockCode, ExecutionPhase, Observation, ObservedOutcome, OutcomeKind
 from .execution_store import load_execution, prepare_action, record_observation
-from .merge_evidence import EligibilityReason, EligibilityState, observe_merge_eligibility
+from .merge_evidence import EligibilityReason, EligibilityState, GitHubEvidenceSource, observe_merge_eligibility
 from .merge_provider import MergeProvider
 from .merge_review import load_merge_review
 from .models import (
@@ -81,11 +82,12 @@ class MergeReceipt(BaseModel):
     provider_repository_id: int = Field(gt=0)
     provider_pr_node_id: str = Field(min_length=1, max_length=255)
     reviewed_head_sha: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-    reviewed_base_sha: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    reviewed_base_sha: str | None = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
     merge_sha: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
     review_ref: str = Field(min_length=1, max_length=512)
     operation_key: str = Field(min_length=1, max_length=255)
-    method: str = Field(pattern=r"^(merge|squash|rebase|queue)$")
+    method: str = Field(pattern=r"^(merge|squash|rebase|queue|external)$")
+    verification_kind: Literal["pre_merge_authorization", "post_merge_verification"] = "pre_merge_authorization"
     eligibility_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     eligibility_observed_at: datetime
     merged_at: datetime
@@ -96,7 +98,14 @@ class MergeReceipt(BaseModel):
     def chronological(self):
         if any(moment.tzinfo is None for moment in (self.eligibility_observed_at, self.merged_at, self.observed_at)):
             raise ValueError("merge receipt timestamps must be timezone-aware")
-        if not evidence_precedes_merge(self.eligibility_observed_at, self.merged_at) or self.merged_at > self.observed_at:
+        if self.verification_kind == "post_merge_verification":
+            if not self.adopted or self.method != "external" or self.reviewed_base_sha is not None:
+                raise ValueError("Observed external merges cannot claim a pre-merge method or base authorization")
+            if not self.merged_at <= self.eligibility_observed_at <= self.observed_at:
+                raise ValueError("Post-merge verification must retain its actual observation time")
+        elif self.method == "external" or self.reviewed_base_sha is None or not evidence_precedes_merge(self.eligibility_observed_at, self.merged_at):
+            raise ValueError("merge receipt evidence is not chronological")
+        if self.merged_at > self.observed_at:
             raise ValueError("merge receipt evidence is not chronological")
         return self
 
@@ -159,13 +168,13 @@ class MergeServices:
             raise CycleBlockedError("merge_claim_unavailable", BlockCode.OWNERSHIP_LOST)
         return node, binding, claim.active_run_id
 
-    async def eligibility(self, session, context, node, binding, run_id, provider_state):
+    async def review(self, session, context, node, binding, run_id, provider_state):
         raw = await self.authority.protected(node.org_id, run_id)
         if not raw or raw.get("status", {}).get("S") in {"revoked", "cancelled"}:
             raise CycleBlockedError("reviewer_authority_revoked", BlockCode.AUTHORITY_UNVERIFIABLE)
         if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
             raise CycleBlockedError("reviewer_still_active")
-        review = await load_merge_review(
+        return await load_merge_review(
             session,
             context=context,
             node=node,
@@ -175,6 +184,9 @@ class MergeServices:
             head_sha=provider_state.head_sha,
             storage=self.storage,
         )
+
+    async def eligibility(self, session, context, node, binding, run_id, provider_state):
+        review = await self.review(session, context, node, binding, run_id, provider_state)
 
         async def current_authority():
             current_node, current_binding, current_run = await self.state(session, context)
@@ -192,6 +204,76 @@ class MergeServices:
             client=self.provider.client,
         )
         return result, review
+
+    async def completed_elsewhere(self, session, context, node, binding, run_id, state):
+        """Reconcile delivered code using current review/check evidence, without a merge effect.
+
+        A human or another authorized actor can merge before this controller runs.
+        Record what is verified now; never invent an earlier engine authorization.
+        """
+        before = (binding.id, binding.revision, binding.head_sha, run_id)
+        review = await self.review(session, context, node, binding, run_id, state)
+        token = await self.provider.token(binding, evidence=True)
+        evidence = await GitHubEvidenceSource().bound_pull_request(
+            org_id=node.org_id,
+            installation_id=binding.installation_id,
+            repo=binding.repo,
+            pr_number=binding.pr_number,
+            read_token=token,
+            client=self.provider.client,
+        )
+        if (
+            evidence is None
+            or not evidence.merged
+            or evidence.head_sha != binding.head_sha
+            or evidence.head_sha != state.head_sha
+            or evidence.merge_commit_sha != state.merge_sha
+            or evidence.provider_repository_id != binding.provider_repository_id
+            or evidence.provider_pr_node_id != binding.provider_pr_node_id
+            or evidence.merged_at != state.merged_at
+        ):
+            raise CycleBlockedError("merged_pr_identity_changed")
+        if not evidence.checks_successful:
+            raise CycleBlockedError("merged_pr_checks_not_successful")
+        if not evidence.review_approved:
+            raise CycleBlockedError("merged_pr_review_not_approved")
+        _, current, current_run = await self.state(session, context)
+        if before != (current.id, current.revision, current.head_sha, current_run):
+            raise CycleBlockedError("merged_pr_binding_changed")
+        now = datetime.now(UTC)
+        verification = {
+            "verification_kind": "post_merge_verification",
+            "observed_at": now.isoformat(),
+            "head_sha": evidence.head_sha,
+            "merge_sha": evidence.merge_commit_sha,
+            "merged_at": evidence.merged_at,
+            "checks_state": evidence.checks_state,
+            "review_state": evidence.review_state,
+            "review_ref": review.artifact_ref,
+        }
+        key = OperationIdentity.from_context(context, "observe_existing_merge", binding.id, str(binding.revision), state.merge_sha).key
+        receipt = MergeReceipt(
+            **asdict(context.identity),
+            execution_id=context.execution.id,
+            flow_id=context.execution.flow_id,
+            repo=binding.repo,
+            pr_number=binding.pr_number,
+            provider_repository_id=binding.provider_repository_id,
+            provider_pr_node_id=binding.provider_pr_node_id,
+            reviewed_head_sha=state.head_sha,
+            reviewed_base_sha=None,
+            merge_sha=state.merge_sha,
+            review_ref=review.artifact_ref,
+            operation_key=key,
+            method="external",
+            verification_kind="post_merge_verification",
+            eligibility_digest=hashlib.sha256(encode(verification).encode()).hexdigest(),
+            eligibility_observed_at=now,
+            merged_at=datetime.fromisoformat(state.merged_at.replace("Z", "+00:00")),
+            observed_at=now,
+            adopted=True,
+        )
+        return receipt, verification
 
     async def actions(self, session, context):
         rows = list(
@@ -411,12 +493,14 @@ class MergeController:
             matching = [row for row in rows if self.services.matches(row.detail or {}, binding, state)]
             latest = matching[-1] if matching else None
             if state.merged:
+                verification = None
                 if latest is None:
-                    raise CycleBlockedError("historical_merge_requirements_missing", BlockCode.HUMAN_INPUT_REQUIRED)
-                receipt = self.services.receipt(context, binding, state, latest)
+                    receipt, verification = await self.services.completed_elsewhere(session, context, node, binding, run, state)
+                else:
+                    receipt = self.services.receipt(context, binding, state, latest)
                 return MergeObservation(
                     ObservationKind.SUCCEEDED,
-                    operation_key=latest.operation_key,
+                    operation_key=receipt.operation_key,
                     receipt_ref=f"github/verified-merge/{receipt.merge_sha}",
                     receipt=receipt,
                     snapshot={
@@ -424,6 +508,7 @@ class MergeController:
                         "binding_revision": binding.revision,
                         "accepted_scope": binding.accepted_scope,
                         "code_only": await code_only_delivery(session, context, node),
+                        "post_merge_verification": verification,
                     },
                 )
             if not state.open:
@@ -444,6 +529,19 @@ class MergeController:
                     return MergeObservation(ObservationKind.READY, snapshot={"repair_conflict": f"provider:{state.head_sha}:{state.base_sha}"})
                 if eligibility.state is EligibilityState.WAITING:
                     return MergeObservation(ObservationKind.WAITING, detail="Waiting for current repository checks and mergeability.")
+                if set(eligibility.reasons) == {EligibilityReason.REQUIRED_CHECK_FAILED} and eligibility.observation is not None:
+                    failures = [
+                        f"{check.name}: {check.state}"
+                        for check in eligibility.observation.checks
+                        if check.state not in {"success", "neutral", "skipped", "pending"}
+                    ]
+                    return MergeObservation(
+                        ObservationKind.READY,
+                        snapshot={
+                            "repair_conflict": f"checks:{state.head_sha}:{hashlib.sha256(review.artifact_ref.encode()).hexdigest()}",
+                            "repair_reason": "Repair the failing CI checks for this story and rerun validation: " + "; ".join(failures)[:2000],
+                        },
+                    )
                 reason = eligibility.authority_reason or ""
                 code = BlockCode.DEPENDENCY_UNSATISFIED
                 if "attempt" in reason or "wall_clock" in reason:
@@ -468,6 +566,24 @@ class MergeController:
         if getattr(observation, "receipt", None) is not None:
 
             async def settle(session, current):
+                if data.get("post_merge_verification") is not None:
+                    key = observation.receipt.operation_key
+                    prepared = await prepare_action(
+                        session,
+                        identity=current.identity,
+                        intent=ActionIntent(
+                            key, MERGE_KIND, detail={"post_merge_verification": data["post_merge_verification"], "merge_mutation_performed": False}
+                        ),
+                    )
+                    if prepared.kind is not OutcomeKind.APPLIED:
+                        raise CycleBlockedError("observed_merge_settlement_changed")
+                    recorded = await record_observation(
+                        session,
+                        identity=current.identity,
+                        observation=Observation(key, ObservedOutcome.SUCCEEDED, receipt_ref=observation.receipt_ref),
+                    )
+                    if recorded.kind is not OutcomeKind.APPLIED:
+                        raise CycleBlockedError("observed_merge_settlement_changed")
                 await settle_merge(session, current, observation.receipt, data)
 
             if data.get("code_only") is True:
@@ -494,7 +610,10 @@ class MergeController:
                     intent=ActionIntent(
                         key,
                         "merge_repair_request",
-                        detail={"reason": "Resolve the current merge conflict or update the out-of-date base within accepted scope."},
+                        detail={
+                            "reason": data.get("repair_reason")
+                            or "Resolve the current merge conflict or update the out-of-date base within accepted scope."
+                        },
                     ),
                 )
                 if prepared.kind is not OutcomeKind.APPLIED:
@@ -515,7 +634,7 @@ class MergeController:
                 DecisionKind.ADVANCE,
                 phase=ExecutionPhase.REPAIRING,
                 settlement=settle,
-                progress_note="Merge conflict requires repair within the existing allowance.",
+                progress_note=data.get("repair_reason") or "Merge conflict requires repair within the existing allowance.",
             )
         if observation.kind is not ObservationKind.READY:
             return HandlerDecision(DecisionKind.WAIT, next_check_at=context.now + timedelta(seconds=60), progress_note=observation.detail)
@@ -626,5 +745,6 @@ def bounded_receipt_summary(detail):
             "merged_at",
             "observed_at",
             "adopted",
+            "verification_kind",
         },
     )

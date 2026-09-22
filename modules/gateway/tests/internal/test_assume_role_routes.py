@@ -457,6 +457,49 @@ class TestAssumeRoleHappyPath:
 
 class TestAssumeRoleErrors:
     @pytest.mark.asyncio
+    async def test_deploy_tier_request_rejects_linked_steady_state_role_before_secret_read(self, db):
+        cred = await _seed_aws_role_credential(db)
+        cred.scopes = {"permission_tier": "routing"}
+        await db.commit()
+        sm = MagicMock()
+        with (
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+        ):
+            response = _make_app(db, sm).post(
+                "/internal/v1/credential-assume-role",
+                json={
+                    "user_id": "user-alice",
+                    "agent_id": "github-workflow",
+                    "task_id": "deploy-1",
+                    "label": "prod",
+                    "permission_tier": "deploy-bootstrap",
+                },
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert response.status_code == 403
+        assert response.json()["detail"]["error"] == "permission_tier_mismatch"
+        sm.get_secret.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_deploy_credential_requires_explicit_tier_selection(self, db):
+        cred = await _seed_aws_role_credential(db)
+        cred.scopes = {"permission_tier": "deploy-bootstrap"}
+        await db.commit()
+        sm = MagicMock()
+        with (
+            patch("src.internal.auth_deps.get_settings", return_value=_settings_mock()),
+            patch("src.internal.assume_role_routes.get_settings", return_value=_settings_mock()),
+        ):
+            response = _make_app(db, sm).post(
+                "/internal/v1/credential-assume-role",
+                json={"user_id": "user-alice", "agent_id": "developer", "task_id": "task-1", "label": "prod"},
+                headers={"X-Internal-Api-Key": _VALID_KEY},
+            )
+        assert response.status_code == 403
+        sm.get_secret.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_user_not_found_returns_404(self, db):
         mock_sm = MagicMock()
 

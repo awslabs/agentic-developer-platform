@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 from urllib.parse import unquote
@@ -248,6 +249,7 @@ class TestConnectStart:
         assert parsed["account_id"] == "123456789012"
         assert parsed["role_arn"] == "arn:aws:iam::123456789012:role/ADP-Agent-prod-readonly"
         assert "external_id" in parsed
+        assert str(uuid.UUID(parsed["external_id"])) == parsed["external_id"]
 
     def test_launch_url_includes_correct_params(self, alice_client):
         resp = alice_client.post(

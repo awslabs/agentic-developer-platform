@@ -1116,12 +1116,11 @@ def test_the_drivers_own_upload_also_stays_inside_the_prefix():
 
 
 def test_publish_action_default_preserves_the_legacy_destination():
-    """The 8 existing security-scan.yml callers must not change behaviour.
+    """Callers that omit ``dest-prefix`` retain the legacy destination.
 
-    ``dest-prefix`` is optional and defaults to empty, and the action falls back
-    to the legacy ``findings/<run_id>/<tool-name>/`` layout when it is empty.
-    Those callers are byte-identical to main (an asserted #4445 regression
-    check), so a required input or a changed default would break all 8.
+    The authenticated one-off producer now opts into an attempt-scoped prefix,
+    but making the input required or changing its default would break unrelated
+    callers that still rely on ``findings/<run_id>/<tool-name>/``.
     """
     yaml = pytest.importorskip("yaml", reason="PyYAML required to parse the action")
     action = yaml.safe_load(PUBLISH_ACTION.read_text(encoding="utf-8"))
@@ -1130,8 +1129,10 @@ def test_publish_action_default_preserves_the_legacy_destination():
     assert spec.get("required") is False, "dest-prefix must stay optional"
     assert spec.get("default") == "", "an empty default is what selects the legacy path"
 
-    body = action["runs"]["steps"][0]["run"]
-    assert 'findings/${{ github.run_id }}/${{ inputs.tool-name }}/' in body, (
+    step = action["runs"]["steps"][0]
+    assert step["env"]["ACTION_RUN_ID"] == "${{ github.run_id }}"
+    assert step["env"]["TOOL_NAME"] == "${{ inputs.tool-name }}"
+    assert "findings/${ACTION_RUN_ID}/${TOOL_NAME}/" in step["run"], (
         "the legacy destination must remain the fallback for callers that pass "
         "no dest-prefix"
     )

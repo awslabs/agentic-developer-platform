@@ -34,9 +34,17 @@ def context(env, aws_read, git_head):
         raise ValueError("scan workflow path invalid")
     if env["GITHUB_EVENT_NAME"] != "workflow_dispatch" or env["GITHUB_WORKFLOW_REF"].split("@", 1)[0] != repository + "/" + workflow:
         raise ValueError("scan producer must be the bound one-off workflow")
-    account = aws_read(["sts", "get-caller-identity"])["Account"]
+    caller = aws_read(["sts", "get-caller-identity"])
+    account = str(caller["Account"])
     if not re.fullmatch(r"[0-9]{12}", account) or account != env["SCAN_EXPECTED_ACCOUNT"]:
         raise ValueError("scan credential account differs from accepted target")
+    expected_role = env.get("SCAN_EXPECTED_ROLE", "")
+    caller_arn = str(caller.get("Arn", ""))
+    if expected_role and not re.fullmatch(
+        rf"arn:aws:sts::{account}:assumed-role/{re.escape(expected_role)}/[^/]+",
+        caller_arn,
+    ):
+        raise ValueError("scan credential role differs from the approved runner role")
     region = env["AWS_REGION"]
     if not re.fullmatch(r"[a-z]{2}(?:-gov)?-[a-z]+-[0-9]+", region):
         raise ValueError("scan region invalid")
@@ -85,23 +93,31 @@ def scan_receipt(identity, observed, provenance_dir):
     root = Path(provenance_dir).resolve()
     output = {}
     for name, item in images.items():
-        if not isinstance(name, str) or not 1 <= len(name) <= 256 or not isinstance(item, dict) or set(item) != {"digest", "provenance_path"}:
+        if not isinstance(name, str) or not 1 <= len(name) <= 256 or not isinstance(item, dict) or set(item) != {"grype", "syft"}:
             raise ValueError("scanner image result invalid")
-        if not isinstance(item["digest"], str) or not DIGEST.fullmatch(item["digest"]):
-            raise ValueError("scanner must report the actual immutable image digest")
-        relative = Path(item["provenance_path"])
-        path = (root / relative).resolve()
-        if (
-            relative.is_absolute()
-            or ".." in relative.parts
-            or not path.is_relative_to(root)
-            or not path.is_file()
-            or not 0 < path.stat().st_size <= 1024 * 1024
-        ):
-            raise ValueError("observed image provenance file missing or outside the evidence directory")
-        output[name] = dict(digest=item["digest"], provenance_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        output[name] = {}
+        for tool in ("grype", "syft"):
+            observation = item[tool]
+            if not isinstance(observation, dict) or set(observation) != {"digest", "provenance_path"}:
+                raise ValueError(f"scanner {tool} image result invalid")
+            if not isinstance(observation["digest"], str) or not DIGEST.fullmatch(observation["digest"]):
+                raise ValueError(f"scanner must report the actual immutable {tool} image digest")
+            relative = Path(observation["provenance_path"])
+            path = (root / relative).resolve()
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or not path.is_relative_to(root)
+                or not path.is_file()
+                or not 0 < path.stat().st_size <= 1024 * 1024
+            ):
+                raise ValueError(f"observed {tool} image provenance file missing or outside the evidence directory")
+            output[name][tool] = dict(
+                digest=observation["digest"],
+                provenance_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
     return dict(
-        evidence_schema="repository-scan-receipt/v1",
+        evidence_schema="repository-scan-receipt/v2",
         source_revision=identity["source_revision"],
         correlation=identity["correlation"],
         target={name: identity[name] for name in ("account_id", "region", "resource_kind", "resource_id")},

@@ -36,13 +36,15 @@ def build():
         GITHUB_RUN_ID="42",
         GITHUB_RUN_ATTEMPT="1",
         ACCOUNT_ID="123456789012",
+        CUSTOMER_ACCOUNT_ID="999999999999",
         AWS_REGION="us-east-1",
         ENVIRONMENT="dev",
         AWS_SECRET_ACCESS_KEY="never-publish",
     )
+    authenticated_account = env["ACCOUNT_ID"]
 
     def read(args):
-        return {"Account": env["ACCOUNT_ID"]} if args[0] == "sts" else {"imageDetails": [{"imageDigest": DIGEST, "imageTags": [SHA]}]}
+        return {"Account": authenticated_account} if args[0] == "sts" else {"imageDetails": [{"imageDigest": DIGEST, "imageTags": [SHA]}]}
 
     return env, read
 
@@ -68,7 +70,7 @@ def test_frontend_producer_hashes_exact_bytes_and_rejects_symlinks(build, tmp_pa
 def test_producer_refuses_unverifiable_release(build, failure):
     env, read = build
     if failure == "account":
-        env["CUSTOMER_ACCOUNT_ID"] = "999999999999"
+        env["ACCOUNT_ID"] = "999999999999"
     elif failure == "source":
         env["ADP_RELEASE_SOURCE"] = "main"
     else:

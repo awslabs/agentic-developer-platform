@@ -13,6 +13,10 @@ inputs:
   bucket:
     description: 'S3 bucket name (account-suffixed security-scans bucket)'
     required: true
+  source-revision:
+    description: 'Verified source revision represented by these findings; defaults to the workflow revision'
+    required: false
+    default: ''
   dest-prefix:
     description: >
       Optional destination prefix within the bucket, e.g.
@@ -31,17 +35,29 @@ runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        FINDINGS_PATH: ${{ inputs.path }}
+        TOOL_NAME: ${{ inputs.tool-name }}
+        FINDINGS_BUCKET: ${{ inputs.bucket }}
+        SOURCE_REVISION: ${{ inputs.source-revision }}
+        DEST_PREFIX: ${{ inputs.dest-prefix }}
+        ACTION_RUN_ID: ${{ github.run_id }}
+        ACTION_RUN_ATTEMPT: ${{ github.run_attempt }}
       run: |
-        if [ ! -e "${{ inputs.path }}" ]; then
-          echo "::warning::findings path '${{ inputs.path }}' not found for ${{ inputs.tool-name }} — scanner may have crashed; nothing to publish"
+        SOURCE_REVISION="${SOURCE_REVISION:-${GITHUB_SHA}}"
+        if [[ ! "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::findings source revision must be a full lowercase commit SHA"
+          exit 1
+        fi
+        if [ ! -e "$FINDINGS_PATH" ]; then
+          echo "::warning::findings path '$FINDINGS_PATH' not found for $TOOL_NAME — scanner may have crashed; nothing to publish"
           exit 0
         fi
-        # Unset dest-prefix reproduces the legacy destination exactly. The 8
-        # security-scan.yml callers pass no dest-prefix, so their behaviour is
-        # unchanged -- which is itself an asserted regression check (#4517).
-        PREFIX='${{ inputs.dest-prefix }}'
+        # Unset dest-prefix reproduces the legacy destination exactly for callers
+        # outside the one-off producer, which passes an attempt-scoped prefix.
+        PREFIX="$DEST_PREFIX"
         if [ -z "$PREFIX" ]; then
-          PREFIX="findings/${{ github.run_id }}/${{ inputs.tool-name }}/"
+          PREFIX="findings/${ACTION_RUN_ID}/${TOOL_NAME}/"
         fi
         # `aws s3 cp` treats a destination without a trailing slash as an object
         # key, which would silently write the findings to a KEY named after the
@@ -50,12 +66,12 @@ runs:
           */) ;;
           *) PREFIX="$PREFIX/" ;;
         esac
-        DEST="s3://${{ inputs.bucket }}/$PREFIX"
-        if [ -d "${{ inputs.path }}" ]; then
-          aws s3 cp "${{ inputs.path }}" "$DEST" --recursive \
-            --metadata "commit=${{ github.sha }},run-attempt=${{ github.run_attempt }}"
+        DEST="s3://${FINDINGS_BUCKET}/$PREFIX"
+        if [ -d "$FINDINGS_PATH" ]; then
+          aws s3 cp "$FINDINGS_PATH" "$DEST" --recursive \
+            --metadata "commit=${SOURCE_REVISION},run-attempt=${ACTION_RUN_ATTEMPT}"
         else
-          aws s3 cp "${{ inputs.path }}" "$DEST" \
-            --metadata "commit=${{ github.sha }},run-attempt=${{ github.run_attempt }}"
+          aws s3 cp "$FINDINGS_PATH" "$DEST" \
+            --metadata "commit=${SOURCE_REVISION},run-attempt=${ACTION_RUN_ATTEMPT}"
         fi
-        echo "Published ${{ inputs.tool-name }} findings to $DEST"
+        echo "Published $TOOL_NAME findings to $DEST"

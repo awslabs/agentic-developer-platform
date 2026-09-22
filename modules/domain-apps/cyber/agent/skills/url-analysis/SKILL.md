@@ -27,78 +27,76 @@ is captured and synthesized into a deterministic verdict via `verdict.py`.
 
 Given a URL to analyze:
 
-### 1. Pre-flight validation
+### 1. Submit the URL to the trusted browser broker
+
+`browser_client.analyze_url` is the only browser entry point available to the
+reasoning pod. The pod's IAM role explicitly denies every AgentCore Browser API,
+including `InvokeBrowser`, session lifecycle, and CDP stream access. A separate
+broker pod owns the narrow session/CDP role and never exposes a raw browser,
+page, stream URL, or AWS credential.
+
+The broker vets the initial URL before starting AgentCore, makes the browser
+offline, blocks service workers and WebSockets, and installs request policy
+before creating the page. Every HTTP request is fetched over a socket pinned to
+the freshly vetted address while preserving Host and TLS SNI.
 
 ```python
-from denylist import DenylistConfig, check_url, scrub_url_credentials
+from browser_client import analyze_url
+from browser_guard import DestinationRefused
+from denylist import scrub_url_credentials
 
 safe_url = scrub_url_credentials(url)
-result = check_url(url)
-if not result.allowed:
-    # Return immediately with status "refused" and result.reason
-    # Do NOT create a browser session
+
+try:
+    analysis = analyze_url(url)
+    screenshot_base64 = analysis["screenshot_base64"]
+    text = analysis["visible_text"]
+except DestinationRefused as refusal:
+    # Emit the stage envelope with status "refused" and refusal.reason.
+    # No evidence exists for this target.
+    # refusal.reason_code distinguishes the cases:
+    #   "blocked_address"   — policy refusal (internal/reserved destination)
+    #   "resolution_failed" — the analysis environment could not resolve the
+    #                         host, so the destination could not be vetted.
+    #                         A spike in this code means a resolver problem,
+    #                         not an attack.
+    #   "host_pattern", "scheme_not_allowed", "malformed_url", "no_hostname"
     pass
 ```
+
+Do not import `BrowserClient`, create a `bedrock-agentcore` client, call
+`InvokeBrowser`, or connect over CDP. Those calls are denied by IAM, not merely
+forbidden by this playbook. If the broker is unavailable, report an environment
+failure; there is no unguarded fallback.
 
 ### 2. Write and execute an orchestration script
 
 Write a Python script that:
-- Opens an AgentCore Browser session (see `agentcore-browser-contract.md`)
-- Navigates to the URL
-- Captures a screenshot
-- Extracts visible text (via screenshot + your interpretation, or via CDP)
-- Detects any auto-downloads or forms
+- Calls `analyze_url` once for each URL
+- Uses the returned screenshot, visible text, redirects, forms, and downloads
 - Populates an `Evidence` object (see `evidence_schema.py`)
-- Stops the browser session in a `finally` block
 
 **Key rules for the orchestration script:**
 - Language: Python 3.11+
-- Use `boto3.client('bedrock-agentcore', region_name='us-east-1')`
-- Follow `agentcore-browser-contract.md` for exact API shapes
-- The API provides OS-level actions (mouseClick, keyType, screenshot) NOT
-  high-level browser automation (no `navigate`, no `evaluate`, no `getHar`)
-- To navigate: type the URL into the browser address bar or use Playwright via CDP
-- Screenshots return base64-encoded PNG data
-- Always call `stop_browser_session` in a finally block
+- Use `browser_client.analyze_url`; never instantiate `BrowserClient` directly
+- Treat `BrowserBrokerError` as an environment failure, not a policy approval
 - Save the script to `/tmp/run-artifacts/{run_id}/orchestration.py`
 
-**Two approaches to browser interaction. Default to CDP. Only fall back to InvokeBrowser if CDP fails at runtime.**
-
-1. **Playwright via CDP WebSocket — DEFAULT. USE THIS FIRST.**
-
-   Do NOT reject this path because "CDP requires SigV4." The
-   `bedrock-agentcore` SDK handles SigV4 for you. The one-line idiom is:
+**There is one browser interaction path: the guarded broker operation.**
 
    ```python
-   from bedrock_agentcore.tools.browser_client import BrowserClient
-   from playwright.sync_api import sync_playwright
+   from browser_client import analyze_url
 
-   bc = BrowserClient(region="us-east-1")
-   session_id = bc.start()                     # start_browser_session
-   ws_url, headers = bc.generate_ws_headers()  # SigV4-signed, ready to use
-
-   with sync_playwright() as p:
-       browser = p.chromium.connect_over_cdp(ws_url, headers=headers)
-       page = browser.contexts[0].pages[0] if browser.contexts else browser.new_context().new_page()
-       page.goto(url, wait_until="networkidle", timeout=30000)
-       screenshot_bytes = page.screenshot(full_page=True)
-       text = page.inner_text("body")
-       # ... extract forms, redirects, etc.
-
-   bc.stop()
+   analysis = analyze_url(url, wait_until="networkidle", timeout_ms=30000)
+   screenshot_base64 = analysis["screenshot_base64"]
+   text = analysis["visible_text"]
+   forms = analysis["forms"]
+   redirects = analysis["redirects"]
    ```
 
-   This gives full DOM access, network interception, form detection, and
-   download events. See `examples/001-basic-clean.py` for the complete
-   template and `examples/004`/`005`/`006` for scenario variants.
-
-2. **InvokeBrowser OS actions — FALLBACK ONLY.**
-
-   Use only when CDP raises a runtime error you can't work around (e.g., a
-   specific site breaks Playwright, or you need OS-level keyboard input
-   for a native dialog). Lower-level, no DOM access, no form detection,
-   no network interception. Screenshots from InvokeBrowser are full-OS
-   desktop PNGs — resize them before passing to Claude (see Section 9).
+`InvokeBrowser` cannot enforce redirects, subresources, or the actual socket
+destination and is therefore denied. WebSockets are refused because they cannot
+currently be proxied while retaining host identity and address pinning.
 
 ### 3. Enrichment (parallel with browser work if possible)
 
@@ -254,17 +252,30 @@ Stage envelope (JSON):
 
 ## Guardrails
 
-- **Never visit internal URLs.** Denylist is enforced before any session creation.
+- **Never visit internal URLs.** Enforced structurally by
+  the trusted broker: reasoning workers have an explicit AgentCore API deny;
+  the broker refuses before session creation, disables raw browser networking
+  and service workers, intercepts every HTTP request, and fetches only through
+  a socket pinned to a vetted address. Resolution fails closed and canonical
+  address forms receive the same verdict.
 - **Never submit forms.** Read-only observation of page content.
 - **Never click downloads.** Detect auto-downloads but don't interact.
-- **Session timeout enforced.** Default 300s, configurable per-tenant.
+- **Resource budgets enforced.** Each response is limited to 25 MiB and 30s;
+  each browser analysis is limited to 100 MiB and 300s across all requests.
 - **Credentials scrubbed.** Any URL containing auth tokens is masked before persistence.
-- **Explicit session termination.** Always call StopBrowserSession in a finally block.
+- **Explicit session termination.** The broker closes every session before responding.
 
 ## Failure handling
 
-- URL denylist match: refuse immediately, no session created
-- Session creation fails: retry 3x with backoff, then fail with "browser unavailable"
-- Navigation timeout: terminate session, produce partial report with evidence so far
+- `DestinationRefused` from `analyze_url`: status "refused" and no evidence is
+  returned. Report `reason_code` — `resolution_failed` means the
+  analysis environment could not resolve the host (an environment problem the
+  analyst should be told about), everything else is a policy refusal.
+- `analysis["refusals"]` non-empty: a subresource or WebSocket was blocked.
+  A blocked navigation or redirect returns `DestinationRefused` before capture.
+- `response_too_large` or `fetch_deadline_exceeded`: the pinned transport
+  stopped an untrusted response at its byte or wall-clock budget.
+- `BrowserBrokerError`: fail with "browser unavailable"; never browse directly.
+- Navigation timeout: the broker terminates the session and returns no capture.
 - Enrichment source unavailable: degrade gracefully, note missing sources
 - Session cleanup fails: log warning, AWS will auto-clean after timeout

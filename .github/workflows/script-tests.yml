@@ -73,6 +73,24 @@ on:
       # re-run the gate. No workflow here runs `terraform test`, so the tftest
       # beside the module is not merge-blocking and this is the real gate.
       - 'modules/agent-factory/infra/main.tf'
+      # Artifacts the security-scan tool-invocation and container-coverage
+      # suites assert against (S19, #5618). The suites assert by content that
+      # the scan emits valid detect-secrets JSON, handles cfn-nag FATAL records,
+      # and that every expected image must produce a real result. Listed so an
+      # edit to any subject re-runs the gate that guards it.
+      - '.github/workflows/security-scan.yml'
+      - '.github/actions/codebuild-run/action.yml'
+      - '.github/actions/publish-findings-s3/action.yml'
+      - '.github/scripts/reconcile_security_scan.py'
+      - 'modules/gateway/scripts/repository-scan-receipt.py'
+      - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
+      - '.github/security/cfn-nag-suppressions.yml'
+      - 'codebuild/security_image_targets.py'
+      - 'codebuild/scan_security_images.py'
+      - 'codebuild/bs-grype-scan.yml'
+      - 'codebuild/bs-syft-scan.yml'
+      - 'codebuild/tests/**'
+      - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       # This workflow
       - '.github/workflows/script-tests.yml'
   pull_request:
@@ -137,6 +155,24 @@ on:
       # re-run the gate. No workflow here runs `terraform test`, so the tftest
       # beside the module is not merge-blocking and this is the real gate.
       - 'modules/agent-factory/infra/main.tf'
+      # Artifacts the security-scan tool-invocation and container-coverage
+      # suites assert against (S19, #5618). The suites assert by content that
+      # the scan emits valid detect-secrets JSON, handles cfn-nag FATAL records,
+      # and that every expected image must produce a real result. Listed so an
+      # edit to any subject re-runs the gate that guards it.
+      - '.github/workflows/security-scan.yml'
+      - '.github/actions/codebuild-run/action.yml'
+      - '.github/actions/publish-findings-s3/action.yml'
+      - '.github/scripts/reconcile_security_scan.py'
+      - 'modules/gateway/scripts/repository-scan-receipt.py'
+      - 'modules/gateway/tests/orchestration/test_repository_scan_export.py'
+      - '.github/security/cfn-nag-suppressions.yml'
+      - 'codebuild/security_image_targets.py'
+      - 'codebuild/scan_security_images.py'
+      - 'codebuild/bs-grype-scan.yml'
+      - 'codebuild/bs-syft-scan.yml'
+      - 'codebuild/tests/**'
+      - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       # This workflow
       - '.github/workflows/script-tests.yml'
     branches:
@@ -163,7 +199,16 @@ jobs:
         # workflow to assert it carries no `schedule:` key. Without the
         # dependency those gates importorskip and the check goes green
         # having asserted nothing.
-        run: pip install pytest pytest-timeout pyyaml
+        #
+        # detect-secrets: same reasoning (S19, #5618). Two gates in
+        # test_security_scan_tool_invocations.py shell out to the real
+        # `detect-secrets` binary -- one runs `audit --report` against the
+        # committed baseline (it crashed on every run before this fix), the other
+        # plants a live AWS key and asserts the workflow's command shape actually
+        # surfaces it. Both skipif when the binary is absent, so without this
+        # dependency the detect-secrets gate passes having asserted nothing.
+        # Pinned to the version security-scan.yml installs.
+        run: pip install pytest pytest-timeout pyyaml detect-secrets==1.5.0
 
       # Test files are pinned explicitly rather than globbed: a glob silently
       # stops covering a file that is moved or renamed, which is the same
@@ -192,4 +237,17 @@ jobs:
             tests/test_nightly_triage_wiring.py \
             tests/test_report_finalization.py \
             tests/test_verify_scoped_plan.py \
+            tests/test_security_scan_tool_invocations.py \
+            -v --tb=short --timeout=60
+
+      # The container-scan inventory/coverage suite lives beside its subject in
+      # codebuild/, not under .github/scripts/tests/, so the pinned run above
+      # cannot reach it. No other workflow executes it either: without this step
+      # the S19 (#5618) coverage gate -- "every expected image must produce a
+      # real result" -- is asserted by tests that never run.
+      - name: Run container scan inventory tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          pytest \
+            codebuild/tests/test_security_image_scan.py \
             -v --tb=short --timeout=60

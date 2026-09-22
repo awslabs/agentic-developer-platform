@@ -21,6 +21,7 @@ SHELL ["/bin/sh", "-c"]
 RUN cp "$(command -v zoekt-git-index || find / -name zoekt-git-index -type f 2>/dev/null | head -1)" /tmp/zoekt-git-index
 
 FROM public.ecr.aws/docker/library/python:3.13-slim
+#checkov:skip=CKV_DOCKER_3:Runtime executes language indexers and browser/scanner toolchains whose root-owned caches and writable paths have not yet been relocated; keep this exception local to the ingestion image.
 
 # System deps: git for cloning, build tools for tree-sitter native extensions
 RUN apt-get update && \

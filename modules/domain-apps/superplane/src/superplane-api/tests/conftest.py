@@ -4,13 +4,21 @@ Overrides the database session with an in-memory SQLite backend so that
 tests do not require a running PostgreSQL instance.
 """
 
+import os
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.database import Base, get_session
-from app.main import app
+# The application creates its production-shaped engine at import time. Give that
+# engine an explicit credential-free local target; requests use the isolated SQLite
+# engine below and never connect to this URL.
+APPLICATION_TEST_DATABASE_URL = "postgresql+asyncpg://localhost/superplane_offline_test"
+os.environ["DATABASE_URL"] = APPLICATION_TEST_DATABASE_URL
+
+from app.database import Base, get_session  # noqa: E402
+from app.main import app  # noqa: E402
 
 # In-memory SQLite for tests (aiosqlite driver)
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -62,6 +70,45 @@ async def _override_get_session():
 
 # Override the dependency globally
 app.dependency_overrides[get_session] = _override_get_session
+
+
+# ---------------------------------------------------------------------------
+# The offline suite's token signing key — issue #5683 (A04).
+#
+# `app/config.py` no longer defaults `jwt_secret_key`, because the value it used to
+# default to was a committed placeholder that a deployment could unknowingly run
+# on. Removing it means the tests that create org-scoped tokens have to state the
+# key they use, which is the point: a fixture that silently inherits the
+# production default is how such a placeholder survives review, and it makes the
+# suite pass in exactly the misconfiguration the fix exists to catch.
+#
+# Isolated by construction, not by convention:
+#   * it is set on the imported `settings` object, so it exists only inside this
+#     process and is never written to the environment a deployment reads;
+#   * it is autouse and session-scoped, so no test can accidentally depend on the
+#     value having leaked in from outside;
+#   * the string says what it is, so it cannot be mistaken for a real key if it
+#     ever appears in output.
+#
+# Tests asserting the REFUSAL (that a missing key fails closed) deliberately undo
+# this with monkeypatch — see tests/test_jwt_secret_required.py.
+TEST_JWT_SECRET_KEY = "offline-test-only-jwt-signing-key-not-a-real-secret"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _offline_jwt_signing_key():
+    """Give the offline suite an explicit signing key for the whole session.
+
+    Set directly on `settings` rather than via the environment because `Settings`
+    reads env vars once at import, and this module imports `app.main` above — so an
+    `os.environ` write here would already be too late to be seen.
+    """
+    from app.config import settings
+
+    previous = settings.jwt_secret_key
+    settings.jwt_secret_key = TEST_JWT_SECRET_KEY
+    yield
+    settings.jwt_secret_key = previous
 
 
 @pytest.fixture(autouse=True)

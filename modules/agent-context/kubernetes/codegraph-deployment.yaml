@@ -36,6 +36,8 @@ spec:
       initContainers:
       - name: install-cgc
         image: python:3.12.4-slim
+        securityContext:
+          allowPrivilegeEscalation: false
         command: ["/bin/bash", "-c"]
         args:
         - |
@@ -52,6 +54,8 @@ spec:
       containers:
       - name: codegraph
         image: python:3.12.4-slim
+        securityContext:
+          allowPrivilegeEscalation: false
         command: ["/bin/bash", "-c"]
         args:
         - |

@@ -81,3 +81,76 @@ def test_default_has_no_registration_and_no_network(monkeypatch):
     monkeypatch.setattr(proxy, "_cache", (0, {}))
     monkeypatch.setattr(proxy.boto3, "client", lambda *a, **k: pytest.fail("unexpected AWS call"))
     assert proxy.registration() == {}
+
+
+@pytest.fixture
+def route_store(monkeypatch):
+    from io import BytesIO
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("BG_ENVIRONMENT", "dev")
+    monkeypatch.setenv("BG_SUPERPLANE_ROUTE_BUCKET", "adp-terraform-state-123456789012")
+    monkeypatch.setattr(proxy, "_cache", (0, {}))
+    store = {"version": 2, "enabled": True, "namespace": "superplane", "release_id": "a" * 64, "installation_id": "b" * 24, "revision": "c" * 32}
+    calls = []
+
+    def get_object(**kwargs):
+        calls.append(kwargs)
+        return {"Body": BytesIO(json.dumps(store).encode())}
+
+    def factory(service, **kwargs):
+        assert service == "s3"
+        return SimpleNamespace(get_object=get_object)
+
+    monkeypatch.setattr(proxy.boto3, "client", factory)
+    return store, calls
+
+
+def test_registration_reads_only_the_conditional_route_object(route_store):
+    store, calls = route_store
+    assert proxy.registration() == store
+    assert calls == [{"Bucket": "adp-terraform-state-123456789012", "Key": "domain-routes/dev/superplane/public-route.json"}]
+    assert proxy.registration() == store
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("version", 1),
+        ("enabled", False),
+        ("namespace", "adp"),
+        ("namespace", "foreign/route"),
+        ("installation_id", ""),
+        ("release_id", "unknown"),
+        ("revision", ""),
+    ],
+)
+def test_invalid_route_registration_is_off(route_store, field, value):
+    store, _ = route_store
+    store[field] = value
+    assert proxy.registration() == {}
+
+
+def test_route_read_failure_is_off_and_never_falls_back_to_ssm(route_store, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("private provider error")
+
+    monkeypatch.setattr(proxy.boto3, "client", unavailable)
+    assert proxy.registration() == {}
+
+
+def test_unconfigured_route_store_does_not_use_ambient_aws(monkeypatch):
+    monkeypatch.setenv("BG_ENVIRONMENT", "dev")
+    monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET", raising=False)
+    monkeypatch.setattr(proxy, "_cache", (0, {}))
+    monkeypatch.setattr(proxy.boto3, "client", lambda *a, **kw: pytest.fail("unexpected AWS call"))
+    assert proxy.registration() == {}
+
+
+async def test_transport_capability_requires_deployed_configuration(route_store, monkeypatch):
+    result = await proxy.installation_support()
+    assert result["version"] == 2 and result["configured"] is True
+    assert result["transport"] == "s3-conditional-domain-registration"
+    monkeypatch.delenv("BG_SUPERPLANE_ROUTE_BUCKET")
+    assert (await proxy.installation_support())["configured"] is False

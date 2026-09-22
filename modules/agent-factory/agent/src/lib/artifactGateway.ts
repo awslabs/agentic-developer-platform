@@ -24,6 +24,11 @@ export async function uploadRunArtifact(kind: ArtifactKind, content: string | Bu
       method: 'POST', hostname: endpoint.hostname, protocol: endpoint.protocol, path: endpoint.pathname,
       headers: { host: endpoint.host, 'content-type': 'application/octet-stream', ...workerIdentityHeaders() }, body,
     });
+    // endpoint is the operator-configured ADP_GATEWAY_ENDPOINT, checked above for https
+    // and for inline credentials/query/fragment, with a fixed own-run artifact path and an
+    // allowlisted `kind`. The agent/LLM contributes no part of the destination, and
+    // redirect:'error' keeps the SigV4 credentials from following a relocation (#5603).
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
     const response = await fetch(endpoint, { method: 'POST', headers: signed.headers, body, redirect: 'error', signal: AbortSignal.timeout(35_000) });
     if (!response.ok) { await response.body?.cancel(); throw new Error(); }
     const chunks: Uint8Array[] = [];

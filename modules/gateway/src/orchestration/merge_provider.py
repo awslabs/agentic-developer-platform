@@ -7,10 +7,10 @@ from datetime import UTC, datetime
 
 import httpx
 
-from src.agentauth.github_provider import BoundMergeAssignment, GitHubProvider, ProviderUnavailableError
+from src.agentauth.github_provider import BoundMergeAssignment, GitHubProvider, ProviderUnavailableError, WorkflowPermissionRequiredError
 from src.knowledge.github_app_service import mint_installation_token_with_expiry, resolve_tenant_app_credentials
 
-from .merge_evidence import _boolean, _integer, _object, _sha, _text
+from .merge_evidence import READ_PERMISSIONS, _boolean, _integer, _object, _sha, _text
 from .review_cycle import CycleBlockedError
 
 
@@ -32,9 +32,17 @@ class MergeProvider:
     def __init__(self, *, client=None, clock=lambda: datetime.now(UTC)):
         self.client, self.clock = client, clock
 
-    async def token(self, binding, *, write=False):
+    async def token(self, binding, *, write=False, evidence=False, workflows=False):
+        if workflows and (not write or evidence):
+            raise ValueError("Workflow credentials require an authorized merge mutation")
         app, key = await resolve_tenant_app_credentials(binding.org_id)
         permissions = {"contents": "write" if write else "read", "pull_requests": "write" if write else "read", "metadata": "read"}
+        if workflows:
+            permissions["workflows"] = "write"
+        if evidence:
+            if write:
+                raise ValueError("Evidence observations require read-only credentials")
+            permissions = dict(READ_PERMISSIONS)
         token, expires = await mint_installation_token_with_expiry(
             app,
             key,
@@ -132,7 +140,11 @@ class MergeProvider:
             raise CycleBlockedError("merge_provider_identity_changed")
 
     async def perform(self, binding, state, *, method, operation_key, reauthorize):
-        await reauthorize()
+        if method == "queue":
+            await reauthorize()
+        # The merge provider checks live authority immediately before its PUT.
+        # Repeating the full evidence read before token minting and read-only PR
+        # lookup can exhaust the runner deadline before that mutation is reached.
         token = await self.token(binding, write=True)
         assignment = BoundMergeAssignment(
             binding.repo, binding.provider_repository_id, state.head_ref, state.base_ref, binding.pr_number, binding.provider_pr_node_id
@@ -152,9 +164,21 @@ class MergeProvider:
                     return await provider.enqueue_pull_request(
                         pull_number=binding.pr_number, expected_head=state.head_sha, operation_key=operation_key, reauthorize=reauthorize
                     )
-                return await provider.merge_pull_request(
-                    pull_number=binding.pr_number, expected_head=state.head_sha, method=method, reauthorize=reauthorize
-                )
+                try:
+                    return await provider.merge_pull_request(
+                        pull_number=binding.pr_number, expected_head=state.head_sha, method=method, reauthorize=reauthorize
+                    )
+                except WorkflowPermissionRequiredError:
+                    # GitHub requires this extra permission when the reviewed PR
+                    # changes workflows. Request it only for that explicit refusal,
+                    # scoped to the same repository, then recheck live authority.
+                    # Ordinary merges and evidence reads retain their smaller token.
+                    await reauthorize()
+                    workflow_token = await self.token(binding, write=True, workflows=True)
+                    client.headers["Authorization"] = f"Bearer {workflow_token}"
+                    return await provider.merge_pull_request(
+                        pull_number=binding.pr_number, expected_head=state.head_sha, method=method, reauthorize=reauthorize
+                    )
         finally:
             if owned:
                 await client.aclose()

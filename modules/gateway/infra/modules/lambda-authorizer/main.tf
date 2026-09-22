@@ -481,6 +481,7 @@ resource "aws_iam_role_policy" "authorizer" {
 # =============================================================================
 
 resource "aws_cloudwatch_log_group" "authorizer" {
+  #checkov:skip=CKV_AWS_338: Authorizer logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/aws/lambda/${var.name_prefix}-api-authorizer"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn

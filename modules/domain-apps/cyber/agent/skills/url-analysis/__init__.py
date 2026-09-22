@@ -7,7 +7,10 @@ Evidence, then passes it through deterministic verdict + report logic.
 
 Key modules:
 - evidence_schema: Pydantic models defining the evidence contract
-- denylist: Pre-flight URL safety validation
+- denylist: Destination policy decision (canonicalises the address, fails closed)
+- browser_client: Unprivileged entry point to the trusted browser broker
+- browser_broker: Trusted one-shot capture service with exclusive browser IAM
+- browser_guard: Broker-internal destination and pinned-transport enforcement
 - enrichment: WHOIS, VT, URLhaus, MISP lookups (pure HTTP, no AgentCore)
 - verdict: Deterministic scoring and classification
 - report: Markdown/JSON/HTML report rendering

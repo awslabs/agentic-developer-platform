@@ -50,7 +50,12 @@ async def scan(contract_request, monkeypatch):  # noqa: F811
         target=dict(account_id="123456789012", region="us-east-1", resource_kind="repository_scan", resource_id=ctx.binding.repo),
         receipt_artifact="scan-{run_attempt}",
         receipt_path="scan-receipt.json",
-        images={"controller": dict(digest="sha256:" + "a" * 64, provenance_sha256="b" * 64)},
+        images={
+            "controller": {
+                "grype": dict(digest="sha256:" + "a" * 64, provenance_sha256="b" * 64),
+                "syft": dict(digest="sha256:" + "c" * 64, provenance_sha256="d" * 64),
+            }
+        },
     )
     ctx.request = ctx.request.model_copy(update=dict(specification=document, authorize_workflow_dispatch=True))
     ctx.provider_scan = RepositoryScanProvider(evidence=ctx.provider)

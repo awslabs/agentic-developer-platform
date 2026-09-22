@@ -39,6 +39,8 @@ spec:
           containers:
           - name: synthesis
             image: ${INGESTION_IMAGE}
+            securityContext:
+              allowPrivilegeEscalation: false
             command: ["python", "-m", "personal_context.synthesis"]
             envFrom:
             - configMapRef:

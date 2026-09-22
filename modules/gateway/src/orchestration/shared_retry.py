@@ -45,6 +45,7 @@ def verified_limits_increased(before, policy):
         ("max_spend_usd", policy._shared_budget_decision_id),
         ("max_attempts_per_node", policy._shared_retry_decision_id),
         ("max_wall_clock_seconds", policy._shared_window_decision_id),
+        ("max_concurrent_actions", policy._shared_concurrency_decision_id),
     ):
         prior, current = before["limits"][key], after["limits"][key]
         if prior != current:

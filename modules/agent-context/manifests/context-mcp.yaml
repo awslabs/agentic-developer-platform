@@ -41,6 +41,8 @@ spec:
       containers:
       - name: context-mcp
         image: ${CONTEXT_MCP_IMAGE}
+        securityContext:
+          allowPrivilegeEscalation: false
         ports:
         - containerPort: 5100
           name: http

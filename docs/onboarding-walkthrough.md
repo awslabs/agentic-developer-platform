@@ -31,10 +31,9 @@ doc, **the linked doc wins.**
 
 ## Step 1 — Setup: pick your track first
 
-ADP deploys two ways. **They are separate paths. Do not mix commands between them in one
-run** — a half-self-managed, half-pipeline deploy is the single most expensive mistake on
-this page, because the two tracks disagree about who holds credentials and where Terraform
-state lives.
+Use the self-managed path for customer deployments. The former cross-account
+ADP-managed track is unavailable because linked roles do not authorize platform
+bootstrap.
 
 ### Track A — Self-managed (you run it, in your own AWS account)
 
@@ -60,20 +59,17 @@ Resource → validation-command mapping: [`deployment-manifest.md`](adp-platform
 If you would rather have an AI agent drive the deploy, that is a supported path:
 [`deploy-with-agent.md`](adp-platform-deployment/deploy-with-agent.md).
 
-### Track B — ADP-managed (agents in ADP's infrastructure deploy into your account)
+### Track B — ADP-managed cross-account (unavailable)
 
-You run nothing. You link your AWS account in the dashboard, and ADP agents assume a role
-into your account and deploy on your behalf via GitHub Actions workflows.
+Do not use a linked AWS role or `customer_account` configuration to deploy ADP.
+Dashboard-linked roles support steady-state personal account inspection or
+shared Bedrock routing only. They cannot create the platform, and adding
+administrator access would defeat their trust and revocation contract.
 
-→ **[`docs/adp-platform-deployment/adp-managed-deploy.md`](adp-platform-deployment/adp-managed-deploy.md)**
-
-Prerequisites are different from Track A: an ADP dashboard account, a linked and verified
-AWS role credential (Settings → AWS Access), and your ADP `user_id`. Note that this track
-is still being verified phase-by-phase — treat any phase not marked verified as unproven.
-
-> **⚠️ Track B does not run `bootstrap-admin.sh`.** The pipeline stops short of seeding the
-> first admin, so [Step 2](#step-2--become-the-first-admin) is a manual step on **both**
-> tracks.
+The status and requirements to re-enable this track are documented in
+[`docs/adp-platform-deployment/adp-managed-deploy.md`](adp-platform-deployment/adp-managed-deploy.md).
+Until those requirements ship, use Track A, optionally with an agent following
+the canonical agent deployment guide.
 
 ---
 
@@ -530,7 +526,7 @@ agent can trigger and monitor an ARC pipeline itself. Setup and usage:
 | I want to… | Read |
 |---|---|
 | Deploy (self-managed) | [`deploy-quickstart.md`](adp-platform-deployment/deploy-quickstart.md) |
-| Deploy (ADP-managed) | [`adp-managed-deploy.md`](adp-platform-deployment/adp-managed-deploy.md) |
+| Check ADP-managed cross-account status | [`adp-managed-deploy.md`](adp-platform-deployment/adp-managed-deploy.md) |
 | Know every persona | [`agent-catalogue.md`](agent-catalogue.md) |
 | Run a multi-issue build | [`orchestration-issue-guide.md`](orchestration-issue-guide.md) |
 | Understand the architecture | [`ARCHITECTURE.md`](../ARCHITECTURE.md) |

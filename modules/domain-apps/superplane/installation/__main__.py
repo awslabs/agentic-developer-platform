@@ -84,10 +84,12 @@ def main(argv=None):
                     )
                     if args.resume:
                         installer.resume(load(previous_path))
-                        if installer.receipt.get(
-                            "remote_lock"
-                        ) or installer.receipt.get("temporary_preflight", {}).get(
-                            "cleanup_required"
+                        if (
+                            installer.receipt.get("remote_lock")
+                            or installer.receipt.get("lock_attempt")
+                            or installer.receipt.get("temporary_preflight", {}).get(
+                                "cleanup_required"
+                            )
                         ):
                             raise Refusal(
                                 "Prior preparation requires lock/temporary-namespace recovery before retry"

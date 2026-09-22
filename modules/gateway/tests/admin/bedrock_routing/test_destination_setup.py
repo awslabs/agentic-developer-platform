@@ -73,7 +73,9 @@ async def test_download_and_resume_preserve_destination_and_external_id(session,
         assert set(bundle.namelist()) == {"template.yaml", "parameters.json", "README.md"}
         template = bundle.read("template.yaml").decode()
         assert template == (Path(__file__).parents[3] / "src/auth/cfn_templates/aws_role_v2.yaml").read_text()
-        assert "project/default" in template  # OpenAI, alongside Claude's model/profile grants.
+        assert "inference-profile/*" in template
+        assert "project/default" in template
+        assert "EnableResponsesApi" not in template
         params = {item["ParameterKey"]: item["ParameterValue"] for item in json.loads(bundle.read("parameters.json"))}
         assert params == {key.removeprefix("param_"): value[0] for key, value in query.items() if key.startswith("param_")}
         assert params["ExternalId"] == json.loads(secrets.get_secret.return_value)["external_id"]

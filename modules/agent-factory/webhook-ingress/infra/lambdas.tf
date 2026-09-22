@@ -172,6 +172,7 @@ resource "aws_lambda_function" "github_webhook" {
 }
 
 resource "aws_cloudwatch_log_group" "lambda" {
+  #checkov:skip=CKV_AWS_338: GitHub webhook Lambda logs use an explicitly bounded 14-day operational retention.
   name              = "/aws/lambda/${local.name_prefix}-github-webhook"
   retention_in_days = 14
   kms_key_id        = aws_kms_key.cloudwatch.arn

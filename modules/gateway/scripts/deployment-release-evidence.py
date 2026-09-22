@@ -15,7 +15,7 @@ def produce(env, component, read, frontend=Path("modules/gateway/frontend/dist")
     if not re.fullmatch(r"[0-9a-f]{40}", source):
         raise ValueError("immutable release source required")
     account = read(["sts", "get-caller-identity"])["Account"]
-    if account != (env.get("CUSTOMER_ACCOUNT_ID") or env["ACCOUNT_ID"]):
+    if account != env["ACCOUNT_ID"]:
         raise ValueError("release account differs from resolved workflow account")
     digest, assets = None, {}
     if component == "gateway-frontend":

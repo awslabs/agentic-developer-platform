@@ -159,7 +159,12 @@ class WorkflowProvider:
             if record.get("type") != "file" or record.get("encoding") != "base64" or record.get("size", MAX_CONTEXT_BYTES + 1) > MAX_CONTEXT_BYTES:
                 raise CycleBlockedError("deployment_workflow_definition_unverifiable")
             content = base64.b64decode(record["content"])
-            blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()
+            # Git's blob object ID, not a security digest: SHA-1 over "blob <len>\0<bytes>" IS
+            # the name GitHub reports in `sha`, so the algorithm is fixed by Git's object format
+            # and a stronger hash would match nothing. Authorization comes from the approved
+            # revision pin, the allowed-input check and the scoped token, never from this value;
+            # cross-revision equality below compares the content bytes, not just this digest.
+            blob = hashlib.sha1(b"blob " + str(len(content)).encode() + b"\0" + content, usedforsecurity=False).hexdigest()
             if blob != record.get("sha"):
                 raise CycleBlockedError("deployment_workflow_blob_mismatch")
             blobs.append((blob, content))

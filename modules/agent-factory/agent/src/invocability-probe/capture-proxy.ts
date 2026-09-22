@@ -66,6 +66,14 @@ function modelFromPath(pathname: string): string | null {
   catch { return null; }
 }
 
+export function resolveProviderUrl(path: string, upstream: URL): URL {
+  const providerUrl = new URL(path, upstream);
+  if (providerUrl.origin !== upstream.origin) {
+    throw new Error('captured request path does not resolve to the Bedrock upstream');
+  }
+  return providerUrl;
+}
+
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -184,10 +192,23 @@ export async function startCaptureProxy(options: CaptureProxyOptions): Promise<C
         providerErrorCode: 'provider_response_indeterminate',
         forwarded: true,
       };
-      const providerResponse = await fetch(new URL(path, upstream), {
+      // Resolve and assert the destination here rather than trusting the model check
+      // above to have constrained it. A captured target containing dot segments (e.g.
+      // "/..//host/model/m/invoke") yields a pathname starting with "//", which
+      // new URL(path, upstream) reads as a host and silently retargets the forward.
+      // The model check rejects that shape today, but only incidentally; this keeps the
+      // guarantee local to the call that carries the signed Bedrock credentials.
+      const providerUrl = resolveProviderUrl(path, upstream);
+      // providerUrl is asserted above to share the Bedrock upstream origin, which is
+      // derived from the Gateway-supplied region (bedrockEndpoint validates its charset)
+      // and never from the captured request. redirect:'error' keeps the SigV4 credentials
+      // from following a relocation (#5603).
+      // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
+      const providerResponse = await fetch(providerUrl, {
         method: 'POST',
         headers: signed.headers as Record<string, string>,
         body,
+        redirect: 'error',
         signal: options.signal,
       });
       const providerBody = Buffer.from(await providerResponse.arrayBuffer());

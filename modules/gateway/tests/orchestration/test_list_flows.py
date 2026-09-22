@@ -827,8 +827,8 @@ class TestDisplayCountsAndStatus:
             assert page.total == len(expected[status])
 
 
-class TestStalledIsDecisionDerived:
-    """Stall detection writes `failed`, so `state` cannot answer this."""
+class TestCurrentAttentionCount:
+    """Every current failure or hold has one consistent display count."""
 
     async def test_a_failed_node_with_a_stall_decision_counts_as_stalled(self, session):
         flow = await seed_flow(session, slug="stalled", created_offset=0)
@@ -840,21 +840,17 @@ class TestStalledIsDecisionDerived:
         assert page.flows[0].stalled_count == 1
         assert page.flows[0].status is FlowStatus.ATTENTION_NEEDED
 
-    async def test_a_plain_failure_with_no_stall_decision_does_not_count_as_stalled(self, session):
-        """A failure is not a stall: "the work failed" and "this is wedged, go look"
-        are different news and prompt different action."""
+    async def test_a_plain_failure_counts_in_the_same_attention_bucket(self, session):
+        """The summary counts all work needing help; node badges retain the reason."""
         flow = await seed_flow(session, slug="just-failed", created_offset=0)
         await seed_node(session, flow, node_ref="n1", state=NodeState.FAILED.value)
 
         page = await OrchestrationRepository(session).list_flows_page_with_aggregates(org_id=ORG_A)
 
-        assert page.flows[0].stalled_count == 0
-        # Still in the stalled *display* bucket — the node does need attention —
-        # but not a decision-derived stall.
-        assert page.flows[0].display_counts.stalled == 1
+        assert page.flows[0].stalled_count == page.flows[0].display_counts.stalled == 1
 
-    async def test_stalled_then_resumed_then_halted_does_not_read_as_stalled(self, session):
-        """Latest-wins. An any-match implementation leaves this node stalled forever."""
+    async def test_a_halted_node_still_needs_attention_after_a_prior_stall(self, session):
+        """A current halt needs attention regardless of the older stall record."""
         flow = await seed_flow(session, slug="halted-eventually", created_offset=0)
         node = await seed_node(session, flow, node_ref="n1", state=NodeState.HALTED.value)
         await seed_decision(session, flow, node, kind=DecisionKind.NODE_STALLED.value, created_offset=1)
@@ -862,7 +858,7 @@ class TestStalledIsDecisionDerived:
 
         page = await OrchestrationRepository(session).list_flows_page_with_aggregates(org_id=ORG_A)
 
-        assert page.flows[0].stalled_count == 0
+        assert page.flows[0].stalled_count == 1
 
     async def test_halted_then_stalled_again_does_read_as_stalled(self, session):
         """The other direction of latest-wins, so the test above cannot be passed by
@@ -1377,7 +1373,7 @@ class TestEndpoint:
         assert summary["intent_ref"] == "4645"
         assert summary["status"] == FlowStatus.AWAITING_YOU.value
         assert summary["awaiting_gate_count"] == 1
-        assert summary["stalled_count"] == 0
+        assert summary["stalled_count"] == summary["display_counts"]["stalled"] == 0
         assert summary["display_counts"] == {"queued": 2, "in_progress": 0, "gate": 1, "stalled": 0, "complete": 0}
         assert summary["total_nodes"] == 3
         assert summary["epic_count"] == 1
@@ -1514,7 +1510,7 @@ class TestEndpoint:
 
         summary = client_for(app_with_router, org_id=ORG_A).get(ROUTE).json()["flows"][0]
 
-        assert summary["stalled_count"] == 0
+        assert summary["stalled_count"] == summary["display_counts"]["stalled"] == 0
         assert summary["status"] == FlowStatus.RUNNING.value
 
     async def test_without_usage_read_the_request_is_denied(self, session, app_with_router):
@@ -1569,7 +1565,7 @@ class TestRequestedChangesSummary:
         summary = body["flows"][0]
         assert summary["status"] == "attention_needed"
         assert summary["changes_requested_count"] == 1
-        assert summary["stalled_count"] == 0
+        assert summary["stalled_count"] == summary["display_counts"]["stalled"] == 1
         assert (summary["story_count"], summary["gate_count"], summary["eval_count"], summary["total_nodes"]) == (27, 14, 4, 45)
         assert [w["story_count"] for w in summary["waves"]] == [4, 6, 12, 5]
         assert body["status_counts"]["attention_needed"] == 1

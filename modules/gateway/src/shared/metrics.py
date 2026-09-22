@@ -49,6 +49,7 @@ def _emit_emf(
     dimensions: list[list[str]],
     namespace: str = NAMESPACE,
     timestamp: int | None = None,
+    properties: dict[str, Any] | None = None,
 ) -> None:
     """
     Emit metrics in CloudWatch EMF format.
@@ -58,6 +59,7 @@ def _emit_emf(
         dimensions: List of dimension sets (each is a list of dimension names)
         namespace: CloudWatch namespace
         timestamp: Optional timestamp in milliseconds
+        properties: Optional non-metric values to include in the EMF event
     """
     if timestamp is None:
         timestamp = _get_timestamp()
@@ -78,6 +80,8 @@ def _emit_emf(
 
     # Add metric values
     emf_data.update(metrics)
+    if properties:
+        emf_data.update(properties)
 
     # Add standard context
     request_id = get_request_id()
@@ -111,6 +115,7 @@ def _get_unit(metric_name: str) -> str:
         "BudgetUtilizationPercent": "Percent",
         "RateLimitRemaining": "Count",
         "AuthExchangeCount": "Count",
+        "CallerProvenanceRejected": "Count",
     }
     return units.get(metric_name, "None")
 
@@ -592,6 +597,37 @@ def emit_auth_exchange_count(
             ["org_id", "account_type", "success", "Environment"],
             ["org_id", "account_type", "Environment"],
             ["org_id", "Environment"],
+            ["Environment"],
+        ],
+    )
+
+
+def emit_caller_provenance_rejected(
+    reason: str,
+    count: int = 1,
+    environment: str = "production",
+) -> None:
+    """Emit CallerProvenanceRejected metric.
+
+    Issue #5653: incremented whenever an X-Caller-Identity assertion is refused for
+    failing the provenance check. Deliberately carries NO org_id or principal
+    dimension — the rejected assertion is attacker-controlled, so dimensioning on it
+    would let a caller create unbounded metric cardinality and would record an
+    unverified identity as though it were established.
+
+    Args:
+        reason: Why the assertion was rejected (a fixed, non-caller-supplied value)
+        count: Number of rejections (default 1)
+        environment: Environment name
+    """
+    _emit_emf(
+        metrics={"CallerProvenanceRejected": count},
+        properties={
+            "reason": reason,
+            "Environment": environment,
+        },
+        dimensions=[
+            ["reason", "Environment"],
             ["Environment"],
         ],
     )

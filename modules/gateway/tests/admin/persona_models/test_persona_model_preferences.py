@@ -2753,7 +2753,7 @@ class TestRealIamAgentRegistryAuth:
 
     @staticmethod
     def _request(caller_identity: str):
-        headers = {"x-caller-identity": caller_identity}
+        headers = {"x-caller-identity": caller_identity, "x-adp-edge-provenance": "test-edge-provenance"}
 
         class _State:
             pass
@@ -2767,6 +2767,7 @@ class TestRealIamAgentRegistryAuth:
     def _trust_enabled():
         settings = MagicMock()
         settings.trust_apigw_headers = True
+        settings.apigw_provenance_secret = "test-edge-provenance"
         return settings
 
     @pytest.mark.asyncio

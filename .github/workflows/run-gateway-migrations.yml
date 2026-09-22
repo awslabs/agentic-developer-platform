@@ -173,7 +173,7 @@ jobs:
             PRICING_IMAGE_ARGS=(--expected-image "$PRICING_EXPECTED_IMAGE")
           fi
           python3 modules/gateway/scripts/pricing-rollout.py migrate \
-            --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" \
+            --account-id "$ACCOUNT_ID" \
             --environment "$ENVIRONMENT" "${PRICING_IMAGE_ARGS[@]}"
 
       - name: Record gateway-migrations build evidence
