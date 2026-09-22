@@ -166,8 +166,14 @@ export async function callRecall(
   const timeout = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
 
   try {
-    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf — CONTEXT_MCP_URL is a module constant validated once via validateBaseUrl() at load (blocks loopback/metadata/link-local); only the static /tools/call path is interpolated
     const url = isProtectedKnowledgeRun() ? `${getDoorBaseUrl(CONTEXT_MCP_URL)}/call` : `${CONTEXT_MCP_URL}/tools/call`;
+    // Both branches are fixed destinations with a static path: CONTEXT_MCP_URL is
+    // validated once via validateBaseUrl() at load (blocks metadata/link-local, rejects
+    // inline credentials), and the protected branch is the loopback bridge on a
+    // numeric-only port. redirect:'error' stops the Door or the bridge from relocating
+    // the call, which would forward the Door key and the X-Owner-Sub/X-Tenant-Id
+    // identity headers below to the redirect target (#5603).
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -185,6 +191,7 @@ export async function callRecall(
           limit: RECALL_LIMIT,
         },
       }),
+      redirect: 'error',
       signal: controller.signal,
     });
 

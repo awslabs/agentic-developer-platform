@@ -197,6 +197,7 @@ describe('callRecall', () => {
     const [url, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toContain('/tools/call');
     expect(options.method).toBe('POST');
+    expect(options.redirect).toBe('error');
     const reqHeaders = options.headers as Record<string, string>;
     expect(reqHeaders).toMatchObject({
       'Content-Type': 'application/json',
