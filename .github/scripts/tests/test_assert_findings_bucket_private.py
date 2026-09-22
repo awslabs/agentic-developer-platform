@@ -573,6 +573,7 @@ def test_the_scan_identity_can_make_both_calls():
     tf = SCAN_IAM_TF.read_text(encoding="utf-8")
     for action in REQUIRED_RUNNER_ACTIONS:
         assert f'"{action}"' in tf, f"The scan identity is missing {action}"
+    import yaml
     job = yaml.safe_load(NIGHTLY_WORKFLOW.read_text())["jobs"]["code-review"]
     assert str(job["environment"]).startswith("adp-scan-")
     assert any(step.get("uses") == "aws-e/adp/.github/actions/trusted-scan@main" for step in job["steps"])
