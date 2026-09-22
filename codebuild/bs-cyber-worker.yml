@@ -33,8 +33,11 @@ phases:
 
   build:
     commands:
-      - cd modules/domain-apps/cyber/workers
-      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
+      # Issue #5616: context is the cyber module root (not workers/) so the
+      # image can include the Stage-3 validator the worker now enforces with,
+      # instead of vendoring a second copy that could drift.
+      - cd modules/domain-apps/cyber
+      - docker build --no-cache --pull -f workers/Dockerfile -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
       - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"

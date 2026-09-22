@@ -28,13 +28,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY workers/requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY entrypoint.py ./entrypoint.py
-COPY triage/ ./triage/
-COPY static/ ./static/
-COPY scripts/ ./scripts/
+COPY workers/entrypoint.py ./entrypoint.py
+COPY workers/sample_access.py ./sample_access.py
+COPY workers/script_guard.py ./script_guard.py
+COPY workers/triage/ ./triage/
+COPY workers/static/ ./static/
+COPY workers/scripts/ ./scripts/
+
+# Issue #5616: the worker enforces Mode B script validation itself, so the
+# validator must be in the image. It is copied from the Stage-3 skill rather
+# than vendored here so the agent-side pre-upload check and the worker-side
+# enforcement cannot drift into two different rule sets. This is why the build
+# context is the cyber module root rather than workers/.
+COPY agent/skills/stage-3-static/validate_script.py ./skills/stage-3-static/validate_script.py
 
 ARG IMAGE_TAG=dev
 ENV IMAGE_TAG=${IMAGE_TAG}
