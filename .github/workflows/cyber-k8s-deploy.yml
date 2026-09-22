@@ -57,6 +57,11 @@ jobs:
           echo "static_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-tasks.fifo" >> "$GITHUB_OUTPUT"
           echo "static_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-responses.fifo" >> "$GITHUB_OUTPUT"
 
+          # Issue #5616: buckets the workers may read samples from. The workers
+          # deny every read whose bucket is not in this set, so this list is the
+          # allowlist, not a hint. Keep it as narrow as the pipeline needs.
+          echo "allowed_sample_buckets=${{ vars.CYBER_ALLOWED_BUCKETS || 'adp-dev-chat-artifacts,adp-dev-cape-assets' }}" >> "$GITHUB_OUTPUT"
+
       - name: Apply cyber-workers manifests
         run: |
           for f in modules/domain-apps/cyber/k8s/*.yaml; do
@@ -67,8 +72,33 @@ jobs:
               -e "s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue }}|g" \
               -e "s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g" \
               -e "s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g" \
+              -e "s|REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS|${{ steps.vars.outputs.allowed_sample_buckets }}|g" \
               "$f" | kubectl apply -f -
           done
+
+      - name: Verify no placeholders survived substitution
+        # A placeholder that reaches the cluster is not a cosmetic problem:
+        # REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS would be read as a bucket name, so
+        # the workers would deny every sample read and the whole pipeline would
+        # fail closed with no obvious cause. Fail the deploy here instead.
+        run: |
+          MISSED=0
+          for f in modules/domain-apps/cyber/k8s/*.yaml; do
+            RENDERED=$(sed \
+              -e "s|REPLACE_WITH_CYBER_WORKER_IMAGE|${{ steps.vars.outputs.ecr_image }}|g" \
+              -e "s|REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL|${{ steps.vars.outputs.triage_tasks_queue }}|g" \
+              -e "s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue }}|g" \
+              -e "s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g" \
+              -e "s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g" \
+              -e "s|REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS|${{ steps.vars.outputs.allowed_sample_buckets }}|g" \
+              "$f")
+            if echo "$RENDERED" | grep -n "REPLACE_WITH_"; then
+              echo "::error file=$f::unsubstituted placeholder(s) in $f"
+              MISSED=1
+            fi
+          done
+          [ "$MISSED" -eq 0 ] || exit 1
+          echo "All placeholders substituted."
 
       - name: Summary
         run: |

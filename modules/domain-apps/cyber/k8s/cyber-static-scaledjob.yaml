@@ -48,6 +48,23 @@ spec:
         serviceAccountName: cyber-worker
         restartPolicy: Never
         # ---------------------------------------------------------------
+        # Pod hardening (issue #5616)
+        # ---------------------------------------------------------------
+        # This pod parses attacker-controlled binaries and, in Mode B, runs a
+        # generated analysis script. Both are places where a memory-safety bug
+        # in a parser or a gap in script validation could turn into execution,
+        # so the container is constrained to what analysis actually needs and
+        # nothing more. The image already declares USER 1001; these settings are
+        # asserted here too so the guarantee does not silently depend on an
+        # image rebuild.
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          runAsGroup: 1001
+          fsGroup: 1001
+          seccompProfile:
+            type: RuntimeDefault
+        # ---------------------------------------------------------------
         # initContainer: fetch YARA rules from S3 (Issue #272)
         # Resolves current.json pointer → syncs that version's rules/
         # ---------------------------------------------------------------
@@ -70,9 +87,26 @@ spec:
                 echo "Fetched $RULE_COUNT rule files"
                 # Write provenance manifest for Stage 3 envelope
                 python3 -c "import json; json.dump({'public': {'florian-roth': '$VERSION'}}, open('/rules/rules-manifest.json','w'))"
+            # Inherits the pod's runAsNonRoot/runAsUser 1001. The aws-cli image
+            # defaults HOME to /root, which uid 1001 cannot write, so point HOME
+            # and the CLI's cache at the writable scratch volume. Without this
+            # the rule fetch fails and the static worker starts with no rules.
+            env:
+              - name: HOME
+                value: /tmp
+              - name: AWS_CONFIG_FILE
+                value: /tmp/aws-config
+              - name: AWS_SHARED_CREDENTIALS_FILE
+                value: /tmp/aws-credentials
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
             volumeMounts:
               - name: rules
                 mountPath: /rules
+              - name: scratch
+                mountPath: /tmp
             resources:
               requests:
                 cpu: "100m"
@@ -83,6 +117,15 @@ spec:
         containers:
           - name: cyber-static
             image: REPLACE_WITH_CYBER_WORKER_IMAGE
+            # Analysis needs no privilege escalation and no Linux capabilities;
+            # it reads a file and runs parsers. Dropping ALL means a parser
+            # exploit lands in a context that cannot raise its own privileges.
+            securityContext:
+              allowPrivilegeEscalation: false
+              privileged: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
             env:
               - name: WORKER_ROLE
                 value: "static"
@@ -96,10 +139,26 @@ spec:
                 value: "REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL"
               - name: RESULTS_TABLE
                 value: "adp-dev-cyber-analysis-results"
+              # Issue #5616: the worker denies every read unless the bucket is
+              # named here, so an unset value fails closed rather than falling
+              # back to "any bucket this role can reach".
+              - name: CYBER_ALLOWED_BUCKETS
+                value: "REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS"
+              # With a read-only root filesystem, any library that caches under
+              # HOME fails on write. Point it at the scratch volume rather than
+              # discovering this through a parser crash on a live sample.
+              - name: HOME
+                value: /tmp
             volumeMounts:
               - name: rules
                 mountPath: /rules
                 readOnly: true
+              # readOnlyRootFilesystem is compatible with this worker because
+              # every write it makes goes through tempfile.TemporaryDirectory().
+              # Size-limited so a hostile sample that inflates on unpack fills a
+              # bounded volume instead of the node's disk.
+              - name: scratch
+                mountPath: /tmp
             resources:
               requests:
                 cpu: "1"
@@ -112,6 +171,9 @@ spec:
         volumes:
           - name: rules
             emptyDir: {}
+          - name: scratch
+            emptyDir:
+              sizeLimit: "2Gi"
   pollingInterval: 5
   minReplicaCount: 0
   maxReplicaCount: 10
