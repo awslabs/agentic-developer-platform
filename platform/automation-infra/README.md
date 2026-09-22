@@ -87,7 +87,10 @@ not add upfront GitHub setup to the canonical fresh-deployment guide.
    project with the trusted deployment/operator identity. Exercise a publishing
    build and a gateway PR smoke build. Then update active/legacy runner policies
    and remove their EKS edit policies and service-account RBAC bindings **together**.
-   Include webhook `scaledjob-rbac.tf` in this cutover. Confirm custom/onboarded
+   Include webhook `scaledjob-rbac.tf` in this cutover. Set the retired
+   `manage_ci_runner_cluster_admin` input to false; true is now rejected.
+   Platform state excludes the trusted deployment access entry because this
+   independent state owns it, avoiding duplicate-entry conflicts. Confirm custom/onboarded
    repository roles use the narrowed boundary and have no independent Kubernetes
    deploy binding. A stale binding can bypass the AWS restrictions.
 7. Run an ordinary repository job using the unchanged engine transport; verify
