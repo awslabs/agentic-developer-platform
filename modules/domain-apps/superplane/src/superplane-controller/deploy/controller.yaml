@@ -22,48 +22,114 @@ metadata:
     app.kubernetes.io/name: superplane-controller
     app.kubernetes.io/component: controller
     app.kubernetes.io/part-of: superplane
+# Every rule below names the controller behaviour that exercises it. A grant with no
+# call behind it was removed rather than left "in case" — an inherited grant nobody can
+# trace is indistinguishable from a deliberate one, which is how the cluster-wide Secret
+# read below survived review. Scoped by A19 (#5684).
+#
+# Two rules are deliberately NOT narrowed with `resourceNames`, and the reason is
+# recorded so a later reviewer neither re-flags them nor narrows them into an outage:
+# `resourceNames` only authorises a `list`/`watch` when the client sends a matching
+# `metadata.name` field selector. These loops search for objects they cannot name in
+# advance — an unschedulable pod is found by *not* knowing which pod it is — so a name
+# filter would not tighten the read, it would stop authorising it and silently disable
+# provisioning and drain.
 rules:
-  # Pods: watch for pending GPU pods
+  # Pods.
+  #   get/list/watch — pod_watcher.go reconciles Pods (For(&corev1.Pod{})) to find
+  #     unschedulable GPU pods; consolidator.go:383,700 lists pods by spec.nodeName to
+  #     decide whether a node is empty and to drain it. list+watch are both required
+  #     because the cached client backs every read with an informer.
+  #   patch — pod_watcher.go:380,393 annotates pods (first-seen, provisioning-triggered)
+  #     so a pending pod triggers capacity exactly once.
+  #   Not narrowable by name: see the note above. No create/update/delete — this
+  #   controller never creates or removes a workload.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "patch"]
-  # Pod eviction for drain
-  - apiGroups: ["policy"]
+  # Pod eviction — consolidator.go:736 drains via SubResource("eviction").Create, which
+  # is what makes the API server enforce PodDisruptionBudgets (see RETIREMENT.md).
+  #
+  # apiGroups MUST be "" (core), not "policy". RBAC matches a subresource against the
+  # API group in the request path — POST /api/v1/namespaces/{ns}/pods/{name}/eviction —
+  # not against the `policy/v1` apiVersion the Eviction *body* carries. The previous
+  # "policy" value was a silent outage: the rule loads without error and simply never
+  # matches, so every drain is refused 403 at the moment it runs, bypassing the
+  # disruption budgets it was written to respect. Upstream's own bootstrap policy uses
+  # the core group for this in both editRules() and NodeRules(); so do
+  # cluster-autoscaler and Karpenter. Fixed by A19 (#5684).
+  - apiGroups: [""]
     resources: ["pods/eviction"]
     verbs: ["create"]
-  # Nodes: get/list/delete for health monitoring and consolidation
+  # Nodes (the Kubernetes Node object, not SuperplaneNode).
+  #   get/list/watch — health_monitor.go:67 reads a Node's Ready condition; list+watch
+  #     are required by the informer backing that cached Get.
+  #   update — consolidator.go:689 cordons (spec.unschedulable) before draining.
+  #   delete — consolidator.go:777 removes the Node object after a confirmed teardown.
+  #   No patch: cordon is a read-modify-Update, and nothing else mutates a Node.
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch", "update", "patch", "delete"]
-  # Secrets: list for vault sync status check (heartbeat)
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["list"]
-  # Events: create for recording controller actions
+    verbs: ["get", "list", "watch", "update", "delete"]
+  # Events — the leader-election recorder emits LeaderElection events; create+patch is
+  # the recorder's own aggregation behaviour (client-go tools/record).
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
-  # ConfigMaps: for leader election
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Leases: for leader election
+  # Leases — leader election, so only one replica acts at a time (--leader-elect=true).
+  # client-go's LeaseLock calls exactly Get, Create and Update; it never lists, watches
+  # or deletes the lease (release rewrites the holder via Update). The lock uses a
+  # direct client, not the cache, so no watch is implied either.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Custom resources: full access to NodePools and SuperplaneNodes
+    verbs: ["get", "create", "update"]
+  # NodePools (cluster-scoped CRD) — read-only apart from status.
+  #   get/list/watch — nodepool_reconciler and cost_reconciler reconcile NodePools;
+  #     pod_watcher.go:256 lists them to match a pool to a pending pod.
+  #   The controller never creates, updates the spec of, or deletes a NodePool: pools
+  #   are declared by an administrator and this controller only reports on them.
   - apiGroups: ["superplane.ai"]
     resources: ["nodepools"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
+  # NodePool status — nodepool_reconciler.go:48 and cost_reconciler.go:99 write phase
+  # and aggregated cost via Status().Update. No patch/get: Status().Update is a PUT.
   - apiGroups: ["superplane.ai"]
     resources: ["nodepools/status"]
-    verbs: ["get", "update", "patch"]
+    verbs: ["update"]
+  # SuperplaneNodes (namespaced CRD) — the controller's own capacity records.
+  #   get/list/watch — provisioner and health_monitor reconcile them; consolidator.go:347
+  #     and pod_watcher.go:217 list them to assess capacity.
+  #   create — health_monitor.go:367 creates a replacement on auto-repair;
+  #     pod_watcher.go:351 creates one for an unschedulable pod.
+  #   update — provisioner.go:583 writes back spec.cloud/spec.region after a fallback.
+  #   No delete: nothing in this controller deletes a SuperplaneNode. A failed teardown
+  #   must RETAIN the record and its status.skypilotCluster (RETIREMENT.md) — that name
+  #   is the only handle on a possibly-live GPU cluster, so deletion is a human decision.
+  #   Cluster-wide rather than namespace-scoped by design: an administrator may declare
+  #   capacity in any namespace and these decisions are cluster-wide. Not narrowable by
+  #   name — auto-repair creates records with generateName, so the names do not exist
+  #   until after the call that would need to be authorised for them.
   - apiGroups: ["superplane.ai"]
     resources: ["superplanenodes"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch", "create", "update"]
+  # SuperplaneNode status — phase/message/cost writes via Status().Update throughout
+  # provisioner.go, health_monitor.go and consolidator.go.
   - apiGroups: ["superplane.ai"]
     resources: ["superplanenodes/status"]
-    verbs: ["get", "update", "patch"]
+    verbs: ["update"]
+# REMOVED by A19 (#5684), with the behaviour that justified each removal:
+#   secrets ["list"] — granted read access to EVERY Secret in the cluster (every team's
+#     passwords, tokens, TLS keys and cloud credentials) to serve one heartbeat field.
+#     checkVaultSyncStatus returned the constant "synced" on every branch INCLUDING the
+#     branch where the list failed, so the grant funded no real signal; and "synced" is
+#     outside the receiver's ok|pending|failed vocabulary, so cluster_health.go
+#     classified it as uninterpretable on arrival. The check was retired with the grant
+#     rather than left to fail closed on a permission error and still report "synced".
+#   configmaps [8 verbs] — leader election in controller-runtime v0.20.1 defaults to
+#     resourcelock.LeasesResourceLock (pkg/leaderelection/leader_election.go). The
+#     ConfigMap lock was the pre-v0.12 default; nothing here selects it, and no
+#     controller in this tree reads or writes a ConfigMap through the API. The
+#     Deployment's own configMap mounts are resolved by the kubelet, not by this
+#     ServiceAccount, so they are unaffected.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

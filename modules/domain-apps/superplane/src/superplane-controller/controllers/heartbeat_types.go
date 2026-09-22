@@ -5,17 +5,21 @@ import "time"
 // ClusterHeartbeat is the payload sent to the control plane API on each heartbeat tick.
 type ClusterHeartbeat struct {
 	ClusterID         string    `json:"cluster_id"`
-	Status            string    `json:"status"`              // healthy, degraded, recovering
+	Status            string    `json:"status"` // healthy, degraded, recovering
 	ControllerVersion string    `json:"controller_version"`
 	Timestamp         time.Time `json:"timestamp"`
 
 	NodeSummary NodeSummary `json:"node_summary"`
 	GPUSummary  GPUSummary  `json:"gpu_summary"`
 
-	SkyPilotHealthy bool    `json:"skypilot_healthy"`
-	VaultSyncStatus string  `json:"vault_sync_status"` // synced, pending, failed
-	CostHourly      float64 `json:"cost_hourly"`
-	PendingPods     int     `json:"pending_pods"`
+	SkyPilotHealthy bool `json:"skypilot_healthy"`
+	// VaultSyncStatus was removed by A19 (#5684) along with the cluster-wide Secret
+	// read that produced it; see the note in heartbeat.go. The field is omitted rather
+	// than sent empty so the receiver records "not reported" instead of interpreting a
+	// value: an empty string is outside its ok|pending|failed vocabulary and would
+	// aggregate as Unknown, which claims a reading was attempted.
+	CostHourly  float64 `json:"cost_hourly"`
+	PendingPods int     `json:"pending_pods"`
 
 	Alerts []HeartbeatAlert `json:"alerts"`
 }

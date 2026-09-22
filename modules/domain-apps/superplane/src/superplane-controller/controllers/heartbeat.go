@@ -137,13 +137,10 @@ func (h *HeartbeatSender) Collect(ctx context.Context) ClusterHeartbeat {
 		})
 	}
 
-	// 3. Check vault/credential sync status (ExternalSecrets).
-	hb.VaultSyncStatus = h.checkVaultSyncStatus(ctx)
-
-	// 4. Count pending GPU pods.
+	// 3. Count pending GPU pods.
 	hb.PendingPods = h.countPendingPods(ctx)
 
-	// 5. Determine overall status.
+	// 4. Determine overall status.
 	hb.Status = h.computeStatus(hb)
 
 	return hb
@@ -297,27 +294,36 @@ func (h *HeartbeatSender) checkSkyPilotHealth(ctx context.Context) bool {
 	return healthy
 }
 
-// checkVaultSyncStatus checks ExternalSecret objects in the cluster.
-// Returns "synced", "pending", or "failed".
-func (h *HeartbeatSender) checkVaultSyncStatus(ctx context.Context) string {
-	// Check for ExternalSecret objects by looking for secrets with the
-	// external-secrets.io/managed label.
-	var secretList corev1.SecretList
-	if err := h.Client.List(ctx, &secretList, client.MatchingLabels{
-		"reconcile.external-secrets.io/managed": "true",
-	}); err != nil {
-		// If we can't list (e.g. no ExternalSecrets CRD), assume synced.
-		return "synced"
-	}
-
-	if len(secretList.Items) == 0 {
-		return "synced"
-	}
-
-	// All managed secrets exist → synced. In a real implementation we'd check
-	// the ExternalSecret CR status conditions, but for now this is sufficient.
-	return "synced"
-}
+// Vault-sync reporting was REMOVED by A19 (#5684) together with the ClusterRole's
+// cluster-wide `secrets: ["list"]` grant, which existed solely to serve it.
+//
+// The removed checkVaultSyncStatus listed every Secret in the cluster carrying the
+// `reconcile.external-secrets.io/managed` label and then returned the constant
+// "synced" on every branch — including the branch where the list itself FAILED. It
+// never read a single field of what it fetched, so the broadest permission this
+// controller held funded an answer that was already a constant.
+//
+// It was not merely useless, it was actively misleading in two directions:
+//
+//   - The one case where the answer was genuinely unknown (the list failed) reported
+//     the most reassuring value available. That is the exact bug the domain's health
+//     contract was built to make unrepresentable — see contracts/superplane_contracts/
+//     health.py, which cites this function by name, and tests/test_probe_cannot_fake_health.py.
+//   - "synced" is not in the receiver's `ok|pending|failed` vocabulary, so
+//     superplane-platform-monitor/monitors/cluster_health.go classified it as
+//     Unrecognised/Unknown on arrival. The field was discarded at the far end.
+//
+// Deleting only the RBAC grant would have been worse than leaving both: the List would
+// then fail on a permission error and the function would still return "synced",
+// converting a dead signal into a guaranteed lie. So the check and the grant were
+// retired together, and the field was dropped from the payload rather than populated
+// with a value the receiver cannot interpret. An absent field is read as "nothing was
+// reported" (cluster_health.go's `case ""` → NotChecked), which is the truthful state
+// and, per the health contract's severity ordering, never aggregates to healthy.
+//
+// Restoring a real vault-sync check means reading ExternalSecret CR status conditions
+// and granting `externalsecrets` on `external-secrets.io` — NOT cluster-wide Secret
+// reads, which this controller has never needed.
 
 // countPendingPods counts pods in Pending phase that request GPU resources.
 func (h *HeartbeatSender) countPendingPods(ctx context.Context) int {
