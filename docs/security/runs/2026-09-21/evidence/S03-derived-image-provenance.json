@@ -1,0 +1,526 @@
+{
+  "work_package": "S03",
+  "issue": 5602,
+  "built_at": "2026-09-22",
+  "recipe": "modules/domain-apps/superplane/images/skypilot/build_oci.py",
+  "reproduction_command": "python3 modules/domain-apps/superplane/images/skypilot/build_oci.py /tmp/S03-skypilot-oci",
+  "output": {
+    "format": "OCI image layout",
+    "platform": "linux/amd64",
+    "manifest_digest": "sha256:f8d893cfabadff1946f7ccb8e2c0ba002322d1bfb0ee416cf6ce039f45de55ec",
+    "config_digest": "sha256:d05a57076d2c5c277b280d37d938716cedc908c25ae4e71931789ca7f7e0ef87",
+    "layer_digest": "sha256:9511a164bddb468ecb3e0b83c6fb087b7b541c4f2f87ed274fd642d850c60605",
+    "layer_diff_id": "sha256:9df9d434bbe595c81e2ee7cf3aab506bf667393b482ad33cc86ba0e03de632d2"
+  },
+  "inputs": {
+    "base_index": "berkeleyskypilot/skypilot@sha256:0c0c0db86ee31559f9c98f2331b7d91ee84b61e7ab97bb6cbcd89938c89d37e4",
+    "base_amd64_manifest": "sha256:46d3886317e1c38ac4d21c4b4c335d93d0320433dee86df985f396de8a9bee8f",
+    "setuptools_wheel": {
+      "version": "81.0.0",
+      "url": "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl",
+      "sha256": "fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6",
+      "size": 1062021
+    }
+  },
+  "reproducibility": {
+    "source_date_epoch": 1790035200,
+    "independent_builds": 2,
+    "result": "byte-identical index.json and provenance.json; identical manifest digest"
+  },
+  "inventory": {
+    "tool": "syft",
+    "version": "1.11.1",
+    "command": "syft oci-dir:/tmp/S03-skypilot-oci -o syft-json",
+    "packages": [
+      {
+        "name": "setuptools",
+        "version": "81.0.0",
+        "location": "/usr/local/lib/python3.10/site-packages/setuptools-81.0.0.dist-info/METADATA"
+      },
+      {
+        "name": "jaraco-context",
+        "version": "6.1.0",
+        "location": "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/jaraco_context-6.1.0.dist-info/METADATA"
+      },
+      {
+        "name": "wheel",
+        "version": "0.46.3",
+        "location": "/usr/local/lib/python3.10/site-packages/setuptools/_vendor/wheel-0.46.3.dist-info/METADATA"
+      },
+      {
+        "name": "jackson-core",
+        "version": "2.18.6",
+        "location": "/usr/local/lib/python3.10/site-packages/ray/jars/ray_dist.jar"
+      },
+      {
+        "name": "cryptography",
+        "version": "46.0.5",
+        "location": "/usr/local/lib/python3.10/site-packages/cryptography-46.0.5.dist-info/METADATA"
+      },
+      {
+        "name": "jsonwebtoken",
+        "version": "10.3.0",
+        "location": "/root/.local/bin/uv and /root/.local/bin/uvx"
+      }
+    ]
+  },
+  "scan": {
+    "tool": "grype",
+    "version": "0.80.2",
+    "command": "cd /tmp && GRYPE_DB_AUTO_UPDATE=false grype oci-dir:/tmp/S03-skypilot-oci -o json",
+    "database_built": "2026-03-09T00:31:20Z",
+    "database_checksum": "sha256:a65e27aecbbb2cd6671f5da84c16db7e9c60f0114075e6ae9bcc71f466460a0c",
+    "counts": {
+      "Critical": 1,
+      "High": 13,
+      "Medium": 33,
+      "Low": 11,
+      "Negligible": 512,
+      "Unknown": 10
+    },
+    "covered_advisory_matches": [],
+    "requested_lower_native_matches": [
+      {
+        "advisory": "CVE-2020-15778",
+        "packages": [
+          "openssh-client",
+          "openssh-server",
+          "openssh-sftp-server"
+        ],
+        "version": "1:10.0p1-7+deb13u4",
+        "native_severity": "Negligible"
+      }
+    ],
+    "jsonwebtoken_matches": [],
+    "repository_configured_counts": {
+      "Critical": 0,
+      "High": 2,
+      "Medium": 31,
+      "Low": 11,
+      "Negligible": 389,
+      "Unknown": 10
+    },
+    "all_critical_high_matches": [
+      {
+        "severity": "High",
+        "advisory": "CVE-2026-0915",
+        "package": "libc-bin",
+        "version": "2.41-12+deb13u3",
+        "fix_versions": [],
+        "locations": [
+          "/usr/share/doc/libc-bin/copyright",
+          "/var/lib/dpkg/info/libc-bin.conffiles",
+          "/var/lib/dpkg/info/libc-bin.md5sums",
+          "/var/lib/dpkg/status"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2026-0861",
+        "package": "libc-bin",
+        "version": "2.41-12+deb13u3",
+        "fix_versions": [],
+        "locations": [
+          "/usr/share/doc/libc-bin/copyright",
+          "/var/lib/dpkg/info/libc-bin.conffiles",
+          "/var/lib/dpkg/info/libc-bin.md5sums",
+          "/var/lib/dpkg/status"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2025-15281",
+        "package": "libc-bin",
+        "version": "2.41-12+deb13u3",
+        "fix_versions": [],
+        "locations": [
+          "/usr/share/doc/libc-bin/copyright",
+          "/var/lib/dpkg/info/libc-bin.conffiles",
+          "/var/lib/dpkg/info/libc-bin.md5sums",
+          "/var/lib/dpkg/status"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2026-0915",
+        "package": "libc6",
+        "version": "2.41-12+deb13u3",
+        "fix_versions": [],
+        "locations": [
+          "/usr/share/doc/libc6/copyright",
+          "/var/lib/dpkg/info/libc6:amd64.conffiles",
+          "/var/lib/dpkg/info/libc6:amd64.md5sums",
+          "/var/lib/dpkg/status"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2026-0861",
+        "package": "libc6",
+        "version": "2.41-12+deb13u3",
+        "fix_versions": [],
+        "locations": [
+          "/usr/share/doc/libc6/copyright",
+          "/var/lib/dpkg/info/libc6:amd64.conffiles",
+          "/var/lib/dpkg/info/libc6:amd64.md5sums",
+          "/var/lib/dpkg/status"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2025-15281",
+        "package": "libc6",
+        "version": "2.41-12+deb13u3",
+        "fix_versions": [],
+        "locations": [
+          "/usr/share/doc/libc6/copyright",
+          "/var/lib/dpkg/info/libc6:amd64.conffiles",
+          "/var/lib/dpkg/info/libc6:amd64.md5sums",
+          "/var/lib/dpkg/status"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2025-59375",
+        "package": "libexpat1",
+        "version": "2.7.1-2",
+        "fix_versions": [],
+        "locations": [
+          "/usr/share/doc/libexpat1/copyright",
+          "/var/lib/dpkg/info/libexpat1:amd64.md5sums",
+          "/var/lib/dpkg/status"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2025-13151",
+        "package": "libtasn1-6",
+        "version": "4.20.0-2",
+        "fix_versions": [],
+        "locations": [
+          "/usr/share/doc/libtasn1-6/copyright",
+          "/var/lib/dpkg/info/libtasn1-6:amd64.md5sums",
+          "/var/lib/dpkg/status"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2025-13836",
+        "package": "python",
+        "version": "3.10.19",
+        "fix_versions": [
+          "3.13.11",
+          "3.14.1",
+          "3.15.0"
+        ],
+        "locations": [
+          "/usr/local/bin/python3.10",
+          "/usr/local/lib/libpython3.10.so.1.0"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2023-36632",
+        "package": "python",
+        "version": "3.10.19",
+        "fix_versions": [],
+        "locations": [
+          "/usr/local/bin/python3.10",
+          "/usr/local/lib/libpython3.10.so.1.0"
+        ]
+      },
+      {
+        "severity": "Critical",
+        "advisory": "CVE-2025-68121",
+        "package": "stdlib",
+        "version": "go1.24.11",
+        "fix_versions": [
+          "1.24.13",
+          "1.25.7",
+          "1.26.0-rc.3"
+        ],
+        "locations": [
+          "/usr/local/bin/kubectl"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2025-61732",
+        "package": "stdlib",
+        "version": "go1.24.11",
+        "fix_versions": [
+          "1.24.13",
+          "1.25.7"
+        ],
+        "locations": [
+          "/usr/local/bin/kubectl"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2025-61731",
+        "package": "stdlib",
+        "version": "go1.24.11",
+        "fix_versions": [
+          "1.24.12",
+          "1.25.6"
+        ],
+        "locations": [
+          "/usr/local/bin/kubectl"
+        ]
+      },
+      {
+        "severity": "High",
+        "advisory": "CVE-2025-61726",
+        "package": "stdlib",
+        "version": "go1.24.11",
+        "fix_versions": [
+          "1.24.12",
+          "1.25.6"
+        ],
+        "locations": [
+          "/usr/local/bin/kubectl"
+        ]
+      }
+    ],
+    "global_disposition_boundary": "All non-story critical/high occurrences are inherited from the 0.12.3 base and currently matched by package-wide .grype.yaml rules. S21 owns those shared rules; S03 changes none.",
+    "additional_dispositions": [
+      {
+        "advisory": "CVE-2025-13151",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "libtasn1-6",
+            "version": "4.20.0-2",
+            "locations": [
+              "/usr/share/doc/libtasn1-6/copyright",
+              "/var/lib/dpkg/info/libtasn1-6:amd64.md5sums",
+              "/var/lib/dpkg/status"
+            ]
+          }
+        ],
+        "fix_versions": [],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited Debian 13 libtasn1-6 occurrence. The existing repository disposition records that no Debian fix is available for this distribution version. S03 neither changes nor broadens that S21-owned global rule."
+      },
+      {
+        "advisory": "CVE-2025-13836",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "python",
+            "version": "3.10.19",
+            "locations": [
+              "/usr/local/bin/python3.10",
+              "/usr/local/lib/libpython3.10.so.1.0"
+            ]
+          }
+        ],
+        "fix_versions": [
+          "3.13.11",
+          "3.14.1",
+          "3.15.0"
+        ],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited Python 3.10.19 CPE occurrence concerning unbounded HTTPResponse.read() against a malicious server. Grype lists fixes only for Python 3.13.11, 3.14.1 and 3.15.0, while the compatible SkyPilot base uses 3.10.19. It remains visible for separate Python-base ownership and is not introduced by setuptools."
+      },
+      {
+        "advisory": "CVE-2025-15281",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "libc-bin",
+            "version": "2.41-12+deb13u3",
+            "locations": [
+              "/usr/share/doc/libc-bin/copyright",
+              "/var/lib/dpkg/info/libc-bin.conffiles",
+              "/var/lib/dpkg/info/libc-bin.md5sums",
+              "/var/lib/dpkg/status"
+            ]
+          },
+          {
+            "package": "libc6",
+            "version": "2.41-12+deb13u3",
+            "locations": [
+              "/usr/share/doc/libc6/copyright",
+              "/var/lib/dpkg/info/libc6:amd64.conffiles",
+              "/var/lib/dpkg/info/libc6:amd64.md5sums",
+              "/var/lib/dpkg/status"
+            ]
+          }
+        ],
+        "fix_versions": [],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited Debian 13 glibc occurrence in libc-bin and libc6. The existing repository disposition records that no Debian fix is available. S03 neither changes nor broadens that S21-owned global rule."
+      },
+      {
+        "advisory": "CVE-2025-59375",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "libexpat1",
+            "version": "2.7.1-2",
+            "locations": [
+              "/usr/share/doc/libexpat1/copyright",
+              "/var/lib/dpkg/info/libexpat1:amd64.md5sums",
+              "/var/lib/dpkg/status"
+            ]
+          }
+        ],
+        "fix_versions": [],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited Debian 13 libexpat1 occurrence. A package-wide repository rule suppresses this occurrence, but its no-untrusted-XML comment does not name SkyPilot. S03 leaves the match and S21-owned global rule unchanged and explicitly records that S21 must revalidate it; the setuptools layer does not introduce XML handling."
+      },
+      {
+        "advisory": "CVE-2025-61726",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "stdlib",
+            "version": "go1.24.11",
+            "locations": [
+              "/usr/local/bin/kubectl"
+            ]
+          }
+        ],
+        "fix_versions": [
+          "1.24.12",
+          "1.25.6"
+        ],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited from the immutable 0.12.3 base in /usr/local/bin/kubectl, built with Go 1.24.11. Grype lists fixed Go versions 1.24.12 and 1.25.6. It is covered by the existing package-wide Go stdlib ignore; refreshing that globally shared disposition or kubectl is outside S03 and owned by S21."
+      },
+      {
+        "advisory": "CVE-2025-61731",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "stdlib",
+            "version": "go1.24.11",
+            "locations": [
+              "/usr/local/bin/kubectl"
+            ]
+          }
+        ],
+        "fix_versions": [
+          "1.24.12",
+          "1.25.6"
+        ],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited from the immutable 0.12.3 base in /usr/local/bin/kubectl, built with Go 1.24.11. The issue concerns malicious cgo source passed to cmd/go, while kubectl is a prebuilt runtime tool. It is covered by the existing package-wide Go stdlib ignore; S03 does not change that S21-owned global disposition."
+      },
+      {
+        "advisory": "CVE-2025-61732",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "stdlib",
+            "version": "go1.24.11",
+            "locations": [
+              "/usr/local/bin/kubectl"
+            ]
+          }
+        ],
+        "fix_versions": [
+          "1.24.13",
+          "1.25.7"
+        ],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited from the immutable 0.12.3 base in /usr/local/bin/kubectl, built with Go 1.24.11. The issue concerns code smuggling while building cgo source, while kubectl is a prebuilt runtime tool. It is covered by the existing package-wide Go stdlib ignore; S03 does not change that S21-owned global disposition."
+      },
+      {
+        "advisory": "CVE-2025-68121",
+        "severity": "Critical",
+        "occurrences": [
+          {
+            "package": "stdlib",
+            "version": "go1.24.11",
+            "locations": [
+              "/usr/local/bin/kubectl"
+            ]
+          }
+        ],
+        "fix_versions": [
+          "1.24.13",
+          "1.25.7",
+          "1.26.0-rc.3"
+        ],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited from the immutable 0.12.3 base in /usr/local/bin/kubectl, built with Go 1.24.11. Grype lists fixed Go versions 1.24.13, 1.25.7 and 1.26.0-rc.3. The repository package-wide Go stdlib ignore suppresses it even though its comment names the ARC runner; S03 does not alter that S21-owned global disposition."
+      },
+      {
+        "advisory": "CVE-2026-0861",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "libc-bin",
+            "version": "2.41-12+deb13u3",
+            "locations": [
+              "/usr/share/doc/libc-bin/copyright",
+              "/var/lib/dpkg/info/libc-bin.conffiles",
+              "/var/lib/dpkg/info/libc-bin.md5sums",
+              "/var/lib/dpkg/status"
+            ]
+          },
+          {
+            "package": "libc6",
+            "version": "2.41-12+deb13u3",
+            "locations": [
+              "/usr/share/doc/libc6/copyright",
+              "/var/lib/dpkg/info/libc6:amd64.conffiles",
+              "/var/lib/dpkg/info/libc6:amd64.md5sums",
+              "/var/lib/dpkg/status"
+            ]
+          }
+        ],
+        "fix_versions": [],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited Debian 13 glibc occurrence in libc-bin and libc6. The existing repository disposition records no Debian patch; exploitation additionally requires attacker control of near-PTRDIFF_MAX allocation size and alignment. S03 leaves the S21-owned global rule unchanged."
+      },
+      {
+        "advisory": "CVE-2026-0915",
+        "severity": "High",
+        "occurrences": [
+          {
+            "package": "libc-bin",
+            "version": "2.41-12+deb13u3",
+            "locations": [
+              "/usr/share/doc/libc-bin/copyright",
+              "/var/lib/dpkg/info/libc-bin.conffiles",
+              "/var/lib/dpkg/info/libc-bin.md5sums",
+              "/var/lib/dpkg/status"
+            ]
+          },
+          {
+            "package": "libc6",
+            "version": "2.41-12+deb13u3",
+            "locations": [
+              "/usr/share/doc/libc6/copyright",
+              "/var/lib/dpkg/info/libc6:amd64.conffiles",
+              "/var/lib/dpkg/info/libc6:amd64.md5sums",
+              "/var/lib/dpkg/status"
+            ]
+          }
+        ],
+        "fix_versions": [],
+        "status": "inherited_global_disposition",
+        "reason": "Inherited Debian 13 glibc occurrence in libc-bin and libc6. The existing repository disposition records no Debian fix. S03 leaves the S21-owned global rule unchanged."
+      }
+    ]
+  },
+  "runtime_validation": {
+    "runtime": "udocker 1.3.17 loading the exact OCI layout",
+    "database": "PostgreSQL 16.15 (Debian 16.15-1.pgdg12+2)",
+    "go": "1.23.8 archive hash verified against go.dev metadata",
+    "results": [
+      "setuptools=81.0.0 and skypilot=0.12.3 imported from the loaded image",
+      "health healthy, version 0.12.3, expected commit, external proxy auth enabled",
+      "unauthenticated proxy health 401; authenticated health 200",
+      "maintained controller client Health and Status passed",
+      "PostgreSQL database public schema and SkyPilot tables confirmed",
+      "s03-restart-proof created through API and confirmed directly in users table",
+      "proxy returned 503 after only SkyPilot stopped",
+      "new SkyPilot process returned the same basic user after restart"
+    ]
+  }
+}
