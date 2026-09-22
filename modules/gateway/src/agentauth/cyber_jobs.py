@@ -82,7 +82,7 @@ async def caller(body, request: Request, db):
     ]
     # A service registration's registered_by human is NOT its sample owner.
     # Private human samples require a verified human-triggered workflow.
-    if len(matches) != 1 or claims.get("job_workflow_ref") or claims["event_name"] not in {"issues", "issue_comment", "workflow_dispatch"}:
+    if len(matches) != 1 or claims["event_name"] not in {"issues", "issue_comment", "workflow_dispatch"}:
         raise HTTPException(403, "Cyber workflow identity refused")
     binding = matches[0]
     owner = await human_owner(db, tenant=binding.tenant_id, actor_id=claims["actor_id"])

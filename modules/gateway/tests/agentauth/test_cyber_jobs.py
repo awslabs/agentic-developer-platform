@@ -237,3 +237,15 @@ async def test_revocation_during_storage_preparation_prevents_enqueue(context, d
     monkeypatch.setattr(cyber_jobs, 'run_in_threadpool', prepare_then_revoke)
     assert (await post(context)).status_code == 403
     assert not delivered(context)
+
+
+async def test_registered_reusable_workflow_requires_actual_verified_human(context, monkeypatch):
+    import os
+    entries = json.loads(os.environ["ADP_ARC_MODEL_BINDINGS"])
+    reusable = "org/repo/.github/workflows/malware-analysis-agent.yml@refs/heads/main"
+    entries[0]["job_workflow_ref"] = reusable
+    monkeypatch.setenv("ADP_ARC_MODEL_BINDINGS", json.dumps(entries))
+    assert (await post(context, claims={"job_workflow_ref": reusable})).status_code == 200
+    assert delivered(context)
+    assert (await post(context, claims={"job_workflow_ref": reusable, "actor_id": "99"})).status_code == 403
+    assert not delivered(context)

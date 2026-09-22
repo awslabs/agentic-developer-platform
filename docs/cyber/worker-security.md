@@ -19,7 +19,9 @@ wrong versions, expired or oversized downloads, and changed content. Scripts
 are registered inline bytes; `script_s3_uri` dispatch is refused. Results use a
 server-derived workflow/run/attempt namespace and are read through the broker.
 Private human uploads are not granted to a service workflow merely because a
-human registered that service.
+human registered that service. An explicitly registered reusable workflow is
+accepted only with the same verified human actor and allowed human event; its
+registration owner never substitutes for the triggering actor.
 
 Triage's native parsers, static Mode A, and Mode B scripts all execute in a fresh
 interpreter after Linux Landlock and seccomp are installed. Landlock permits
@@ -29,6 +31,9 @@ code. Seccomp blocks networking, io_uring, process inspection, namespace/mount
 operations, and process-group escape. Restrictions survive subprocess execution.
 The supervisor closes inherited descriptors, clears the environment, caps output
 and resources, and kills the whole process group even after successful analysis.
+A dedicated UID (61161) separates the Linux per-UID process ceiling from
+ordinary runners. The 256-process/thread ceiling is shared by Cyber jobs on a
+node; CPU/memory also have pod limits. Native thread pools default to one thread.
 An unsupported kernel or missing isolation dependency produces a failed stage;
 there is no AST-only fallback. AST validation is an additional compatibility check.
 

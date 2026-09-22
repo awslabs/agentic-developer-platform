@@ -170,6 +170,10 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
         Action      = ["s3:GetObject", "s3:GetObjectVersion"],
         NotResource = "arn:aws:s3:::adp-${var.environment}-cape-assets/yara-rules/public/*"
       },
+      {
+        Sid    = "DenyOtherIdentities", Effect = "Deny",
+        Action = ["iam:*", "sts:AssumeRole", "sts:AssumeRoleWithWebIdentity", "sts:AssumeRoleWithSAML"], Resource = "*"
+      },
     ]
   })
 }
