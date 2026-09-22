@@ -20,6 +20,12 @@ WORKERS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 EICAR_BYTES = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 
+# Issue #5616: jobs carry the requester's identity and samples are addressed
+# inside that identity's own prefix. The layout matches the ingest gateway's
+# upload key builder (o/<org>/t/<team>/u/<user>/s/<session>/<task>/in/<file>).
+JOB_IDENTITY = {"org_id": "org-1", "team_id": "team-a", "user_id": "user-1"}
+SAMPLE_KEY = "o/org-1/t/team-a/u/user-1/s/sess-1/task-1/in/test.bin"
+
 
 @pytest.fixture()
 def aws_env():
@@ -58,9 +64,11 @@ def aws_env():
             BillingMode="PAY_PER_REQUEST",
         )
 
-        # Create S3 bucket with test sample
+        # Create S3 bucket with test sample. Issue #5616: the sample lives under
+        # the requester's own tenant prefix, because that is the only place a
+        # worker is now allowed to read from.
         s3.create_bucket(Bucket="test-samples")
-        s3.put_object(Bucket="test-samples", Key="samples/test.bin", Body=EICAR_BYTES)
+        s3.put_object(Bucket="test-samples", Key=SAMPLE_KEY, Body=EICAR_BYTES)
 
         # Set env vars the handlers expect
         os.environ["INPUT_QUEUE_URL"] = input_url
@@ -68,6 +76,8 @@ def aws_env():
         os.environ["RESULTS_TABLE"] = "cyber-results"
         os.environ["IMAGE_TAG"] = "test-sha"
         os.environ["AWS_DEFAULT_REGION"] = region
+        # Issue #5616: workers deny all reads unless the bucket is allowlisted.
+        os.environ["CYBER_ALLOWED_BUCKETS"] = "test-samples"
 
         yield {
             "sqs": sqs,
@@ -85,7 +95,8 @@ def _send_sample_message(sqs_client, queue_url: str, artifact_id: str) -> None:
         QueueUrl=queue_url,
         MessageBody=json.dumps({
             "artifact_id": artifact_id,
-            "sample_s3_uri": "s3://test-samples/samples/test.bin",
+            "sample_s3_uri": f"s3://test-samples/{SAMPLE_KEY}",
+            **JOB_IDENTITY,
         }),
     )
 

@@ -21,6 +21,9 @@ import pefile
 from magika import Magika
 import iocextract
 
+from sample_access import AccessDenied, job_context, resolve_sample
+
+
 def _region() -> str:
     return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
 
@@ -175,6 +178,58 @@ def _fingerprint(sample_path: Path) -> dict:
     }
 
 
+def _fail_stage(
+    sqs,
+    ddb,
+    msg: dict,
+    artifact_id: str,
+    response_queue_url: str,
+    queue_url: str,
+    reason: str,
+    start: float,
+) -> None:
+    """Record an authorization refusal as an explicit failed stage.
+
+    Issue #5616. Mirrors the static worker: the requester gets a real failure
+    with a reason code rather than empty findings, the rejected location is
+    never echoed (it could name another tenant's object), and the message is
+    deleted because the refusal is deterministic and would be repeated.
+    """
+    ts = int(time.time())
+    findings = {"status": "rejected", "reason": reason}
+
+    envelope = {
+        "artifact_id": artifact_id,
+        "stage": 1,
+        "stage_name": "triage",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "status": "failed",
+        "duration_seconds": int(time.time() - start),
+        "findings": findings,
+        "tool_calls": 0,
+        "notes": f"stage refused: {reason}",
+    }
+
+    ddb.put_item(
+        Item={
+            "artifact_id": artifact_id,
+            "stage_timestamp": f"triage#{ts}",
+            "stage": "triage",
+            "status": "failed",
+            "findings": json.dumps(findings),
+            "image_tag": os.environ.get("IMAGE_TAG", "unknown"),
+        }
+    )
+    sqs.send_message(
+        QueueUrl=response_queue_url,
+        MessageBody=json.dumps(envelope),
+        MessageGroupId=artifact_id,
+        MessageDeduplicationId=f"{artifact_id}-triage-{ts}",
+    )
+    sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"])
+    print(f"triage REFUSED {artifact_id}: {reason}")
+
+
 def run() -> None:
     """Main entrypoint — receive SQS message, triage sample, write results."""
     queue_url = os.environ["INPUT_QUEUE_URL"]
@@ -200,15 +255,24 @@ def run() -> None:
     msg = msgs[0]
     body = json.loads(msg["Body"])
     artifact_id = body["artifact_id"]
-    sample_s3_uri = body["sample_s3_uri"]
     start = time.time()
 
-    # Parse s3:// URI
-    bucket, key = sample_s3_uri.replace("s3://", "", 1).split("/", 1)
+    # Issue #5616: authorize the sample against the job's trusted identity
+    # before any download. Same shared resolver as the static worker — the
+    # weakest remaining path is what an attacker would use, so both enforce.
+    try:
+        ctx = job_context(body)
+        sample_ref = resolve_sample(body, ctx)
+    except AccessDenied as denied:
+        _fail_stage(
+            sqs, ddb, msg, artifact_id, response_queue_url, queue_url,
+            reason=denied.reason, start=start,
+        )
+        return
 
     with tempfile.TemporaryDirectory() as td:
         sample_path = Path(td) / "sample"
-        s3.download_file(bucket, key, str(sample_path))
+        s3.download_file(sample_ref.bucket, sample_ref.key, str(sample_path))
         findings = _fingerprint(sample_path)
 
     duration = int(time.time() - start)

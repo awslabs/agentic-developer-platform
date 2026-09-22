@@ -21,6 +21,16 @@ import boto3
 import lief
 import yara
 
+from sample_access import (
+    AccessDenied,
+    ObjectRef,
+    job_context,
+    resolve_sample,
+    resolve_script,
+)
+from script_guard import ScriptRejected, verify_script
+
+
 def _region() -> str:
     return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
 
@@ -209,12 +219,26 @@ def _run_mode_a(sample_path: Path, focus: list | None, yara_rules: list | None) 
     }
 
 
-def _run_mode_b(sample_path: Path, script_s3_uri: str, s3_client) -> dict:
-    """Mode B: agent-authored script execution in locked-down subprocess."""
+def _run_mode_b(sample_path: Path, script_ref: ObjectRef, body: dict, s3_client) -> dict:
+    """Mode B: agent-authored script execution in locked-down subprocess.
+
+    Issue #5616: the script location has already been authorized against the
+    job's tenant space and the script-prefix allowlist by the caller. Here we
+    additionally bind the downloaded content to what the pipeline registered
+    and run the validator before executing. Any refusal raises ScriptRejected,
+    which the caller turns into an explicit failed stage — never a silent
+    empty-findings result.
+
+    The rejected/failed script's S3 location is deliberately not echoed into
+    the returned findings (see _mode_b_label).
+    """
     with tempfile.TemporaryDirectory() as td:
         script_path = Path(td) / "script.py"
-        bucket, key = script_s3_uri.replace("s3://", "", 1).split("/", 1)
-        s3_client.download_file(bucket, key, str(script_path))
+        s3_client.download_file(script_ref.bucket, script_ref.key, str(script_path))
+
+        # Blocking: registration digest + validator verdict. Raises on refusal,
+        # so no code path below can run an unverified script.
+        verified_digest = verify_script(script_path, body)
 
         try:
             result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
@@ -229,29 +253,92 @@ def _run_mode_b(sample_path: Path, script_s3_uri: str, s3_client) -> dict:
                 parsed = json.loads(result.stdout)
                 return {
                     "mode": "agent-authored-script",
-                    "script_s3_uri": script_s3_uri,
+                    "script_sha256": verified_digest,
                     **parsed,
                 }
             except json.JSONDecodeError as e:
                 return {
                     "mode": "agent-authored-script",
-                    "script_s3_uri": script_s3_uri,
+                    "script_sha256": verified_digest,
                     "error": f"script stdout was not valid JSON: {e}",
                     "stdout_snippet": result.stdout[:500],
                 }
         except subprocess.TimeoutExpired:
             return {
                 "mode": "agent-authored-script",
-                "script_s3_uri": script_s3_uri,
+                "script_sha256": verified_digest,
                 "error": "script exceeded 300s timeout",
             }
         except subprocess.CalledProcessError as e:
             return {
                 "mode": "agent-authored-script",
-                "script_s3_uri": script_s3_uri,
+                "script_sha256": verified_digest,
                 "error": f"script exited {e.returncode}",
                 "stderr_snippet": (e.stderr or "")[:500],
             }
+
+
+def _fail_stage(
+    sqs,
+    ddb,
+    msg: dict,
+    artifact_id: str,
+    response_queue_url: str,
+    queue_url: str,
+    reason: str,
+    start: float,
+    violations: list | None = None,
+) -> None:
+    """Record an authorization/validation refusal as an explicit failed stage.
+
+    Issue #5616. Three properties matter here:
+
+    * The requester sees a real failure with a reason code, not empty findings
+      that read as "analysed, nothing found".
+    * The rejected location is NOT included. Echoing it would turn a blocked
+      cross-tenant read into a disclosure of another tenant's key naming.
+      ``reason`` is a fixed vocabulary and validator violations describe the
+      requester's own script, so neither carries another tenant's data.
+    * The message is deleted rather than left to redrive. These refusals are
+      deterministic — the same message will be refused identically — so
+      retrying only burns queue capacity and repeats the alert.
+    """
+    ts = int(time.time())
+    findings = {"status": "rejected", "reason": reason}
+    if violations:
+        findings["validation_violations"] = violations[:20]
+
+    envelope = {
+        "artifact_id": artifact_id,
+        "stage": 3,
+        "stage_name": "static",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "status": "failed",
+        "duration_seconds": int(time.time() - start),
+        "findings": findings,
+        "tool_calls": 0,
+        "notes": f"stage refused: {reason}",
+    }
+
+    ddb.put_item(
+        Item={
+            "artifact_id": artifact_id,
+            "stage_timestamp": f"static#{ts}",
+            "stage": "static",
+            "status": "failed",
+            "findings": json.dumps(findings),
+            "image_tag": os.environ.get("IMAGE_TAG", "unknown"),
+        }
+    )
+    sqs.send_message(
+        QueueUrl=response_queue_url,
+        MessageBody=json.dumps(envelope),
+        MessageGroupId=artifact_id,
+        MessageDeduplicationId=f"{artifact_id}-static-{ts}",
+    )
+    sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=msg["ReceiptHandle"])
+    # Operator-visible signal. Reason codes are a fixed vocabulary, safe to log.
+    print(f"static REFUSED {artifact_id}: {reason}")
 
 
 def run() -> None:
@@ -279,24 +366,43 @@ def run() -> None:
     msg = msgs[0]
     body = json.loads(msg["Body"])
     artifact_id = body["artifact_id"]
-    sample_s3_uri = body["sample_s3_uri"]
     start = time.time()
 
-    # Parse s3:// URI
-    bucket, key = sample_s3_uri.replace("s3://", "", 1).split("/", 1)
+    # -----------------------------------------------------------------------
+    # Issue #5616: authorize every object this job wants to touch BEFORE any
+    # download. Both the sample and (in Mode B) the script are resolved from
+    # the job's trusted identity, so a caller-named location outside the
+    # requester's own space is refused here rather than fetched.
+    # -----------------------------------------------------------------------
+    try:
+        ctx = job_context(body)
+        sample_ref = resolve_sample(body, ctx)
+        script_ref = resolve_script(body, ctx) if body.get("script_s3_uri") else None
+    except AccessDenied as denied:
+        _fail_stage(
+            sqs, ddb, msg, artifact_id, response_queue_url, queue_url,
+            reason=denied.reason, start=start,
+        )
+        return
 
-    with tempfile.TemporaryDirectory() as td:
-        sample_path = Path(td) / "sample"
-        s3.download_file(bucket, key, str(sample_path))
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            sample_path = Path(td) / "sample"
+            s3.download_file(sample_ref.bucket, sample_ref.key, str(sample_path))
 
-        # Dispatch Mode A vs Mode B
-        script_s3_uri = body.get("script_s3_uri")
-        if script_s3_uri:
-            findings = _run_mode_b(sample_path, script_s3_uri, s3)
-        else:
-            focus = body.get("focus")
-            yara_rules = body.get("yara_rules")
-            findings = _run_mode_a(sample_path, focus, yara_rules)
+            # Dispatch Mode A vs Mode B
+            if script_ref is not None:
+                findings = _run_mode_b(sample_path, script_ref, body, s3)
+            else:
+                focus = body.get("focus")
+                yara_rules = body.get("yara_rules")
+                findings = _run_mode_a(sample_path, focus, yara_rules)
+    except ScriptRejected as rejected:
+        _fail_stage(
+            sqs, ddb, msg, artifact_id, response_queue_url, queue_url,
+            reason=rejected.reason, start=start, violations=rejected.violations,
+        )
+        return
 
     duration = int(time.time() - start)
     ts = int(time.time())

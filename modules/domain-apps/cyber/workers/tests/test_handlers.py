@@ -299,7 +299,6 @@ class TestStaticModeB:
 
     def test_mode_b_happy_path(self):
         """Script that outputs valid JSON — returns merged findings."""
-        from static.handler import _run_mode_b
 
         with tempfile.TemporaryDirectory() as td:
             sample_path = Path(td) / "sample.bin"
@@ -383,24 +382,46 @@ class TestStaticModeB:
                 )
             assert exc_info.value.returncode == 1
 
-    def test_mode_b_integration_with_s3_mock(self):
-        """Full Mode B flow with mocked S3 for script download."""
+    def test_mode_b_integration_with_s3_mock(self, tmp_path, monkeypatch):
+        """Full Mode B flow with mocked S3 — the protected happy path.
+
+        Issue #5616 changed _run_mode_b to take an already-authorized ObjectRef
+        plus the job body, and to verify the registration digest and run the
+        validator before executing. A legitimate registered script must still
+        run and produce findings.
+        """
+        import hashlib
+
+        from sample_access import ObjectRef
+
+        script_content = (
+            b'import json, sys\n'
+            b'sample = sys.argv[1]\n'
+            b'print(json.dumps({"analyzed": True, "sample_path": sample}))\n'
+        )
+
+        # Minimal manifest + the real validator, so this exercises the same
+        # enforcement the worker performs rather than a stub of it.
+        manifest = tmp_path / "worker-manifest.json"
+        manifest.write_text(json.dumps({"python_packages": {}, "system_binaries": {}}))
+        monkeypatch.setenv("WORKER_MANIFEST_PATH", str(manifest))
+        monkeypatch.setenv(
+            "CYBER_VALIDATOR_PATH",
+            str(
+                Path(__file__).resolve().parents[2]
+                / "agent"
+                / "skills"
+                / "stage-3-static"
+                / "validate_script.py"
+            ),
+        )
+
         with mock_aws():
             region = "us-east-1"
             s3 = boto3.client("s3", region_name=region)
-
-            # Create bucket and upload script
             s3.create_bucket(Bucket="test-artifacts")
-            script_content = (
-                'import json, sys\n'
-                'sample = sys.argv[1]\n'
-                'print(json.dumps({"analyzed": True, "sample_path": sample}))\n'
-            )
-            s3.put_object(
-                Bucket="test-artifacts",
-                Key="scripts/test/stage-3.py",
-                Body=script_content.encode(),
-            )
+            key = "o/acme/t/team-a/u/user-1/scripts/test/stage-3.py"
+            s3.put_object(Bucket="test-artifacts", Key=key, Body=script_content)
 
             with tempfile.TemporaryDirectory() as td:
                 sample_path = Path(td) / "sample.bin"
@@ -410,13 +431,16 @@ class TestStaticModeB:
 
                 result = _run_mode_b(
                     sample_path,
-                    "s3://test-artifacts/scripts/test/stage-3.py",
+                    ObjectRef(bucket="test-artifacts", key=key),
+                    {"script_sha256": hashlib.sha256(script_content).hexdigest()},
                     s3,
                 )
 
             assert result["mode"] == "agent-authored-script"
             assert result.get("analyzed") is True
             assert "error" not in result
+            # The location is no longer echoed back into findings.
+            assert "script_s3_uri" not in result
 
 
 # ---------------------------------------------------------------------------

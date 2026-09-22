@@ -37,15 +37,25 @@ REASON_DIGEST_MISMATCH = "script_digest_mismatch"
 REASON_VALIDATION_FAILED = "script_validation_failed"
 REASON_MANIFEST_UNAVAILABLE = "worker_manifest_unavailable"
 
-# Baked into the worker image at build time (see workers/Dockerfile).
-WORKER_MANIFEST_PATH = os.environ.get("WORKER_MANIFEST_PATH", "/opt/worker-manifest.json")
+# Defaults for the worker image layout (see workers/Dockerfile). Both are read
+# at call time, not import time, so the running process reflects its current
+# environment rather than whatever was set when the module first loaded.
+DEFAULT_WORKER_MANIFEST_PATH = "/opt/worker-manifest.json"
+DEFAULT_VALIDATOR_PATH = "/app/skills/stage-3-static/validate_script.py"
 
-# The validator lives with the Stage-3 skill so the agent-side convenience
-# check and the worker-side enforcement cannot diverge into two rule sets.
-_VALIDATOR_PATH = os.environ.get(
-    "CYBER_VALIDATOR_PATH",
-    "/app/skills/stage-3-static/validate_script.py",
-)
+
+def worker_manifest_path() -> str:
+    """Path to the build-time manifest baked into the image."""
+    return os.environ.get("WORKER_MANIFEST_PATH", DEFAULT_WORKER_MANIFEST_PATH)
+
+
+def validator_path() -> str:
+    """Path to the shared validator.
+
+    It lives with the Stage-3 skill so the agent-side convenience check and the
+    worker-side enforcement cannot diverge into two rule sets.
+    """
+    return os.environ.get("CYBER_VALIDATOR_PATH", DEFAULT_VALIDATOR_PATH)
 
 
 class ScriptRejected(Exception):
@@ -79,7 +89,7 @@ def load_validator():
     directory rather than as an installed package. Its CLI entry point is
     unchanged, so the agent-side pre-upload check still works as before.
     """
-    path = Path(_VALIDATOR_PATH)
+    path = Path(validator_path())
     if not path.is_file():
         raise ScriptRejected(REASON_MANIFEST_UNAVAILABLE, "validator not present in image")
     spec = importlib.util.spec_from_file_location("cyber_validate_script", path)
@@ -91,7 +101,7 @@ def load_validator():
 def load_worker_manifest() -> dict:
     """Read the build-time manifest describing what the image actually has."""
     try:
-        with open(WORKER_MANIFEST_PATH) as handle:
+        with open(worker_manifest_path()) as handle:
             return json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
         # Fail closed: without a manifest the validator cannot decide what is
