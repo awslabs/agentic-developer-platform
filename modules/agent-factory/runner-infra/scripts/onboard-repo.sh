@@ -93,13 +93,46 @@ fi
 # Step 3: Create/update IAM policy for this repo
 echo "Step 3: Creating IAM policy..."
 
-# Base policy - can be customized per repo
+# Per-repository runner policy (A18, #5674).
+#
+# What this policy deliberately does NOT contain, and why:
+#
+#   iam:CreateRole / CreatePolicy / AttachRolePolicy / PutRolePolicy / PassRole
+#     A runner holding these does not need to be granted administrator access —
+#     it can create itself a role, attach AdministratorAccess to it, and use it.
+#     Workflow jobs execute instructions that originate in text written outside
+#     the organisation, so this converted any prompt-injected or compromised job
+#     into account takeover. The permissions boundary now DENIES this action set
+#     outright (see infrastructure/iam.tf), so re-adding it here would not revive
+#     the capability — but it is removed here too, so the intent is unambiguous.
+#
+#   sts:AssumeRole on "*"
+#     Let a runner become any role in the account that trusts it, including the
+#     shared runner role that could read the whole adp/ secret prefix. Removed.
+#     A repository needing a specific role must have that single role ARN added
+#     below, reviewed as a named exception.
+#
+#   s3:* / ec2:* / lambda:* / dynamodb:* / cloudformation:* / rds:* / ecs:* and
+#   the rest of the service wildcards, all on Resource "*"
+#     Whole services on every resource in a shared account: one repository's
+#     runner could read every other tenant's buckets and tables. Replaced by the
+#     concrete resources a repository's own jobs use, all carrying this
+#     repository's name.
+#
+# Scope model: a per-repository runner reaches resources tagged or named for ITS
+# repository, and nothing belonging to another. The repo-scoped prefix below is
+# the mechanism — a runner for repo A cannot name repo B's resources.
+#
+# Extending this for a real workload is expected: add the specific ARNs that
+# repository needs. Adding a service wildcard or an iam:/sts: action back is not
+# an extension, it is a reintroduction of the finding this closed, and the
+# boundary will refuse it.
 RUNNER_POLICY=$(cat <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "BedrockAccess",
+      "Sid": "BedrockModelInvoke",
       "Effect": "Allow",
       "Action": [
         "bedrock:InvokeModel",
@@ -111,111 +144,80 @@ RUNNER_POLICY=$(cat <<EOF
       ]
     },
     {
-      "Sid": "SecretsManagerAccess",
+      "Sid": "OwnRepositorySecrets",
       "Effect": "Allow",
       "Action": [
         "secretsmanager:GetSecretValue",
         "secretsmanager:DescribeSecret"
       ],
-      "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:github-*"
+      "Resource": [
+        "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:github-runner/${REPO_NAME_LOWER}/*",
+        "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:adp/runner/${REPO_NAME_LOWER}/*"
+      ]
     },
     {
-      "Sid": "S3Access",
-      "Effect": "Allow",
-      "Action": ["s3:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "EC2Access",
-      "Effect": "Allow",
-      "Action": ["ec2:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "LambdaAccess",
-      "Effect": "Allow",
-      "Action": ["lambda:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "DynamoDBAccess",
-      "Effect": "Allow",
-      "Action": ["dynamodb:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "CloudFormationAccess",
-      "Effect": "Allow",
-      "Action": ["cloudformation:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "CloudWatchAccess",
-      "Effect": "Allow",
-      "Action": ["cloudwatch:*", "logs:*"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "IAMPassRole",
+      "Sid": "OwnRepositoryParameters",
       "Effect": "Allow",
       "Action": [
-        "iam:CreateRole",
-        "iam:CreatePolicy",
-        "iam:AttachRolePolicy",
-        "iam:PutRolePolicy",
-        "iam:PassRole",
-        "iam:TagRole",
-        "iam:TagPolicy",
-        "iam:CreateServiceLinkedRole",
-        "iam:GetRole",
-        "iam:GetPolicy",
-        "iam:GetRolePolicy",
-        "iam:ListRoles",
-        "iam:ListPolicies",
-        "iam:ListRolePolicies",
-        "iam:ListAttachedRolePolicies",
-        "iam:DeleteRole",
-        "iam:DeleteRolePolicy",
-        "iam:DetachRolePolicy"
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
       ],
+      "Resource": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/adp/runner/${REPO_NAME_LOWER}/*"
+    },
+    {
+      "Sid": "OwnRepositoryArtifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:AbortMultipartUpload",
+        "s3:DeleteObject",
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:ListBucket",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::adp-runner-artifacts-${AWS_ACCOUNT_ID}",
+        "arn:aws:s3:::adp-runner-artifacts-${AWS_ACCOUNT_ID}/${REPO_NAME_LOWER}/*"
+      ]
+    },
+    {
+      "Sid": "OwnRepositoryEcr",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchGetImage",
+        "ecr:CompleteLayerUpload",
+        "ecr:DescribeImages",
+        "ecr:DescribeRepositories",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:ListImages",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart"
+      ],
+      "Resource": "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/${REPO_NAME_LOWER}/*"
+    },
+    {
+      "Sid": "EcrAuth",
+      "Effect": "Allow",
+      "Action": ["ecr:GetAuthorizationToken"],
       "Resource": "*"
     },
     {
-      "Sid": "STSAccess",
+      "Sid": "OwnRepositoryLogs",
       "Effect": "Allow",
       "Action": [
-        "sts:AssumeRole",
-        "sts:GetCallerIdentity"
+        "logs:CreateLogStream",
+        "logs:DescribeLogStreams",
+        "logs:PutLogEvents"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/adp/runner/${REPO_NAME_LOWER}:*"
     },
     {
-      "Sid": "AdditionalServices",
+      "Sid": "CallerIdentity",
       "Effect": "Allow",
-      "Action": [
-        "rds:*",
-        "ecs:*",
-        "ecr:*",
-        "elasticloadbalancing:*",
-        "autoscaling:*",
-        "sns:*",
-        "sqs:*",
-        "apigateway:*",
-        "route53:*",
-        "cloudfront:*",
-        "acm:*",
-        "ssm:*",
-        "events:*",
-        "stepfunctions:*",
-        "cognito-idp:*",
-        "elasticache:*",
-        "eks:DescribeCluster",
-        "eks:ListClusters",
-        "sagemaker:*",
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:GenerateDataKey*"
-      ],
+      "Action": ["sts:GetCallerIdentity"],
       "Resource": "*"
     }
   ]
@@ -291,24 +293,33 @@ echo "=========================================="
 echo "📝 CUSTOMIZING PERMISSIONS"
 echo "=========================================="
 echo ""
-echo "The IAM role has broad default permissions. To customize for your project:"
+echo "The role starts with a least-privilege policy (A18, #5674): Bedrock invoke,"
+echo "and resources named for THIS repository only — no service wildcards, no"
+echo "ability to create or assume roles."
 echo ""
 echo "1. View current policy:"
 echo "   aws iam get-role-policy --role-name $ROLE_NAME --policy-name $POLICY_NAME"
 echo ""
-echo "2. Update policy (edit and apply):"
+echo "2. Add the specific resources your jobs need (edit and apply):"
 echo "   aws iam put-role-policy \\"
 echo "     --role-name $ROLE_NAME \\"
 echo "     --policy-name $POLICY_NAME \\"
 echo "     --policy-document file://my-custom-policy.json"
 echo ""
-echo "3. Common customizations:"
-echo "   - Restrict S3 to specific buckets: s3:*  →  specific bucket ARNs"
-echo "   - Remove unused services (RDS, SageMaker, etc.)"
-echo "   - Add project-specific resources"
+echo "3. Extend by naming concrete ARNs — a specific bucket, table or queue."
+echo "   Do NOT add a service wildcard (s3:*, ec2:*) on Resource \"*\": in a"
+echo "   shared account that reaches every other repository's data."
 echo ""
-echo "4. The permissions boundary prevents dangerous actions like:"
-echo "   - Creating IAM users"
-echo "   - Modifying billing/organizations"
-echo "   - Deleting the boundary itself"
+echo "4. The permissions boundary will refuse these regardless of what you put"
+echo "   in the policy above, so do not spend time on them:"
+echo "   - Creating or attaching roles/policies, PutRolePolicy, PassRole"
+echo "     (a runner able to do this can grant itself administrator access)"
+echo "   - sts:AssumeRole (becoming another identity, e.g. one that can read"
+echo "     another tenant's secrets)"
+echo "   - Reading secrets outside this repository's own paths"
+echo "   - Creating IAM users, or modifying billing/organizations"
+echo ""
+echo "If a job genuinely needs one of the above, that is a review conversation,"
+echo "not a policy edit — the boundary is the control that makes one"
+echo "compromised repository stay one compromised repository."
 echo ""

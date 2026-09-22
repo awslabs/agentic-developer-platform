@@ -111,25 +111,15 @@ resource "aws_iam_policy" "runner_boundary" {
           # IAM reads
           "iam:Get*", "iam:List*", "iam:Simulate*", "iam:Generate*",
 
-          # IAM writes
-          "iam:CreateRole", "iam:CreatePolicy", "iam:AttachRolePolicy",
-          "iam:PutRolePolicy", "iam:PassRole", "iam:TagRole", "iam:TagPolicy",
-          "iam:CreateServiceLinkedRole",
-          "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
-          # Issue #596: iam:DeletePolicy + DeletePolicyVersion required for
-          # Terraform to replace inline policies with managed policies.
-          "iam:DeletePolicy", "iam:DeletePolicyVersion",
-          "iam:CreatePolicyVersion",
-          "iam:SetDefaultPolicyVersion",
-          "iam:UpdateAssumeRolePolicy",
-          "iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile",
-          "iam:DeleteInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
-          "iam:TagInstanceProfile",
-          "iam:CreateOpenIDConnectProvider", "iam:DeleteOpenIDConnectProvider",
-          "iam:AddClientIDToOpenIDConnectProvider",
-          "iam:TagOpenIDConnectProvider", "iam:UntagOpenIDConnectProvider",
-          "iam:UntagRole", "iam:UpdateRole",
-          "sts:AssumeRole", "sts:GetCallerIdentity",
+          # NOTE (A18, #5674): the IAM WRITE actions and sts:AssumeRole that used
+          # to sit here have moved to the DenyPrivilegeEscalation statement
+          # below. They were the finding: a boundary that permits
+          # iam:CreateRole + iam:AttachRolePolicy does not bound anything, since
+          # the role it caps can mint itself a fresh administrator role and use
+          # it. The Terraform-driven IAM lifecycle these grants were added for
+          # (#596) belongs to the deploy identity, not to a runner executing
+          # third-party-authored workflow instructions.
+          "sts:GetCallerIdentity",
           "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
           "events:*", "stepfunctions:*",
           "cognito-idp:*", "cognito-identity:*",
@@ -151,6 +141,96 @@ resource "aws_iam_policy" "runner_boundary" {
         Effect   = "Allow"
         Action   = ["execute-api:*"]
         Resource = "*"
+      },
+      {
+        # A18 (#5674). A Deny in a permissions boundary is absolute for the roles
+        # it caps: no policy attached to a bounded role can grant these, so a
+        # future edit to the onboarding script's inline policy — or to the
+        # managed policies below — cannot reopen the path. That is the point of
+        # denying here rather than only omitting from the grant.
+        #
+        # Every action listed lets the holder obtain an identity other than the
+        # one it was issued. iam:PassRole is included because handing an existing
+        # privileged role to a service the runner can invoke (Lambda, CodeBuild,
+        # EC2) reaches administrator without creating anything. The three
+        # sts:AssumeRole* variants are included because the shared runner role
+        # reachable through them could read the whole adp/ secret prefix — every
+        # tenant's stored credentials and the signing keys for agent control
+        # messages and GitHub App auth.
+        Sid    = "DenyPrivilegeEscalation"
+        Effect = "Deny"
+        Action = [
+          "iam:AddClientIDToOpenIDConnectProvider",
+          "iam:AddRoleToInstanceProfile",
+          "iam:AddUserToGroup",
+          "iam:AttachGroupPolicy",
+          "iam:AttachRolePolicy",
+          "iam:AttachUserPolicy",
+          "iam:CreateGroup",
+          "iam:CreateInstanceProfile",
+          "iam:CreateOpenIDConnectProvider",
+          "iam:CreatePolicy",
+          "iam:CreatePolicyVersion",
+          "iam:CreateRole",
+          "iam:CreateSAMLProvider",
+          "iam:CreateServiceLinkedRole",
+          "iam:DeleteGroupPolicy",
+          "iam:DeleteOpenIDConnectProvider",
+          "iam:DeletePolicy",
+          "iam:DeletePolicyVersion",
+          "iam:DeleteRole",
+          "iam:DeleteRolePermissionsBoundary",
+          "iam:DeleteRolePolicy",
+          "iam:DeleteUserPermissionsBoundary",
+          "iam:DeleteUserPolicy",
+          "iam:DetachGroupPolicy",
+          "iam:DetachRolePolicy",
+          "iam:DetachUserPolicy",
+          "iam:PassRole",
+          "iam:PutGroupPolicy",
+          "iam:PutRolePermissionsBoundary",
+          "iam:PutRolePolicy",
+          "iam:PutUserPermissionsBoundary",
+          "iam:PutUserPolicy",
+          "iam:SetDefaultPolicyVersion",
+          "iam:UpdateAssumeRolePolicy",
+          "iam:UpdateOpenIDConnectProviderThumbprint",
+          "iam:UpdateRole",
+          "iam:UpdateUser",
+          "sts:AssumeRole",
+          "sts:AssumeRoleWithSAML",
+          "sts:AssumeRoleWithWebIdentity"
+        ]
+        Resource = "*"
+      },
+      {
+        # A18 (#5674). The onboarding script now grants each repository only its
+        # own secret paths, and the shared role's grant is env-segmented — but
+        # this boundary's ceiling is still secretsmanager:* on "*", so a future
+        # policy edit could re-grant cross-tenant reads. A Deny here cannot be
+        # out-voted by any attached policy, making that edit inert.
+        #
+        # Same four environment-less namespaces as the two sibling runner roles
+        # (webhook-ingress/infra/scaledjob-iam.tf Sid DenyTenantVaultSecrets and
+        # agent-factory/infra/modules/runner-iam/main.tf). Keep all three in
+        # sync. PATH SHAPE IS LOAD-BEARING: vault paths carry no environment
+        # segment, so "normalising" these to adp/${var.environment}/* would match
+        # nothing while reading, in review, as though it still closed the hole.
+        #
+        # Both actions are required — a GetSecretValue-only Deny still lets a
+        # runner enumerate other tenants' secret names.
+        Sid    = "DenyTenantVaultSecrets"
+        Effect = "Deny"
+        Action = [
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/users/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*"
+        ]
       },
       {
         Sid    = "DenyDangerousActions"
@@ -192,9 +272,28 @@ resource "aws_iam_role" "runner" {
         Federated = aws_iam_openid_connect_provider.eks.arn
       }
       Action = "sts:AssumeRoleWithWebIdentity"
+      # A18 (#5674): exact match on the allowed service accounts, replacing
+      # StringLike on "system:serviceaccount:arc-runners-*:github-runner-sa".
+      #
+      # The pattern was equivalent to "any namespace whose name starts
+      # arc-runners-, with the conventional service-account name". Namespaces are
+      # created per repository by scripts/onboard-repo.sh, and the service
+      # account name is fixed by that script — so onboarding a repository
+      # silently made its runner trusted by this role, which reaches this
+      # module's shared grants. Nobody decided that; the wildcard did.
+      #
+      # With StringEquals on a list, a new runner namespace is NOT trusted until
+      # its service account is added here and applied — which is the review step
+      # the wildcard skipped. `aud` is asserted because a federated trust policy
+      # that conditions only on `sub` accepts a token minted for a different
+      # audience.
       Condition = {
-        StringLike = {
-          "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:arc-runners-*:github-runner-sa"
+        StringEquals = {
+          "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = [
+            for namespace in var.runner_trusted_namespaces :
+            "system:serviceaccount:${namespace}:github-runner-sa"
+          ]
+          "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud" = "sts.amazonaws.com"
         }
       }
     }]
@@ -668,9 +767,30 @@ resource "aws_iam_policy" "runner_services" {
           "secretsmanager:UntagResource",
           "secretsmanager:UpdateSecret"
         ]
+        # A18 (#5674): was "secret:adp/*", which spanned every tenant. The
+        # platform mints per-customer vault secrets under the same adp/ prefix
+        # with NO environment segment — adp/users/<sub>/…, adp/teams/<id>/…,
+        # adp/orgs/<id>/… and adp/domain-apps/<app>/<org>/… (gateway/src/shared/
+        # services/secrets_manager.py). So "adp/*" gave a runner read AND WRITE
+        # over every customer's stored API keys and database passwords, and the
+        # access was indistinguishable from ordinary deploy traffic.
+        #
+        # Now scoped to the environment-segmented platform paths deploys
+        # actually touch. adp/${var.environment}/* cannot match a vault path,
+        # because vault paths have no environment segment — that shape
+        # difference is what makes this Allow sufficient without also needing a
+        # Deny (contrast the scaledjob role, which must read a tenant-specific
+        # path at runtime and therefore needs an explicit
+        # DenyTenantVaultSecrets — see webhook-ingress/infra/scaledjob-iam.tf).
+        #
+        # Do NOT widen this back to adp/*: that single character reopens the
+        # cross-tenant vault read. If a deploy needs another path, add that
+        # path.
         Resource = [
           "arn:aws:secretsmanager:*:*:secret:bedrockgw-*",
-          "arn:aws:secretsmanager:us-east-1:*:secret:adp/*"
+          "arn:aws:secretsmanager:${var.aws_region}:*:secret:adp/${var.environment}/*",
+          "arn:aws:secretsmanager:${var.aws_region}:*:secret:adp/runner/*",
+          "arn:aws:secretsmanager:${var.aws_region}:*:secret:github-runner/*"
         ]
       },
       {
@@ -705,12 +825,25 @@ resource "aws_iam_policy" "runner_services" {
         Resource = "arn:aws:ssm:us-east-1:*:parameter/adp/*"
       },
       {
-        Sid    = "STSIdentityAndAssume"
-        Effect = "Allow"
-        Action = [
-          "sts:AssumeRole",
-          "sts:GetCallerIdentity"
-        ]
+        # A18 (#5674): was "sts:AssumeRole" + "sts:GetCallerIdentity" on "*".
+        #
+        # AssumeRole on "*" is a lateral-movement primitive: it lets this role
+        # become ANY role in the account whose trust policy accepts it, which is
+        # how a scoped runner reaches grants it was deliberately not given.
+        # Combined with the iam: writes this policy set used to hold, it was also
+        # the second half of a self-promotion path — create a role with
+        # AdministratorAccess, then assume it.
+        #
+        # The boundary now DENIES sts:AssumeRole (Sid DenyPrivilegeEscalation),
+        # so this Allow had already become unreachable; leaving it would only
+        # mislead the next reader into thinking the capability exists.
+        #
+        # GetCallerIdentity is kept: it is unprivileged (it reports who you
+        # already are, grants nothing) and deploy scripts across this repo call
+        # it to resolve the account ID.
+        Sid      = "CallerIdentity"
+        Effect   = "Allow"
+        Action   = ["sts:GetCallerIdentity"]
         Resource = "*"
       },
       {

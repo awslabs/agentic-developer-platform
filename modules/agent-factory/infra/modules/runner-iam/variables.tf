@@ -32,6 +32,25 @@ variable "runner_namespace" {
   default     = "arc-runners"
 }
 
+# A18 (#5674): see the trust policy in main.tf. Empty means "trust exactly
+# var.runner_namespace", which is the behaviour every current caller wants —
+# so no caller has to set this, and the wildcard is gone regardless.
+variable "runner_trusted_namespaces" {
+  description = "Additional namespaces whose github-runner-sa may assume the runner role, beyond var.runner_namespace. Exact matches — no patterns. Each entry is a reviewed grant of this role's deploy permissions to another namespace."
+  type        = list(string)
+  default     = []
+
+  validation {
+    # StringEquals does not glob, so a pattern here would silently match nothing
+    # and invite someone to switch the operator back to StringLike.
+    condition = alltrue([
+      for namespace in var.runner_trusted_namespaces :
+      !can(regex("[*?]", namespace))
+    ])
+    error_message = "runner_trusted_namespaces entries must be exact namespace names, not patterns (A18, #5674). List each namespace individually."
+  }
+}
+
 variable "security_scans_bucket_arn" {
   description = "ARN of the security scans S3 bucket for SARIF archival"
   type        = string

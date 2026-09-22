@@ -16,6 +16,16 @@
 
 data "aws_caller_identity" "current" {}
 
+locals {
+  # The runner's own namespace is always trusted; extras are opt-in and reviewed.
+  # distinct() so listing runner_namespace in the extras is harmless rather than
+  # producing a duplicate condition value.
+  runner_trusted_namespaces = distinct(concat(
+    [var.runner_namespace],
+    var.runner_trusted_namespaces,
+  ))
+}
+
 # Permissions boundary — scoped version (Issue #1204, #596 fix)
 resource "aws_iam_policy" "runner_boundary" {
   name        = "${var.name_prefix}-runner-boundary"
@@ -206,9 +216,31 @@ resource "aws_iam_role" "runner" {
         Federated = var.oidc_provider_arn
       }
       Action = "sts:AssumeRoleWithWebIdentity"
+      # A18 (#5674): exact match, replacing StringLike on
+      # "system:serviceaccount:${var.runner_namespace}*:github-runner-sa".
+      #
+      # Note the trailing "*" sat OUTSIDE the interpolation, so with the default
+      # runner_namespace the pattern was "arc-runners*" — matching not just
+      # "arc-runners" but every "arc-runners-<anything>" namespace. Creating a
+      # conventionally named namespace was therefore the same act as being
+      # trusted by this role, which holds the wide deploy grants in
+      # runner_base/runner_services. That is an authorization decision made by a
+      # naming convention rather than by review.
+      #
+      # runner_trusted_namespaces defaults to exactly [var.runner_namespace], so
+      # the intended runner keeps working and nothing else is admitted. A second
+      # runner namespace is added there explicitly and applied — the review step
+      # the wildcard skipped.
+      #
+      # `aud` is asserted because a federated trust policy conditioned only on
+      # `sub` accepts a token minted for a different audience.
       Condition = {
-        StringLike = {
-          "${replace(var.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.runner_namespace}*:github-runner-sa"
+        StringEquals = {
+          "${replace(var.oidc_issuer, "https://", "")}:sub" = [
+            for namespace in local.runner_trusted_namespaces :
+            "system:serviceaccount:${namespace}:github-runner-sa"
+          ]
+          "${replace(var.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
         }
       }
     }]
