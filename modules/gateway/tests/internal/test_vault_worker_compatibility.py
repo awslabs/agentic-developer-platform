@@ -68,6 +68,16 @@ async def vault(db_session, monkeypatch):
             pass
 
     settings = SimpleNamespace(
+        # #5653 (A01): this fixture's premise is a LEGITIMATE IRSA worker whose
+        # X-Caller-Identity was written by API Gateway from a verified SigV4
+        # signature. That premise used to be implicit, because the internal guard
+        # believed the header unconditionally. It is now stated, because the guard
+        # asks whether the edge vouched for the assertion. Enabling trust here says
+        # "these requests arrived through the identity-verified front door" — it is
+        # the fixture describing its own transport, not a relaxed assertion. The
+        # forged-assertion cases live in tests/auth/test_caller_provenance.py.
+        trust_apigw_headers=True,
+        apigw_provenance_secret="vault-edge-provenance",
         enforce_credential_binding=False,
         webhook_events_table="events",
         vault_raw_read_enabled=True,
@@ -96,10 +106,16 @@ async def vault(db_session, monkeypatch):
     app.include_router(task_router)
     # Some integration fixtures reload auth modules. Patch the external IAM lookup
     # used by each registered dependency, keeping real broker verification intact.
+    # For the same reason, `get_settings` is patched in the dependency's OWN globals
+    # rather than via `monkeypatch.setattr("src.internal.auth_deps.get_settings")`:
+    # after a reload, the live route object closes over the pre-reload module dict,
+    # so patching the importable path reaches a module this route no longer uses.
+    # These tests pass in isolation and fail in a full-suite run without this.
     for route in app.routes:
         for dependency in getattr(getattr(route, "dependant", None), "dependencies", []):
             if dependency.call.__name__ == "verify_internal_or_irsa":
                 monkeypatch.setitem(dependency.call.__globals__, "extract_iam_identity_from_headers", lambda _: identity)
+                monkeypatch.setitem(dependency.call.__globals__, "get_settings", lambda: settings)
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_secrets_manager] = lambda: sm
     return SimpleNamespace(
@@ -110,7 +126,12 @@ async def vault(db_session, monkeypatch):
         identity=identity,
         runtime=runtime,
         sm=sm,
-        headers={"X-Caller-Identity": "worker", "X-Adp-Run-Credential": "proof", "X-Adp-Workload-Token": "pod"},
+        headers={
+            "X-Caller-Identity": "worker",
+            "X-Adp-Edge-Provenance": "vault-edge-provenance",
+            "X-Adp-Run-Credential": "proof",
+            "X-Adp-Workload-Token": "pod",
+        },
         body={
             "user_id": "vault-user",
             "invocation_id": "vault-run",

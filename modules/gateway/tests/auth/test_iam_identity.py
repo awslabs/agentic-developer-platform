@@ -321,10 +321,33 @@ class TestAgentRegistryService:
 
 
 class TestExtractIamIdentityFromHeaders:
-    """Tests for extract_iam_identity_from_headers function."""
+    """Tests for extract_iam_identity_from_headers function.
+
+    Issue #5653 (A01): this function now reads X-Caller-Identity through the shared
+    provenance helper, which honours an assertion only where the edge vouches for
+    it. The tests below exercise what happens *after* provenance passes — ARN
+    parsing, registry lookup, org attribution — so they enable header trust via the
+    autouse fixture. The provenance gate itself is covered separately in
+    tests/auth/test_caller_provenance.py, including the case where trust is off.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _trust_edge_header(self):
+        """Treat the assertion as edge-written for this class.
+
+        Before #5653 this function read the raw header unconditionally, so these
+        tests needed no settings at all. They are not asserting that an untrusted
+        header is honoured — they assume a request that already cleared the edge.
+        """
+        settings = MagicMock()
+        settings.trust_apigw_headers = True
+        settings.apigw_provenance_secret = "test-edge-provenance"
+        with patch("src.auth.middleware.get_settings", return_value=settings):
+            yield
 
     def _create_mock_request(self, headers: dict) -> Request:
         """Create a mock request with the given headers."""
+        headers = {**headers, "X-Adp-Edge-Provenance": "test-edge-provenance"}
         scope = {
             "type": "http",
             "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
@@ -372,42 +395,38 @@ class TestExtractIamIdentityFromHeaders:
             assert context.org_id == "test-org"
             assert context.auth_source == "iam"
 
-    def test_extracts_identity_from_x_amzn_iam_user_arn(self):
-        """Test extracting IAM identity from X-Amzn-Iam-User-Arn header."""
+    def test_x_amzn_iam_user_arn_no_longer_authenticates(self):
+        """X-Amzn-Iam-User-Arn is NOT an identity source (inverted by #5653).
+
+        This test previously asserted the opposite — that presenting this header
+        authenticated the named agent. That assertion encoded the vulnerability, so
+        it is inverted rather than deleted, to pin the fix.
+
+        No route in infra/modules/api-gateway/main.tf has ever set this header. The
+        only places it appears in the whole infrastructure are the CloudFront lines
+        that *delete* it. So nothing trusted ever wrote it, which means every value
+        it has ever carried was supplied by a client — and it was accepted as a
+        fall-back identity source equal in authority to the edge-written header.
+
+        Being a fall-back made it MORE dangerous, not less: blanking
+        X-Caller-Identity at the edge would have left this as an open second door
+        that the edge fix does not cover, because API Gateway only overwrites the
+        header it is told about.
+        """
         headers = {
             API_GATEWAY_HEADER_IAM_USER_ARN: "arn:aws:sts::123456789012:assumed-role/test-agent/session",
         }
         request = self._create_mock_request(headers)
 
-        mock_entry: AgentRegistryEntry = {
-            "agent_id": "00000000-0000-0000-0000-000000000001",
-            "role_arn": "arn:aws:iam::123456789012:role/test-agent",
-            "agent_name": "test-agent",
-            "org_id": "test-org",
-            "team_id": "test-team",
-            "owner": "system",
-            "scope": "shared",
-            "budget_config_id": "",
-            "allowed_models": ["claude-sonnet"],
-            "credential_scopes": [],
-            "status": "active",
-            "description": "Test agent",
-            "image_uri": "",
-            "code_repo": "",
-            "workflow_name": "",
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-01T00:00:00Z",
-        }
-
         with patch("src.auth.agent_registry.get_agent_registry_service") as mock_get_service:
             mock_service = MagicMock()
-            mock_service.get_agent_by_role_arn.return_value = mock_entry
             mock_get_service.return_value = mock_service
 
             context = extract_iam_identity_from_headers(request)
 
-            assert context is not None
-            assert context.user_id == "test-agent"
+            # No identity, and the registry was never even consulted.
+            assert context is None
+            mock_service.get_agent_by_role_arn.assert_not_called()
 
     def test_returns_none_when_no_iam_headers(self):
         """Test returns None when no IAM identity headers present."""

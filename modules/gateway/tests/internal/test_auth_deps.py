@@ -28,6 +28,7 @@ from src.shared.schemas.auth import TokenContext
 # ---------------------------------------------------------------------------
 
 _VALID_KEY = "test-internal-api-key"
+_EDGE_PROVENANCE = "test-edge-provenance"
 
 app = FastAPI()
 
@@ -51,8 +52,15 @@ def client():
     with patch("src.internal.auth_deps.get_settings") as mock_settings:
         settings = MagicMock()
         settings.internal_api_key = _VALID_KEY
+        # Issue #5653 (A01): set explicitly rather than relying on MagicMock's
+        # auto-truthy attribute. The IRSA tests in this file are about what happens
+        # once an assertion is trusted, so they need the edge-written premise; if
+        # this is left implicit, a later change to a real Settings object silently
+        # flips every one of them to exercise the rejection path instead.
+        settings.trust_apigw_headers = True
+        settings.apigw_provenance_secret = _EDGE_PROVENANCE
         mock_settings.return_value = settings
-        yield TestClient(app)
+        yield TestClient(app, headers={"X-Adp-Edge-Provenance": _EDGE_PROVENANCE})
 
 
 def _mock_token_context(scope: str = "internal") -> TokenContext:
@@ -327,7 +335,19 @@ def test_registry_protected_worker_cannot_downgrade_to_legacy_binding(monkeypatc
     guarded = FastAPI()
     guarded.add_api_route(f"/internal/v1/{path}", test_endpoint, methods=["POST"])
     verify = AsyncMock(side_effect=HTTPException(404, "not found"))
+
+    # Issue #5653 (A01): this test builds its own app rather than using the `client`
+    # fixture, so it gets real settings — where header trust now defaults to OFF.
+    # Without this patch the request is rejected at the provenance gate and never
+    # reaches run-identity verification, which is what this test is actually about.
+    # The premise here is a worker whose assertion already cleared the edge.
+    settings = MagicMock()
+    settings.internal_api_key = _VALID_KEY
+    settings.trust_apigw_headers = True
+    settings.apigw_provenance_secret = _EDGE_PROVENANCE
+
     with (
+        patch("src.internal.auth_deps.get_settings", return_value=settings),
         patch("src.internal.auth_deps.extract_iam_identity_from_headers", return_value=protected),
         patch("src.agentauth.broker_identity.verify_broker_worker", verify),
     ):
@@ -336,6 +356,7 @@ def test_registry_protected_worker_cannot_downgrade_to_legacy_binding(monkeypatc
             json={"user_id": "victim", "invocation_id": "victim-run"},
             headers={
                 "X-Caller-Identity": "arn:aws:sts::123456789012:assumed-role/protected/session",
+                "X-Adp-Edge-Provenance": _EDGE_PROVENANCE,
                 "X-Internal-Api-Key": _VALID_KEY,
             },
         )

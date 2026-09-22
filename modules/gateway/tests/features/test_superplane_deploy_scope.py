@@ -93,6 +93,8 @@ exit 0
 _TERRAFORM_STUB = """#!/usr/bin/env bash
 if [ "$1 $2 $3" = "output -json redis_endpoint" ]; then
   echo '[{"address":"redis.example.internal"}]'
+elif [ "$1 $2 $3" = "output -raw pentest_actor_client_id" ]; then
+  echo "pentest-client-123"
 fi
 exit 0
 """

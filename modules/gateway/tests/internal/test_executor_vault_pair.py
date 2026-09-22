@@ -181,7 +181,15 @@ async def pair(authority, pg_url, store, kubernetes, tmp_path, monkeypatch):  # 
     registry = AgentRegistryService(table_name="delivery-registry")
     registry._dynamodb = store.client
     monkeypatch.setattr("src.auth.agent_registry.get_agent_registry_service", lambda: registry)
-    monkeypatch.setattr("src.internal.auth_deps.get_settings", lambda: SimpleNamespace(internal_api_key="evidence-key"))
+    edge_proof = "synthetic-api-gateway-provenance"
+    monkeypatch.setattr(
+        "src.internal.auth_deps.get_settings",
+        lambda: SimpleNamespace(internal_api_key="evidence-key", trust_apigw_headers=True, apigw_provenance_secret=edge_proof),
+    )
+    monkeypatch.setattr(
+        "src.auth.middleware.get_settings",
+        lambda: SimpleNamespace(trust_apigw_headers=True, apigw_provenance_secret=edge_proof),
+    )
 
     sm = MagicMock()
     sm.current_version_id.return_value = VERSION
@@ -261,6 +269,7 @@ async def pair(authority, pg_url, store, kubernetes, tmp_path, monkeypatch):  # 
         requests.append(request)
         assert "X-Caller-Identity" not in request.headers
         assert "X-Internal-Api-Key" not in request.headers
+        assert "X-Adp-Edge-Provenance" not in request.headers
         # API Gateway boundary verifies the signature over the actual bytes before
         # forwarding a trusted IAM identity. The application decisions stay real.
         signed_headers = request.headers["Authorization"].split("SignedHeaders=")[1].split(",")[0].split(";")
@@ -272,7 +281,11 @@ async def pair(authority, pg_url, store, kubernetes, tmp_path, monkeypatch):  # 
         expected = signer.signature(signer.string_to_sign(signed, signer.canonical_request(signed)), signed)
         assert request.headers["Authorization"].endswith("Signature=" + expected)
         path = request.url.path.removeprefix("/dev")
-        response = api.post(path, content=request.content, headers={**dict(request.headers), "X-Caller-Identity": IAM})
+        response = api.post(
+            path,
+            content=request.content,
+            headers={**dict(request.headers), "X-Caller-Identity": IAM, "X-Adp-Edge-Provenance": edge_proof},
+        )
         return httpx.Response(response.status_code, json=response.json())
 
     http = httpx.Client(transport=httpx.MockTransport(api_gateway))

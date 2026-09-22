@@ -28,6 +28,7 @@ from src.shared.config import get_settings
 from src.shared.schemas.auth import TokenContext
 from src.shared.timing import get_timings
 
+from .caller_provenance import has_caller_identity_assertion, verified_caller_identity
 from .cognito_jwt import CognitoJWTValidator, CognitoTokenClaims
 
 logger = logging.getLogger(__name__)
@@ -190,12 +191,23 @@ async def get_current_user(
     auth_start = time.monotonic()
 
     try:
-        # Issue #260: Check for IAM identity first (AWS_IAM auth via /agent/* path)
-        # get_settings is imported at module scope (it was redundantly re-imported
-        # here, which shadowed the module attribute and made this branch untestable).
-        settings = get_settings()
-        if settings.trust_apigw_headers:
-            caller_identity = request.headers.get("x-caller-identity", "")
+        # Issue #260: IAM identity via API Gateway's AWS_IAM /agent/* route.
+        #
+        # Issue #5653 (A01): the identity assertion is read through the shared
+        # provenance helper, which returns an ARN only where the edge vouches for
+        # the header (see src/auth/caller_provenance.py). It replaces the inline
+        # `settings.trust_apigw_headers and raw header` read that trusted any
+        # client-supplied value, and it is the same helper the request middleware
+        # and the internal-endpoint guard use, so one rule governs all three.
+        #
+        # Bearer-token precedence: an assertion that FAILS provenance no longer
+        # short-circuits anything — the request falls through to the JWT branch
+        # below and authenticates as an ordinary client or not at all. Only a
+        # provenance-verified assertion is terminal (#3985's property, preserved).
+        if has_caller_identity_assertion(request):
+            # Pass this module's settings so the trust decision is resolved through
+            # the same Settings object this dependency uses for everything else.
+            caller_identity = verified_caller_identity(request, settings=get_settings())
             if caller_identity:
                 # Issue #3985: X-Caller-Identity presence is TERMINAL.
                 #

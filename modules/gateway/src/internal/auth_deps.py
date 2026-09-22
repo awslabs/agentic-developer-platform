@@ -12,6 +12,34 @@ At least one must succeed or the request is rejected with 403.
 Issue #3985: X-Caller-Identity presence is terminal — see verify_internal_or_irsa.
 Presenting the header commits the request to the IRSA path; it cannot fall back
 to the shared secret. Shared-secret callers must send no X-Caller-Identity.
+
+Issue #5653 (A01): the IRSA path now requires the assertion to pass the shared
+provenance check (src/auth/caller_provenance.py) before the registry lookup runs.
+An assertion the edge does not vouch for is rejected here, not passed through to
+the shared-secret branch.
+
+DELIBERATE DEVIATION from #5653's prose, which asked to make the shared secret
+mandatory "in all cases" and remove the identity short-circuit. That is NOT
+implemented, because this issue's own reviewed acceptance overrides it:
+
+    "retain a proven SigV4/IAM path rather than mandating both IAM and a
+     shared secret"
+
+and because it would be an outage, not a fix. The two legitimate IRSA callers —
+the scaledjob-worker pods and the platform deploy-runner (see
+agent-registry-seed.tf and lambda-authorizer/main.tf) — authenticate by SigV4
+through API Gateway and hold no copy of BG_INTERNAL_API_KEY. Requiring the secret
+on top of IAM would 403 every worker credential fetch and every customer-deploy
+credential assumption, which is the "over-broad rejection breaking legitimate
+machine-to-machine traffic" row of the issue's own blast-radius table.
+
+What actually closes the hole the prose was aiming at is the pair of controls that
+do not depend on a second application credential: API Gateway blanking
+X-Caller-Identity on every non-AWS_IAM route, and the caller-side egress policies
+that deny the agent workloads any in-cluster route to this service (see
+src/auth/caller_provenance.py for why the bypass must be closed from the caller's
+namespace and not by a gateway-side ingress policy). Dual-auth remains: SigV4 for
+principals that have it, shared secret for the ClusterIP callback that does not.
 """
 
 from __future__ import annotations
@@ -21,6 +49,7 @@ import os
 
 from fastapi import Header, HTTPException, Request
 
+from src.auth.caller_provenance import has_caller_identity_assertion, verified_caller_identity
 from src.auth.middleware import extract_iam_identity_from_headers
 from src.shared.config import get_settings
 
@@ -101,7 +130,28 @@ async def verify_internal_or_irsa(
     ingestion status callback, which reaches the pod via ClusterIP and never
     transits API Gateway) send no X-Caller-Identity at all and are unaffected.
     """
-    if x_caller_identity:
+    # Issue #5653 (A01): entry is gated on the shared provenance helper, so this
+    # guard, get_current_user and TokenContextMiddleware share one definition of a
+    # trustworthy assertion. An assertion that FAILS provenance is rejected below
+    # rather than silently falling through to the shared secret.
+    if has_caller_identity_assertion(request):
+        # Settings from this module's own get_settings — the same object
+        # _verify_internal_key reads the shared secret from.
+        if verified_caller_identity(request, settings=get_settings()) is None:
+            # Asserted an identity the edge does not vouch for. Reject rather than
+            # fall back to the shared secret: falling back would mask a forgery
+            # attempt behind a 200 for anyone holding the secret (the #3985
+            # "presence is terminal" property), and a caller legitimately using the
+            # shared secret sends no X-Caller-Identity at all.
+            logger.warning("Rejecting internal request: X-Caller-Identity failed provenance verification")
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "invalid_caller_identity",
+                    "message": "X-Caller-Identity did not arrive through an identity-verified route.",
+                },
+            )
+
         # IRSA path: extract_iam_identity_from_headers validates the IAM ARN
         # and looks up the caller in the agent_registry DynamoDB table.
         # Raises HTTPException on unregistered agents.

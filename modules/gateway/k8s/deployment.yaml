@@ -154,6 +154,12 @@ spec:
                   name: bedrockgateway-secrets
                   key: internal-api-key
                   optional: true
+            - name: BG_APIGW_PROVENANCE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: apigw-provenance-secret
+                  optional: true
             # GitHub App private key — used by the connections "Link GitHub"
             # install-callback to fetch installation metadata (GitHubAppClient).
             # Slug + App ID come from the configmap (BG_GITHUB_APP_SLUG /

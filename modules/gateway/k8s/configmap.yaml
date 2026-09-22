@@ -52,6 +52,11 @@ data:
   # CLI app client for web CLI login (/auth/cli). Empty until the Terraform
   # that creates the client applies — endpoints answer 503 until then.
   BG_COGNITO_CLI_CLIENT_ID: "__COGNITO_CLI_CLIENT_ID__"
+  BG_COGNITO_AGENT_CLIENT_ID: "__COGNITO_AGENT_CLIENT_ID__"
+  BG_COGNITO_GITLAB_CLIENT_ID: "__COGNITO_GITLAB_CLIENT_ID__"
+  # Dev-only pentest actor client. Empty outside dev or before agent-factory applies.
+  BG_COGNITO_PENTEST_CLIENT_ID: "__COGNITO_PENTEST_CLIENT_ID__"
+  BG_AGENT_CLIENTS_TABLE: "__AGENT_CLIENTS_TABLE__"
   BG_COGNITO_CLIENT_ID: "__COGNITO_CLIENT_ID__"
   BG_COGNITO_DOMAIN: "__COGNITO_DOMAIN__"
 

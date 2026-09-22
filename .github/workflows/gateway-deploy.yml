@@ -313,6 +313,10 @@ jobs:
           # the CLI client applies, and deploys before that must not fail —
           # the /auth/cli endpoints 503 cleanly while this is empty.
           COGNITO_CLI_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
+          COGNITO_AGENT_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-agent-client-id" "")
+          AGENT_CLIENTS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-clients-table" "bedrockgw-${ENVIRONMENT}-agent-clients")
+          COGNITO_GITLAB_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gitlab/oidc-client-id" "")
+          COGNITO_PENTEST_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-pentest-client-id" "")
           COGNITO_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
           CF_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")
           # User-facing origin: the custom domain when gateway-infra published one,
@@ -402,6 +406,21 @@ jobs:
           # "true" per env via SSM once the WARN logs are clean.
           VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-enforce-credential-host-binding" "false")
 
+          # #5653 (A01): whether the pod may believe X-Caller-Identity, which it
+          # treats as proof of identity (resolved against the agent registry to a
+          # privileged internal/platform context). This was hard-coded "true"
+          # here, which overrode the application's safe default on every deploy
+          # and asserted a property nothing had established.
+          #
+          # The param is published by the api-gateway Terraform module — the same
+          # module that blanks the header on every non-AWS_IAM route. So "true"
+          # now means "the edge control that makes this claim sound is deployed
+          # in this environment", instead of being an unconditional literal.
+          # Default "false": an environment without that apply treats a forged
+          # assertion as inert rather than authoritative.
+          TRUST_APIGW_HEADERS=$(get_ssm "/adp/${ENVIRONMENT}/gateway/trust-apigw-headers" "false")
+          if [ -z "$TRUST_APIGW_HEADERS" ] || [ "$TRUST_APIGW_HEADERS" = "None" ]; then TRUST_APIGW_HEADERS="false"; fi
+
           # Issue #4743: Bedrock routing shadow mode. Observation only — the
           # resolved destination is recorded in usage_logs.bedrock_account_id and
           # changes nothing about where a request goes (enforcement is #4744).
@@ -480,6 +499,10 @@ jobs:
               -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
               -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
               -e "s|__COGNITO_CLI_CLIENT_ID__|${COGNITO_CLI_CLIENT_ID}|g" \
+              -e "s|__COGNITO_AGENT_CLIENT_ID__|${COGNITO_AGENT_CLIENT_ID}|g" \
+              -e "s|__AGENT_CLIENTS_TABLE__|${AGENT_CLIENTS_TABLE}|g" \
+              -e "s|__COGNITO_GITLAB_CLIENT_ID__|${COGNITO_GITLAB_CLIENT_ID}|g" \
+              -e "s|__COGNITO_PENTEST_CLIENT_ID__|${COGNITO_PENTEST_CLIENT_ID}|g" \
               -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
               -e "s|__CORS_ALLOWED_ORIGINS__|${CORS_ORIGINS}|g" \
               -e "s|__GATEWAY_BASE_URL__|${FRONTEND_URL}|g" \
@@ -488,7 +511,7 @@ jobs:
               -e "s|__CHAT_LOGGING_ENABLED__|$([ -n "$CHAT_LOGS_BUCKET" ] && echo true || echo false)|g" \
               -e "s|__CHAT_LOGGING_BUCKET__|${CHAT_LOGS_BUCKET}|g" \
               -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|${CHAT_LOGGING_SCRUB_LEVEL}|g" \
-              -e "s|__TRUST_APIGW_HEADERS__|true|g" \
+              -e "s|__TRUST_APIGW_HEADERS__|${TRUST_APIGW_HEADERS}|g" \
               -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
@@ -561,9 +584,18 @@ jobs:
               --region "${AWS_REGION}"
           fi
 
+          APIGW_PROVENANCE_SECRET=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
+            --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ "$TRUST_APIGW_HEADERS" = "true" ] && { [ -z "$APIGW_PROVENANCE_SECRET" ] || [ "$APIGW_PROVENANCE_SECRET" = "None" ]; }; then
+            echo "ERROR: API Gateway header trust is enabled but its provenance secret is unavailable" >&2
+            exit 1
+          fi
+
           kubectl create secret generic bedrockgateway-secrets \
             --from-literal=token-secret-key="$TOKEN_SECRET" \
             --from-literal=internal-api-key="$INTERNAL_API_KEY" \
+            --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
             -n ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
 
           # --- Render and apply ServiceAccount (Section 3) ---
