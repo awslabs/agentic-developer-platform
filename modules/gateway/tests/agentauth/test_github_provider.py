@@ -603,6 +603,25 @@ async def test_merge_passes_the_expected_head_so_a_moved_branch_conflicts():
     assert body["sha"] == HEAD
 
 
+async def test_authority_withdrawn_during_pull_lookup_prevents_merge():
+    withdrawn = False
+
+    def read_pull():
+        nonlocal withdrawn
+        withdrawn = True
+        return httpx.Response(200, json={"number": 7, "head": {"ref": BRANCH, "repo": {"id": REPOSITORY_ID}}, "base": {"ref": "main"}})
+
+    async def authorize():
+        if withdrawn:
+            raise OperationRefusedError("authority withdrawn")
+
+    recorder = Recorder(overrides={"GET /repos/acme/widgets/pulls/7": read_pull})
+    async with provider(recorder) as gh:
+        with pytest.raises(OperationRefusedError, match="authority withdrawn"):
+            await gh.merge_pull_request(pull_number=7, expected_head=HEAD, reauthorize=authorize)
+    assert not [request for request in recorder.requests if request[0] == "PUT"]
+
+
 # --- Timeouts reconcile rather than blindly retry --------------------------
 
 

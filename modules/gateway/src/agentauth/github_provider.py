@@ -825,12 +825,13 @@ class GitHubProvider:
         """
         if method not in {"merge", "squash", "rebase"}:
             raise OperationRefusedError("unsupported merge method")
-        await reauthorize()
         # Same reasoning as the review path, and it matters more here: an
         # unvalidated number would let a merge authorization for this assignment
         # merge somebody else's pull request.
         pull = await self._call("GET", f"/repos/{self.repo}/pulls/{pull_number}")
         self._require_assigned_pull_request(pull)
+        # One full live check, after the read and immediately before mutation.
+        # Credential retries come through this boundary again.
         await reauthorize()
         merged = await self._call(
             "PUT",

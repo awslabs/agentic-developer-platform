@@ -140,7 +140,11 @@ class MergeProvider:
             raise CycleBlockedError("merge_provider_identity_changed")
 
     async def perform(self, binding, state, *, method, operation_key, reauthorize):
-        await reauthorize()
+        if method == "queue":
+            await reauthorize()
+        # The merge provider checks live authority immediately before its PUT.
+        # Repeating the full evidence read before token minting and read-only PR
+        # lookup can exhaust the runner deadline before that mutation is reached.
         token = await self.token(binding, write=True)
         assignment = BoundMergeAssignment(
             binding.repo, binding.provider_repository_id, state.head_ref, state.base_ref, binding.pr_number, binding.provider_pr_node_id

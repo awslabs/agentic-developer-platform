@@ -75,7 +75,7 @@ async def test_workflow_refusal_retries_once_with_scoped_permission_and_fresh_au
 
     result, _ = await perform(response=respond, reauthorize=authorize)
     assert result == {"merged": True, "sha": "b" * 40}
-    assert calls == [3, 6]
+    assert calls == [1, 3]
     assert credentials == [
         {"contents": "write", "pull_requests": "write", "metadata": "read"},
         {"contents": "write", "pull_requests": "write", "metadata": "read", "workflows": "write"},
@@ -113,10 +113,24 @@ async def test_workflow_retry_cannot_loop_or_expose_provider_content(credentials
 
 
 async def test_revoked_authority_prevents_workflow_credential_retry(credentials):
-    authorize = AsyncMock(side_effect=[None, None, None, OperationRefusedError("authority withdrawn")])
+    authorize = AsyncMock(side_effect=[None, OperationRefusedError("authority withdrawn")])
     with pytest.raises(OperationRefusedError, match="authority withdrawn"):
         await perform(response=lambda request: httpx.Response(403, json={"message": MESSAGE}), reauthorize=authorize)
     assert len(credentials) == 1
+
+
+async def test_authority_withdrawn_after_workflow_token_mint_prevents_second_put(credentials):
+    authorize = AsyncMock(side_effect=[None, None, OperationRefusedError("authority withdrawn")])
+    mutations = []
+
+    def respond(request):
+        mutations.append(request)
+        return httpx.Response(403, json={"message": MESSAGE})
+
+    with pytest.raises(OperationRefusedError, match="authority withdrawn"):
+        await perform(response=respond, reauthorize=authorize)
+    assert len(credentials) == 2
+    assert len(mutations) == 1
 
 
 @pytest.mark.parametrize("write,evidence", [(False, False), (False, True), (True, True)])
