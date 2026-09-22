@@ -799,6 +799,141 @@ class TestABoundAcceptanceGrants:
         assert acceptance_gate_address(transformed) == gate_address
 
 
+class TestBoundsAlreadyExpiredAreNotGranted:
+    """Authority whose lifetime is already over is refused, not granted (#5331).
+
+    A proposed policy carries an `expires_at` chosen when the plan was derived, and a
+    plan can sit at its acceptance gate for as long as its approver takes to read it.
+    So "the bounds were in the future when they were written" is not the same claim as
+    "the bounds are in the future now", and the grant path is the only place the second
+    one can be checked — `stamp_policy` binds a principal and a hash and says nothing
+    about lifetime.
+
+    Granting a dead grant is not a cosmetic wrong. The gate passes, every root behind
+    it arms, the plan reads as authorized — and then `authorize_action` denies every
+    single dispatch with `POLICY_EXPIRED`, because that is exactly what admission is
+    supposed to do with an expired policy. The flow is live, approved, and incapable
+    of doing anything, with nothing in the approver's view explaining why.
+
+    It is refused rather than **silently re-clocked to a fresh expiry**, which is the
+    tempting repair and the wrong one. The approver read a document that said when the
+    authority lapses; issuing different bounds than the ones they read would attribute
+    to them a grant they never reviewed — the precise misattribution the revision
+    binding exists to prevent. Refusing costs them one round trip and a re-derived
+    plan they can read.
+    """
+
+    @staticmethod
+    def _expired_policy():
+        """Bounds whose lifetime ended an hour ago.
+
+        Relative to the real clock rather than a fixed past date, because an expiry
+        check compares against `now`: a literal like 2020 would still be in the past
+        in 2030, but it would also let a check that compared against the *wrong* now
+        (a hardcoded epoch, a naive-vs-aware mixup) pass for the wrong reason.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        return policy_for_these_fixtures(expires_at=datetime.now(tz=UTC) - timedelta(hours=1))
+
+    async def test_a_bound_approval_of_expired_bounds_is_refused(self, session, registrar, access):
+        """The refusal, raised out of the gate answer rather than returned.
+
+        `PolicyNotAcceptableError` and not a refusal outcome, because the caller's
+        transaction must not commit: the gate move and the decision row are already
+        written at this point, and the whole reason this is raised is so they roll back
+        with the grant instead of persisting an approval that armed nothing.
+        """
+        await register_policy_bearing_draft(session, registrar, policy=self._expired_policy())
+        gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
+
+        with pytest.raises(PolicyNotAcceptableError, match="expired"):
+            await answer_acceptance_gate(session, access, node_id=gate.id, expected_plan_hash=(await in_force(session)).plan_hash)
+
+    async def test_nothing_is_granted_and_no_new_version_is_recorded(self, session, registrar, access):
+        """The claim that matters is not the exception type — it is that no authority
+        exists afterwards.
+
+        Asserted through `load_in_force_policy`, the function admission actually reads,
+        for the same reason `TestADraftsPolicyGrantsNothing` does: an assertion about
+        which JSON key holds the policy would pass even if something had started
+        enforcing the refused one.
+
+        The `commit` after registration and the `rollback` after the refusal are what
+        make this the real shape rather than a convenient one. In production the
+        registration request commits and the gate answer is a separate transaction the
+        route abandons on an exception — here both share one session, so without the
+        commit the rollback would discard the registration too and every assertion
+        below would pass against an empty database.
+        """
+        await register_policy_bearing_draft(session, registrar, policy=self._expired_policy())
+        await session.commit()
+        gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
+
+        with pytest.raises(PolicyNotAcceptableError):
+            await answer_acceptance_gate(session, access, node_id=gate.id, expected_plan_hash=(await in_force(session)).plan_hash)
+        await session.rollback()
+
+        assert (await load_in_force_policy(session, org_id=ORG_A, flow_id=await flow_id_of(session))).policy is None
+        assert len(await plan_versions(session)) == 1, "a refused grant recorded a new plan version"
+        assert (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF].state == _reg.NodeState.AWAITING_GATE.value, (
+            "the gate did not stay answerable, so the approver cannot retry after re-deriving the plan"
+        )
+
+    async def test_the_refusal_names_the_remedy(self, session, registrar, access):
+        """A refusal an operator cannot act on is an outage.
+
+        The message has to distinguish this from the other things that refuse a grant
+        (a service acceptor, a stale hash, an inert field) and say what to do — the
+        plan needs re-deriving, not re-answering, because re-answering the same
+        document would produce the same dead bounds.
+        """
+        await register_policy_bearing_draft(session, registrar, policy=self._expired_policy())
+        gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
+
+        with pytest.raises(PolicyNotAcceptableError) as error:
+            await answer_acceptance_gate(session, access, node_id=gate.id, expected_plan_hash=(await in_force(session)).plan_hash)
+
+        message = str(error.value)
+        assert "expired" in message
+        assert "plan" in message, f"the refusal does not tell the approver a new plan is needed: {message!r}"
+
+    def test_a_direct_acceptance_of_expired_bounds_is_refused_too(self):
+        """The same refusal at the function every acceptance path shares.
+
+        The gate path is not the only way a policy reaches `accept_execution_policy` —
+        the amendment path and the direct-submission path both call it, and a
+        hand-authored or file-prepared document can carry a past expiry from its
+        author with no planning session involved at all. Asserted here so the guarantee
+        belongs to the single authority point rather than to one of its callers.
+        """
+        submitted = gateless_proposal().model_copy(update={"execution_policy": self._expired_policy()})
+
+        with pytest.raises(PolicyNotAcceptableError, match="expired"):
+            accept_execution_policy(
+                submitted,
+                decision=ApprovalContext(org_id=ORG_A, actor_id=HUMAN_USER_ID, actor_role="org_admin", actor_kind=ActorKind.HUMAN),
+                decision_kind=DecisionKind.PLAN_ACCEPTED,
+            )
+
+    def test_unexpired_bounds_are_still_accepted(self):
+        """The scope of the refusal, from the other side.
+
+        A guard that refused everything would pass every test above and disable the
+        grant path entirely — the inverse failure, and the one that turns a safety
+        check into an outage.
+        """
+        submitted = gateless_proposal().model_copy(update={"execution_policy": policy_for_these_fixtures()})
+
+        granted = accept_execution_policy(
+            submitted,
+            decision=ApprovalContext(org_id=ORG_A, actor_id=HUMAN_USER_ID, actor_role="org_admin", actor_kind=ActorKind.HUMAN),
+            decision_kind=DecisionKind.PLAN_ACCEPTED,
+        )
+
+        assert granted.execution_policy is not None and granted.execution_policy.policy_id
+
+
 class TestTenantIsolationOfAGrant:
     """A grant is scoped to the tenant whose plan it is."""
 

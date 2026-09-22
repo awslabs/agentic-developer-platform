@@ -1424,6 +1424,64 @@ def test_the_preview_states_the_policy_bounds_being_authorized(server, tmp_path)
     assert "acme/app" in text and "conn-1" in text and "25.00" in text
 
 
+class TestAnExpiryAlreadyBehindUsIsNamedAsSuch:
+    """The consent text has to answer "is this authority still live?" (#5331).
+
+    An expiry is the one policy field whose meaning depends on when it is read, and a
+    bare ISO timestamp makes the reader do that comparison at the exact moment they
+    are concentrating on something else. A plan whose bounds have already lapsed
+    cannot be accepted at all — the server refuses the grant — so printing the date
+    alone sends the operator to approve something guaranteed to fail and then decode
+    the refusal.
+
+    Asserted on `policy_lines` rather than through a `create` run because this is a
+    rendering claim, and `create`'s exit path depends on the server fixture. The
+    rendering is shared by the dry run and the registered-draft preview, so it is the
+    text in both places.
+    """
+
+    @staticmethod
+    def _rendered(expires_at):
+        return "\n".join(cli.policy_lines({"repository_ids": ["acme/app"], "expires_at": expires_at}))
+
+    def test_a_past_expiry_is_called_expired_and_names_the_remedy(self):
+        from datetime import UTC, datetime, timedelta
+
+        text = self._rendered((datetime.now(tz=UTC) - timedelta(hours=1)).isoformat())
+
+        assert "ALREADY EXPIRED" in text
+        # The remedy, not just the diagnosis: re-answering the same plan produces the
+        # same dead bounds, so the operator needs to know a new plan is required.
+        assert "new plan" in text
+
+    def test_a_live_expiry_is_printed_as_the_server_sent_it(self):
+        """The scope of the warning. A renderer that shouted on every plan would be
+        noise, and noise on a consent screen is worse than silence — it trains the
+        reader to skip the line that will one day matter."""
+        from datetime import UTC, datetime, timedelta
+
+        expires_at = (datetime.now(tz=UTC) + timedelta(hours=20)).isoformat()
+
+        text = self._rendered(expires_at)
+
+        assert expires_at in text
+        assert "EXPIRED" not in text
+
+    def test_a_z_suffixed_expiry_is_understood_rather_than_passed_through(self):
+        """`Z` is what the server actually sends (`model_dump(mode="json")`), and
+        `fromisoformat` rejected it before 3.11 — so this is the format the check has
+        to handle, not an edge case."""
+        assert "ALREADY EXPIRED" in self._rendered("2020-01-01T00:00:00Z")
+
+    def test_an_unreadable_expiry_is_shown_verbatim_and_not_guessed_at(self):
+        """Silence over invention. Telling a reader "already expired" about a value
+        this code merely failed to parse would attribute to the server a claim it
+        never made, and the reader has no way to tell the two apart."""
+        for value in ("sometime next week", "", None):
+            text = self._rendered(value)
+            assert "EXPIRED" not in text, f"a malformed expiry {value!r} was reported as expired"
+
+
 def test_the_bounds_are_read_from_the_proposal_not_from_what_is_in_force(server, tmp_path):
     """The defect this closes, and it fails in the reassuring direction.
 

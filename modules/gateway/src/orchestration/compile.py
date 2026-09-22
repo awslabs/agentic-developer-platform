@@ -57,9 +57,12 @@ stored document would create two copies of one value.
 import hashlib
 import json
 from dataclasses import dataclass, field
+from datetime import UTC
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.shared.models.base import utcnow
 
 from .execution_policy import PolicyRejectedError, stamp_policy
 from .genesis import APPROVAL_DECISION_KINDS
@@ -319,6 +322,25 @@ def accept_execution_policy(
     producing a flow that runs with legacy unbounded semantics while its author
     believes it is constrained. A refusal cannot be misread that way.
 
+    **Bounds whose lifetime is already over are refused too (#5331).** A policy's
+    `expires_at` is chosen when the document is written, and a plan can wait at its
+    acceptance gate for as long as its approver takes to read it — so "in the future
+    when written" and "in the future now" are different claims, and only the second
+    one makes a grant usable. Accepting a dead grant passes the gate and arms every
+    root behind it, after which `authorize_action` correctly denies every dispatch
+    with `POLICY_EXPIRED`: a flow that reads as authorized and cannot act, with
+    nothing in the approver's view explaining why. Checked here rather than in a
+    caller for the same reason the acceptor kind is — this is the single point where
+    a proposal becomes authority, and the amendment path, the direct-submission path
+    and the draft gate's promotion all arrive through it.
+
+    It is refused rather than **re-clocked to a fresh expiry**, which is the tempting
+    repair and the wrong one: the approver read a document stating when the authority
+    lapses, and issuing different bounds than the ones they read would attribute to
+    them a grant they never reviewed — the misattribution the revision binding exists
+    to prevent. The remedy is a newly derived plan, which costs one round trip and is
+    readable before it is approved.
+
     Args:
         proposal: The document being compiled.
         decision: Server-resolved acceptance context. Both the principal and the
@@ -330,8 +352,9 @@ def accept_execution_policy(
         The proposal, with `execution_policy` stamped when one was present.
 
     Raises:
-        PolicyNotAcceptableError: A non-human actor attempted acceptance, or the
-            document declared a server-stamped field.
+        PolicyNotAcceptableError: A non-human actor attempted acceptance, the
+            document declared a server-stamped field, or its bounds have already
+            expired.
     """
     if decision_kind != DecisionKind.PLAN_DRAFTED:
         require_evaluation_acceptor(proposal, decision)
@@ -349,6 +372,19 @@ def accept_execution_policy(
             f"a {decision.actor_kind.value if isinstance(decision.actor_kind, ActorKind) else decision.actor_kind!r} actor "
             f"cannot accept an execution policy (attempted via {decision_kind.value!r}); a model may propose one, but accepting "
             "delegated authority is a human act. Submit the plan without a policy, or have an authorized human accept it."
+        )
+
+    # Naive coerced to UTC rather than refused, matching `execution_runner`'s
+    # treatment of the same field: every writer of an expiry in this system is UTC,
+    # and a naive value from an older stored document must not be read as local time
+    # — which on a westward offset would make an expired grant look live.
+    expires_at = policy.expires_at if policy.expires_at.tzinfo is not None else policy.expires_at.replace(tzinfo=UTC)
+    now = utcnow()
+    if expires_at <= now:
+        raise PolicyNotAcceptableError(
+            f"the execution policy this plan proposes expired at {expires_at.isoformat()} and cannot be accepted "
+            f"(it is now {now.isoformat()}). Accepting it would arm the plan with bounds every dispatch is then denied "
+            "under. The expiry is part of what was reviewed and is not extended here: request a new plan and accept that."
         )
 
     try:

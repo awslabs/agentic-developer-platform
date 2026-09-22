@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.parse
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -992,8 +993,38 @@ def policy_lines(policy):
         f"    repositories: {policy.get('repository_ids')}",
         f"    environment connections: {policy.get('environment_connection_ids')}",
         f"    limits: {policy.get('limits')}",
-        f"    expires: {policy.get('expires_at')}",
+        f"    expires: {expiry_text(policy.get('expires_at'))}",
     ]
+
+
+def expiry_text(expires_at):
+    """The expiry, with a past one named as past rather than printed as a timestamp.
+
+    A bare ISO timestamp does not tell a reader whether the authority they are about
+    to approve is still live — comparing it to now is work, and it is work done at
+    the one moment the reader is focused on something else. An expiry already behind
+    us is the case that matters: accepting it is refused by the server, and without
+    this the operator reads a plausible-looking date, approves, and gets a refusal
+    they have to decode.
+
+    An unparseable or absent value is passed through verbatim. Guessing at a
+    malformed expiry would be the one wrong thing to do here: a reader shown
+    "(already expired)" for a value this code simply failed to read has been told
+    something the server never said.
+    """
+    if not isinstance(expires_at, str):
+        return f"{expires_at}"
+    try:
+        moment = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return expires_at
+    if moment.tzinfo is None:
+        # Every expiry ADP writes is UTC; reading a naive one as local time would
+        # shift the comparison by the offset and could call a dead grant live.
+        moment = moment.replace(tzinfo=UTC)
+    if moment <= datetime.now(tz=UTC):
+        return f"{expires_at} — ALREADY EXPIRED: accepting this plan is refused. Request a new plan and accept that one."
+    return expires_at
 
 
 def registration_refusal(api, document):

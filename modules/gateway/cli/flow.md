@@ -194,9 +194,20 @@ The current generator proposes one story per declared outcome, a single wave and
 a human evaluation. Stories sharing an issue are serialized. Its proposed policy
 permits development, review, repair and evaluation in the selected repository,
 with a $5 total ceiling, one-hour runtime ceiling, two attempts per node, one
-concurrent action and expiry 24 hours after session creation. It grants no merge
-or deployment authority. These are proposed bounds, visible before acceptance;
-use a prepared plan with `create --file` for different bounds or execution inputs.
+concurrent action and expiry 24 hours after the conversation's last activity. It
+grants no merge or deployment authority. These are proposed bounds, visible before
+acceptance; use a prepared plan with `create --file` for different bounds or
+execution inputs.
+
+Measuring that expiry from the last turn rather than from session creation is what
+makes a resumed conversation usable: a session opened days ago and continued today
+proposes bounds valid from today, so the authority an approver reads is authority
+that can still be exercised. Requesting a plan on a conversation that has been idle
+close to the full 24 hours is refused (`planning_session_idle`) instead of producing
+a grant that expires before it could be used — continue the conversation, then ask
+for the plan again. An acceptance of bounds that have nonetheless already expired is
+refused rather than re-clocked, because the expiry is part of what was approved;
+derive a new plan and accept that.
 
 This does **not** complete story #5331's full inception journey. Automatic issue
 materialization, the canonical multi-stage inception gates, conversational graph
