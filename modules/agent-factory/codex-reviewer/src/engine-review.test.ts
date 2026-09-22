@@ -47,6 +47,7 @@ async function fixture(t: test.TestContext, trackedLearning = false) {
     cycle: { action: "review", repo: "org/repo", pr_number: 7, head_sha: sha, findings: [], allow_story_repairs: true } };
   const runtime = { workspace, githubToken: "test-token", proxyBaseUrl: "http://localhost/openai/v1" };
   const github = { getIssue: async () => ({ number: 42, title: "Story", body: "Valid input succeeds", html_url: "https://github.com/org/repo/issues/42" }),
+    getBranch: async () => ({ commit: { sha: pr.base.sha } }),
     getPullRequest: async () => ({ ...pr, head: { ...pr.head, sha: await git("--git-dir", remote, "rev-parse", "story") } }) };
   return { directory, workspace, remote, git, sha, pr, envelope, runtime, github };
 }
@@ -259,7 +260,7 @@ test("an explicit repair consumes assigned findings before its only verification
   assert.notEqual(result.sha, state.sha);
 });
 
-test("a merge conflict is repaired and reviewed against the current base before publishing", async t => {
+for (const mergeable of [false, null, true]) test(`an assigned base repair integrates the base when GitHub mergeable is ${mergeable}`, async t => {
   const state = await fixture(t);
   await state.git("checkout", "-b", "main");
   await writeFile(join(state.workspace, "code.txt"), "base behavior\n");
@@ -273,10 +274,12 @@ test("a merge conflict is repaired and reviewed against the current base before 
   await state.git("push", state.remote, "story");
   state.envelope.cycle.head_sha = expected;
   state.envelope.cycle.action = "repair";
-  state.pr.base.sha = base;
+  // GitHub's PR snapshot remains at the old base although main has advanced.
+  state.envelope.cycle.findings = [{ source: "merge-controller", summary: "Resolve the current merge conflict or update the out-of-date base within accepted scope." }];
   const steps: string[] = [];
   const result = await runEngineReview(state.envelope, state.runtime, { github: { ...state.github,
-    getPullRequest: async () => ({ ...await state.github.getPullRequest(), mergeable: false, mergeable_state: "dirty" }) },
+    getBranch: async () => ({ commit: { sha: base } }),
+    getPullRequest: async () => ({ ...await state.github.getPullRequest(), mergeable, mergeable_state: mergeable === false ? "dirty" : "unknown" }) },
     fix: async prompt => {
       steps.push("repair");
       assert.match(prompt, /resolve every conflict/);

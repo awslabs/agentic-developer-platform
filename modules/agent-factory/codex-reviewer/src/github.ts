@@ -175,6 +175,10 @@ export class GitHubClient {
     return this.request(`/repos/${this.repository}/pulls/${number}`);
   }
 
+  getBranch(ref: string): Promise<{ commit: { sha: string } }> {
+    return this.request(`/repos/${this.repository}/branches/${encodeURIComponent(ref)}`);
+  }
+
   getIssue(number: number): Promise<IssueResponse> {
     return this.request(`/repos/${this.repository}/issues/${number}`);
   }
