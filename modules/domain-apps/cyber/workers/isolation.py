@@ -93,7 +93,7 @@ def _confine(read_paths: list[str], scratch: str) -> None:
         sendmmsg recvfrom recvmsg recvmmsg shutdown
         io_uring_setup io_uring_enter io_uring_register
         ptrace process_vm_readv process_vm_writev pidfd_open pidfd_getfd
-        pidfd_send_signal kill tkill tgkill setsid setpgid
+        pidfd_send_signal kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo setsid setpgid
         mount umount2 pivot_root chroot move_mount open_tree fsopen fsconfig
         fsmount mount_setattr setns unshare
         bpf perf_event_open userfaultfd keyctl add_key request_key
@@ -104,6 +104,22 @@ def _confine(read_paths: list[str], scratch: str) -> None:
         for name in deny:
             number = sec.seccomp_syscall_resolve_name(name.encode())
             if number >= 0 and sec.seccomp_rule_add(ctx, 0x50000 | errno.EPERM, number, 0) != 0:
+                raise IsolationError("isolation_seccomp_rule_failed")
+        # clone3 passes flags through a pointer that seccomp cannot inspect.
+        # ENOSYS makes libc use its ordinary clone/fork fallback. Legacy clone
+        # may create threads/processes, but never a new namespace.
+        clone3 = sec.seccomp_syscall_resolve_name(b"clone3")
+        if clone3 >= 0 and sec.seccomp_rule_add(ctx, 0x50000 | errno.ENOSYS, clone3, 0) != 0:
+            raise IsolationError("isolation_seccomp_rule_failed")
+
+        class ArgumentRule(ctypes.Structure):
+            _fields_ = [("arg", ctypes.c_uint), ("op", ctypes.c_uint), ("datum_a", ctypes.c_uint64), ("datum_b", ctypes.c_uint64)]
+
+        sec.seccomp_rule_add_array.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint, ctypes.POINTER(ArgumentRule)]
+        clone = sec.seccomp_syscall_resolve_name(b"clone")
+        for flag in (0x00020000, 0x02000000, 0x04000000, 0x08000000, 0x10000000, 0x20000000, 0x40000000):
+            rule = ArgumentRule(0, 7, flag, flag)  # SCMP_CMP_MASKED_EQ
+            if clone < 0 or sec.seccomp_rule_add_array(ctx, 0x50000 | errno.EPERM, clone, 1, ctypes.byref(rule)) != 0:
                 raise IsolationError("isolation_seccomp_rule_failed")
         if sec.seccomp_load(ctx) != 0:
             raise IsolationError("isolation_seccomp_load_failed")

@@ -58,6 +58,16 @@ print(json.dumps({"value": p.read_text(), "child": child.stdout.strip()}))
 ''')
         assert result == {"value": "legitimate", "child": "42"}
 
+
+    def test_clone_cannot_create_a_namespace(self, tmp_path):
+        result = execute(tmp_path, """import ctypes, errno, json, platform
+c = ctypes.CDLL(None, use_errno=True)
+number = 56 if platform.machine() == 'x86_64' else 220
+result = c.syscall(number, 0x10000000, 0, 0, 0, 0)
+print(json.dumps({'blocked': result == -1 and ctypes.get_errno() == errno.EPERM}))
+""")
+        assert result == {"blocked": True}
+
     def test_no_token_environment_parent_memory_or_other_job(self, tmp_path, monkeypatch):
         # A harmless canary stands in for a projected token/another job's file.
         secret = tmp_path / "other-job-token"
