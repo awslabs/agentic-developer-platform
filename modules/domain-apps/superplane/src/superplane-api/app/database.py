@@ -5,11 +5,11 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-from app.config import settings
+from app.config import require_database_url, settings
 from app.schema_boundary import connect_args
 
 engine = create_async_engine(
-    settings.database_url,
+    require_database_url(),
     echo=settings.debug,
     pool_pre_ping=True,
     pool_size=5,

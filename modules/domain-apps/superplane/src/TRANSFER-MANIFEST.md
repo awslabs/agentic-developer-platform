@@ -589,8 +589,25 @@ guaranteed daily red window in a lane three other units declare as required.
 Present in the transferred code as-is, and left as-is because rewriting them would be
 implementing another unit's story inside a transfer commit:
 
-- `jwt_secret_key: str = "CHANGE-ME-IN-PRODUCTION"` in `superplane-api/app/config.py`.
-  **U14** owns auth enforcement.
+- ~~A hardcoded token signing-key default in `superplane-api/app/config.py`.~~
+  **Repaired — issue #5683 (A04), not deferred to U14 after all.** The default is
+  removed; there is now no default at all, and a missing key is refused at startup and
+  at every sign/verify call rather than substituted. The deployment renderer
+  (`installation/manifests.py`) injects the key by reference, and
+  `installation/runner.py` requires the secret field with a 32-character floor.
+
+  Recorded here rather than silently fixed, because this entry previously told readers
+  the defect was still present and owned elsewhere; leaving it would make the
+  manifest's own audit trail wrong in the opposite direction. Byte-fidelity with the
+  origin is already broken for `superplane-api` by entries 2 and 3 above — this is the
+  third such divergence, and the first one made for a security reason rather than a
+  test or migration repair.
+
+  **The code change is not the remediation for a running environment.** A deployment
+  that ran on the removed default has a key that is public and tokens that are
+  forgeable until it is rotated, which is a live operation this repository change did
+  not perform: `docs/runbooks/superplane-jwt-and-db-credential-rotation.md` is the
+  procedure and its named owner executes it.
 - Upstream's AWS account ids in **six** transferred files across **two** components:
 
   | Account | Transferred carrier |
@@ -601,6 +618,7 @@ implementing another unit's story inside a transfer commit:
   | `605440105851` | `superplane-api/deploy/integration-test.yaml` |
   | `605440105851` | `superplane-controller/deploy/controller.yaml` |
   | `938500344975` | `superplane-api/deploy/db-seed-job.yaml` |
+  | `938500344975` | `superplane-api/deploy/integration-test.yaml` |
 
   Earlier versions first attributed the values to the API alone, then enumerated only the
   first account id; those omissions are precisely what makes an inventory unsafe to rely on.
@@ -609,7 +627,23 @@ implementing another unit's story inside a transfer commit:
   `superplane-platform-monitor/deploy/deployment.yaml` — so all three ship at least one
   floating tag.
 - An inline development database password in `superplane-api/deploy/integration-test.yaml`
-  (a local Postgres for the integration suite, not a deployed credential).
+  (a local Postgres for the integration suite, not a deployed credential). **Still
+  inline, deliberately, and re-scoped by #5683.** The database is an `emptyDir` Postgres
+  destroyed with its pod, so the isolation is what makes the value safe rather than the
+  value itself; generating it would imply this database guards something. What #5683 did
+  change in that file is the part that was *not* safe: it also shipped a plaintext
+  `JWT_SECRET_KEY` inside a `kind: Secret`, in the same shape a production manifest
+  would use. That key is now generated per apply. The fixture uses a dedicated namespace
+  and test-only resource names, limits PostgreSQL ingress to its API pods, and provides an
+  apply helper that refuses non-local cluster contexts and API servers. Direct application
+  is explicitly prohibited in the file header.
+- The inline database credentials in `superplane-api/deploy/`'s **deployed** manifests
+  (`config.env`, `db-migrate-job.yaml`, `db-seed-job.yaml`) were removed by #5683 and
+  replaced with `secretKeyRef` references, and `deployment.yaml`'s existing references
+  changed from `optional: true` to `optional: false` so a missing secret stops the pod
+  instead of starting it with the variable unset. U3 still owns reconciling these assets
+  into ADP infrastructure; what changed is that they no longer carry credential literals
+  while waiting for it.
 
 These values are **not** adopted as ADP configuration anywhere. The lock deliberately
 records no account id — `tests/test_lock.py` fails on any 12-digit number in a value

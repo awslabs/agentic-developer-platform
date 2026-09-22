@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from installation.config import Refusal
+from installation.database_preparation import observation_secret_value
 from installation.runner import Installer
 
 
@@ -78,6 +79,11 @@ class ExternalTools:
                 "controller-credential": "controller-private",
                 "controller-signing-key": "controller-key",
                 "skypilot-token": "s" * 32,
+                # Issue #5683 (A04). An obviously-synthetic filler of the minimum
+                # accepted length, not a key: these installer checks assert the
+                # renderer's wiring and the refusals, and none of them needs a
+                # value that could be mistaken for real material.
+                "jwt-signing-key": "j" * 32,
             },
             "workspace_access": {"kubeconfig": yaml.safe_dump(config)},
         }
@@ -496,6 +502,21 @@ def setup(tmp_path, environment, release, monkeypatch, failure=None, auto_mode=F
     monkeypatch.setattr("installation.runner.httpx.get", tools.http)
     installer.plan()
     return installer, tools
+
+
+def test_preparation_observation_secret_satisfies_installer_contract(
+    tmp_path, environment, release, monkeypatch
+):
+    installer, tools = setup(tmp_path, environment, release, monkeypatch)
+    generated = observation_secret_value(installer)
+    tools.secrets["observation"] = generated
+    installer.secret_values.clear()
+    installer.secret_versions.clear()
+
+    installer.secrets()
+
+    assert installer.secret_values["observation"] == generated
+    assert len(generated["jwt-signing-key"]) >= 32
 
 
 def test_one_command_reaches_all_four_services_and_public_verification(
