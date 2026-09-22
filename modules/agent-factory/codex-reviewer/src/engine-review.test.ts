@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { parseEnvelope, type CodexEngineReviewEnvelope } from "./contracts.js";
-import { engineReport, engineReviewBody, parseEngineVerdict, runEngineReview, type EngineVerdict } from "./engine-review.js";
+import { engineReport, engineReviewBody, parseEngineVerdict, runEngineReview, observePublishedRepair, type EngineVerdict } from "./engine-review.js";
 
 const exec = promisify(execFile);
 const approved: EngineVerdict = { verdict: "approve", summary: "Story and tests verified", findings: [],
@@ -164,4 +164,35 @@ test("missing stages and validation gaps cannot become approval", () => {
   assert.equal(report.findings[0]?.severity, "blocking");
   assert.match(engineReviewBody({ ...approved, validationGaps: ["test failed"] }, "a".repeat(40)), /— REQUEST CHANGES/);
   assert.match(engineReviewBody({ ...approved, stages: { functional: "failed", security: "completed" } }, "a".repeat(40)), /— INCOMPLETE/);
+});
+
+
+test("published repair waits for the exact PR head without rerunning review", async t => {
+  const state = await fixture(t);
+  const head = "b".repeat(40);
+  let reads = 0;
+  const waits: number[] = [];
+  await observePublishedRepair({ ...state.github,
+    getPullRequest: async () => ({ ...state.pr, head: { ...state.pr.head, sha: ++reads < 3 ? state.sha : head } }),
+  }, 7, state.sha, head, "story", async ms => { waits.push(ms); });
+  assert.equal(reads, 3);
+  assert.deepEqual(waits, [1000, 2000]);
+});
+
+test("publication observation rejects a concurrent revision immediately", async t => {
+  const state = await fixture(t);
+  let reads = 0;
+  await assert.rejects(observePublishedRepair({ ...state.github,
+    getPullRequest: async () => { reads++; return { ...state.pr, head: { ...state.pr.head, sha: "c".repeat(40) } }; },
+  }, 7, state.sha, "b".repeat(40), "story", async () => assert.fail("must not retry a different revision")), /head changed/);
+  assert.equal(reads, 1);
+});
+
+test("an indefinitely stale PR projection cannot deliver a review", async t => {
+  const state = await fixture(t);
+  let reads = 0;
+  await assert.rejects(observePublishedRepair({ ...state.github,
+    getPullRequest: async () => { reads++; return state.pr; },
+  }, 7, state.sha, "b".repeat(40), "story", async () => {}), /not yet visible/);
+  assert.equal(reads, 6);
 });

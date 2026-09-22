@@ -4,6 +4,7 @@ import { Codex } from "@openai/codex-sdk";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as pause } from "node:timers/promises";
 import { parseVerdict, requiresChanges, reviewOutputSchema,
   type CodexEngineReviewEnvelope, type ReviewVerdict } from "./contracts.js";
 import { GitHubClient, formatReviewComment } from "./github.js";
@@ -55,6 +56,24 @@ export interface EngineReviewServices {
   github: Pick<GitHubClient, "getPullRequest" | "getIssue">;
   review(prompt: string): Promise<EngineVerdict>;
   fix(prompt: string): Promise<void>;
+}
+
+export async function observePublishedRepair(
+  github: EngineReviewServices["github"], number: number, before: string, after: string,
+  branch: string, wait: (milliseconds: number) => Promise<unknown> = pause,
+) {
+  // A successful push can precede the pull-request projection update. Retry
+  // only that exact old head; another revision or branch is a real conflict.
+  for (const delay of [0, 1000, 2000, 4000, 8000, 16000]) {
+    if (delay) await wait(delay);
+    const current = await github.getPullRequest(number);
+    if (current.state !== "open" || current.head.ref !== branch) {
+      throw new Error("PR changed before review delivery");
+    }
+    if (current.head.sha === after) return;
+    if (current.head.sha !== before) throw new Error("PR head changed before review delivery");
+  }
+  throw new Error("Published repair is not yet visible in the PR projection");
 }
 
 function services(runtime: ReviewRuntime & { repository: string }): EngineReviewServices {
@@ -204,8 +223,12 @@ export async function runEngineReview(
       verdict = original;
     }
   }
-  const current = await controller.github.getPullRequest(cycle.pr_number);
-  if (current.head.sha !== head) throw new Error("PR head changed before review delivery");
+  if (head !== expected) {
+    await observePublishedRepair(controller.github, cycle.pr_number, expected, head, initialPr.head.ref);
+  } else {
+    const current = await controller.github.getPullRequest(cycle.pr_number);
+    if (current.head.sha !== head) throw new Error("PR head changed before review delivery");
+  }
   return { status: "engine_reviewed", sha: head,
     repair_base_sha: head !== expected ? expected : null,
     report: engineReport(verdict),
