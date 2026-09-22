@@ -32,6 +32,10 @@ Use Mode B when:
 | Stage 2 envelope | DDB | prior_hypothesis, recommended_static_focus, recommended_yara_rules |
 | `CYBER_STATIC_QUEUE` / `_RESPONSE_QUEUE` | env | FIFO URLs |
 | `CYBER_ARTIFACTS_BUCKET` | env | S3 bucket (for Mode B script upload) |
+| `ORG_ID` / `TEAM_ID` / `USER_ID` | env | requester identity — **required in both modes** |
+
+Both modes download the sample, so both carry the identity fields. A job without
+them fails with `identity_missing` (issue #5616).
 
 ## Outputs
 
@@ -79,8 +83,12 @@ aws sqs send-message --region us-east-1 \
   --queue-url "$CYBER_STATIC_QUEUE" \
   --message-group-id "$ARTIFACT_ID" \
   --message-deduplication-id "${ARTIFACT_ID}-static-$(date +%s)" \
-  --message-body "$(jq -n --arg a "$ARTIFACT_ID" --arg s "$SAMPLE_S3_URI" --argjson focus '["config_block_extraction","c2_pattern_confirmation"]' --argjson rules '["qakbot_v5","banking_trojan_generic"]' \
-    '{artifact_id:$a, sample_s3_uri:$s, stage:"static", mode:"rule-driven", focus:$focus, yara_rules:$rules}')"
+  --message-body "$(jq -nc --arg a "$ARTIFACT_ID" --arg s "$SAMPLE_S3_URI" \
+    --arg o "$ORG_ID" --arg t "$TEAM_ID" --arg u "$USER_ID" \
+    --argjson focus '["config_block_extraction","c2_pattern_confirmation"]' \
+    --argjson rules '["qakbot_v5","banking_trojan_generic"]' \
+    '{artifact_id:$a, sample_s3_uri:$s, stage:"static", mode:"rule-driven",
+      focus:$focus, yara_rules:$rules, org_id:$o, team_id:$t, user_id:$u}')"
 ```
 
 ### 2b. MANDATORY — Read the worker manifest first
@@ -138,28 +146,73 @@ print(json.dumps(findings))
 
 ### 2d. Validate the script against the manifest
 
-Before uploading, parse your script's imports and subprocess calls. Fail fast if any aren't in the manifest:
+Run the validator before uploading:
 
 ```bash
 python3 modules/domain-apps/cyber/agent/skills/stage-3-static/validate_script.py \
   /tmp/stage-3.py /tmp/worker-manifest.json
 ```
 
-Exit 0 means safe to upload. Nonzero means you referenced something the worker doesn't have — fix the script, don't proceed.
+Exit 0 means safe to upload. Nonzero means you referenced something the worker
+doesn't have, or a denied capability — fix the script, don't proceed.
 
-### 2e. Upload + enqueue
+> **This check is for your convenience, not the security boundary (issue #5616).**
+> The worker re-runs this exact validator on the bytes it downloaded and refuses
+> to execute anything that fails. Skipping this step therefore cannot get a
+> script past the worker; it just wastes a round trip. Equally, passing it is not
+> a promise of execution — the worker's verdict is the one that counts.
+>
+> The validator denies network and cloud-credential imports (`requests`,
+> `urllib`, `socket`, `boto3`, …) and dynamic execution (`eval`, `exec`,
+> `compile`, `__import__`, `os.system`, `os.popen`, `pickle.loads`). Analysis
+> work does not need these. If you think you need one, you want Mode A or a
+> worker-image change, not a workaround.
+
+### 2e. Upload + register + enqueue
+
+Two constraints the worker enforces on Mode B, both of which will fail the job
+rather than degrade quietly:
+
+1. **Location** — the script must sit under the requester's own prefix, in a
+   `scripts/` subdirectory: `o/<ORG_ID>/t/<TEAM_ID>/u/<USER_ID>/scripts/...`.
+   An object elsewhere in the tenant's space is not executable, so an uploaded
+   *sample* can never be run as code.
+2. **Registration** — the job must carry `script_sha256`, the digest of the
+   bytes you uploaded. The worker recomputes it on what it downloaded and
+   refuses on mismatch, so an object swapped between upload and execution does
+   not run. Compute it from the same local file you uploaded; do not copy a
+   digest from anywhere else.
 
 ```bash
-SCRIPT_URI="s3://$CYBER_ARTIFACTS_BUCKET/scripts/$ARTIFACT_ID/stage-3.py"
+TENANT_PREFIX="o/$ORG_ID/t/$TEAM_ID/u/$USER_ID"
+SCRIPT_URI="s3://$CYBER_ARTIFACTS_BUCKET/$TENANT_PREFIX/scripts/$ARTIFACT_ID/stage-3.py"
 aws s3 cp /tmp/stage-3.py "$SCRIPT_URI" --region us-east-1
+
+SCRIPT_SHA256=$(sha256sum /tmp/stage-3.py | cut -d' ' -f1)
 
 aws sqs send-message --region us-east-1 \
   --queue-url "$CYBER_STATIC_QUEUE" \
   --message-group-id "$ARTIFACT_ID" \
   --message-deduplication-id "${ARTIFACT_ID}-static-$(date +%s)" \
-  --message-body "$(jq -n --arg a "$ARTIFACT_ID" --arg s "$SAMPLE_S3_URI" --arg u "$SCRIPT_URI" \
-    '{artifact_id:$a, sample_s3_uri:$s, stage:"static", mode:"agent-authored-script", script_s3_uri:$u}')"
+  --message-body "$(jq -nc --arg a "$ARTIFACT_ID" --arg s "$SAMPLE_S3_URI" --arg u "$SCRIPT_URI" \
+    --arg d "$SCRIPT_SHA256" --arg o "$ORG_ID" --arg t "$TEAM_ID" --arg usr "$USER_ID" \
+    '{artifact_id:$a, sample_s3_uri:$s, stage:"static", mode:"agent-authored-script",
+      script_s3_uri:$u, script_sha256:$d, org_id:$o, team_id:$t, user_id:$usr}')"
 ```
+
+If the response comes back `status: "failed"` with a `reason`, read it literally:
+
+| reason | meaning |
+|---|---|
+| `identity_missing` | job carried no org/team/user — fix the pipeline, not the URI |
+| `outside_tenant_prefix` | the location is not inside the requester's space |
+| `script_prefix_not_allowed` | inside the tenant space but not under `scripts/` |
+| `script_registration_missing` | no `script_sha256` in the job |
+| `script_digest_mismatch` | downloaded bytes differ from what was registered |
+| `script_validation_failed` | validator rejected it; `validation_violations` lists why |
+
+Do not retry a refusal unchanged and do not attempt to route around it — every
+one of these is deterministic and will fail identically.
 
 ### 3. Poll response queue (up to 10 min)
 

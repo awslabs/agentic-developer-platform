@@ -15,9 +15,31 @@ If a Stage 1 envelope for this artifact already exists in DDB (re-run scenario),
 |---|---|---|
 | `ARTIFACT_ID` | issue body | string, stable across stages |
 | `SAMPLE_S3_URI` | issue body | `s3://bucket/key` pointing at raw sample |
+| `ORG_ID` | env | requester's org — **required**, see below |
+| `TEAM_ID` | env | requester's team — **required** |
+| `USER_ID` | env | requester's user — **required** |
 | `CYBER_TRIAGE_QUEUE` | env | FIFO queue URL |
 | `CYBER_TRIAGE_RESPONSE_QUEUE` | env | FIFO response queue URL |
 | `CYBER_RESULTS_TABLE` | env | DDB table name |
+
+### Sample locations are confined to the requester (issue #5616)
+
+The worker will only read a sample that sits inside the requester's own prefix:
+
+```
+o/<ORG_ID>/t/<TEAM_ID>/u/<USER_ID>/...
+```
+
+This is enforced **by the worker**, not here. A job whose `sample_s3_uri` points
+anywhere else — another org, another team, or a bucket that is not allowlisted —
+comes back as `status: "failed"` with a `reason` code and nothing is downloaded.
+Omitting the three identity fields fails the job too (`identity_missing`): the
+worker cannot confirm a location is yours if it does not know who you are.
+
+So do not try to "fix" a refusal by editing the URI to something that looks more
+permissive; it will keep failing. A refusal means either the sample was staged
+outside the requester's space (re-stage it correctly) or the identity passed
+through the pipeline is wrong (fix that upstream).
 
 ## Outputs
 
@@ -74,7 +96,11 @@ MSG_ID=$(aws sqs send-message --region us-east-1 \
   --queue-url "$CYBER_TRIAGE_QUEUE" \
   --message-group-id "$ARTIFACT_ID" \
   --message-deduplication-id "${ARTIFACT_ID}-triage-$(date +%s)" \
-  --message-body "{\"artifact_id\":\"$ARTIFACT_ID\",\"sample_s3_uri\":\"$SAMPLE_S3_URI\",\"stage\":\"triage\"}" \
+  --message-body "$(jq -nc \
+    --arg a "$ARTIFACT_ID" --arg s "$SAMPLE_S3_URI" \
+    --arg o "$ORG_ID" --arg t "$TEAM_ID" --arg u "$USER_ID" \
+    '{artifact_id:$a, sample_s3_uri:$s, stage:"triage",
+      org_id:$o, team_id:$t, user_id:$u}')" \
   --query 'MessageId' --output text)
 echo "Enqueued triage: $MSG_ID"
 ```
