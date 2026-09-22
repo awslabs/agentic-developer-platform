@@ -165,3 +165,42 @@ class TestFailsClosed:
         with pytest.raises(sg.ScriptRejected) as e:
             sg.verify_script(path, {"script_sha256": _digest(LEGIT_SCRIPT)})
         assert e.value.reason == sg.REASON_MANIFEST_UNAVAILABLE
+
+
+class TestImagePathContract:
+    """The guard's defaults must match where the Dockerfile puts these files.
+
+    Docker is unavailable in this environment, so the image cannot be built and
+    exercised here. These are the two paths that would break Mode B entirely if
+    they drifted — and because the guard fails closed, a drifted path fails every
+    Mode B job with worker_manifest_unavailable rather than announcing itself as
+    a packaging bug. Pinned as a static contract so a Dockerfile edit that moves
+    either file breaks a test instead of the pipeline.
+    """
+
+    DOCKERFILE = Path(__file__).resolve().parents[1] / "Dockerfile"
+
+    def _lines(self) -> list[str]:
+        return self.DOCKERFILE.read_text().splitlines()
+
+    def test_validator_default_matches_dockerfile_destination(self):
+        workdir = next(
+            line.split()[1] for line in self._lines() if line.startswith("WORKDIR")
+        )
+        copy = next(
+            line for line in self._lines()
+            if line.startswith("COPY") and "validate_script.py" in line
+        )
+        dest = copy.split()[2].removeprefix("./")
+        resolved = f"{workdir.rstrip('/')}/{dest}"
+        assert resolved == sg.DEFAULT_VALIDATOR_PATH, (
+            f"image puts the validator at {resolved} but the guard looks in "
+            f"{sg.DEFAULT_VALIDATOR_PATH}"
+        )
+
+    def test_manifest_default_matches_dockerfile_destination(self):
+        assert any(
+            sg.DEFAULT_WORKER_MANIFEST_PATH in line
+            for line in self._lines()
+            if "generate_manifest.py" in line
+        ), f"Dockerfile does not generate the manifest at {sg.DEFAULT_WORKER_MANIFEST_PATH}"
