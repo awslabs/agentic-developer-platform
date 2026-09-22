@@ -154,6 +154,31 @@ resource "kubernetes_namespace" "bedrockgw" {
   ]
 }
 
+# Root-based clean-room eval pods are isolated from the gateway namespace so
+# restricted Pod Security Admission can be enforced there without breaking the
+# stock-image provisioning those evals perform at runtime.
+resource "kubernetes_namespace" "gateway_evals" {
+  metadata {
+    name = "adp-gateway-evals"
+    labels = {
+      "app.kubernetes.io/managed-by"               = "terraform"
+      "app.kubernetes.io/part-of"                  = "adp"
+      "app.kubernetes.io/component"                = "gateway-evals"
+      "pod-security.kubernetes.io/enforce"         = "baseline"
+      "pod-security.kubernetes.io/enforce-version" = "latest"
+      "pod-security.kubernetes.io/warn"            = "restricted"
+      "pod-security.kubernetes.io/warn-version"    = "latest"
+      "pod-security.kubernetes.io/audit"           = "restricted"
+      "pod-security.kubernetes.io/audit-version"   = "latest"
+    }
+  }
+
+  depends_on = [
+    aws_eks_cluster.main,
+    time_sleep.wait_for_access_entry,
+  ]
+}
+
 # IRSA Role for Gateway Service — trusts the EKS OIDC provider
 # This role is created here (not in the IAM module) because it depends on
 # the OIDC provider which is created after the EKS cluster.

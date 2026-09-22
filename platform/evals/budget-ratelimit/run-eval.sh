@@ -64,7 +64,7 @@
 #   AWS_REGION        default: us-east-1
 #   EVAL_RUN_ID       unique suffix for throwaway resources (default: local-$$)
 #   EVAL_WORKDIR      scratch dir (default: mktemp -d)
-#   EVAL_POD_NAMESPACE  namespace for the laptop pod (default: adp-gateway)
+#   EVAL_POD_NAMESPACE  namespace for the laptop pod (default: adp-gateway-evals)
 #   EVAL_POD_IMAGE    laptop pod image (default: node:20-bookworm)
 # =============================================================================
 
@@ -179,7 +179,7 @@ PHASES="1,2,3,4,5,6,7,8,9,10,11,12,H"
 # -----------------------------------------------------------------------------
 # The laptop pod — the clean room
 # -----------------------------------------------------------------------------
-POD_NAMESPACE="${EVAL_POD_NAMESPACE:-adp-gateway}"
+POD_NAMESPACE="${EVAL_POD_NAMESPACE:-adp-gateway-evals}"
 POD_IMAGE="${EVAL_POD_IMAGE:-node:20-bookworm}"
 POD_LABEL_APP="$EVAL_USER_PREFIX"
 POD_RUN_LABEL="$(printf '%s' "$EVAL_RUN_ID" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-63)"

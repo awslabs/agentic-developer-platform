@@ -33,6 +33,30 @@ RUN apt-get update && apt-get -y upgrade \
     && test -s /etc/ssl/certs/rds-global-bundle.pem \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Issue #5675: run the gateway as an unprivileged account instead of root.
+#
+# This pod mounts the platform's token-signing key, the internal shared secret,
+# the GitHub App private key and the agent signing keys. As root, any code
+# execution in this process reaches all of them plus the container's own
+# filesystem, which turns a moderate defect into a full credential compromise.
+# Dropping to an ordinary user is the layer the other two (the pod
+# securityContext in k8s/deployment.yaml and the namespace Pod Security
+# Admission labels in k8s/namespace.yaml) are measured against: if the IMAGE
+# still starts as root, `runAsNonRoot: true` is the only thing standing between
+# us and uid 0, and one deleted line puts it back.
+#
+# UID 65532 and `useradd --create-home` mirror the superplane API image
+# (modules/domain-apps/superplane/src/superplane-api/Dockerfile), the closest
+# analogue in this repo — Python + alembic, same shape. 16 of the 18 real
+# Dockerfiles here already set USER; the gateway was the outlier.
+#
+# A HOME is created because Python and botocore write first-use caches under it;
+# with a read-only root filesystem a homeless user surfaces that as a confusing
+# mid-request error rather than a clean failure. The pod also mounts emptyDir
+# volumes over the writable paths — see k8s/deployment.yaml.
+RUN useradd --create-home --uid 65532 appuser
+ENV HOME=/home/appuser
+
 WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
@@ -59,6 +83,19 @@ COPY alembic.ini .
 # (src/cli_download/routes.py), which reads bg-cognito-auth.sh off disk. Without this
 # the route 404s in the image while working fine locally.
 COPY cli/ cli/
+
+# Everything above needed privilege (apt-get, the RDS bundle fetch, the contract
+# self-check). Everything the container actually RUNS is below this line, so the
+# switch goes here: the build keeps its privileges, the served process gets none.
+#
+# Port 8080 is deliberately unchanged and deliberately above 1024 — an
+# unprivileged process cannot bind a port below 1024, so a gateway on :80 would
+# have made this switch an immediate startup failure. It is not, which is why
+# CMD below is untouched.
+#
+# The Lambda path (orchestration tick, issue #4203) overrides entry_point but not
+# the user, so it inherits this too.
+USER 65532:65532
 
 EXPOSE 8080
 CMD ["uvicorn", "src.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]

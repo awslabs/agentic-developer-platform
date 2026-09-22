@@ -25,6 +25,8 @@ spec:
       containers:
       - name: codegraph
         image: ${CODEGRAPH_IMAGE}
+        securityContext:
+          allowPrivilegeEscalation: false
         command: ["/bin/bash", "-c"]
         args:
           - |

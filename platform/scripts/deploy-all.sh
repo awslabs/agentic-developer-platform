@@ -983,7 +983,9 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   EFFECTIVE_ACCOUNT="${ADP_CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
   AGENT_RUN_LOGS_BUCKET="adp-${ENVIRONMENT}-agent-run-logs-${EFFECTIVE_ACCOUNT}"
   cd "$ROOT_DIR/modules/gateway"
-  kubectl create namespace adp-gateway --dry-run=client -o yaml | kubectl apply -f -
+  # Preserve restricted Pod Security Admission labels on upgrades. Applying a
+  # generated label-free Namespace would remove them until the rollout finished.
+  kubectl get namespace adp-gateway >/dev/null 2>&1 || kubectl create namespace adp-gateway
   # Issue #1008: Create bedrockgateway-secrets K8s Secret from Secrets Manager
   SM_SECRET_NAME="adp/${ENVIRONMENT}/gateway/token-secret-key"
   TOKEN_SECRET=$(aws secretsmanager get-secret-value \
@@ -1141,8 +1143,13 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
   for f in k8s/*.yaml; do
     case "$(basename "$f")" in
       configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
-      *) kubectl apply -f "$f" -n adp-gateway ;;
     esac
+    if kubectl create --dry-run=client --validate=false -f "$f" \
+         -o jsonpath='{.kind}{"\n"}{range .items[*]}{.kind}{"\n"}{end}' \
+         | grep -qx Namespace; then
+      continue
+    fi
+    kubectl apply -f "$f" -n adp-gateway
   done
 
   # Render deployment settings as well as the ConfigMap. Applying the raw
@@ -1184,6 +1191,11 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     kubectl set image deployment/bedrockgateway bedrockgateway="${GATEWAY_IMAGE}" -n adp-gateway
     kubectl rollout status deployment/bedrockgateway -n adp-gateway --timeout=300s || fail "Gateway rollout not complete"
   fi
+
+  # Enforce the restricted namespace policy only after the hardened image and
+  # pod spec are Ready, then prove the API server rejects a privileged pod.
+  kubectl apply -f k8s/namespace.yaml
+  scripts/verify-restricted-admission.sh adp-gateway
 
   PRICING_RELEASE_IMAGE="${GATEWAY_IMAGE}"
   python3 "$ROOT_DIR/modules/gateway/scripts/pricing-rollout.py" migrate \

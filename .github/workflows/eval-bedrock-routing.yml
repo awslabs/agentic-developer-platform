@@ -159,6 +159,7 @@ jobs:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       EVAL_WORKDIR: /tmp/bedrock-routing-eval
+      EVAL_POD_NAMESPACE: adp-gateway-evals
 
     steps:
       - uses: actions/checkout@v7

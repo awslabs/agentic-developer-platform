@@ -127,12 +127,13 @@ jobs:
 
     # No job-level image: this job is the HARNESS, on the runner. The clean room
     # is the pod run-eval.sh spawns (see the header). The runner's existing RBAC
-    # in adp-gateway already grants pods create/delete and pods/exec create.
+    # in adp-gateway-evals grants only the pod lifecycle verbs used here.
     env:
       AWS_REGION: us-east-1
       ENVIRONMENT: ${{ inputs.environment || 'dev' }}
       EVAL_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       EVAL_WORKDIR: /tmp/cli-onboarding-eval
+      EVAL_POD_NAMESPACE: adp-gateway-evals
 
     steps:
       - name: Refuse an untrusted ref
@@ -205,9 +206,9 @@ jobs:
           fi
           # eval-pod leftover check: a clean-room pod outlives the job that made
           # it, so a leak here is a leaked node until Karpenter reclaims it.
-          PODS=$(kubectl get pods -n adp-gateway -l app=eval-cli-onboarding \
+          PODS=$(kubectl get pods -n $EVAL_POD_NAMESPACE -l app=eval-cli-onboarding \
             --no-headers 2>/dev/null | wc -l | tr -d ' ')
           echo "- Leftover clean-room pods (\`app=eval-cli-onboarding\`): \`${PODS}\`" >> "$GITHUB_STEP_SUMMARY"
           if [ "${PODS:-0}" != "0" ]; then
-            echo "::warning::${PODS} clean-room pod(s) left behind — sweep: kubectl delete pod -n adp-gateway -l app=eval-cli-onboarding"
+            echo "::warning::${PODS} clean-room pod(s) left behind — sweep: kubectl delete pod -n $EVAL_POD_NAMESPACE -l app=eval-cli-onboarding"
           fi

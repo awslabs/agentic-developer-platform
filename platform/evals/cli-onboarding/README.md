@@ -64,8 +64,11 @@ pod; only its shape ever comes back.
 Why a pod and not a job-level `container:`: the ARC scale set runs without a
 Docker daemon and without `containerMode`, so a job that asks for a container
 image dies before its first step (`failed to connect to the docker API`). The
-runner *can* create pods — its `adp-gateway` RBAC already grants `pods`
-create/delete and `pods/exec` create — so the clean room is a pod (#4171).
+runner *can* create pods — its dedicated `adp-gateway-evals` RBAC grants
+`pods` create/delete and `pods/exec` create — so the clean room is a pod
+(#4171). Keeping it outside `adp-gateway` lets that namespace enforce the
+restricted Pod Security standard while this stock-image eval provisions tools
+as root.
 
 That split is what makes the whole thing possible: `cognito-idp:InitiateAuth` is
 an **unsigned** API, so `import` / `token` / `refresh` genuinely need no AWS
@@ -160,7 +163,7 @@ D, which runs from an `EXIT` trap *and* as a separate `if: always()` step:
 | `BG_ENFORCE_ORG_ASSIGNMENT` on the gateway deployment | Set back to the value **read at start**. If there was no deployment-level override, the override is *removed* rather than pinned, so the deployment keeps tracking the configmap. |
 | Two throwaway Cognito users (`eval-cli-onboarding*`) | `admin-delete-user` |
 | One or two `users` rows | `DELETE` by the ids recorded in state |
-| One clean-room pod in `adp-gateway` | `kubectl delete pod -l app=eval-cli-onboarding`. Deleted **by label, not by name**, so a pod orphaned by a crashed run is swept by a later run that never learned the old run id. The laptop `$HOME`, the tokens and the auth-proxy process go with it. |
+| One clean-room pod in `adp-gateway-evals` | `kubectl delete pod -l app=eval-cli-onboarding`. Deleted **by label, not by name**, so a pod orphaned by a crashed run is swept by a later run that never learned the old run id. The laptop `$HOME`, the tokens and the auth-proxy process go with it. |
 | Harness-side token scratch files | `rm -f` |
 
 Restoring to the value read at start — never a hardcoded `false` — is the point:
@@ -188,7 +191,7 @@ kubectl get deploy bedrockgateway -n adp-gateway \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="BG_ENFORCE_ORG_ASSIGNMENT")].value}'
 
 # Leaked clean-room pods (--cleanup-only already does this)
-kubectl delete pod -n adp-gateway -l app=eval-cli-onboarding
+kubectl delete pod -n adp-gateway-evals -l app=eval-cli-onboarding
 ```
 
 ## Triaging a failure
@@ -224,9 +227,9 @@ label keeps meaning something.
   and `kubectl` access to `deploy/bedrockgateway`. The `runner-iam` module
   currently grants `cognito-idp:*`.
 - The runner needs Kubernetes RBAC to `create` / `exec` / `delete` **pods** in
-  `adp-gateway` for the clean room. Already granted: the `adp-runner-deploy`
-  Role (`modules/agent-factory/infra/runner-rbac.tf`) covers `pods` with
-  create/delete and `pods/exec` with create. Nothing to add.
+  `adp-gateway-evals` for the clean room. Already granted: the
+  `adp-runner-evals` Role (`modules/agent-factory/infra/runner-rbac.tf`) covers
+  `pods` with create/delete and `pods/exec` with create. Nothing to add.
 - The eval will not fall back to running the laptop journey on the runner: a run
   outside the clean-room pod would report a false green, which is the one
   outcome this eval exists to prevent.

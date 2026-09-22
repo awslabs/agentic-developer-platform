@@ -26,9 +26,49 @@ spec:
         app.kubernetes.io/part-of: bedrock-gateway
     spec:
       serviceAccountName: gateway-service
+      # Issue #5675: pod-level hardening. This pod holds BG_TOKEN_SECRET_KEY (the
+      # platform's token-signing key), BG_INTERNAL_API_KEY (the internal shared
+      # secret), BG_GITHUB_APP_PRIVATE_KEY and the two agent signing keys. Running
+      # it as root meant any code execution here reached every one of them, so a
+      # moderate defect became a full platform credential compromise and a forced
+      # rotation of everything the platform issues.
+      #
+      # Set at BOTH levels, here and on the container below. That is not
+      # redundancy for its own sake: a container-level securityContext silently
+      # OVERRIDES the pod default, so a future container that omits a field it
+      # inherits today is not a visible regression. Stating it twice makes the
+      # container's own guarantee explicit and independently testable.
+      #
+      # The image (Dockerfile, USER 65532) is the third layer. runAsNonRoot below
+      # only FAILS a root image — it cannot make one non-root — so the image and
+      # this block have to agree. They are asserted together in
+      # tests/infra/test_gateway_container_hardening.py.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Volume ownership for the emptyDir mounts below, so the unprivileged
+        # user can actually write to its scratch space.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: bedrockgateway
           image: REPLACE_WITH_GATEWAY_IMAGE
+          # Container-level hardening (#5675). readOnlyRootFilesystem and
+          # capabilities have NO pod-level equivalent — they only exist here — so
+          # this block is required, not a restatement of the pod's.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
           ports:
             - containerPort: 8080
               protocol: TCP
@@ -59,6 +99,31 @@ spec:
             limits:
               cpu: 1000m
               memory: 2Gi
+          # Issue #5675: the writable surface readOnlyRootFilesystem leaves behind.
+          #
+          # Scoped deliberately: /app (the code, the pricing snapshots, the
+          # contracts) stays read-only, which is the point of the control — the
+          # served process cannot rewrite its own program or its pinned rate data.
+          #
+          # I checked what the gateway actually writes before choosing these. No
+          # tempfile/mkdtemp/open-for-write exists in src/ — logs go to stdout
+          # (BG_LOG_FORMAT=json) and chat records go to S3 (chat_logging/s3_writer).
+          # These two mounts are therefore for the RUNTIME's incidental writes, not
+          # the application's, and both are known first-use write sites:
+          #   /tmp   — Python's default temp dir; stdlib, httpx and botocore all
+          #            reach for it, and an OTEL exporter buffering to disk would
+          #            too (BG_OTEL_ENABLED=true).
+          #   /home/appuser — botocore/boto3 cache credentials and endpoint data
+          #            under HOME. The Dockerfile creates this dir for uid 65532.
+          #
+          # Sized small on purpose. These are caches; an unbounded emptyDir counts
+          # against node ephemeral storage and would let a runaway write evict the
+          # pod, which is the failure mode this control is supposed to prevent.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/appuser
           # Startup delay sized for 4 uvicorn workers each registering all
           # routes from scratch. New modules (vault, internal, connections)
           # have added ~5-8s to cold start since the last probe tuning.
@@ -295,6 +360,17 @@ spec:
               value: "true"
             - name: USER_IDENTITY_INDEX_V2_READ
               value: "false"
+      # Issue #5675: backing store for the read-only-root scratch mounts above.
+      # emptyDir (not hostPath) so nothing is shared with the node or survives the
+      # pod, and sizeLimit so a runaway write is capped at the pod rather than
+      # filling node ephemeral storage and taking neighbours down with it.
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: home
+          emptyDir:
+            sizeLimit: 64Mi
       # Pod topology spread constraints for HA across availability zones
       topologySpreadConstraints:
         - maxSkew: 1

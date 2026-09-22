@@ -116,6 +116,7 @@ _SUB_SCRIPTS = {
     "modules/gateway/scripts/bootstrap-admin.sh": "STUB-BOOTSTRAP-ADMIN",
     "modules/gateway/scripts/deploy-frontend.sh": "STUB-DEPLOY-FRONTEND",
     "modules/gateway/scripts/apply-internal-plane-deny.sh": "STUB-INTERNAL-DENY",
+    "modules/gateway/scripts/verify-restricted-admission.sh": "STUB-RESTRICTED-ADMISSION",
     "modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh": "STUB-WEBHOOK-INGRESS",
     "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh": "STUB-DEPLOY-CHAT-SCALEDJOB",
     # Invoked as `bash deploy.sh` after a cd into the module, so it is a relative path.
@@ -393,7 +394,7 @@ class TestSuperplaneOnlyScope:
 
     @pytest.mark.parametrize(
         "marker",
-        ["STUB-DEPLOY-BROKER", "STUB-BOOTSTRAP-ADMIN", "STUB-WEBHOOK-INGRESS", "STUB-WIRE-ALB", "STUB-DEPLOY-FRONTEND"],
+        ["STUB-DEPLOY-BROKER", "STUB-BOOTSTRAP-ADMIN", "STUB-WEBHOOK-INGRESS", "STUB-WIRE-ALB", "STUB-DEPLOY-FRONTEND", "STUB-RESTRICTED-ADMISSION"],
     )
     def test_out_of_scope_sub_script_never_executes(self, output, marker):
         """Proves the guard, not just the label.
@@ -453,6 +454,9 @@ class TestDefaultDeployIsUnchanged:
 
     def test_agent_context_still_gated_off_by_default(self, output):
         assert_skipped(output, "agent_context")
+
+    def test_gateway_admission_check_runs_with_the_gateway_phase(self, output):
+        assert "STUB-RESTRICTED-ADMISSION" in phase_section(output, "gateway_deploy")
 
     def test_explicit_enable_runs_the_phase(self, harness):
         """`SUPERPLANE_ENABLED=true` is the documented opt-in and must work."""

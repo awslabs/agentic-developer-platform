@@ -16,10 +16,14 @@ spec:
       initContainers:
         - name: wait-for-db
           image: public.ecr.aws/docker/library/postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
           command: ['sh', '-c', 'until pg_isready -h postgres.superplane.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
       containers:
         - name: seed
           image: public.ecr.aws/docker/library/postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
           env:
             # Resolved at runtime from a Secret (issue #5683, A04). The psql
             # invocation below previously carried a connection URI with the username

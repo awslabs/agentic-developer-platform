@@ -39,6 +39,8 @@ spec:
           containers:
           - name: refresh
             image: ${INGESTION_IMAGE}
+            securityContext:
+              allowPrivilegeEscalation: false
             command: ["/bin/bash", "-c"]
             args:
               - |

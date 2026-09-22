@@ -33,3 +33,73 @@ phases:
       # without this the first sign would be refused review evidence in production.
       - docker run --rm --entrypoint python adp-gateway:pr-smoke -m src.orchestration.review_contract_selfcheck
       - docker run --rm --entrypoint python adp-gateway:pr-smoke -m src.orchestration.evaluation_contract_selfcheck
+      # Issue #5675: exercise the exact image under the workload restrictions.
+      # This runs on the privileged CodeBuild project because ARC has no daemon.
+      - |
+        set -euo pipefail
+        RESTRICTIONS="--read-only --cap-drop=ALL --security-opt=no-new-privileges:true"
+        RESTRICTIONS="$RESTRICTIONS --tmpfs /tmp:rw,noexec,nosuid,nodev,uid=65532,gid=65532,mode=1777"
+        RESTRICTIONS="$RESTRICTIONS --tmpfs /home/appuser:rw,noexec,nosuid,nodev,uid=65532,gid=65532,mode=700"
+        test "$(docker image inspect adp-gateway:pr-smoke --format '{{.Config.User}}')" = "65532:65532"
+        # Prove the image layer protects immutable application content on its
+        # own, without --read-only masking an ownership or mode regression.
+        docker run --rm --entrypoint sh adp-gateway:pr-smoke -c '
+          test "$(id -u)" = 65532
+          test -z "$(find /app ! -uid 0 -print -quit)"
+          test -z "$(find /app \( -type f -o -type d \) -perm /022 -print -quit)"
+          touch /tmp/image-layer-write
+          touch "$HOME/image-layer-write"
+          if touch /app/image-layer-must-stay-read-only 2>/dev/null; then
+            echo "/app was writable without the workload read-only control" >&2
+            exit 1
+          fi
+        '
+        docker run --rm $RESTRICTIONS --entrypoint sh adp-gateway:pr-smoke -c '
+          test "$(id -u)" = 65532
+          touch /tmp/runtime-write
+          touch "$HOME/runtime-write"
+          if touch /app/must-stay-read-only 2>/dev/null; then
+            echo "/app was writable" >&2
+            exit 1
+          fi
+        '
+        # Exercise the database driver that is actually shipped in the runtime
+        # image. aiosqlite is test-only, so a SQLite URL would make startup log a
+        # missing-driver failure while the hard-coded health endpoints still
+        # returned 200. Settings also require the BG_ prefix; DATABASE_URL alone
+        # is ignored and silently falls back to the localhost default.
+        docker run --rm $RESTRICTIONS --entrypoint python \
+          adp-gateway:pr-smoke -c 'import asyncpg'
+
+        CONTAINER_ID=$(docker run -d $RESTRICTIONS \
+          -e AWS_EC2_METADATA_DISABLED=true \
+          -e BG_TOKEN_SECRET_KEY=gateway-smoke-not-a-production-secret \
+          -e BG_DATABASE_URL=postgresql+asyncpg://smoke:smoke@127.0.0.1:1/gateway-smoke \
+          -p 127.0.0.1:18080:8080 \
+          adp-gateway:pr-smoke)
+        cleanup() {
+          docker logs "$CONTAINER_ID" || true
+          docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true
+        }
+        trap cleanup EXIT
+
+        for attempt in $(seq 1 60); do
+          if curl -fsS http://127.0.0.1:18080/health >/tmp/gateway-health.json; then
+            break
+          fi
+          if ! docker inspect "$CONTAINER_ID" --format '{{.State.Running}}' | grep -qx true; then
+            echo "Gateway exited before readiness" >&2
+            exit 1
+          fi
+          sleep 2
+        done
+        grep -q '"status":"healthy"' /tmp/gateway-health.json
+        curl -fsS http://127.0.0.1:18080/ready -o /tmp/gateway-ready.json
+        grep -q '"status":"ready"' /tmp/gateway-ready.json
+        curl -fsS http://127.0.0.1:18080/v1/health -o /tmp/gateway-proxy-health.json
+        grep -q '"service":"proxy"' /tmp/gateway-proxy-health.json
+        test "$(docker exec "$CONTAINER_ID" id -u)" = 65532
+        docker exec "$CONTAINER_ID" sh -c \
+          'test "$(awk '\''/^CapEff:/ {print $2}'\'' /proc/1/status)" = 0000000000000000'
+        docker exec "$CONTAINER_ID" sh -c \
+          'test "$(awk '\''/^NoNewPrivs:/ {print $2}'\'' /proc/1/status)" = 1'

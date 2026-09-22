@@ -156,7 +156,8 @@ ROLE_ARN_PARAM="/adp/${ENVIRONMENT}/bedrock-routing/validation-destination/role-
 
 # Clean-room / pod plumbing (contract from lib/pod.sh).
 PROXY_PORT="${EVAL_PROXY_PORT:-9193}"
-POD_NAMESPACE="${POD_NAMESPACE:-adp-gateway}"
+GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-adp-gateway}"
+POD_NAMESPACE="${POD_NAMESPACE:-${EVAL_POD_NAMESPACE:-adp-gateway-evals}}"
 POD_IMAGE="${POD_IMAGE:-public.ecr.aws/docker/library/debian:stable-slim}"
 POD_LABEL_APP="$EVAL_USER_PREFIX"
 POD_RUN_LABEL="$EVAL_RUN_ID"
@@ -766,7 +767,7 @@ phase_0() {
 
   # --- shadow mode + platform account, read from the LIVE configmap ---------
   local cm
-  cm="$(h_kubectl get configmap bedrockgateway-config -n "$POD_NAMESPACE" \
+  cm="$(h_kubectl get configmap bedrockgateway-config -n "$GATEWAY_NAMESPACE" \
     -o jsonpath='{.data.BG_BEDROCK_ROUTING_SHADOW_MODE}{"|"}{.data.BG_PLATFORM_BEDROCK_ACCOUNT_ID}' 2>/dev/null || true)"
   local shadow platform_acct
   shadow="$(printf '%s' "$cm" | cut -d'|' -f1)"

@@ -52,6 +52,8 @@ spec:
       containers:
         - name: platform-monitor
           image: superplane-platform-monitor:latest
+          securityContext:
+            allowPrivilegeEscalation: false
           ports:
             - name: metrics
               containerPort: 9090

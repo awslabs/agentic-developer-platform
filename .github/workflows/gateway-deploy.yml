@@ -288,8 +288,16 @@ jobs:
           EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
 
-          # --- Namespace ---
-          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          # --- Namespace prerequisite ---
+          # Namespace lifecycle and Pod Security Admission labels are deliberately
+          # cluster-scoped platform operations. The gateway deploy principal has
+          # namespaced edit access only and must never create or patch namespaces.
+          # Fresh-account deployments create the namespace in deploy-all.sh before
+          # this workflow can run.
+          if ! kubectl get namespace ${{ env.NAMESPACE }} >/dev/null 2>&1; then
+            echo "::error::Namespace ${{ env.NAMESPACE }} is missing. Run the platform deployment prerequisite first."
+            exit 1
+          fi
 
           # --- Helper: read SSM param with fallback ---
           get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
@@ -606,8 +614,17 @@ jobs:
           for f in modules/gateway/k8s/*.yaml; do
             case "$(basename "$f")" in
               configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
-              *) kubectl apply -f "$f" -n ${{ env.NAMESPACE }} ;;
             esac
+            # Namespace resources are cluster-scoped even when -n is supplied.
+            # Detect by rendered Kind rather than filename so a future rename or
+            # additional namespace manifest cannot broaden this runner's scope.
+            if kubectl create --dry-run=client --validate=false -f "$f" \
+                 -o jsonpath='{.kind}{"\n"}{range .items[*]}{.kind}{"\n"}{end}' \
+                 | grep -qx Namespace; then
+              echo "Skipping platform-owned Namespace manifest: $f"
+              continue
+            fi
+            kubectl apply -f "$f" -n ${{ env.NAMESPACE }}
           done
 
       - name: Migrate schema then roll out new image
