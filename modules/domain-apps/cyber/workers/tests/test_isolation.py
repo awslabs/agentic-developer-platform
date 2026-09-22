@@ -3,11 +3,33 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isolation import IsolationError, run_isolated
+
+
+@pytest.fixture(autouse=True)
+def trusted_fixture_diagnostics(monkeypatch):
+    # Test fixtures contain no tenant data. Keep their stderr available on CI
+    # failure without exposing arbitrary sample output in production errors.
+    original = subprocess.Popen
+
+    class DiagnosticProcess(original):
+        def __init__(self, *args, **kwargs):
+            self.diagnostic_file = kwargs.get("stderr")
+            super().__init__(*args, **kwargs)
+
+        def wait(self, *args, **kwargs):
+            status = super().wait(*args, **kwargs)
+            if status and hasattr(self.diagnostic_file, "seek"):
+                self.diagnostic_file.seek(0)
+                print(self.diagnostic_file.read(8192).decode(errors="replace"))
+            return status
+
+    monkeypatch.setattr(subprocess, "Popen", DiagnosticProcess)
 
 
 def execute(tmp_path, source, *, timeout=10):
