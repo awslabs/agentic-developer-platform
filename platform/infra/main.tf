@@ -298,6 +298,7 @@ module "codebuild" {
   security_scans_bucket_arn  = module.security_scans.bucket_arn
   security_scans_bucket_name = module.security_scans.bucket_name
   account_id                 = data.aws_caller_identity.current.account_id
+  aws_region                 = var.aws_region
   ecr_registry               = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
 }
 
