@@ -555,6 +555,7 @@ class ExecutionPolicy(BaseModel):
     _shared_chain_spend_usd: Decimal | None = PrivateAttr(default=None)
     _shared_budget_decision_id: str | None = PrivateAttr(default=None)
     _shared_retry_decision_id: str | None = PrivateAttr(default=None)
+    _shared_window_decision_id: str | None = PrivateAttr(default=None)
 
     policy_id: str | None = None
     policy_hash: str | None = None

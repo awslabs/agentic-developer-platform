@@ -51,6 +51,11 @@ def verified_limits_increased(before, policy):
                 return False
             changed = True
             before["limits"][key] = current
+    if before["expires_at"] != after["expires_at"]:
+        if not policy._shared_window_decision_id or datetime.fromisoformat(before["expires_at"].replace("Z", "+00:00")) >= policy.expires_at:
+            return False
+        changed = True
+        before["expires_at"] = after["expires_at"]
     for document in (before, after):
         document.pop("policy_id", None)
         document.pop("policy_hash", None)

@@ -208,9 +208,11 @@ async def load_in_force_policy(session: AsyncSession, *, org_id: str, flow_id: s
     try:
         from .shared_budget import effective_shared_budget
         from .shared_retry import effective_shared_retry
+        from .shared_window import effective_shared_window
 
         policy = await effective_shared_budget(session, plan, ExecutionPolicy.model_validate(raw))
         policy = await effective_shared_retry(session, plan, policy)
+        policy = await effective_shared_window(session, plan, policy)
         posture = await read_enforcement(session, org_id=org_id, flow_id=flow_id)
         policy._budget_enforcement_enabled = posture.enabled
         policy._budget_accounting_incomplete = posture.accounting_incomplete

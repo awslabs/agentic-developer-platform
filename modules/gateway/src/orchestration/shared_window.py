@@ -1,0 +1,254 @@
+"""Attributed expiry renewal for an exact accepted shared-worker plan.
+
+Only the policy expiry and execution deadlines capped by that expiry may advance.
+The original wall-clock allowance, claims, attempts, scope and spend are retained.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from uuid import NAMESPACE_URL, uuid5
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from sqlalchemy import select
+
+from .continuation import digest
+from .execution_policy import ExecutionPolicy, policy_hash, stamp_policy
+from .models import OrchestrationDecision, OrchestrationExecution
+from .state import ActorKind
+
+CONTRACT = "shared-window-renewal/v1"
+KIND = "execution_window_renewed"
+
+
+class WindowRenewalError(ValueError):
+    pass
+
+
+class WindowRenewalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_plan_version: int = Field(strict=True, gt=0)
+    expected_plan_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expires_at: AwareDatetime
+    resume_expired: bool = Field(default=False, strict=True)
+    reason: str = Field(min_length=8, max_length=4000)
+    expected_snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+def apply_window(policy, limit, decision_id):
+    # Copy private financial attributes as well as the public policy. Rebuilding
+    # from model_dump would discard the already verified run/chain ceilings.
+    draft = policy.model_copy(deep=True)
+    draft.expires_at = limit
+    draft.policy_id = draft.policy_hash = draft.principal_id = None
+    effective = stamp_policy(draft, principal_id=policy.principal_id, org_id=policy.org_id)
+    effective._shared_window_decision_id = decision_id
+    return effective
+
+
+async def effective_shared_window(session, plan, policy):
+    marker = (plan.plan_document or {}).get("execution_continuation") or {}
+    if marker.get("mode") != "shared_worker_role" or marker.get("contract_version") != 1:
+        return policy
+    decision = await session.scalar(
+        select(OrchestrationDecision)
+        .where(
+            OrchestrationDecision.org_id == plan.org_id,
+            OrchestrationDecision.flow_id == plan.flow_id,
+            OrchestrationDecision.kind == KIND,
+        )
+        .order_by(OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc())
+        .limit(1)
+    )
+    if decision is None:
+        return policy
+    try:
+        data = json.loads(decision.reason or "{}")
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        limit = datetime.fromisoformat(data["expires_at"])
+        before = datetime.fromisoformat(data["before"])
+        accepted = datetime.fromisoformat(data["accepted_at"])
+        if (
+            any(t.tzinfo is None for t in (limit, before, accepted))
+            or not max(before, accepted) < limit <= accepted + timedelta(hours=24)
+            or (accepted >= before and data.get("resume_expired") is not True)
+        ):
+            raise ValueError("invalid renewal window")
+    except (ValueError, TypeError, KeyError) as error:
+        raise WindowRenewalError("window_receipt_unverifiable") from error
+    if type(data.get("plan_version")) is not int or data["plan_version"] > plan.version:
+        raise WindowRenewalError("window_receipt_unverifiable")
+    if data["plan_version"] < plan.version:
+        return policy  # A later graph acceptance requires its own approval.
+    original = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
+    if (
+        decision.actor_kind != "human"
+        or decision.actor_role != "platform_admin"
+        or not decision.actor_id
+        or decision.actor_id != policy.principal_id
+        or data.get("contract") != CONTRACT
+        or data.get("org_id") != plan.org_id
+        or data.get("flow_id") != plan.flow_id
+        or data.get("plan_hash") != plan.plan_hash
+        or plan.plan_hash != digest(plan.plan_document)
+        or data.get("original_policy_hash") != original.policy_hash
+        or original.policy_hash != policy_hash(original)
+        or policy.policy_hash != policy_hash(policy)
+        or data.get("principal_id") != policy.principal_id
+    ):
+        raise WindowRenewalError("window_receipt_unverifiable")
+    if limit <= policy.expires_at:
+        raise WindowRenewalError("window_receipt_reduces_limit")
+    return apply_window(policy, limit, decision.id)
+
+
+async def prepare_renewal(session, *, flow_id, actor, request):
+    from .shared_amendment import current_plan
+    from .shared_policy import shared_inputs
+
+    if actor.actor_kind != ActorKind.HUMAN or actor.actor_role != "platform_admin":
+        raise WindowRenewalError("human_platform_admin_required")
+    flow, plan = await current_plan(session, flow_id=flow_id, actor=actor)
+    if plan.version != request.expected_plan_version or plan.plan_hash != request.expected_plan_hash:
+        raise WindowRenewalError("accepted_plan_changed")
+    if plan.plan_hash != digest(plan.plan_document):
+        raise WindowRenewalError("accepted_document_hash_changed")
+    inputs, _ = await shared_inputs(session, org_id=actor.org_id, flow_id=flow_id)
+    policy = inputs.policy
+    now = datetime.now(UTC)
+    if policy.expires_at <= now and not request.resume_expired:
+        raise WindowRenewalError("expired_policy_requires_explicit_reacceptance")
+    if not max(now, policy.expires_at) < request.expires_at <= now + timedelta(hours=24):
+        raise WindowRenewalError("renewal_must_extend_within_24_hours")
+    if actor.actor_id != policy.principal_id:
+        raise WindowRenewalError("original_principal_required")
+    if flow.state not in {"pending", "running"}:
+        raise WindowRenewalError("flow_not_running")
+    deadlines = await capped_deadlines(session, flow, plan, policy.expires_at, request.expires_at, policy.limits.max_wall_clock_seconds)
+    document = {
+        "contract": CONTRACT,
+        "flow_id": flow.id,
+        "org_id": flow.org_id,
+        "plan_version": plan.version,
+        "plan_hash": plan.plan_hash,
+        "original_policy_hash": plan.plan_document["execution_policy"]["policy_hash"],
+        "principal_id": policy.principal_id,
+        "previous_decision_id": policy._shared_window_decision_id,
+        "before": policy.expires_at.isoformat(),
+        "resume_expired": request.resume_expired,
+        "expires_at": request.expires_at.isoformat(),
+        "unchanged_limits": policy.limits.model_dump(mode="json"),
+        "deadlines": deadlines,
+    }
+    return document, {"snapshot": digest(document), **document, "attempts_preserved": True, "budget_meter_unchanged": True}
+
+
+async def preview_window_renewal(session, *, flow_id, actor, request):
+    _, result = await prepare_renewal(session, flow_id=flow_id, actor=actor, request=request)
+    return result
+
+
+async def accept_window_renewal(session, *, flow_id, actor, request):
+    from .shared_amendment import current_plan
+
+    if actor.actor_kind != ActorKind.HUMAN or actor.actor_role != "platform_admin":
+        raise WindowRenewalError("human_platform_admin_required")
+    if request.expected_snapshot is None:
+        raise WindowRenewalError("preview_snapshot_required")
+    async with session.begin_nested():
+        _, plan = await current_plan(session, flow_id=flow_id, actor=actor, lock=True)
+        request_data = {"org_id": actor.org_id, "actor_id": actor.actor_id, "flow_id": flow_id, **request.model_dump(mode="json")}
+        identity = str(uuid5(NAMESPACE_URL, CONTRACT + ":" + digest(request_data)))
+        existing = await session.get(OrchestrationDecision, identity)
+        if existing is not None:
+            if existing.org_id != actor.org_id or existing.actor_id != actor.actor_id or existing.kind != KIND:
+                raise WindowRenewalError("window_receipt_conflict")
+            data = json.loads(existing.reason)
+            if data["plan_version"] != plan.version or data["plan_hash"] != plan.plan_hash:
+                raise WindowRenewalError("accepted_plan_changed")
+            return {"accepted": True, "created": False, "decision_id": identity, **data}
+        document, result = await prepare_renewal(session, flow_id=flow_id, actor=actor, request=request)
+        if result["snapshot"] != request.expected_snapshot:
+            raise WindowRenewalError("window_preview_changed")
+        await advance_deadlines(session, document)
+        accepted_at = datetime.now(UTC)
+        if accepted_at >= datetime.fromisoformat(document["before"]) and not request.resume_expired:
+            raise WindowRenewalError("expired_policy_requires_explicit_reacceptance")
+        if accepted_at >= request.expires_at:
+            raise WindowRenewalError("renewal_already_expired")
+        session.add(
+            OrchestrationDecision(
+                id=identity,
+                org_id=actor.org_id,
+                flow_id=flow_id,
+                kind=KIND,
+                actor_id=actor.actor_id,
+                actor_role=actor.actor_role,
+                actor_kind="human",
+                reason=json.dumps({**document, "accepted_at": accepted_at.isoformat(), "snapshot": result["snapshot"], "reason": request.reason}),
+            )
+        )
+        await session.flush()
+        return {"accepted": True, "created": True, "decision_id": identity, **result}
+
+
+def aware(moment):
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+
+
+async def capped_deadlines(session, flow, plan, before, after, max_seconds):
+    rows = list(
+        await session.scalars(
+            select(OrchestrationExecution)
+            .where(
+                OrchestrationExecution.org_id == flow.org_id,
+                OrchestrationExecution.flow_id == flow.id,
+                OrchestrationExecution.accepted_plan_version == plan.version,
+                OrchestrationExecution.status.not_in({"concluded", "superseded"}),
+                OrchestrationExecution.deadline_at == before,
+            )
+            .order_by(OrchestrationExecution.id)
+            .limit(1001)
+        )
+    )
+    if len(rows) > 1000:
+        raise WindowRenewalError("renewal_history_limit")
+    result = []
+    for row in rows:
+        deadline = min(after, aware(row.created_at) + timedelta(seconds=max_seconds))
+        if deadline > before:
+            result.append({"execution_id": row.id, "before": before.isoformat(), "after": deadline.isoformat()})
+    return result
+
+
+async def advance_deadlines(session, document):
+    # NOWAIT prevents lock inversion with dispatch/settlement; callers retry the
+    # unchanged preview after concurrent work finishes. No worker is restarted.
+    from sqlalchemy.exc import DBAPIError
+
+    for expected in document["deadlines"]:
+        try:
+            row = await session.scalar(
+                select(OrchestrationExecution)
+                .where(
+                    OrchestrationExecution.id == expected["execution_id"],
+                    OrchestrationExecution.org_id == document.get("org_id"),
+                )
+                .execution_options(populate_existing=True)
+                .with_for_update(nowait=True)
+            )
+        except DBAPIError as error:
+            raise WindowRenewalError("execution_update_in_progress") from error
+        if (
+            row is None
+            or row.flow_id != document["flow_id"]
+            or row.accepted_plan_version != document["plan_version"]
+            or row.status in {"concluded", "superseded"}
+            or row.deadline_at is None
+            or aware(row.deadline_at).isoformat() != expected["before"]
+        ):
+            raise WindowRenewalError("execution_deadline_changed")
+        row.deadline_at = datetime.fromisoformat(expected["after"])
+        row.revision += 1
