@@ -105,8 +105,9 @@ def _deny_statement(path: Path) -> str:
         f"no Sid {DENY_SID!r} in {path.name}: the agent role can still read "
         "every tenant's vault secrets (#4130 / #4073 finding #4)"
     )
-    end = hcl.find("\n      },", start)
-    return hcl[start:] if end == -1 else hcl[start:end]
+    end = re.search(r"\n {6}\},?(?=\n)", hcl[start:])
+    assert end is not None, "Cannot find the end of the vault deny statement"
+    return hcl[start:start + end.start()]
 
 
 class TestScaledjobVaultDeny:

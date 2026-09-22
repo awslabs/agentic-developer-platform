@@ -95,7 +95,7 @@ resource "aws_codebuild_project" "agent_context_images" {
 
   source {
     type      = "S3"
-    location  = "${var.state_bucket}/codebuild/adp-source.zip"
+    location  = "${var.state_bucket}/codebuild/src/${var.name_prefix}-${each.key}-build/explicit-source-required.zip"
     buildspec = "codebuild/bs-agent-context-image.yml"
   }
 

@@ -113,6 +113,7 @@ provider "helm" {
 # =============================================================================
 
 module "runner_iam" {
+  transport_secret_arns = var.runner_transport_secret_arns
   source = "./modules/runner-iam"
 
   environment       = var.environment
@@ -203,18 +204,7 @@ resource "aws_eks_access_entry" "runner" {
 # resources in runner-rbac.tf.
 # =============================================================================
 
-resource "aws_eks_access_policy_association" "runner_edit" {
-  cluster_name  = local.cluster_name
-  principal_arn = module.runner_iam.runner_role_arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
-
-  access_scope {
-    type       = "namespace"
-    namespaces = ["adp-gateway", "adp-gateway-evals", "adp-gateway-agents", "adp-agents", "arc-systems", "arc-runners", "agent-context", "keda"]
-  }
-
-  depends_on = [aws_eks_access_entry.runner]
-}
+# Deployment access is owned by platform/automation-infra.
 
 # =============================================================================
 # Public CFN Templates Bucket

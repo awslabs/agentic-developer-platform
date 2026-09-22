@@ -387,7 +387,7 @@ jobs:
           STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
           # Separate revisions, concurrent jobs and rerun attempts must never
           # replace source while another CodeBuild is waiting to download it.
-          SOURCE_KEY="codebuild/src/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
+          SOURCE_KEY="codebuild/src/adp-dev-gateway-smoke/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
           ARCHIVE="${RUNNER_TEMP}/gateway-smoke-source.zip"
           ./platform/scripts/zip-source.sh . "$ARCHIVE"
           aws s3 cp "$ARCHIVE" "s3://${STATE_BUCKET}/${SOURCE_KEY}"
@@ -400,7 +400,7 @@ jobs:
           set -euo pipefail
           test -n "$SMOKE_SOURCE_LOCATION"
           BUILD_ID=$(aws codebuild start-build \
-            --project-name adp-dev-gateway-build \
+            --project-name adp-dev-gateway-smoke \
             --source-location-override "$SMOKE_SOURCE_LOCATION" \
             --buildspec-override codebuild/bs-gateway-smoke.yml \
             --query 'build.id' --output text)

@@ -64,12 +64,23 @@ jobs:
   context:
     name: Authenticate Scan Context
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -82,7 +93,7 @@ jobs:
           CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
           CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
           SCAN_EXPECTED_ACCOUNT: ${{ inputs.expected_account_id }}
-          SCAN_EXPECTED_ROLE: adp-dev-agent-runner-role
+          SCAN_EXPECTED_ROLE: adp-dev-trusted-scan
           SCAN_INPUTS_JSON: ${{ format('{{"expected_account_id":"{0}","region":"{1}","scan_scope":"{2}"}}', inputs.expected_account_id, inputs.region, inputs.scan_scope) }}
         run: |
           set -euo pipefail
@@ -104,15 +115,26 @@ jobs:
   discover-dockerfiles:
     name: Discover Dockerfiles
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     needs: [context]
     outputs:
       matrix: ${{ steps.find.outputs.matrix }}
       image_count: ${{ steps.find.outputs.image_count }}
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -123,7 +145,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -148,11 +170,22 @@ jobs:
     needs: [context]
     name: Checkov (IaC)
     runs-on: arc-runner-org
+    environment: adp-scan-dev
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -163,7 +196,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -200,11 +233,22 @@ jobs:
     needs: [context]
     name: Semgrep (SAST)
     runs-on: arc-runner-org
+    environment: adp-scan-dev
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -215,7 +259,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -276,13 +320,24 @@ jobs:
     needs: [context]
     name: detect-secrets
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     # No continue-on-error: the validity guards below are the whole point. A
     # scanner that cannot produce usable output must not read as a clean pass.
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -293,7 +348,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -414,13 +469,24 @@ jobs:
   grype:
     name: Grype (CodeBuild)
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     needs: [context, discover-dockerfiles]
     timeout-minutes: 105
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -431,7 +497,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -487,11 +553,22 @@ jobs:
     needs: [context]
     name: Bandit (Python)
     runs-on: arc-runner-org
+    environment: adp-scan-dev
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -502,7 +579,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -538,13 +615,24 @@ jobs:
     needs: [context]
     name: cfn-nag (CloudFormation)
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     # No continue-on-error: a parse abort must surface. All three templates
     # aborted unscanned on 2026-09-21 and the job still reported success.
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -555,7 +643,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -665,17 +753,28 @@ jobs:
     needs: [context]
     name: npm audit (${{ matrix.package_dir }})
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     strategy:
       fail-fast: false
       matrix:
         package_dir:
           - modules/gateway/frontend
           - modules/agent-factory/agent
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -686,7 +785,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -734,13 +833,24 @@ jobs:
   syft:
     name: Syft (CodeBuild)
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     needs: [context, discover-dockerfiles]
     timeout-minutes: 105
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -751,7 +861,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -803,15 +913,26 @@ jobs:
   cleanup:
     name: Cleanup Scan Children
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     if: always() && needs.context.result == 'success'
     needs: [context, grype, syft]
     outputs:
       cleanup_complete: ${{ steps.cleanup.outputs.cleanup_complete }}
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -822,7 +943,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -870,6 +991,7 @@ jobs:
   summary:
     name: Security Summary
     runs-on: arc-runner-org
+    environment: adp-scan-dev
     if: always() && inputs.scan_scope == 'all' && needs.context.result == 'success'
     needs:
       - context
@@ -882,11 +1004,21 @@ jobs:
       - npm-audit
       - syft
       - cleanup
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           fetch-depth: 1
+
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Verify checked-out scan source
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"
@@ -897,7 +1029,7 @@ jobs:
           ARN=$(aws sts get-caller-identity --query Arn --output text)
           test "$ACCOUNT" = "$EXPECTED_ACCOUNT_ID"
           case "$ARN" in
-            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-agent-runner-role/"*) ;;
+            "arn:aws:sts::${EXPECTED_ACCOUNT_ID}:assumed-role/adp-dev-trusted-scan/"*) ;;
             *) echo "::error::Scan job is not using the approved runner role"; exit 1 ;;
           esac
 
@@ -967,7 +1099,7 @@ jobs:
           CONTEXT_CORRELATION: ${{ inputs.adp_correlation }}
           CONTEXT_REPOSITORY_ID: ${{ github.repository_id }}
           SCAN_EXPECTED_ACCOUNT: ${{ inputs.expected_account_id }}
-          SCAN_EXPECTED_ROLE: adp-dev-agent-runner-role
+          SCAN_EXPECTED_ROLE: adp-dev-trusted-scan
           SCAN_INPUTS_JSON: ${{ format('{{"expected_account_id":"{0}","region":"{1}","scan_scope":"{2}"}}', inputs.expected_account_id, inputs.region, inputs.scan_scope) }}
         run: |
           CLEANUP_COMPLETE=$(python3 -c 'import json; print(str(json.load(open("scanner-evidence/cleanup.json"))["cleanup_complete"]).lower())')

@@ -82,3 +82,9 @@ locals {
   public_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]
   private_subnets = ["10.0.11.0/24", "10.0.12.0/24"]
 }
+
+variable "transport_secret_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact legacy engine transport secret ARNs; validated by the shared runtime policy."
+}

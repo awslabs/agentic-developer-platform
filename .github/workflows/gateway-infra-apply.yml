@@ -51,8 +51,13 @@ env:
 jobs:
   apply:
     name: Terraform Apply
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main'
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
       pull-requests: read
 
@@ -60,6 +65,19 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -72,27 +90,10 @@ jobs:
 
       - name: Install required CLI tools
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v terraform >/dev/null 2>&1; then
-            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends terraform
-          fi
-          aws --version
-          terraform version | head -1
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       - name: Pre-create OAuth stub secret (idempotent)
         run: |
           SECRET_ID="adp/${{ env.TF_VAR_environment || 'dev' }}/cognito/github-oauth-credentials"
@@ -219,10 +220,7 @@ jobs:
 
           # --- Fix 3: Delete stale RDS bootstrap K8s job if stuck ---
           # Install kubectl if needed
-          if ! command -v kubectl >/dev/null 2>&1; then
-            curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-            chmod +x kubectl && sudo mv kubectl /usr/local/bin/
-          fi
+          command -v kubectl >/dev/null
           aws eks update-kubeconfig --name adp-dev-eks --region us-east-1 2>/dev/null || true
           # Find and delete any stuck rds-bootstrap jobs (namespace: bedrockgw,
           # previously adp-gateway — check both for migration period)
@@ -236,7 +234,6 @@ jobs:
             fi
           done
           echo "Stale RDS bootstrap job check complete."
-
       # Pre-resolve the EKS Ingress ALB BEFORE terraform plan. On a fresh deploy the
       # ALB doesn't exist yet (returns empty); on subsequent runs the SSM cache hit
       # returns the real ARN. Passing the resolved values to plan + apply ensures
@@ -525,6 +522,7 @@ jobs:
       - name: Destroy-safety gate
         if: steps.plan.outputs.detailed_exitcode == '2'
         env:
+          ADP_INPUT_6B856C20FF: ${{ inputs.confirm_destructive_apply }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
@@ -543,7 +541,7 @@ jobs:
 
           # workflow_dispatch: require explicit operator confirmation.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ inputs.confirm_destructive_apply }}" = "yes" ]; then
+            if [ "${ADP_INPUT_6B856C20FF}" = "yes" ]; then
               echo "Operator-confirmed destructive apply (confirm_destructive_apply=yes). Proceeding."
               exit 0
             fi
@@ -571,7 +569,6 @@ jobs:
             echo "::error::Add the label to PR #$PR_NUMBER and re-run, or trigger manually with confirm_destructive_apply=yes."
             exit 1
           fi
-
       - name: Terraform Apply
         id: apply
         working-directory: ${{ env.TF_WORKING_DIR }}

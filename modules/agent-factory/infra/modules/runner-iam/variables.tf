@@ -56,3 +56,9 @@ variable "security_scans_bucket_arn" {
   type        = string
   default     = ""
 }
+
+variable "transport_secret_arns" {
+  description = "Exact legacy transport secret ARNs preserved during the separately authorized engine rollout. Validated by runner-runtime-policy."
+  type        = list(string)
+  default     = []
+}

@@ -50,12 +50,30 @@ env:
 jobs:
   build:
     name: Build Custom Runner Image
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main'
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-build-${{ inputs.environment || 'dev' }}
     permissions:
+      id-token: write
       contents: read
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted build identity
+        uses: ./.github/actions/trusted-build
+        with:
+          role_arn: ${{ vars.ADP_BUILD_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -69,19 +87,10 @@ jobs:
       # Bootstrap tools until the new runner image ships everywhere.
       - name: Install zip + AWS CLI (bootstrap)
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          aws --version
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       - name: Verify Terraform-managed CodeBuild project
         run: |
           set -euo pipefail

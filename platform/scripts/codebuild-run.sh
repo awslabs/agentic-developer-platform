@@ -39,7 +39,8 @@ STATE_BUCKET="${STATE_BUCKET:?STATE_BUCKET must be set}"
 # Build a unique source key
 SOURCE_SHA="${SOURCE_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")}"
 UNIQUE_ID="$(date +%s)-$$"
-SOURCE_KEY="codebuild/src/${SOURCE_SHA}-${UNIQUE_ID}.zip"
+[[ "$PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+SOURCE_KEY="codebuild/src/${PROJECT_NAME}/${SOURCE_SHA}-${UNIQUE_ID}.zip"
 
 POLL_INTERVAL="${POLL_INTERVAL:-15}"
 

@@ -178,25 +178,12 @@ run "the_runner_cannot_read_another_tenants_vault" {
   }
 
   assert {
-    condition = toset(flatten([
-      for statement in jsondecode(aws_iam_policy.runner_services.policy).Statement :
-      flatten([statement.Resource])
-      if statement.Sid == "SecretsManagerOps"
-      ])) == toset([
-      "arn:aws:secretsmanager:eu-west-1:123456789012:secret:bedrockgw-*",
-      "arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/test/*",
+    condition = alltrue([for statement in jsondecode(aws_iam_policy.runner_services.policy).Statement :
+      alltrue([for action in statement.Action : !startswith(action, "secretsmanager:")])
     ])
-    error_message = "The runner secret grant is not limited to its account, region and environment-owned prefixes."
+    error_message = "Default runner role must carry no ambient secret access."
   }
 
-  assert {
-    condition = !contains(flatten([
-      for statement in jsondecode(aws_iam_policy.runner_services.policy).Statement :
-      flatten([statement.Action])
-      if statement.Sid == "SecretsManagerOps"
-    ]), "secretsmanager:ListSecrets")
-    error_message = "The runner can still enumerate every tenant secret because ListSecrets cannot be resource-scoped."
-  }
 }
 
 run "the_active_runner_cannot_mint_or_assume_a_broader_identity" {

@@ -2,7 +2,7 @@
 # limit. Its actions must also be allowed by runner_boundary in main.tf.
 resource "aws_iam_role_policy" "bedrock_invocation_logging" {
   name = "bedrock-invocation-logging-deploy"
-  role = aws_iam_role.runner.id
+  role = aws_iam_role.deployment.id
 
   policy = jsonencode({
     Version = "2012-10-17"

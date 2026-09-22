@@ -125,7 +125,7 @@ run "no_build_role_can_escalate_its_own_privileges" {
     condition = alltrue(flatten([
       for name, policy in aws_iam_role_policy.project : [
         for statement in jsondecode(policy.policy).Statement : [
-          for action in flatten([statement.Action]) :
+          for action in try(flatten([statement.Action]), []) :
           !can(regex("^(iam:(Create|Attach|Put|Update|Delete|Pass|Add)|sts:AssumeRole)", action))
           if statement.Effect == "Allow"
         ]
@@ -147,7 +147,7 @@ run "no_build_role_can_escalate_its_own_privileges" {
         "sts:AssumeRole",
         ] : contains(flatten([
           for statement in jsondecode(aws_iam_policy.codebuild_boundary.policy).Statement :
-          flatten([statement.Action])
+          try(flatten([statement.Action]), [])
           if statement.Effect == "Deny"
       ]), action)
     ])
@@ -205,7 +205,7 @@ run "no_build_role_reaches_another_projects_resources" {
   assert {
     condition = contains(flatten([
       for statement in jsondecode(aws_iam_policy.codebuild_boundary.policy).Statement :
-      flatten([statement.Action])
+      try(flatten([statement.Action]), [])
       if statement.Effect == "Deny" && statement.Sid == "DenyBuildInputTampering"
     ]), "s3:PutObject")
     error_message = "The boundary does not deny builds writing to the buildspec source prefix."
@@ -256,7 +256,7 @@ run "no_build_role_reaches_another_projects_resources" {
       for name, policy in aws_iam_role_policy.project :
       alltrue([
         for statement in jsondecode(policy.policy).Statement :
-        toset(flatten([statement.Action])) == toset(["ecr:CreateRepository"])
+        toset(try(flatten([statement.Action]), [])) == toset(["ecr:CreateRepository"])
         if statement.Sid == "EcrRepositoryBootstrap"
       ])
     ])
@@ -310,5 +310,25 @@ run "host_container_privilege_is_an_explicit_reviewed_allow_list" {
       project.environment[0].privileged_mode == local.projects[name].privileged
     ])
     error_message = "A CodeBuild project's privileged_mode does not match its declared contract."
+  }
+}
+
+run "smoke_source_and_service_identity_are_project_bound" {
+  command = plan
+  assert {
+    condition = alltrue([for name, role in aws_iam_role.project :
+      jsondecode(role.assume_role_policy).Statement[0].Condition.StringEquals["aws:SourceArn"] == "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-${name}"
+    ])
+    error_message = "A CodeBuild identity can be assumed by another project."
+  }
+  assert {
+    condition = alltrue([for name, policy in aws_iam_role_policy.project :
+      one([for s in jsondecode(policy.policy).Statement : s if s.Sid == "BuildSourceRead"]).Resource == "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-${name}/*"
+    ])
+    error_message = "A project can read another project's source archive."
+  }
+  assert {
+    condition     = !can(regex("ecr:|kms:|secretsmanager:", aws_iam_role_policy.project["gateway-smoke"].policy))
+    error_message = "The arbitrary-source PR smoke project can publish or access credential/encryption services."
   }
 }

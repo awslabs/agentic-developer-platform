@@ -11,6 +11,10 @@ if [ $# -lt 1 ]; then
 fi
 
 REPO_NAME=$1
+[[ "$REPO_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,45}$ ]] || {
+    echo "Invalid repository name for runner identity" >&2
+    exit 1
+}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 # Lowercase and replace underscores for Kubernetes resources
@@ -93,137 +97,21 @@ fi
 # Step 3: Create/update IAM policy for this repo
 echo "Step 3: Creating IAM policy..."
 
-# Per-repository runner policy (A18, #5674).
-#
-# What this policy deliberately does NOT contain, and why:
-#
-#   iam:CreateRole / CreatePolicy / AttachRolePolicy / PutRolePolicy / PassRole
-#     A runner holding these does not need to be granted administrator access —
-#     it can create itself a role, attach AdministratorAccess to it, and use it.
-#     Workflow jobs execute instructions that originate in text written outside
-#     the organisation, so this converted any prompt-injected or compromised job
-#     into account takeover. The permissions boundary now DENIES this action set
-#     outright (see infrastructure/iam.tf), so re-adding it here would not revive
-#     the capability — but it is removed here too, so the intent is unambiguous.
-#
-#   sts:AssumeRole on "*"
-#     Let a runner become any role in the account that trusts it, including the
-#     shared runner role that could read the whole adp/ secret prefix. Removed.
-#     A repository needing a specific role must have that single role ARN added
-#     below, reviewed as a named exception.
-#
-#   s3:* / ec2:* / lambda:* / dynamodb:* / cloudformation:* / rds:* / ecs:* and
-#   the rest of the service wildcards, all on Resource "*"
-#     Whole services on every resource in a shared account: one repository's
-#     runner could read every other tenant's buckets and tables. Replaced by the
-#     concrete resources a repository's own jobs use, all carrying this
-#     repository's name.
-#
-# Scope model: a per-repository runner reaches resources tagged or named for ITS
-# repository, and nothing belonging to another. The repo-scoped prefix below is
-# the mechanism — a runner for repo A cannot name repo B's resources.
-#
-# Extending this for a real workload is expected: add the specific ARNs that
-# repository needs. Adding a service wildcard or an iam:/sts: action back is not
-# an extension, it is a reintroduction of the finding this closed, and the
-# boundary will refuse it.
-RUNNER_POLICY=$(cat <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "BedrockModelInvoke",
-      "Effect": "Allow",
-      "Action": [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream"
-      ],
-      "Resource": [
-        "arn:aws:bedrock:*::foundation-model/anthropic.*",
-        "arn:aws:bedrock:*:${AWS_ACCOUNT_ID}:inference-profile/*"
-      ]
-    },
-    {
-      "Sid": "OwnRepositorySecrets",
-      "Effect": "Allow",
-      "Action": [
-        "secretsmanager:GetSecretValue",
-        "secretsmanager:DescribeSecret"
-      ],
-      "Resource": [
-        "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:github-runner/${REPO_NAME_LOWER}/*",
-        "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:adp/runner/${REPO_NAME_LOWER}/*"
-      ]
-    },
-    {
-      "Sid": "OwnRepositoryParameters",
-      "Effect": "Allow",
-      "Action": [
-        "ssm:GetParameter",
-        "ssm:GetParameters",
-        "ssm:GetParametersByPath"
-      ],
-      "Resource": "arn:aws:ssm:${AWS_REGION}:${AWS_ACCOUNT_ID}:parameter/adp/runner/${REPO_NAME_LOWER}/*"
-    },
-    {
-      "Sid": "OwnRepositoryArtifacts",
-      "Effect": "Allow",
-      "Action": [
-        "s3:AbortMultipartUpload",
-        "s3:DeleteObject",
-        "s3:GetObject",
-        "s3:GetObjectVersion",
-        "s3:ListBucket",
-        "s3:PutObject"
-      ],
-      "Resource": [
-        "arn:aws:s3:::adp-runner-artifacts-${AWS_ACCOUNT_ID}",
-        "arn:aws:s3:::adp-runner-artifacts-${AWS_ACCOUNT_ID}/${REPO_NAME_LOWER}/*"
-      ]
-    },
-    {
-      "Sid": "OwnRepositoryEcr",
-      "Effect": "Allow",
-      "Action": [
-        "ecr:BatchCheckLayerAvailability",
-        "ecr:BatchGetImage",
-        "ecr:CompleteLayerUpload",
-        "ecr:DescribeImages",
-        "ecr:DescribeRepositories",
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:InitiateLayerUpload",
-        "ecr:ListImages",
-        "ecr:PutImage",
-        "ecr:UploadLayerPart"
-      ],
-      "Resource": "arn:aws:ecr:${AWS_REGION}:${AWS_ACCOUNT_ID}:repository/${REPO_NAME_LOWER}/*"
-    },
-    {
-      "Sid": "EcrAuth",
-      "Effect": "Allow",
-      "Action": ["ecr:GetAuthorizationToken"],
-      "Resource": "*"
-    },
-    {
-      "Sid": "OwnRepositoryLogs",
-      "Effect": "Allow",
-      "Action": [
-        "logs:CreateLogStream",
-        "logs:DescribeLogStreams",
-        "logs:PutLogEvents"
-      ],
-      "Resource": "arn:aws:logs:${AWS_REGION}:${AWS_ACCOUNT_ID}:log-group:/adp/runner/${REPO_NAME_LOWER}:*"
-    },
-    {
-      "Sid": "CallerIdentity",
-      "Effect": "Allow",
-      "Action": ["sts:GetCallerIdentity"],
-      "Resource": "*"
-    }
-  ]
-}
-EOF
-)
+# Reuse the actual Terraform runtime inventory and the same boundary. Publishing
+# builds and infrastructure operations use protected GitHub OIDC identities.
+# Only transport secrets registered for this repository survive the filter.
+RUNNER_POLICY=$(terraform output -json runner_runtime_policy | jq --arg repo "$REPO_NAME_LOWER" '
+  .Statement |= map(
+    if .Sid == "LegacyEngineTransport" then
+      .Resource |= map(select(contains(":secret:github-runner/" + $repo + "/"))) |
+      select(.Resource | length > 0)
+    else . end
+  )')
+
+# Existing onboarded roles also need the reviewed boundary on an authorized
+# rerun. Merely updating an inline policy would leave an old role unbounded.
+aws iam put-role-permissions-boundary \
+    --role-name "$ROLE_NAME" --permissions-boundary "$BOUNDARY_ARN"
 
 # Put inline policy on the role
 aws iam put-role-policy \
