@@ -923,7 +923,21 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     CHAT_LOGGING_ENABLED="false"
     warn "Chat-logs bucket not found in SSM — chat logging disabled (set /adp/$ENVIRONMENT/gateway/chat-logs-bucket to enable)"
   fi
-  CHAT_LOGGING_SCRUB_LEVEL="basic"
+  # #5672: chat-transcript redaction level. This was the literal "basic", which
+  # silently overrode the application's own default of "standard" in every
+  # environment — so customer content pasted into a prompt (names, emails, phone
+  # numbers, identity numbers, addresses, payment details) was stored in S3
+  # exactly as typed.
+  #
+  # Now per-environment and fail-closed: unset means "standard", the strongest
+  # level. An environment that genuinely needs something weaker sets the
+  # parameter, which leaves a review trail, rather than the choice being a
+  # constant buried in this script. The app also resolves an unrecognised value
+  # up to "standard" (see modules/gateway/src/chat_logging/config.py).
+  CHAT_LOGGING_SCRUB_LEVEL=$(_get_ssm "/adp/$ENVIRONMENT/gateway/chat-logging-scrub-level" "standard")
+  if [ -z "$CHAT_LOGGING_SCRUB_LEVEL" ] || [ "$CHAT_LOGGING_SCRUB_LEVEL" = "None" ]; then
+    CHAT_LOGGING_SCRUB_LEVEL="standard"
+  fi
 
   # #3182/#3477: Credential binding enforcement. Default "true" (safe-by-default
   # for fresh accounts). Existing deployments pin via SSM param; dev stays in

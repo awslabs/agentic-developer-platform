@@ -62,6 +62,7 @@ resource "aws_cloudwatch_metric_alarm" "rate_limit_alarm" {
 #     (#1619), so deny-by-omission granted nothing. Terraform owns retention; do
 #     not reintroduce a retention write in worker code.
 resource "aws_cloudwatch_log_group" "agent_bootstrap" {
+  #checkov:skip=CKV_AWS_338: Hosted-agent bootstrap logs use an explicitly bounded 14-day operational retention.
   name              = "/adp/${var.environment}/agent-factory/bootstrap"
   retention_in_days = 14
   kms_key_id        = aws_kms_key.cloudwatch.arn
@@ -105,6 +106,7 @@ resource "aws_cloudwatch_log_group" "agent_bootstrap" {
 # statement therefore does not grant CreateLogGroup (see scaledjob-iam.tf), so
 # no import is required and repeated applies are a clean no-op.
 resource "aws_cloudwatch_log_group" "agent_logs" {
+  #checkov:skip=CKV_AWS_338: Hosted-agent runtime logs use an explicitly bounded 14-day operational retention.
   name              = "/adp/${var.environment}/agent-factory/agent"
   retention_in_days = 14
   kms_key_id        = aws_kms_key.cloudwatch.arn

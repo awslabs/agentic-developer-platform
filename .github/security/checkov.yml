@@ -48,10 +48,6 @@ skip-check:
   # ─── AWS: CloudWatch / Lambda ──────────────────────────────────────────────
   # NOTE: CKV_AWS_158 (CloudWatch log KMS encryption) is now FIXED in Terraform
   # (Band B #2380), not skipped — removed from this list.
-  # CloudWatch log retention ≥365 days — dev environment uses 7-30d retention
-  # as intentional cost optimization; logs are ephemeral debugging data, not
-  # audit records. Re-evaluate per-group when promoting to prod.
-  - CKV_AWS_338
   # Lambda code signing — unnecessary friction in dev iteration cycle;
   # implement for prod to verify deployment artifact integrity
   - CKV_AWS_272

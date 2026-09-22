@@ -332,6 +332,23 @@ jobs:
           CHAT_LOGS_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-logs-bucket")
           FRONTEND_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/frontend-bucket")
 
+          # #5672: chat-transcript redaction level. This was the literal "basic"
+          # substituted below, which silently overrode the application's own default
+          # of "standard" in EVERY environment — so customer content pasted into a
+          # prompt (names, emails, phone numbers, identity numbers, addresses,
+          # payment details) was stored in S3 exactly as typed.
+          #
+          # Now per-environment and fail-closed: unset means "standard", the
+          # strongest level. An environment that genuinely needs something weaker
+          # sets the parameter, which leaves a review trail, instead of the choice
+          # being a constant buried in a deploy pipeline. The app also resolves an
+          # unrecognised value up to "standard" (see src/chat_logging/config.py), so
+          # a typo here cannot downgrade redaction either.
+          CHAT_LOGGING_SCRUB_LEVEL=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-logging-scrub-level" "standard")
+          if [ -z "$CHAT_LOGGING_SCRUB_LEVEL" ] || [ "$CHAT_LOGGING_SCRUB_LEVEL" = "None" ]; then
+            CHAT_LOGGING_SCRUB_LEVEL="standard"
+          fi
+
           # Fail-fast on missing required SSM params — don't silently render a broken ConfigMap.
           # If any of these are empty, gateway-infra-apply hasn't been run yet.
           # #4342: REDIS_IAM_USERNAME / REDIS_CACHE_NAME are fail-fast on purpose.
@@ -470,7 +487,7 @@ jobs:
               -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
               -e "s|__CHAT_LOGGING_ENABLED__|$([ -n "$CHAT_LOGS_BUCKET" ] && echo true || echo false)|g" \
               -e "s|__CHAT_LOGGING_BUCKET__|${CHAT_LOGS_BUCKET}|g" \
-              -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|basic|g" \
+              -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|${CHAT_LOGGING_SCRUB_LEVEL}|g" \
               -e "s|__TRUST_APIGW_HEADERS__|true|g" \
               -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \

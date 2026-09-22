@@ -254,6 +254,7 @@ moved {
 }
 
 resource "aws_cloudwatch_log_group" "ingest" {
+  #checkov:skip=CKV_AWS_338: Gateway ingest Lambda logs use an explicitly bounded 30-day operational retention.
   name              = "/aws/lambda/${var.name_prefix}-gateway-ingest"
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn
@@ -419,6 +420,7 @@ resource "aws_iam_role_policy" "response_secrets" {
 }
 
 resource "aws_cloudwatch_log_group" "response" {
+  #checkov:skip=CKV_AWS_338: Gateway response Lambda logs use an explicitly bounded 30-day operational retention.
   name              = "/aws/lambda/${var.name_prefix}-gateway-response"
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn

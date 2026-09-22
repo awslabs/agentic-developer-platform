@@ -213,6 +213,7 @@ resource "aws_db_instance" "read_replica" {
 
 # CloudWatch log group for RDS logs
 resource "aws_cloudwatch_log_group" "rds_log_group" {
+  #checkov:skip=CKV_AWS_338: RDS engine logs use an explicitly bounded 30-day operational retention.
   name              = "/aws/rds/instance/${aws_db_instance.main.identifier}/postgresql"
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn

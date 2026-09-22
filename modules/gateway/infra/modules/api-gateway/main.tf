@@ -563,9 +563,28 @@ resource "aws_api_gateway_method_settings" "all" {
   method_path = "*/*"
 
   settings {
-    metrics_enabled    = true
-    logging_level      = "INFO"
-    data_trace_enabled = var.environment != "prod"
+    metrics_enabled = true
+    logging_level   = "INFO"
+
+    # Issue #5672. This was `var.environment != "prod"`, i.e. full request/response
+    # payload tracing was ON in every environment whose name was not literally
+    # "prod". data_trace_enabled writes complete requests and responses — headers
+    # included — into the CloudWatch log group. Headers are where callers present
+    # their bearer tokens and the internal-plane shared secret; bodies are the
+    # prompts and completions. That put replayable credentials and private user
+    # content in front of everyone with log read access: CI roles, build roles,
+    # any operator.
+    #
+    # Deriving it from the environment NAME is the part that made this durable: a
+    # new environment is exposed by default because nobody added its name to a
+    # comparison. Now it is an explicit input, default false, set true nowhere.
+    # Turning payload tracing on has to be a deliberate, reviewed, per-environment
+    # act with a plan diff that shows it.
+    #
+    # The access_log_settings format on the stage above stays the single sanctioned
+    # gateway log source: request id, source IP, time, method, path, status, length
+    # and latencies — metadata only, no headers and no bodies.
+    data_trace_enabled = var.enable_payload_tracing
 
     throttling_burst_limit = var.throttle_burst_limit
     throttling_rate_limit  = var.throttle_rate_limit

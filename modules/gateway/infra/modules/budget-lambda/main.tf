@@ -220,6 +220,7 @@ resource "aws_lambda_function" "usage_tracker" {
 
 # CloudWatch Log Group for Usage Tracker
 resource "aws_cloudwatch_log_group" "usage_tracker" {
+  #checkov:skip=CKV_AWS_338: Budget Lambda logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/aws/lambda/${var.name_prefix}-budget-usage-tracker"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn
@@ -321,6 +322,7 @@ resource "aws_lambda_function" "pricing_refresh" {
 
 # CloudWatch Log Group for Pricing Refresh
 resource "aws_cloudwatch_log_group" "pricing_refresh" {
+  #checkov:skip=CKV_AWS_338: Pricing Lambda logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/aws/lambda/${var.name_prefix}-pricing-refresh"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn

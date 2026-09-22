@@ -168,13 +168,13 @@ variable "throttle_rate_limit" {
 # =============================================================================
 
 variable "log_retention_days" {
-  description = "CloudWatch log retention in days"
+  description = "CloudWatch API Gateway access-log retention in days (minimum 365)"
   type        = number
-  default     = 30
+  default     = 365
 
   validation {
-    condition     = contains([0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653], var.log_retention_days)
-    error_message = "Log retention days must be a valid CloudWatch retention value."
+    condition     = contains([365, 400, 545, 731, 1827, 3653], var.log_retention_days)
+    error_message = "API Gateway access-log retention must be a valid CloudWatch value of at least 365 days."
   }
 }
 
@@ -182,6 +182,29 @@ variable "enable_xray_tracing" {
   description = "Enable X-Ray tracing on the API Gateway stage"
   type        = bool
   default     = true
+}
+
+# Issue #5672 — payload tracing is OFF by default, in every environment.
+#
+# `data_trace_enabled` writes full request and response payloads, headers included,
+# to CloudWatch. Headers carry caller bearer tokens and the internal-plane shared
+# secret; bodies carry prompts and completions. Anyone with log read access can
+# harvest live credentials and private conversation content from them.
+#
+# This used to be derived from `var.environment != "prod"`, which meant any
+# environment not named exactly "prod" — including every future one — was exposed
+# by default. It is now an explicit switch so that enabling it is a visible choice
+# in a plan diff rather than a consequence of how an environment was named.
+#
+# Leave this false. If a specific short-lived debugging need ever justifies it,
+# scope it to one non-production environment, treat the log group as
+# credential-bearing for its retention window, and rotate anything captured.
+# Metadata-level troubleshooting is served by the stage access log; request-level
+# detail is served by the application's own logs.
+variable "enable_payload_tracing" {
+  description = "Enable full request/response payload tracing (data_trace_enabled) on the API Gateway stage. MUST stay false: payload traces write caller credentials and private prompt/completion content to CloudWatch. Not set true in any shipped environment."
+  type        = bool
+  default     = false
 }
 
 # =============================================================================

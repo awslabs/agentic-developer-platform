@@ -251,6 +251,7 @@ resource "aws_kms_alias" "workspace" {
 # this one stays empty — a failure that looks like working logging.
 # ---------------------------------------------------------------------------
 resource "aws_cloudwatch_log_group" "cluster" {
+  #checkov:skip=CKV_AWS_338: EKS control-plane logs use an explicitly bounded workspace-selected operational retention.
   # `local.cluster_log_group_name`, not an inline string: the KMS key policy above must name
   # this exact group in its encryption-context condition, and a second copy of the path here
   # could drift from the one the key authorises — which would produce a key that cannot
