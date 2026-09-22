@@ -278,6 +278,13 @@ class ReleaseContracts(unittest.TestCase):
                         continue
                     self.assertIn('steps', job, 'job must define steps or call a reusable workflow')
                     self.assertIn('runs-on', job, 'executable job must select a self-hosted runner')
+                    if isinstance(job['runs-on'], dict):
+                        self.assertEqual(job['runs-on'], {
+                            'group': 'adp-deployment', 'labels': 'arc-runner-deployment',
+                        })
+                        self.assertTrue(str(job.get('environment', '')).startswith(('adp-deploy-', 'adp-build-')))
+                        self.assertIn("github.ref == 'refs/heads/main'", job.get('if', ''))
+                        continue
                     self.assertIn(
                         job['runs-on'],
                         allowed,
