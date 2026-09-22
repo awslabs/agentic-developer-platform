@@ -199,7 +199,7 @@ the S3 version history; never discard state or disable locking to get past it.
 
 Every phase records its state before starting. `--resume` requires the identical environment/release and uses the same migration and bootstrap Job identities. A nonterminal Job is waited on, never duplicated. Failed/interrupted mutations retain the shared lock with status `recovery-required`; time passing never steals it.
 
-After the named operator verifies that the prior installer and child processes have stopped, inspect the recorded migration Job and Terraform backend lock. A still-running migration or bootstrap Job prevents lock recovery. Release only the recorded lock version:
+After the named operator verifies that the prior installer and child processes have stopped, inspect the recorded migration Job and Terraform backend lock. A still-running migration or bootstrap Job prevents lock recovery. Recovery first deletes any recorded temporary preflight namespace with UID/resource-version preconditions and verifies its absence, then releases only the recorded lock version. A changed owner or failed cleanup retains the recovery marker and lock. The same command recovers interrupted database preparation even when it never acquired an installation lock:
 
 ```sh
 modules/domain-apps/superplane/deploy.sh \

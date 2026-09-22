@@ -2051,11 +2051,21 @@ class Installer:
             "Recovery requires confirming that the recorded installer and its child processes have stopped",
         )
         lock = self.receipt.get("remote_lock", {})
+        cleanup_required = self.receipt.get("temporary_preflight", {}).get(
+            "cleanup_required"
+        )
         require(
-            lock.get("bucket") == self.bucket
-            and lock.get("key") == self.lock_key
-            and lock.get("etag"),
+            not lock
+            or (
+                lock.get("bucket") == self.bucket
+                and lock.get("key") == self.lock_key
+                and lock.get("etag")
+            ),
             "Receipt has no matching retained installation lock",
+        )
+        require(
+            lock or cleanup_required,
+            "Receipt has no retained lock or temporary namespace",
         )
         self.target(verify_source=False)
         for doc in (
@@ -2071,17 +2081,20 @@ class Installer:
                 ),
                 "Installation Job is nonterminal or foreign; leave the lock in place",
             )
-        self.aws(
-            "s3api",
-            "delete-object",
-            "--bucket",
-            self.bucket,
-            "--key",
-            self.lock_key,
-            "--if-match",
-            lock["etag"],
-        )
-        self.receipt.pop("remote_lock")
+        if cleanup_required:
+            ClusterProbe.recover(self)
+        if lock:
+            self.aws(
+                "s3api",
+                "delete-object",
+                "--bucket",
+                self.bucket,
+                "--key",
+                self.lock_key,
+                "--if-match",
+                lock["etag"],
+            )
+            self.receipt.pop("remote_lock")
         self.receipt["status"] = "failed"
         self.save()
 

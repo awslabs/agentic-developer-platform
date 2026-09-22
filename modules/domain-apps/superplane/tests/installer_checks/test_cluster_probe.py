@@ -23,6 +23,7 @@ class ProbeTools:
         if "create" in args:
             value = json.loads(kwargs["data"])
             value["metadata"]["uid"] = "owned-" + value["metadata"]["name"]
+            value["metadata"]["resourceVersion"] = "1"
             self.objects[value["kind"], value["metadata"]["name"]] = value
             if value["kind"] == "Pod":
                 spec = value["spec"]
@@ -65,6 +66,10 @@ class ProbeTools:
                 assert (
                     options["preconditions"]["uid"]
                     == self.objects["Namespace", name]["metadata"]["uid"]
+                )
+                assert (
+                    options["preconditions"]["resourceVersion"]
+                    == self.objects["Namespace", name]["metadata"]["resourceVersion"]
                 )
                 self.objects.clear()
             else:
@@ -112,6 +117,36 @@ def test_cleanup_refuses_a_replaced_namespace(tmp_path, environment, release):
     assert installer.receipt["temporary_preflight"]["cleanup_required"] is True
 
 
+@pytest.mark.parametrize("remote_lock", [False, True])
+def test_recovery_cleans_interrupted_probe_before_releasing_lock(
+    tmp_path, environment, release, monkeypatch, remote_lock
+):
+    tools = ProbeTools()
+    installer = Installer(environment, release, tmp_path, tools)
+    probe = ClusterProbe(installer).__enter__()
+    probe.pod("interrupted", "superplane-api", ["python", "-V"])
+    installer.receipt["status"] = "failed"
+    if remote_lock:
+        installer.receipt["remote_lock"] = {
+            "bucket": installer.bucket,
+            "key": installer.lock_key,
+            "etag": '"owned"',
+        }
+    installer.save()
+    monkeypatch.setattr(installer, "target", lambda **_: None)
+    monkeypatch.setattr(installer, "existing", lambda _: None)
+
+    installer.recover_lock(installer.run_id)
+
+    assert not tools.objects
+    assert installer.receipt["temporary_preflight"]["cleanup_required"] is False
+    assert "remote_lock" not in installer.receipt
+    if remote_lock:
+        verbs = [args for args, _ in tools.calls]
+        deleted = next(i for i, args in enumerate(verbs) if "delete-object" in args)
+        assert any("--for=delete" in args for args in verbs[:deleted])
+
+
 @pytest.mark.parametrize("code", [1, 137])
 def test_network_process_failure_never_counts_as_network_denial(
     tmp_path, environment, release, monkeypatch, code
@@ -128,3 +163,79 @@ def test_network_process_failure_never_counts_as_network_denial(
     result = probe.network_sample("client", "http://10.0.0.1:8080/")
     assert result == {"reachable": False, "denied": False, "process_exit": code}
     assert calls[0]["allow_failure"] is True
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "replaced",
+        "relabeled",
+        "scope",
+        "uid",
+        "delete",
+        "wait",
+        "not-deleted",
+        "delete-race",
+    ],
+)
+def test_recovery_preserves_lock_and_cleanup_marker_on_failure(
+    tmp_path, environment, release, monkeypatch, fault
+):
+    tools = ProbeTools()
+    installer = Installer(environment, release, tmp_path, tools)
+    probe = ClusterProbe(installer).__enter__()
+    installer.receipt["remote_lock"] = {
+        "bucket": installer.bucket,
+        "key": installer.lock_key,
+        "etag": '"owned"',
+    }
+    metadata = tools.objects["Namespace", probe.namespace]["metadata"]
+    if fault == "replaced":
+        metadata["uid"] = "foreign"
+    elif fault == "relabeled":
+        metadata["labels"] = {}
+    elif fault == "scope":
+        installer.receipt["temporary_preflight"]["namespace"] = "unrelated"
+    elif fault == "uid":
+        installer.receipt["temporary_preflight"]["uid"] = ""
+    original = tools.call
+
+    def call(args, **kwargs):
+        if (fault == "delete" and "delete" in args) or (
+            fault == "wait" and "wait" in args
+        ):
+            raise Refusal("Injected cleanup failure")
+        if fault == "not-deleted" and "delete" in args:
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        if fault == "delete-race" and "delete" in args:
+            metadata["resourceVersion"] = "2"
+            metadata["labels"] = {}
+            options = json.loads(kwargs["data"])
+            assert options["preconditions"]["resourceVersion"] == "1"
+            raise Refusal("Kubernetes version conflict")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(tools, "call", call)
+    monkeypatch.setattr(installer, "target", lambda **_: None)
+    monkeypatch.setattr(installer, "existing", lambda _: None)
+    with pytest.raises(Refusal):
+        installer.recover_lock(installer.run_id)
+    assert installer.receipt["remote_lock"]["etag"] == '"owned"'
+    assert installer.receipt["temporary_preflight"]["cleanup_required"] is True
+    assert not any("delete-object" in args for args, _ in tools.calls)
+
+
+def test_recovery_accepts_already_deleted_probe(
+    tmp_path, environment, release, monkeypatch
+):
+    tools = ProbeTools()
+    installer = Installer(environment, release, tmp_path, tools)
+    ClusterProbe(installer).__enter__()
+    tools.objects.clear()
+    monkeypatch.setattr(installer, "target", lambda **_: None)
+    monkeypatch.setattr(installer, "existing", lambda _: None)
+    installer.recover_lock(installer.run_id)
+    assert installer.receipt["temporary_preflight"]["cleanup_required"] is False
+    assert not any(
+        "delete" in args or "delete-object" in args for args, _ in tools.calls
+    )
