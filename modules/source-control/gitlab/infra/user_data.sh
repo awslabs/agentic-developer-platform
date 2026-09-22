@@ -41,8 +41,27 @@ nginx['proxy_set_headers'] = {
   "X-Forwarded-Ssl" => "on"
 }
 
-# Health check endpoint (used by ALB target group)
-gitlab_rails['monitoring_whitelist'] = ['0.0.0.0/0']
+# Monitoring endpoint allowlist (Issue #5685).
+#
+# Scoped to the VPC CIDR instead of 0.0.0.0/0. This governs GitLab's own
+# monitoring endpoints (/-/metrics, /-/metrics/system, /-/readiness and
+# /-/liveness) at the Rails layer.
+#
+# Be precise about what this does and does not do: every request arrives via the
+# ALB, so Rails sees the ALB's private address as the client either way — this
+# narrowing does NOT by itself refuse an anonymous public request. The control
+# that does is the fixed-response rules on the ALB's CloudFront-facing HTTP
+# listener (see alb.tf), which refuse the /gitlab-prefixed public form of these
+# paths while the VPC-only HTTPS listener remains available to operators.
+#
+# It is still worth setting: the config no longer declares the endpoints
+# world-readable, and it bounds the exposure if the instance is ever reachable
+# by a route that does not pass through the ALB.
+#
+# NOTE: the ALB target-group health check probes /-/health, which nginx answers
+# directly via custom_gitlab_server_config below. It does not pass through this
+# Rails allowlist, so narrowing this cannot affect target health.
+gitlab_rails['monitoring_whitelist'] = ['${vpc_cidr_block}']
 
 # Custom nginx health endpoint for ALB health checks.
 # Returns 200 directly from nginx regardless of Host header,
