@@ -1,20 +1,6 @@
-output "codebuild_role_arn" {
-  description = <<-EOT
-    ARN of the build role used by the agent-context image CodeBuild projects
-    (modules/agent-context/terraform reads this via platform remote state).
-
-    A18 (#5674): this was the shared AdministratorAccess role used by every
-    project in this module. Each project in this module now has its OWN scoped
-    role (see `project_role_arns`), and this output resolves to a role scoped to
-    the agent-context image repositories. The output name is unchanged because
-    it is a cross-state contract; the permissions behind it are not.
-  EOT
-  value       = aws_iam_role.agent_context_images.arn
-}
-
-output "codebuild_role_name" {
-  description = "Name of the agent-context images build role (see codebuild_role_arn for the A18 scope change)"
-  value       = aws_iam_role.agent_context_images.name
+output "agent_context_project_role_arns" {
+  description = "Map of agent-context image key to its dedicated build role ARN"
+  value       = { for key, role in aws_iam_role.agent_context_image : key => role.arn }
 }
 
 output "project_role_arns" {

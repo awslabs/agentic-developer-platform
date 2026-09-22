@@ -106,6 +106,7 @@ variable "ecr_repositories" {
     "adp-agent-runtime",
     "adp-skill-registry",
     "adp-agent-gateway",
+    "adp-chat-agent",
   ]
 }
 

@@ -164,17 +164,73 @@ run "the_runner_cannot_read_another_tenants_vault" {
     error_message = "The vault Deny is not on the four environment-less vault namespaces, so it may match nothing at all."
   }
 
-  # Both actions: a GetSecretValue-only Deny still lets a runner enumerate other
-  # tenants' secret names and metadata.
+  # A wildcard Deny on these exact resources blocks every current and future
+  # read, mutation, deletion, restore, rotation, replication and resource-policy
+  # action. This is intentionally stronger than enumerating today's write set.
   assert {
     condition = toset(flatten([
       for statement in jsondecode(aws_iam_policy.runner_boundary.policy).Statement :
       flatten([statement.Action])
       if statement.Sid == "DenyTenantVaultSecrets"
+    ])) == toset(["secretsmanager:*"])
+    error_message = "The vault Deny does not block the full Secrets Manager API on tenant paths."
+  }
+
+  assert {
+    condition = toset(flatten([
+      for statement in jsondecode(aws_iam_policy.runner_services.policy).Statement :
+      flatten([statement.Resource])
+      if statement.Sid == "SecretsManagerOps"
       ])) == toset([
-      "secretsmanager:DescribeSecret",
-      "secretsmanager:GetSecretValue",
+      "arn:aws:secretsmanager:eu-west-1:123456789012:secret:bedrockgw-*",
+      "arn:aws:secretsmanager:eu-west-1:123456789012:secret:adp/test/*",
     ])
-    error_message = "The vault Deny does not cover both reading secret values and describing them."
+    error_message = "The runner secret grant is not limited to its account, region and environment-owned prefixes."
+  }
+
+  assert {
+    condition = !contains(flatten([
+      for statement in jsondecode(aws_iam_policy.runner_services.policy).Statement :
+      flatten([statement.Action])
+      if statement.Sid == "SecretsManagerOps"
+    ]), "secretsmanager:ListSecrets")
+    error_message = "The runner can still enumerate every tenant secret because ListSecrets cannot be resource-scoped."
+  }
+}
+
+run "the_active_runner_cannot_mint_or_assume_a_broader_identity" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for action in local.privilege_escalation_actions :
+      contains(flatten([
+        for statement in jsondecode(aws_iam_policy.runner_boundary.policy).Statement :
+        flatten([statement.Action])
+        if statement.Effect == "Deny" && statement.Sid == "DenyPrivilegeEscalation"
+      ]), action)
+    ])
+    error_message = "The active runner boundary does not deny the complete privilege-escalation action set."
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for policy in [aws_iam_policy.runner_base.policy, aws_iam_policy.runner_services.policy] : [
+        for statement in jsondecode(policy).Statement : [
+          for action in flatten([statement.Action]) :
+          !contains(local.privilege_escalation_actions, action)
+          if statement.Effect == "Allow"
+        ]
+      ]
+    ]))
+    error_message = "An active runner identity policy still grants identity mutation or role assumption."
+  }
+
+  assert {
+    condition = length([
+      for statement in jsondecode(aws_iam_policy.runner_base.policy).Statement : statement
+      if statement.Sid == "IAMRolePolicyMgmt"
+    ]) == 0
+    error_message = "The active runner still carries the IAMRolePolicyMgmt write statement."
   }
 }

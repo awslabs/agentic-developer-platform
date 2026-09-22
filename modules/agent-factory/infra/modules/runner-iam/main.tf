@@ -24,6 +24,59 @@ locals {
     [var.runner_namespace],
     var.runner_trusted_namespaces,
   ))
+
+  privilege_escalation_actions = [
+    "iam:AddClientIDToOpenIDConnectProvider",
+    "iam:AddRoleToInstanceProfile",
+    "iam:AddUserToGroup",
+    "iam:AttachGroupPolicy",
+    "iam:AttachRolePolicy",
+    "iam:AttachUserPolicy",
+    "iam:CreateAccessKey",
+    "iam:CreateGroup",
+    "iam:CreateInstanceProfile",
+    "iam:CreateLoginProfile",
+    "iam:CreateOpenIDConnectProvider",
+    "iam:CreatePolicy",
+    "iam:CreatePolicyVersion",
+    "iam:CreateRole",
+    "iam:CreateSAMLProvider",
+    "iam:CreateServiceLinkedRole",
+    "iam:CreateUser",
+    "iam:DeleteGroupPolicy",
+    "iam:DeleteOpenIDConnectProvider",
+    "iam:DeletePolicy",
+    "iam:DeletePolicyVersion",
+    "iam:DeleteRole",
+    "iam:DeleteRolePermissionsBoundary",
+    "iam:DeleteRolePolicy",
+    "iam:DeleteUserPermissionsBoundary",
+    "iam:DeleteUserPolicy",
+    "iam:DetachGroupPolicy",
+    "iam:DetachRolePolicy",
+    "iam:DetachUserPolicy",
+    "iam:PassRole",
+    "iam:PutGroupPolicy",
+    "iam:PutRolePermissionsBoundary",
+    "iam:PutRolePolicy",
+    "iam:PutUserPermissionsBoundary",
+    "iam:PutUserPolicy",
+    "iam:SetDefaultPolicyVersion",
+    "iam:UpdateAssumeRolePolicy",
+    "iam:UpdateOpenIDConnectProviderThumbprint",
+    "iam:UpdateRole",
+    "iam:UpdateUser",
+    "sts:AssumeRole",
+    "sts:AssumeRoleWithSAML",
+    "sts:AssumeRoleWithWebIdentity",
+  ]
+
+  tenant_vault_secret_arns = [
+    "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/users/*",
+    "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
+    "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
+    "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*",
+  ]
 }
 
 # Permissions boundary — scoped version (Issue #1204, #596 fix)
@@ -81,25 +134,9 @@ resource "aws_iam_policy" "runner_boundary" {
           # IAM — broad read-only via wildcards.
           "iam:Get*", "iam:List*", "iam:Simulate*", "iam:Generate*",
 
-          # IAM writes — scoped to what Terraform apply actually uses.
-          "iam:CreateRole", "iam:CreatePolicy", "iam:AttachRolePolicy",
-          "iam:PutRolePolicy", "iam:PassRole", "iam:TagRole", "iam:TagPolicy",
-          "iam:CreateServiceLinkedRole",
-          "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:DetachRolePolicy",
-          # Issue #596: iam:DeletePolicy + DeletePolicyVersion required for
-          # Terraform to replace inline policies with managed policies.
-          "iam:DeletePolicy", "iam:DeletePolicyVersion",
-          "iam:CreatePolicyVersion", "iam:DeletePolicyVersion",
-          "iam:SetDefaultPolicyVersion",
-          "iam:UpdateAssumeRolePolicy",
-          "iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile",
-          "iam:DeleteInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
-          "iam:TagInstanceProfile",
-          "iam:CreateOpenIDConnectProvider", "iam:DeleteOpenIDConnectProvider",
-          "iam:AddClientIDToOpenIDConnectProvider",
-          "iam:TagOpenIDConnectProvider", "iam:UntagOpenIDConnectProvider",
-          "iam:UntagRole", "iam:UpdateRole",
-          "sts:AssumeRole", "sts:GetCallerIdentity",
+          # Identity mutation and role assumption belong to a separately trusted
+          # deployment identity, never to a runner executing repository input.
+          "sts:GetCallerIdentity",
           "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
           # EPIC #4997: platform Terraform owns regional invocation logging.
           "bedrock:GetModelInvocationLoggingConfiguration",
@@ -136,55 +173,27 @@ resource "aws_iam_policy" "runner_boundary" {
         Resource = "*"
       },
       {
-        # Self-manage boundary versions — required for Terraform to update the
-        # boundary from a runner pod.
-        Sid    = "ManageOwnBoundary"
-        Effect = "Allow"
-        Action = [
-          "iam:CreatePolicyVersion",
-          "iam:DeletePolicyVersion",
-          "iam:SetDefaultPolicyVersion",
-          "iam:ListPolicyVersions",
-          "iam:GetPolicyVersion"
-        ]
-        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/${var.name_prefix}-runner-boundary"
-      },
-      {
         Sid      = "ExecuteApi"
         Effect   = "Allow"
         Action   = ["execute-api:*"]
         Resource = "*"
       },
       {
-        # Cross-tenant vault lockout — DEFENCE IN DEPTH ONLY (issue #4130).
-        #
-        # This does NOT close #4073 finding #4 for this role. The binding grant
-        # here is aws_iam_policy.runner_base Sid AllowBroadAccess, which holds
-        # secretsmanager:* on Resource="*" — broader than this finding and
-        # tracked separately in #4116. Do not mark #4116 addressed by this.
-        #
-        # Placed in the BOUNDARY rather than in runner_base on purpose: the
-        # boundary is the ceiling on this role's effective permissions, so a
-        # Deny here is reachable regardless of what any attached policy allows
-        # and cannot be out-voted by the secretsmanager:* grant above. A Deny
-        # added to runner_base instead would be trivially bypassed the moment a
-        # future policy re-granted the same actions elsewhere.
-        #
-        # Same four env-less namespaces as the scaledjob role — see
-        # webhook-ingress/infra/scaledjob-iam.tf Sid DenyTenantVaultSecrets for
-        # the full rationale and the path-shape warning. Keep the two in sync.
-        Sid    = "DenyTenantVaultSecrets"
-        Effect = "Deny"
-        Action = [
-          "secretsmanager:DescribeSecret",
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = [
-          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/users/*",
-          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
-          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
-          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*"
-        ]
+        Sid      = "DenyPrivilegeEscalation"
+        Effect   = "Deny"
+        Action   = local.privilege_escalation_actions
+        Resource = "*"
+      },
+      {
+        # Cross-tenant vault lockout. The runner may manage deployment secrets
+        # only under its environment prefix; tenant vault paths have no
+        # environment segment. Deny the entire Secrets Manager API on those
+        # paths so writes, deletion, replication, rotation and resource-policy
+        # changes cannot be reintroduced by another attached policy.
+        Sid      = "DenyTenantVaultSecrets"
+        Effect   = "Deny"
+        Action   = "secretsmanager:*"
+        Resource = local.tenant_vault_secret_arns
       },
       {
         Sid    = "DenyDangerousActions"
@@ -523,56 +532,24 @@ resource "aws_iam_policy" "runner_base" {
         Resource = "arn:aws:events:us-east-1:*:event-bus/default"
       },
       {
-        Sid    = "IAMRolePolicyMgmt"
+        Sid    = "IAMReadOnly"
         Effect = "Allow"
         Action = [
-          "iam:AddClientIDToOpenIDConnectProvider",
-          "iam:AddRoleToInstanceProfile",
-          "iam:AttachRolePolicy",
-          "iam:CreateInstanceProfile",
-          "iam:CreateOpenIDConnectProvider",
-          "iam:CreatePolicy",
-          "iam:CreatePolicyVersion",
-          "iam:CreateRole",
-          "iam:CreateServiceLinkedRole",
-          "iam:DeleteInstanceProfile",
-          "iam:DeleteOpenIDConnectProvider",
-          "iam:DeletePolicy",
-          "iam:DeletePolicyVersion",
-          "iam:DeleteRole",
-          "iam:DeleteRolePolicy",
-          "iam:DetachRolePolicy",
           "iam:GetInstanceProfile",
           "iam:GetOpenIDConnectProvider",
           "iam:GetPolicy",
+          "iam:GetPolicyVersion",
           "iam:GetRole",
           "iam:GetRolePolicy",
           "iam:ListAttachedRolePolicies",
           "iam:ListInstanceProfilesForRole",
           "iam:ListPolicies",
+          "iam:ListPolicyVersions",
           "iam:ListRolePolicies",
           "iam:ListRoleTags",
-          "iam:ListRoles",
-          "iam:PassRole",
-          "iam:PutRolePolicy",
-          "iam:RemoveRoleFromInstanceProfile",
-          "iam:SetDefaultPolicyVersion",
-          "iam:TagInstanceProfile",
-          "iam:TagOpenIDConnectProvider",
-          "iam:TagPolicy",
-          "iam:TagRole",
-          "iam:UntagOpenIDConnectProvider",
-          "iam:UntagRole",
-          "iam:UpdateAssumeRolePolicy",
-          "iam:UpdateRole"
+          "iam:ListRoles"
         ]
-        Resource = [
-          "*",
-          "arn:aws:iam::*:instance-profile/adp-*",
-          "arn:aws:iam::*:oidc-provider/oidc.eks.*.amazonaws.com/*",
-          "arn:aws:iam::*:policy/adp-*",
-          "arn:aws:iam::*:role/adp-*"
-        ]
+        Resource = "*"
       },
       {
         Sid    = "KMSKeyLifecycle"
@@ -806,7 +783,6 @@ resource "aws_iam_policy" "runner_services" {
           "secretsmanager:DeleteSecret",
           "secretsmanager:DescribeSecret",
           "secretsmanager:GetSecretValue",
-          "secretsmanager:ListSecrets",
           "secretsmanager:PutSecretValue",
           "secretsmanager:RestoreSecret",
           "secretsmanager:TagResource",
@@ -814,8 +790,8 @@ resource "aws_iam_policy" "runner_services" {
           "secretsmanager:UpdateSecret"
         ]
         Resource = [
-          "arn:aws:secretsmanager:*:*:secret:bedrockgw-*",
-          "arn:aws:secretsmanager:us-east-1:*:secret:adp/*"
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:bedrockgw-*",
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:adp/${var.environment}/*"
         ]
       },
       {
@@ -865,12 +841,9 @@ resource "aws_iam_policy" "runner_services" {
         Resource = "arn:aws:ssm:us-east-1:*:parameter/adp/*"
       },
       {
-        Sid    = "STSIdentityAndAssume"
-        Effect = "Allow"
-        Action = [
-          "sts:AssumeRole",
-          "sts:GetCallerIdentity"
-        ]
+        Sid      = "STSIdentity"
+        Effect   = "Allow"
+        Action   = ["sts:GetCallerIdentity"]
         Resource = "*"
       },
       {

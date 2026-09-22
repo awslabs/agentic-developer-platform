@@ -54,7 +54,7 @@ locals {
     }
     "chat-agent" = {
       buildspec      = "codebuild/bs-chat-agent.yml"
-      ecr_repos      = ["adp-agent-gateway"]
+      ecr_repos      = ["adp-chat-agent"]
       privileged     = true
       privileged_why = "docker build -f agent/Dockerfile"
     }
@@ -109,7 +109,33 @@ locals {
       privileged     = true
       privileged_why = "scan_security_images.py builds/pulls each scan target with docker before syft reads it"
     }
+    "superplane-api" = {
+      buildspec      = "modules/domain-apps/superplane/releases/buildspecs/api.yml"
+      ecr_repos      = ["adp-superplane-api"]
+      privileged     = true
+      privileged_why = "docker build of the maintained Superplane API image"
+    }
+    "superplane-controller" = {
+      buildspec      = "modules/domain-apps/superplane/releases/buildspecs/controller.yml"
+      ecr_repos      = ["adp-superplane-controller"]
+      privileged     = true
+      privileged_why = "docker build of the maintained Superplane controller image"
+    }
+    "superplane-monitor" = {
+      buildspec      = "modules/domain-apps/superplane/releases/buildspecs/monitor.yml"
+      ecr_repos      = ["adp-superplane-platform-monitor"]
+      privileged     = true
+      privileged_why = "docker build of the maintained Superplane platform monitor image"
+    }
   }
+
+  agent_context_images = toset([
+    "ingestion",
+    "codegraph-context",
+    "litellm-proxy",
+    "deepwiki",
+    "context-mcp",
+  ])
 
   ecr_repo_arn_prefix = "arn:aws:ecr:${var.aws_region}:${var.account_id}:repository"
 }
@@ -370,20 +396,14 @@ resource "aws_iam_role_policy" "project" {
         ]
         Resource = [for repo in each.value.ecr_repos : "${local.ecr_repo_arn_prefix}/${repo}"]
       }],
-      # The buildspecs call describe-repositories and create-repository to be
-      # first-run safe. describe-repositories with --repository-names is
-      # authorized against the repository ARN (granted above); CreateRepository
-      # has no ARN to name before the repository exists, so it is conditioned on
-      # the ADP name prefix instead of left open.
+      # The buildspecs retain a first-run-safe CreateRepository call. IAM can
+      # authorize that call against the exact repository ARN even before the
+      # repository exists, so no prefix-wide bootstrap grant is needed.
       [for _ in range(length(lookup(each.value, "ecr_repos", [])) > 0 ? 1 : 0) : {
-        Sid    = "EcrRepositoryBootstrap"
-        Effect = "Allow"
-        Action = [
-          "ecr:CreateRepository",
-          "ecr:PutLifecyclePolicy",
-          "ecr:TagResource"
-        ]
-        Resource = "${local.ecr_repo_arn_prefix}/adp-*"
+        Sid      = "EcrRepositoryBootstrap"
+        Effect   = "Allow"
+        Action   = ["ecr:CreateRepository"]
+        Resource = [for repo in each.value.ecr_repos : "${local.ecr_repo_arn_prefix}/${repo}"]
       }],
       # Lambda-layer publication: the exact object key gateway Terraform reads.
       [for _ in range(length(lookup(each.value, "s3_write", [])) > 0 ? 1 : 0) : {
@@ -431,29 +451,27 @@ resource "aws_iam_role_policy" "project" {
 }
 
 # -----------------------------------------------------------------------------
-# Build role for the agent-context image projects
+# Per-project build roles for agent-context images
 # -----------------------------------------------------------------------------
-# modules/agent-context/terraform declares five CodeBuild projects of its own
-# and reads this module's `codebuild_role_arn` output for their service role
-# (modules/agent-context/terraform/main.tf:274 → modules/images-build/main.tf:90).
-# Before A18 that output was the shared administrator role, so agent-context's
-# image builds ran as account administrator too.
-#
-# It gets a dedicated role here rather than in its own module because the output
-# is the existing cross-module contract; changing the contract would require a
-# coordinated apply across two state files for no security gain. Scope is the
-# ECR repositories that module creates (`${name_prefix}-*`) and nothing else.
-resource "aws_iam_role" "agent_context_images" {
-  name                 = "${var.name_prefix}-codebuild-agent-context-images"
-  description          = "Build role for the agent-context image CodeBuild projects — ECR push to that module's repositories only (A18, #5674)"
+# The projects live in the agent-context state, while their IAM ceiling lives in
+# platform state. The output contract is therefore a map keyed by image. Each
+# role can write one exact repository and one exact log group; no image build can
+# replace a sibling project's artifact.
+resource "aws_iam_role" "agent_context_image" {
+  for_each = local.agent_context_images
+
+  name                 = "${var.name_prefix}-codebuild-agent-context-${each.key}"
+  description          = "Build role for the ${each.key} agent-context image (A18, #5674)"
   assume_role_policy   = data.aws_iam_policy_document.codebuild_assume.json
   permissions_boundary = aws_iam_policy.codebuild_boundary.arn
   tags                 = var.common_tags
 }
 
-resource "aws_iam_role_policy" "agent_context_images" {
+resource "aws_iam_role_policy" "agent_context_image" {
+  for_each = local.agent_context_images
+
   name = "build-scope"
-  role = aws_iam_role.agent_context_images.id
+  role = aws_iam_role.agent_context_image[each.key].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -467,8 +485,8 @@ resource "aws_iam_role_policy" "agent_context_images" {
           "logs:PutLogEvents"
         ]
         Resource = [
-          "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/codebuild/${var.name_prefix}-*",
-          "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/codebuild/${var.name_prefix}-*:*"
+          "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/codebuild/${var.name_prefix}-agent-context-${each.key}-build",
+          "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/codebuild/${var.name_prefix}-agent-context-${each.key}-build:*"
         ]
       },
       {
@@ -484,7 +502,7 @@ resource "aws_iam_role_policy" "agent_context_images" {
         Resource = "*"
       },
       {
-        Sid    = "AgentContextEcrRepositories"
+        Sid    = "OwnEcrRepository"
         Effect = "Allow"
         Action = [
           "ecr:BatchCheckLayerAvailability",
@@ -498,12 +516,9 @@ resource "aws_iam_role_policy" "agent_context_images" {
           "ecr:PutImage",
           "ecr:UploadLayerPart"
         ]
-        Resource = "${local.ecr_repo_arn_prefix}/${var.name_prefix}-*"
+        Resource = "${local.ecr_repo_arn_prefix}/${var.name_prefix}-agent-context-${each.key}"
       },
       {
-        # Those repositories set encryption_type = KMS. The ViaService condition
-        # means this key use is only accepted when it arrives through ECR, so the
-        # grant cannot be turned on unrelated encrypted data.
         Sid    = "EcrEncryptionKeyUse"
         Effect = "Allow"
         Action = [

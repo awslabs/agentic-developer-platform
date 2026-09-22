@@ -371,7 +371,7 @@ that mode. What changes on a very stale deployment is how risky it becomes:
 
 **Images.** Update mode tags images with the source SHA
 (`IMAGE_TAG=$(git rev-parse HEAD)`) for `adp-gateway`,
-`adp-agent-gateway`, and `adp-agent-runtime`, and forwards that tag to
+`adp-agent-gateway`, `adp-chat-agent`, and `adp-agent-runtime`, and forwards that tag to
 CodeBuild. This guarantees Kubernetes sees a new image reference and actually
 rolls out — the classic `:latest`-push-no-rollout silent failure cannot happen.
 The script rebuilds images on repeat upgrades and forces a rollout restart

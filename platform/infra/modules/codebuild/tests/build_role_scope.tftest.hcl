@@ -71,11 +71,11 @@ run "no_build_identity_is_an_administrator" {
   }
 
   assert {
-    condition = !can(regex(
-      "(AdministratorAccess|PowerUserAccess)",
-      aws_iam_role_policy.agent_context_images.policy
-    ))
-    error_message = "The agent-context image-build policy references an administrator policy."
+    condition = alltrue([
+      for key, policy in aws_iam_role_policy.agent_context_image :
+      !can(regex("(AdministratorAccess|PowerUserAccess)", policy.policy))
+    ])
+    error_message = "An agent-context image-build policy references an administrator policy."
   }
 
   # Each project gets its OWN role. A shared role means one project's buildspec
@@ -100,12 +100,16 @@ run "no_build_identity_is_an_administrator" {
     error_message = "A build role's name is not derived from its own project key, so projects could share an identity."
   }
 
-  # The shared role is gone as a concept, not just renamed: the only other role
-  # this module creates is the agent-context image builder, which exists to keep
-  # a cross-state output contract and is itself scoped.
   assert {
     condition     = length(keys(aws_iam_role.project)) == length(local.projects)
     error_message = "The number of build roles does not match the number of build projects."
+  }
+
+  assert {
+    condition = length(distinct([
+      for key, role in aws_iam_role.agent_context_image : role.name
+    ])) == length(local.agent_context_images)
+    error_message = "Agent-context image projects do not each have a distinct IAM role."
   }
 }
 
@@ -152,7 +156,7 @@ run "no_build_role_can_escalate_its_own_privileges" {
 
   # A boundary is an UPPER BOUND, not a grant: effective permission is the
   # identity policy INTERSECTED with the boundary. A Deny-only boundary permits
-  # nothing and breaks all ten builds on the next apply — which is exactly the
+  # nothing and breaks every build on the next apply — which is exactly the
   # pressure that gets a broad grant reattached as a hotfix. The ceiling
   # statement is therefore load-bearing and asserted, not incidental.
   assert {
@@ -165,11 +169,15 @@ run "no_build_role_can_escalate_its_own_privileges" {
   }
 
   assert {
-    condition = alltrue([
-      for name, role in aws_iam_role.project :
-      role.permissions_boundary == aws_iam_policy.codebuild_boundary.arn
-    ])
-    error_message = "A per-project build role is not capped by the build permissions boundary."
+    condition = alltrue(concat(
+      [for name, role in aws_iam_role.project :
+        role.permissions_boundary == aws_iam_policy.codebuild_boundary.arn
+      ],
+      [for key, role in aws_iam_role.agent_context_image :
+        role.permissions_boundary == aws_iam_policy.codebuild_boundary.arn
+      ],
+    ))
+    error_message = "A build role is not capped by the build permissions boundary."
   }
 }
 
@@ -233,13 +241,47 @@ run "no_build_role_reaches_another_projects_resources" {
     ])
     error_message = "A project with no declared ECR repositories still has image-push permission."
   }
+
+  assert {
+    condition = length(flatten([
+      for name, project in local.projects : lookup(project, "ecr_repos", [])
+      ])) == length(distinct(flatten([
+        for name, project in local.projects : lookup(project, "ecr_repos", [])
+    ])))
+    error_message = "Two CodeBuild projects can write the same ECR repository."
+  }
+
+  assert {
+    condition = alltrue([
+      for name, policy in aws_iam_role_policy.project :
+      alltrue([
+        for statement in jsondecode(policy.policy).Statement :
+        toset(flatten([statement.Action])) == toset(["ecr:CreateRepository"])
+        if statement.Sid == "EcrRepositoryBootstrap"
+      ])
+    ])
+    error_message = "An ECR bootstrap grant includes lifecycle or tagging mutation beyond exact repository creation."
+  }
+
+  assert {
+    condition = alltrue([
+      for key, policy in aws_iam_role_policy.agent_context_image :
+      toset(flatten([
+        for statement in jsondecode(policy.policy).Statement : flatten([statement.Resource])
+        if statement.Sid == "OwnEcrRepository"
+        ])) == toset([
+        "arn:aws:ecr:us-east-1:123456789012:repository/adp-test-agent-context-${key}"
+      ])
+    ])
+    error_message = "An agent-context build can write outside its one exact ECR repository."
+  }
 }
 
 run "host_container_privilege_is_an_explicit_reviewed_allow_list" {
   command = apply
 
   # #5674 asked for privileged_mode to be dropped where images are not built.
-  # Reading the buildspecs showed no such project exists here: all ten invoke a
+  # Reading the buildspecs showed no such project exists here: all projects invoke a
   # container runtime, including the two Lambda-layer builds, which compile
   # dependencies inside the Lambda runtime image for binary compatibility.
   # Rather than silently keep a broad default, every use must now carry a

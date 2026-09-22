@@ -87,7 +87,7 @@ resource "aws_codebuild_project" "agent_context_images" {
   for_each     = local.images
   name         = "${var.name_prefix}-${each.key}-build"
   description  = "Build + push agent-context/${each.key} image to ECR on Dockerfile change"
-  service_role = var.codebuild_service_role_arn
+  service_role = var.codebuild_service_role_arns[each.key]
 
   artifacts {
     type = "NO_ARTIFACTS"

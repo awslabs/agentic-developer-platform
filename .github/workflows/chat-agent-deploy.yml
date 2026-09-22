@@ -35,7 +35,7 @@ env:
   ENVIRONMENT: dev
   NAMESPACE: adp-gateway-agents
   EKS_CLUSTER: adp-dev-eks-cluster
-  ECR_REPO: adp-agent-gateway
+  ECR_REPO: adp-chat-agent
   CODEBUILD_PROJECT: adp-dev-chat-agent
 
 jobs:
@@ -91,39 +91,17 @@ jobs:
           terraform version | head -1
 
       # ── 1. Ensure CodeBuild project exists and is pointed at the right buildspec
-      - name: Ensure CodeBuild project
+      - name: Verify Terraform-managed CodeBuild project
         run: |
-          # Role name matches platform/scripts/deploy-all.sh (CB_ROLE_NAME).
-          CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
-          SERVICE_ROLE_ARN=$(aws iam get-role \
-            --role-name "$CB_ROLE_NAME" \
-            --query 'Role.Arn' --output text 2>/dev/null || echo "")
-          if [ -z "$SERVICE_ROLE_ARN" ]; then
-            echo "${CB_ROLE_NAME} missing — run platform/scripts/deploy-all.sh once to create it." >&2
-            exit 1
-          fi
-
-          SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
+          set -euo pipefail
           EXISTS=$(aws codebuild batch-get-projects \
-            --names "${{ env.CODEBUILD_PROJECT }}" \
+            --names "${CODEBUILD_PROJECT}" \
             --region "${AWS_REGION}" \
             --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
-
-          CMD="create-project"
-          [ "$EXISTS" -gt 0 ] && CMD="update-project"
-
-          aws codebuild $CMD --region "${AWS_REGION}" \
-            --name "${{ env.CODEBUILD_PROJECT }}" \
-            --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"codebuild/bs-chat-agent.yml\"}" \
-            --artifacts '{"type":"NO_ARTIFACTS"}' \
-            --environment '{
-              "type":"LINUX_CONTAINER",
-              "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
-              "computeType":"BUILD_GENERAL1_MEDIUM",
-              "privilegedMode":true
-            }' \
-            --service-role "$SERVICE_ROLE_ARN" > /dev/null
-
+          if [ "$EXISTS" -ne 1 ]; then
+            echo "::error::${CODEBUILD_PROJECT} is missing — apply platform/infra before running this build lane."
+            exit 1
+          fi
       # ── 2. Build the image via CodeBuild (per-build isolated source) ────
       - name: Build image via CodeBuild
         id: build

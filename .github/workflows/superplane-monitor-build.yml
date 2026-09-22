@@ -147,39 +147,17 @@ jobs:
           aws --version
 
       # ── 3. Ensure CodeBuild project exists ─────────────────────────────
-      - name: Ensure CodeBuild project
+      - name: Verify Terraform-managed CodeBuild project
         run: |
           set -euo pipefail
-          CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
-          SERVICE_ROLE_ARN=$(aws iam get-role \
-            --role-name "$CB_ROLE_NAME" \
-            --query 'Role.Arn' --output text 2>/dev/null || echo "")
-          if [ -z "$SERVICE_ROLE_ARN" ]; then
-            echo "${CB_ROLE_NAME} missing — a separately approved build-role setup is required; this domain lane does not deploy platform infrastructure." >&2
-            exit 1
-          fi
-
-          SOURCE_LOC="${STATE_BUCKET}/codebuild/adp-source.zip"
           EXISTS=$(aws codebuild batch-get-projects \
             --names "${CODEBUILD_PROJECT}" \
             --region "${AWS_REGION}" \
             --query 'projects | length(@)' --output text 2>/dev/null || echo "0")
-
-          CMD="create-project"
-          [ "$EXISTS" -gt 0 ] && CMD="update-project"
-
-          aws codebuild $CMD --region "${AWS_REGION}" \
-            --name "${CODEBUILD_PROJECT}" \
-            --source "{\"type\":\"S3\",\"location\":\"$SOURCE_LOC\",\"buildspec\":\"modules/domain-apps/superplane/releases/buildspecs/monitor.yml\"}" \
-            --artifacts '{"type":"NO_ARTIFACTS"}' \
-            --environment '{
-              "type":"LINUX_CONTAINER",
-              "image":"aws/codebuild/amazonlinux2-x86_64-standard:5.0",
-              "computeType":"BUILD_GENERAL1_MEDIUM",
-              "privilegedMode":true
-            }' \
-            --service-role "$SERVICE_ROLE_ARN" > /dev/null
-
+          if [ "$EXISTS" -ne 1 ]; then
+            echo "::error::${CODEBUILD_PROJECT} is missing — apply platform/infra before running this build lane."
+            exit 1
+          fi
       # ── 4. Build via CodeBuild ─────────────────────────────────────────
       # ORIGIN_* are passed for the provenance labels only; nothing in the build fetches
       # them. IMAGE_TAG is github.sha — see the tagging note in the header.
