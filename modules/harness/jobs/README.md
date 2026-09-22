@@ -571,6 +571,23 @@ exhaustion escalates to UNRESOLVED with budget retained. Orphan recovery uses th
 retry accounting. `RecoveryReport.deferred` distinguishes scheduled observations from
 completed outcomes or lost-claim skips.
 
+Both recovery sweeps stop awaiting each observation after 30 seconds by default. Set
+`observation_timeout_seconds` to a finite value greater than zero and at most 30
+seconds (below the 60-second recovery claim). A timeout
+follows the UNKNOWN retry/exhaustion path: budget is retained, the orphan advisory
+lock is released, and later operations can proceed. Cancellation of the sweep itself
+still propagates; recovery always rechecks ownership before writing a result.
+
+Observer hooks perform asynchronous read-only provider I/O and must not use the
+recovery database connection or block the event-loop thread. At the deadline the
+hook task is cancelled without awaiting its cancellation cleanup. A process-wide
+registry retains at most 50 outstanding observer tasks and prevents duplicate
+observations of an intent within the same loop until its previous task exits.
+Late results never update durable state; late exceptions are consumed. Occupied
+slots or a still-running observer follow the same UNKNOWN path without starting
+another hook. Tasks that refuse cancellation consume their slot until they exit or
+the worker process is terminated; recovery still releases its locks and progresses.
+
 Cancellation is rechecked after provider I/O and atomically at terminal settlement.
 The recorded provider effect is retained; `CancellationPending` carries that call and
 its budget disposition to trusted composition. SUCCEEDED settlement is refused when
