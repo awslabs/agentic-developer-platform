@@ -33,4 +33,4 @@ jobs:
           sudo chown -R root:root /tmp/cyber-security-source
           sudo chmod -R a+rX /tmp/cyber-security-source
       - name: Exercise full worker suite including actual kernel confinement
-        run: sudo -u cyber-test /tmp/cyber-kernel-tests/bin/python -m pytest -q -p no:cacheprovider /tmp/cyber-security-source/workers/tests
+        run: sudo -u cyber-test env LD_LIBRARY_PATH="$pythonLocation/lib" /tmp/cyber-kernel-tests/bin/python -m pytest -q -p no:cacheprovider /tmp/cyber-security-source/workers/tests
