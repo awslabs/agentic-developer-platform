@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +50,11 @@ logger = logging.getLogger("bedrockgateway.agentauth.github_provider")
 GITHUB_API_BASE = "https://api.github.com"
 _API_VERSION = "2022-11-28"
 _TIMEOUT = 30.0
+
+
+class WorkflowPermissionRequiredError(OperationRefusedError):
+    """GitHub refused a merge because its token cannot update workflow files."""
+
 
 # GitHub's own cap on a blob posted as base64 JSON is well above this; the limit
 # here bounds what one mediated call will relay, so a runaway generated file
@@ -296,6 +302,17 @@ class GitHubProvider:
         if response.status_code >= 500 or response.status_code == 429:
             raise ProviderUnavailableError(f"provider is unavailable for {method} {path}")
         if response.status_code in (401, 403):
+            if response.status_code == 403 and method == "PUT" and path.endswith("/merge"):
+                try:
+                    payload = response.json()
+                    message = payload.get("message") if isinstance(payload, dict) else None
+                except ValueError:
+                    message = None
+                if isinstance(message, str) and re.fullmatch(
+                    r"refusing to allow a GitHub App to create or update workflow `[^`]+` without `workflows` permission",
+                    message,
+                ):
+                    raise WorkflowPermissionRequiredError("GitHub requires workflow permission for this merge")
             # Do not retry: a mediated call is authorized before it is made, so
             # the provider disagreeing means our authority is genuinely absent.
             raise OperationRefusedError("provider refused the mediated operation")
