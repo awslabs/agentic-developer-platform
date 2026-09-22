@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # System tools for triage + static analysis
 RUN apt-get update && apt-get install -y --no-install-recommends \
       file \
+      libseccomp2 \
       binutils \
       yara \
       libyara-dev \
@@ -34,6 +35,7 @@ RUN pip install -r requirements.txt
 COPY workers/entrypoint.py ./entrypoint.py
 COPY workers/sample_access.py ./sample_access.py
 COPY workers/script_guard.py ./script_guard.py
+COPY workers/isolation.py workers/analyze.py workers/job_delivery.py ./
 COPY workers/triage/ ./triage/
 COPY workers/static/ ./static/
 COPY workers/scripts/ ./scripts/
@@ -54,7 +56,18 @@ RUN python3 /app/scripts/generate_manifest.py > /opt/worker-manifest.json \
     && python3 -c "import json; json.load(open('/opt/worker-manifest.json'))"
 
 # Non-root user (reduces blast radius when static-analysis parsers get fed nasty input)
-RUN useradd -m -s /bin/bash -u 1001 worker && chown -R worker:worker /app
+RUN useradd -m -s /bin/bash -u 1001 worker \
+    && chmod -R go-w /app /opt/worker-manifest.json
 USER worker
 
 ENTRYPOINT ["python", "entrypoint.py"]
+
+# Exact runtime filesystem/kernel tests, built only by security contract CI.
+FROM base AS security-test
+USER root
+RUN pip install pytest==8.3.5
+COPY workers/tests/test_isolation.py /app/tests/test_isolation.py
+USER worker
+ENTRYPOINT ["python", "-m", "pytest", "-q", "/app/tests/test_isolation.py"]
+
+FROM base AS runtime

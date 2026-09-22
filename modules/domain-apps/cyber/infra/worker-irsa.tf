@@ -156,53 +156,6 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
     Version = "2012-10-17"
     Statement = [
       {
-        # Issue #5616 (finding #4730). Samples only, and only at the canonical
-        # depth the ingest gateway writes:
-        #   o/<org>/t/<team>/u/<user>/s/<session>/<task>/in/<file>
-        #
-        # The previous pattern was o/*/in/* . Because an IAM `*` also matches
-        # `/`, that single wildcard spanned every org, team and user, and it
-        # matched any depth — so one grant covered every tenant's inputs. The
-        # pattern below is anchored segment by segment, which removes the
-        # any-depth reach and confines the role to `in/` objects: `out/` results
-        # and anything staged outside the canonical layout are no longer
-        # readable at all.
-        #
-        # LIMIT, stated plainly: this narrows *what shape* of key is reachable,
-        # not *whose*. All tenants' jobs share this one role, so there is no
-        # per-tenant value for IAM to substitute here and no static pattern can
-        # separate org A from org B. Per-tenant confinement in IAM would need
-        # session-tagged or per-job scoped credentials (tenant derived at
-        # AssumeRole time, then `s3:prefix`/`aws:PrincipalTag` conditions) —
-        # an identity-architecture change beyond this package's scope.
-        #
-        # So the cross-tenant guarantee is enforced in the worker, by
-        # sample_access.py, which rejects any key outside the requesting
-        # tenant's prefix before a download is attempted. This grant is
-        # defence-in-depth that shrinks what a bypass could reach; it is not
-        # the tenant boundary itself. Do not widen it back to a bare o/*.
-        Sid      = "ReadSampleArtifacts"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::adp-${var.environment}-chat-artifacts-*/o/*/t/*/u/*/s/*/*/in/*"
-      },
-      {
-        # Issue #5616 (finding #4729). Mode B downloads an analysis script, and
-        # there was no grant for it: the only artifacts-bucket grant covered
-        # `in/` objects, so a script at `scripts/...` was never readable. Mode B
-        # could therefore only ever have worked by staging the script where
-        # samples go — i.e. the old code path depended on treating an uploaded
-        # input as executable code, which is the shape of the finding itself.
-        #
-        # Scripts now live under the requester's own prefix in a dedicated
-        # `scripts/` subtree, matching what resolve_script() enforces, so a
-        # sample can never be executed as a script and vice versa.
-        Sid      = "ReadModeBScripts"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::adp-${var.environment}-chat-artifacts-*/o/*/t/*/u/*/scripts/*"
-      },
-      {
         # Issue #272: Workers fetch YARA rules from S3 via initContainer
         Sid    = "ReadYaraRulesPublic"
         Effect = "Allow"
@@ -212,14 +165,7 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
           "arn:aws:s3:::adp-${var.environment}-cape-assets/yara-rules/public/*"
         ]
       },
-      {
-        # Issue #278: Workers need to read samples from cape-assets bucket
-        # (smoke-test samples, future: any sample staged for analysis)
-        Sid      = "ReadCapeAssetsSamples"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::adp-${var.environment}-cape-assets/smoke-test/*"
-      }
+
     ]
   })
 }

@@ -11,6 +11,7 @@ Envelope shape matches modules/domain-apps/cyber/agent/skills/stage-3-static/SKI
 """
 
 import json
+import base64
 import os
 import subprocess
 import tempfile
@@ -18,15 +19,16 @@ import time
 from pathlib import Path
 
 import boto3
-import lief
-import yara
+import sys
+
+from isolation import IsolationError, run_isolated
+
+from job_delivery import download_sample, registered_job
 
 from sample_access import (
     AccessDenied,
-    ObjectRef,
     job_context,
     resolve_sample,
-    resolve_script,
 )
 from script_guard import ScriptRejected, verify_script
 
@@ -76,6 +78,8 @@ ANTI_ANALYSIS_SLEEP_THRESHOLD = 60000  # milliseconds
 
 def _parse_binary(path: Path) -> dict:
     """Parse PE/ELF/Mach-O using lief and extract structural info."""
+    import lief
+
     binary = lief.parse(str(path))
     if binary is None:
         return {"format": "unknown", "sections": [], "imports": []}
@@ -163,6 +167,8 @@ def _extract_strings(path: Path, limit: int = 500) -> list:
 
 def _yara_scan(path: Path, rule_hints: list | None = None) -> list:
     """Run YARA scan against the sample. Optionally narrow by rule hints."""
+    import yara
+
     hits = []
     rules_dir = Path(YARA_RULES_DIR)
     if not rules_dir.is_dir():
@@ -219,63 +225,22 @@ def _run_mode_a(sample_path: Path, focus: list | None, yara_rules: list | None) 
     }
 
 
-def _run_mode_b(sample_path: Path, script_ref: ObjectRef, body: dict, s3_client) -> dict:
-    """Mode B: agent-authored script execution in locked-down subprocess.
-
-    Issue #5616: the script location has already been authorized against the
-    job's tenant space and the script-prefix allowlist by the caller. Here we
-    additionally bind the downloaded content to what the pipeline registered
-    and run the validator before executing. Any refusal raises ScriptRejected,
-    which the caller turns into an explicit failed stage — never a silent
-    empty-findings result.
-
-    The rejected/failed script's S3 location is deliberately not echoed into
-    the returned findings (see _mode_b_label).
-    """
+def _run_mode_b(sample_path: Path, body: dict) -> dict:
+    """Registered bytes are delivered by the broker, never caller-selected S3."""
     with tempfile.TemporaryDirectory() as td:
         script_path = Path(td) / "script.py"
-        s3_client.download_file(script_ref.bucket, script_ref.key, str(script_path))
-
-        # Blocking: registration digest + validator verdict. Raises on refusal,
-        # so no code path below can run an unverified script.
-        verified_digest = verify_script(script_path, body)
-
         try:
-            result = subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
-                ["python3", str(script_path), str(sample_path)],
-                capture_output=True,
-                text=True,
-                timeout=300,
-                check=True,
-                env={"PYTHONDONTWRITEBYTECODE": "1"},
-            )
-            try:
-                parsed = json.loads(result.stdout)
-                return {
-                    "mode": "agent-authored-script",
-                    "script_sha256": verified_digest,
-                    **parsed,
-                }
-            except json.JSONDecodeError as e:
-                return {
-                    "mode": "agent-authored-script",
-                    "script_sha256": verified_digest,
-                    "error": f"script stdout was not valid JSON: {e}",
-                    "stdout_snippet": result.stdout[:500],
-                }
-        except subprocess.TimeoutExpired:
-            return {
-                "mode": "agent-authored-script",
-                "script_sha256": verified_digest,
-                "error": "script exceeded 300s timeout",
-            }
-        except subprocess.CalledProcessError as e:
-            return {
-                "mode": "agent-authored-script",
-                "script_sha256": verified_digest,
-                "error": f"script exited {e.returncode}",
-                "stderr_snippet": (e.stderr or "")[:500],
-            }
+            script = base64.b64decode(body["script_base64"], validate=True)
+            if not 0 < len(script) <= 32768 or body.get("script_validation") != "python-syntax-v1":
+                raise ValueError()
+        except (KeyError, ValueError, TypeError):
+            raise ScriptRejected("script_registration_missing") from None
+        script_path.write_bytes(script)
+        verified_digest = verify_script(script_path, body)
+        result = run_isolated(
+            [sys.executable, "-I", str(script_path), str(sample_path)], [sample_path, script_path],
+        )
+        return {**result, "mode": "agent-authored-script", "script_sha256": verified_digest}
 
 
 def _fail_stage(
@@ -349,7 +314,6 @@ def run() -> None:
     region = _region()
 
     sqs = boto3.client("sqs", region_name=region)
-    s3 = boto3.client("s3", region_name=region)
     ddb = boto3.resource("dynamodb", region_name=region).Table(results_table)
 
     resp = sqs.receive_message(
@@ -375,9 +339,11 @@ def run() -> None:
     # requester's own space is refused here rather than fetched.
     # -----------------------------------------------------------------------
     try:
+        registered_job(body, "static")
         ctx = job_context(body)
         sample_ref = resolve_sample(body, ctx)
-        script_ref = resolve_script(body, ctx) if body.get("script_s3_uri") else None
+        if "script_s3_uri" in body:
+            raise AccessDenied("legacy_script_location_refused")
     except AccessDenied as denied:
         _fail_stage(
             sqs, ddb, msg, artifact_id, response_queue_url, queue_url,
@@ -388,15 +354,22 @@ def run() -> None:
     try:
         with tempfile.TemporaryDirectory() as td:
             sample_path = Path(td) / "sample"
-            s3.download_file(sample_ref.bucket, sample_ref.key, str(sample_path))
+            download_sample(body, sample_ref, sample_path)
 
             # Dispatch Mode A vs Mode B
-            if script_ref is not None:
-                findings = _run_mode_b(sample_path, script_ref, body, s3)
+            if "script_base64" in body:
+                findings = _run_mode_b(sample_path, body)
             else:
-                focus = body.get("focus")
-                yara_rules = body.get("yara_rules")
-                findings = _run_mode_a(sample_path, focus, yara_rules)
+                options = Path(td) / "options.json"
+                options.write_text(json.dumps({"focus": body.get("focus"), "yara_rules": body.get("yara_rules")}))
+                findings = run_isolated(
+                    [sys.executable, "-I", str(Path(__file__).resolve().parents[1] / "analyze.py"),
+                     "static", str(sample_path), str(options)], [sample_path, options],
+                )
+    except (IsolationError, AccessDenied):
+        _fail_stage(sqs, ddb, msg, artifact_id, response_queue_url, queue_url,
+                    reason="analysis_isolation_failed", start=start)
+        return
     except ScriptRejected as rejected:
         _fail_stage(
             sqs, ddb, msg, artifact_id, response_queue_url, queue_url,

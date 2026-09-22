@@ -1,0 +1,25 @@
+name: Cyber job security contracts
+on:
+  pull_request:
+    paths:
+      - modules/domain-apps/cyber/**
+      - modules/gateway/src/agentauth/cyber_jobs.py
+      - modules/gateway/tests/agentauth/test_cyber_jobs.py
+      - .github/workflows/cyber-security-ci.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  kernel-isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build exact worker runtime with isolation probes
+        run: docker build --target security-test -t cyber-isolation-test -f modules/domain-apps/cyber/workers/Dockerfile modules/domain-apps/cyber
+      - name: Enforce isolation with the production container restrictions
+        run: >-
+          docker run --rm --network none --read-only
+          --tmpfs /tmp:rw,nosuid,nodev,size=512m,mode=1777
+          --cap-drop ALL --security-opt no-new-privileges
+          --memory 4g --pids-limit 256 cyber-isolation-test

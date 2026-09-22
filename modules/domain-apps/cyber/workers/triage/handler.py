@@ -16,10 +16,11 @@ import time
 from pathlib import Path
 
 import boto3
-import magic
-import pefile
-from magika import Magika
-import iocextract
+import sys
+
+from isolation import IsolationError, run_isolated
+
+from job_delivery import download_sample, registered_job
 
 from sample_access import AccessDenied, job_context, resolve_sample
 
@@ -44,6 +45,9 @@ def _hashes(path: Path) -> dict:
 
 def _file_type(path: Path) -> dict:
     """Identify file type via libmagic and magika; flag disagreement."""
+    import magic
+    from magika import Magika
+
     libmagic_desc = magic.from_file(str(path))
     m = Magika()
     with open(path, "rb") as f:
@@ -71,6 +75,8 @@ def _is_pe(libmagic_desc: str) -> bool:
 
 def _pe_fields(path: Path) -> dict:
     """Extract PE-specific fields: compile timestamp, sections, signature status."""
+    import pefile
+
     try:
         pe = pefile.PE(str(path), fast_load=True)
         pe.parse_data_directories(
@@ -127,6 +133,8 @@ def _strings(path: Path, limit: int = 500) -> list:
 
 def _iocs(strings_sample: list) -> dict:
     """Extract candidate IOCs from strings using iocextract."""
+    import iocextract
+
     blob = "\n".join(strings_sample)
     urls = sorted(set(iocextract.extract_urls(blob, refang=True)))
     ips = sorted(set(iocextract.extract_ips(blob, refang=True)))
@@ -238,7 +246,6 @@ def run() -> None:
     region = _region()
 
     sqs = boto3.client("sqs", region_name=region)
-    s3 = boto3.client("s3", region_name=region)
     ddb = boto3.resource("dynamodb", region_name=region).Table(results_table)
 
     resp = sqs.receive_message(
@@ -261,6 +268,7 @@ def run() -> None:
     # before any download. Same shared resolver as the static worker — the
     # weakest remaining path is what an attacker would use, so both enforce.
     try:
+        registered_job(body, "triage")
         ctx = job_context(body)
         sample_ref = resolve_sample(body, ctx)
     except AccessDenied as denied:
@@ -270,10 +278,20 @@ def run() -> None:
         )
         return
 
-    with tempfile.TemporaryDirectory() as td:
-        sample_path = Path(td) / "sample"
-        s3.download_file(sample_ref.bucket, sample_ref.key, str(sample_path))
-        findings = _fingerprint(sample_path)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            sample_path = Path(td) / "sample"
+            download_sample(body, sample_ref, sample_path)
+            options = Path(td) / "options.json"
+            options.write_text("{}")
+            findings = run_isolated(
+                [sys.executable, "-I", str(Path(__file__).resolve().parents[1] / "analyze.py"),
+                 "triage", str(sample_path), str(options)], [sample_path, options],
+            )
+    except (IsolationError, AccessDenied):
+        _fail_stage(sqs, ddb, msg, artifact_id, response_queue_url, queue_url,
+                    reason="analysis_isolation_failed", start=start)
+        return
 
     duration = int(time.time() - start)
     ts = int(time.time())

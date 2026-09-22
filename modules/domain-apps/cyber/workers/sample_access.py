@@ -83,8 +83,8 @@ class AccessDenied(Exception):
 class JobContext:
     """Trusted identity for one analysis job.
 
-    Built only from the enqueued job's identity fields, which the intake path
-    populates from authenticated request context. The worker treats these as
+    Built from a broker-only SQS manifest after registered_job() checks its
+    lifetime and stage. The queue resource policy denies every other producer. The worker treats these as
     the authority and derives the permitted keyspace from them.
     """
 

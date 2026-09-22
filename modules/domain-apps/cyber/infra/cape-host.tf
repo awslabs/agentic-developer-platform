@@ -80,22 +80,11 @@ resource "aws_iam_role_policy" "cape_minimal" {
     Version = "2012-10-17"
     Statement = [
       {
-        # Issue #5616 (finding #4730): same narrowing as the worker role in
-        # worker-irsa.tf — anchored to the canonical ingest layout
-        # o/<org>/t/<team>/u/<user>/s/<session>/<task>/in/<file> instead of
-        # o/*/in/*, whose single wildcard matched `/` and so spanned every org,
-        # team and user at any depth.
-        #
-        # The CAPE host is deliberately given no `scripts/` grant: it runs
-        # samples in the dynamic sandbox and has no Mode B script path. Same
-        # limit applies as for the worker role — this constrains the shape of
-        # reachable keys, not which tenant owns them; the per-tenant boundary is
-        # enforced in the worker before any download.
+        # CAPE receives samples as uploads; no tenant bucket grant is needed.
         Sid    = "S3ReadSamples"
         Effect = "Allow"
         Action = ["s3:GetObject"]
         Resource = [
-          "arn:aws:s3:::${var.sample_bucket_name}-*/o/*/t/*/u/*/s/*/*/in/*",
           "arn:aws:s3:::adp-${var.environment}-cape-assets/smoke-test/*"
         ]
       },

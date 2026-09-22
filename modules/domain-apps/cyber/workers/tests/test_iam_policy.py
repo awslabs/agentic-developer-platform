@@ -103,13 +103,11 @@ class TestNoUnanchoredOrgWildcard:
 
 
 class TestOnlyIntendedShapesAreReachable:
-    def test_canonical_sample_key_is_readable(self, policy_file):
-        """The legitimate path must still work, or this gets reverted."""
+    @pytest.mark.parametrize("tenant", [TENANT_A, TENANT_B])
+    def test_no_tenant_sample_is_readable_with_ambient_worker_credentials(self, policy_file, tenant):
         name, path = policy_file
-        key = f"{BUCKET}/{TENANT_A}/s/sess-1/task-1/in/sample.bin"
-        assert any(_matches(key, p) for p in _artifact_patterns(path)), (
-            f"{name}: legitimate sample is not readable"
-        )
+        key = f"{BUCKET}/{tenant}/s/sess-1/task-1/in/sample.bin"
+        assert not any(_matches(key, p) for p in _artifact_patterns(path))
 
     def test_analysis_output_is_not_readable(self, policy_file):
         """`out/` holds analysis results, which workers never need to read.
@@ -144,29 +142,9 @@ class TestOnlyIntendedShapesAreReachable:
 
 
 class TestModeBScriptGrant:
-    """Scripts and samples must be separately addressable (finding #4729)."""
-
-    def test_worker_can_read_a_script_under_the_tenant_script_prefix(self):
-        key = f"{BUCKET}/{TENANT_A}/scripts/art-1/stage-3.py"
-        assert any(_matches(key, p) for p in _artifact_patterns(WORKER_TF)), (
-            "Mode B script is not readable — the worker cannot fetch what it must verify"
-        )
-
-    def test_script_grant_does_not_cover_sample_inputs(self):
-        """A grant that covered both would let an uploaded sample be executed."""
-        script_patterns = [p for p in _artifact_patterns(WORKER_TF) if "scripts" in p]
-        assert script_patterns, "no scripts/ grant found"
-        sample_key = f"{BUCKET}/{TENANT_A}/s/sess-1/task-1/in/sample.bin"
-        for pattern in script_patterns:
-            assert not _matches(sample_key, pattern), (
-                f"scripts grant '{pattern}' also matches a sample input"
-            )
-
-    def test_cape_host_has_no_script_grant(self):
-        """CAPE runs samples dynamically; it has no Mode B path."""
-        assert not [p for p in _artifact_patterns(CAPE_TF) if "scripts" in p], (
-            "CAPE host has a scripts/ grant it does not need"
-        )
+    def test_no_worker_or_cape_script_read_grant(self, policy_file):
+        name, path = policy_file
+        assert not _artifact_patterns(path), "Scripts must be broker-registered inline bytes, not ambient S3 reads"
 
 
 class TestNoUnusedCredentialGrant:
