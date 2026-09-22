@@ -43,6 +43,8 @@ change.)
 
 from __future__ import annotations
 
+import fnmatch
+import re
 from pathlib import Path
 
 import pytest
@@ -231,25 +233,65 @@ class TestRunnerBoundaryVaultDeny:
     """
 
     def test_runner_boundary_denies_vault_namespaces(self):
-        """All four namespaces denied on both actions, in the boundary policy."""
+        """The boundary denies reads and mutations in all tenant namespaces.
+
+        Accept Terraform formatting, wildcard actions and a referenced local
+        list without letting an unrelated statement or a comment satisfy the
+        assertion. Rendered-policy tests also cover this in runner-iam/tests.
+        """
         hcl = _executable_hcl(RUNNER_IAM_TF)
-        boundary_start = hcl.find('resource "aws_iam_policy" "runner_boundary"')
-        assert boundary_start != -1, (
+        boundary = re.search(
+            r'^resource "aws_iam_policy" "runner_boundary"\s*\{(.*?)(?=^resource |\Z)',
+            hcl,
+            re.MULTILINE | re.DOTALL,
+        )
+        assert boundary is not None, (
             "aws_iam_policy.runner_boundary not found — if the boundary was "
             "renamed or removed, re-home this Deny; a Deny outside the boundary "
             "can be out-voted by runner_base's secretsmanager:* grant (#4116)"
         )
 
         stmt = _deny_statement(RUNNER_IAM_TF)
-        assert hcl.find(DENY_SID) > boundary_start, (
+        assert stmt in boundary.group(1), (
             f"{DENY_SID} is not inside the runner_boundary policy; placed in an "
             "attached policy instead it is bypassable"
         )
-        assert 'Effect = "Deny"' in stmt
-        for action in DENIED_ACTIONS:
-            assert action in stmt, f"runner boundary does not deny {action}"
-        for namespace in VAULT_NAMESPACES:
-            assert namespace in stmt, f"runner boundary does not deny {namespace}"
+        assert re.search(r'\bEffect\s*=\s*"Deny"', stmt)
+        assert not re.search(r"\bCondition\s*=", stmt), (
+            "tenant lockout must be unconditional"
+        )
+        action_value = re.search(r'\bAction\s*=\s*("[^"]+"|\[[^\]]*\])', stmt)
+        assert action_value is not None
+        actions = re.findall(r'"([^"]+)"', action_value.group(1))
+        for action in (
+            *DENIED_ACTIONS,
+            "secretsmanager:PutSecretValue",
+            "secretsmanager:PutResourcePolicy",
+        ):
+            assert any(fnmatch.fnmatchcase(action, pattern) for pattern in actions), (
+                f"runner boundary does not deny {action}"
+            )
+        resource_value = re.search(r"\bResource\s*=\s*local\.([A-Za-z0-9_]+)", stmt)
+        assert resource_value is not None, (
+            "resolve the boundary's actual resource expression"
+        )
+        local_name = resource_value.group(1)
+        resources = re.search(
+            rf"^\s*{re.escape(local_name)}\s*=\s*\[(.*?)\n\s*\]",
+            hcl,
+            re.MULTILINE | re.DOTALL,
+        )
+        assert resources is not None, (
+            f"referenced resource local {local_name} is missing"
+        )
+        arns = re.findall(r'"([^"]+)"', resources.group(1))
+        expected = {
+            f"arn:aws:secretsmanager:*:${{data.aws_caller_identity.current.account_id}}:secret:{namespace}*"
+            for namespace in (*VAULT_NAMESPACES, "adp/*/tenants/")
+        }
+        assert set(arns) == expected, (
+            "the referenced Deny must cover exactly the tenant vault namespaces"
+        )
 
     def test_runner_deny_has_no_env_segment(self):
         """Same inert-fix guard as the scaledjob role."""
