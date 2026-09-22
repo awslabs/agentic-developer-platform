@@ -12,6 +12,8 @@ import { childEnvironment, gitEnvironment, repositoryUrl, selectedModel,
   WORKER_SANDBOX_MODE, type ReviewRuntime } from "./reviewer.js";
 import { run } from "./process.js";
 import { runResumableTurn } from "./turn.js";
+import { ModelExecutionBudget } from "./model-budget.js";
+import { observeReviewerChecks, type ReviewerChecks } from "./reviewer-checks.js";
 
 export interface EngineVerdict extends ReviewVerdict {
   stages: { functional: "completed" | "failed"; security: "completed" | "failed" };
@@ -57,6 +59,8 @@ export interface EngineReviewServices {
   github: Pick<GitHubClient, "getPullRequest" | "getIssue" | "getBranch">;
   review(prompt: string): Promise<EngineVerdict>;
   fix(prompt: string): Promise<void>;
+  checks?(head: string): Promise<ReviewerChecks>;
+  wait?(milliseconds: number): Promise<unknown>;
 }
 
 export async function observePublishedRepair(
@@ -80,8 +84,8 @@ export async function observePublishedRepair(
 function services(runtime: ReviewRuntime & { repository: string }): EngineReviewServices {
   const codex = new Codex({ baseUrl: runtime.proxyBaseUrl,
     apiKey: "sigv4-proxy-placeholder", env: childEnvironment() });
-  // One deadline covers review, repair and verification together.
-  const signal = AbortSignal.timeout(Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000));
+  // Retained turns share one execution allowance; CI polling does not consume it.
+  const budget = new ModelExecutionBudget(Number(process.env.CODEX_REVIEWER_TURN_TIMEOUT_MS ?? 45 * 60 * 1000));
   const thread = () => codex.startThread({ workingDirectory: runtime.workspace,
     model: selectedModel(), modelReasoningEffort: "high", sandboxMode: WORKER_SANDBOX_MODE,
     approvalPolicy: "never", networkAccessEnabled: false, webSearchMode: "disabled",
@@ -96,9 +100,10 @@ function services(runtime: ReviewRuntime & { repository: string }): EngineReview
       try { return (await readFile(process.env.ADP_TOKEN_FILE ?? "/tmp/.adp-gh-token", "utf8")).trim() || runtime.githubToken; }
       catch { return runtime.githubToken; }
     })),
-    review: async prompt => parseEngineVerdict((await runResumableTurn(inspection, prompt,
-      { outputSchema: engineReviewSchema, signal })).finalResponse),
-    fix: async prompt => { await runResumableTurn(repair, prompt, { signal }); },
+    checks: observeReviewerChecks,
+    review: async prompt => budget.run(async signal => parseEngineVerdict((await runResumableTurn(inspection, prompt,
+      { outputSchema: engineReviewSchema, signal })).finalResponse)),
+    fix: async prompt => { await budget.run(signal => runResumableTurn(repair, prompt, { signal })); },
   };
 }
 
@@ -129,7 +134,7 @@ export function engineReviewBody(verdict: EngineVerdict, head: string): string {
     + `\nFunctional review: ${verdict.stages.functional}. Security review: ${verdict.stages.security}.\n${verdict.stageDetails}\n`;
 }
 
-export async function runEngineReview(
+async function runEngineReviewPass(
   envelope: CodexEngineReviewEnvelope,
   runtime: ReviewRuntime,
   supplied?: EngineReviewServices,
@@ -152,6 +157,13 @@ export async function runEngineReview(
   if (initialPr.head.sha !== expected || (initialPr.state !== "open" && !merged)
       || (merged && cycle.action === "repair")) throw new Error("Engine PR head or state changed before review");
   if (await git(["rev-parse", "HEAD"]) !== expected) throw new Error("Engine checkout does not match assigned head");
+  const availableBase = await run("git", ["cat-file", "-e", `${baseSha}^{commit}`],
+    { cwd: runtime.workspace, env: localEnv, allowFailure: true });
+  if (availableBase.exitCode !== 0) {
+    const token = runtime.getGitHubToken ? await runtime.getGitHubToken() : runtime.githubToken;
+    await run("git", ["fetch", "--no-tags", repositoryUrl(envelope.repository), baseSha],
+      { cwd: runtime.workspace, env: gitEnvironment(token) });
+  }
   const branch = await git(["symbolic-ref", "--short", "HEAD"]);
   const config = await readFile(join(runtime.workspace, ".git", "config"), "utf8");
   const trackedDiff = () => git(["diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"]);
@@ -286,9 +298,71 @@ export async function runEngineReview(
     if (current.head.sha !== head) throw new Error("PR head changed before review delivery");
   }
   if (!verdict) throw new Error("Engine review produced no inspection");
-  return { status: "engine_reviewed", sha: head,
+  return { status: "engine_reviewed", sha: head, merged,
     repair_base_sha: head !== expected ? expected : null,
     report: engineReport(verdict),
     body: engineReviewBody(verdict, head),
   };
+}
+
+/** Keep the same controller and both SDK threads alive until checks settle.
+ * Python publishes final evidence/terminal receipts only after this returns;
+ * the engine then performs its existing fenced merge and story completion. */
+export async function runEngineReview(
+  envelope: CodexEngineReviewEnvelope, runtime: ReviewRuntime, supplied?: EngineReviewServices,
+) {
+  const controller = supplied ?? services({ ...runtime, repository: envelope.repository });
+  let result = await runEngineReviewPass(envelope, runtime, controller);
+  if (!envelope.cycle.reviewer_owned_delivery || result.merged) return result;
+  if (!controller.checks) throw new Error("Reviewer-owned delivery requires canonical check observations");
+  const root = envelope.cycle.head_sha;
+  const finish = () => ({ ...result, repair_base_sha: result.sha === root ? null : root });
+  const wait = controller.wait ?? pause;
+  let observationFailures = 0;
+  while (true) {
+    if (Object.values(result.report.stages).some(stage => stage !== "completed")) return finish();
+    let checks: ReviewerChecks;
+    try {
+      checks = await controller.checks(result.sha);
+      observationFailures = 0;
+    } catch (error) {
+      if (!(error instanceof Error) || !("retryable" in error) || error.retryable !== true || ++observationFailures >= 3) throw error;
+      await wait(60000);
+      continue;
+    }
+    if (checks.head_sha !== result.sha) throw new Error("PR head changed while waiting for checks");
+    if (!checks.open && !checks.merged) throw new Error("PR closed while waiting for checks");
+    if (checks.merged) return finish();
+    if (checks.state === "pending" && !checks.base_repair_required) {
+      // No model call and no terminal receipt while applicable CI is running.
+      await wait(60000);
+      continue;
+    }
+    if (checks.state === "passed" && !checks.base_repair_required && result.report.verdict === "approve") return finish();
+    const previous = result;
+    const needsRepair = checks.state === "failed" || checks.base_repair_required;
+    const findings = [...result.report.findings, {
+      source: checks.base_repair_required ? "merge-controller" : "required-checks",
+      summary: checks.base_repair_required ? "Repair merge conflict or out-of-date base" : "Canonical CI observation for this exact head",
+      evidence: checks,
+    }];
+    if (envelope.cycle.allow_story_repairs) {
+      result = await runEngineReviewPass({ ...envelope, cycle: { ...envelope.cycle,
+        head_sha: result.sha, action: needsRepair ? "repair" : "review", findings,
+      } }, runtime, controller);
+    }
+    if (result.sha === previous.sha) {
+      // A genuine external/no-progress blocker must remain visible. Do not spend
+      // another model turn or accidentally approve code with failing checks.
+      if (needsRepair) {
+        result = { ...result, report: { ...result.report, verdict: "request-changes",
+          findings: [...result.report.findings, { finding_id: "delivery-blocked", stage: "functional",
+            severity: "blocking", disposition: "open", summary: JSON.stringify(findings.at(-1)) }] },
+          body: result.body.replace(/— APPROVE/g, "— REQUEST CHANGES") + "\nDelivery remains blocked: " + JSON.stringify(findings.at(-1)) };
+      }
+      return finish();
+    }
+    // The pushed child is inspected already. Observe its checks, and only repair
+    // new failures/findings; never dispatch another developer or reviewer here.
+  }
 }

@@ -19,8 +19,14 @@ def finish_engine_review(output: str, *, envelope: dict, delivery, run, cwd) -> 
             or run(["git", "rev-parse", "HEAD"], cwd=cwd).stdout.strip() != head):
         raise RuntimeError("Codex result does not match the inspected checkout")
     if head != cycle["head_sha"]:
-        if (cycle.get("allow_story_repairs") is not True or base != cycle["head_sha"]
-                or run(["git", "rev-parse", "HEAD^"], cwd=cwd).stdout.strip() != base):
+        if (cycle.get("allow_story_repairs") is not True or base != cycle["head_sha"]):
+            raise RuntimeError("Codex repaired head is not a child of its assigned revision")
+        if cycle.get("reviewer_owned_delivery") is True:
+            # The same controller may publish several tested repairs while CI
+            # runs. Every push is fenced; the final result retains its assignment
+            # root instead of pretending each intermediate commit is a new run.
+            run(["git", "merge-base", "--is-ancestor", base, head], cwd=cwd)
+        elif run(["git", "rev-parse", "HEAD^"], cwd=cwd).stdout.strip() != base:
             raise RuntimeError("Codex repaired head is not a child of its assigned revision")
     elif base is not None:
         raise RuntimeError("Codex repair result has inconsistent lineage")
@@ -29,13 +35,15 @@ def finish_engine_review(output: str, *, envelope: dict, delivery, run, cwd) -> 
     if not isinstance(report, dict) or not isinstance(result.get("body"), str):
         raise RuntimeError("Codex did not produce a structured review")
     if cycle["action"] == "repair":
-        if head == cycle["head_sha"] and report.get("verdict") != "approve":
+        owns_delivery = cycle.get("reviewer_owned_delivery") is True and delivery is not None
+        if not owns_delivery and head == cycle["head_sha"] and report.get("verdict") != "approve":
             raise RuntimeError("Codex story repair remains blocked; no commit was published")
-        # A separately dispatched repair remains an authoring execution. Its next
-        # reviewer must be a distinct run, even when both use the Codex persona.
-        pr_binding.register_pull_request(repo=cycle["repo"], pr_number=cycle["pr_number"])
-        return ("Codex story repair delivered to the existing PR" if base
-                else "Codex verified the existing PR; no repair was needed")
+        # Owned repairs retain the story's implementation binding, as ordinary
+        # review-and-fix runs do. Only legacy authoring runs register a new author.
+        if not owns_delivery:
+            pr_binding.register_pull_request(repo=cycle["repo"], pr_number=cycle["pr_number"])
+            return ("Codex story repair delivered to the existing PR" if base
+                    else "Codex verified the existing PR; no repair was needed")
     if delivery is None:
         raise RuntimeError("Codex engine review has no evidence assignment")
     event = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES"}.get(report.get("verdict"), "COMMENT")

@@ -300,3 +300,81 @@ for (const mergeable of [false, null, true]) test(`an assigned base repair integ
   assert.equal(result.repair_base_sha, expected);
   assert.equal(result.report.verdict, "approve");
 });
+
+function checkObservation(head: string, state: "passed" | "pending" | "failed" = "passed") {
+  return { head_sha: head, base_sha: head, state, open: true, merged: false, base_repair_required: false,
+    reasons: state === "passed" ? [] : [`required_check_${state}`], checks: [], failures: state === "failed" ? [{ name: "unit", details: "Expected 2, received 1" }] : [] };
+}
+
+test("reviewer-owned project without CI finishes without waiting or extra review", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let reviews = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => { reviews++; return approved; }, fix: async () => assert.fail("no repair"),
+    checks: async head => checkObservation(head), wait: async () => assert.fail("no CI must not wait") });
+  assert.equal(result.report.verdict, "approve");
+  assert.equal(reviews, 1);
+});
+
+test("reviewer remains alive through pending CI and fixes its failure using retained services", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0;
+  let observations = 0;
+  let waits = 0;
+  let complete = false;
+  const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => approved,
+    fix: async prompt => { assert.match(prompt, /Expected 2, received 1/); repairs++; await writeFile(join(state.workspace, "code.txt"), "fixed CI behavior\n"); },
+    checks: async head => { assert.equal(complete, false); return checkObservation(head, ++observations === 1 ? "pending" : observations === 2 ? "failed" : "passed"); },
+    wait: async () => { waits++; assert.equal(repairs, 0); },
+  });
+  complete = true;
+  assert.equal(waits, 1);
+  assert.equal(repairs, 1);
+  assert.equal(observations, 3);
+  assert.equal(result.report.verdict, "approve");
+  assert.equal(result.repair_base_sha, state.sha);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+});
+
+test("successive CI repairs retain original assignment lineage and one controller", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => approved,
+    fix: async () => { await writeFile(join(state.workspace, "code.txt"), `repair ${++repairs}\n`); },
+    checks: async head => checkObservation(head, repairs < 2 ? "failed" : "passed"),
+  });
+  assert.equal(repairs, 2);
+  assert.equal(result.repair_base_sha, state.sha);
+  assert.equal(await state.git("rev-parse", "HEAD~2"), state.sha);
+  assert.equal(result.report.verdict, "approve");
+});
+
+test("no-progress repair never approves failed CI or loops model calls", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.reviewer_owned_delivery = true;
+  let repairs = 0;
+  const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => approved, fix: async () => { repairs++; },
+    checks: async head => checkObservation(head, "failed"),
+  });
+  assert.equal(repairs, 1);
+  assert.equal(result.report.verdict, "request-changes");
+  assert.match(result.body, /Expected 2, received 1/);
+});
+
+test("head movement and nonretryable policy refusal stop retained delivery", async t => {
+  for (const refusal of [false, true]) {
+    const state = await fixture(t);
+    state.envelope.cycle.reviewer_owned_delivery = true;
+    await assert.rejects(runEngineReview(state.envelope, state.runtime, { github: state.github,
+      review: async () => approved, fix: async () => assert.fail("must not repair"),
+      checks: async () => { if (refusal) throw Object.assign(new Error("policy expired"), { retryable: false }); return checkObservation("e".repeat(40)); },
+      wait: async () => assert.fail("must not retry"),
+    }), refusal ? /policy expired/ : /head changed/);
+  }
+});

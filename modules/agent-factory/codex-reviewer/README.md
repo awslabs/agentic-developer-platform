@@ -31,17 +31,30 @@ protected `review_cycle_input`, without requiring a webhook payload or an
 `agent/issue-N` branch. Shared-worker flows with repair permission let the reviewer
 fix against the story and acceptance criteria, then review the final child commit
 before an exact-lease push. Reviews with no repair permission remain read-only.
-There is no mechanical file/line limit in this story repair path. It makes at most
-two repair passes within one model deadline, preserving unresolved findings if
-verification fails.
+There is no mechanical file/line limit in this story repair path.
 
-Engine runs never call the adapter's direct merge path or wait for CI in a worker
-slot. Python publishes the exact-head formal verdict and uploads the R1 evidence
-before acknowledging completion. GitHub refusals remain publication blockers.
-The engine validates evidence against the actual PR head and owns subsequent
-checks and merge. Existing in-flight assignments retain their original persona.
-Review reports stay outside the implementation commits. Already merged PRs can
-be reviewed from their retained PR head without recreating deleted branches.
+Assignments with `reviewer_owned_delivery` keep the same controller and review/
+repair threads alive after each inspected push. The host polls the gateway's
+canonical merge-check policy every minute. No configured or observed CI means
+no CI wait. Required pending or missing checks wait; failing applicable checks
+feed provider evidence to the retained repair thread. Optional checks remain
+optional under the existing repository policy. The controller never turns an
+unavailable observation into success.
+
+CI polling does not consume `CODEX_REVIEWER_TURN_TIMEOUT_MS`: that allowance covers
+cumulative model execution across retained review, repair and verification turns.
+The gateway still enforces the flow's policy window, spend and claim on every
+observation and model call. A repair that makes no progress returns its real
+findings rather than repeating model calls on the same head.
+
+Python publishes the final exact-head verdict and uploads R1 evidence before
+acknowledging completion. An owned repair retains the original implementation
+binding/author and can advance directly to merge readiness. The engine rechecks
+current review, checks, authority and PR state, performs its fenced merge, and
+completes the story. It never uses the adapter's standalone direct-merge path.
+Legacy assignments keep their original single-pass delivery behavior. Review
+reports stay outside implementation commits. Already merged PRs can be reviewed
+from their retained head without recreating deleted branches.
 
 Codex uses the same loopback SigV4 proxy as every other hosted agent. Its SDK
 base URL is `http://127.0.0.1:9090/openai/v1`; the proxy signs and forwards
@@ -87,8 +100,8 @@ Engine repair assignments act on their supplied findings before verification.
 For a conflicting PR, the controller fetches and prepares the assigned base
 merge; Codex resolves the files, and the controller verifies and publishes the
 reviewed tree with the original head as its first parent. Review and repair use
-separate retained conversations. Each assignment performs at most one repair
-pass before publishing inspected progress and its remaining findings.
+separate retained conversations. Each pass publishes inspected progress before
+waiting for CI; subsequent failures stay in those same conversations.
 
 An interrupted SDK response stream may resume once on its existing thread and
 working tree, within the original configured deadline. Missing terminal events
