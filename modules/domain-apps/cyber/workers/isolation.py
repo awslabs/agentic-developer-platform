@@ -134,6 +134,7 @@ def run_isolated(command: list[str], inputs: list[Path], *, timeout: float = TIM
     intentionally orphaned descendant cannot survive into the next job.
     """
     code_root = Path(__file__).resolve().parent
+    interpreter_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LD_LIBRARY_PATH": str(Path(sys.base_prefix).resolve() / "lib")}
     with tempfile.TemporaryDirectory(prefix="cyber-isolation-") as td:
         root = Path(td)
         scratch = root / "scratch"
@@ -146,7 +147,7 @@ def run_isolated(command: list[str], inputs: list[Path], *, timeout: float = TIM
         config = root / "config.json"
         config.write_text(json.dumps({
             "command": command, "scratch": str(scratch), "read_paths": reads,
-            "env": {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(scratch),
+            "env": {**interpreter_env, "HOME": str(scratch),
                     "TMPDIR": str(scratch), "PYTHONDONTWRITEBYTECODE": "1",
                     "YARA_RULES_DIR": "/rules" if Path("/rules").is_dir() else "/opt/yara-rules"},
         }))
@@ -154,12 +155,20 @@ def run_isolated(command: list[str], inputs: list[Path], *, timeout: float = TIM
             child = subprocess.Popen(
                 [sys.executable, "-I", str(Path(__file__).resolve()), str(config)],
                 stdin=subprocess.DEVNULL, stdout=out, stderr=err, close_fds=True,
-                start_new_session=True, env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+                start_new_session=True, env=interpreter_env,
             )
             try:
                 status = child.wait(timeout=timeout)
                 if status != 0:
-                    raise IsolationError("isolated_analysis_failed")
+                    err.seek(0)
+                    setup_code = err.read(128).decode("ascii", errors="ignore").strip()
+                    if status == 125 and setup_code in {
+                        "isolation_kernel_unsupported", "isolation_no_new_privs_failed", "isolation_landlock_unavailable",
+                        "isolation_landlock_create_failed", "isolation_landlock_rule_failed", "isolation_landlock_restrict_failed",
+                        "isolation_seccomp_init_failed", "isolation_seccomp_rule_failed", "isolation_seccomp_load_failed",
+                    }:
+                        raise IsolationError(setup_code)
+                    raise IsolationError(f"isolated_analysis_failed_exit_{status}")
             except subprocess.TimeoutExpired as exc:
                 raise IsolationError("isolated_analysis_timeout") from exc
             finally:
@@ -184,6 +193,9 @@ def run_isolated(command: list[str], inputs: list[Path], *, timeout: float = TIM
 if __name__ == "__main__":
     try:
         _launch(sys.argv[1])
+    except IsolationError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(125)
     except Exception:
         # Never echo child paths, environment, output, or credential material.
         sys.exit(125)
