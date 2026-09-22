@@ -772,9 +772,7 @@ def test_the_flat_scan_would_have_passed_the_nested_fixture(tmp_path):
     """
     directory = _nested_hostile_set(tmp_path)
 
-    seen = sorted(
-        p.name for p in directory.iterdir() if p.suffix in {".yaml", ".yml"}
-    )
+    seen = sorted(p.name for p in directory.iterdir() if p.suffix in {".yaml", ".yml"})
     assert seen == ["manifest.yaml"], (
         "this test no longer reproduces the old behaviour; update it deliberately"
     )
