@@ -15,6 +15,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -62,6 +63,7 @@ class AssumeRoleRequestBody(BaseModel):
     service: str = "aws"
     label: str | None = None
     purpose: str | None = None
+    permission_tier: Literal["deploy-bootstrap"] | None = None
     invocation_id: str | None = None
 
 
@@ -197,6 +199,16 @@ async def credential_assume_role(
             detail={
                 "error": "invalid_credential_type",
                 "message": (f"credential_type={cred.credential_type!r} is not an aws_role. This endpoint only works with aws_role credentials."),
+            },
+        )
+
+    stored_tier = (cred.scopes or {}).get("permission_tier")
+    if body.permission_tier != stored_tier and (body.permission_tier == "deploy-bootstrap" or stored_tier == "deploy-bootstrap"):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "permission_tier_mismatch",
+                "message": "The selected AWS credential is not authorized for the requested operation tier.",
             },
         )
 

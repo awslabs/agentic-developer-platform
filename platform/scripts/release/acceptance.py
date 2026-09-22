@@ -89,7 +89,13 @@ def check(directory, environment, upgrade_directory):
     status, health = http(base + '/api/health')
     require(status == 200 and json.loads(health).get('status') == 'healthy', 'Public API is unhealthy')
     with zipfile.ZipFile(directory / 'frontend.zip') as archive:
-        for name in ('index.html', 'cfn-templates/aws_role_v1.yaml', 'cfn-templates/aws_role_v2.yaml'):
+        templates = (
+            'index.html',
+            'cfn-templates/aws_role_v1.yaml',
+            'cfn-templates/aws_role_v2.yaml',
+            'cfn-templates/aws_role_deploy_v1.yaml',
+        )
+        for name in templates:
             status, body = http(base + '/' + name)
             require(status == 200 and body == archive.read(name), f'Published {name} differs from release')
     status, body = http(base + '/runtime-config.js')

@@ -1,0 +1,477 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  ADP cross-account foundation bootstrap role. This temporary role can create
+  deployment-scoped infrastructure, but cannot create IAM identities or a full
+  ADP installation. Delete the stack after the supported bootstrap work.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Tenant and deployment binding
+        Parameters:
+          - DeploymentId
+          - ExternalId
+          - GatewayAccountId
+          - GatewayRolePrincipal
+          - AllowedRegions
+          - ConfirmBootstrapAccess
+      - Label:
+          default: Optional capabilities
+        Parameters:
+          - EnableDataServices
+          - EnablePublicIngress
+          - EnableBedrockMarketplace
+          - EnableDestructiveTeardown
+
+Parameters:
+  DeploymentId:
+    Type: String
+    Description: Immutable identifier used in names and ownership tags.
+    MinLength: 8
+    MaxLength: 24
+    AllowedPattern: '[a-z0-9][a-z0-9-]*[a-z0-9]'
+  ExternalId:
+    Type: String
+    NoEcho: true
+    Description: Tenant-bound external ID issued by ADP for this credential.
+    MinLength: 36
+    MaxLength: 64
+    AllowedPattern: '[A-Za-z0-9-]+'
+  GatewayAccountId:
+    Type: String
+    Description: AWS account ID hosting the ADP gateway.
+    AllowedPattern: '[0-9]{12}'
+  GatewayRolePrincipal:
+    Type: String
+    Description: Exact ADP gateway IAM role ARN permitted to assume this role.
+    AllowedPattern: 'arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+'
+  AllowedRegions:
+    Type: CommaDelimitedList
+    Default: us-east-1
+    Description: Regions in which regional bootstrap actions are permitted. Public ingress requires us-east-1 for its CloudFront certificate.
+  ConfirmBootstrapAccess:
+    Type: String
+    AllowedValues: [CONFIRM]
+    Description: Type CONFIRM to acknowledge temporary infrastructure write access.
+  EnableDataServices:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Allow tagged RDS, DynamoDB, and ElastiCache control-plane operations.
+  EnablePublicIngress:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Allow tagged CloudFront, ACM, and WAF control-plane operations. DNS is excluded.
+  EnableBedrockMarketplace:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Allow model logging configuration and Marketplace subscription changes.
+  EnableDestructiveTeardown:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Allow deletion of deployment-named or deployment-tagged resources.
+
+Rules:
+  GatewayPrincipalBelongsToGatewayAccount:
+    Assertions:
+      - Assert: !Equals
+          - !Select [4, !Split [':', !Ref GatewayRolePrincipal]]
+          - !Ref GatewayAccountId
+        AssertDescription: GatewayRolePrincipal must belong to GatewayAccountId.
+  ConfirmBootstrap:
+    Assertions:
+      - Assert: !Equals [!Ref ConfirmBootstrapAccess, CONFIRM]
+        AssertDescription: Type CONFIRM to install the bootstrap role.
+  PublicIngressIncludesCertificateRegion:
+    RuleCondition: !Equals [!Ref EnablePublicIngress, 'true']
+    Assertions:
+      - Assert: !Contains [!Ref AllowedRegions, us-east-1]
+        AssertDescription: AllowedRegions must include us-east-1 when public ingress is enabled for CloudFront certificate operations.
+
+Conditions:
+  DataServicesEnabled: !Equals [!Ref EnableDataServices, 'true']
+  PublicIngressEnabled: !Equals [!Ref EnablePublicIngress, 'true']
+  BedrockMarketplaceEnabled: !Equals [!Ref EnableBedrockMarketplace, 'true']
+  DestructiveTeardownEnabled: !Equals [!Ref EnableDestructiveTeardown, 'true']
+  DataTeardownEnabled: !And [!Condition DataServicesEnabled, !Condition DestructiveTeardownEnabled]
+  PublicIngressTeardownEnabled: !And [!Condition PublicIngressEnabled, !Condition DestructiveTeardownEnabled]
+  BedrockTeardownEnabled: !And [!Condition BedrockMarketplaceEnabled, !Condition DestructiveTeardownEnabled]
+
+Resources:
+  ADPBootstrapRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'ADP-Deploy-${DeploymentId}'
+      Description: Temporary, non-IAM ADP foundation bootstrap role.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TenantBoundAssume
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${GatewayAccountId}:root'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+                'aws:PrincipalArn': !Ref GatewayRolePrincipal
+          - Sid: AttributedSessions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${GatewayAccountId}:root'
+            Action: 'sts:TagSession'
+            Condition:
+              StringEquals:
+                'aws:PrincipalArn': !Ref GatewayRolePrincipal
+      Policies:
+        - PolicyName: !Sub 'ADP-Foundation-Bootstrap-${DeploymentId}'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Inventory
+                Effect: Allow
+                Action:
+                  - 'ec2:DescribeAddresses'
+                  - 'ec2:DescribeAvailabilityZones'
+                  - 'ec2:DescribeImages'
+                  - 'ec2:DescribeInstanceTypes'
+                  - 'ec2:DescribeInternetGateways'
+                  - 'ec2:DescribeLaunchTemplateVersions'
+                  - 'ec2:DescribeLaunchTemplates'
+                  - 'ec2:DescribeNatGateways'
+                  - 'ec2:DescribeRouteTables'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeSubnets'
+                  - 'ec2:DescribeVpcEndpoints'
+                  - 'ec2:DescribeVpcs'
+                  - 'ecr:DescribeRepositories'
+                  - 'ecr:GetLifecyclePolicy'
+                  - 'ecr:GetRepositoryPolicy'
+                  - 'ecr:ListTagsForResource'
+                  - 'logs:DescribeLogGroups'
+                  - 's3:GetBucketLocation'
+                  - 's3:ListAllMyBuckets'
+                  - 'sts:GetCallerIdentity'
+                Resource: '*'
+              - Sid: CreateTaggedFoundationResources
+                Effect: Allow
+                Action:
+                  - 'ec2:AllocateAddress'
+                  - 'ec2:CreateInternetGateway'
+                  - 'ec2:CreateLaunchTemplate'
+                  - 'ec2:CreateNatGateway'
+                  - 'ec2:CreateRouteTable'
+                  - 'ec2:CreateSecurityGroup'
+                  - 'ec2:CreateSubnet'
+                  - 'ec2:CreateVpc'
+                  - 'ec2:CreateVpcEndpoint'
+                  - 'ecr:CreateRepository'
+                  - 'logs:CreateLogGroup'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/adp:deployment-id': !Ref DeploymentId
+              - Sid: TagFoundationResourcesOnCreate
+                Effect: Allow
+                Action: 'ec2:CreateTags'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'ec2:CreateAction':
+                      - AllocateAddress
+                      - CreateInternetGateway
+                      - CreateLaunchTemplate
+                      - CreateNatGateway
+                      - CreateRouteTable
+                      - CreateSecurityGroup
+                      - CreateSubnet
+                      - CreateVpc
+                      - CreateVpcEndpoint
+                    'aws:RequestTag/adp:deployment-id': !Ref DeploymentId
+                  'ForAllValues:StringEquals':
+                    'aws:TagKeys':
+                      - 'adp:deployment-id'
+              - Sid: MutateTaggedFoundationResources
+                Effect: Allow
+                Action:
+                  - 'ec2:AssociateRouteTable'
+                  - 'ec2:AttachInternetGateway'
+                  - 'ec2:AuthorizeSecurityGroupEgress'
+                  - 'ec2:AuthorizeSecurityGroupIngress'
+                  - 'ec2:CreateRoute'
+                  - 'ec2:ModifySubnetAttribute'
+                  - 'ec2:ModifyVpcAttribute'
+                  - 'ec2:RevokeSecurityGroupEgress'
+                  - 'ec2:RevokeSecurityGroupIngress'
+                  - 'ecr:PutLifecyclePolicy'
+                  - 'logs:PutRetentionPolicy'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:ResourceTag/adp:deployment-id': !Ref DeploymentId
+              - Sid: DeploymentNamedRepositories
+                Effect: Allow
+                Action:
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:CompleteLayerUpload'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:InitiateLayerUpload'
+                  - 'ecr:PutImage'
+                  - 'ecr:UploadLayerPart'
+                Resource: !Sub 'arn:${AWS::Partition}:ecr:*:${AWS::AccountId}:repository/adp-${DeploymentId}-*'
+              - Sid: DeploymentNamedStorage
+                Effect: Allow
+                Action:
+                  - 's3:CreateBucket'
+                  - 's3:GetBucketPolicy'
+                  - 's3:GetBucketTagging'
+                  - 's3:GetBucketVersioning'
+                  - 's3:ListBucket'
+                  - 's3:PutEncryptionConfiguration'
+                  - 's3:PutLifecycleConfiguration'
+                  - 's3:PutBucketOwnershipControls'
+                  - 's3:PutBucketPublicAccessBlock'
+                  - 's3:PutBucketTagging'
+                  - 's3:PutBucketVersioning'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::adp-${DeploymentId}-*'
+              - Sid: DeploymentNamedObjects
+                Effect: Allow
+                Action: ['s3:GetObject', 's3:PutObject']
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::adp-${DeploymentId}-*/*'
+              - Sid: DeploymentNamedConfiguration
+                Effect: Allow
+                Action:
+                  - 'secretsmanager:CreateSecret'
+                  - 'secretsmanager:DescribeSecret'
+                  - 'secretsmanager:GetSecretValue'
+                  - 'secretsmanager:PutSecretValue'
+                  - 'secretsmanager:TagResource'
+                  - 'ssm:AddTagsToResource'
+                  - 'ssm:GetParameter'
+                  - 'ssm:GetParameters'
+                  - 'ssm:PutParameter'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:adp/${DeploymentId}/*'
+                  - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/adp/${DeploymentId}/*'
+              - !If
+                - DataServicesEnabled
+                - Sid: OptionalDataInventory
+                  Effect: Allow
+                  Action:
+                    - 'dynamodb:DescribeTable'
+                    - 'dynamodb:ListTables'
+                    - 'elasticache:DescribeCacheSubnetGroups'
+                    - 'elasticache:DescribeReplicationGroups'
+                    - 'rds:DescribeDBInstances'
+                    - 'rds:DescribeDBSubnetGroups'
+                  Resource: '*'
+                - !Ref 'AWS::NoValue'
+              - !If
+                - DataServicesEnabled
+                - Sid: OptionalDataCreate
+                  Effect: Allow
+                  Action:
+                    - 'dynamodb:CreateTable'
+                    - 'elasticache:CreateCacheSubnetGroup'
+                    - 'elasticache:CreateReplicationGroup'
+                    - 'rds:CreateDBInstance'
+                    - 'rds:CreateDBSubnetGroup'
+                  Resource: '*'
+                  Condition:
+                    StringEquals:
+                      'aws:RequestTag/adp:deployment-id': !Ref DeploymentId
+                - !Ref 'AWS::NoValue'
+              - !If
+                - DataServicesEnabled
+                - Sid: OptionalDataUpdate
+                  Effect: Allow
+                  Action:
+                    - 'dynamodb:UpdateTable'
+                    - 'elasticache:ModifyReplicationGroup'
+                    - 'rds:ModifyDBInstance'
+                    - 'rds:ModifyDBSubnetGroup'
+                  Resource: '*'
+                  Condition:
+                    StringEquals:
+                      'aws:ResourceTag/adp:deployment-id': !Ref DeploymentId
+                - !Ref 'AWS::NoValue'
+              - !If
+                - PublicIngressEnabled
+                - Sid: OptionalPublicIngressInventory
+                  Effect: Allow
+                  Action:
+                    - 'acm:DescribeCertificate'
+                    - 'acm:ListCertificates'
+                    - 'cloudfront:GetDistribution'
+                    - 'cloudfront:GetDistributionConfig'
+                    - 'cloudfront:ListDistributions'
+                    - 'wafv2:GetWebACL'
+                    - 'wafv2:ListWebACLs'
+                  Resource: '*'
+                - !Ref 'AWS::NoValue'
+              - !If
+                - PublicIngressEnabled
+                - Sid: OptionalPublicIngressCreate
+                  Effect: Allow
+                  Action: ['acm:RequestCertificate', 'cloudfront:CreateDistribution', 'wafv2:CreateWebACL']
+                  Resource: '*'
+                  Condition:
+                    StringEquals:
+                      'aws:RequestTag/adp:deployment-id': !Ref DeploymentId
+                - !Ref 'AWS::NoValue'
+              - !If
+                - PublicIngressEnabled
+                - Sid: OptionalPublicIngressUpdate
+                  Effect: Allow
+                  Action: ['cloudfront:UpdateDistribution', 'wafv2:UpdateWebACL']
+                  Resource: '*'
+                  Condition:
+                    StringEquals:
+                      'aws:ResourceTag/adp:deployment-id': !Ref DeploymentId
+                - !Ref 'AWS::NoValue'
+              - !If
+                - BedrockMarketplaceEnabled
+                - Sid: OptionalBedrockMarketplace
+                  Effect: Allow
+                  Action:
+                    - 'aws-marketplace:Subscribe'
+                    - 'aws-marketplace:ViewSubscriptions'
+                    - 'bedrock:GetModelInvocationLoggingConfiguration'
+                    - 'bedrock:PutModelInvocationLoggingConfiguration'
+                  Resource: '*'
+                - !Ref 'AWS::NoValue'
+              - !If
+                - BedrockTeardownEnabled
+                - Sid: OptionalBedrockMarketplaceTeardown
+                  Effect: Allow
+                  Action:
+                    - 'aws-marketplace:Unsubscribe'
+                    - 'bedrock:DeleteModelInvocationLoggingConfiguration'
+                  Resource: '*'
+                - !Ref 'AWS::NoValue'
+              - !If
+                - DestructiveTeardownEnabled
+                - Sid: TeardownNamedResources
+                  Effect: Allow
+                  Action:
+                    - 'ecr:DeleteRepository'
+                    - 's3:DeleteBucket'
+                    - 's3:DeleteObject'
+                    - 'secretsmanager:DeleteSecret'
+                    - 'ssm:DeleteParameter'
+                  Resource:
+                    - !Sub 'arn:${AWS::Partition}:ecr:*:${AWS::AccountId}:repository/adp-${DeploymentId}-*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::adp-${DeploymentId}-*'
+                    - !Sub 'arn:${AWS::Partition}:s3:::adp-${DeploymentId}-*/*'
+                    - !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:adp/${DeploymentId}/*'
+                    - !Sub 'arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/adp/${DeploymentId}/*'
+                - !Ref 'AWS::NoValue'
+              - !If
+                - DestructiveTeardownEnabled
+                - Sid: TeardownTaggedFoundationResources
+                  Effect: Allow
+                  Action:
+                    - 'ec2:DeleteInternetGateway'
+                    - 'ec2:DeleteLaunchTemplate'
+                    - 'ec2:DeleteNatGateway'
+                    - 'ec2:DeleteRoute'
+                    - 'ec2:DeleteRouteTable'
+                    - 'ec2:DeleteSecurityGroup'
+                    - 'ec2:DeleteSubnet'
+                    - 'ec2:DeleteVpc'
+                    - 'ec2:DeleteVpcEndpoints'
+                    - 'ec2:DetachInternetGateway'
+                    - 'ec2:DisassociateRouteTable'
+                    - 'ec2:ReleaseAddress'
+                    - 'logs:DeleteLogGroup'
+                  Resource: '*'
+                  Condition:
+                    StringEquals:
+                      'aws:ResourceTag/adp:deployment-id': !Ref DeploymentId
+                - !Ref 'AWS::NoValue'
+              - !If
+                - DataTeardownEnabled
+                - Sid: OptionalDataTeardown
+                  Effect: Allow
+                  Action:
+                    - 'dynamodb:DeleteTable'
+                    - 'elasticache:DeleteCacheSubnetGroup'
+                    - 'elasticache:DeleteReplicationGroup'
+                    - 'rds:DeleteDBInstance'
+                    - 'rds:DeleteDBSubnetGroup'
+                  Resource: '*'
+                  Condition:
+                    StringEquals:
+                      'aws:ResourceTag/adp:deployment-id': !Ref DeploymentId
+                - !Ref 'AWS::NoValue'
+              - !If
+                - PublicIngressTeardownEnabled
+                - Sid: OptionalPublicIngressTeardown
+                  Effect: Allow
+                  Action: ['acm:DeleteCertificate', 'cloudfront:DeleteDistribution', 'wafv2:DeleteWebACL']
+                  Resource: '*'
+                  Condition:
+                    StringEquals:
+                      'aws:ResourceTag/adp:deployment-id': !Ref DeploymentId
+                - !Ref 'AWS::NoValue'
+              - Sid: DenyIdentityAndTrustChanges
+                Effect: Deny
+                Action: ['iam:*', 'sts:AssumeRole']
+                Resource: '*'
+              - Sid: DenyUnrelatedDataPlaneAndAccountControl
+                Effect: Deny
+                Action:
+                  - 'account:*'
+                  - 'aws-portal:*'
+                  - 'billing:*'
+                  - 'budgets:*'
+                  - 'ce:*'
+                  - 'ec2:GetConsoleOutput'
+                  - 'ec2:RebootInstances'
+                  - 'ec2:StartInstances'
+                  - 'ec2:StopInstances'
+                  - 'kms:Decrypt'
+                  - 'lambda:InvokeFunction'
+                  - 'organizations:*'
+                  - 'sns:Publish'
+                  - 'sqs:PurgeQueue'
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:SendMessage'
+                Resource: '*'
+              - Sid: DenyRegionalActionsOutsideSelection
+                Effect: Deny
+                NotAction:
+                  - 'aws-marketplace:*'
+                  - 'cloudfront:*'
+                  - 'iam:*'
+                  - 'route53:*'
+                  - 's3:GetBucketLocation'
+                  - 's3:ListAllMyBuckets'
+                  - 'sts:GetCallerIdentity'
+                Resource: '*'
+                Condition:
+                  StringNotEquals:
+                    'aws:RequestedRegion': !Ref AllowedRegions
+      Tags:
+        - Key: adp:deployment-id
+          Value: !Ref DeploymentId
+        - Key: adp:permission-tier
+          Value: deploy-bootstrap
+        - Key: adp:access-phase
+          Value: bootstrap
+
+Outputs:
+  RoleArn:
+    Description: Exact role ARN that must be registered as the bootstrap credential.
+    Value: !GetAtt ADPBootstrapRole.Arn
+  SupportedScope:
+    Description: This role deliberately excludes IAM role and trust provisioning.
+    Value: Foundation resources only; a full ADP installation remains unsupported.
+  Teardown:
+    Description: Bootstrap and steady-state access are separate.
+    Value: Delete this stack after bootstrap to prevent new sessions; existing sessions expire within one hour.

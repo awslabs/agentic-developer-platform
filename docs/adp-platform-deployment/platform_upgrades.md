@@ -462,34 +462,18 @@ back.
 
 ---
 
-## 9. Upgrading via a hosted agent (ADP-managed track)
+## 9. Hosted cross-account upgrades are unavailable
 
-Operators of the ADP-managed track drive upgrades through a **deploy-instance
-issue** (see the #3565 runbook pattern, EPIC #2571) instead of a terminal:
+Do not use a dashboard-linked AWS role, `/aws-label`, or a `customer_account`
+workflow input for an upgrade. Those roles are steady-state inspection or
+Bedrock-routing credentials, and the deployment config loader rejects them as a
+target before any plan, apply, or destroy step can run.
 
-1. File a runbook issue specifying the target account, the exact `--update`
-   command, the destroy-gate policy, and validation steps.
-2. Dispatch with an `@agent-operations` mention **and the `/aws-label`
-   directive in the same comment** to pin which linked AWS account the agent's
-   credentials resolve to:
-
-   ```
-   @agent-operations run the update per this runbook.
-
-   /aws-label adp-integration-test
-   ```
-
-   Without `/aws-label`, the agent gets the triggering user's
-   most-recently-verified linked account — which may not be the one you mean.
-   The label must match the vault label shown in the dashboard (Settings →
-   Connections). An unknown label fails the run loudly rather than falling
-   back (by design).
-3. The runbook must include the **hard target-account guard**: assert
-   `aws sts get-caller-identity` equals the expected account before every
-   phase, and stop on mismatch.
-4. Run artifacts are **status comments on the issue** — the agent must never
-   open a PR from its deploy working tree (the tfvars account substitutions
-   must not be committed).
+Run upgrades through the self-managed procedure in this guide with temporary,
+customer-controlled bootstrap credentials. The published
+`aws_role_deploy_v1.yaml` file is an inspectable foundation-only permission
+contract for a future deploy tier; it denies IAM creation and publishing it does
+not enable hosted execution or a full installation.
 
 ---
 
@@ -515,5 +499,5 @@ issue** (see the #3565 runbook pattern, EPIC #2571) instead of a terminal:
 - [`self-managed-deploy.md`](./self-managed-deploy.md) — fresh-deploy sequence (this doc's §1 command appears there as "Updating an existing deployment")
 - [`deploy-all-update-mode-design.md`](./deploy-all-update-mode-design.md) — full design rationale (#3414)
 - [`deployment-manifest.md`](./deployment-manifest.md) — per-resource validation commands
-- [`adp-managed-deploy.md`](./adp-managed-deploy.md) — the hosted-agent track
+- [`adp-managed-deploy.md`](./adp-managed-deploy.md) — hosted-track status and security contract
 - Issues: #3528 (implementation), #3565 (first live run), #3664/#3665/#3666 (fixes from that run), #3543 (open webhook-ingress gate gap)

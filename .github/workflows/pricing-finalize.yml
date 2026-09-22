@@ -68,8 +68,7 @@ jobs:
           set -euo pipefail
           [[ "$PRICING_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "A full release SHA is required" >&2; exit 1; }
           [ "$(git rev-parse HEAD)" = "$PRICING_RELEASE_SHA" ] || { echo "Checkout does not match the release SHA" >&2; exit 1; }
-          PRICING_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
-          PRICING_IMAGE="${PRICING_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_SHA}"
+          PRICING_IMAGE="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/adp-gateway:${PRICING_RELEASE_SHA}"
           python3 modules/gateway/scripts/pricing-rollout.py finalize \
-            --account-id "$PRICING_ACCOUNT" --environment "$ENVIRONMENT" \
+            --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" \
             --expected-image "$PRICING_IMAGE"

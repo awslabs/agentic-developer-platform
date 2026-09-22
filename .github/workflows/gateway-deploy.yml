@@ -216,10 +216,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 modules/gateway/scripts/pricing-rollout.py quiesce \
-            --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" --environment "$ENVIRONMENT"
+            --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT"
           python3 modules/gateway/scripts/build-budget-lambda-archives.py --output /tmp
           for name in pricing-refresh budget-usage-tracker; do
-            function="arn:aws:lambda:${AWS_REGION}:${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}:function:bedrockgw-${ENVIRONMENT}-${name}"
+            function="arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:bedrockgw-${ENVIRONMENT}-${name}"
             if ! aws lambda get-function-configuration --function-name "$function" \
                 --query FunctionName --output text >/dev/null 2>/tmp/budget-function-error; then
               if grep -q 'ResourceNotFoundException' /tmp/budget-function-error; then
@@ -237,9 +237,8 @@ jobs:
       - name: Compute build vars
         id: vars
         run: |
-          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
-          echo "registry=${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_OUTPUT"
-          echo "effective_account=${EFFECTIVE_ACCOUNT}" >> "$GITHUB_OUTPUT"
+          echo "registry=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com" >> "$GITHUB_OUTPUT"
+          echo "effective_account=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Build image via CodeBuild
         uses: ./.github/actions/codebuild-run
@@ -270,10 +269,10 @@ jobs:
           BUCKET=$(aws ssm get-parameter \
             --name "/adp/${ENVIRONMENT}/gateway/frontend-bucket" \
             --query "Parameter.Value" --output text)
-          for v in v1 v2; do
+          for template in aws_role_v1 aws_role_v2 aws_role_deploy_v1; do
             aws s3 cp \
-              "modules/gateway/src/auth/cfn_templates/aws_role_${v}.yaml" \
-              "s3://${BUCKET}/cfn-templates/aws_role_${v}.yaml" \
+              "modules/gateway/src/auth/cfn_templates/${template}.yaml" \
+              "s3://${BUCKET}/cfn-templates/${template}.yaml" \
               --content-type application/x-yaml
           done
 
@@ -286,7 +285,7 @@ jobs:
 
       - name: Ensure namespace and render K8s prerequisites
         run: |
-          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
 
           # --- Namespace ---
@@ -567,7 +566,7 @@ jobs:
           set -euo pipefail
           RENDERED_DEPLOYMENT=$(mktemp)
           trap 'rm -f "$RENDERED_DEPLOYMENT"' EXIT
-          EFFECTIVE_ACCOUNT="${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}"
+          EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
           REGISTRY="${EFFECTIVE_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
           get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
@@ -659,7 +658,7 @@ jobs:
           ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
-          ENGINE_FUNCTION="arn:aws:lambda:${AWS_REGION}:${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}:function:adp-${ENVIRONMENT}-orchestration-tick"
+          ENGINE_FUNCTION="arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:adp-${ENVIRONMENT}-orchestration-tick"
           if ! aws lambda get-function --function-name "$ENGINE_FUNCTION" \
               --query Configuration.FunctionName --output text >/dev/null 2>/tmp/engine-function-error; then
             if grep -q 'ResourceNotFoundException' /tmp/engine-function-error; then
@@ -1022,7 +1021,7 @@ jobs:
           fi
           aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
           python3 modules/gateway/scripts/pricing-rollout.py finalize \
-            --account-id "${CUSTOMER_ACCOUNT_ID:-$ACCOUNT_ID}" --environment "$ENVIRONMENT" \
+            --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" \
             --expected-image "$PRICING_RELEASE_IMAGE"
           # First rollout requires reviewed budget-lambda infra. If this gate
           # fails, apply that reviewed plan, then dispatch pricing-finalize.yml
