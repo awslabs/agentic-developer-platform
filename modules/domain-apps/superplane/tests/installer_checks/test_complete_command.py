@@ -3,6 +3,7 @@
 import copy
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -20,6 +21,10 @@ class ExternalTools:
         self.service_cidr = "172.20.0.0/16"
         self.calls, self.objects = [], {}
         self.route = None
+        self.route_etag = '"route-0"'
+        self.route_version = 0
+        self.lock_object = None
+        self.lock_etag = '"owner-etag"'
         self.restarts = {}
         # workspace_id may be absent in control-plane-only mode; use a placeholder
         # so the grants array is still structurally valid for observation checks.
@@ -267,16 +272,47 @@ class ExternalTools:
                     }
                 },
             }
-        elif "put-object" in args:
-            result = {"ETag": '"owner-etag"'}
-        elif "get-parameter" in args:
-            if self.route:
-                result = {"Parameter": {"Value": json.dumps(self.route)}}
+        elif "get-object" in args:
+            route = args[args.index("--key") + 1].endswith("/public-route.json")
+            value = self.route if route else self.lock_object
+            if value is None:
+                code, error = 254, "NoSuchKey"
             else:
-                code, error = 254, "ParameterNotFound"
-        elif "put-parameter" in args:
-            self.route = json.loads(args[args.index("--value") + 1])
-        elif args[0] == "kubectl" and "apply" in args:
+                Path(args[-1]).write_text(json.dumps(value))
+                result = {"ETag": self.route_etag if route else self.lock_etag}
+        elif "put-object" in args:
+            if args[args.index("--key") + 1].endswith("/public-route.json"):
+                if "--if-none-match" in args:
+                    assert args[args.index("--if-none-match") + 1] == "*"
+                    if self.route is not None:
+                        raise Refusal("S3 PreconditionFailed")
+                else:
+                    assert "--if-match" in args
+                    if args[args.index("--if-match") + 1] != self.route_etag:
+                        raise Refusal("S3 PreconditionFailed")
+                self.route = json.loads(
+                    Path(args[args.index("--body") + 1]).read_text()
+                )
+                self.route_version += 1
+                self.route_etag = f'"route-{self.route_version}"'
+                result = {"ETag": self.route_etag}
+            else:
+                assert "--if-none-match" in args
+                if self.lock_object is not None:
+                    raise Refusal("S3 PreconditionFailed")
+                self.lock_object = json.loads(
+                    Path(args[args.index("--body") + 1]).read_text()
+                )
+                result = {"ETag": self.lock_etag}
+        elif "delete-object" in args:
+            assert args[args.index("--key") + 1].endswith("/installation.lock")
+            if (
+                self.lock_object is not None
+                and args[args.index("--if-match") + 1] != self.lock_etag
+            ):
+                raise Refusal("S3 PreconditionFailed")
+            self.lock_object = None
+        elif args[0] == "kubectl" and ("apply" in args or "create" in args):
             for doc in yaml.safe_load_all(kwargs["data"]):
                 key = (
                     doc["kind"],
@@ -284,11 +320,24 @@ class ExternalTools:
                     doc["metadata"].get("namespace"),
                 )
                 previous = self.objects.get(key)
+                if "create" in args and previous:
+                    raise Refusal("Kubernetes AlreadyExists")
+                if "apply" in args:
+                    for field in ("uid", "resourceVersion"):
+                        if field in doc["metadata"] and (
+                            previous is None
+                            or doc["metadata"][field] != previous["metadata"][field]
+                        ):
+                            raise Refusal("Kubernetes identity/version conflict")
                 doc["metadata"].update(
                     uid=previous["metadata"]["uid"]
                     if previous
                     else "uid-" + str(len(self.objects)),
-                    resourceVersion="1",
+                    resourceVersion=str(
+                        int(previous["metadata"]["resourceVersion"]) + 1
+                    )
+                    if previous
+                    else "1",
                 )
                 if doc["kind"] == "Deployment":
                     doc["status"] = {"availableReplicas": 1}
@@ -305,6 +354,7 @@ class ExternalTools:
                         else {"conditions": [{"type": "Complete", "status": "True"}]}
                     )
                 self.objects[key] = doc
+                result = doc
         elif args[0] == "kubectl" and "delete" in args:
             path = args[args.index("--raw") + 1]
             plural, name = path.split("/")[-2:]
@@ -400,9 +450,21 @@ class ExternalTools:
 
     def http(self, url, headers=None, **kwargs):
         if url.endswith("/installation-support"):
-            return httpx.Response(200, json={"version": 1})
+            return httpx.Response(
+                200,
+                json={
+                    "version": 2,
+                    "transport": "s3-conditional-domain-registration",
+                    "configured": True,
+                    "cache_seconds": 0,
+                },
+            )
         if url.endswith("/api/health"):
             return httpx.Response(200)
+        if "/api/superplane/v1/" in url and (
+            self.route is None or self.route.get("enabled") is not True
+        ):
+            return httpx.Response(404, json={"detail": "Not found"})
         if "/internal/" in url or "/auth/login" in url:
             return httpx.Response(404)
         if not headers or headers.get("Authorization") != "Bearer verified-user":

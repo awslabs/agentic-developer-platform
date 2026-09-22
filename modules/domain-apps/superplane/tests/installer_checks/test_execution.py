@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,9 @@ class ToolProcess:
             raise Refusal("external stage failed")
         if "put-object" in args:
             value = {"ETag": '"conditional-etag"'}
+        elif "get-object" in args:
+            Path(args[-1]).write_text(json.dumps({"installation_id": "other-machine"}))
+            value = {"ETag": '"foreign-etag"'}
         elif "describe-images" in args:
             digest = args[args.index("--image-ids") + 1].split("=", 1)[1]
             value = {"imageDetails": [{"imageDigest": digest, "imageTags": ["a" * 40]}]}
@@ -71,10 +75,13 @@ def test_global_lock_is_conditional_and_retained_on_failure(
 def test_no_mutation_if_other_machine_holds_lock(tmp_path, environment, release):
     tools = ToolProcess(fail="put-object")
     installer = Installer(environment, release, tmp_path, tools)
-    with pytest.raises(Refusal):
+    with pytest.raises(Refusal, match="another attempt"):
         with installer.exclusive():
             pytest.fail("entered a held lock")
-    assert len(tools.calls) == 1
+    assert len(tools.calls) == 2
+    assert "get-object" in tools.calls[-1][0]
+    assert "remote_lock" not in installer.receipt
+    assert not any("delete-object" in args for args, _ in tools.calls)
 
 
 def test_same_receipt_cannot_be_used_concurrently(tmp_path):

@@ -749,3 +749,18 @@ resource "kubernetes_config_map" "amazon_vpc_cni" {
 # CI runner EKS access is managed in the workflow pre-apply step
 # to avoid chicken-and-egg: runner needs access to run Terraform,
 # but Terraform would create the access entry
+
+# Conditional Superplane route registration. No Terraform state reads or writes.
+resource "aws_iam_role_policy" "gateway_superplane_route_read" {
+  name = "${var.name_prefix}-policy-gateway-superplane-route-read"
+  role = aws_iam_role.gateway_service_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = "arn:aws:s3:::adp-terraform-state-${data.aws_caller_identity.current.account_id}/domain-routes/${var.environment}/superplane/public-route.json"
+    }]
+  })
+}

@@ -7,6 +7,7 @@ It does not dispatch asynchronous workflows or invoke a platform deployment.
 from __future__ import annotations
 
 import contextlib
+import copy
 import fcntl
 import hashlib
 import json
@@ -112,7 +113,9 @@ class Installer:
         self.secret_versions = {}
         self.submitter_ids = {}
         self.kubeconfig = directory / "kubeconfig"
-        self.route_name = f"/adp/{env['environment']}/superplane/public-route"
+        self.route_key = (
+            f"domain-routes/{env['environment']}/superplane/public-route.json"
+        )
         self.bucket = f"adp-terraform-state-{env['account_id']}"
         self.lock_key = f"{env['environment']}/modules/superplane/installation.lock"
         self.receipt = {
@@ -1000,9 +1003,18 @@ class Installer:
             follow_redirects=False,
         )
         require(
-            response.status_code == 200 and response.json().get("version") == 1,
-            "Existing Gateway needs the U23 transport integration before domain installation",
+            response.status_code == 200
+            and response.json().get("version") == 2
+            and response.json().get("transport") == "s3-conditional-domain-registration"
+            and response.json().get("configured") is True,
+            "Existing Gateway needs the configured conditional U23 route transport before domain installation",
         )
+        cache_seconds = response.json().get("cache_seconds")
+        require(
+            type(cache_seconds) is int and 0 <= cache_seconds <= 30,
+            "Gateway must advertise a bounded route cache lifetime",
+        )
+        self.gateway_cache_seconds = cache_seconds
         # Existing ADP health is observed now and after route installation/removal.
         response = httpx.get(
             self.env["origin"] + "/api/health", timeout=20, follow_redirects=False
@@ -1127,35 +1139,75 @@ class Installer:
         self.receipt["status"] = "preflight-passed"
         self.save()
 
-    @contextlib.contextmanager
-    def exclusive(self):
-        # S3's conditional PUT makes this exclusive across machines, unlike a
-        # local flock or workflow-specific concurrency group. No expiry or
-        # automatic stale-lock stealing can overlap a still-running migration.
-        path = self.directory / "installation-lock.json"
-        atomic(path, {"run_id": self.run_id, "installation_id": self.owner})
-        result = self.aws(
-            "s3api",
-            "put-object",
-            "--bucket",
-            self.bucket,
-            "--key",
-            self.lock_key,
-            "--body",
-            str(path),
-            "--if-none-match",
-            "*",
+    def read_s3_json(self, key):
+        with tempfile.TemporaryDirectory(dir=self.directory) as directory:
+            path = Path(directory) / "object.json"
+            result = self.aws(
+                "s3api",
+                "get-object",
+                "--bucket",
+                self.bucket,
+                "--key",
+                key,
+                str(path),
+                allow_failure=True,
+            )
+            if result.returncode:
+                require(
+                    "NoSuchKey" in result.stderr, "Cannot establish S3 object ownership"
+                )
+                return None, None
+            try:
+                value = json.loads(path.read_text())
+            except (OSError, ValueError):
+                raise Refusal("Cannot decode S3 object ownership") from None
+            metadata = self.json(result)
+            require(
+                isinstance(metadata, dict), "S3 object metadata is not a JSON object"
+            )
+            etag = metadata.get("ETag")
+            require(isinstance(value, dict), "S3 object is not a JSON object")
+            require(isinstance(etag, str) and etag, "S3 object has no ETag")
+            return value, etag
+
+    def reconcile_lock_attempt(self):
+        attempt = self.receipt.get("lock_attempt")
+        require(
+            isinstance(attempt, dict)
+            and attempt.get("bucket") == self.bucket
+            and attempt.get("key") == self.lock_key,
+            "Receipt has no matching lock attempt",
         )
-        etag = self.json(result)["ETag"]
-        self.receipt["remote_lock"] = {
-            "bucket": self.bucket,
-            "key": self.lock_key,
-            "etag": etag,
-        }
-        # Persist before mutations so SIGKILL cannot lose the recovery identity.
+        value = attempt.get("value", {})
+        require(isinstance(value, dict), "Invalid recorded lock attempt payload")
+        nonce = value.get("nonce")
+        require(
+            set(value) == {"installation_id", "run_id", "nonce"}
+            and value.get("installation_id") == self.owner
+            and value.get("run_id") == self.run_id
+            and isinstance(nonce, str)
+            and len(nonce) == 32
+            and all(c in "0123456789abcdef" for c in nonce),
+            "Invalid recorded lock attempt identity",
+        )
+        current, etag = self.read_s3_json(self.lock_key)
+        if current is None:
+            return None
+        require(
+            digest(current) == digest(value),
+            "Installation lock belongs to another attempt",
+        )
+        lock = {"bucket": self.bucket, "key": self.lock_key, "etag": etag}
+        require(
+            not self.receipt.get("remote_lock") or self.receipt["remote_lock"] == lock,
+            "Installation lock changed since acquisition",
+        )
+        self.receipt["remote_lock"] = lock
         self.save()
+        return lock
+
+    def release_lock(self, lock):
         try:
-            yield
             self.aws(
                 "s3api",
                 "delete-object",
@@ -1164,15 +1216,75 @@ class Installer:
                 "--key",
                 self.lock_key,
                 "--if-match",
-                etag,
+                lock["etag"],
             )
+        except Exception:
+            # A lost DELETE response is success only after verified absence.
+            current, _ = self.read_s3_json(self.lock_key)
+            if current is not None:
+                raise
+        self.receipt.pop("remote_lock", None)
+        self.receipt.pop("lock_attempt", None)
+        self.save()
+
+    @contextlib.contextmanager
+    def exclusive(self):
+        # S3's conditional PUT makes this exclusive across machines, unlike a
+        # local flock or workflow-specific concurrency group. No expiry or
+        # automatic stale-lock stealing can overlap a still-running migration.
+        path = self.directory / "installation-lock.json"
+        require(
+            not self.receipt.get("remote_lock")
+            and not self.receipt.get("lock_attempt"),
+            "Recover the retained installation lock attempt before continuing",
+        )
+        value = {
+            "run_id": self.run_id,
+            "installation_id": self.owner,
+            "nonce": uuid.uuid4().hex,
+        }
+        self.receipt["lock_attempt"] = {
+            "bucket": self.bucket,
+            "key": self.lock_key,
+            "value": value,
+        }
+        # Persist the complete identity before PUT, including its unknown outcome.
+        self.save()
+        try:
+            atomic(path, value)
+            try:
+                result = self.aws(
+                    "s3api",
+                    "put-object",
+                    "--bucket",
+                    self.bucket,
+                    "--key",
+                    self.lock_key,
+                    "--body",
+                    str(path),
+                    "--if-none-match",
+                    "*",
+                )
+                etag = self.json(result).get("ETag")
+                require(
+                    isinstance(etag, str) and etag,
+                    "Written installation lock has no ETag",
+                )
+                self.receipt["remote_lock"] = {
+                    "bucket": self.bucket,
+                    "key": self.lock_key,
+                    "etag": etag,
+                }
+                self.save()
+            except Exception:
+                if self.reconcile_lock_attempt() is None:
+                    raise
+            yield
+            self.release_lock(self.receipt["remote_lock"])
         except BaseException:
             self.receipt["status"] = "recovery-required"
             self.save()
             raise
-        else:
-            self.receipt.pop("remote_lock", None)
-            self.save()
 
     def existing(self, doc):
         meta = doc["metadata"]
@@ -1189,6 +1301,7 @@ class Installer:
         return self.json(result) if result.stdout.strip() else None
 
     def apply(self, docs):
+        writes = []
         for doc in docs:
             current = self.existing(doc)
             require(
@@ -1196,17 +1309,34 @@ class Installer:
                 or current["metadata"].get("labels", {}).get(LABEL) == self.owner,
                 "Refusing to adopt or modify an object owned by another installation",
             )
-        self.kube(
-            "apply",
-            "--server-side",
-            "--field-manager=superplane-installer",
-            "-f",
-            "-",
-            data=yaml.safe_dump_all(docs),
-        )
-        for doc in docs:
-            current = self.existing(doc)
-            require(current is not None, "Applied object is absent")
+            write = copy.deepcopy(doc)
+            if current is not None:
+                for field in ("uid", "resourceVersion"):
+                    require(current["metadata"].get(field), "Object identity is absent")
+                    write["metadata"][field] = current["metadata"][field]
+            writes.append((write, current is not None))
+        for doc, present in writes:
+            # Conditional apply fences both replacement and ownership-label races.
+            # Create is essential for absent objects: apply could adopt a concurrent one.
+            current = self.json(
+                self.kube(
+                    *(["apply", "--server-side"] if present else ["create"]),
+                    "--field-manager=superplane-installer",
+                    "-f",
+                    "-",
+                    "-o",
+                    "json",
+                    data=yaml.safe_dump(doc),
+                )
+            )
+            require(
+                current["metadata"].get("labels", {}).get(LABEL) == self.owner
+                and current["metadata"].get("uid")
+                and (
+                    not present or current["metadata"]["uid"] == doc["metadata"]["uid"]
+                ),
+                "Written object ownership is inconsistent",
+            )
             self.receipt["objects"] = [
                 x
                 for x in self.receipt["objects"]
@@ -1225,7 +1355,7 @@ class Installer:
                     "uid": current["metadata"]["uid"],
                 }
             )
-        self.save()
+            self.save()
 
     def foundations(self):
         self.apply(
@@ -1469,42 +1599,251 @@ class Installer:
                 "Rollout does not match the release or is unavailable",
             )
 
-    def check_route_owner(self):
-        current = self.aws(
-            "ssm", "get-parameter", "--name", self.route_name, allow_failure=True
+    def pending_route(self):
+        pending = self.receipt.get("pending_route")
+        if pending is None:
+            return None
+        require(
+            isinstance(pending, dict)
+            and pending.get("bucket") == self.bucket
+            and pending.get("key") == self.route_key
+            and "prior_etag" in pending
+            and (
+                pending["prior_etag"] is None
+                or isinstance(pending["prior_etag"], str)
+                and pending["prior_etag"]
+            )
+            and self.receipt.get("public_route")
+            == {
+                "bucket": self.bucket,
+                "key": self.route_key,
+                "etag": pending["prior_etag"],
+            },
+            "Pending route has inconsistent prior ownership evidence",
         )
-        if current.returncode == 0:
-            value = json.loads(self.json(current)["Parameter"]["Value"])
+        self.validate_route_value(pending.get("value"))
+        if "superseded_enable" in pending:
+            self.validate_route_value(pending["superseded_enable"])
+            require(
+                pending["value"]["enabled"] is False
+                and pending["superseded_enable"]["enabled"] is True,
+                "Only a pending enable may be superseded by a disable",
+            )
+        return pending
+
+    def validate_route_value(self, value):
+        require(isinstance(value, dict), "Invalid recorded pending route payload")
+        revision = value.get("revision")
+        release = value.get("release_id")
+        require(
+            set(value)
+            == {
+                "version",
+                "enabled",
+                "namespace",
+                "installation_id",
+                "release_id",
+                "revision",
+            }
+            and type(value.get("version")) is int
+            and value["version"] == 2
+            and type(value.get("enabled")) is bool
+            and value.get("namespace") == self.env["namespace"]
+            and value.get("installation_id") == self.owner
+            and isinstance(release, str)
+            and len(release) == 64
+            and all(c in "0123456789abcdef" for c in release)
+            and isinstance(revision, str)
+            and len(revision) == 32
+            and all(c in "0123456789abcdef" for c in revision),
+            "Pending route has invalid publication identity",
+        )
+
+    def acknowledge_route(self, value, etag):
+        acknowledged = copy.deepcopy(self.receipt)
+        acknowledged["public_route"] = {
+            "bucket": self.bucket,
+            "key": self.route_key,
+            "etag": etag,
+        }
+        acknowledged["public_route_enabled"] = value["enabled"]
+        acknowledged.pop("pending_route", None)
+        # Keep the pending identity in memory too if durable acknowledgement fails.
+        atomic(self.receipt_path, acknowledged)
+        self.receipt = acknowledged
+
+    def check_route_owner(self):
+        pending = self.pending_route()
+        value, etag = self.read_s3_json(self.route_key)
+        if value is not None:
             require(
                 value.get("installation_id") == self.owner
                 and value.get("namespace") == self.env["namespace"],
                 "Public route belongs to another installation or namespace",
             )
-        elif "ParameterNotFound" not in current.stderr:
-            raise Refusal("Cannot establish public route ownership")
+        if pending and value is not None and digest(value) == digest(pending["value"]):
+            # Full payload and unique revision identify a committed, unacknowledged PUT.
+            self.acknowledge_route(value, etag)
+            return etag
+        if (
+            pending
+            and value is not None
+            and "superseded_enable" in pending
+            and digest(value) == digest(pending["superseded_enable"])
+        ):
+            # A previously issued enable won the CAS race with its compensation.
+            # Retain the disable intent and condition it on that exact committed body.
+            pending["prior_etag"] = etag
+            pending.pop("superseded_enable")
+            self.receipt["public_route"] = {
+                "bucket": self.bucket,
+                "key": self.route_key,
+                "etag": etag,
+            }
+            self.save()
+        observed = {"bucket": self.bucket, "key": self.route_key, "etag": etag}
+        require(
+            "public_route" not in self.receipt
+            or self.receipt["public_route"] == observed,
+            "Public route changed since the recorded observation",
+        )
+        # Explicit absence is evidence too. This method never publishes routes,
+        # so Gateway/preflight checks remain read-only at the external boundary.
+        if "public_route" not in self.receipt:
+            self.receipt["public_route"] = observed
+            self.save()
+        return etag
+
+    def finish_route(self):
+        self.check_route_owner()
+        pending = self.pending_route()
+        if pending is None:
+            return
+        path = self.directory / "public-route.json"
+        atomic(path, pending["value"])
+        # One bounded retry uses exactly the durable payload and prior condition.
+        # Failed readback retains the marker for supported same-receipt recovery.
+        for attempt in range(2):
+            etag = pending["prior_etag"]
+            try:
+                result = self.aws(
+                    "s3api",
+                    "put-object",
+                    "--bucket",
+                    self.bucket,
+                    "--key",
+                    self.route_key,
+                    "--body",
+                    str(path),
+                    "--content-type",
+                    "application/json",
+                    *(["--if-match", etag] if etag else ["--if-none-match", "*"]),
+                )
+                written_etag = self.json(result).get("ETag")
+                require(
+                    isinstance(written_etag, str) and written_etag,
+                    "Written public route has no ETag",
+                )
+            except Exception:
+                self.check_route_owner()
+                if "pending_route" not in self.receipt:
+                    return
+                if attempt == 1:
+                    raise
+            else:
+                self.acknowledge_route(pending["value"], written_etag)
+                return
 
     def route(self, enabled):
-        self.check_route_owner()
+        etag = self.check_route_owner()
+        pending = self.pending_route()
+        superseded = None
+        if pending:
+            if enabled is False and pending["value"]["enabled"] is True:
+                # Readback left the prior version unchanged. Compensate directly;
+                # never publish an uncommitted enable merely to turn it off next.
+                superseded = copy.deepcopy(pending["value"])
+            else:
+                self.finish_route()
+                if enabled is False:
+                    return
+                etag = self.check_route_owner()
         value = {
-            "version": 1,
+            "version": 2,
             "enabled": enabled,
             "namespace": self.env["namespace"],
             "installation_id": self.owner,
             "release_id": self.release,
+            "revision": uuid.uuid4().hex,
         }
-        self.aws(
-            "ssm",
-            "put-parameter",
-            "--name",
-            self.route_name,
-            "--type",
-            "String",
-            "--overwrite",
-            "--value",
-            json.dumps(value),
-        )
-        self.receipt["public_route_enabled"] = enabled
+        self.receipt["pending_route"] = {
+            "bucket": self.bucket,
+            "key": self.route_key,
+            "prior_etag": etag,
+            "value": value,
+        }
+        if superseded is not None:
+            # Preserve the earlier identity in case its already-issued PUT commits
+            # between readback and the compensating conditional write.
+            self.receipt["pending_route"]["superseded_enable"] = superseded
+        self.receipt["public_route_enabled"] = None
+        self.receipt.pop("route_disabled_verification", None)
         self.save()
+        self.finish_route()
+
+    def disable_route(self):
+        self.receipt["route_disable_pending"] = True
+        self.receipt.pop("route_disabled_verification", None)
+        self.save()
+        self.route(False)
+        self.gateway()
+        start = time.monotonic()
+        deadline = start + self.env["timeout_seconds"]
+        path = self.env["origin"] + "/api/superplane/v1/workspaces"
+        while True:
+            # This inventoried path returns 401 while enabled without a token and
+            # the Gateway's own 404 while off. Never send installation credentials.
+            try:
+                response = httpx.get(
+                    path,
+                    headers={"Cache-Control": "no-cache"},
+                    timeout=min(20, max(1, deadline - time.monotonic())),
+                    follow_redirects=False,
+                )
+                health = httpx.get(
+                    self.env["origin"] + "/api/health",
+                    timeout=min(20, max(1, deadline - time.monotonic())),
+                    follow_redirects=False,
+                )
+                require(
+                    health.status_code == 200,
+                    "Existing ADP health failed during route disable",
+                )
+                off = (
+                    response.status_code == 404
+                    and "X-Superplane-Release" not in response.headers
+                    and response.json() == {"detail": "Not found"}
+                )
+            except (httpx.HTTPError, ValueError):
+                off = False
+            now = time.monotonic()
+            if off and now >= start + self.gateway_cache_seconds:
+                self.check_route_owner()
+                self.receipt["route_disabled_verification"] = {
+                    "public_endpoint": path,
+                    "status": 404,
+                    "adp_healthy": True,
+                    "cache_seconds": self.gateway_cache_seconds,
+                    "verified_at": datetime.now(UTC).isoformat(),
+                }
+                self.receipt.pop("route_disable_pending", None)
+                self.save()
+                return
+            require(
+                now < deadline,
+                "Public route disable was not observed through the Gateway",
+            )
+            time.sleep(min(1, deadline - now))
 
     def private_services(self):
         namespace = self.env["namespace"]
@@ -1891,7 +2230,7 @@ class Installer:
         )
         with self.exclusive():
             try:
-                self.phase("disable-route", lambda: self.route(False))
+                self.phase("disable-route", self.disable_route)
                 self.phase(
                     "infrastructure",
                     lambda: self.commands.call(
@@ -1920,7 +2259,7 @@ class Installer:
                 self.receipt["status"] = "installed-and-verified"
                 self.save()
             except BaseException:
-                self.route(False)
+                self.disable_route()
                 raise
 
     def management_pod_uids(self, name):
@@ -2029,7 +2368,7 @@ class Installer:
             in {"failed", "preflight-passed", "planned", "recovery-required"}
             or (
                 previous.get("status") == "installed-and-verified"
-                and previous.get("remote_lock")
+                and (previous.get("remote_lock") or previous.get("lock_attempt"))
             ),
             "Only an incomplete installation may be resumed",
         )
@@ -2064,7 +2403,7 @@ class Installer:
             "Receipt has no matching retained installation lock",
         )
         require(
-            lock or cleanup_required,
+            lock or self.receipt.get("lock_attempt") or cleanup_required,
             "Receipt has no retained lock or temporary namespace",
         )
         self.target(verify_source=False)
@@ -2083,18 +2422,25 @@ class Installer:
             )
         if cleanup_required:
             ClusterProbe.recover(self)
-        if lock:
-            self.aws(
-                "s3api",
-                "delete-object",
-                "--bucket",
-                self.bucket,
-                "--key",
-                self.lock_key,
-                "--if-match",
-                lock["etag"],
+        if self.receipt.get("lock_attempt"):
+            lock = self.reconcile_lock_attempt()
+        if (
+            self.receipt.get("route_disable_pending")
+            or self.receipt.get("pending_route")
+            or (
+                self.receipt.get("public_route_enabled") is True
+                and self.receipt.get("status") != "installed-and-verified"
             )
-            self.receipt.pop("remote_lock")
+        ):
+            require(lock, "Route recovery requires the retained installation lock")
+            self.gateway()
+            self.disable_route()
+        if lock:
+            self.release_lock(lock)
+        else:
+            # Confirmed absence after an ambiguous acquisition/release.
+            self.receipt.pop("remote_lock", None)
+            self.receipt.pop("lock_attempt", None)
         self.receipt["status"] = "failed"
         self.save()
 
@@ -2119,6 +2465,13 @@ class Installer:
         )
         require(bool(token), "Rollback requires the ADP verification token")
         self.target(verify_source=False)
+        # The supplied receipt selects the release to restore. Fence the current
+        # route separately, before preparation; it must not change while we work.
+        self.gateway()
+        self.receipt["rollback_current_route"] = copy.deepcopy(
+            self.receipt["public_route"]
+        )
+        self.save()
         self.lock = previous["release_lock"]
         self.release = previous["release_id"]
         self.docs = render(
@@ -2143,7 +2496,7 @@ class Installer:
         )
         with self.exclusive():
             try:
-                self.phase("disable-route", lambda: self.route(False))
+                self.phase("disable-route", self.disable_route)
                 self.phase("restore-configuration", self.foundations)
                 self.phase("restore-release", self.rollout)
                 self.phase("verify-private-rollback", self.private_services)
@@ -2155,7 +2508,7 @@ class Installer:
                 )
                 self.save()
             except BaseException:
-                self.route(False)
+                self.disable_route()
                 raise
 
     def cleanup(self, previous):
@@ -2164,7 +2517,29 @@ class Installer:
             and previous.get("environment") == self.env,
             "Cleanup receipt belongs to another environment",
         )
+        observation = previous.get("public_route")
+        require(
+            isinstance(observation, dict)
+            and observation.get("bucket") == self.bucket
+            and observation.get("key") == self.route_key
+            and "etag" in observation
+            and (
+                observation["etag"] is None
+                or isinstance(observation["etag"], str)
+                and observation["etag"]
+            ),
+            "Cleanup requires an exact route observation in the supplied receipt",
+        )
+        self.receipt["public_route"] = copy.deepcopy(observation)
+        if previous.get("pending_route") is not None:
+            self.receipt["pending_route"] = copy.deepcopy(previous["pending_route"])
+            pending = self.pending_route()
+            require(
+                pending["value"]["release_id"] == previous.get("release_id"),
+                "Cleanup pending route differs from the supplied release",
+            )
         self.target(verify_source=False)
+        self.gateway()
         # Namespace, credentials, backups, domain DB and Terraform/ECR resources
         # are retained for recovery. Remove only recorded workload object UIDs.
         resources = {
@@ -2177,7 +2552,7 @@ class Installer:
             "PodDisruptionBudget": ("/apis/policy/v1", "poddisruptionbudgets"),
         }
         with self.exclusive():
-            self.route(False)
+            self.disable_route()
             self.receipt["removed"] = []
             order = {
                 "Deployment": 0,

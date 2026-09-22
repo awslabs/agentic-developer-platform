@@ -1,6 +1,6 @@
 """Route inventoried user APIs to Superplane; authorization stays in its API.
 
-The domain installer owns one SSM registration. A short cache permits activation
+The domain installer owns one conditional S3 registration. A short cache permits activation
 and removal without a Gateway rollout. Missing/malformed registration is off.
 Only namespace selection is configurable: no arbitrary upstream URL or headers.
 """
@@ -33,13 +33,23 @@ def registration() -> dict:
         return _cache[1]
     environment = os.environ.get("BG_ENVIRONMENT", "")
     result = {}
-    if re.fullmatch(r"[a-z][a-z0-9-]{0,39}", environment):
+    bucket = os.environ.get("BG_SUPERPLANE_ROUTE_BUCKET", "")
+    if re.fullmatch(r"[a-z][a-z0-9-]{0,39}", environment) and re.fullmatch(r"adp-terraform-state-[0-9]{12}", bucket):
         try:
-            client = boto3.client("ssm", config=Config(connect_timeout=1, read_timeout=1, retries={"max_attempts": 0}))
-            value = json.loads(client.get_parameter(Name=f"/adp/{environment}/superplane/public-route")["Parameter"]["Value"])
+            client = boto3.client("s3", config=Config(connect_timeout=1, read_timeout=1, retries={"max_attempts": 0}))
+            response = client.get_object(Bucket=bucket, Key=f"domain-routes/{environment}/superplane/public-route.json")
+            body = response["Body"]
+            try:
+                raw = body.read(4097)
+            finally:
+                body.close()
+            value = json.loads(raw) if len(raw) <= 4096 else {}
             if (
-                value.get("version") == 1
+                isinstance(value, dict)
+                and value.get("version") == 2
                 and value.get("enabled") is True
+                and re.fullmatch(r"[0-9a-f]{24}", str(value.get("installation_id", "")))
+                and re.fullmatch(r"[0-9a-f]{32}", str(value.get("revision", "")))
                 and re.fullmatch(r"[a-z][a-z0-9-]{0,39}", str(value.get("namespace", "")))
                 and value["namespace"] not in {"adp", "default", "kube-system", "kube-public"}
                 and re.fullmatch(r"[0-9a-f]{64}", str(value.get("release_id", "")))
@@ -62,7 +72,15 @@ def enabled() -> bool:
 @router.get("/installation-support")
 async def installation_support():
     # Capability discovery does not expose a domain route or any configuration.
-    return {"version": 1, "transport": "ssm-domain-registration", "cache_seconds": 5}
+    return {
+        "version": 2,
+        "transport": "s3-conditional-domain-registration",
+        "cache_seconds": 5,
+        "configured": bool(
+            re.fullmatch(r"adp-terraform-state-[0-9]{12}", os.environ.get("BG_SUPERPLANE_ROUTE_BUCKET", ""))
+            and re.fullmatch(r"[a-z][a-z0-9-]{0,39}", os.environ.get("BG_ENVIRONMENT", ""))
+        ),
+    }
 
 
 @router.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
