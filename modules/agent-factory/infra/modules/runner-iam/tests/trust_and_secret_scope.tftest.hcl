@@ -160,6 +160,7 @@ run "the_runner_cannot_read_another_tenants_vault" {
       "arn:aws:secretsmanager:*:123456789012:secret:adp/teams/*",
       "arn:aws:secretsmanager:*:123456789012:secret:adp/orgs/*",
       "arn:aws:secretsmanager:*:123456789012:secret:adp/domain-apps/*",
+      "arn:aws:secretsmanager:*:123456789012:secret:adp/*/tenants/*",
     ])
     error_message = "The vault Deny is not on the four environment-less vault namespaces, so it may match nothing at all."
   }

@@ -76,6 +76,7 @@ locals {
     "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
     "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
     "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*",
+    "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/*/tenants/*",
   ]
 }
 
@@ -186,8 +187,8 @@ resource "aws_iam_policy" "runner_boundary" {
       },
       {
         # Cross-tenant vault lockout. The runner may manage deployment secrets
-        # only under its environment prefix; tenant vault paths have no
-        # environment segment. Deny the entire Secrets Manager API on those
+        # under explicitly scoped deployment paths; tenant secrets also
+        # include environment-scoped adp/<env>/tenants/ paths. Deny the entire Secrets Manager API on those
         # paths so writes, deletion, replication, rotation and resource-policy
         # changes cannot be reintroduced by another attached policy.
         Sid      = "DenyTenantVaultSecrets"

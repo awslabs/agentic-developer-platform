@@ -210,26 +210,18 @@ resource "aws_iam_policy" "runner_boundary" {
         # policy edit could re-grant cross-tenant reads. A Deny here cannot be
         # out-voted by any attached policy, making that edit inert.
         #
-        # Same four environment-less namespaces as the two sibling runner roles
-        # (webhook-ingress/infra/scaledjob-iam.tf Sid DenyTenantVaultSecrets and
-        # agent-factory/infra/modules/runner-iam/main.tf). Keep all three in
-        # sync. PATH SHAPE IS LOAD-BEARING: vault paths carry no environment
-        # segment, so "normalising" these to adp/${var.environment}/* would match
-        # nothing while reading, in review, as though it still closed the hole.
-        #
-        # Both actions are required — a GetSecretValue-only Deny still lets a
-        # runner enumerate other tenants' secret names.
+        # Mirror the active runner boundary: block all secret operations in
+        # both environment-less vault namespaces and environment-scoped tenant
+        # paths, including stored GitHub App and customer AWS credentials.
         Sid    = "DenyTenantVaultSecrets"
         Effect = "Deny"
-        Action = [
-          "secretsmanager:DescribeSecret",
-          "secretsmanager:GetSecretValue"
-        ]
+        Action = "secretsmanager:*"
         Resource = [
           "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/users/*",
           "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/teams/*",
           "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/orgs/*",
-          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*"
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/domain-apps/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:adp/*/tenants/*"
         ]
       },
       {
