@@ -105,7 +105,7 @@ class TestContainerPrivilege:
         _, path = worker
         sc = _pod_spec(path).get("securityContext", {})
         assert sc.get("runAsNonRoot") is True
-        assert sc.get("runAsUser") == 1001
+        assert sc.get("runAsUser") == 61161
         assert sc.get("runAsUser") != 0
 
     def test_default_seccomp_profile_is_applied(self, worker):

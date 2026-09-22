@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 MAX_OUTPUT = 1024 * 1024
 TIMEOUT = 300
@@ -151,6 +152,11 @@ def run_isolated(command: list[str], inputs: list[Path], *, timeout: float = TIM
     Kill the entire process group on *every* exit, including success, so an
     intentionally orphaned descendant cannot survive into the next job.
     """
+    if sys.platform == "linux":
+        # Adopt orphaned descendants, so successful return means they have been
+        # reaped, not merely sent an asynchronous SIGKILL.
+        if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+            raise IsolationError("isolation_subreaper_unavailable")
     code_root = Path(__file__).resolve().parent
     interpreter_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LD_LIBRARY_PATH": str(Path(sys.base_prefix).resolve() / "lib")}
     with tempfile.TemporaryDirectory(prefix="cyber-isolation-") as td:
@@ -195,7 +201,23 @@ def run_isolated(command: list[str], inputs: list[Path], *, timeout: float = TIM
                     os.killpg(child.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                child.wait()
+                try:
+                    child.wait(timeout=5)
+                    if sys.platform == "linux":
+                        deadline = time.monotonic() + 5
+                        while True:
+                            try:
+                                pid, _ = os.waitpid(-child.pid, os.WNOHANG)
+                            except ChildProcessError:
+                                break
+                            if pid == 0:
+                                if time.monotonic() >= deadline:
+                                    # End the worker/pod instead of processing another
+                                    # tenant while a descendant is still alive.
+                                    raise SystemExit("isolation_cleanup_failed")
+                                time.sleep(0.01)
+                except subprocess.TimeoutExpired:
+                    raise SystemExit("isolation_cleanup_failed") from None
             out.seek(0)
             raw = out.read(MAX_OUTPUT + 1)
             if len(raw) >= MAX_OUTPUT:
