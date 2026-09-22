@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -16,7 +16,7 @@ const blocked: EngineVerdict = { ...approved, verdict: "request_changes", findin
   impact: "high", confidence: "high", blocking: true, fixClass: "author_required", recommendedFix: "Implement the story behavior",
 }] };
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, trackedLearning = false) {
   const directory = await mkdtemp(join(tmpdir(), "codex-engine-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const workspace = join(directory, "work");
@@ -28,6 +28,12 @@ async function fixture(t: test.TestContext) {
   await git("config", "user.email", "reviewer@example.test");
   await writeFile(join(workspace, "code.txt"), "old behavior\n");
   await git("add", "code.txt");
+  if (trackedLearning) {
+    await mkdir(join(workspace, "agent_learning"));
+    await writeFile(join(workspace, "agent_learning", "old.md"), "previously tracked notes\n");
+    await writeFile(join(workspace, ".gitignore"), "agent_learning/\n");
+    await git("add", "-f", "--", "agent_learning/old.md", ".gitignore");
+  }
   await git("commit", "-m", "story implementation");
   const sha = await git("rev-parse", "HEAD");
   await git("init", "--bare", remote);
@@ -80,9 +86,9 @@ test("engine review repairs semantic story issues, re-reviews and pushes the ver
   assert.equal(await state.git("rev-parse", "HEAD^"), state.sha);
   assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
   assert.equal(result.report.verdict, "approve");
-  assert.equal(reviews, 3);
+  assert.equal(reviews, 2);
   assert.ok(prompts.some(prompt => prompt.includes("no additional scope approval")));
-  assert.ok(prompts.some(prompt => prompt.includes(`exact commit ${result.sha}`)));
+  assert.ok(prompts.some(prompt => prompt.includes("full repaired working tree")));
   assert.match(await state.git("show", "HEAD:infra/story-test.txt"), /coverage/);
   await assert.rejects(state.git("show", "HEAD:review-note.md"));
 });
@@ -95,7 +101,7 @@ test("reviewed repairs publish progress while remaining findings block approval"
     review: async () => { reviews++; return { ...approved, validationGaps: ["Remote image scan must run on the published PR commit"] }; },
     fix: async () => { repairs++; await writeFile(join(state.workspace, "code.txt"), "fixed behavior awaiting CI\n"); } });
   assert.equal(repairs, 2);
-  assert.equal(reviews, 4);
+  assert.equal(reviews, 3);
   assert.notEqual(result.sha, state.sha);
   assert.equal(result.repair_base_sha, state.sha);
   assert.equal(result.report.verdict, "request-changes");
@@ -113,14 +119,26 @@ test("failed functional or security inspection never publishes a repaired tree",
   assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
 });
 
-test("failed final commit inspection stops publication even after a completed working-tree review", async t => {
-  const state = await fixture(t);
+test("an inspected repair stages a tracked deletion under a now ignored directory", async t => {
+  const state = await fixture(t, true);
   let reviews = 0;
-  await assert.rejects(runEngineReview(state.envelope, state.runtime, { github: state.github,
-    review: async () => ++reviews === 1 ? blocked : reviews === 2 ? approved
-      : { ...approved, stages: { functional: "completed", security: "failed" } },
-    fix: async () => { await writeFile(join(state.workspace, "code.txt"), "fixed\n"); } }), /inspection did not complete/);
-  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
+  const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => {
+      assert.ok(++reviews <= 2, "an unchanged commit tree needs no repeated model inspection");
+      return reviews === 1 ? blocked : approved;
+    },
+    fix: async () => {
+      await state.git("rm", "--", "agent_learning/old.md");
+      await mkdir(join(state.workspace, "agent_learning"), { recursive: true });
+      await writeFile(join(state.workspace, "agent_learning", "new.md"), "ignored new notes\n");
+      await writeFile(join(state.workspace, "code.txt"), "fixed\n");
+    } });
+  assert.equal(result.report.verdict, "approve");
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+  assert.equal(await state.git("show", "HEAD:code.txt"), "fixed");
+  await assert.rejects(state.git("show", "HEAD:agent_learning/old.md"));
+  await assert.rejects(state.git("show", "HEAD:agent_learning/new.md"));
+  assert.equal(await state.git("diff", "HEAD"), "");
 });
 
 test("merged PR retained checkout can be reviewed without recreating a branch or merging", async t => {
@@ -130,6 +148,33 @@ test("merged PR retained checkout can be reviewed without recreating a branch or
     review: async () => approved, fix: async () => assert.fail("merged PR must not be repaired") });
   assert.equal(result.sha, state.sha);
   assert.equal(result.report.verdict, "approve");
+});
+
+test("a commit whose tree changes after inspection is never pushed", async t => {
+  const state = await fixture(t);
+  const realGit = (await exec("which", ["git"])).stdout.trim();
+  const bin = join(state.directory, "bin");
+  await mkdir(bin);
+  const wrapper = join(bin, "git");
+  const quotedGit = "'" + realGit.replaceAll("'", "'\\''") + "'";
+  await writeFile(wrapper, `#!/bin/sh
+${quotedGit} "$@" || exit $?
+if [ "$1" = "-c" ] && [ "$3" = "commit" ]; then
+  printf 'unreviewed change\\n' > code.txt
+  ${quotedGit} add -- code.txt
+  ${quotedGit} -c core.hooksPath=/dev/null commit --amend --no-edit >/dev/null
+fi
+`);
+  await chmod(wrapper, 0o755);
+  const before = process.env.PATH;
+  process.env.PATH = `${bin}:${before}`;
+  t.after(() => { process.env.PATH = before; });
+  let reviews = 0;
+  await assert.rejects(runEngineReview(state.envelope, state.runtime, { github: state.github,
+    review: async () => ++reviews === 1 ? blocked : approved,
+    fix: async () => { await writeFile(join(state.workspace, "code.txt"), "reviewed repair\n"); },
+  }), /differs from the inspected tree/);
+  assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
 });
 
 test("concurrent head movement stops a repair before publication", async t => {

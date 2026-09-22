@@ -193,7 +193,8 @@ export async function runEngineReview(
     }
     const changed = (await git(["diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "HEAD"]))
       .split("\0").filter(Boolean);
-    const files = [...new Set([...changed, ...(await untracked()).filter(file => !baseline.has(file))])];
+    const newFiles = (await untracked()).filter(file => !baseline.has(file));
+    const files = [...new Set([...changed, ...newFiles])];
     // A repaired PR must be published before remote CI can validate it. Review
     // completion permits publishing progress; only complete() permits approval.
     // Retain remaining findings against the exact commit sent to the provider.
@@ -202,13 +203,21 @@ export async function runEngineReview(
       if (current.state !== "open" || current.head.sha !== expected || current.head.ref !== initialPr.head.ref) {
         throw new Error("PR changed during Codex story repair");
       }
-      await git(["add", "--", ...files]);
+      // A deleted tracked file can now match .gitignore. Updating the index
+      // handles that deletion without trying to add the ignored path anew.
+      await git(["add", "--update", "--", "."]);
+      if (newFiles.length) await git(["add", "--", ...newFiles]);
       await git(["diff", "--cached", "--check"]);
+      const reviewedTree = await git(["write-tree"]);
       await git(["-c", "core.hooksPath=/dev/null", "commit", "-m", `fix(review): address story #${envelope.issue_number}`]);
       head = await git(["rev-parse", "HEAD"]);
       if (await git(["rev-parse", "HEAD^"]) !== expected) throw new Error("Repair does not descend directly from assigned head");
-      verdict = await inspect(head);
-      if (!inspected(verdict)) throw new Error("Committed story repair inspection did not complete; nothing pushed");
+      // The functional/security verdict already covers this exact repaired tree.
+      // A commit adds identity, not code; verify that identity without spending
+      // another full model review on unchanged content.
+      if (await git(["rev-parse", "HEAD^{tree}"]) !== reviewedTree || await trackedDiff()) {
+        throw new Error("Committed repair differs from the inspected tree; nothing pushed");
+      }
       let token: string;
       if (runtime.getGitHubToken) token = await runtime.getGitHubToken();
       else {
