@@ -156,10 +156,51 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
     Version = "2012-10-17"
     Statement = [
       {
+        # Issue #5616 (finding #4730). Samples only, and only at the canonical
+        # depth the ingest gateway writes:
+        #   o/<org>/t/<team>/u/<user>/s/<session>/<task>/in/<file>
+        #
+        # The previous pattern was o/*/in/* . Because an IAM `*` also matches
+        # `/`, that single wildcard spanned every org, team and user, and it
+        # matched any depth — so one grant covered every tenant's inputs. The
+        # pattern below is anchored segment by segment, which removes the
+        # any-depth reach and confines the role to `in/` objects: `out/` results
+        # and anything staged outside the canonical layout are no longer
+        # readable at all.
+        #
+        # LIMIT, stated plainly: this narrows *what shape* of key is reachable,
+        # not *whose*. All tenants' jobs share this one role, so there is no
+        # per-tenant value for IAM to substitute here and no static pattern can
+        # separate org A from org B. Per-tenant confinement in IAM would need
+        # session-tagged or per-job scoped credentials (tenant derived at
+        # AssumeRole time, then `s3:prefix`/`aws:PrincipalTag` conditions) —
+        # an identity-architecture change beyond this package's scope.
+        #
+        # So the cross-tenant guarantee is enforced in the worker, by
+        # sample_access.py, which rejects any key outside the requesting
+        # tenant's prefix before a download is attempted. This grant is
+        # defence-in-depth that shrinks what a bypass could reach; it is not
+        # the tenant boundary itself. Do not widen it back to a bare o/*.
         Sid      = "ReadSampleArtifacts"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::adp-${var.environment}-chat-artifacts-*/o/*/in/*"
+        Resource = "arn:aws:s3:::adp-${var.environment}-chat-artifacts-*/o/*/t/*/u/*/s/*/*/in/*"
+      },
+      {
+        # Issue #5616 (finding #4729). Mode B downloads an analysis script, and
+        # there was no grant for it: the only artifacts-bucket grant covered
+        # `in/` objects, so a script at `scripts/...` was never readable. Mode B
+        # could therefore only ever have worked by staging the script where
+        # samples go — i.e. the old code path depended on treating an uploaded
+        # input as executable code, which is the shape of the finding itself.
+        #
+        # Scripts now live under the requester's own prefix in a dedicated
+        # `scripts/` subtree, matching what resolve_script() enforces, so a
+        # sample can never be executed as a script and vice versa.
+        Sid      = "ReadModeBScripts"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::adp-${var.environment}-chat-artifacts-*/o/*/t/*/u/*/scripts/*"
       },
       {
         # Issue #272: Workers fetch YARA rules from S3 via initContainer
@@ -184,22 +225,21 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
 }
 
 # ---------------------------------------------------------------------------
-# Secrets Manager — CAPE API token only
+# Secrets Manager — intentionally not granted (issue #5616)
 # ---------------------------------------------------------------------------
-
-resource "aws_iam_role_policy" "cyber_worker_secrets" {
-  name = "secrets-cape-token"
-  role = aws_iam_role.cyber_worker.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue"]
-      Resource = "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:adp/cape/api-token-*"
-    }]
-  })
-}
+# The worker role previously held secretsmanager:GetSecretValue on
+# adp/cape/api-token-*. Neither worker reads a secret: there is no
+# secretsmanager call and no boto3 Secrets Manager client anywhere in
+# workers/ (triage and static both only use SQS, S3 and DynamoDB). CAPE
+# submission is driven from the agent side, not from these pods.
+#
+# Removed rather than narrowed. These pods parse hostile binaries and, in
+# Mode B, execute a generated script, so an unused credential grant here is
+# exactly the privilege a successful sandbox escape would reach for — and
+# because nothing uses it, removal cannot break a working path.
+#
+# If a worker ever needs a secret, add a grant for that specific secret at
+# that time; do not restore this one on the assumption it was needed.
 
 # ---------------------------------------------------------------------------
 # Kubernetes Namespace + ServiceAccount
