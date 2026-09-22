@@ -25,6 +25,12 @@ jobs:
       - name: Install worker dependencies for real Linux probes
         run: |
           python -m venv /tmp/cyber-kernel-tests
-          /tmp/cyber-kernel-tests/bin/pip install -r modules/domain-apps/cyber/workers/requirements.txt pytest==8.3.5
-      - name: Exercise actual kernel confinement and native parsers
-        run: /tmp/cyber-kernel-tests/bin/python -m pytest -q modules/domain-apps/cyber/workers/tests/test_isolation.py
+          /tmp/cyber-kernel-tests/bin/pip install -r modules/domain-apps/cyber/workers/requirements.txt pytest==8.3.5 'moto[s3,sqs,dynamodb]==5.0.28'
+      - name: Prepare the dedicated worker UID and read-only source
+        run: |
+          sudo useradd --uid 61161 --no-create-home cyber-test
+          sudo cp -a modules/domain-apps/cyber /tmp/cyber-security-source
+          sudo chown -R root:root /tmp/cyber-security-source
+          sudo chmod -R a+rX /tmp/cyber-security-source
+      - name: Exercise full worker suite including actual kernel confinement
+        run: sudo -u cyber-test /tmp/cyber-kernel-tests/bin/python -m pytest -q -p no:cacheprovider /tmp/cyber-security-source/workers/tests

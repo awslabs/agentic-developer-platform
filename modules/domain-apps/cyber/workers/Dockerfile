@@ -56,7 +56,7 @@ RUN python3 /app/scripts/generate_manifest.py > /opt/worker-manifest.json \
     && python3 -c "import json; json.load(open('/opt/worker-manifest.json'))"
 
 # Non-root user (reduces blast radius when static-analysis parsers get fed nasty input)
-RUN useradd -m -s /bin/bash -u 1001 worker \
+RUN useradd -m -s /bin/bash -u 61161 worker \
     && chmod -R go-w /app /opt/worker-manifest.json
 USER worker
 

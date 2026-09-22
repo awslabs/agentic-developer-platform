@@ -3,7 +3,7 @@
 # =============================================================================
 # Issue #230: Copied from modules/agent-factory/infra/gateway-main.tf
 # One role, one ServiceAccount. Both ScaledJobs reference the same SA.
-# Permissions: SQS consume/send, DDB write, S3 read samples, Secrets read.
+# Permissions: SQS consume/send, DDB results, public YARA rules only.
 # Hard invariant #3: No Bedrock, no other tenant's S3 prefix, no broad Secrets.
 # =============================================================================
 
@@ -145,7 +145,7 @@ resource "aws_iam_role_policy" "cyber_worker_dynamodb" {
 }
 
 # ---------------------------------------------------------------------------
-# S3 — read sample artifacts from the chat artifacts bucket
+# S3 — public rule data only; sample reads use broker capabilities
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role_policy" "cyber_worker_s3" {
@@ -165,7 +165,11 @@ resource "aws_iam_role_policy" "cyber_worker_s3" {
           "arn:aws:s3:::adp-${var.environment}-cape-assets/yara-rules/public/*"
         ]
       },
-
+      {
+        Sid         = "DenyAmbientObjectReads", Effect = "Deny",
+        Action      = ["s3:GetObject", "s3:GetObjectVersion"],
+        NotResource = "arn:aws:s3:::adp-${var.environment}-cape-assets/yara-rules/public/*"
+      },
     ]
   })
 }

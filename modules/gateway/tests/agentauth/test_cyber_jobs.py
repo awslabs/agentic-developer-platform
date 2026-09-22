@@ -211,3 +211,29 @@ async def test_new_attempt_cannot_read_previous_attempt_results(context, monkeyp
     assert not query.called
     assert (await post(context, "result", job)).json() == {"status": "pending"}
     assert query.called
+
+
+@pytest.mark.parametrize('head', [
+    {'ContentLength': 1}, {'ContentLength': 1, 'VersionId': 'null'},
+    {'ContentLength': 0, 'VersionId': 'v'}, {'ContentLength': cyber_jobs.MAX_SAMPLE + 1, 'VersionId': 'v'},
+])
+async def test_unversioned_or_unbounded_sample_never_enqueues(context, monkeypatch, head):
+    monkeypatch.setattr(context['clients']['s3'], 'head_object', Mock(return_value=head))
+    assert (await post(context)).status_code == 409
+    assert not delivered(context)
+
+
+async def test_revocation_during_storage_preparation_prevents_enqueue(context, db_session, monkeypatch):
+    from sqlalchemy import delete
+    original = cyber_jobs.run_in_threadpool
+
+    async def prepare_then_revoke(fn, *args, **kwargs):
+        result = await original(fn, *args, **kwargs)
+        if fn is cyber_jobs.register:
+            await db_session.execute(delete(TeamMembership).where(TeamMembership.user_id == 'human'))
+            await db_session.commit()
+        return result
+
+    monkeypatch.setattr(cyber_jobs, 'run_in_threadpool', prepare_then_revoke)
+    assert (await post(context)).status_code == 403
+    assert not delivered(context)

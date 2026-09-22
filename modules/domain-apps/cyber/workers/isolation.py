@@ -113,12 +113,14 @@ def _confine(read_paths: list[str], scratch: str) -> None:
 
 def _launch(config_path: str) -> None:
     config = json.loads(Path(config_path).read_text())
-    # Resource limits cover descendants as well. The pod's memory/PID limits
-    # remain the aggregate ceiling; these bounds constrain each process.
+    # Limits are inherited by descendants. Memory/CPU also have pod ceilings;
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_OUTPUT, MAX_OUTPUT))
     resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-    resource.setrlimit(resource.RLIMIT_NPROC, (64, 64))
+    # NPROC is aggregate per real UID on Linux, including threads. The image
+    # and pod use a dedicated Cyber UID; retain capacity for sibling jobs while
+    # bounding a fork bomb. Pod memory/CPU limits remain additional ceilings.
+    resource.setrlimit(resource.RLIMIT_NPROC, (256, 256))
     resource.setrlimit(resource.RLIMIT_CPU, (TIMEOUT, TIMEOUT))
     resource.setrlimit(resource.RLIMIT_AS, (4 * 1024**3, 4 * 1024**3))
     os.chdir(config["scratch"])
@@ -149,6 +151,7 @@ def run_isolated(command: list[str], inputs: list[Path], *, timeout: float = TIM
             "command": command, "scratch": str(scratch), "read_paths": reads,
             "env": {**interpreter_env, "HOME": str(scratch),
                     "TMPDIR": str(scratch), "PYTHONDONTWRITEBYTECODE": "1",
+                    "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
                     "YARA_RULES_DIR": "/rules" if Path("/rules").is_dir() else "/opt/yara-rules"},
         }))
         with (root / "stdout").open("w+b") as out, (root / "stderr").open("w+b") as err:

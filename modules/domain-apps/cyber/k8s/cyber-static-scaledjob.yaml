@@ -59,9 +59,9 @@ spec:
         # image rebuild.
         securityContext:
           runAsNonRoot: true
-          runAsUser: 1001
-          runAsGroup: 1001
-          fsGroup: 1001
+          runAsUser: 61161
+          runAsGroup: 61161
+          fsGroup: 61161
           seccompProfile:
             type: RuntimeDefault
         # ---------------------------------------------------------------
@@ -87,7 +87,7 @@ spec:
                 echo "Fetched $RULE_COUNT rule files"
                 # Write provenance manifest for Stage 3 envelope
                 python3 -c "import json; json.dump({'public': {'florian-roth': '$VERSION'}}, open('/rules/rules-manifest.json','w'))"
-            # Inherits the pod's runAsNonRoot/runAsUser 1001. The aws-cli image
+            # Inherits the pod's runAsNonRoot/runAsUser 61161. The aws-cli image
             # defaults HOME to /root, which uid 1001 cannot write, so point HOME
             # and the CLI's cache at the writable scratch volume. Without this
             # the rule fetch fails and the static worker starts with no rules.

@@ -56,9 +56,9 @@ spec:
         # though only static executes generated scripts.
         securityContext:
           runAsNonRoot: true
-          runAsUser: 1001
-          runAsGroup: 1001
-          fsGroup: 1001
+          runAsUser: 61161
+          runAsGroup: 61161
+          fsGroup: 61161
           seccompProfile:
             type: RuntimeDefault
         containers:
