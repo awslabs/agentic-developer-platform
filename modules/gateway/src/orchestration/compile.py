@@ -82,6 +82,7 @@ __all__ = [
     "accept_execution_policy",
     "address_of",
     "compile_proposal",
+    "legacy_naive_policy_plan_hash",
     "plan_hash",
     "prepare_execution_policy",
     "require_unexpired_execution_policy",
@@ -336,12 +337,33 @@ def prepare_execution_policy(
     expires_at = policy.expires_at if policy.expires_at.tzinfo is not None else policy.expires_at.replace(tzinfo=UTC)
     policy = policy.model_copy(update={"expires_at": expires_at})
 
+    stamped = _stamp_execution_policy(policy, decision=decision)
+
+    return proposal.model_copy(update={"execution_policy": stamped})
+
+
+def _stamp_execution_policy(policy, *, decision: ApprovalContext):
     try:
-        stamped = stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)
+        return stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)
     except PolicyRejectedError as exc:
         raise PolicyNotAcceptableError(str(exc)) from exc
 
-    return proposal.model_copy(update={"execution_policy": stamped})
+
+def legacy_naive_policy_plan_hash(proposal: LoopProposal, *, decision: ApprovalContext) -> str | None:
+    """Return the pre-normalization identity for replay compatibility only.
+
+    Older accepted plans retained a submitted naive expiry in their stamped policy.
+    New acceptances normalize that value to UTC so runtime authorization can compare
+    it safely, but an identical response-lost retry must still match the prior plan
+    rather than supersede it. This alias is consulted only under the flow lock and is
+    never persisted or treated as authority for a new acceptance.
+    """
+    policy = proposal.execution_policy
+    if policy is None or policy.expires_at.tzinfo is not None:
+        return None
+
+    stamped = _stamp_execution_policy(policy, decision=decision)
+    return plan_hash(proposal.model_copy(update={"execution_policy": stamped}))
 
 
 def require_unexpired_execution_policy(proposal: LoopProposal) -> None:
@@ -457,7 +479,9 @@ async def compile_proposal(
     # idempotent in the way that matters: a resubmission of the same document
     # stamps to the same id and therefore the same `document_hash`, and the
     # idempotency return below still recognises it as a retry.
+    submitted_proposal = proposal
     proposal = prepare_execution_policy(proposal, decision=decision, decision_kind=decision_kind)
+    legacy_document_hash = legacy_naive_policy_plan_hash(submitted_proposal, decision=decision)
 
     repo = OrchestrationRepository(session)
     document = proposal.model_dump(mode="json")
@@ -495,13 +519,13 @@ async def compile_proposal(
         # --- Idempotency (R-NF2) -------------------------------------------
         # An identical document already in force means this is a retry. Return
         # what exists rather than writing a second identical plan version.
-        if in_force is not None and in_force.plan_hash == document_hash:
+        if in_force is not None and in_force.plan_hash in {document_hash, legacy_document_hash}:
             existing = await repo.list_nodes(org_id=decision.org_id, flow_id=flow.id)
             return CompileResult(
                 flow_id=flow.id,
                 plan_version=in_force.version,
                 decision_id=in_force.accepted_by_decision_id or "",
-                plan_hash=document_hash,
+                plan_hash=in_force.plan_hash,
                 node_ids={address_of(flow.slug, node): node.id for node in existing},
                 already_compiled=True,
             )

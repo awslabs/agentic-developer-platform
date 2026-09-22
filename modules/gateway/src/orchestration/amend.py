@@ -64,6 +64,7 @@ from .compile import (
     ProposalRejectedError,
     TenantMismatchError,
     address_of,
+    legacy_naive_policy_plan_hash,
     plan_hash,
     prepare_execution_policy,
     require_evaluation_acceptor,
@@ -237,7 +238,10 @@ async def amend_plan(
     # than reimplemented. It runs before the hash so the stamp is inside what
     # idempotency compares; the time-dependent expiry check runs only after the
     # locked replay check below.
-    proposal = prepare_execution_policy(proposal, decision=actor.to_approval(), decision_kind=DecisionKind.PLAN_AMENDED)
+    submitted_proposal = proposal
+    approval = actor.to_approval()
+    proposal = prepare_execution_policy(proposal, decision=approval, decision_kind=DecisionKind.PLAN_AMENDED)
+    legacy_document_hash = legacy_naive_policy_plan_hash(submitted_proposal, decision=approval)
 
     document = proposal.model_dump(mode="json")
     document_hash = plan_hash(proposal)
@@ -266,14 +270,14 @@ async def amend_plan(
         # An identical document already in force means this is a retry — a dropped
         # connection, a double-submit. Return what exists rather than writing a
         # second version that differs from the first only in its number.
-        if in_force is not None and in_force.plan_hash == document_hash:
+        if in_force is not None and in_force.plan_hash in {document_hash, legacy_document_hash}:
             existing = await repo.list_nodes(org_id=actor.org_id, flow_id=flow.id)
             return AmendResult(
                 flow_id=flow.id,
                 plan_version=in_force.version,
                 superseded_version=None,
                 decision_id=in_force.accepted_by_decision_id or "",
-                plan_hash=document_hash,
+                plan_hash=in_force.plan_hash,
                 node_ids={address_of(flow.slug, node): node.id for node in existing},
                 already_amended=True,
             )

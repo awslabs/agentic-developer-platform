@@ -59,6 +59,7 @@ from src.orchestration.execution_policy import (
     DenyReason,
     ResourceRef,
     authorize_action,
+    stamp_policy,
 )
 from src.orchestration.models import DecisionKind, OrchestrationAcceptedPlan, OrchestrationDecision
 from src.orchestration.policy_admission import authorize_node_dispatch, load_in_force_policy
@@ -992,6 +993,41 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         assert replay.decision_id == first.decision_id
         assert len(await plan_versions(session)) == 1
 
+    async def test_direct_retry_matches_a_pre_normalization_naive_policy(self, session, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        from src.orchestration import compile as compile_module
+
+        expires_at = (datetime.now(tz=UTC) + timedelta(hours=1)).replace(tzinfo=None)
+        submitted = gateless_proposal().model_copy(update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)})
+        approval = ApprovalContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+        )
+
+        def legacy_prepare(proposal, *, decision, decision_kind):
+            policy = proposal.execution_policy
+            assert policy is not None and policy.expires_at.tzinfo is None
+            return proposal.model_copy(update={"execution_policy": stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)})
+
+        with monkeypatch.context() as legacy:
+            legacy.setattr(compile_module, "prepare_execution_policy", legacy_prepare)
+            first = await compile_proposal(session, submitted, approval)
+        await session.commit()
+        original = (await plan_versions(session))[0]
+        assert original.plan_document["execution_policy"]["expires_at"] == expires_at.isoformat()
+
+        replay = await compile_proposal(session, submitted, approval)
+
+        assert replay.already_compiled is True
+        assert replay.flow_id == first.flow_id
+        assert replay.plan_version == first.plan_version
+        assert replay.decision_id == first.decision_id
+        assert replay.plan_hash == original.plan_hash
+        assert len(await plan_versions(session)) == 1
+
     async def test_amendment_retry_returns_committed_result_after_expiry(self, session, monkeypatch):
         from datetime import UTC, datetime, timedelta
 
@@ -1025,6 +1061,51 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         assert replay.already_amended is True
         assert replay.plan_version == first.plan_version
         assert replay.decision_id == first.decision_id
+        assert len(await plan_versions(session)) == 2
+
+    async def test_amendment_retry_matches_a_pre_normalization_naive_policy(self, session, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        from src.orchestration import amend as amend_module
+        from src.orchestration.amend import AmendmentContext, amend_plan
+
+        approval = ApprovalContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+        )
+        original = await compile_proposal(session, gateless_proposal(), approval)
+        expires_at = (datetime.now(tz=UTC) + timedelta(hours=1)).replace(tzinfo=None)
+        submitted = gateless_proposal(title="Delivery loop with amended bounds").model_copy(
+            update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)}
+        )
+        amender = AmendmentContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+            reason="Accept bounded execution.",
+        )
+
+        def legacy_prepare(proposal, *, decision, decision_kind):
+            policy = proposal.execution_policy
+            assert policy is not None and policy.expires_at.tzinfo is None
+            return proposal.model_copy(update={"execution_policy": stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)})
+
+        with monkeypatch.context() as legacy:
+            legacy.setattr(amend_module, "prepare_execution_policy", legacy_prepare)
+            first = await amend_plan(session, original.flow_id, submitted, amender)
+        await session.commit()
+        accepted = (await plan_versions(session))[1]
+        assert accepted.plan_document["execution_policy"]["expires_at"] == expires_at.isoformat()
+
+        replay = await amend_plan(session, original.flow_id, submitted, amender)
+
+        assert replay.already_amended is True
+        assert replay.plan_version == first.plan_version
+        assert replay.decision_id == first.decision_id
+        assert replay.plan_hash == accepted.plan_hash
         assert len(await plan_versions(session)) == 2
 
     def test_unexpired_bounds_are_still_accepted(self):
