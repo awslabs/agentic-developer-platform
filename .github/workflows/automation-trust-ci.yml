@@ -9,6 +9,9 @@ on:
       - platform/automation-infra/**
       - platform/infra/modules/codebuild/**
   workflow_dispatch:
+concurrency:
+  group: automation-trust-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

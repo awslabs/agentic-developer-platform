@@ -52,6 +52,12 @@ jobs:
           for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
             command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
           done
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Build actual Lambda inputs before planning
+        run: bash platform/scripts/build-agent-factory-lambdas.sh
+
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
@@ -137,6 +143,11 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.14.2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Build actual Lambda inputs before validation
+        run: bash platform/scripts/build-agent-factory-lambdas.sh
       - name: Validate without state or deployment credentials
         working-directory: modules/agent-factory/infra
         run: |
