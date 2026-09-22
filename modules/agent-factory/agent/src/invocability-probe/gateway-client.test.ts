@@ -25,6 +25,7 @@ describe('SigV4 probe Gateway client', () => {
     );
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.body).toBe('{"trigger":"scheduled"}');
+    expect(init.redirect).toBe('error');
     expect((init.headers as Record<string, string>).authorization).toBeDefined();
   });
 

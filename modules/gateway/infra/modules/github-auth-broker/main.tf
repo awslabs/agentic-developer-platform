@@ -274,6 +274,7 @@ data "archive_file" "placeholder" {
 # --- CloudWatch Log Group ---
 
 resource "aws_cloudwatch_log_group" "broker" {
+  #checkov:skip=CKV_AWS_338: Broker application logs use an explicitly bounded 30-day operational retention.
   name              = "/aws/lambda/${local.function_name}"
   retention_in_days = 30
   kms_key_id        = var.cloudwatch_kms_key_arn

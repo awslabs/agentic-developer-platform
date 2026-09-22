@@ -717,8 +717,13 @@ variable "api_gateway_throttle_rate_limit" {
 
 variable "api_gateway_log_retention_days" {
   type        = number
-  description = "CloudWatch log retention in days for API Gateway access logs"
-  default     = 30
+  description = "CloudWatch API Gateway access-log retention in days (minimum 365)"
+  default     = 365
+
+  validation {
+    condition     = contains([365, 400, 545, 731, 1827, 3653], var.api_gateway_log_retention_days)
+    error_message = "API Gateway access-log retention must be a valid CloudWatch value of at least 365 days."
+  }
 }
 
 variable "authorizer_ip_allowlist_ssm_parameter" {

@@ -76,6 +76,7 @@ resource "aws_kms_alias" "logs" {
 }
 
 resource "aws_cloudwatch_log_group" "invocations" {
+  #checkov:skip=CKV_AWS_338: Bedrock invocation logs use an explicitly bounded customer-selected retention below the one-year audit-log policy.
   name              = local.log_group_name
   retention_in_days = var.retention_in_days
   kms_key_id        = aws_kms_key.logs.arn

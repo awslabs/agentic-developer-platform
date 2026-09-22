@@ -13,7 +13,7 @@ import { buildArtifactStore } from './artifacts/factory';
 import { getChannelDirective, getChannelEffort } from './channel-profiles';
 import { loadPersona, composeSystemPrompt } from './persona-loader';
 import { runQuery } from './run-query';
-import { SqsClient, TaskPayload, AgUiEventEnvelope } from './sqs-client';
+import { SqsClient, TaskPayload, AgUiEventEnvelope, deliveryRoutingForTask } from './sqs-client';
 import { withChatBedrockRouting } from './bedrock-routing';
 import { AgentTool } from './context/types';
 import { ArtifactRef } from './artifacts/port';
@@ -119,11 +119,10 @@ async function processOne(
     // Delivery routing — echoed into every sendResponse() so the response
     // Lambda knows which channel/connection to deliver to. Missing any of
     // these caused WS replies to silently fall back to REST polling.
-    thread_id,
     connection_id,
     channel,
-    platform_data,
   } = task;
+  const deliveryRouting = deliveryRoutingForTask(task);
 
   // Stage A (#184): log full identity context at INFO for audit trail.
   console.log(
@@ -143,10 +142,7 @@ async function processOne(
         status: 'ag_ui',
         ag_ui_event: true,
         event,
-        thread_id,
-        connection_id,
-        channel,
-        channel_metadata: platform_data,
+        ...deliveryRouting,
       };
       await deps.sqs.sendAgUiEvent(envelope);
     } catch (err) {
@@ -471,10 +467,7 @@ async function processOne(
           kind: event.type,
           text,
           turn: event.turn,
-          thread_id,
-          connection_id,
-          channel,
-          channel_metadata: platform_data,
+          ...deliveryRouting,
         });
 
         // AG-UI events
@@ -572,10 +565,7 @@ async function processOne(
       tokens: result.tokens,
       status: 'completed',
       artifacts: publishedRefs,
-      thread_id,
-      connection_id,
-      channel,
-      channel_metadata: platform_data,
+      ...deliveryRouting,
     });
 
     if (msg.ReceiptHandle) {
@@ -600,10 +590,7 @@ async function processOne(
       session_id,
       text: `error: ${(err as Error).message}`,
       status: 'failed',
-      thread_id,
-      connection_id,
-      channel,
-      channel_metadata: platform_data,
+      ...deliveryRouting,
     });
 
     // Do not delete — DLQ policy applies

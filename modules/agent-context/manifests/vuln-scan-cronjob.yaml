@@ -37,6 +37,8 @@ spec:
           containers:
           - name: vuln-scan
             image: ${INGESTION_IMAGE}
+            securityContext:
+              allowPrivilegeEscalation: false
             command: ["python3", "/app/scan-vulns.py"]
             envFrom:
             - configMapRef:

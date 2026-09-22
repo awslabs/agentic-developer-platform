@@ -318,6 +318,14 @@ class TestForeignOwnerRejected:
         # Seed a session carrying a github thread for that follow-up id.
         aws["table"].put_item(Item={
             "session_id": "sess-foreign-followup",
+            # The session must be owned by the caller `_send` authenticates as,
+            # or the ownership gate (#5660) refuses first and this test stops
+            # exercising the tenant gate it is actually about.
+            "user_workspace": "user-sess-foreign-followup#webchat",
+            "owner_principal": '["test-tenant","acme-corp","","user-sess-foreign-followup","webchat"]',
+            "owner_user_id": "user-sess-foreign-followup",
+            "tenant_id": "test-tenant",
+            "created_at": 1,
             "threads": {"thr-1": {
                 "topic": "earlier work",
                 "path": "github_actions",

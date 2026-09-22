@@ -33,6 +33,23 @@ def test_job_uses_release_config_without_joining_service_or_starting_server():
     assert source == deployment()
 
 
+def test_admission_verification_submits_the_rendered_job_as_server_dry_run(monkeypatch):
+    calls = []
+
+    def command(args, *, input_text=None):
+        calls.append((args, input_text))
+        if "--dry-run=client" in args:
+            return json.dumps(deployment())
+        return ""
+
+    monkeypatch.setattr(script, "command", command)
+    script.verify_admission("deployment.yaml", "registry/gateway:reviewed", "adp-gateway")
+
+    args, manifest = calls[-1]
+    assert args == ["kubectl", "create", "--dry-run=server", "-f", "-"]
+    assert json.loads(manifest)["kind"] == "Job"
+
+
 @pytest.mark.parametrize("condition,raises", [("Failed", True), ("Complete", False)])
 def test_job_failure_stops_before_any_serving_mutation(monkeypatch, condition, raises):
     calls = []

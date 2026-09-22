@@ -1502,6 +1502,24 @@ resource "aws_ssm_parameter" "cognito_cli_client_id" {
   tags = local.common_tags
 }
 
+resource "aws_ssm_parameter" "cognito_agent_client_id" {
+  name        = "/adp/${var.environment}/gateway/cognito-agent-client-id"
+  description = "Cognito app client ID for machine-to-machine gateway authentication"
+  type        = "String"
+  value       = module.cognito.agent_client_id
+
+  tags = local.common_tags
+}
+
+resource "aws_ssm_parameter" "agent_clients_table" {
+  name        = "/adp/${var.environment}/gateway/agent-clients-table"
+  description = "DynamoDB registry for dynamically provisioned Cognito machine clients"
+  type        = "String"
+  value       = module.cognito.agent_clients_table_name
+
+  tags = local.common_tags
+}
+
 resource "aws_ssm_parameter" "cognito_domain" {
   name        = "/adp/${var.environment}/gateway/cognito-domain"
   description = "Cognito hosted-UI domain prefix"
@@ -1733,6 +1751,12 @@ resource "aws_iam_role_policy" "gateway_identity_index" {
         Resource = [
           aws_dynamodb_table.identity_index.arn
         ]
+      },
+      {
+        Sid      = "AgentClientRegistryRead"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = [module.cognito.agent_clients_table_arn]
       },
       {
         Sid    = "DynamoDBKMSAccess"

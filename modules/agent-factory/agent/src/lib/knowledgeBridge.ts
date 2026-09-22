@@ -57,6 +57,12 @@ export async function handleKnowledgeBridge(req: IncomingMessage, res: ServerRes
       method: req.method!, hostname: endpoint.hostname, path: endpoint.pathname,
       protocol: endpoint.protocol, headers, body: body.length ? body : undefined,
     });
+    // endpoint is the operator-configured ADP_GATEWAY_ENDPOINT, checked above for https
+    // and for inline credentials/query/fragment. The caller cannot contribute to the
+    // destination: `path` comes from the fixed lookup table above, so an arbitrary request
+    // URL is a 404 before reaching here. redirect:'error' keeps the SigV4 credentials and
+    // worker identity headers from following a relocation (#5603).
+    // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
     const upstream = await fetch(endpoint, {
       method: req.method, headers: signed.headers, body: body.length ? body : undefined,
       redirect: 'error', signal: AbortSignal.timeout(35_000),

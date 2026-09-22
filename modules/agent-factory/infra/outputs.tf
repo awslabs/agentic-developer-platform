@@ -59,3 +59,8 @@ output "pentest_actor_token_function_name" {
   description = "Name of the dev-only pentest actor-token minting Lambda"
   value       = local.pentest_actor_token_enabled ? module.pentest_actor_token[0].function_name : ""
 }
+
+output "pentest_actor_client_id" {
+  description = "Cognito app client ID used by the dev-only pentest actor-token Lambda"
+  value       = local.pentest_actor_token_enabled ? module.pentest_actor_token[0].pentest_client_id : ""
+}

@@ -124,6 +124,7 @@ resource "aws_security_group_rule" "tick_to_vpc_endpoints" {
 # and encryption are managed, and so the group the smoke check greps for
 # (`/aws/lambda/adp-<env>-orchestration-tick`) exists from the first apply.
 resource "aws_cloudwatch_log_group" "tick" {
+  #checkov:skip=CKV_AWS_338: Orchestration Lambda logs use an explicitly bounded operational retention below the one-year audit-log policy.
   name              = "/aws/lambda/${local.tick_name}"
   retention_in_days = var.log_retention_days
   kms_key_id        = var.cloudwatch_kms_key_arn

@@ -35,6 +35,14 @@ turn, bypassing the server-side classifier. This adapter only carries the raw
 value through to platform_data; the handler validates it against an allowlist
 and REJECTS the message if it does not match. Never treat it as safe here.
 
+`session_id` (#5660) is likewise OPTIONAL and UNTRUSTED, and is the one
+identity-bearing field in this payload that does NOT come from the verified
+`claims`. It becomes a sessions-table key and an S3 path segment downstream, so
+naming another user's conversation is an ownership question, not a lookup. This
+adapter only type-checks it; the handler enforces the shape
+(`is_valid_session_id`) and the owner (`get_or_create_session`), refusing rather
+than sanitising. Everything else identity-related below is read from `claims`.
+
 The WebSocket connection is authenticated via Cognito JWT token
 passed during the $connect route.
 """
@@ -54,6 +62,10 @@ from .base import (
     UnifiedMessage,
     effective_tenant_id,
 )
+
+
+class InvalidWebChatRequest(ValueError):
+    """A syntactically present WebChat field cannot be safely processed."""
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +141,10 @@ class WebChatAdapter(ChannelAdapter):
             logger.debug("Ignoring WebChat action: %s", action)
             return None
 
+        if "session_id" in body and not isinstance(body["session_id"], str):
+            logger.warning("Rejected WebChat message with non-string session_id")
+            raise InvalidWebChatRequest("session_id must be a string")
+
         text = body.get("text", "").strip()
         if not text and not body.get("attachments"):
             return None
@@ -163,6 +179,9 @@ class WebChatAdapter(ChannelAdapter):
             channel_id=connection_id,
             user_id=user_id,
             user_name=user_name,
+            # UNTRUSTED (#5660): explicit non-strings are rejected above rather
+            # than silently redirected to a different server-derived session.
+            # Shape and ownership are enforced by the handler.
             thread_id=body.get("session_id"),
             text=text,
             role=MessageRole.USER,

@@ -155,6 +155,7 @@ resource "aws_secretsmanager_secret_version" "mcp_token" {
 # CloudWatch Log Group
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_log_group" "gbrain" {
+  #checkov:skip=CKV_AWS_338: GBrain research logs use an explicitly bounded 30-day operational retention.
   name              = "/adp/research/gbrain"
   retention_in_days = 30
 }

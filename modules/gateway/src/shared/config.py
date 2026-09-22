@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # rotation, minted by src/auth/cli_login.py. Empty = feature disabled
     # (endpoints 503) — safe before the Terraform that creates it applies.
     cognito_cli_client_id: str = ""
+    cognito_agent_client_id: str = ""
+    cognito_gitlab_client_id: str = ""
+    cognito_pentest_client_id: str = ""
+    agent_clients_table: str = ""
     # Either a hosted-UI domain PREFIX ("bedrockgw-dev-auth") or a custom-domain
     # FQDN ("auth.example.com"). Consumers distinguish them on the presence of a
     # dot, since a prefix is a single DNS label — see agent_service.py, which
@@ -55,6 +59,7 @@ class Settings(BaseSettings):
     # custom domain has replaced it yields a host that no longer exists, and the
     # failure surfaces only when an agent attempts a token exchange.
     cognito_domain: str = ""
+    apigw_provenance_secret: str = ""
 
     # Server
     host: str = "0.0.0.0"

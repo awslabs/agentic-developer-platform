@@ -78,6 +78,156 @@ REGEX_PATTERNS: dict[str, tuple[str, str]] = {
     "bearer_token": (r"Bearer\s+[A-Za-z0-9_.-]+", "[REDACTED:BEARER_TOKEN]"),
 }
 
+# =============================================================================
+# Personal-data patterns (Issue #5672)
+# =============================================================================
+# The regex layer is the ONLY layer that always runs: it needs no AWS API call,
+# no entitlement and no quota. Comprehend PII detection (ScrubLevel.STANDARD) is
+# strictly additive on top of it, and it can be unavailable — the service may not
+# be enabled in an account, the workload role may lack comprehend:DetectPiiEntities,
+# or the account may be out of quota. Before this change the regex layer covered
+# credential shapes only, so any environment where Comprehend was unavailable
+# stored personal data entirely in the clear while reporting itself protected.
+#
+# These patterns close that gap for the categories that have a reliable textual
+# shape. They are defence in depth, NOT a replacement for Comprehend.
+#
+# DELIBERATELY NOT COVERED HERE: person names and free-form postal addresses.
+# Neither has a shape a regex can recognise without either missing most real
+# values or redacting ordinary prose. Those two categories depend on Comprehend,
+# which is why ScrubLevel.STANDARD is the default and why a failed Comprehend
+# pass is logged as an error (see service.py) rather than a warning.
+#
+# Ordering note: card-number patterns are registered BEFORE the phone pattern so
+# a formatted card ("4111 1111 1111 1111") is consumed as a card rather than
+# partially matched as a phone number.
+PII_REGEX_PATTERNS: dict[str, tuple[str, str]] = {
+    # Email addresses
+    "email_address": (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b", "[REDACTED:EMAIL]"),
+    # National identifiers. The bare form is the US SSN's dashed/spaced shape,
+    # which is distinctive enough to match on its own. Nine contiguous digits are
+    # NOT matched bare — far too common in ordinary text (ids, timestamps,
+    # quantities) — so that form is only redacted when labelled.
+    "national_id": (r"\b\d{3}[- ]\d{2}[- ]\d{4}\b", "[REDACTED:NATIONAL_ID]"),
+    "national_id_labelled": (
+        r"(?:ssn|social[\s_-]?security(?:[\s_-]?(?:number|no\.?|#))?|national[\s_-]?id(?:entifier)?|nino|sin)"
+        r"\s*[:=#]?\s*['\"]?\d{3}[- ]?\d{2}[- ]?\d{4}['\"]?",
+        "[REDACTED:NATIONAL_ID]",
+    ),
+    # Payment card numbers, major issuers, contiguous form (Visa, Mastercard,
+    # Amex, Discover, Diners, JCB). Prefix-anchored rather than "13-19 digits"
+    # to keep ordinary long numbers out of the match.
+    "payment_card": (
+        r"\b(?:4[0-9]{12}(?:[0-9]{3})?"
+        r"|5[1-5][0-9]{14}"
+        r"|2(?:2[2-9][0-9]|[3-6][0-9]{2}|7[01][0-9]|720)[0-9]{12}"
+        r"|3[47][0-9]{13}"
+        r"|3(?:0[0-5]|[68][0-9])[0-9]{11}"
+        r"|6(?:011|5[0-9]{2})[0-9]{12}"
+        r"|35(?:2[89]|[3-8][0-9])[0-9]{12})\b",
+        "[REDACTED:PAYMENT_CARD]",
+    ),
+    # Payment card numbers in the grouped form people actually paste
+    # ("4111 1111 1111 1111", "4111-1111-1111-1111", and the 4-6-5 Amex form).
+    "payment_card_grouped": (r"\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{1,4}\b|\b\d{4}[ -]\d{6}[ -]\d{5}\b", "[REDACTED:PAYMENT_CARD]"),
+    # Bank account and routing numbers. Both are plain digit runs with no
+    # distinctive shape, so these are label-anchored only — a bare 9-digit run is
+    # not evidence of a routing number.
+    "bank_routing": (
+        r"(?:routing(?:[\s_-]?(?:number|no\.?|#))?|aba(?:[\s_-]?(?:number|no\.?|#))?|sort[\s_-]?code)"
+        r"\s*[:=#]?\s*['\"]?\d{6,9}['\"]?",
+        "[REDACTED:BANK_ROUTING]",
+    ),
+    "bank_account": (
+        r"(?:bank[\s_-]?account|account[\s_-]?(?:number|no\.?|#))\s*[:=#]?\s*['\"]?[0-9]{6,26}['\"]?",
+        "[REDACTED:BANK_ACCOUNT]",
+    ),
+    # IBANs carry their own distinctive shape (2-letter country + 2 check digits +
+    # 11-30 alphanumerics), so unlike a bare account number they can be matched
+    # without a label. Minimum length follows the shortest real IBAN (Norway, 15).
+    "iban": (r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b", "[REDACTED:BANK_ACCOUNT]"),
+    # Phone numbers, as three explicit shapes rather than one loose digit-group
+    # rule. A generic "digits separator digits separator digits" pattern also
+    # matches ISO dates (2026-09-22) and version-like triples, which would redact
+    # ordinary prose and destroy the operational value of the transcript.
+    #   1. international, leading "+" country code
+    #   2. parenthesised area code
+    #   3. bare 3-3-4 / 3-4-4 national form — deliberately NOT 4-2-2 or 2-2-4,
+    #      the shapes ISO and US/EU dates take
+    "phone_number": (
+        r"(?<![\w.+-])(?:"
+        r"\+\d{1,3}[ .-]?(?:\(?\d{2,4}\)?[ .-]?){1,4}\d{2,4}"
+        r"|\(\d{2,5}\)[ .-]?\d{2,4}[ .-]?\d{2,4}"
+        r"|\d{3}[ .-]\d{3,4}[ .-]\d{4}"
+        r")(?![\w-])",
+        "[REDACTED:PHONE]",
+    ),
+}
+
+# The always-on layer is credential patterns PLUS personal-data patterns.
+# Registration order is preserved (Python dicts are ordered) and matters: see the
+# ordering note above.
+REGEX_PATTERNS.update(PII_REGEX_PATTERNS)
+
+_SENSITIVE_NUMERIC_FIELDS: dict[str, tuple[str, str, str]] = {
+    "ssn": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "socialsecurity": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "socialsecuritynumber": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "nationalid": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "nationalidentifier": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "nino": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "sin": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "taxid": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "taxpayerid": ("[REDACTED:NATIONAL_ID]", "numeric_national_id_field", "SSN"),
+    "card": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "cardnumber": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "creditcard": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "creditcardnumber": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "debitcard": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "debitcardnumber": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "paymentcard": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "paymentcardnumber": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "pan": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "cvv": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "cvc": ("[REDACTED:PAYMENT_CARD]", "numeric_payment_card_field", "CREDIT_CARD"),
+    "bankaccount": ("[REDACTED:BANK_ACCOUNT]", "numeric_bank_account_field", "BANK_ACCOUNT"),
+    "bankaccountnumber": ("[REDACTED:BANK_ACCOUNT]", "numeric_bank_account_field", "BANK_ACCOUNT"),
+    "routingnumber": ("[REDACTED:BANK_ROUTING]", "numeric_bank_routing_field", "BANK_ROUTING"),
+    "abanumber": ("[REDACTED:BANK_ROUTING]", "numeric_bank_routing_field", "BANK_ROUTING"),
+    "sortcode": ("[REDACTED:BANK_ROUTING]", "numeric_bank_routing_field", "BANK_ROUTING"),
+    "phone": ("[REDACTED:PHONE]", "numeric_phone_field", "PHONE"),
+    "phonenumber": ("[REDACTED:PHONE]", "numeric_phone_field", "PHONE"),
+    "telephone": ("[REDACTED:PHONE]", "numeric_phone_field", "PHONE"),
+    "mobile": ("[REDACTED:PHONE]", "numeric_phone_field", "PHONE"),
+    "mobilenumber": ("[REDACTED:PHONE]", "numeric_phone_field", "PHONE"),
+}
+_TRANSPARENT_NUMERIC_PATH_PARTS = {"content", "data", "raw", "value", "values"}
+
+_NUMERIC_SHAPE_PATTERNS = {
+    name: (re.compile(pattern, re.IGNORECASE), replacement) for name, (pattern, replacement) in PII_REGEX_PATTERNS.items() if name == "payment_card"
+}
+
+
+def redact_numeric_value(value: Any, path: tuple[str, ...]) -> tuple[str, str, str] | None:
+    """Return a redaction for a sensitive numeric leaf, or None for operational data."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+
+    for path_part in reversed(path):
+        normalized_part = re.sub(r"[^a-z0-9]", "", str(path_part).lower())
+        if redaction := _SENSITIVE_NUMERIC_FIELDS.get(normalized_part):
+            return redaction
+        if normalized_part not in _TRANSPARENT_NUMERIC_PATH_PARTS:
+            break
+
+    text = str(value)
+    for pattern_name, (pattern, replacement) in _NUMERIC_SHAPE_PATTERNS.items():
+        if pattern.fullmatch(text):
+            return replacement, f"numeric_{pattern_name}", "CREDIT_CARD"
+
+    return None
+
+
 # Headers to scrub from logs
 SENSITIVE_HEADERS = {
     "authorization",
@@ -182,7 +332,13 @@ class RegexScrubber:
             patterns_matched=patterns_matched,
         )
 
-    def scrub_dict(self, data: dict[str, Any], depth: int = 0, max_depth: int = 10) -> ScrubResult:
+    def scrub_dict(
+        self,
+        data: dict[str, Any],
+        depth: int = 0,
+        max_depth: int = 10,
+        path: tuple[str, ...] = (),
+    ) -> ScrubResult:
         """Recursively scrub sensitive data from a dictionary.
 
         Args:
@@ -201,21 +357,26 @@ class RegexScrubber:
         all_patterns: list[str] = []
 
         for key, value in data.items():
+            value_path = (*path, str(key))
             if isinstance(value, str):
                 result = self.scrub_text(value)
                 scrubbed[key] = result.content
                 total_redactions += result.redactions_count
                 all_patterns.extend(result.patterns_matched)
             elif isinstance(value, dict):
-                result = self.scrub_dict(value, depth + 1, max_depth)
+                result = self.scrub_dict(value, depth + 1, max_depth, value_path)
                 scrubbed[key] = result.content
                 total_redactions += result.redactions_count
                 all_patterns.extend(result.patterns_matched)
             elif isinstance(value, list):
-                result = self.scrub_list(value, depth + 1, max_depth)
+                result = self.scrub_list(value, depth + 1, max_depth, value_path)
                 scrubbed[key] = result.content
                 total_redactions += result.redactions_count
                 all_patterns.extend(result.patterns_matched)
+            elif redaction := redact_numeric_value(value, value_path):
+                scrubbed[key] = redaction[0]
+                total_redactions += 1
+                all_patterns.append(redaction[1])
             else:
                 scrubbed[key] = value
 
@@ -225,7 +386,13 @@ class RegexScrubber:
             patterns_matched=list(set(all_patterns)),  # Deduplicate
         )
 
-    def scrub_list(self, data: list[Any], depth: int = 0, max_depth: int = 10) -> ScrubResult:
+    def scrub_list(
+        self,
+        data: list[Any],
+        depth: int = 0,
+        max_depth: int = 10,
+        path: tuple[str, ...] = (),
+    ) -> ScrubResult:
         """Recursively scrub sensitive data from a list.
 
         Args:
@@ -250,15 +417,19 @@ class RegexScrubber:
                 total_redactions += result.redactions_count
                 all_patterns.extend(result.patterns_matched)
             elif isinstance(item, dict):
-                result = self.scrub_dict(item, depth + 1, max_depth)
+                result = self.scrub_dict(item, depth + 1, max_depth, path)
                 scrubbed.append(result.content)
                 total_redactions += result.redactions_count
                 all_patterns.extend(result.patterns_matched)
             elif isinstance(item, list):
-                result = self.scrub_list(item, depth + 1, max_depth)
+                result = self.scrub_list(item, depth + 1, max_depth, path)
                 scrubbed.append(result.content)
                 total_redactions += result.redactions_count
                 all_patterns.extend(result.patterns_matched)
+            elif redaction := redact_numeric_value(item, path):
+                scrubbed.append(redaction[0])
+                total_redactions += 1
+                all_patterns.append(redaction[1])
             else:
                 scrubbed.append(item)
 

@@ -534,7 +534,37 @@ def broker_harness(store, kubernetes, monkeypatch):
     monkeypatch.setattr("src.agentauth.routes.get_agent_runtime", lambda: runtime)
     monkeypatch.setattr("src.shared.config.get_settings", lambda: SimpleNamespace(webhook_events_table="broker-events"))
     identity = SimpleNamespace(scope="internal", user_id="shared-worker", credential_scopes=["credential:raw-read", "credential:materialize"])
-    monkeypatch.setattr("src.internal.auth_deps.extract_iam_identity_from_headers", lambda request: identity)
+
+    # Issue #5653 (A01): this fixture's premise is a REAL agent worker whose
+    # X-Caller-Identity was written by API Gateway from a verified SigV4 signature
+    # (that is what `extract_iam_identity_from_headers` is stubbed to model below).
+    # The provenance gate now asks whether the edge vouched for that header, so the
+    # fixture has to state its own transport; without it every broker route 403s at
+    # the gate and never reaches the run-identity logic these tests are about.
+    #
+    # This states the fixture's transport, it does not relax an assertion: forged
+    # and untrusted-transport assertions are covered in tests/auth/
+    # test_caller_provenance.py, which asserts they are REJECTED.
+    #
+    # Both stubs go into verify_internal_or_irsa's OWN globals dict rather than
+    # through the "src.internal.auth_deps.<attr>" string path, and that distinction
+    # is what makes these tests pass in a full-suite run instead of only in
+    # isolation. tests/auth/test_status_callback_routes.py deletes
+    # "src.internal.auth_deps" from sys.modules and re-imports it, which rebinds
+    # sys.modules but leaves the ALREADY-IMPORTED `auth_deps` attribute on the
+    # `src.internal` package pointing at the original module object. pytest's
+    # monkeypatch resolves a dotted string with getattr on the package, so it
+    # reaches that stale module while the function this fixture holds closes over
+    # the live one — the patch lands somewhere nothing reads. Patching the globals
+    # of the exact function object under test cannot miss, and mirrors the same
+    # fix already applied in tests/orchestration/test_user_credential_authority.py.
+    fixture_settings = SimpleNamespace(
+        trust_apigw_headers=True,
+        apigw_provenance_secret="bootstrap-edge-provenance",
+        internal_api_key="internal-key-for-fixture",
+    )
+    monkeypatch.setitem(verify_internal_or_irsa.__globals__, "extract_iam_identity_from_headers", lambda request: identity)
+    monkeypatch.setitem(verify_internal_or_irsa.__globals__, "get_settings", lambda: fixture_settings)
     monkeypatch.setenv("AGENT_AUTHORITY_ENABLED", "true")
     app = FastAPI()
     effects = []
@@ -550,7 +580,12 @@ def broker_harness(store, kubernetes, monkeypatch):
             app.get(path)(broker)
         else:
             app.post(path)(broker)
-    headers = {"X-Caller-Identity": "shared-worker", "X-Adp-Run-Credential": lease["credential"], WORKLOAD_HEADER: "pod-token"}
+    headers = {
+        "X-Caller-Identity": "shared-worker",
+        "X-Adp-Edge-Provenance": "bootstrap-edge-provenance",
+        "X-Adp-Run-Credential": lease["credential"],
+        WORKLOAD_HEADER: "pod-token",
+    }
     return TestClient(app), headers, effects, identity
 
 
@@ -565,7 +600,14 @@ def test_broker_requires_same_verified_worker_and_permits_own_run(broker_harness
     assert effects == ["mint"]
     for altered in ({**body, "invocation_id": "run-b"}, {**body, "invocation_id": None}):
         assert client.post(url, json=altered, headers=headers).status_code == 404
-    assert client.post(url, json=body, headers={"X-Caller-Identity": "shared-worker"}).status_code == 404
+    assert (
+        client.post(
+            url,
+            json=body,
+            headers={"X-Caller-Identity": "shared-worker", "X-Adp-Edge-Provenance": "bootstrap-edge-provenance"},
+        ).status_code
+        == 404
+    )
     kubernetes[1]["uid"] = "pod-b"
     assert client.post(url, json=body, headers=headers).status_code == 404
     assert effects == ["mint"]
@@ -615,7 +657,14 @@ def test_broker_no_shared_key_fallback_and_platform_deploy_stays_supported(broke
     url = "/internal/v1/credential-assume-role"
     assert client.post(url, json={}, headers={"X-Internal-Api-Key": "shared-secret"}).status_code == 403
     identity.scope = "platform"
-    assert client.post(url, json={}, headers={"X-Caller-Identity": "deploy-role"}).status_code == 200
+    assert (
+        client.post(
+            url,
+            json={},
+            headers={"X-Caller-Identity": "deploy-role", "X-Adp-Edge-Provenance": "bootstrap-edge-provenance"},
+        ).status_code
+        == 200
+    )
     assert effects == ["mint"]
 
 

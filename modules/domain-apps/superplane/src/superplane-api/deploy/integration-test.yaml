@@ -56,6 +56,8 @@ spec:
       containers:
         - name: superplane-integration-test-postgres
           image: public.ecr.aws/docker/library/postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
           env:
             - name: POSTGRES_USER
               value: superplane
@@ -209,6 +211,8 @@ spec:
       containers:
         - name: generate
           image: public.ecr.aws/bitnami/kubectl:latest
+          securityContext:
+            allowPrivilegeEscalation: false
           command:
             - sh
             - -c
@@ -266,10 +270,14 @@ spec:
       initContainers:
         - name: wait-for-db
           image: public.ecr.aws/docker/library/postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
           command: ['sh', '-c', 'until pg_isready -h superplane-integration-test-postgres.superplane-integration-test.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
       containers:
         - name: migrate
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
           command: ['python', '-m', 'alembic', 'upgrade', 'head']
           env:
             - name: DATABASE_URL
@@ -309,6 +317,8 @@ spec:
       initContainers:
         - name: wait-for-schema
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
           command: ['sh', '-c', 'until python -m alembic check; do echo "Waiting for migrations..."; sleep 2; done']
           env:
             - name: DATABASE_URL
@@ -320,6 +330,8 @@ spec:
       containers:
         - name: seed
           image: public.ecr.aws/docker/library/postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -416,9 +428,13 @@ spec:
       initContainers:
         - name: wait-for-db
           image: public.ecr.aws/docker/library/postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
           command: ['sh', '-c', 'until pg_isready -h superplane-integration-test-postgres.superplane-integration-test.svc.cluster.local -p 5432 -U superplane; do echo "Waiting for postgres..."; sleep 2; done']
         - name: wait-for-schema
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
           command: ['sh', '-c', 'until python -m alembic check; do echo "Waiting for migrations..."; sleep 2; done']
           env:
             - name: DATABASE_URL
@@ -430,6 +446,8 @@ spec:
       containers:
         - name: api
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
           imagePullPolicy: Always
           envFrom:
             - configMapRef:

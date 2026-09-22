@@ -45,6 +45,8 @@ spec:
       containers:
         - name: prepull
           image: REPLACE_WITH_AGENT_IMAGE
+          securityContext:
+            allowPrivilegeEscalation: false
           # Override the agent ENTRYPOINT — we want the container to start,
           # keep the image cached, and do nothing else.
           command: ["/bin/sh", "-c", "while true; do sleep 3600; done"]

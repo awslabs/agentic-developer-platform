@@ -10,6 +10,12 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "chat_session_sweeper_dry_run" {
+  description = "Log intended chat session cleanup without deleting data; keep true for the initial observation window"
+  type        = bool
+  default     = true
+}
+
 variable "github_org" {
   description = "GitHub organization for optional legacy ARC integration; empty when GitHub is not configured"
   type        = string

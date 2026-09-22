@@ -1,0 +1,46 @@
+name: Gateway Hardening CI
+
+on:
+  pull_request:
+    paths:
+      - '**/Dockerfile'
+      - '**/*.yaml'
+      - '**/*.yml'
+      - '.github/security/checkov-baseline.json'
+      - 'modules/agent-factory/infra/main.tf'
+      - 'modules/agent-factory/infra/runner-rbac.tf'
+      - 'platform/infra/modules/eks/main.tf'
+      - 'platform/evals/**/*.sh'
+      - 'platform/scripts/deploy-all.sh'
+      - 'modules/gateway/scripts/migrate-before-rollout.py'
+      - 'modules/gateway/scripts/verify-restricted-admission.sh'
+      - 'modules/gateway/tests/infra/test_checkov_suppression_scope.py'
+      - 'modules/gateway/tests/infra/test_gateway_container_hardening.py'
+    branches:
+      - main
+
+concurrency:
+  group: gateway-hardening-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  hardening:
+    name: Gateway Hardening Tests
+    runs-on: arc-runner-org
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: modules/gateway/pyproject.toml
+
+      - name: Install focused test dependencies
+        run: pip install 'checkov==3.3.19' pytest PyYAML
+
+      - name: Verify hardening and scanner coverage
+        run: |
+          pytest -q --confcutdir=modules/gateway/tests/infra \
+            modules/gateway/tests/infra/test_gateway_container_hardening.py \
+            modules/gateway/tests/infra/test_checkov_suppression_scope.py

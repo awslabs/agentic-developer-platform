@@ -17,17 +17,15 @@ This example shows the expected pattern:
 Encountered live on #497 URL 3 (`hotfixs.qen7varol.surf`).
 """
 
-import base64
 import re
 import sys
 from datetime import datetime, timezone
 
-from bedrock_agentcore.tools.browser_client import BrowserClient
-from playwright.sync_api import sync_playwright
+from browser_client import analyze_url
+from browser_guard import DestinationRefused
 
 # -- Config --
 URL = sys.argv[1] if len(sys.argv) > 1 else "https://suspected-phishing.example/"
-REGION = "us-east-1"
 
 # Signature-based interstitial detection (title + visible-text fragments)
 INTERSTITIAL_SIGNATURES = [
@@ -40,7 +38,10 @@ INTERSTITIAL_SIGNATURES = [
     {
         "vendor": "google-safe-browsing",
         "title_markers": ["deceptive site ahead", "dangerous site"],
-        "text_markers": ["google safe browsing", "attackers on the site you are trying to visit"],
+        "text_markers": [
+            "google safe browsing",
+            "attackers on the site you are trying to visit",
+        ],
         "ray_id_pattern": None,
     },
     {
@@ -75,35 +76,16 @@ def detect_interstitial(title: str, body_text: str) -> dict | None:
 
 # -- Main --
 run_started_at = iso_now()
-bc = BrowserClient(region=REGION)
-session_id = None
 run_status = "ok"
 
 try:
-    session_id = bc.start()
-    ws_url, headers = bc.generate_ws_headers()
-
-    with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(ws_url, headers=headers)
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
-        page = context.pages[0] if context.pages else context.new_page()
-
-        try:
-            response = page.goto(URL, wait_until="domcontentloaded", timeout=30000)
-            final_url = page.url
-            http_status = response.status if response else 0
-            page_title = page.title()
-        except Exception as e:
-            final_url = URL
-            http_status = 0
-            page_title = ""
-            print(f"Navigation error (may still have interstitial): {e}")
-
-        screenshot_b64 = base64.b64encode(page.screenshot(full_page=True)).decode()
-        visible_text = page.inner_text("body") if page.url else ""
-
-        page.close()
-        browser.close()
+    result = analyze_url(URL, wait_until="domcontentloaded")
+    session_id = result["session_id"]
+    final_url = result["final_url"]
+    http_status = result["http_status"]
+    page_title = result["page_title"]
+    screenshot_b64 = result["screenshot_base64"]
+    visible_text = result["visible_text"]
 
     run_completed_at = iso_now()
 
@@ -152,7 +134,9 @@ try:
         run_started_at=run_started_at,
         run_completed_at=run_completed_at,
         session_id=session_id,
-        error=None if run_status == "ok" else f"status={run_status}: interstitial blocked content",
+        error=None
+        if run_status == "ok"
+        else f"status={run_status}: interstitial blocked content",
     )
 
     print(
@@ -161,9 +145,6 @@ try:
         f"signals={anti_analysis_signals}"
     )
 
-finally:
-    try:
-        bc.stop()
-        print(f"Session stopped: {session_id}")
-    except Exception:
-        print(f"Session cleanup failed (will auto-terminate): {session_id}")
+except DestinationRefused as refusal:
+    print(f"REFUSED [{refusal.reason_code}]: {refusal.reason}")
+    raise SystemExit(0) from refusal
