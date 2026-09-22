@@ -7,6 +7,9 @@ on:
       - modules/gateway/tests/agentauth/test_cyber_jobs.py
       - .github/workflows/cyber-security-ci.yml
   workflow_dispatch:
+concurrency:
+  group: cyber-security-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
