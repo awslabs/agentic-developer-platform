@@ -81,3 +81,16 @@ add an engine field, queue, webhook dispatcher, or GitHub identity.
 npm ci
 npm test
 ```
+# Reviewer reliability
+
+Engine repair assignments act on their supplied findings before verification.
+For a conflicting PR, the controller fetches and prepares the assigned base
+merge; Codex resolves the files, and the controller verifies and publishes the
+reviewed tree with the original head as its first parent. Review and repair use
+separate retained conversations. Each assignment performs at most one repair
+pass before publishing inspected progress and its remaining findings.
+
+An interrupted SDK response stream may resume once on its existing thread and
+working tree, within the original configured deadline. Missing terminal events
+cannot count as success. Provider safety refusals, authorization failures,
+invalid verdicts and expired deadlines do not trigger transport recovery.

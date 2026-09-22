@@ -100,8 +100,8 @@ test("reviewed repairs publish progress while remaining findings block approval"
   const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
     review: async () => { reviews++; return { ...approved, validationGaps: ["Remote image scan must run on the published PR commit"] }; },
     fix: async () => { repairs++; await writeFile(join(state.workspace, "code.txt"), "fixed behavior awaiting CI\n"); } });
-  assert.equal(repairs, 2);
-  assert.equal(reviews, 3);
+  assert.equal(repairs, 1);
+  assert.equal(reviews, 2);
   assert.notEqual(result.sha, state.sha);
   assert.equal(result.repair_base_sha, state.sha);
   assert.equal(result.report.verdict, "request-changes");
@@ -240,4 +240,60 @@ test("an indefinitely stale PR projection cannot deliver a review", async t => {
     getPullRequest: async () => { reads++; return state.pr; },
   }, 7, state.sha, "b".repeat(40), "story", async () => {}), /not yet visible/);
   assert.equal(reads, 6);
+});
+
+test("an explicit repair consumes assigned findings before its only verification review", async t => {
+  const state = await fixture(t);
+  state.envelope.cycle.action = "repair";
+  state.envelope.cycle.findings = [{ summary: "Fix valid input handling" }];
+  const steps: string[] = [];
+  const result = await runEngineReview(state.envelope, state.runtime, { github: state.github,
+    fix: async prompt => {
+      steps.push("repair");
+      assert.match(prompt, /Fix valid input handling/);
+      await writeFile(join(state.workspace, "code.txt"), "fixed behavior\n");
+    },
+    review: async () => { steps.push("review"); return approved; },
+  });
+  assert.deepEqual(steps, ["repair", "review"]);
+  assert.notEqual(result.sha, state.sha);
+});
+
+test("a merge conflict is repaired and reviewed against the current base before publishing", async t => {
+  const state = await fixture(t);
+  await state.git("checkout", "-b", "main");
+  await writeFile(join(state.workspace, "code.txt"), "base behavior\n");
+  await state.git("commit", "-am", "main evolved");
+  const base = await state.git("rev-parse", "HEAD");
+  await state.git("push", state.remote, "main");
+  await state.git("checkout", "story");
+  await writeFile(join(state.workspace, "code.txt"), "story behavior\n");
+  await state.git("commit", "-am", "story evolved");
+  const expected = await state.git("rev-parse", "HEAD");
+  await state.git("push", state.remote, "story");
+  state.envelope.cycle.head_sha = expected;
+  state.envelope.cycle.action = "repair";
+  state.pr.base.sha = base;
+  const steps: string[] = [];
+  const result = await runEngineReview(state.envelope, state.runtime, { github: { ...state.github,
+    getPullRequest: async () => ({ ...await state.github.getPullRequest(), mergeable: false, mergeable_state: "dirty" }) },
+    fix: async prompt => {
+      steps.push("repair");
+      assert.match(prompt, /resolve every conflict/);
+      assert.match(await readFile(join(state.workspace, "code.txt"), "utf8"), /<<<<<<</);
+      await writeFile(join(state.workspace, "code.txt"), "base and story behavior\n");
+    },
+    review: async () => {
+      steps.push("review");
+      assert.equal(await state.git("ls-files", "--unmerged"), "");
+      assert.equal(await readFile(join(state.workspace, "code.txt"), "utf8"), "base and story behavior\n");
+      return approved;
+    },
+  });
+  assert.deepEqual(steps, ["repair", "review"]);
+  assert.equal(await state.git("rev-parse", "HEAD^"), expected);
+  assert.equal(await state.git("rev-parse", "HEAD^2"), base);
+  assert.equal(await state.git("merge-base", "HEAD", base), base);
+  assert.equal(result.repair_base_sha, expected);
+  assert.equal(result.report.verdict, "approve");
 });
