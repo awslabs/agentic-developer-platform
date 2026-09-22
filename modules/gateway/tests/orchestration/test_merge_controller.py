@@ -90,7 +90,19 @@ async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40):
     data["reviews"][0]["commit_id"] = ctx.head
     data["graphql"]["data"]["repository"].update(databaseId=123)
     data["graphql"]["data"]["repository"]["pullRequest"].update(
-        id=ctx.binding.provider_pr_node_id, headRefOid=ctx.head, baseRefOid="b" * 40, merged=False, mergeQueueEntry=None
+        id=ctx.binding.provider_pr_node_id,
+        headRefOid=ctx.head,
+        baseRefOid="b" * 40,
+        merged=False,
+        mergeQueueEntry=None,
+        author={"login": "developer"},
+        commits={"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+        reviews={
+            "pageInfo": {"hasPreviousPage": False},
+            "nodes": [
+                {"author": {"login": "reviewer"}, "state": "APPROVED", "submittedAt": datetime.now(UTC).isoformat(), "commit": {"oid": ctx.head}}
+            ],
+        },
     )
     calls, mutations = [], []
     ctx.remote, ctx.mutations, ctx.http_calls = data, mutations, calls
@@ -100,7 +112,9 @@ async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40):
 
     def merge_remote():
         data["pr"].update(merged=True, state="closed", merge_commit_sha=merge_sha, merged_at=datetime.now(UTC).isoformat())
-        data["graphql"]["data"]["repository"]["pullRequest"].update(merged=True, mergeQueueEntry=None)
+        data["graphql"]["data"]["repository"]["pullRequest"].update(
+            merged=True, mergeQueueEntry=None, mergedAt=data["pr"]["merged_at"], mergeCommit={"oid": merge_sha}
+        )
 
     ctx.merge_remote = merge_remote
 
@@ -121,6 +135,8 @@ async def prepared_merge(ctx, monkeypatch, *, merge_sha="c" * 40):
             if ctx.timeout_after_merge:
                 raise httpx.ReadTimeout("response lost after merge")
             return httpx.Response(200, json={"merged": True, "sha": merge_sha})
+        if path.endswith("/comments"):
+            return httpx.Response(200, json=[])
         if path == "/graphql":
             body = json.loads(request.content)
             if "rulesets(first:100,includeParents:true)" in body["query"] and "capability" in data:
@@ -253,13 +269,88 @@ async def test_queue_admission_waits_for_actual_merge(merge):
     assert len(merge.mutations) == 1
 
 
-async def test_manual_merge_without_historical_requirements_blocks(merge):
+async def test_external_merge_completes_with_current_verified_evidence_without_mutation(merge):
     merge.merge_remote()
     result = await tick(merge)
-    assert result.blocked == 1
     execution, _, node, _ = await state(merge)
-    assert node.state == "running" and "historical" in execution.block_detail
+    assert node.state == "passed", result
+    assert execution.phase == "deployment_pending"
     assert merge.mutations == []
+    actions = await merge_actions(merge)
+    assert len(actions) == 1 and actions[0].status == "succeeded"
+    receipt = MergeReceipt.model_validate(actions[0].detail["merge_receipt"])
+    assert receipt.verification_kind == "post_merge_verification"
+    assert receipt.adopted and receipt.method == "external" and receipt.reviewed_base_sha is None
+    assert receipt.merged_at <= receipt.eligibility_observed_at <= receipt.observed_at
+    assert actions[0].detail["merge_mutation_performed"] is False
+    assert (
+        receipt.eligibility_digest
+        == hashlib.sha256(json.dumps(actions[0].detail["post_merge_verification"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    )
+    assert all("write" not in call.kwargs.get("permissions", {}).values() for call in merge.mint.call_args_list)
+    for change in (
+        {"verification_kind": "pre_merge_authorization"},
+        {"adopted": False},
+        {"method": "squash"},
+        {"reviewed_base_sha": "b" * 40},
+        {"eligibility_observed_at": receipt.merged_at - timedelta(seconds=1)},
+    ):
+        with pytest.raises(ValueError):
+            MergeReceipt.model_validate({**receipt.model_dump(), **change})
+    from src.orchestration.deployment_authority import load_delivery_merge
+
+    async with merge.factory() as db:
+        _, _, delivery_receipt = await load_delivery_merge(db, identity=merge.identity, node=node)
+        assert delivery_receipt == receipt
+
+
+@pytest.mark.parametrize("defect", ["checks", "review", "stale_review", "head", "repository", "merge_sha", "review_artifact", "timestamp"])
+async def test_external_merge_requires_real_matching_review_checks_and_provider_evidence(merge, defect):
+    merge.merge_remote()
+    record = merge.remote["graphql"]["data"]["repository"]["pullRequest"]
+    if defect == "checks":
+        record["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = "FAILURE"
+    elif defect == "review":
+        record["reviewDecision"] = "CHANGES_REQUESTED"
+    elif defect == "stale_review":
+        record["reviews"]["nodes"][0]["commit"]["oid"] = "e" * 40
+    elif defect == "head":
+        merge.remote["pr"]["head"]["sha"] = record["headRefOid"] = "e" * 40
+    elif defect == "repository":
+        merge.remote["graphql"]["data"]["repository"]["databaseId"] = 999
+    elif defect == "merge_sha":
+        record["mergeCommit"]["oid"] = "e" * 40
+    elif defect == "timestamp":
+        record["mergedAt"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    else:
+        merge.objects[merge.artifact_key] = b"{}"
+    result = await tick(merge)
+    assert (await state(merge))[2].state == "running", result
+    assert merge.mutations == []
+    assert not await merge_actions(merge)
+
+
+async def test_review_after_external_merge_is_recorded_as_post_merge_verification(merge):
+    merge.merge_remote()
+    earlier = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    merge.remote["pr"]["merged_at"] = earlier
+    merge.remote["graphql"]["data"]["repository"]["pullRequest"]["mergedAt"] = earlier
+    result = await tick(merge)
+    assert (await state(merge))[2].state == "passed", result
+    receipt = MergeReceipt.model_validate((await merge_actions(merge))[0].detail["merge_receipt"])
+    assert receipt.merged_at < receipt.eligibility_observed_at and receipt.verification_kind == "post_merge_verification"
+
+
+async def test_failed_ci_returns_to_codex_repair_without_developer_handoff(merge):
+    merge.remote["checks"]["check_runs"][0]["conclusion"] = "failure"
+    result = await tick(merge)
+    assert (await state(merge))[0].phase == "repairing", result
+    assert merge.mutations == []
+    result = await review_tick(merge)
+    assert result.effects_succeeded == 1, result
+    assert merge.calls[-1]["persona"] == "agent-codex-reviewer"
+    finding = merge.calls[-1]["review_cycle_input"]["findings"][0]["summary"]
+    assert "CI checks" in finding and "test: failure" in finding
 
 
 async def test_head_change_returns_to_review_without_merge(merge):

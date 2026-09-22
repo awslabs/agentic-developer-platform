@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -108,6 +109,7 @@ class GitHubEvidenceSource:
         repo: str,
         pr_number: int,
         read_token: str | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> MergeEvidence | None:
         """Provider truth about one specific pull request (#5301).
 
@@ -148,7 +150,8 @@ class GitHubEvidenceSource:
                 reviews(last:100) { pageInfo { hasPreviousPage } nodes { state submittedAt commit { oid } author { login } } }
               } }
             }"""
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with AsyncExitStack() as stack:
+                client = client or await stack.enter_async_context(httpx.AsyncClient(timeout=15))
                 response = await client.post(
                     "https://api.github.com/graphql",
                     headers={"Authorization": f"Bearer {token}"},
@@ -621,7 +624,9 @@ def evaluate_observation(observation: PullRequestObservation) -> MergeEligibilit
             matches += [c for c in observation.checks if c.name == check.name and c.source == "status"]
         if not matches:
             blocked.append(EligibilityReason.REQUIRED_CHECK_MISSING)
-        elif any(c.state not in {"success", "pending"} for c in matches):
+        elif any(
+            c.state not in ({"success", "skipped", "neutral", "pending"} if c.source == "check_run" else {"success", "pending"}) for c in matches
+        ):
             blocked.append(EligibilityReason.REQUIRED_CHECK_FAILED)
         elif any(c.state == "pending" for c in matches):
             waiting.append(EligibilityReason.REQUIRED_CHECK_PENDING)

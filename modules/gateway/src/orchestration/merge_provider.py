@@ -10,7 +10,7 @@ import httpx
 from src.agentauth.github_provider import BoundMergeAssignment, GitHubProvider, ProviderUnavailableError
 from src.knowledge.github_app_service import mint_installation_token_with_expiry, resolve_tenant_app_credentials
 
-from .merge_evidence import _boolean, _integer, _object, _sha, _text
+from .merge_evidence import READ_PERMISSIONS, _boolean, _integer, _object, _sha, _text
 from .review_cycle import CycleBlockedError
 
 
@@ -32,9 +32,13 @@ class MergeProvider:
     def __init__(self, *, client=None, clock=lambda: datetime.now(UTC)):
         self.client, self.clock = client, clock
 
-    async def token(self, binding, *, write=False):
+    async def token(self, binding, *, write=False, evidence=False):
         app, key = await resolve_tenant_app_credentials(binding.org_id)
         permissions = {"contents": "write" if write else "read", "pull_requests": "write" if write else "read", "metadata": "read"}
+        if evidence:
+            if write:
+                raise ValueError("Evidence observations require read-only credentials")
+            permissions = dict(READ_PERMISSIONS)
         token, expires = await mint_installation_token_with_expiry(
             app,
             key,

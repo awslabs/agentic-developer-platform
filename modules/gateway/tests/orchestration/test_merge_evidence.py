@@ -294,12 +294,21 @@ async def test_current_base_change_during_observation_refuses(change):
         await observe(data, on_request=mutate)
 
 
-@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "neutral", "timed_out", "action_required", "stale"])
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out", "action_required", "stale"])
 async def test_required_check_non_success_never_passes(conclusion):
     data = provider_data()
     data["checks"]["check_runs"][0]["conclusion"] = conclusion
     observed, _ = await observe(data)
     assert EligibilityReason.REQUIRED_CHECK_FAILED in evaluate_observation(observed).reasons
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "neutral"])
+async def test_github_successful_check_conclusions_do_not_block_merge(conclusion):
+    data = provider_data()
+    data["checks"]["check_runs"][0]["conclusion"] = conclusion
+    observed, _ = await observe(data)
+    assert evaluate_observation(observed).eligible
+    assert observed.checks[0].state == conclusion
 
 
 @pytest.mark.parametrize(
