@@ -112,6 +112,32 @@ class TestRegisterCredential:
     """Test POST /vault/credentials."""
 
     @pytest.mark.asyncio
+    async def test_register_aws_role_reference_from_gateway(self, client):
+        from app.models.organization import Organization
+        from tests.conftest import async_session_test
+
+        org_id = uuid.uuid4()
+        async with async_session_test() as session:
+            session.add(Organization(id=org_id, name="aws-role-reference"))
+            await session.commit()
+        headers = _auth_header(org_id)
+        response = await client.post(
+            "/vault/credentials",
+            json={
+                "name": "AWS role",
+                "provider": "aws",
+                "credential_type": "aws_role",
+                "adp_credential_id": "adp-cred-role-reference",
+            },
+            headers=headers,
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["credential_type"] == "aws_role"
+        listing = await client.get("/vault/credentials", headers=headers)
+        assert "adp-cred-role-reference" in listing.text
+        assert "arn:" not in listing.text
+
+    @pytest.mark.asyncio
     async def test_register_requires_auth(self, client):
         """Registering a credential without auth returns 401/403."""
         response = await client.post(
@@ -178,7 +204,9 @@ class TestValidationErrorsDoNotEchoTheRejectedValue:
     # Not a credential for anything. Structurally complete so the ARN detector and
     # the account-id assertion below have something real to match; the account id is
     # the reserved all-zeros value and the secret does not exist.
-    FAKE_ARN = "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake-not-real-AbCdEf"
+    FAKE_ARN = (
+        "arn:aws:secretsmanager:us-east-1:000000000000:secret:fake-not-real-AbCdEf"
+    )
 
     @pytest.mark.asyncio
     async def test_422_body_does_not_contain_the_submitted_arn(self, client):

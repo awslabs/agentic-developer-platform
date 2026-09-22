@@ -418,7 +418,7 @@ PRODUCTION_PORTS: tuple[PortContract, ...] = (
     PortContract(
         name="trusted_delivery",
         owner=PortOwner.GATEWAY_VAULT,
-        declared_at="contracts/superplane_contracts/delivery.py:398",
+        declared_at="contracts/superplane_contracts/delivery.py:412",
         purpose=(
             "Hand over credential material scoped to one recipient, run and "
             "workspace, and report whether that credential still admits work."
@@ -449,7 +449,7 @@ PRODUCTION_PORTS: tuple[PortContract, ...] = (
     PortContract(
         name="provider_operation",
         owner=PortOwner.PROVIDER,
-        declared_at="contracts/superplane_contracts/delivery.py:432",
+        declared_at="contracts/superplane_contracts/delivery.py:446",
         purpose=(
             "Perform exactly one permitted provider action with a materialized "
             "credential and return the provider's own observation."

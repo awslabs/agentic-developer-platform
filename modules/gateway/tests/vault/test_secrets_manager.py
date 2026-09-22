@@ -99,6 +99,32 @@ class TestGetSecret:
         mock_sm_client.get_secret_value.assert_called_once_with(SecretId="arn:aws:secretsmanager:us-east-1:123:secret:test")
 
 
+class TestGetSecretAtVersion:
+    def test_returns_the_version_reported_by_secrets_manager(self, helper, mock_sm_client):
+        mock_sm_client.get_secret_value.return_value = {
+            "SecretString": '{"token": "ghp_xxx"}',
+            "VersionId": "served-version",
+        }
+
+        result = helper.get_secret_at_version("arn:fake", "requested-version")
+
+        assert result == ('{"token": "ghp_xxx"}', "served-version")
+        mock_sm_client.get_secret_value.assert_called_once_with(SecretId="arn:fake", VersionId="requested-version")
+
+    @pytest.mark.parametrize(
+        "version_metadata",
+        [pytest.param({}, id="missing"), pytest.param({"VersionId": ""}, id="empty")],
+    )
+    def test_refuses_when_secrets_manager_does_not_report_a_version(self, helper, mock_sm_client, version_metadata):
+        mock_sm_client.get_secret_value.return_value = {
+            "SecretString": '{"token": "ghp_xxx"}',
+            **version_metadata,
+        }
+
+        with pytest.raises(ValueError, match="non-empty VersionId"):
+            helper.get_secret_at_version("arn:fake", "requested-version")
+
+
 # ---------------------------------------------------------------------------
 # update_secret
 # ---------------------------------------------------------------------------

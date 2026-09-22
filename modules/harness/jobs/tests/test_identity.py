@@ -438,3 +438,41 @@ def test_the_workspace_prefix_family_still_refuses_unknown_members():
     """
     for key in ("workspace_owner", "workspace_principal", "workspace_role"):
         assert forbidden_parameters({key: "x"}) == (key,)
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "tampered"])
+def test_credential_target_is_covered_by_the_approved_digest(mutation):
+    from harness_jobs.identity import (
+        admitted_credential_target,
+        encode_payload,
+        payload_digest,
+    )
+
+    parameters = {
+        "credential_id": "credential",
+        "credential_service": "aws",
+        "credential_label": "default",
+        "provider": "aws",
+        "provider_account_id": "123456789012",
+    }
+    request = OperationRequest(
+        action="provision", idempotency_key="target", parameters=parameters
+    )
+    digest = payload_digest(request)
+    if mutation == "missing":
+        parameters.pop("provider_account_id")
+    elif mutation == "tampered":
+        parameters["provider_account_id"] = "999999999999"
+    changed = OperationRequest(
+        action="provision", idempotency_key="target", parameters=parameters
+    )
+    if mutation == "missing":
+        digest = payload_digest(changed)
+    if mutation:
+        with pytest.raises(ContractViolation):
+            admitted_credential_target(encode_payload(changed), digest)
+    else:
+        assert admitted_credential_target(encode_payload(changed), digest) == (
+            "aws",
+            "123456789012",
+        )

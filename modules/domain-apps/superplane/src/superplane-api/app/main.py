@@ -36,6 +36,11 @@ from app.routers.quota import router as quota_router
 from app.routers.research import router as research_router
 from app.routers.users import router as users_router
 from app.routers.workspaces import router as workspaces_router
+from app.adapters.adp_vault_client import build_vault_client
+from app.services.credential_evidence import (
+    get_credential_evidence_reader,
+    install_credential_evidence_reader,
+)
 from app.services.vault_sync import VaultSyncReconciler
 from app.services.workspace_reconciler import WorkspaceReconciler
 
@@ -59,11 +64,48 @@ vault_sync_reconciler = VaultSyncReconciler(session_factory=async_session_factor
 workspace_reconciler = WorkspaceReconciler(session_factory=async_session_factory)
 
 
+def compose_vault_client() -> None:
+    """Install the ADP vault client as the credential-evidence reader (#5528, w6-05).
+
+    Called from the lifespan rather than at import time, and that placement is the
+    point rather than a detail:
+
+    * **Not at import.** A module-level install would give every deployment and every
+      test process a vault dependency it never configured, and `install_...` refuses a
+      second call — so an importing test could not substitute its own reader.
+    * **Before the installation gate below.** The gate probes whatever is installed and
+      refuses to start an image whose trust adapters are absent. Installing after it
+      would mean the gate always saw an uncomposed port, so a real adapter could never
+      satisfy it and the gate would be permanently unsatisfiable rather than passed.
+
+    Silent when nothing is configured. `build_vault_client` returns None for an
+    unconfigured deployment and logs that itself; no reader is installed, and the
+    provider-connection routes answer 503 "ADP vault evidence is unavailable" — the
+    honest answer, as opposed to a 403 that would blame the caller's permissions for
+    a missing setting.
+
+    A pre-existing reader is left alone. A test or an embedding host that installed
+    its own is the authority here, and overwriting it would let production
+    composition silently displace a deliberately substituted one — the reason
+    `install_credential_evidence_reader` refuses a second install in the first place.
+    """
+    if get_credential_evidence_reader() is not None:
+        return
+    client = build_vault_client(settings)
+    if client is None:
+        return
+    install_credential_evidence_reader(client)
+    logger.info("Installed the ADP vault credential-evidence reader")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle — start/stop background reconcilers."""
     # Reapply if the server or an embedding host replaced handlers after import.
     configure_log_redaction()
+    # Before the installation gate: the gate probes installed adapters (see the
+    # docstring above).
+    compose_vault_client()
     if management_only():
         from pathlib import Path
 

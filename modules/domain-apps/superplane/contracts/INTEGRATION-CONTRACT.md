@@ -85,7 +85,7 @@ fact about storage, not a grant.
 | Port | Declared at | Binds | Permission | Acts as | Unknown answer |
 |---|---|---|---|---|---|
 | `credential_evidence` | [`src/superplane-api/app/services/credential_evidence.py:26`](../src/superplane-api/app/services/credential_evidence.py) | `org_id`, `workspace_id`, `credential_reference` | `workspace:renew_credential` | the vault's own ownership record, never the request's digest claim | `None` means unverified |
-| `trusted_delivery` | [`superplane_contracts/delivery.py:398`](superplane_contracts/delivery.py) | `lease_id`, `operation_id`, `workspace_id`, `recipient` | `workspace:provision` | the lease's bound principal, re-checked at the operation | raise unavailable |
+| `trusted_delivery` | [`superplane_contracts/delivery.py:412`](superplane_contracts/delivery.py) | `lease_id`, `operation_id`, `workspace_id`, `recipient` | `workspace:provision` | the lease's bound principal, re-checked at the operation | raise unavailable |
 
 "Never the request's digest claim" is the whole of `credential_evidence`'s value.
 A caller can compute any digest it likes; the port's job is to report a binding
@@ -98,7 +98,7 @@ as proof satisfies the type and establishes nothing.
 | Port | Declared at | Binds | Permission | Acts as | Unknown answer |
 |---|---|---|---|---|---|
 | `provider_client` | [`superplane_contracts/adapter.py:120`](superplane_contracts/adapter.py) | `idempotency_key`, `resource_name`, `allocation_id` | — | the provider credential delivered for this operation | unresolved value |
-| `provider_operation` | [`superplane_contracts/delivery.py:432`](superplane_contracts/delivery.py) | `provider`, `provider_account_id`, `operation` | `workspace:provision` | the leased credential, for the single bound action | unresolved value |
+| `provider_operation` | [`superplane_contracts/delivery.py:446`](superplane_contracts/delivery.py) | `provider`, `provider_account_id`, `operation` | `workspace:provision` | the leased credential, for the single bound action | unresolved value |
 
 The provider is the **only** source of provider truth, which is why these two are
 the ports whose unknown answer is a typed unresolved *value* rather than a

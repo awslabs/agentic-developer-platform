@@ -23,11 +23,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.shared.models.vault import UserCredential, UserIdentity
+from src.shared.models.vault import CredentialValidationEvidence, UserCredential, UserIdentity
 from src.shared.schemas.auth import TokenContext
 from src.shared.services.secrets_manager import SecretsManagerHelper
 
@@ -341,6 +341,13 @@ async def update_credential(
     if data.strict is not None:
         cred.strict = data.strict
 
+    # Metadata changes invalidate the observation's exact credential binding.
+    await db.execute(
+        delete(CredentialValidationEvidence).where(
+            CredentialValidationEvidence.credential_id == cred.id,
+            CredentialValidationEvidence.org_id == caller.org_id,
+        )
+    )
     await db.commit()
     await db.refresh(cred)
     return cred

@@ -6,6 +6,9 @@ on:
       - 'platform/scripts/adversarial-test-assert.py'
       - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
+      # Gateway stages the canonical harness decoder into its image.
+      - 'modules/harness/jobs/harness_jobs/identity.py'
+      - 'modules/gateway/scripts/stage-contracts.sh'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'
       # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas
@@ -90,6 +93,9 @@ on:
       - 'platform/scripts/adversarial-test-assert.py'
       - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
+      # Gateway stages the canonical harness decoder into its image.
+      - 'modules/harness/jobs/harness_jobs/identity.py'
+      - 'modules/gateway/scripts/stage-contracts.sh'
       - 'modules/gateway/scripts/pricing-rollout.py'
       - 'modules/gateway/scripts/migrate-before-rollout.py'
       # Persona-catalogue lockstep (#5420, PMM-03). The gateway serves personas

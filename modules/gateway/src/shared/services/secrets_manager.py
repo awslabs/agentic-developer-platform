@@ -209,6 +209,61 @@ class SecretsManagerHelper:
         response = self._client.get_secret_value(SecretId=secret_arn)
         return response["SecretString"]
 
+    def get_secret_at_version(self, secret_arn: str, version_id: str) -> tuple[str, str]:
+        """Retrieve a secret value pinned to a specific version, returning (value, actual_version).
+
+        Issue #5528 (F3). ``get_secret`` calls ``get_secret_value`` without a
+        ``VersionId``, which always reads ``AWSCURRENT``. During a rotation window,
+        ``AWSCURRENT`` may have advanced past the version the Gateway validated, so a
+        delivery that calls ``get_secret`` could hand the caller bytes that were never
+        validated.
+
+        This method pins the read to ``version_id`` and returns the version the
+        Secrets Manager actually served alongside the value. The caller (``deliver_credential``)
+        checks the two match before returning material; a mismatch means the version
+        changed between the "what is current" lookup and the actual read, which the
+        caller must refuse rather than deliver.
+
+        Raises ``botocore.exceptions.ClientError`` (``InvalidRequestException``) when
+        the version does not exist or no longer carries any staging label, which the
+        caller must treat as a refusal. Raises ``ValueError`` when Secrets Manager
+        does not identify the version it actually served.
+        """
+        response = self._client.get_secret_value(SecretId=secret_arn, VersionId=version_id)
+        served_version = response.get("VersionId")
+        if not isinstance(served_version, str) or not served_version:
+            raise ValueError("Secrets Manager response did not include a non-empty VersionId")
+        return response["SecretString"], served_version
+
+    def current_version_id(self, secret_arn: str) -> str | None:
+        """Return the id of the secret's CURRENT version, or ``None`` if unknown.
+
+        Issue #5528. Credential evidence has to state *which* stored value is
+        current: an evidence record that says "this credential is valid" without
+        naming a version cannot distinguish the value that was validated from one
+        that replaced it afterwards, which is the rotation-during-execution case.
+
+        Metadata only, deliberately. ``describe_secret`` returns version ids and
+        their staging labels and never the value, so adding this cannot become a
+        second way to read a secret — unlike ``get_secret`` above, whose result is
+        the material itself.
+
+        ``None`` rather than a raise or a guess when no version carries the
+        ``AWSCURRENT`` label. "I could not establish the version" and "the version
+        is X" are different facts, and the evidence service reports the former as
+        unverified rather than substituting a plausible-looking value.
+        """
+        response = self._client.describe_secret(SecretId=secret_arn)
+        stages = response.get("VersionIdsToStages") or {}
+        if not isinstance(stages, dict):
+            return None
+        current = [
+            version_id
+            for version_id, labels in stages.items()
+            if isinstance(version_id, str) and version_id and isinstance(labels, list | tuple) and "AWSCURRENT" in labels
+        ]
+        return current[0] if len(current) == 1 else None
+
     def update_secret(self, secret_arn: str, payload: str | dict) -> None:
         """Update an existing secret's value.
 

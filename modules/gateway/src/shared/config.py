@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     # AWS
     aws_region: str = "us-east-1"
+    # Tenant -> workspace -> AWS EC2 read-only validation profile. Empty grants
+    # no validation capability; deployment supplies actual placement identifiers.
+    credential_validation_profiles: str = "{}"
 
     # Auth
     api_key_duration_hours: int = 12

@@ -52,6 +52,7 @@ COPY pricing_policy/ pricing_policy/
 # `contract_unavailable` — honest, but a total outage discovered on first use, which
 # is why `src.orchestration.review_contract_selfcheck` gates the build below.
 COPY contracts/ contracts/
+RUN python src/auth/operation_contract.py
 COPY alembic/ alembic/
 COPY alembic.ini .
 # Issue #4146: the /setup page's Download button is served by GET /api/cli/{script_name}

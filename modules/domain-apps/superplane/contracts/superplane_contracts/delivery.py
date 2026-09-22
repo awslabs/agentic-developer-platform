@@ -275,7 +275,21 @@ class RunBinding:
     supply has no delivery authority to express.
     """
 
+    job_id: str | None = None
+    attempt_id: str | None = None
+    """Durable executor job and current lease attempt, supplied by trusted B.
+
+    Optional for existing offline channels. Gateway delivery requires both and
+    verifies them against the operation store; recipient IDs remain opaque.
+    """
+
     def __post_init__(self) -> None:
+        for name in ("job_id", "attempt_id"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ContractViolation(
+                    f"run binding {name} must be non-empty when supplied"
+                )
         if not isinstance(self.principal, ResolvedPrincipal):
             raise ContractViolation("run binding must carry a resolved principal")
         if not isinstance(self.recipient, ExecutorIdentity):

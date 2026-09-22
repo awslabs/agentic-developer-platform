@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.models.credential import validate_adp_credential_id
 
-
 # ── Account (POST /accounts, GET /accounts, DELETE /accounts/{id}) ──
 
 
@@ -118,7 +117,7 @@ class RegisterCredentialRequest(BaseModel):
         description="Cloud provider (nebius, lambda, etc.)",
     )
     credential_type: str = Field(
-        default="api_key", pattern="^(api_key|service_account|oauth_token)$"
+        default="api_key", pattern="^(api_key|service_account|oauth_token|aws_role)$"
     )
     aws_account_id: str | None = Field(
         default=None, max_length=255, description="AWS account where secret is stored"

@@ -30,9 +30,16 @@ UNIT_MODULES = [
     "src.auth.cli_login",  # Web CLI login: device-authorization flow (no copy-paste)
     "src.auth.cli_native_login",  # Native Cognito bootstrap and MFA for CLI administrators
     "src.auth.vault_routes",  # Issue #135: vault credential + identity CRUD
+    "src.auth.vault_authority_routes",  # Workspace delegation and independent validation
     "src.auth.aws_connect_routes",  # Issue #562: self-serve AWS account connect
     "src.internal.routes",  # Issue #446: internal service-to-service endpoints
     "src.internal.credential_routes",  # Issue #136: credential delivery paths
+    # #5528: vault evidence + operation-bound delivery for Superplane. A separate
+    # module from credential_routes even though it shares the /internal/v1 prefix,
+    # because delivery here additionally verifies the individual run credential and
+    # pod (the shared worker IRSA identity cannot name one executor), and that
+    # authorization deserves review on its own terms rather than by inheritance.
+    "src.internal.vault_evidence_routes",
     "src.internal.assume_role_routes",  # Issue #481: aws_role STS assume delivery path
     "src.internal.task_credentials",  # Existing customer trust principal, restricted task session
     "src.internal.provenance_routes",  # Issue #785: action provenance write endpoint

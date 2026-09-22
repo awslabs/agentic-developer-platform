@@ -185,6 +185,28 @@ class AgentRegistryService:
             logger.error(f"Unexpected error looking up agent: {e}")
             return None
 
+    def get_current_agent(self, agent_id: str, role_arn: str) -> AgentRegistryEntry | None:
+        """Strong read of one authenticated principal for credential delivery.
+
+        The GSI/cache locates identity; it cannot prove a capability is still live.
+        Verify the role again because the cached identity may have been replaced.
+        Storage failures propagate so the caller can distinguish unavailability.
+        """
+        if not self._table_name or not agent_id or not role_arn:
+            return None
+        reply = self.dynamodb.get_item(
+            TableName=self._table_name,
+            Key={"agent_id": {"S": agent_id}},
+            ConsistentRead=True,
+        )
+        item = reply.get("Item")
+        if not item:
+            return None
+        entry = self._parse_dynamodb_item(item)
+        if entry["role_arn"] != role_arn or entry["status"] != "active":
+            return None
+        return entry
+
     def clear_cache(self):
         """Clear the agent cache."""
         self._cache.clear()

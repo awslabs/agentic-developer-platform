@@ -127,6 +127,16 @@ def test_both_filters_cover_the_cli_directory(workflow, filter_script, tmp_path)
     assert (triggers, deploys) == (True, True), "on.push.paths and the BACKEND regex disagree about modules/gateway/cli/"
 
 
+@pytest.mark.parametrize("changed", ["modules/harness/jobs/harness_jobs/identity.py", "modules/gateway/scripts/stage-contracts.sh"])
+def test_staged_operation_decoder_changes_reach_the_gateway_image(changed, workflow, filter_script, tmp_path):
+    triggers = any(fnmatchcase(changed, pattern) for pattern in workflow["on"]["push"]["paths"])
+    decisions = decisions_for(changed, filter_script, tmp_path)
+    assert triggers
+    assert decisions["backend"] == "true"
+    assert decisions["frontend"] == "false"
+    assert decisions["budget_lambdas"] == "false"
+
+
 def test_the_dockerfile_bakes_the_cli_into_the_image(workflow) -> None:
     """A triggered deploy delivers nothing if the image does not carry the files."""
     dockerfile = (REPO / "modules/gateway/Dockerfile").read_text()

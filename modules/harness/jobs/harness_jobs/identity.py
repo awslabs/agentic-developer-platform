@@ -619,3 +619,38 @@ class OperationRefused(PermissionError):
     and `store.py` re-exports it; keeping it here rather than in `store.py` avoids
     an import cycle between identity and the store that holds it.
     """
+
+
+def admitted_credential_reference(encoded: str, digest: str) -> tuple[str, str, str]:
+    """Read the exact credential selected in the approved request parameters.
+
+    These are resource selectors, not authority claims. Admission includes them in
+    the canonical plan digest just like every other parameter. Operations that do
+    not select all three fields cannot use operation-bound credential delivery.
+    """
+    import hmac
+
+    request = decode_payload(encoded)
+    if not isinstance(digest, str) or not hmac.compare_digest(
+        payload_digest(request), digest
+    ):
+        raise ContractViolation("stored request does not match its approved digest")
+    reference = tuple(
+        request.parameters.get(key, "")
+        for key in ("credential_id", "credential_service", "credential_label")
+    )
+    if any(not value.strip() for value in reference):
+        raise ContractViolation("approved operation has no exact credential reference")
+    return reference
+
+
+def admitted_credential_target(encoded: str, digest: str) -> tuple[str, str]:
+    """The provider/account approved for credential use, covered by the same digest."""
+    admitted_credential_reference(encoded, digest)
+    request = decode_payload(encoded)
+    target = tuple(
+        request.parameters.get(key, "") for key in ("provider", "provider_account_id")
+    )
+    if any(not value.strip() for value in target):
+        raise ContractViolation("approved operation has no provider account target")
+    return target

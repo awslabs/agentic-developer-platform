@@ -49,6 +49,13 @@ INTERNAL_ROUTE_MODULES = (
     # 46b62cf8: it imports no orchestration package/model/table and cannot read
     # or mutate release-promotion state.
     "src.internal.persona_model_probe_routes",
+    # w6-05 credential evidence, revocation state and operation-bound delivery.
+    # Reviewed for this guard's specific question: it imports no orchestration
+    # package, model or repository and references none of ORCHESTRATION_TABLES or
+    # ORCHESTRATION_SYMBOLS, so it cannot read or mutate release-promotion state.
+    # Its reads and writes are confined to credential ownership, delegation and
+    # the credential-delivery audit trail.
+    "src.internal.vault_evidence_routes",
 )
 
 # The full internal-plane surface as of this change, as (path, method) pairs.
@@ -72,6 +79,12 @@ EXPECTED_INTERNAL_ROUTES = {
     ("/internal/v1/persona-model-probes/claim", "POST"),
     ("/internal/v1/persona-model-probes/{slot_id}/start", "POST"),
     ("/internal/v1/persona-model-probes/{slot_id}/complete", "POST"),
+    ("/internal/v1/credential-evidence", "POST"),
+    ("/internal/v1/credential-revocation-state", "POST"),
+    ("/internal/v1/credential-delivery", "POST"),
+    # Same delivery authority checks, with version metadata only and no new
+    # access to release-promotion state.
+    ("/internal/v1/credential-delivery/preflight", "POST"),
 }
 
 # Promotion state: the tables and models this guard protects. A reference to any

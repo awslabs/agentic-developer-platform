@@ -71,6 +71,11 @@ for contract in "${SOURCE}"/*/; do
     | ( cd "${contract}" && xargs -0 -I{} cp -f --parents {} "${TARGET}/${name}/" )
 done
 
+# Vault delivery must decode the same approval-bound request as harness admission.
+# Stage its dependency-free canonical module, never a hand-maintained copy.
+mkdir -p "${TARGET}/harness-operation"
+cp -f "${REPO_ROOT}/modules/harness/jobs/harness_jobs/identity.py" "${TARGET}/harness-operation/identity.py"
+
 # The README explains the no-install rule the staged copy depends on; keep it with
 # the copy so a reader inside the image is not left guessing.
 if [[ -f "${SOURCE}/README.md" ]]; then

@@ -6,7 +6,7 @@ Issue #134: Vault Phase 1 — schema + secret-store substrate
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, String, false
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from src.shared.identity.providers import SUPPORTED_PROVIDERS, IdentityProvider
@@ -309,3 +309,124 @@ class InstallationOwnershipConflict(Base):
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CredentialWorkspaceDelegation(Base, TenantMixin):
+    """The vault-side record that a credential's owner allowed it in one workspace.
+
+    Issue #5528 (Wave 6 / w6-05). ``superplane_contracts.connections.VaultOwnership``
+    carries ``delegated_to_workspaces``, and ``authorize_delegation`` treats an
+    unresolved ownership record as a denial. Before this table the Gateway had no
+    place to record a delegation at all, so the only honest value it could report
+    was the empty set — which denies every workspace that is not the owner's own.
+
+    One row per (credential, workspace): the unique index is what makes "ambiguous
+    delegation" a refusable condition rather than a ranking decision. The vault's
+    ``CredentialResolver`` deliberately ranks and picks a winner among candidates
+    (``credential_resolver.py`` ``_rank``); that is right for "find me a credential
+    for this service" and wrong for "is this exact credential allowed here", so
+    exactness is enforced in the schema instead of in a comparison.
+
+    ``revoked_at`` rather than a DELETE: an operator needs to tell a delegation that
+    never existed from one that was withdrawn, and a delivery refusal that cannot
+    distinguish the two cannot explain itself. A revoked row still denies — see
+    ``vault_evidence.delegated_workspaces``, which filters on it.
+    """
+
+    __tablename__ = "credential_workspace_delegations"
+    __table_args__ = (
+        Index(
+            "uq_credential_workspace_delegations_pair",
+            "credential_id",
+            "workspace_id",
+            unique=True,
+        ),
+        Index("ix_credential_workspace_delegations_org_id_workspace", "org_id", "workspace_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    credential_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("user_credentials.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # The Superplane workspace the credential was delegated to. Opaque here: the
+    # Gateway never parses it for meaning, matching how the contract treats
+    # workspace ids as identifiers rather than structured values.
+    workspace_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The principal (users.id or a service subject) that granted the delegation.
+    # Recorded so evidence can state who delegated, not merely that someone did.
+    delegated_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    delegated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def is_active(self) -> bool:
+        """True when this delegation still admits work."""
+        return self.revoked_at is None
+
+
+class CredentialValidationEvidence(Base, TenantMixin):
+    """The provider-validation readings the Gateway itself holds for a credential.
+
+    Issue #5528 (Wave 6 / w6-05). The evidence port receives a ``report_digest``
+    from its caller and the port's own docstring is explicit that it is "untrusted
+    request context, not proof": echoing it back would let any caller manufacture an
+    attestation for a credential that was never validated.
+
+    So the Gateway needs its own copy of the four readings to recompute the digest
+    from. These five columns are exactly
+    ``superplane_contracts.connections.ValidationReport`` minus nothing: the four
+    readings, the provider's observation time, and the detail string. They are stored
+    separately rather than as a precomputed digest because the digest recipe belongs
+    to the consumer, and a stored digest could not be recomputed if that recipe ever
+    gains a field — a stale digest that still compares equal is worse than no digest.
+
+    ``observed_capacity`` is nullable and ``0`` is a distinct value: the contract
+    draws "not measured" (``None``) as a different fact from "measured as zero", and
+    collapsing either into the other erases the distinction at the boundary that
+    exists to preserve it.
+    """
+
+    __tablename__ = "credential_validation_evidence"
+    __table_args__ = (
+        Index(
+            "uq_credential_validation_evidence_pair",
+            "credential_id",
+            "workspace_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    credential_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("user_credentials.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Exact Secrets Manager version independently validated. Unversioned evidence
+    # remains readable for migration but never attests a current credential.
+    validated_version_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Independently authenticated provider account for this exact version.
+    # Older/unidentified rows never authorize operation-bound delivery.
+    provider_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # The four independent readings, reported separately. No aggregate column, by
+    # design: "usable" is a decision the contract's own predicates make from these.
+    credential_valid: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    permissions_sufficient: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    quota_available: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    observed_capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # When the PROVIDER made the measurement, not when this row was written. The
+    # consumer refuses a future observation time, so this must be the provider's
+    # reading; ``created_at`` below carries local receipt time separately.
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    detail: Mapped[str] = mapped_column(String(1024), nullable=False, default="", server_default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), onupdate=utcnow)

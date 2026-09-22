@@ -8,6 +8,9 @@ on:
       - 'modules/gateway/src/**'
       - 'modules/gateway/cli/**'
       - 'modules/gateway/Dockerfile'
+      # The operation decoder is staged into the Gateway image from its source.
+      - 'modules/harness/jobs/harness_jobs/identity.py'
+      - 'modules/gateway/scripts/stage-contracts.sh'
       - 'modules/gateway/k8s/**'
       - 'modules/gateway/frontend/**'
       - 'modules/gateway/alembic/versions/**'
@@ -128,7 +131,7 @@ jobs:
           FRONTEND=false
           MIGRATIONS=false
           BUDGET_LAMBDAS=false
-          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/migrate-before-rollout\.py)'; then
+          if echo "$CHANGED" | grep -qE '^(modules/gateway/src/|modules/gateway/cli/|modules/gateway/Dockerfile|modules/gateway/k8s/|modules/gateway/scripts/migrate-before-rollout\.py|modules/gateway/scripts/stage-contracts\.sh$|modules/harness/jobs/harness_jobs/identity\.py$)'; then
             BACKEND=true
           fi
           if echo "$CHANGED" | grep -qE '^modules/gateway/frontend/'; then
