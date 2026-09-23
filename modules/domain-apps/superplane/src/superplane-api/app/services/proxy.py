@@ -42,6 +42,20 @@ logger = logging.getLogger(__name__)
 # STS token duration (15 minutes — minimum)
 TOKEN_DURATION_SECONDS = 900
 
+# The label carrying the workspace a model-serving object belongs to (issue #5671, A15).
+#
+# Ownership has to be recorded ON the object because the mutating calls are made with
+# workspace-brokered credentials against a cluster that may host several workspaces:
+# reaching the right namespace is necessary but not sufficient, since a namespace can
+# contain an object the platform never created for that workspace. Replace and delete
+# therefore read this label back and compare it before acting, which is the same
+# predicate the listing path already applied via its label selector.
+WORKSPACE_OWNER_LABEL = "superplane.io/workspace"
+
+# The component label every model-serving object created here carries. Used by the
+# listing path's selector and by the ownership checks below.
+MODEL_SERVING_SELECTOR = "superplane.io/component=model-serving"
+
 
 class ProxyError(Exception):
     """Raised when a proxy operation fails."""
@@ -366,9 +380,17 @@ def create_deployment_manifest(
     gpu_per_replica: int = 1,
     tensor_parallel_size: int = 1,
     max_model_len: int | None = None,
-    namespace: str = "default",
+    *,
+    namespace: str,
+    workspace_id: uuid.UUID | str,
 ) -> dict[str, Any]:
     """Generate a vLLM/SGLang K8s Deployment manifest.
+
+    ``namespace`` and ``workspace_id`` are keyword-only and have NO defaults (issue
+    #5671, A15). They used to default to ``"default"``, which meant a caller-supplied
+    namespace — or an omitted one — placed tenant workloads in the cluster's shared
+    namespace. Requiring both at the call site means a new entry point cannot reach
+    this function without stating, explicitly, which workspace it is acting for.
 
     Args:
         name: Deployment name.
@@ -379,7 +401,9 @@ def create_deployment_manifest(
         gpu_per_replica: GPUs per replica.
         tensor_parallel_size: Tensor parallel degree.
         max_model_len: Maximum model context length.
-        namespace: K8s namespace.
+        namespace: K8s namespace, resolved server-side from the owning workspace.
+        workspace_id: Owning workspace; stamped as the ownership label that
+            replace/delete later verify before touching the object.
 
     Returns:
         K8s Deployment manifest as dict.
@@ -430,6 +454,9 @@ def create_deployment_manifest(
                 "superplane.io/component": "model-serving",
                 "superplane.io/framework": serving_framework,
                 "superplane.io/model": model_name.replace("/", "--"),
+                # The ownership marker replace/delete verify before mutating an
+                # existing object (issue #5671, A15).
+                WORKSPACE_OWNER_LABEL: str(workspace_id),
             },
         },
         "spec": {
@@ -498,16 +525,76 @@ def create_deployment_manifest(
     return manifest
 
 
+def _assert_owned_by_workspace(
+    apps_api: AppsV1Api,
+    name: str,
+    namespace: str,
+    workspace_id: uuid.UUID | str,
+) -> None:
+    """Refuse unless the existing deployment carries this workspace's ownership label.
+
+    Applied before replace and before delete (issue #5671, A15). Being in the right
+    namespace is not proof of ownership: a shared cluster's namespace can hold an
+    object the platform did not create for this workspace, and overwriting or removing
+    it takes down a workload whose owner gets no explanation.
+
+    A missing label is treated as NOT owned. The alternative — adopting unlabelled
+    objects — would mean any object the platform did not create becomes mutable by
+    whichever workspace names it, which is the defect rather than a lenient reading
+    of it.
+
+    Raises:
+        ProxyError: 404 if there is nothing there, 409 if it belongs to someone else.
+            Deliberately not 403: the requester is authorized for their workspace, and
+            the object's existence is not theirs to learn about.
+    """
+    try:
+        existing = apps_api.read_namespaced_deployment(name=name, namespace=namespace)
+    except ApiException as exc:
+        if exc.status == 404:
+            raise ProxyError(
+                f"Deployment '{name}' not found", status_code=404
+            ) from exc
+        logger.error("K8s read_deployment failed during ownership check: %s", exc)
+        raise ProxyError(
+            f"Failed to verify deployment ownership on child cluster: {exc.reason}"
+        ) from exc
+
+    labels = (getattr(existing, "metadata", None) and existing.metadata.labels) or {}
+    owner = labels.get(WORKSPACE_OWNER_LABEL)
+    if owner != str(workspace_id):
+        logger.warning(
+            "Refusing mutation of deployment %s/%s: owner label %r != workspace %s",
+            namespace,
+            name,
+            owner,
+            workspace_id,
+        )
+        raise ProxyError(
+            f"Deployment '{name}' is not owned by this workspace",
+            status_code=409,
+        )
+
+
 def apply_deployment_via_k8s(
     apps_api: AppsV1Api,
     manifest: dict[str, Any],
+    *,
+    workspace_id: uuid.UUID | str,
 ) -> dict[str, Any]:
     """Apply a K8s Deployment manifest to the child cluster.
+
+    ``workspace_id`` is required (issue #5671, A15): on the conflict-then-replace
+    path an object already exists under that name, and replacing it without checking
+    ownership is how one workspace overwrites another's workload on a shared cluster.
 
     Returns:
         Deployment status dict.
     """
-    namespace = manifest["metadata"].get("namespace", "default")
+    # Read the namespace from the manifest rather than accepting a parameter: the
+    # manifest was built by `create_deployment_manifest`, whose namespace is already
+    # server-resolved, so there is no second place for a caller-derived value to enter.
+    namespace = manifest["metadata"]["namespace"]
     name = manifest["metadata"]["name"]
 
     try:
@@ -524,7 +611,9 @@ def apply_deployment_via_k8s(
         }
     except ApiException as exc:
         if exc.status == 409:
-            # Already exists — update via replace
+            # Already exists. Replace it only if this workspace owns it — otherwise
+            # the conflict is reported to the caller, not resolved by overwriting.
+            _assert_owned_by_workspace(apps_api, name, namespace, workspace_id)
             try:
                 result = apps_api.replace_namespaced_deployment(
                     name=name,
@@ -550,14 +639,21 @@ def apply_deployment_via_k8s(
 
 def list_deployments_via_k8s(
     apps_api: AppsV1Api,
-    namespace: str = "default",
-    label_selector: str = "superplane.io/component=model-serving",
+    *,
+    namespace: str,
+    workspace_id: uuid.UUID | str,
 ) -> list[dict[str, Any]]:
     """List deployments from child cluster via K8s API.
+
+    Scoped to the workspace's own namespace AND to objects carrying its ownership
+    label (issue #5671, A15). The selector previously matched every model-serving
+    object in whatever namespace was asked for, so on a shared cluster a caller could
+    enumerate a neighbour's workloads. Both arguments are server-resolved.
 
     Returns:
         List of deployment info dicts.
     """
+    label_selector = f"{MODEL_SERVING_SELECTOR},{WORKSPACE_OWNER_LABEL}={workspace_id}"
     try:
         dep_list = apps_api.list_namespaced_deployment(
             namespace=namespace,
@@ -591,13 +687,22 @@ def list_deployments_via_k8s(
 def delete_deployment_via_k8s(
     apps_api: AppsV1Api,
     name: str,
-    namespace: str = "default",
+    *,
+    namespace: str,
+    workspace_id: uuid.UUID | str,
 ) -> dict[str, str]:
     """Delete a deployment from child cluster via K8s API.
+
+    ``namespace`` and ``workspace_id`` are keyword-only and required (issue #5671,
+    A15). ``namespace`` used to default to ``"default"``, so an omitted value deleted
+    out of the cluster's shared namespace; the ownership label is now verified first,
+    so a delete cannot remove an object this workspace does not own.
 
     Returns:
         Deletion status dict.
     """
+    _assert_owned_by_workspace(apps_api, name, namespace, workspace_id)
+
     try:
         apps_api.delete_namespaced_deployment(
             name=name,

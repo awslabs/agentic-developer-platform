@@ -26,6 +26,11 @@ class Deployment(Base):
         UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The namespace this deployment was actually placed in, resolved server-side from
+    # the owning workspace (issue #5671, A15). Recorded rather than recomputed at read
+    # time: a workspace's namespace assignment is the platform's, and a delete must
+    # target where the object really is, not where the current config says it would go.
+    namespace: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_revision: Mapped[str | None] = mapped_column(String(100), nullable=True)
     precision: Mapped[str | None] = mapped_column(

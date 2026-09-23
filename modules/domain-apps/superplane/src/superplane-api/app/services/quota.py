@@ -13,18 +13,31 @@ Enforcement points:
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.middleware.quota import QUOTA_DECISION_ATTR
+from app.models.deployment import Deployment
 from app.models.node import Node
 from app.models.organization import Organization
 from app.models.workspace import Workspace
 
 logger = logging.getLogger(__name__)
+
+# Deployment statuses that hold no capacity, so do not count against a workspace's
+# committed GPUs. Everything else — including in-flight creation — does count: a
+# reservation that stops counting the moment it is uncertain is how two concurrent
+# requests both see the same headroom.
+RELEASED_DEPLOYMENT_STATUSES = ("Deleted", "Failed")
+
+# Statuses a deployment row can hold while its cluster write is still in flight.
+# `reserve_deployment_gpus` writes this, and it counts toward the workspace total.
+DEPLOYMENT_STATUS_RESERVED = "Reserving"
 
 # Default plan-based quotas (fallback when no explicit quota is set)
 PLAN_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -161,14 +174,60 @@ async def count_workspace_nodes(workspace: Workspace, db: AsyncSession) -> int:
 
 
 async def count_workspace_gpus(workspace: Workspace, db: AsyncSession) -> int:
-    """Count active GPUs for a workspace."""
-    if not workspace.cluster_id:
-        return 0
+    """Count active GPUs for a workspace: cluster nodes plus model deployments.
+
+    Issue #5671 (A15) added the deployment half. Counting only nodes made the
+    deployment quota check vacuous in the case it exists for: a workspace could hold
+    any number of GPU-consuming model deployments and this returned the node total,
+    unchanged, so "current usage" never reflected the thing being limited and the
+    check compared a request against a number that never grew.
+
+    Nodes and deployments are summed together because the recorded limit
+    (``budget_max_gpus``) is a single figure for the workspace's GPU footprint, not a
+    per-kind allowance.
+    """
+    node_total = 0
+    if workspace.cluster_id:
+        result = await db.execute(
+            select(func.coalesce(func.sum(Node.gpu_count), 0)).where(
+                Node.cluster_id == workspace.cluster_id,
+                Node.terminated_at.is_(None),
+                Node.status.in_(["Running", "Provisioning", "Ready"]),
+            )
+        )
+        node_total = int(result.scalar() or 0)
+
+    return node_total + await count_workspace_deployment_gpus(workspace.id, db)
+
+
+async def count_workspace_deployment_gpus(
+    workspace_id: uuid.UUID, db: AsyncSession
+) -> int:
+    """Total GPUs committed by a workspace's live model deployments.
+
+    ``replicas * gpu_per_replica`` per deployment, matching how a request's demand is
+    computed, so the limit compares like with like.
+
+    Keyed on ``workspace_id``, not ``cluster_id``: two workspaces can share one
+    cluster, and charging each for the other's deployments would throttle both below
+    their real entitlement.
+
+    Deleted and failed deployments are excluded — they hold no capacity. A deployment
+    still being created IS counted: it is a commitment already made, and ignoring it
+    is what lets concurrent requests each see capacity the other is using.
+    """
     result = await db.execute(
-        select(func.coalesce(func.sum(Node.gpu_count), 0)).where(
-            Node.cluster_id == workspace.cluster_id,
-            Node.terminated_at.is_(None),
-            Node.status.in_(["Running", "Provisioning", "Ready"]),
+        select(
+            func.coalesce(
+                func.sum(
+                    Deployment.desired_replicas
+                    * func.coalesce(Deployment.gpu_per_replica, 0)
+                ),
+                0,
+            )
+        ).where(
+            Deployment.workspace_id == workspace_id,
+            Deployment.status.notin_(RELEASED_DEPLOYMENT_STATUSES),
         )
     )
     return int(result.scalar() or 0)
@@ -196,6 +255,19 @@ async def count_org_nodes(org_id: uuid.UUID, db: AsyncSession) -> int:
         )
     )
     return int(result.scalar() or 0)
+
+
+def mark_quota_decision(request: Request | None) -> None:
+    """Record that a quota decision was evaluated for this request.
+
+    The quota middleware only claims enforcement for requests carrying this mark, so
+    the ``X-Quota-Enforcement`` header cannot appear on a path where nothing was
+    checked (issue #5671, A15). ``None`` is accepted so the enforcement functions stay
+    callable outside a request — from the reconciler and from tests — without the
+    marking becoming a required argument everywhere.
+    """
+    if request is not None:
+        setattr(request.state, QUOTA_DECISION_ATTR, True)
 
 
 def raise_quota_exceeded(
@@ -320,7 +392,7 @@ async def enforce_deployment_quota(
     total_gpus_requested: int,
     db: AsyncSession,
 ) -> None:
-    """Check GPU quotas before creating a deployment.
+    """Check GPU and daily-spend quotas before creating a deployment.
 
     Args:
         workspace_id: Target workspace.
@@ -330,17 +402,200 @@ async def enforce_deployment_quota(
 
     Raises:
         HTTPException 429 if GPU quota would be exceeded.
+
+    Note:
+        This is the check WITHOUT a reservation. Callers on the provisioning path must
+        use :func:`reserve_deployment_gpus` instead: checking and then writing as two
+        steps lets two concurrent requests both pass against the same headroom. This
+        remains for read-only previews of a decision.
     """
     workspace, ws_quotas = await get_workspace_quotas(workspace_id, org_id, db)
+    _assert_deployment_within_quota(
+        workspace_id,
+        ws_quotas,
+        current_gpus=await count_workspace_gpus(workspace, db),
+        total_gpus_requested=total_gpus_requested,
+    )
+    await _assert_daily_spend_within_budget(workspace, ws_quotas, db)
 
+
+def _assert_deployment_within_quota(
+    workspace_id: uuid.UUID,
+    ws_quotas: dict[str, Any],
+    *,
+    current_gpus: int,
+    total_gpus_requested: int,
+) -> None:
+    """Raise 429 unless the request fits the workspace's GPU and daily-spend limits.
+
+    The limit applies to the workspace's TOTAL committed capacity
+    (``current_gpus + total_gpus_requested``), not to the size of a single request, so
+    a series of individually-modest requests cannot walk past the budget.
+
+    A workspace with no recorded limit falls back to its plan default (``PLAN_DEFAULTS``,
+    via :func:`get_workspace_quotas`) rather than being treated as unlimited: an absent
+    budget is an unconfigured workspace, and reading that as "no ceiling" is how an
+    unconfigured tenant becomes the expensive one.
+    """
     max_gpus = ws_quotas.get("max_gpus")
-    if max_gpus is not None:
-        current_gpus = await count_workspace_gpus(workspace, db)
-        if current_gpus + total_gpus_requested > max_gpus:
-            raise_quota_exceeded(
-                "max_gpus",
-                current_gpus,
-                max_gpus,
-                "workspace",
-                str(workspace_id),
-            )
+    if max_gpus is not None and current_gpus + total_gpus_requested > max_gpus:
+        raise_quota_exceeded(
+            "max_gpus",
+            current_gpus,
+            max_gpus,
+            "workspace",
+            str(workspace_id),
+        )
+
+    # Daily spend is checked separately, against cost actually recorded for today —
+    # see `_assert_daily_spend_within_budget`. It is not derived from the GPU count
+    # here: this service prices spend from each node's recorded `hourly_cost_usd`, and
+    # there is no per-GPU list price to project a new deployment's cost from.
+    # Inventing a rate would produce a limit that refuses legitimate requests whenever
+    # the guess ran high, which is the over-strict failure mode this change must avoid.
+
+
+async def _assert_daily_spend_within_budget(
+    workspace: Workspace,
+    ws_quotas: dict[str, Any],
+    db: AsyncSession,
+) -> None:
+    """Raise 429 if the workspace has already spent its daily budget.
+
+    Uses cost the platform has actually recorded for today (the cost reconciler's own
+    calculation, from each node's recorded hourly rate) rather than a projection, so
+    the figure in the refusal is one an operator can reconcile against the cost views.
+
+    The limitation is worth being precise about: this refuses further provisioning once
+    the budget is already spent, so it bounds how far a workspace can run over rather
+    than predicting whether one specific new deployment would cross the line. Pricing a
+    not-yet-created deployment would need a per-GPU rate this service does not have.
+    """
+    max_cost_per_day = ws_quotas.get("max_cost_per_day")
+    if max_cost_per_day is None:
+        return
+
+    # Imported here, not at module scope: `app.services.cost_reconciler` imports this
+    # module for quota figures, so a top-level import would be circular.
+    from app.services.cost_reconciler import CostReconciler
+
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    spent = await CostReconciler(db)._compute_daily_cost(workspace, day_start, now)
+
+    if spent >= Decimal(str(max_cost_per_day)):
+        raise_quota_exceeded(
+            "max_cost_per_day",
+            spent.quantize(Decimal("0.01")),
+            max_cost_per_day,
+            "workspace",
+            str(workspace.id),
+        )
+
+
+async def reserve_deployment_gpus(
+    workspace_id: uuid.UUID,
+    org_id: uuid.UUID,
+    total_gpus_requested: int,
+    db: AsyncSession,
+    *,
+    deployment_kwargs: dict[str, Any],
+    request: Request | None = None,
+) -> Deployment:
+    """Atomically check the workspace's GPU/spend budget and reserve the capacity.
+
+    Issue #5671 (A15). Returns a persisted ``Deployment`` row in state ``Reserving``,
+    which counts toward the workspace's committed GPUs from the moment it is written.
+
+    WHY THE ROW *IS* THE RESERVATION
+    --------------------------------
+    A separate "reserved capacity" counter would need its own compensation path, and a
+    counter that is decremented by code that might not run is exactly the leak the
+    acceptance criteria call out. Writing the deployment row up front means the
+    reservation and the thing being reserved for are the same object: releasing it is a
+    status change, and a crash leaves a visible row an operator can see rather than an
+    invisible counter nobody can reconcile.
+
+    WHY IT IS ATOMIC
+    ----------------
+    The workspace row is locked FOR UPDATE and the committed total is recounted *under
+    that lock*, so two concurrent requests for the same workspace serialise: the second
+    sees the first's reservation and is refused if it no longer fits. Without the lock
+    both read the same pre-request total, both pass, and the workspace ends up over
+    budget with neither request at fault.
+
+    The caller must call :func:`release_deployment_reservation` if the cluster write
+    fails, or the capacity stays held.
+
+    Raises:
+        HTTPException 429 if the GPU or daily-spend quota would be exceeded.
+        HTTPException 404 if the workspace does not exist for this org.
+    """
+    # Record that a quota decision is being made for this request, so the middleware's
+    # enforcement header reflects reality instead of asserting it. Set BEFORE the checks
+    # below, because a refusal is a decision too — a 429 response should still be
+    # marked as having been quota-evaluated.
+    mark_quota_decision(request)
+
+    # Lock the workspace row first. This is the serialisation point for every
+    # reservation against this workspace; the quota figures are only meaningful once
+    # no other request can be reading them concurrently.
+    locked = await db.execute(
+        select(Workspace)
+        .where(Workspace.id == workspace_id, Workspace.org_id == org_id)
+        .with_for_update()
+    )
+    workspace = locked.scalar_one_or_none()
+    if workspace is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found"
+        )
+
+    _, ws_quotas = await get_workspace_quotas(workspace_id, org_id, db)
+
+    # Recount under the lock — not before it — so a reservation committed by a
+    # concurrent request since this request arrived is included.
+    _assert_deployment_within_quota(
+        workspace_id,
+        ws_quotas,
+        current_gpus=await count_workspace_gpus(workspace, db),
+        total_gpus_requested=total_gpus_requested,
+    )
+    await _assert_daily_spend_within_budget(workspace, ws_quotas, db)
+
+    deployment = Deployment(
+        workspace_id=workspace_id,
+        org_id=org_id,
+        status=DEPLOYMENT_STATUS_RESERVED,
+        **deployment_kwargs,
+    )
+    db.add(deployment)
+    # Commit while still holding the lock's transaction, so the reservation is visible
+    # to the next request before this one proceeds to the cluster.
+    await db.commit()
+    await db.refresh(deployment)
+    return deployment
+
+
+async def release_deployment_reservation(
+    deployment: Deployment, db: AsyncSession
+) -> None:
+    """Release a reservation whose provisioning did not complete.
+
+    Marks the row ``Failed``, which :func:`count_workspace_deployment_gpus` excludes,
+    so the capacity returns to the workspace's headroom. Without this a failed cluster
+    write would hold GPUs forever and throttle the tenant below their entitlement.
+
+    Best-effort by design: this runs while another failure is already being handled, so
+    it must not replace that error with one of its own.
+    """
+    try:
+        deployment.status = "Failed"
+        await db.commit()
+    except Exception:  # pragma: no cover - defensive
+        logger.exception(
+            "Failed to release GPU reservation for deployment %s; capacity may stay "
+            "held until reconciliation",
+            deployment.id,
+        )
+        await db.rollback()
