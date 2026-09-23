@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -8,6 +9,7 @@ BUILD_WORKFLOWS = (
     ".github/workflows/arc-runner-build.yml",
     ".github/workflows/chat-agent-deploy.yml",
     ".github/workflows/cyber-worker-build.yml",
+    ".github/workflows/cyber-browser-build.yml",
     ".github/workflows/gateway-infra-apply.yml",
     ".github/workflows/pyjwt-layer-build.yml",
     ".github/workflows/psycopg2-layer-build.yml",
@@ -20,6 +22,13 @@ BUILD_WORKFLOWS = (
 @pytest.mark.parametrize("workflow", BUILD_WORKFLOWS)
 def test_build_workflow_does_not_mutate_terraform_owned_project(workflow: str) -> None:
     text = (REPO_ROOT / workflow).read_text()
+    # App-owned execution moved out of the thin protected wrapper in #5816.
+    definition = yaml.safe_load(text)
+    for job in definition['jobs'].values():
+        for step in job.get('steps', []):
+            target = step.get('uses', '')
+            if target.startswith('./modules/domain-apps/'):
+                text += (REPO_ROOT / target[2:] / 'action.yml').read_text()
 
     assert "batch-get-projects" in text
     assert "codebuild-role" not in text

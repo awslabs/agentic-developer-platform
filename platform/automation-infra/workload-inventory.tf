@@ -132,6 +132,7 @@ data "external" "workload_admission" {
   query = {
     inventory = jsonencode({
       account_id                     = data.aws_caller_identity.current.account_id,
+      deployment_managed_policy_arns = var.deployment_managed_policy_arns
       deployment_role_boundaries     = var.deployment_role_boundaries,
       deployment_execution_resources = var.deployment_execution_resources,
       clusters                       = [for name in setunion(var.additional_cluster_names, toset([var.cluster_name])) : { name = name, region = var.aws_region }]

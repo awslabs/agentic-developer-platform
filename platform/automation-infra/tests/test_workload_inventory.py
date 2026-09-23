@@ -60,3 +60,41 @@ def test_implicit_boundary_denies_do_not_contain_direct_session_grants():
     boundary = {'Statement':[{'Effect':'Allow','Action':['logs:PutLogEvents'],'Resource':'*'}]}
     with pytest.raises(AssertionError, match='identity mutation/role chaining'):
         inventory.verify_ceiling(boundary, {ROLE}, {TARGET})
+
+
+@pytest.mark.parametrize('action', ['glue:StartJobRun', 'states:StartExecution', 'sagemaker:CreatePresignedNotebookInstanceUrl', 'future-service:RunAsExistingRole'])
+def test_unmodeled_execution_cannot_hide_in_a_finite_api_list(action):
+    with pytest.raises(AssertionError, match='Unsupported workload API'):
+        inventory.verify_ceiling(policy(action, resource=TARGET), {ROLE}, {TARGET})
+
+
+def test_unmodeled_action_is_safe_when_explicitly_denied():
+    boundary = policy('logs:PutLogEvents', 'glue:StartJobRun')
+    boundary['Statement'].append({'Effect':'Deny','Action':'glue:StartJobRun','Resource':'*'})
+    inventory.verify_ceiling(boundary, {ROLE}, {TARGET})
+
+
+@pytest.mark.parametrize('kind,usage', [('PolicyUsers','PermissionsPolicy'), ('PolicyGroups','PermissionsPolicy'), ('PolicyRoles','PermissionsPolicy'), ('PolicyRoles','PermissionsBoundary')])
+def test_mutable_policy_cannot_reach_unbounded_identities_or_a_boundary(kind, usage):
+    arn = 'arn:aws:iam::123456789012:policy/adp-mutable'
+    config = {'account_id':'123456789012','deployment_managed_policy_arns':[arn]}
+    def aws(*args):
+        if args[1] == 'list-policies':
+            return {'Policies':[{'Arn':arn}]}
+        if args[1] == 'list-entities-for-policy':
+            return {kind:[{'RoleName':'unbounded'}]} if args[-1] == usage else {}
+        assert args[1] == 'get-role'
+        return {'Role':{'Arn':ROLE+'-unbounded'}}
+    with pytest.raises(AssertionError, match='Mutable policy'):
+        inventory.verify_mutable_policies(config, {ROLE:'arn:aws:iam::123456789012:policy/ceiling'}, aws)
+
+
+def test_mutable_policy_only_on_admitted_roles_is_allowed():
+    arn = 'arn:aws:iam::123456789012:policy/adp-mutable'
+    def aws(*args):
+        if args[1] == 'list-policies':
+            return {'Policies':[{'Arn':arn}]}
+        if args[1] == 'list-entities-for-policy':
+            return {'PolicyRoles':[{'RoleName':'adp-test-worker'}]} if args[-1] == 'PermissionsPolicy' else {}
+        return {'Role':{'Arn':ROLE}}
+    inventory.verify_mutable_policies({'account_id':'123456789012','deployment_managed_policy_arns':[arn]}, {ROLE:'arn:aws:iam::123456789012:policy/ceiling'}, aws)

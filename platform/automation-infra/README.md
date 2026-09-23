@@ -221,3 +221,21 @@ protected main with the checks identity. Configure their exact
 only the existing GitLab/webhook test configuration keys. The browser image
 build now uses the same protected publishing lane and Terraform-owned project
 contract as the worker image build.
+
+The admission checker accepts only the finite API catalog in
+`workload-actions.json`. An unconditional `Deny`/`NotAction` must close all other
+APIs, including future service operations. Execution is currently verified only
+for Lambda, CodeBuild and EC2/SSM targets; other execution services require an
+explicit extension and tests before admission. Customer credential brokers that
+legitimately chain roles are not compatible with this deployment ceiling and
+must remain operator-managed until a separately reviewed broker ceiling exists.
+Do not enable deployment access for a cluster containing such an unadmitted role.
+The operator must also review data paths: mutable image repositories, source
+archives, event inputs and secrets must not feed an unadmitted privileged service.
+API admission is not a proof of arbitrary application dataflow safety.
+
+Mutable managed policies are checked for every existing role/user/group and
+boundary attachment. Policies attached outside the admitted bounded roles, or
+used as any identity's boundary, are rejected. New mutable policies may be
+created only at their exact admitted ARNs and attached only to admitted roles.
+Re-run admission after operator changes to these attachments.
