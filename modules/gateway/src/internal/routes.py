@@ -59,6 +59,7 @@ from src.knowledge.github_app_service import (
 )
 from src.shared.config import get_settings
 from src.shared.database import get_db
+from src.shared.identity.providers import is_linkable_provider
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import new_uuid
 from src.shared.models.organization import Organization, User
@@ -254,6 +255,25 @@ async def issue_magic_link(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> IssueMagicLinkResponse:
+    # Closed provider allowlist, checked before any state is written (#5664, A10).
+    #
+    # This is the OTHER writer into the shared `magic_link_nonces` table, and it
+    # took `provider` from the request body with no validation at all. The internal
+    # plane is authenticated, but that only means the caller is an ADP Lambda — it
+    # does not make an arbitrary namespace safe to mint into, and the
+    # `github_app_register` namespace is the sole authenticator on the callback that
+    # overwrites the deployment's shared GitHub App credentials. A compromised or
+    # simply buggy ingest caller must not be able to reach it, so both nonce
+    # minters now enforce the same allowlist.
+    if not is_linkable_provider(body.provider):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unsupported_provider",
+                "message": "That identity provider is not supported for linking.",
+            },
+        )
+
     secret = _get_magic_link_secret()
     if not secret:
         raise HTTPException(

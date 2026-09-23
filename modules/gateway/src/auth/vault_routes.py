@@ -30,6 +30,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.shared.config import get_settings
 from src.shared.database import get_db
 from src.shared.identity.providers import is_linkable_provider
+from src.shared.identity.verification import (
+    MAGIC_LINK_CONFIRMED,
+    SELF_ASSERTED,
+    is_proven,
+)
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import User
 from src.shared.models.vault import MagicLinkNonce, UserIdentity
@@ -43,8 +48,6 @@ from .magic_link import (
     TokenExpiredError,
     TokenInvalidError,
     consume_nonce,
-    issue_token,
-    store_nonce,
     verify_token,
 )
 from .middleware import get_current_user_context
@@ -333,7 +336,27 @@ class MagicLinkIssueRequest(BaseModel):
 
 
 class MagicLinkIssueResponse(BaseModel):
-    magic_link_url: str
+    """Outcome of a link request — never a credential (#5664, A10).
+
+    This used to be ``magic_link_url``: the caller named an account and the
+    platform handed back the very token that "confirms" the claim. The requester
+    could therefore complete both halves of the handshake, so the resulting row
+    was recorded as verified without the claimed account ever being contacted.
+
+    What the caller gets now is the *status* of their claim. When the claim is
+    unproven that status says so explicitly, which is the honest answer and also
+    the only one that cannot be replayed.
+    """
+
+    status: str
+    provider: str
+    provider_user_id: str
+    verification_method: str
+    verified_at: str | None = None
+    identity_id: str | None = None
+    # How the user can turn an unproven claim into a proven link. Instructions,
+    # not a credential.
+    next_step: str | None = None
 
 
 def _get_magic_link_secret() -> str:
@@ -349,10 +372,13 @@ def _get_magic_link_secret() -> str:
     return get_settings().magic_link_secret
 
 
-def _build_magic_link_url(token: str) -> str:
-    settings = get_settings()
-    base = settings.gateway_base_url.rstrip("/")
-    return f"{base}/auth/link/magic?token={token}"
+# NOTE (#5664, A10): this module no longer builds magic-link URLs or mints nonces.
+# It used to, on the user-facing claim route, and handing that URL back to the
+# claimant is what made the "verification" circular. Link construction now lives
+# only on the internal issuance path (``src/internal/routes.py``), whose caller
+# delivers it in-channel to the claimed account. Keeping the builder here would
+# invite a future caller to re-open the circle, so it is deliberately absent
+# rather than left unused.
 
 
 async def _append_audit(
@@ -365,6 +391,12 @@ async def _append_audit(
 ) -> None:
     log = AuditLog(org_id=org_id, event_type=event_type, actor_id=actor_id, details=details)
     db.add(log)
+
+
+_OUT_OF_BAND_NEXT_STEP = (
+    "Send a message from this account in a connected channel. ADP will deliver a "
+    "confirmation link to that account; confirming it there proves you control it."
+)
 
 
 def _require_linkable_provider(provider: str) -> None:
@@ -411,10 +443,14 @@ def _require_linkable_provider(provider: str) -> None:
     status_code=201,
     summary="Issue a magic-link to add a new identity",
     description=(
-        "Cognito-authed users call this to obtain a magic-link URL they can share "
-        "with their other-channel identity (e.g. a Slack bot DM).  "
-        "The token binds to the caller's Cognito user_id so the landing page "
-        "will reject a different signed-in user."
+        "Records that the caller claims an external account. The claim is stored "
+        "as UNPROVEN (`self_asserted`, no `verified_at`) and grants nothing.\n\n"
+        "Proof of ownership is established out-of-band: send a message from the "
+        "claimed account in an ADP-connected channel, and the platform delivers a "
+        "confirmation link to that account. Confirming it there records "
+        "`magic_link_confirmed`. This endpoint deliberately does not return a "
+        "confirmation link, because a link returned to the claimant proves nothing "
+        "about the account being claimed."
     ),
 )
 async def issue_identity_magic_link(
@@ -423,61 +459,143 @@ async def issue_identity_magic_link(
     token_context=Depends(get_current_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> MagicLinkIssueResponse:
+    """Record an unproven claim. Never mints a confirmation credential (#5664, A10).
+
+    This endpoint used to close a full circle with no proof anywhere in it: the
+    caller chose ``provider_user_id``, the response handed back the magic link, and
+    confirming that link wrote ``verified_at``. Every step was performed by the
+    person making the claim, so "verified" only ever meant "the requester can read
+    their own HTTP response". Any signed-in user could therefore have an arbitrary
+    external account recorded as verifiably theirs.
+
+    The issue allows two remedies — derive the account id from a completed provider
+    handshake, or deliver confirmation out-of-band to the claimed account and never
+    return it to the requester. This route takes the second, because a completed
+    handshake is not available here: the caller is authenticated to ADP, not to
+    Slack or Discord, so there is no provider-signed assertion about the account
+    they are naming. (Where such an assertion *does* exist the platform already
+    uses it — ``admin/onboarding/handler.py`` reads the immutable GitHub id out of
+    the signed Cognito claims, never from a request body.)
+
+    Out-of-band delivery is not new machinery. The ingest path already does it:
+    when a provider-authenticated inbound event arrives from an unrecognised
+    account, ``/internal/v1/issue-magic-link`` mints the token and the ingest
+    Lambda posts it back **in-channel** to that account
+    (``gateway/lambdas/ingest/handler.py``, ``_handle_unresolved_user``). Only
+    someone who can read that channel can complete it, which is what makes it
+    evidence. Nonce issuance therefore belongs solely to that path, and this route
+    records the claim and points the user at it.
+
+    Consequence worth stating plainly: because the in-channel path is now the only
+    minter, "a nonce exists" implies "it was delivered to the claimed account".
+    That invariant is structural rather than a rule someone has to remember, which
+    is also why no backfill of stored rows is required.
+
+    The claim row is still written, deliberately: recording it as ``self_asserted``
+    keeps an attempt to claim someone else's account visible and auditable,
+    whereas dropping it silently would hide exactly that. It sets no
+    ``verified_at``, and ``is_proven()`` rejects it, so no consumer can mistake the
+    claim for evidence.
+    """
     # Provider validity is a property of the request alone, so it is settled
-    # before anything else — including before the signing-key check, so the
-    # answer to "is this provider linkable" cannot vary with deployment config.
+    # before anything else — including before any persistence, so the answer to
+    # "is this provider linkable" cannot vary with deployment config.
     _require_linkable_provider(provider)
 
-    secret = _get_magic_link_secret()
-    if not secret:
+    # The caller's row supplies team_id, which UserIdentity requires.
+    user = (await db.execute(select(User).where(User.id == token_context.user_id))).scalar_one_or_none()
+    team_id = user.team_id if user else ""
+
+    existing = (
+        await db.execute(
+            select(UserIdentity).where(
+                UserIdentity.org_id == token_context.org_id,
+                UserIdentity.provider == provider,
+                UserIdentity.provider_user_id == body.provider_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        # Already claimed in this tenant. Never overwrite, and never disclose whose
+        # it is — a claim probe must not become an account-enumeration oracle.
+        # Echoing the caller's OWN row is not a leak.
+        if existing.user_id == token_context.user_id:
+            return MagicLinkIssueResponse(
+                status="already_linked",
+                provider=provider,
+                provider_user_id=body.provider_user_id,
+                verification_method=existing.verification_method,
+                verified_at=existing.verified_at.isoformat() if existing.verified_at else None,
+                identity_id=existing.id,
+                next_step=(None if is_proven(existing.verification_method) else _OUT_OF_BAND_NEXT_STEP),
+            )
         raise HTTPException(
-            status_code=503,
-            detail={"error": "not_configured", "message": "Magic-link signing key not configured"},
+            status_code=409,
+            detail={
+                "error": "identity_already_linked",
+                "message": f"Provider identity {provider}:{body.provider_user_id} is already linked.",
+            },
         )
 
-    result = issue_token(
+    claim = UserIdentity(
+        org_id=token_context.org_id,
+        user_id=token_context.user_id,
+        team_id=team_id,
         provider=provider,
         provider_user_id=body.provider_user_id,
-        channel_context=body.channel_context,
-        target_user_id=token_context.user_id,
-        secret_key=secret,
+        provider_username=None,
+        # Unproven by construction, and verified_at left NULL rather than stamped:
+        # the pair is what every trust-aware consumer reads.
+        verification_method=SELF_ASSERTED,
+        verified_at=None,
     )
-
-    await store_nonce(
-        jti=result["jti"],
-        provider=provider,
-        provider_user_id=body.provider_user_id,
-        channel_context=body.channel_context,
-        target_user_id=token_context.user_id,
-        expires_at=result["expires_at"],
-        db=db,
-    )
-
-    magic_link_url = _build_magic_link_url(result["token"])
+    db.add(claim)
 
     await _append_audit(
         db,
-        event_type="magic_link_issued",
+        event_type="identity_claim_recorded",
         org_id=token_context.org_id,
         actor_id=token_context.user_id,
         details={
             "provider": provider,
             "provider_user_id": body.provider_user_id,
             "channel_context": body.channel_context,
-            "jti": result["jti"],
+            "verification_method": SELF_ASSERTED,
             "source": "user_initiated",
         },
     )
-    await db.commit()
+
+    try:
+        await db.commit()
+        await db.refresh(claim)
+    except Exception as exc:
+        # Lost a race against a concurrent claim for the same account.
+        await db.rollback()
+        logger.warning("Identity claim conflict provider=%s provider_user_id=%s: %s", provider, body.provider_user_id, exc)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "identity_already_linked",
+                "message": f"Provider identity {provider}:{body.provider_user_id} is already linked.",
+            },
+        )
 
     logger.info(
-        "Magic-link issued by user=%s provider=%s provider_user_id=%s jti=%s",
+        "Identity claim recorded (unproven) user=%s provider=%s provider_user_id=%s",
         token_context.user_id,
         provider,
         body.provider_user_id,
-        result["jti"],
     )
-    return MagicLinkIssueResponse(magic_link_url=magic_link_url)
+    return MagicLinkIssueResponse(
+        status="claim_recorded_unverified",
+        provider=provider,
+        provider_user_id=body.provider_user_id,
+        verification_method=SELF_ASSERTED,
+        verified_at=None,
+        identity_id=claim.id,
+        next_step=_OUT_OF_BAND_NEXT_STEP,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -686,18 +804,45 @@ async def magic_link_landing_post(
     user = user_result.scalar_one_or_none()
     team_id = user.team_id if user else ""
 
-    # Write user_identities row — 409 on duplicate (UNIQUE constraint)
-    identity = UserIdentity(
-        org_id=token_context.org_id,
-        user_id=token_context.user_id,
-        team_id=team_id,
-        provider=provider,
-        provider_user_id=provider_user_id,
-        provider_username=None,
-        verification_method="magic_link",
-        verified_at=datetime.now(UTC),
-    )
-    db.add(identity)
+    # The user may already hold an UNPROVEN claim on this account (recorded by
+    # POST /auth/identities/{provider}/link). Confirming an out-of-band link is
+    # precisely the evidence that claim was missing, so upgrade the row in place
+    # rather than inserting a second one and colliding with the
+    # (provider, provider_user_id, org_id) unique index from migration 021.
+    #
+    # Scoped to the caller's own row: a claim recorded by a DIFFERENT user is not
+    # upgraded here. That case falls through to the insert below and is refused by
+    # the unique index as a 409 — an attacker's claim must not be silently
+    # converted into someone else's proven link, nor the reverse.
+    identity = (
+        await db.execute(
+            select(UserIdentity).where(
+                UserIdentity.org_id == token_context.org_id,
+                UserIdentity.user_id == token_context.user_id,
+                UserIdentity.provider == provider,
+                UserIdentity.provider_user_id == provider_user_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if identity is not None:
+        identity.verification_method = MAGIC_LINK_CONFIRMED
+        identity.verified_at = datetime.now(UTC)
+    else:
+        identity = UserIdentity(
+            org_id=token_context.org_id,
+            user_id=token_context.user_id,
+            team_id=team_id,
+            provider=provider,
+            provider_user_id=provider_user_id,
+            provider_username=None,
+            # Proven: this token was delivered to the claimed account by the
+            # ingest path and confirmed from there. Distinct from the legacy bare
+            # "magic_link", which could not tell that apart from a self-claim.
+            verification_method=MAGIC_LINK_CONFIRMED,
+            verified_at=datetime.now(UTC),
+        )
+        db.add(identity)
 
     await _append_audit(
         db,
@@ -719,7 +864,7 @@ async def magic_link_landing_post(
         details={
             "provider": provider,
             "provider_user_id": provider_user_id,
-            "verification_method": "magic_link",
+            "verification_method": identity.verification_method,
         },
     )
 
@@ -748,6 +893,6 @@ async def magic_link_landing_post(
         "identity_id": identity.id,
         "provider": provider,
         "provider_user_id": provider_user_id,
-        "verification_method": "magic_link",
+        "verification_method": identity.verification_method,
         "verified_at": identity.verified_at.isoformat() if identity.verified_at else None,
     }
