@@ -51,8 +51,16 @@ from src.orchestration.adapters.github_comments import (
     InputPath,
     apply_gate_answer_for_context,
 )
-from src.orchestration.compile import ApprovalContext, PolicyNotAcceptableError, accept_execution_policy, plan_hash
-from src.orchestration.execution_policy import Action, DenyReason, ResourceRef
+from src.orchestration.compile import ApprovalContext, PolicyNotAcceptableError, accept_execution_policy, compile_proposal, plan_hash
+from src.orchestration.execution_policy import (
+    Action,
+    AuthorizationContext,
+    CredentialScope,
+    DenyReason,
+    ResourceRef,
+    authorize_action,
+    stamp_policy,
+)
 from src.orchestration.models import DecisionKind, OrchestrationAcceptedPlan, OrchestrationDecision
 from src.orchestration.policy_admission import authorize_node_dispatch, load_in_force_policy
 from src.orchestration.registration import (
@@ -75,6 +83,27 @@ registrar = _reg.registrar
 access = _reg.access
 autonomy_default_unset = _reg.autonomy_default_unset
 provider_repository_identity = _reg.provider_repository_identity
+
+
+@pytest.fixture
+def controls_app(session, access):
+    from fastapi import FastAPI
+
+    from src.auth.dependencies import get_current_user
+    from src.orchestration.controls import get_access_control, router
+    from src.shared.database import get_db
+
+    app = FastAPI()
+    app.include_router(router)
+
+    async def override_db():
+        yield session
+
+    app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_current_user] = lambda: token_context(ORG_A, user_id=HUMAN_USER_ID)
+    app.dependency_overrides[get_access_control] = lambda: access
+    return app
+
 
 ORG_A = _reg.ORG_A
 FLOW = _reg.FLOW
@@ -799,6 +828,348 @@ class TestABoundAcceptanceGrants:
         )
 
         assert acceptance_gate_address(transformed) == gate_address
+
+
+class TestBoundsAlreadyExpiredAreNotGranted:
+    """Authority whose lifetime is already over is refused, not granted (#5331).
+
+    A proposed policy carries an `expires_at` chosen when the plan was derived, and a
+    plan can sit at its acceptance gate for as long as its approver takes to read it.
+    So "the bounds were in the future when they were written" is not the same claim as
+    "the bounds are in the future now", and the grant path is the only place the second
+    one can be checked — `stamp_policy` binds a principal and a hash and says nothing
+    about lifetime.
+
+    Granting a dead grant is not a cosmetic wrong. The gate passes, every root behind
+    it arms, the plan reads as authorized — and then `authorize_action` denies every
+    single dispatch with `POLICY_EXPIRED`, because that is exactly what admission is
+    supposed to do with an expired policy. The flow is live, approved, and incapable
+    of doing anything, with nothing in the approver's view explaining why.
+
+    It is refused rather than **silently re-clocked to a fresh expiry**, which is the
+    tempting repair and the wrong one. The approver read a document that said when the
+    authority lapses; issuing different bounds than the ones they read would attribute
+    to them a grant they never reviewed — the precise misattribution the revision
+    binding exists to prevent. Refusing costs them one round trip and a re-derived
+    plan they can read.
+    """
+
+    @staticmethod
+    def _expired_policy():
+        """Bounds whose lifetime ended an hour ago.
+
+        Relative to the real clock rather than a fixed past date, because an expiry
+        check compares against `now`: a literal like 2020 would still be in the past
+        in 2030, but it would also let a check that compared against the *wrong* now
+        (a hardcoded epoch, a naive-vs-aware mixup) pass for the wrong reason.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        return policy_for_these_fixtures(expires_at=datetime.now(tz=UTC) - timedelta(hours=1))
+
+    async def test_a_bound_approval_of_expired_bounds_is_refused(self, session, registrar, access):
+        """The refusal, raised out of the gate answer rather than returned.
+
+        `PolicyNotAcceptableError` and not a refusal outcome, because the caller's
+        transaction must not commit: the gate move and the decision row are already
+        written at this point, and the whole reason this is raised is so they roll back
+        with the grant instead of persisting an approval that armed nothing.
+        """
+        await register_policy_bearing_draft(session, registrar, policy=self._expired_policy())
+        gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
+
+        with pytest.raises(PolicyNotAcceptableError, match="expired"):
+            await answer_acceptance_gate(session, access, node_id=gate.id, expected_plan_hash=(await in_force(session)).plan_hash)
+
+    async def test_nothing_is_granted_and_no_new_version_is_recorded(self, session, registrar, access):
+        """The claim that matters is not the exception type — it is that no authority
+        exists afterwards.
+
+        Asserted through `load_in_force_policy`, the function admission actually reads,
+        for the same reason `TestADraftsPolicyGrantsNothing` does: an assertion about
+        which JSON key holds the policy would pass even if something had started
+        enforcing the refused one.
+
+        The `commit` after registration and the `rollback` after the refusal are what
+        make this the real shape rather than a convenient one. In production the
+        registration request commits and the gate answer is a separate transaction the
+        route abandons on an exception — here both share one session, so without the
+        commit the rollback would discard the registration too and every assertion
+        below would pass against an empty database.
+        """
+        await register_policy_bearing_draft(session, registrar, policy=self._expired_policy())
+        await session.commit()
+        gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
+
+        with pytest.raises(PolicyNotAcceptableError):
+            await answer_acceptance_gate(session, access, node_id=gate.id, expected_plan_hash=(await in_force(session)).plan_hash)
+        await session.rollback()
+
+        assert (await load_in_force_policy(session, org_id=ORG_A, flow_id=await flow_id_of(session))).policy is None
+        assert len(await plan_versions(session)) == 1, "a refused grant recorded a new plan version"
+        assert (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF].state == _reg.NodeState.AWAITING_GATE.value, (
+            "the gate did not stay answerable, so the approver cannot retry after re-deriving the plan"
+        )
+
+    async def test_expired_gate_approval_is_a_409_and_rolls_back_every_write(self, session, registrar, access, controls_app):
+        from fastapi.testclient import TestClient
+
+        await register_policy_bearing_draft(session, registrar, policy=self._expired_policy())
+        await session.commit()
+        gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
+        flow_id = await flow_id_of(session)
+        reviewed_hash = (await in_force(session)).plan_hash
+        decisions_before = len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=flow_id))
+
+        with TestClient(controls_app, raise_server_exceptions=False) as client:
+            response = client.post(
+                f"/orchestration/gates/{gate.id}/approve",
+                json={"expected_plan_hash": reviewed_hash},
+            )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["error"] == "execution_policy_expired"
+        assert "request a new plan" in response.json()["detail"]["message"]
+        assert (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF].state == _reg.NodeState.AWAITING_GATE.value
+        assert len(await plan_versions(session)) == 1
+        assert len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=flow_id)) == decisions_before
+
+    async def test_the_refusal_names_the_remedy(self, session, registrar, access):
+        """A refusal an operator cannot act on is an outage.
+
+        The message has to distinguish this from the other things that refuse a grant
+        (a service acceptor, a stale hash, an inert field) and say what to do — the
+        plan needs re-deriving, not re-answering, because re-answering the same
+        document would produce the same dead bounds.
+        """
+        await register_policy_bearing_draft(session, registrar, policy=self._expired_policy())
+        gate = (await nodes_by_ref(session))[ACCEPTANCE_GATE_REF]
+
+        with pytest.raises(PolicyNotAcceptableError) as error:
+            await answer_acceptance_gate(session, access, node_id=gate.id, expected_plan_hash=(await in_force(session)).plan_hash)
+
+        message = str(error.value)
+        assert "expired" in message
+        assert "plan" in message, f"the refusal does not tell the approver a new plan is needed: {message!r}"
+
+    def test_a_direct_acceptance_of_expired_bounds_is_refused_too(self):
+        """The same refusal at the function every acceptance path shares.
+
+        The gate path is not the only way a policy reaches `accept_execution_policy` —
+        the amendment path and the direct-submission path both call it, and a
+        hand-authored or file-prepared document can carry a past expiry from its
+        author with no planning session involved at all. Asserted here so the guarantee
+        belongs to the single authority point rather than to one of its callers.
+        """
+        submitted = gateless_proposal().model_copy(update={"execution_policy": self._expired_policy()})
+
+        with pytest.raises(PolicyNotAcceptableError, match="expired"):
+            accept_execution_policy(
+                submitted,
+                decision=ApprovalContext(org_id=ORG_A, actor_id=HUMAN_USER_ID, actor_role="org_admin", actor_kind=ActorKind.HUMAN),
+                decision_kind=DecisionKind.PLAN_ACCEPTED,
+            )
+
+    async def test_direct_acceptance_retry_returns_committed_result_after_expiry(self, session, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        from src.orchestration import compile as compile_module
+
+        expires_at = datetime.now(tz=UTC) + timedelta(minutes=5)
+        submitted = gateless_proposal().model_copy(update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)})
+        approval = ApprovalContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+        )
+        first = await compile_proposal(session, submitted, approval)
+        await session.commit()
+        monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at + timedelta(seconds=1))
+
+        replay = await compile_proposal(session, submitted, approval)
+
+        assert replay.already_compiled is True
+        assert replay.flow_id == first.flow_id
+        assert replay.plan_version == first.plan_version
+        assert replay.decision_id == first.decision_id
+        assert len(await plan_versions(session)) == 1
+
+    @pytest.mark.parametrize("after_expiry", [False, True])
+    async def test_direct_retry_matches_a_pre_normalization_naive_policy(self, session, monkeypatch, after_expiry):
+        from datetime import UTC, datetime, timedelta
+
+        from src.orchestration import compile as compile_module
+
+        expires_at = (datetime.now(tz=UTC) + timedelta(hours=1)).replace(tzinfo=None)
+        submitted = gateless_proposal().model_copy(update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)})
+        approval = ApprovalContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+        )
+
+        def legacy_prepare(proposal, *, decision, decision_kind):
+            policy = proposal.execution_policy
+            assert policy is not None and policy.expires_at.tzinfo is None
+            return proposal.model_copy(update={"execution_policy": stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)})
+
+        with monkeypatch.context() as legacy:
+            legacy.setattr(compile_module, "prepare_execution_policy", legacy_prepare)
+            first = await compile_proposal(session, submitted, approval)
+        await session.commit()
+        original = (await plan_versions(session))[0]
+        assert original.plan_document["execution_policy"]["expires_at"] == expires_at.isoformat()
+        decisions_before = len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=first.flow_id))
+        if after_expiry:
+            monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at.replace(tzinfo=UTC) + timedelta(seconds=1))
+
+        replay = await compile_proposal(session, submitted, approval)
+
+        assert replay.already_compiled is True
+        assert replay.flow_id == first.flow_id
+        assert replay.plan_version == first.plan_version
+        assert replay.decision_id == first.decision_id
+        assert replay.plan_hash == original.plan_hash
+        assert len(await plan_versions(session)) == 1
+        assert len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=first.flow_id)) == decisions_before
+
+    async def test_amendment_retry_returns_committed_result_after_expiry(self, session, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        from src.orchestration import compile as compile_module
+        from src.orchestration.amend import AmendmentContext, amend_plan
+
+        approval = ApprovalContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+        )
+        original = await compile_proposal(session, gateless_proposal(), approval)
+        expires_at = datetime.now(tz=UTC) + timedelta(minutes=5)
+        submitted = gateless_proposal(title="Delivery loop with amended bounds").model_copy(
+            update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)}
+        )
+        amender = AmendmentContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+            reason="Accept bounded execution.",
+        )
+        first = await amend_plan(session, original.flow_id, submitted, amender)
+        await session.commit()
+        monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at + timedelta(seconds=1))
+
+        replay = await amend_plan(session, original.flow_id, submitted, amender)
+
+        assert replay.already_amended is True
+        assert replay.plan_version == first.plan_version
+        assert replay.decision_id == first.decision_id
+        assert len(await plan_versions(session)) == 2
+
+    @pytest.mark.parametrize("after_expiry", [False, True])
+    async def test_amendment_retry_matches_a_pre_normalization_naive_policy(self, session, monkeypatch, after_expiry):
+        from datetime import UTC, datetime, timedelta
+
+        from src.orchestration import amend as amend_module
+        from src.orchestration import compile as compile_module
+        from src.orchestration.amend import AmendmentContext, amend_plan
+
+        approval = ApprovalContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+        )
+        original = await compile_proposal(session, gateless_proposal(), approval)
+        expires_at = (datetime.now(tz=UTC) + timedelta(hours=1)).replace(tzinfo=None)
+        submitted = gateless_proposal(title="Delivery loop with amended bounds").model_copy(
+            update={"execution_policy": policy_for_these_fixtures(expires_at=expires_at)}
+        )
+        amender = AmendmentContext(
+            org_id=ORG_A,
+            actor_id=HUMAN_USER_ID,
+            actor_role="org_admin",
+            actor_kind=ActorKind.HUMAN,
+            reason="Accept bounded execution.",
+        )
+
+        def legacy_prepare(proposal, *, decision, decision_kind):
+            policy = proposal.execution_policy
+            assert policy is not None and policy.expires_at.tzinfo is None
+            return proposal.model_copy(update={"execution_policy": stamp_policy(policy, principal_id=decision.actor_id, org_id=decision.org_id)})
+
+        with monkeypatch.context() as legacy:
+            legacy.setattr(amend_module, "prepare_execution_policy", legacy_prepare)
+            first = await amend_plan(session, original.flow_id, submitted, amender)
+        await session.commit()
+        accepted = (await plan_versions(session))[1]
+        assert accepted.plan_document["execution_policy"]["expires_at"] == expires_at.isoformat()
+        decisions_before = len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=first.flow_id))
+        if after_expiry:
+            monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at.replace(tzinfo=UTC) + timedelta(seconds=1))
+
+        replay = await amend_plan(session, original.flow_id, submitted, amender)
+
+        assert replay.already_amended is True
+        assert replay.plan_version == first.plan_version
+        assert replay.decision_id == first.decision_id
+        assert replay.plan_hash == accepted.plan_hash
+        assert len(await plan_versions(session)) == 2
+        assert len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=first.flow_id)) == decisions_before
+
+    def test_unexpired_bounds_are_still_accepted(self):
+        """The scope of the refusal, from the other side.
+
+        A guard that refused everything would pass every test above and disable the
+        grant path entirely — the inverse failure, and the one that turns a safety
+        check into an outage.
+        """
+        submitted = gateless_proposal().model_copy(update={"execution_policy": policy_for_these_fixtures()})
+
+        granted = accept_execution_policy(
+            submitted,
+            decision=ApprovalContext(org_id=ORG_A, actor_id=HUMAN_USER_ID, actor_role="org_admin", actor_kind=ActorKind.HUMAN),
+            decision_kind=DecisionKind.PLAN_ACCEPTED,
+        )
+
+        assert granted.execution_policy is not None and granted.execution_policy.policy_id
+
+    def test_a_future_naive_expiry_is_normalized_for_runtime_authorization(self):
+        from datetime import UTC, datetime, timedelta
+
+        future_naive_expiry = (datetime.now(tz=UTC) + timedelta(hours=1)).replace(tzinfo=None)
+        submitted = gateless_proposal().model_copy(update={"execution_policy": policy_for_these_fixtures(expires_at=future_naive_expiry)})
+
+        granted = accept_execution_policy(
+            submitted,
+            decision=ApprovalContext(org_id=ORG_A, actor_id=HUMAN_USER_ID, actor_role="org_admin", actor_kind=ActorKind.HUMAN),
+            decision_kind=DecisionKind.PLAN_ACCEPTED,
+        )
+
+        policy = granted.execution_policy
+        assert policy is not None and policy.expires_at.tzinfo is UTC
+        decision = authorize_action(
+            AuthorizationContext(
+                policy=policy,
+                accepted_plan_version=1,
+                in_force_plan_version=1,
+                principal_id=HUMAN_USER_ID,
+                member_org_id=ORG_A,
+                principal_can_authorize=True,
+                now=datetime.now(tz=UTC),
+                credential_scope=CredentialScope.SCOPED,
+                observed_spend_usd=0,
+            ),
+            Action.DEVELOP,
+            ResourceRef(repository_id="aws-e/adp", org_id=ORG_A, node_address=f"{FLOW}/epic-1/wave-1/story-1"),
+            policy_version=1,
+        )
+
+        assert decision.permitted
 
 
 class TestTenantIsolationOfAGrant:

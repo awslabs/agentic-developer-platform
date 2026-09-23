@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.parse
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -682,6 +683,26 @@ def check_plan_revision(api, flow, expected_hash):
         )
 
 
+def request_gate_answer(api, gate_id, *, approve, body):
+    """Submit a gate answer and make an expired reviewed policy actionable."""
+    try:
+        return api.request(
+            "POST",
+            f"{GATES}/{segment(gate_id)}/{'approve' if approve else 'reject'}",
+            body,
+        )
+    except CliError as exc:
+        if exc.code == "execution_policy_expired":
+            raise CliError(
+                "The reviewed execution policy has expired, so nothing was approved. "
+                "Continue planning or request a newly derived plan, review its new revision and policy, then approve that exact revision.",
+                exc.code,
+                exc.exit_code,
+                status_code=exc.status_code,
+            ) from None
+        raise
+
+
 def answer_gate(args, api):
     """Approve or reject one gate, showing what it is attached to first."""
     command = "flow gate " + args.gate_action
@@ -747,11 +768,7 @@ def answer_gate(args, api):
         # is the enforcement point: it is compared inside the same transaction that
         # moves the gate, which is the part no client re-read can do.
         body["expected_plan_hash"] = args.expect_plan_hash
-    result = api.request(
-        "POST",
-        f"{GATES}/{segment(args.gate_id)}/{'approve' if approving else 'reject'}",
-        body,
-    )
+    result = request_gate_answer(api, args.gate_id, approve=approving, body=body)
     detail = dict(
         context,
         status=result.get("status"),
@@ -992,8 +1009,38 @@ def policy_lines(policy):
         f"    repositories: {policy.get('repository_ids')}",
         f"    environment connections: {policy.get('environment_connection_ids')}",
         f"    limits: {policy.get('limits')}",
-        f"    expires: {policy.get('expires_at')}",
+        f"    expires: {expiry_text(policy.get('expires_at'))}",
     ]
+
+
+def expiry_text(expires_at):
+    """The expiry, with a past one named as past rather than printed as a timestamp.
+
+    A bare ISO timestamp does not tell a reader whether the authority they are about
+    to approve is still live — comparing it to now is work, and it is work done at
+    the one moment the reader is focused on something else. An expiry already behind
+    us is the case that matters: accepting it is refused by the server, and without
+    this the operator reads a plausible-looking date, approves, and gets a refusal
+    they have to decode.
+
+    An unparseable or absent value is passed through verbatim. Guessing at a
+    malformed expiry would be the one wrong thing to do here: a reader shown
+    "(already expired)" for a value this code simply failed to read has been told
+    something the server never said.
+    """
+    if not isinstance(expires_at, str):
+        return f"{expires_at}"
+    try:
+        moment = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return expires_at
+    if moment.tzinfo is None:
+        # Every expiry ADP writes is UTC; reading a naive one as local time would
+        # shift the comparison by the offset and could call a dead grant live.
+        moment = moment.replace(tzinfo=timezone.utc)
+    if moment <= datetime.now(tz=timezone.utc):
+        return f"{expires_at} — ALREADY EXPIRED: accepting this plan is refused. Request a new plan and accept that one."
+    return expires_at
 
 
 def registration_refusal(api, document):
@@ -1376,13 +1423,14 @@ def register_preview_accept(api, document, *, verb, reason, assume_yes, expected
         "and the approval is recorded against your identity.",
         assume_yes,
     )
-    answer = api.request(
-        "POST",
-        f"{GATES}/{segment(gate_id)}/approve",
+    answer = request_gate_answer(
+        api,
+        gate_id,
+        approve=True,
         # The binding, server-enforced. Sent even under --yes: a script that
         # accepts whatever is live is the concurrent-edit hole, and the hash it
         # sends is the one this run previewed.
-        {"reason": reason, "expected_plan_hash": plan_hash},
+        body={"reason": reason, "expected_plan_hash": plan_hash},
     )
     detail["acceptance"] = {
         "gate_id": gate_id,

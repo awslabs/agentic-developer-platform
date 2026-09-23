@@ -92,6 +92,7 @@ from src.shared.models.base import utcnow
 from src.shared.schemas.auth import TokenContext
 
 from .adapters.github_comments import GateAnswerStatus, InputPath, apply_gate_answer_for_context
+from .compile import ExpiredExecutionPolicyError, PolicyNotAcceptableError
 from .execution_state import BlockCode, BlockRecord
 from .handoff import outstanding_block
 from .lifecycle_recovery import RecoveryRefusedError, ResumeContinuationRequest, resume_continuation
@@ -551,16 +552,24 @@ async def _answer_gate(
     HTTP — which is what keeps the dashboard row and the GitHub-comment row the
     same shape produced by the same code.
     """
-    outcome = await apply_gate_answer_for_context(
-        db,
-        context=current_user,
-        node_id=gate_id,
-        approve=approve,
-        reason=reason,
-        access=access,
-        input_path=InputPath.DASHBOARD,
-        expected_plan_hash=expected_plan_hash,
-    )
+    try:
+        outcome = await apply_gate_answer_for_context(
+            db,
+            context=current_user,
+            node_id=gate_id,
+            approve=approve,
+            reason=reason,
+            access=access,
+            input_path=InputPath.DASHBOARD,
+            expected_plan_hash=expected_plan_hash,
+        )
+    except PolicyNotAcceptableError as exc:
+        # Policy promotion happens inside the same transaction as the tentative
+        # gate transition and decision append. An expected refusal must roll all
+        # three back before it becomes a stable client-visible conflict.
+        await db.rollback()
+        error = "execution_policy_expired" if isinstance(exc, ExpiredExecutionPolicyError) else "execution_policy_not_acceptable"
+        raise HTTPException(status_code=409, detail={"error": error, "message": str(exc)}) from None
 
     status_code = _GATE_STATUS_CODES[outcome.status]
     if status_code != 200:
