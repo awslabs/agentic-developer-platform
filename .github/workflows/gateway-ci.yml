@@ -371,13 +371,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # ARC runner pods have no Docker daemon (docker-ce-cli only, no DinD
-      # sidecar) — `docker build` has failed on every run since the
-      # ubuntu-latest → arc-runner-org migration (#367). Kaniko also can't
-      # run here (needs root FS ownership; runner is non-root). Platform
-      # convention: docker builds run in CodeBuild (privileged). This job
-      # triggers the gateway-build project with a build-only buildspec
-      # override — same trigger/poll pattern as security-scan.yml Grype.
+      # Actions execute on ARC. Docker builds run in the isolated, nonpublishing
+      # CodeBuild project; a publishing project's service role is not a fallback.
+      - name: Verify nonpublishing smoke project exists
+        run: |
+          set -euo pipefail
+          PROJECT_ARN=$(aws codebuild batch-get-projects \
+            --names adp-dev-gateway-smoke --query 'projects[0].arn' --output text)
+          if [ -z "$PROJECT_ARN" ] || [ "$PROJECT_ARN" = None ]; then
+            echo "::error::Missing adp-dev-gateway-smoke. Complete the approved CodeBuild cutover in platform/automation-infra/README.md before running the container gate."
+            exit 1
+          fi
+
       - name: Refresh CodeBuild source zip
         id: smoke-source
         run: |

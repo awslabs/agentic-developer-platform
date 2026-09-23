@@ -221,6 +221,30 @@ def test_codebuild_runs_the_exact_image_with_manifest_restrictions():
     assert "-e DATABASE_URL=" not in buildspec, "gateway settings ignore database overrides without the BG_ prefix"
 
 
+@pytest.mark.parametrize(
+    "project_arn,exit_code", [("", 1), ("None", 1), ("arn:aws:codebuild:us-east-1:123456789012:project/adp-dev-gateway-smoke", 0)]
+)
+def test_smoke_project_preflight_refuses_before_upload_without_provisioning(tmp_path, project_arn, exit_code):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/gateway-ci.yml").read_text())
+    job = workflow["jobs"]["build"]
+    assert job["runs-on"] == "arc-runner-org"
+    steps = job["steps"]
+    guard = next(step for step in steps if step.get("name") == "Verify nonpublishing smoke project exists")
+    upload = next(step for step in steps if step.get("id") == "smoke-source")
+    assert steps.index(guard) < steps.index(upload)
+    aws = tmp_path / "aws"
+    aws.write_text('#!/bin/sh\ntest "$1 $2" = "codebuild batch-get-projects" || exit 90\nprintf "%s\\n" "$PROJECT_ARN"\n')
+    aws.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", guard["run"]],
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "PROJECT_ARN": project_arn},
+        capture_output=True,
+    )
+    assert result.returncode == exit_code
+    if exit_code:
+        assert b"approved CodeBuild cutover" in result.stdout
+
+
 def test_overlapping_smoke_builds_consume_their_own_source(tmp_path):
     """Run the workflow shells with interleaved uploads against a fake cloud.
 
