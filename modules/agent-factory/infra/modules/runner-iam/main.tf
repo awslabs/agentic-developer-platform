@@ -28,7 +28,9 @@ locals {
   ))
 
   privilege_escalation_actions = [
-    "iam:*", "sts:AssumeRole", "sts:AssumeRoleWithSAML", "sts:AssumeRoleWithWebIdentity",
+    # IAM mutations are denied by the shared API ceiling. The sole IAM API it
+    # permits is PassRole for the service-only gateway PR validation identity.
+    "sts:AssumeRole", "sts:AssumeRoleWithSAML", "sts:AssumeRoleWithWebIdentity",
   ]
 
   tenant_vault_secret_arns = [

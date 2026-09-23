@@ -17,18 +17,29 @@ variable "transport_secret_arns" {
 }
 
 locals {
+  gateway_pr_role = "arn:aws:iam::${var.account_id}:role/${var.name_prefix}-codebuild-gateway-pr"
   capabilities = {
+    StartSmokeBuild = {
+      actions   = ["codebuild:StartBuild"]
+      resources = ["arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${var.name_prefix}-gateway-build"]
+      condition = { StringEquals = { "codebuild:serviceRole" = local.gateway_pr_role } }
+    }
+    PassSmokeRole = {
+      actions   = ["iam:PassRole"]
+      resources = [local.gateway_pr_role]
+      condition = { StringEquals = { "iam:PassedToService" = "codebuild.amazonaws.com" } }
+    }
     SafeSmokeBuild = {
-      actions = ["codebuild:StartBuild", "codebuild:BatchGetBuilds", "codebuild:BatchGetProjects", "codebuild:StopBuild"]
+      actions = ["codebuild:BatchGetBuilds", "codebuild:BatchGetProjects", "codebuild:StopBuild"]
       resources = [
-        "arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${var.name_prefix}-gateway-smoke",
-        "arn:aws:codebuild:${var.aws_region}:${var.account_id}:build/${var.name_prefix}-gateway-smoke:*",
+        "arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${var.name_prefix}-gateway-build",
+        "arn:aws:codebuild:${var.aws_region}:${var.account_id}:build/${var.name_prefix}-gateway-build:*",
       ]
     }
     OwnSmokeSource = {
       actions = ["s3:PutObject", "s3:GetObject"]
       resources = [
-        "arn:aws:s3:::adp-terraform-state-${var.account_id}/codebuild/src/${var.name_prefix}-gateway-smoke/*",
+        "arn:aws:s3:::adp-terraform-state-${var.account_id}/codebuild/src/${var.name_prefix}-gateway-build-pr/*",
         "arn:aws:s3:::${var.name_prefix}-security-scans-${var.account_id}/security-agent/*",
       ]
     }
@@ -83,8 +94,24 @@ locals {
     Sid = name, Effect = "Allow", Action = capability.actions, Resource = capability.resources
   }, try({ Condition = capability.condition }, {}))]
   # Explicit denies also cover resource policies granting directly to a session.
-  # There is no Lambda/CodeBuild/EKS/KMS/S3/SSM control plane allowance here.
-  boundary = concat(local.grants, [
+  # The ceiling allows only the enumerated APIs. Resource and condition denies
+  # below retain every scope without duplicating all the grants in this limited
+  # 6144-character managed policy. IAM still intersects it with the grants.
+  boundary = concat([
+    {
+      Sid    = "RuntimeApiCeiling", Effect = "Allow",
+      Action = distinct(flatten([for capability in local.allowed : capability.actions])), Resource = "*"
+    },
+    {
+      # A missing override must not inherit the project's publishing role.
+      # AWS StartBuild exposes serviceRoleOverride as codebuild:serviceRole.
+      Sid       = "DenyOtherBuildRole", Effect = "Deny", Action = ["codebuild:StartBuild"], Resource = "*",
+      Condition = { StringNotEquals = { "codebuild:serviceRole" = local.gateway_pr_role } }
+    },
+    {
+      Sid       = "DenyOtherPassService", Effect = "Deny", Action = ["iam:PassRole"], Resource = "*",
+      Condition = { StringNotEquals = { "iam:PassedToService" = "codebuild.amazonaws.com" } }
+    },
     {
       Sid       = "DenyOutsideRuntimeActions", Effect = "Deny",
       NotAction = flatten([for capability in local.allowed : capability.actions]), Resource = "*"

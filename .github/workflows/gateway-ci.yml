@@ -371,15 +371,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Actions execute on ARC. Docker builds run in the isolated, nonpublishing
-      # CodeBuild project; a publishing project's service role is not a fallback.
-      - name: Verify nonpublishing smoke project exists
+      # ARC dispatches to the existing gateway project. IAM requires the
+      # nonpublishing PR role override, even if repository code changes this job.
+      - name: Verify gateway build project exists
         run: |
           set -euo pipefail
           PROJECT_ARN=$(aws codebuild batch-get-projects \
-            --names adp-dev-gateway-smoke --query 'projects[0].arn' --output text)
+            --names adp-dev-gateway-build --query 'projects[0].arn' --output text)
           if [ -z "$PROJECT_ARN" ] || [ "$PROJECT_ARN" = None ]; then
-            echo "::error::Missing adp-dev-gateway-smoke. Complete the approved CodeBuild cutover in platform/automation-infra/README.md before running the container gate."
+            echo "::error::Existing gateway CodeBuild project adp-dev-gateway-build is unavailable."
             exit 1
           fi
 
@@ -389,23 +389,28 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
           STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
           # Separate revisions, concurrent jobs and rerun attempts must never
           # replace source while another CodeBuild is waiting to download it.
-          SOURCE_KEY="codebuild/src/adp-dev-gateway-smoke/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
+          SOURCE_KEY="codebuild/src/adp-dev-gateway-build-pr/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
           ARCHIVE="${RUNNER_TEMP}/gateway-smoke-source.zip"
           ./platform/scripts/zip-source.sh . "$ARCHIVE"
           aws s3 cp "$ARCHIVE" "s3://${STATE_BUCKET}/${SOURCE_KEY}"
           echo "location=${STATE_BUCKET}/${SOURCE_KEY}" >> "$GITHUB_OUTPUT"
+          echo "role=arn:aws:iam::${ACCOUNT_ID}:role/adp-dev-codebuild-gateway-pr" >> "$GITHUB_OUTPUT"
 
       - name: Smoke-build image (CodeBuild, no push)
         env:
           SMOKE_SOURCE_LOCATION: ${{ steps.smoke-source.outputs.location }}
+          SMOKE_SERVICE_ROLE: ${{ steps.smoke-source.outputs.role }}
         run: |
           set -euo pipefail
           test -n "$SMOKE_SOURCE_LOCATION"
+          test -n "$SMOKE_SERVICE_ROLE"
           BUILD_ID=$(aws codebuild start-build \
-            --project-name adp-dev-gateway-smoke \
+            --project-name adp-dev-gateway-build \
+            --service-role-override "$SMOKE_SERVICE_ROLE" \
             --source-location-override "$SMOKE_SOURCE_LOCATION" \
             --buildspec-override codebuild/bs-gateway-smoke.yml \
             --query 'build.id' --output text)

@@ -8,7 +8,9 @@ runner Kubernetes deployment access. It does not claim live remediation.
 
 - CodeBuild uses a separate role for each project, an explicit action ceiling,
   exact service SourceArn/SourceAccount trust and project-specific source paths.
-  Arbitrary PR input can run only the nonpublishing gateway smoke project.
+  Arbitrary PR input reuses the existing gateway build project with an exact
+  nonpublishing role override and a separate PR source prefix. The runner boundary
+  denies omitted or different role overrides; no second project is added.
   Image-building privilege is restricted to the documented managed CodeBuild
   projects that actually need Docker; no privileged ARC sidecar is retained.
 - Active and legacy runners share the same action/resource ceiling and explicit

@@ -102,9 +102,11 @@ resource "aws_iam_policy" "runner_boundary" {
         # reachable through them could read the whole adp/ secret prefix — every
         # tenant's stored credentials and the signing keys for agent control
         # messages and GitHub App auth.
-        Sid      = "DenyPrivilegeEscalation"
-        Effect   = "Deny"
-        Action   = ["iam:*", "sts:AssumeRole", "sts:AssumeRoleWithSAML", "sts:AssumeRoleWithWebIdentity"]
+        Sid    = "DenyPrivilegeEscalation"
+        Effect = "Deny"
+        # The shared API ceiling denies IAM mutation and permits only passing
+        # the exact service-only gateway PR role to CodeBuild.
+        Action   = ["sts:AssumeRole", "sts:AssumeRoleWithSAML", "sts:AssumeRoleWithWebIdentity"]
         Resource = "*"
       },
       {
