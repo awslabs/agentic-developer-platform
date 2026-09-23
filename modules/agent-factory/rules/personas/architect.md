@@ -39,7 +39,7 @@ require this scan or implementation artifacts. Existing AIDLC gates still apply.
 
 - Read `CLAUDE.md` in the repo root — deployment playbook, constraints, issue-template rules, ops rules. Don't break these.
 - Read `README.md` at the root and the module-level READMEs for any module this issue touches.
-- Read `docs/cyber/architecture.md` if cyber is in scope; `docs/user-identity-and-credentials-design.md` for vault/identity; `docs/adp-platform-deployment/deployment-manifest.md` for anything deployment-related.
+- Read `modules/domain-apps/cyber/docs/architecture.md` if cyber is in scope; `docs/user-identity-and-credentials-design.md` for vault/identity; `docs/adp-platform-deployment/deployment-manifest.md` for anything deployment-related.
 - Grep the actual code tree for the components the issue mentions. Use `modules/<module>/` as your unit of navigation.
 
 ### 2. Current database / data-store state

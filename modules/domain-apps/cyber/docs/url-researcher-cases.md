@@ -68,7 +68,7 @@ python "$URL_SKILL/research_case.py" verify --case "$CASE_DIR"
 ```
 
 Assessment fields and a worked JSON shape are in the
-[agent skill](../../modules/domain-apps/cyber/agent/skills/url-analysis/SKILL.md).
+[agent skill](../agent/skills/url-analysis/SKILL.md).
 Use actual observation IDs. The command rejects invented IDs, unsupported content
 variation, numeric confidence fields, hypotheses-only conclusions and false
 clearance on incomplete probes. It validates evidence references and completeness;
@@ -138,7 +138,7 @@ escaping, redaction, failed follow-ups, evidence integrity and broker contracts.
 python -m pip install -r modules/domain-apps/cyber/agent/skills/url-analysis/tests/requirements.txt
 python -m playwright install chromium
 python -m pytest modules/domain-apps/cyber/agent/skills/url-analysis/tests -q
-python -m pytest --noconftest modules/agent-factory/webhook-ingress/tests/test_url_analysis_browser_boundary.py -q
+python -m pytest --noconftest modules/domain-apps/cyber/tests/test_url_analysis_browser_boundary.py -q
 ```
 
 Linux hosts may also need `python -m playwright install-deps chromium`. The
@@ -161,7 +161,7 @@ image, merged PRs, evidence archive and validation limits. Sessions still start
 on demand; absence of idle sessions does not indicate a broken browser path.
 
 For future rollout, follow the canonical
-[agent deployment guide](../adp-platform-deployment/deploy-with-agent.md), confirm
+[agent deployment guide](../../../../docs/adp-platform-deployment/deploy-with-agent.md), confirm
 the account, build/pin the runtime image, and coordinate the worker/broker update.
 Then validate a harmless URL through `/v1/capture`, verify the downloaded case,
 confirm on-demand session termination independently, and test a controlled delayed

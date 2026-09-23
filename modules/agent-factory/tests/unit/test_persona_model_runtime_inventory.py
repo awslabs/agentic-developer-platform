@@ -21,7 +21,12 @@ def _inventory() -> dict:
 
 def _runtime_literal_files() -> set[str]:
     found: set[str] = set()
-    roots = (ROOT / ".github/workflows", ROOT / "modules/agent-factory", ROOT / "platform/scripts")
+    roots = (
+        ROOT / ".github/workflows",
+        ROOT / "modules/agent-factory",
+        ROOT / "platform/scripts",
+        *(ROOT / "modules/domain-apps").glob("*/ci"),
+    )
     for base in roots:
         for path in base.rglob("*"):
             relative = path.relative_to(ROOT)
@@ -101,11 +106,20 @@ def test_wired_queue_paths_reach_gateway_authority_and_blocked_paths_stay_visibl
 
 
 def test_all_nine_arc_workflows_preflight_and_enable_the_per_launch_guard():
-    workflows = [path for path in _inventory()["literal_files"]["persona_execution_legacy"] if path.startswith(".github/workflows/")]
-    assert len(workflows) == 9
+    inventory = _inventory()
+    implementations = inventory.get("arc_workflow_implementations", {})
+    workflows = [path for path in inventory["literal_files"]["persona_execution_legacy"] if path.startswith(".github/workflows/")]
+    workflows.extend(implementations)
+    assert len(set(workflows)) == 9
     for path in workflows:
         text = (ROOT / path).read_text()
         assert "id-token: write" in text
+        if path in implementations:
+            implementation = Path(implementations[path])
+            # Follow the actual local-action edge; a detached inventory entry
+            # must not make an unguarded workflow look covered.
+            assert f"uses: ./{implementation.parent.as_posix()}" in text
+            text = (ROOT / implementation).read_text()
         assert "ADP_ARC_MODEL_POLICY_ENABLED" in text
         assert "ADP_AGENT_CONTROL_ENDPOINT" in text
         assert text.index("npx ts-node src/arc-model-preflight.ts") < text.rindex("npx ts-node src/")

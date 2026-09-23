@@ -56,7 +56,6 @@
       ".github/workflows/agent-product.yml",
       ".github/workflows/agent-pt-superpower.yml",
       ".github/workflows/agent-reviewer.yml",
-      ".github/workflows/malware-analysis-agent.yml",
       ".github/workflows/skill-agent.yml",
       "modules/agent-factory/agent-worker-image/entrypoint.py",
       "modules/agent-factory/agent/k8s/chat-scaledjob.yaml",
@@ -76,7 +75,8 @@
       "modules/agent-factory/infra/gateway-main.tf",
       "modules/agent-factory/rules/workflows/agent-template.yml",
       "modules/agent-factory/runner-infra/scripts/full-onboard-repo.sh",
-      "modules/agent-factory/runner-infra/workflow-example.yml"
+      "modules/agent-factory/runner-infra/workflow-example.yml",
+      "modules/domain-apps/cyber/ci/malware-analysis-agent/action.yml"
     ],
     "non_persona_or_generated": [
       "modules/agent-factory/agent/src/complex-task-chat/context/lcm/config.ts",
@@ -98,5 +98,8 @@
     "authority": "gateway committed-posture preflight before each API call; enforcing refuses unsupported harness",
     "verified_by": "modules/agent-factory/tests/unit/test_legacy_model_guard.py",
     "rollout": "same chat flag; ingress no longer publishes to its standard queue"
+  },
+  "arc_workflow_implementations": {
+    ".github/workflows/malware-analysis-agent.yml": "modules/domain-apps/cyber/ci/malware-analysis-agent/action.yml"
   }
 }

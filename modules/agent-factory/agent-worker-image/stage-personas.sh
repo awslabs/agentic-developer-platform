@@ -22,7 +22,7 @@ set -euo pipefail
 SOURCE_ROOT="${1:?Usage: stage-personas.sh <source_root> <stage_root>}"
 STAGE_ROOT="${2:?Usage: stage-personas.sh <source_root> <stage_root>}"
 
-mkdir -p "${STAGE_ROOT}/personas" "${STAGE_ROOT}/skills"
+mkdir -p "${STAGE_ROOT}/personas" "${STAGE_ROOT}/skills" "${STAGE_ROOT}/requirements"
 
 # --- Stage core agent-factory personas ---
 # Copy the top-level persona *.md files AND any persona subdirectories (e.g.
@@ -57,6 +57,11 @@ fi
 if [ -d "${SOURCE_ROOT}/domain-apps" ]; then
     for domain_dir in "${SOURCE_ROOT}/domain-apps"/*/; do
         domain=$(basename "${domain_dir}")
+
+        # Each domain owns the dependencies needed by its hosted skills.
+        if [ -f "${domain_dir}agent/requirements.txt" ]; then
+            cp -f "${domain_dir}agent/requirements.txt" "${STAGE_ROOT}/requirements/${domain}.txt"
+        fi
 
         # Personas
         domain_personas="${domain_dir}agent/personas"

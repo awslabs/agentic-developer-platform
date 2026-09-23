@@ -1,0 +1,57 @@
+name: Cyber URL Analysis CI
+description: Cyber-owned implementation for cyber-url-analysis-ci.
+runs:
+  using: composite
+  steps:
+  - name: Load cyber configuration
+    shell: env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+      -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+      -u AWS_PROFILE -u AWS_DEFAULT_PROFILE bash --noprofile --norc -e -o pipefail {0}
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+      AWS_CREDENTIAL_FILE: /dev/null
+      BOTO_CONFIG: /dev/null
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+    run: |
+      python3 - <<'PYENV'
+      import os, uuid
+      with open(os.environ["GITHUB_ENV"], "a") as stream:
+          for key in ['AWS_EC2_METADATA_DISABLED', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CREDENTIAL_FILE', 'BOTO_CONFIG', 'AWS_REGION', 'AWS_DEFAULT_REGION']:
+              marker = uuid.uuid4().hex
+              stream.write(f"{key}<<{marker}\n{os.environ[key]}\n{marker}\n")
+      PYENV
+  - name: Install Terraform for configuration checks
+    uses: hashicorp/setup-terraform@v3
+    with:
+      terraform_version: 1.14.6
+      terraform_wrapper: 'false'
+  - uses: actions/setup-python@v7
+    with:
+      python-version: '3.12'
+  - name: Install fixture dependencies and Chromium
+    run: |
+      python -m pip install -r modules/domain-apps/cyber/agent/skills/url-analysis/tests/requirements.txt
+      python -m playwright install --with-deps chromium
+    shell: env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+      -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+      -u AWS_PROFILE -u AWS_DEFAULT_PROFILE bash --noprofile --norc -e -o pipefail {0}
+  - name: Verify collector, reports and broker contracts
+    run: python -m pytest modules/domain-apps/cyber/agent/skills/url-analysis/tests -q --tb=short
+    shell: env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+      -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+      -u AWS_PROFILE -u AWS_DEFAULT_PROFILE bash --noprofile --norc -e -o pipefail {0}
+  - name: Verify existing browser IAM boundary
+    run: python -m pytest --noconftest modules/domain-apps/cyber/tests -q
+    shell: env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+      -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+      -u AWS_PROFILE -u AWS_DEFAULT_PROFILE bash --noprofile --norc -e -o pipefail {0}
+  - name: Verify broker Terraform plans with mock providers
+    shell: env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
+      -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+      -u AWS_PROFILE -u AWS_DEFAULT_PROFILE bash --noprofile --norc -e -o pipefail {0}
+    run: |
+      terraform -chdir=modules/domain-apps/cyber/infra/platform-integration init -backend=false
+      terraform -chdir=modules/domain-apps/cyber/infra/platform-integration test

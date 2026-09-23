@@ -1,6 +1,6 @@
 # The reasoning worker executes generated code, so it must never hold browser
 # credentials. This broker is a separate pod and role whose only API performs a
-# complete guarded capture; no raw session, CDP endpoint or InvokeBrowser action
+# guarded capture or investigation step; no raw session, CDP endpoint or InvokeBrowser action
 # is exposed to callers.
 
 locals {
@@ -19,7 +19,7 @@ locals {
 # the browser rollout so adopting the broker does not require that migration.
 resource "aws_iam_role_policy" "agent_scaledjob_browser_deny" {
   name = "deny-direct-agentcore-browser"
-  role = aws_iam_role.agent_scaledjob.id
+  role = var.worker_role_name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -32,7 +32,7 @@ resource "aws_iam_role_policy" "agent_scaledjob_browser_deny" {
 }
 
 resource "aws_iam_policy" "url_analysis_browser_broker_boundary" {
-  name = "${local.name_prefix}-url-analysis-browser-broker-boundary"
+  name = "${var.name_prefix}-url-analysis-browser-broker-boundary"
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -48,7 +48,7 @@ resource "aws_iam_policy" "url_analysis_browser_broker_boundary" {
 }
 
 resource "aws_iam_role" "url_analysis_browser_broker" {
-  name                 = "${local.name_prefix}-url-analysis-browser-broker-role"
+  name                 = "${var.name_prefix}-url-analysis-browser-broker-role"
   permissions_boundary = aws_iam_policy.url_analysis_browser_broker_boundary.arn
 
   assume_role_policy = jsonencode({
@@ -56,13 +56,13 @@ resource "aws_iam_role" "url_analysis_browser_broker" {
     Statement = [{
       Effect = "Allow"
       Principal = {
-        Federated = local.oidc_provider_arn
+        Federated = var.oidc_provider_arn
       }
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:adp-agents:url-analysis-browser-broker-sa"
-          "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+          "${replace(var.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.namespace}:url-analysis-browser-broker-sa"
+          "${replace(var.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
         }
       }
     }]
@@ -89,7 +89,7 @@ resource "aws_iam_role_policy" "url_analysis_browser_broker" {
 resource "kubernetes_service_account" "url_analysis_browser_broker" {
   metadata {
     name      = "url-analysis-browser-broker-sa"
-    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+    namespace = var.namespace
     annotations = {
       "eks.amazonaws.com/role-arn" = aws_iam_role.url_analysis_browser_broker.arn
     }
@@ -104,7 +104,7 @@ resource "kubernetes_service_account" "url_analysis_browser_broker" {
 resource "kubernetes_deployment" "url_analysis_browser_broker" {
   metadata {
     name      = "url-analysis-browser-broker"
-    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+    namespace = var.namespace
     labels = {
       "app.kubernetes.io/name"       = "url-analysis-browser-broker"
       "app.kubernetes.io/part-of"    = "adp-agent-factory"
@@ -151,7 +151,7 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
         }
         container {
           name    = "browser-broker"
-          image   = local.agent_image
+          image   = local.broker_image
           command = ["python3"]
           args    = ["/app/skills/url-analysis/browser_broker.py"]
           port {
@@ -209,7 +209,7 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
 resource "kubernetes_service" "url_analysis_browser_broker" {
   metadata {
     name      = "url-analysis-browser-broker"
-    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+    namespace = var.namespace
   }
   spec {
     # A worker's investigation steps must reach the replica owning its short-lived
@@ -227,7 +227,7 @@ resource "kubernetes_service" "url_analysis_browser_broker" {
 resource "kubernetes_network_policy" "url_analysis_browser_broker" {
   metadata {
     name      = "url-analysis-browser-broker"
-    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+    namespace = var.namespace
   }
   spec {
     pod_selector {

@@ -38,7 +38,7 @@ selectors or JavaScript supplied by the agent.
 ## Runtime interface
 
 The full workflow and JSON review/decision shapes are in the
-[agent skill](../../modules/domain-apps/cyber/agent/skills/url-analysis/SKILL.md).
+[agent skill](../agent/skills/url-analysis/SKILL.md).
 
 ```bash
 python /app/skills/url-analysis/domain_investigation.py start "$SEED_URL" \

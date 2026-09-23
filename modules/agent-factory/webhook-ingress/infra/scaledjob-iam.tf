@@ -16,7 +16,7 @@
 #   - DynamoDB: update correlation pointers (UpdateItem, not PutItem — #1716)
 #   - KMS: decrypt the marker-signing key only (condition-scoped — #4028)
 #   - CloudWatch Logs: agent execution + bootstrap logging
-#   - S3: beads state + url-analysis evidence + agent-run-logs
+#   - S3: beads state + domain app artifacts + agent-run-logs
 #   - Preflight: read-only checks (multiple services)
 #
 # Issue: #346, #1204, #4028, #4130
@@ -283,11 +283,10 @@ locals {
           "s3:GetObject",
           "s3:PutObject"
         ]
-        Resource = [
+        Resource = concat([
           "arn:aws:s3:::adp-*-agent-beads-state-*/*",
           "arn:aws:s3:::adp-*-agent-run-logs-*/*",
-          "arn:aws:s3:::adp-*-url-analysis-evidence-v2-*/*"
-        ]
+        ], local.domain_worker_artifact_resources)
       },
       {
         Sid    = "SecretsManagerOps"

@@ -1,55 +1,30 @@
 name: Cyber URL Analysis CI
-
-on:
+'on':
   pull_request:
-    branches: [main]
+    branches:
+    - main
     paths:
-      - 'modules/domain-apps/cyber/agent/skills/url-analysis/**'
-      - 'modules/domain-apps/cyber/agent/personas/malware-analysis-agent.md'
-      - 'modules/agent-factory/webhook-ingress/tests/test_url_analysis_browser_boundary.py'
-      - '.github/workflows/cyber-url-analysis-ci.yml'
-  workflow_dispatch:
-
+    - modules/domain-apps/cyber/infra/platform-integration/**
+    - modules/domain-apps/cyber/browser/**
+    - modules/domain-apps/cyber/releases/**
+    - modules/domain-apps/cyber/tests/**
+    - modules/agent-factory/webhook-ingress/infra/**
+    - modules/domain-apps/cyber/agent/skills/url-analysis/**
+    - modules/domain-apps/cyber/agent/personas/malware-analysis-agent.md
+    - .github/workflows/cyber-url-analysis-ci.yml
+    - modules/domain-apps/cyber/ci/cyber-url-analysis-ci/**
+  workflow_dispatch: null
 permissions:
   contents: read
-
 concurrency:
   group: cyber-url-analysis-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   research-fixtures:
     name: URL researcher browser fixtures
     runs-on: arc-runner-org
     timeout-minutes: 15
-    env:
-      AWS_EC2_METADATA_DISABLED: 'true'
-      AWS_CONFIG_FILE: /dev/null
-      AWS_SHARED_CREDENTIALS_FILE: /dev/null
-      AWS_CREDENTIAL_FILE: /dev/null
-      BOTO_CONFIG: /dev/null
-      AWS_REGION: us-east-1
-      AWS_DEFAULT_REGION: us-east-1
-    defaults:
-      run:
-        # Synthetic fixtures need no cloud identity. Match the domain CI convention.
-        shell: >-
-          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN
-          -u AWS_SECURITY_TOKEN -u AWS_ROLE_ARN -u AWS_WEB_IDENTITY_TOKEN_FILE
-          -u AWS_CONTAINER_CREDENTIALS_FULL_URI -u AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
-          -u AWS_CONTAINER_AUTHORIZATION_TOKEN -u AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
-          -u AWS_PROFILE -u AWS_DEFAULT_PROFILE
-          bash --noprofile --norc -e -o pipefail {0}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-      - name: Install fixture dependencies and Chromium
-        run: |
-          python -m pip install -r modules/domain-apps/cyber/agent/skills/url-analysis/tests/requirements.txt
-          python -m playwright install --with-deps chromium
-      - name: Verify collector, reports and broker contracts
-        run: python -m pytest modules/domain-apps/cyber/agent/skills/url-analysis/tests -q --tb=short
-      - name: Verify existing browser IAM boundary
-        run: python -m pytest --noconftest modules/agent-factory/webhook-ingress/tests/test_url_analysis_browser_boundary.py -q
+    - uses: actions/checkout@v7
+    - name: Run cyber app automation
+      uses: ./modules/domain-apps/cyber/ci/cyber-url-analysis-ci
