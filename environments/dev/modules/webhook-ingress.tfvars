@@ -25,6 +25,6 @@ gateway_authority_managed_policies = true
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true
 
-# Cyber researcher collector (#5782). Both the worker and browser broker use
-# this immutable image; keep the separate protected-worker migration disabled.
-agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1a32e339c072f2dec9adabd7aa19617cf6fbef50de604a7bb6142138567d99d5"
+# Cyber domain investigations (#5808, #5810), retaining deployed worker repairs.
+# Worker and browser broker share this digest; protected-worker migration stays off.
+agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f"
