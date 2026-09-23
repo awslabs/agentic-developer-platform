@@ -215,12 +215,16 @@ jobs:
   # dominates, so extra workers buy almost nothing while multiplying the
   # oversubscription risk: arc-runner/main.tf documents a 2026-08-30 incident
   # where packed runners hit 104% node CPU and a job died with "runner lost
-  # communication ... starves it for CPU/Memory". 4 shards x -n 4 stays inside
+  # communication ... starves it for CPU/Memory". 8 shards x -n 4 stays inside
   # the existing 4-CPU limit and needs no infrastructure change at all.
   #
   # Runner capacity is not the constraint and never was: the scale set allows 20
   # runners, queue time was measured at 0min on every run, and we were using
-  # one. 4 shards is spending capacity that already sits idle.
+  # one. Sharding spends pool capacity deliberately -- see maxRunners in
+  # arc-runner/main.tf, raised to 40 alongside this because at typical
+  # concurrency (3-5 overlapping Gateway CI runs, peak 11 measured over 58 runs)
+  # a 20-runner pool was already oversubscribed at 4 shards, which is why shards
+  # that take 4m19s alone were showing up as 7m24s.
   #
   # Coverage is main-only: --cov measured +58% wall clock (138s -> 218s on the
   # same slice). Nothing gates on the number, so PRs don't pay for it.
@@ -236,7 +240,7 @@ jobs:
     runs-on: arc-runner-org
     # `needs: lint` is KEPT, after measuring the alternative. Dropping it saves
     # one ~1min dispatch hop, but it raises peak concurrency per run from 4
-    # runners to 7 (lint + frontend + smoke + 4 shards all starting at once),
+    # runners to 11 (lint + frontend + smoke + 8 shards all starting at once),
     # and Gateway CI runs overlap routinely — 3 were concurrent on 2026-09-20
     # 07:24, i.e. up to 12 shards bursting to 4 CPUs each. arc-runner/main.tf
     # documents a 2026-08-30 node-saturation incident from exactly this, and the
@@ -249,7 +253,7 @@ jobs:
       # the others, or a single failure hides the state of 10k other tests.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v7
 
@@ -268,9 +272,17 @@ jobs:
         working-directory: modules/gateway
         env:
           # pytest-split partitions the collected list deterministically, so the
-          # 4 shards are disjoint and together cover every test exactly once
-          # (verified: 3475+3475+3475+3474 = 13899).
-          SHARD_ARGS: --splits 4 --group ${{ matrix.shard }}
+          # shards are disjoint and together cover every selected test exactly
+          # once (verified at 8 shards: 7x2183 + 2180 = 17461, plus the 86
+          # deselected = the full 17547 collected).
+          #
+          # 4 -> 8 because 4 saturated. Measured on one run: 1181s of total test
+          # work, 1.17x imbalance, ~46s fixed overhead per shard. That models
+          # 6.5m at 4 shards and 3.6m at 8. Returns fall off fast beyond this --
+          # 8->16 buys only another 1.4m against a hard ~46s/shard floor
+          # (checkout + Setup Python + pip install, paid per shard regardless) --
+          # so do not keep raising this expecting the same return.
+          SHARD_ARGS: --splits 8 --group ${{ matrix.shard }}
           # -n 4 is pinned to the runner's 4-CPU limit (arc-runner/main.tf). Do
           # NOT use `-n auto`: nproc inside the pod reports the NODE's 32 cores,
           # not the cgroup limit, so auto would spawn 32 workers on 4 CPUs and
