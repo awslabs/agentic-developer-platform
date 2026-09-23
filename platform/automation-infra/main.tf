@@ -36,7 +36,7 @@ variable "deployment_secret_arns" {
 
 resource "aws_iam_role" "deployment" {
   name                 = "${var.name_prefix}-trusted-deployment"
-  max_session_duration = 3600
+  max_session_duration = 10800
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

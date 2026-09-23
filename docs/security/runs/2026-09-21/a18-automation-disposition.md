@@ -22,6 +22,10 @@ runner Kubernetes deployment access. It does not claim live remediation.
   approval and no admin bypass. Source must belong to reviewed main history.
   PR Terraform validation uses no state backend. Scanning has a separate scoped
   identity; its existing long-run duration and downstream transport are retained.
+- Domain Kubernetes/migration lanes, CAPE image maintenance and live evaluations
+  also use the protected deployment path. Existing database probes use an explicit
+  IAM database username. Public-rule ingestion has its own public-prefix-only
+  identity and stays off deployment nodes while parsing upstream rules.
 
 The two external dependency dispositions were consumed, without duplicating
 implementation or claiming new live evidence:

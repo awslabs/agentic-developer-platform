@@ -37,38 +37,46 @@ env:
 
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
     name: Build Windows 11 CAPE Image
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-dev
     timeout-minutes: 120
     permissions:
+      id-token: write
       contents: read
 
     steps:
       - uses: actions/checkout@v7
 
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+          duration_seconds: 10800
+
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
 
       # ── 0. Install CLI tools on ARC runner ─────────────────────────────
-      - name: Install AWS CLI + Terraform
+      - name: Verify reviewed runner tools
         run: |
-          set -e
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v terraform >/dev/null 2>&1; then
-            curl -sL "https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip" -o /tmp/tf.zip
-            unzip -q /tmp/tf.zip -d /usr/local/bin/
-            rm -f /tmp/tf.zip
-          fi
-          aws --version
-          terraform --version
+          set -euo pipefail
+          for tool in aws terraform kubectl jq python3 psql; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
+          python3 -c 'import yaml'
 
-      # ── 1. Upload build inputs to S3 FIRST ────────────────────────────
-      # Must happen before Terraform so user-data can download them.
       - name: Stage build inputs
         run: |
           BUILD_DATE=$(date -u +%Y-%m-%d)
@@ -188,13 +196,13 @@ jobs:
           REG_CMD_ID=$(aws ssm send-command \
             --instance-ids "${{ env.CAPE_HOST_ID }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh /tmp/register-cape-vm.sh --region ${AWS_REGION} && chmod +x /tmp/register-cape-vm.sh && sudo bash /tmp/register-cape-vm.sh ${BUILD_DATE}\"]" \
+            --parameters "commands=[\"aws s3 cp s3://${{ env.ASSETS_BUCKET }}/windows-build-inputs/register-cape-vm.sh /tmp/register-cape-vm.sh --region ${AWS_REGION} && chmod +x /tmp/register-cape-vm.sh && bash /tmp/register-cape-vm.sh ${BUILD_DATE}\"]" \
             --timeout-seconds 600 \
             --region "${AWS_REGION}" \
             --query 'Command.CommandId' --output text)
           echo "Registration command: $REG_CMD_ID"
 
-          for i in $(seq 1 40); do
+          for _ in $(seq 1 40); do
             STATUS=$(aws ssm get-command-invocation \
               --command-id "$REG_CMD_ID" \
               --instance-id "${{ env.CAPE_HOST_ID }}" \
@@ -237,9 +245,11 @@ jobs:
         if: success()
         run: |
           BUILD_DATE=$(date -u +%Y-%m-%d)
-          echo "## Windows 11 CAPE Image Build" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Date**: ${BUILD_DATE}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Image**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-${BUILD_DATE}.qcow2" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Latest**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-latest.qcow2" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **CAPE Host**: ${{ env.CAPE_HOST_ID }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **VM Name**: win11-cape-${BUILD_DATE}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Windows 11 CAPE Image Build"
+            echo "- **Date**: ${BUILD_DATE}"
+            echo "- **Image**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-${BUILD_DATE}.qcow2"
+            echo "- **Latest**: s3://${{ env.ASSETS_BUCKET }}/win11-cape-latest.qcow2"
+            echo "- **CAPE Host**: ${{ env.CAPE_HOST_ID }}"
+            echo "- **VM Name**: win11-cape-${BUILD_DATE}"
+          } >> "$GITHUB_STEP_SUMMARY"

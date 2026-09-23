@@ -83,7 +83,7 @@ def test_runner_has_no_ambient_credential_and_uses_separate_nodes():
     assert sa["automountServiceAccountToken"] is False
 
 
-@pytest.mark.parametrize("kind", ["deployment", "build", "scan"])
+@pytest.mark.parametrize("kind", ["deployment", "build", "scan", "rules"])
 def test_credential_action_cannot_fall_back_to_irsa(kind):
     action = yaml.safe_load((ROOT / f".github/actions/trusted-{kind}/action.yml").read_text())
     config = next(s["with"] for s in action["runs"]["steps"] if s.get("uses", "").startswith("aws-actions/configure-aws-credentials@"))
@@ -102,3 +102,53 @@ def test_scan_jobs_keep_scoped_identity_and_no_schedule():
                 assert any(s.get("uses") == "aws-e/adp/.github/actions/trusted-scan@main" for s in job["steps"])
         if name == "security-scan.yml":
             assert "adp-dev-agent-runner-role" not in raw
+
+
+def test_domain_deployments_and_live_evaluations_are_in_trusted_inventory():
+    inventory = set(json.loads((AUTOMATION / "deployment-workflows.json").read_text()))
+    assert {
+        "_deploy-eks.yml", "cyber-k8s-deploy.yml", "cyber-windows-image-build.yml",
+        "superplane-k8s-deploy.yml", "superplane-migrate.yml", "platform-deploy-mgmt-verify.yml",
+        "eval-budget-ratelimit.yml", "eval-cli-onboarding.yml", "eval-bedrock-routing.yml",
+        "credential-binding-adversarial-e2e.yml",
+    } <= inventory
+
+
+def test_untrusted_rule_compilation_has_only_rules_identity_off_deployment_nodes():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/yara-ingest-public.yml").read_text())
+    job = workflow["jobs"]["ingest"]
+    assert job["environment"] == "adp-rules-dev"
+    assert job["if"] == "github.ref == 'refs/heads/main'"
+    assert not isinstance(job["runs-on"], dict)
+    actions = [s.get("uses", "") for s in job["steps"]]
+    assert "aws-e/adp/.github/actions/trusted-rules@main" in actions
+    assert not any("trusted-deployment" in a or "trusted-build" in a for a in actions)
+
+
+@pytest.mark.parametrize("username", ["", "eval_operator"])
+def test_database_probe_uses_configured_iam_user_without_master_secret(username, tmp_path):
+    import os
+    import subprocess
+
+    calls = tmp_path / "calls"
+    script = '''
+source platform/evals/lib/aws.sh
+die() { exit 9; }
+mask() { :; }
+h_aws() { printf '%s\\n' "$*" >> "$CALLS"; printf 'test-token'; }
+resolve_db_creds
+test "$PGUSER" = "$ADP_DB_USER"
+test "$PGSSLMODE" = require
+'''
+    result = subprocess.run(["bash", "-c", script], cwd=ROOT, env={
+        "PATH": os.environ["PATH"], "ADP_DB_USER": username,
+        "RDS_HOST": "db.test", "RDS_DB": "test", "AWS_REGION": "us-east-1", "CALLS": str(calls),
+    })
+    if username:
+        assert result.returncode == 0
+        assert calls.read_text().startswith("rds generate-db-auth-token ")
+        assert "--username eval_operator" in calls.read_text()
+        assert "secretsmanager" not in calls.read_text()
+    else:
+        assert result.returncode == 9
+        assert not calls.exists()
