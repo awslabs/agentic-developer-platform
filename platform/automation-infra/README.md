@@ -22,10 +22,11 @@ admitted to the trusted group. The ordinary runner's action and resource ceiling
 are shared by active and legacy Terraform. Explicit `NotAction`/`NotResource`
 denies prevent an attached or resource policy from restoring service escalation.
 The smoke project cannot publish even if a caller overrides its buildspec.
-Gateway PR image checks run on credential-free GitHub-hosted Docker VMs using
-the canonical smoke buildspec. They do not require a pre-existing AWS project,
-upload source to platform storage, or publish images. The bounded CodeBuild smoke
-project remains available for repository jobs after the authorized cutover.
+All GitHub Actions jobs run on ARC. Container smoke checks are dispatched from
+ARC to the nonpublishing `adp-<environment>-gateway-smoke` CodeBuild project;
+there is no GitHub-hosted runner or publishing-project fallback. Provision that
+project in the authorized CodeBuild cutover before running the image gate. The
+preflight refuses before uploading source when the project is missing.
 Infrastructure PR workflows validate with the backend disabled. Their real plans
 remain available by manual dispatch from main under the protected deployment
 environment. One-shot maintenance, diagnostics, ingestion and teardown workflows

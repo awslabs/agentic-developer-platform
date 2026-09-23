@@ -25,6 +25,20 @@ def test_valid_environment_is_accepted():
     cutover.verify_environment(ENVIRONMENT)
 
 
+def test_all_action_jobs_run_on_arc():
+    paths = list((ROOT / ".github/workflows").glob("*.yml")) + list((ROOT / ".github/workflows").glob("*.yaml"))
+    for path in paths:
+        workflow = yaml.safe_load(path.read_text())
+        for name, job in workflow["jobs"].items():
+            if "runs-on" not in job:  # Reusable workflows select their own ARC jobs.
+                continue
+            assert job["runs-on"] in [
+                "arc-runner-org",
+                "${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}",
+                {"group": "adp-deployment", "labels": "arc-runner-deployment"},
+            ], f"{path.name}/{name}: GitHub Actions must run via ARC"
+
+
 @pytest.mark.parametrize("mutation", ["bypass", "no-review", "self-review", "all-protected-branches"])
 def test_weakened_environment_refused(mutation):
     env = copy.deepcopy(ENVIRONMENT)
