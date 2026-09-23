@@ -127,7 +127,9 @@ class TestCredentialEvidence:
 
         assert get_credential_evidence_reader() is None
         assert result.ports[PORT_CREDENTIAL_EVIDENCE].installed is False
-        assert "ADP_GATEWAY_INTERNAL_URL" in result.ports[PORT_CREDENTIAL_EVIDENCE].detail
+        assert (
+            "ADP_GATEWAY_INTERNAL_URL" in result.ports[PORT_CREDENTIAL_EVIDENCE].detail
+        )
         assert "Installed the ADP vault" not in caplog.text
 
     def test_it_does_not_displace_an_adapter_someone_else_installed(self, monkeypatch):
@@ -281,3 +283,76 @@ class TestReadout:
             PORT_ALLOCATION_INVENTORY,
         }
         assert all(reason.strip() for reason in result.unconfigured.values())
+
+
+class TestTheVaultTimeoutIsConfigurable:
+    """The read bound is a deployment decision, not an image constant. Issue #5535.
+
+    Before this, `AdpVaultClient._DEFAULT_TIMEOUT` was a module constant, so the only
+    way to change the bound was to ship a new image. The bound belongs to the
+    deployment's network: the value that is generous in one cluster is an outage in
+    another.
+    """
+
+    def test_a_configured_timeout_reaches_the_client(self):
+        class _WithTimeout(_Configured):
+            adp_vault_timeout_seconds = 2.5
+
+        compose(_WithTimeout())
+
+        from app.services.credential_evidence import get_credential_evidence_reader
+
+        assert get_credential_evidence_reader()._timeout == 2.5
+
+    def test_settings_without_the_attribute_fall_back_to_the_safe_bound(self):
+        """`_Configured` has no timeout attribute — an unbounded read is not the default.
+
+        A read with no bound holds a request worker for as long as the vault stays
+        silent, so a slow vault becomes an exhausted pool and an API-wide outage:
+        much larger than the one unavailable credential the caller asked about.
+        """
+        from app.adapters.adp_vault_client import _DEFAULT_TIMEOUT
+        from app.services.credential_evidence import get_credential_evidence_reader
+
+        compose(_Configured())
+
+        assert get_credential_evidence_reader()._timeout == _DEFAULT_TIMEOUT
+        assert 0 < _DEFAULT_TIMEOUT <= 120
+
+    @pytest.mark.parametrize("value", [0, -1, 0.0, 121, 10_000])
+    def test_an_unusable_timeout_is_refused_at_startup(self, value):
+        """Refused when settings are built, not on the first credential read.
+
+        Zero or negative would time out immediately, turning every read into a
+        spurious "vault unavailable" and reporting a healthy vault as broken. Failing
+        lazily instead would surface as intermittent 503s under load, which read as a
+        vault fault rather than as the setting that is actually wrong.
+        """
+        import pydantic
+        from app.config import Settings
+
+        with pytest.raises(pydantic.ValidationError):
+            Settings(adp_vault_timeout_seconds=value)
+
+    def test_a_usable_timeout_is_accepted(self):
+        from app.config import Settings
+
+        assert Settings(adp_vault_timeout_seconds=30).adp_vault_timeout_seconds == 30
+
+    def test_the_two_defaults_agree(self):
+        """The settings default and the adapter fallback must be the same number.
+
+        They are declared in different modules, and nothing else would notice them
+        drifting apart. If they did, the timeout a deployment actually got would
+        depend on whether its settings object carried the attribute — so the same
+        configuration would behave differently in the app and in the packaged
+        command, which is the class of split-brain defect #5535 exists to remove.
+        """
+        import os
+
+        from app.adapters.adp_vault_client import _DEFAULT_TIMEOUT
+
+        os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://localhost/unused")
+        from app.config import Settings
+
+        assert Settings().adp_vault_timeout_seconds == _DEFAULT_TIMEOUT

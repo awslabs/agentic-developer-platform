@@ -283,3 +283,111 @@ class TestThreeSeparateReadinessAnswers:
 
         returned = inspect.getsource(health.readiness).split("return")[-1]
         assert "workspace" not in returned
+
+
+class TestEveryRuntimeCallerReachesTheComposedAdapter:
+    """The wiring audit, as assertions rather than as a paragraph. Issue #5535.
+
+    The design asks for an audit of every runtime caller and public endpoint. A
+    written audit is true on the day it is written; these fail when it stops being
+    true.
+    """
+
+    # (owning module, the module-global that holds the installed adapter).
+    # A tuple, not a dict: nothing mutates it, and a mutable class attribute shared
+    # across tests is a contamination source waiting for someone to append to it.
+    PORT_MODULES = (
+        ("app.services.credential_evidence", "_reader"),
+        ("app.services.provisioning", "_facade"),
+        ("app.services.provider_authority", "_validator"),
+        ("app.services.provider_inventory", "_reader"),
+    )
+
+    def test_no_module_outside_a_ports_own_service_touches_its_global(self):
+        """Every caller must go through the getter, so substitution is total.
+
+        A module reading the global directly would bypass whatever the getter
+        enforces, and would not see an adapter installed after its own import. The
+        composition root is exempt: installing *is* its job.
+        """
+        import re
+        from pathlib import Path
+
+        app_root = Path(__file__).resolve().parents[1] / "app"
+
+        # Two ports both name their global `_reader` (credential_evidence and
+        # allocation_inventory), so a name alone cannot say which port a module is
+        # touching. Every owning module is therefore exempt for that name — the
+        # question here is whether a NON-owner reads a port global, not which port.
+        owners = {
+            app_root / Path(*module.split(".")[1:]).with_suffix(".py")
+            for module, _attribute in self.PORT_MODULES
+        }
+        attributes = {attribute for _module, attribute in self.PORT_MODULES}
+
+        offenders = []
+        for source_file in sorted(app_root.rglob("*.py")):
+            if source_file in owners or source_file == app_root / "composition.py":
+                continue
+            text = source_file.read_text()
+            for attribute in sorted(attributes):
+                # Matches both bypass shapes:
+                #   * a bare `_reader` (the module's own global), and
+                #   * a qualified `module._reader` (the shape a caller elsewhere
+                #     would have to write, and the one an earlier version of this
+                #     test missed entirely because its lookbehind excluded `.`).
+                # `\w` before the name is still excluded, so this does not match
+                # `get_credential_evidence_reader`.
+                if re.search(rf"(?<!\w){re.escape(attribute)}\b", text):
+                    offenders.append(f"{source_file.name} touches {attribute}")
+        assert offenders == []
+
+    def test_every_mounted_endpoint_has_a_recorded_authorization_decision(self):
+        """A route absent from the inventory is a hole, not a default-deny.
+
+        `app/domain_guard.py` refuses an uninventoried route, so an endpoint added
+        without an entry would 500 rather than authorize — and until someone calls
+        it, nothing says so.
+        """
+        from app.endpoint_inventory import RouteNotInventoried, classify
+        from app.main import app
+
+        # Catches only `RouteNotInventoried`, the refusal this test is about. A blanket
+        # `except Exception` would silently absorb a TypeError or an import failure in
+        # `classify` itself and report it as a missing inventory entry, sending the
+        # reader to the inventory table when the bug is in the classifier.
+        uninventoried = []
+        for route in app.routes:
+            for method in sorted(getattr(route, "methods", set()) or set()):
+                if method in ("HEAD", "OPTIONS"):
+                    continue
+                try:
+                    classify(method, route.path)
+                except RouteNotInventoried:
+                    uninventoried.append(f"{method} {route.path}")
+        assert uninventoried == []
+
+    def test_provisioning_has_no_fallback_when_the_facade_is_absent(self):
+        """ "Facade unavailable, so provision directly" is the forbidden substitution.
+
+        It is a *broader* authority being available exactly where the correct,
+        narrower one could not be built — so the unconfigured case would end up more
+        privileged than the configured one.
+        """
+        from app.services.provisioning import ProvisioningUnavailable, _require_facade
+
+        with pytest.raises(ProvisioningUnavailable):
+            _require_facade()
+
+    def test_an_absent_evidence_reader_is_unavailable_and_not_a_denial(self):
+        """503, never 403: a missing setting is not the caller's permissions.
+
+        Reporting it as 403 sends an operator to check grants that are fine, while
+        the actual fault — an unconfigured vault — goes unexamined.
+        """
+        import inspect
+
+        from app.routers import provider_connections
+
+        source = inspect.getsource(provider_connections._vault_evidence)
+        assert "503" in source
