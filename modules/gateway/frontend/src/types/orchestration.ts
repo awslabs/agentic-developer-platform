@@ -261,6 +261,7 @@ export interface PolicySummary {
 }
 
 export interface FlowGraph {
+  execution_paused?: boolean;
   flow_id: string;
   slug: string;
   title: string;
@@ -435,6 +436,7 @@ export interface DesignHistory {
 
 /** One flow as the list page reads it: identity plus everything derived. */
 export interface FlowSummary {
+  execution_paused?: boolean;
   id: string;
   slug: string;
   title: string;
@@ -472,6 +474,9 @@ export interface FlowSummary {
   eval_count?: number;
   changes_requested_count?: number;
   completed_story_count?: number;
+  /** Additional issue-linked evaluation stories; engine kind counts stay unchanged. */
+  eval_story_count?: number;
+  completed_eval_story_count?: number;
   epic_count: number;
   wave_count: number;
   /** The first wave with unfinished work; null when everything is done. */

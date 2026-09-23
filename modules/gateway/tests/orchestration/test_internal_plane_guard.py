@@ -453,6 +453,9 @@ class TestOrchestrationRouterIsOperatorPlane:
             # that. Asserted on the response body in
             # `test_execution_read.py::test_the_claim_binding_is_never_published`.
             ("/orchestration/flows/{flow_id}/execution", "GET"): "Permission.USAGE_READ",
+            # Pause/resume changes execution authority; visibility alone cannot
+            # grant control. The handler also requires a live human session.
+            ("/orchestration/flows/{flow_id}/execution", "POST"): "Permission.PLAN_APPROVE",
             # Read-only acknowledgment projection; no worker capability,
             # acceptance identity, ownership nonce or raw envelope is exposed.
             ("/orchestration/flows/{flow_id}/run-reports", "GET"): "Permission.USAGE_READ",

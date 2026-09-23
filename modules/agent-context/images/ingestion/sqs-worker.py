@@ -37,7 +37,8 @@ _tracer = get_tracer("knowledge-layer.sqs-worker")
 
 from config import settings
 from github_auth import InstallationRevokedError, mint_github_token, mint_installation_token
-from scope import parse_scope
+from scope import ScopeValidationError, parse_scope
+from source_admission import SourceAdmissionError, validate_source
 from status_callback import emit_status_callback
 
 AWS_REGION = settings.aws_region
@@ -425,8 +426,20 @@ def main():
     registry_asset_id = message.get("registry_asset_id")
     installation_id = message.get("installation_id")  # Per-pod auth (#2088)
 
-    # Parse scope envelope (backward-compatible: defaults to shared if absent)
-    scope = parse_scope(message.get("scope"))
+    # Require an explicit ownership envelope; missing or invalid scope is fatal
+    # (#5658): the old behaviour downgraded it to shared, which published
+    # tenant- or user-scoped content to the prefix every tenant can read. The
+    # message is abandoned without deleting the receipt, so it retries and then
+    # lands in the DLQ for inspection rather than being silently mis-ingested.
+    try:
+        scope = parse_scope(message.get("scope"))
+        validate_source(
+            content_type, source, scope, default_bucket=settings.s3_bucket_name,
+            allowlist=settings.s3_source_allowlist, allow_infra=True,
+        )
+    except (ScopeValidationError, SourceAdmissionError) as e:
+        log.error("Refusing message with unsatisfiable scope: %s", e)
+        sys.exit(1)
 
     # Export scope as env vars for child processes (S3 prefix routing in #1773)
     scope_env = scope.to_env()

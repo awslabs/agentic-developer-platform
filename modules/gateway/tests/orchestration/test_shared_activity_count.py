@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationNode, OrchestrationWorkClaim
+from src.orchestration.models import OrchestrationAcceptedPlan, OrchestrationNode, OrchestrationPullRequestBinding, OrchestrationWorkClaim
 from src.orchestration.run_reports import OrchestrationRunReport, prepare_run_report
 from src.orchestration.shared_policy import _active_count
 from tests.orchestration import test_review_cycle as protocol
@@ -130,7 +130,7 @@ async def test_only_evidenced_claim_reconciliation_releases_orphaned_report_slot
         assert await count(shared, db) == expected
 
 
-async def test_shared_develop_review_repair_and_merge_ready_with_real_slot_accounting(shared, monkeypatch):  # noqa: F811
+async def test_shared_retained_reviewer_repairs_and_reaches_merge_ready_with_real_slot_accounting(shared, monkeypatch):  # noqa: F811
     monkeypatch.setattr("src.orchestration.shared_policy._active_count", _active_count)
     async with shared.factory() as db:
         # This is a newly reported developer, not an owner-reconciled legacy run.
@@ -141,6 +141,36 @@ async def test_shared_develop_review_repair_and_merge_ready_with_real_slot_accou
         report.binding_receipt = {"binding_id": shared.binding.id, "revision": 1}
         report.terminal_receipt = {"outcome": "complete"}
         await db.commit()
-    await protocol.test_develop_review_repair_fresh_review_merge_ready(shared)
+    assert (await protocol.tick(shared)).effects_succeeded == 1
+    reviewer = shared.calls[-1]
+    assert reviewer["persona"] == "agent-codex-reviewer"
+    assert reviewer["review_cycle_input"]["reviewer_owned_delivery"] is True
+    assert reviewer["review_expect"]["author_run_id"] == shared.root
     async with shared.factory() as db:
+        assert await count(shared, db) == 1
+
+    # The assigned reviewer repairs the PR and reviews the new head in the same
+    # run. Its unfinished report retains the slot throughout that work.
+    shared.head = "b" * 40
+    for _ in range(3):
+        assert (await protocol.tick(shared)).effects_succeeded == 0
+        async with shared.factory() as db:
+            assert await count(shared, db) == 1
+    assert len(shared.calls) == 1
+
+    await protocol.review(shared, approve=True)
+    async with shared.factory() as db:
+        assert await count(shared, db) == 0
+    await protocol.tick(shared)
+    execution, claim, node, actions = await protocol.state(shared)
+    assert execution.phase == "merge_ready" and execution.status == "runnable"
+    assert execution.attempts == 1 and len(actions) == 1
+    assert node.state == "running" and node.attempts == 1
+    assert claim.active_run_id == reviewer["message_id"]
+    assert claim.generation == 5 and claim.state == "held"
+    assert len(shared.calls) == 1
+    async with shared.factory() as db:
+        binding = await db.get(OrchestrationPullRequestBinding, shared.binding.id)
+        assert binding.head_sha == shared.head and binding.revision == 2
+        assert binding.run_id == shared.root and binding.accepted_scope == shared.binding.accepted_scope
         assert await count(shared, db) == 0

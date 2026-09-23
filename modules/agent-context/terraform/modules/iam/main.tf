@@ -101,19 +101,40 @@ resource "aws_iam_role_policy" "s3" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # Bucket-level actions. These take the bucket ARN, not object ARNs, so they
+      # cannot be prefix-scoped in Resource. GetBucketLocation does not carry an
+      # s3:prefix context key, so it must not share ListBucket's condition.
       {
-        Sid    = "S3BucketAccess"
+        Sid      = "S3BucketLocation"
+        Effect   = "Allow"
+        Action   = ["s3:GetBucketLocation"]
+        Resource = ["arn:${local.partition}:s3:::${var.bucket_name}"]
+      },
+      {
+        Sid      = "S3ScopedListing"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = ["arn:${local.partition}:s3:::${var.bucket_name}"]
+        Condition = {
+          StringLike = {
+            "s3:prefix" = var.served_s3_prefixes
+          }
+        }
+      },
+      # Object-level actions, narrowed from `<bucket>/*` to the served prefixes
+      # only (#5658). See the served_s3_prefixes variable for what this bounds and
+      # what it deliberately does not.
+      {
+        Sid    = "S3ObjectAccess"
         Effect = "Allow"
         Action = [
           "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject",
-          "s3:ListBucket",
-          "s3:GetBucketLocation",
         ]
         Resource = [
-          "arn:${local.partition}:s3:::${var.bucket_name}",
-          "arn:${local.partition}:s3:::${var.bucket_name}/*",
+          for prefix in var.served_s3_prefixes :
+          "arn:${local.partition}:s3:::${var.bucket_name}/${prefix}"
         ]
       }
     ]

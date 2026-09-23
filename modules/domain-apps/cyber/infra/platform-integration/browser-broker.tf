@@ -1,6 +1,6 @@
 # The reasoning worker executes generated code, so it must never hold browser
 # credentials. This broker is a separate pod and role whose only API performs a
-# complete guarded capture; no raw session, CDP endpoint or InvokeBrowser action
+# guarded capture or investigation step; no raw session, CDP endpoint or InvokeBrowser action
 # is exposed to callers.
 
 locals {
@@ -13,8 +13,26 @@ locals {
   ]
 }
 
+# Independently deployable boundary for existing workers. The broader worker
+# policy also denies these APIs, but updating that policy can pull the separate
+# worker-authority migration into its dependency graph. Keep this deny owned by
+# the browser rollout so adopting the broker does not require that migration.
+resource "aws_iam_role_policy" "agent_scaledjob_browser_deny" {
+  name = "deny-direct-agentcore-browser"
+  role = var.worker_role_name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "DenyDirectAgentCoreBrowser"
+      Effect   = "Deny"
+      Action   = ["bedrock-agentcore:*"]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_iam_policy" "url_analysis_browser_broker_boundary" {
-  name = "${local.name_prefix}-url-analysis-browser-broker-boundary"
+  name = "${var.name_prefix}-url-analysis-browser-broker-boundary"
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -30,7 +48,7 @@ resource "aws_iam_policy" "url_analysis_browser_broker_boundary" {
 }
 
 resource "aws_iam_role" "url_analysis_browser_broker" {
-  name                 = "${local.name_prefix}-url-analysis-browser-broker-role"
+  name                 = "${var.name_prefix}-url-analysis-browser-broker-role"
   permissions_boundary = aws_iam_policy.url_analysis_browser_broker_boundary.arn
 
   assume_role_policy = jsonencode({
@@ -38,13 +56,13 @@ resource "aws_iam_role" "url_analysis_browser_broker" {
     Statement = [{
       Effect = "Allow"
       Principal = {
-        Federated = local.oidc_provider_arn
+        Federated = var.oidc_provider_arn
       }
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "${replace(local.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:adp-agents:url-analysis-browser-broker-sa"
-          "${replace(local.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
+          "${replace(var.oidc_issuer, "https://", "")}:sub" = "system:serviceaccount:${var.namespace}:url-analysis-browser-broker-sa"
+          "${replace(var.oidc_issuer, "https://", "")}:aud" = "sts.amazonaws.com"
         }
       }
     }]
@@ -71,7 +89,7 @@ resource "aws_iam_role_policy" "url_analysis_browser_broker" {
 resource "kubernetes_service_account" "url_analysis_browser_broker" {
   metadata {
     name      = "url-analysis-browser-broker-sa"
-    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+    namespace = var.namespace
     annotations = {
       "eks.amazonaws.com/role-arn" = aws_iam_role.url_analysis_browser_broker.arn
     }
@@ -86,7 +104,7 @@ resource "kubernetes_service_account" "url_analysis_browser_broker" {
 resource "kubernetes_deployment" "url_analysis_browser_broker" {
   metadata {
     name      = "url-analysis-browser-broker"
-    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+    namespace = var.namespace
     labels = {
       "app.kubernetes.io/name"       = "url-analysis-browser-broker"
       "app.kubernetes.io/part-of"    = "adp-agent-factory"
@@ -101,6 +119,18 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
     }
     template {
       metadata {
+        # Auto-instrumentation preloads Node code into Playwright's private
+        # driver process and stalls startup. Preserve the driver's stdio protocol.
+        # This fixed Python service opts out; container logs remain available.
+        annotations = merge(
+          # Browser context lives in this replica during agent reasoning. Avoid
+          # voluntary consolidation interrupting an otherwise healthy lease.
+          { "karpenter.sh/do-not-disrupt" = "true" },
+          { for language in ["java", "nodejs", "python", "dotnet"] :
+          "cloudwatch.aws.amazon.com/auto-annotate-${language}" => "false" },
+          { for language in ["java", "nodejs", "python", "dotnet"] :
+          "instrumentation.opentelemetry.io/inject-${language}" => "false" }
+        )
         labels = {
           "app.kubernetes.io/name"      = "url-analysis-browser-broker"
           "app.kubernetes.io/part-of"   = "adp-agent-factory"
@@ -121,7 +151,7 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
         }
         container {
           name    = "browser-broker"
-          image   = local.agent_image
+          image   = local.broker_image
           command = ["python3"]
           args    = ["/app/skills/url-analysis/browser_broker.py"]
           port {
@@ -179,10 +209,13 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
 resource "kubernetes_service" "url_analysis_browser_broker" {
   metadata {
     name      = "url-analysis-browser-broker"
-    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+    namespace = var.namespace
   }
   spec {
-    selector = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
+    # A worker's investigation steps must reach the replica owning its short-lived
+    # browser lease. Replica loss fails closed; contexts are never silently replayed.
+    session_affinity = "ClientIP"
+    selector         = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
     port {
       name        = "http"
       port        = 8765
@@ -194,7 +227,7 @@ resource "kubernetes_service" "url_analysis_browser_broker" {
 resource "kubernetes_network_policy" "url_analysis_browser_broker" {
   metadata {
     name      = "url-analysis-browser-broker"
-    namespace = kubernetes_namespace.adp_agents.metadata[0].name
+    namespace = var.namespace
   }
   spec {
     pod_selector {

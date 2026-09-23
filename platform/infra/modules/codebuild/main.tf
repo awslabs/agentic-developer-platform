@@ -53,7 +53,7 @@ locals {
     "ecr:GetDownloadUrlForLayer", "ecr:InitiateLayerUpload", "ecr:ListImages", "ecr:PutImage", "ecr:UploadLayerPart",
     "kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey", "sts:GetCallerIdentity",
   ]
-  projects = {
+  core_projects = {
     "gateway-build" = {
       buildspec      = "codebuild/bs-gateway-build.yml"
       ecr_repos      = ["adp-gateway"]
@@ -77,12 +77,6 @@ locals {
       ecr_repos      = ["adp-arc-runner"]
       privileged     = true
       privileged_why = "docker build of the self-hosted runner image"
-    }
-    "cyber-worker" = {
-      buildspec      = "codebuild/bs-cyber-worker.yml"
-      ecr_repos      = ["adp-cyber-worker"]
-      privileged     = true
-      privileged_why = "docker build of the cyber worker image"
     }
     "agent-runtime" = {
       buildspec      = "codebuild/bs-agent-runtime.yml"
@@ -136,6 +130,10 @@ locals {
       privileged_why = "docker build of the maintained Superplane platform monitor image"
     }
   }
+
+  projects = merge(local.core_projects, [for manifest in sort(tolist(fileset("${path.module}/../../../../modules/domain-apps", "*/codebuild/projects.json"))) :
+    jsondecode(file("${path.module}/../../../../modules/domain-apps/${manifest}"))
+  ]...)
 
   agent_context_images = toset([
     "ingestion",

@@ -17,7 +17,7 @@ reports = route_tests.reports
 
 @pytest.fixture
 async def db_session_factory(pg_url):
-    upgrade(pg_url, "064_orchestration_run_reports")
+    upgrade(pg_url, "head")
     engine = create_async_engine(to_async_url(pg_url))
     try:
         yield async_sessionmaker(engine, expire_on_commit=False)

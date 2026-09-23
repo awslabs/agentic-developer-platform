@@ -307,7 +307,7 @@ jobs:
       - name: Ensure namespace and render K8s prerequisites
         run: |
           EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
+          aws eks update-kubeconfig --name "${EKS_CLUSTER}" --region ${AWS_REGION}
 
           # --- Namespace prerequisite ---
           # Namespace lifecycle and Pod Security Admission labels are deliberately
@@ -315,8 +315,8 @@ jobs:
           # namespaced edit access only and must never create or patch namespaces.
           # Fresh-account deployments create the namespace in deploy-all.sh before
           # this workflow can run.
-          if ! kubectl get namespace ${{ env.NAMESPACE }} >/dev/null 2>&1; then
-            echo "::error::Namespace ${{ env.NAMESPACE }} is missing. Run the platform deployment prerequisite first."
+          if ! kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1; then
+            echo "::error::Namespace ${NAMESPACE} is missing. Run the platform deployment prerequisite first."
             exit 1
           fi
 
@@ -613,6 +613,16 @@ jobs:
               --region "${AWS_REGION}"
           fi
 
+          # Issue #5656 (A05): dedicated signing key for single-use identity-linking
+          # ("magic link") tokens. src/shared/config.py no longer falls back to the
+          # session-signing key, so this must exist for those endpoints to work —
+          # and because it is separate, it can be replaced without signing every
+          # user out. Generate-if-absent, same pattern as the keys above; never
+          # echoed. Rotation: docs/runbooks/gateway-secret-rotation.md
+          MAGIC_LINK_SM_NAME="adp/${ENVIRONMENT}/gateway/magic-link-secret"
+          MAGIC_LINK_SECRET=$(python3 modules/gateway/scripts/ensure-signing-secret.py \
+            --name "$MAGIC_LINK_SM_NAME" --region "$AWS_REGION")
+
           APIGW_PROVENANCE_SECRET=$(aws ssm get-parameter \
             --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
             --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
@@ -625,7 +635,8 @@ jobs:
             --from-literal=token-secret-key="$TOKEN_SECRET" \
             --from-literal=internal-api-key="$INTERNAL_API_KEY" \
             --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
-            -n ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+            --from-literal=magic-link-secret="$MAGIC_LINK_SECRET" \
+            -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
           # --- Render and apply ServiceAccount (Section 3) ---
           sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
@@ -645,7 +656,7 @@ jobs:
               echo "Skipping platform-owned Namespace manifest: $f"
               continue
             fi
-            kubectl apply -f "$f" -n ${{ env.NAMESPACE }}
+            kubectl apply -f "$f" -n "${NAMESPACE}"
           done
 
       - name: Migrate schema then roll out new image

@@ -780,14 +780,22 @@ async def run_scan(
     }
 
 
-async def get_scanner_stats(
-    session: AsyncSession, org_id: uuid.UUID | None = None
-) -> dict[str, Any]:
-    """Get aggregate statistics, tenant-scoped when strict auth supplies one."""
+async def get_scanner_stats(session: AsyncSession, org_id: uuid.UUID) -> dict[str, Any]:
+    """Get aggregate statistics for ONE organization.
+
+    Issue #5682 (A02): ``org_id`` is required and has no ``None`` default. It
+    previously defaulted to ``None``, and ``owned()`` returned the query
+    unfiltered for that value — so the shipped configuration reported counts
+    across every tenant. Aggregates are as disclosive as rows here: the totals and
+    the per-source breakdown reveal how much research other organizations are
+    doing and where they are sourcing it.
+
+    Removing the default is the enforcement: a caller that forgets to pass a
+    tenant now fails at the call site instead of silently receiving every
+    tenant's numbers.
+    """
 
     def owned(query):
-        if org_id is None:
-            return query
         return query.join(
             Workspace, Workspace.id == ResearchFinding.workspace_id
         ).where(Workspace.org_id == org_id)

@@ -213,7 +213,7 @@ async def test_existing_execution_runs_after_controls_commit_before_new_dispatch
 async def _seed_ready_story(factory, *, approved: bool = True, kind: str = NodeKind.STORY.value) -> str:
     async with factory() as session:
         session.add(Organization(id=ORG, name="Tick Org", github_installation_ids=[str(INSTALLATION)]))
-        flow = OrchestrationFlow(org_id=ORG, slug="pmm07", title="PMM-07 flow", intent_ref="5425")
+        flow = OrchestrationFlow(org_id=ORG, slug="pmm07", title="PMM-07 flow", intent_ref="5425", execution_paused=False)
         session.add(flow)
         await session.flush()
         if approved:

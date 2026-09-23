@@ -173,7 +173,16 @@ class MergeServices:
         if not raw or raw.get("status", {}).get("S") in {"revoked", "cancelled"}:
             raise CycleBlockedError("reviewer_authority_revoked", BlockCode.AUTHORITY_UNVERIFIABLE)
         if raw.get("status") != {"S": "completed"} or raw.get("terminal_outcome") != {"S": "complete"}:
-            raise CycleBlockedError("reviewer_still_active")
+            from .run_reports import OrchestrationRunReport
+
+            report = await session.get(OrchestrationRunReport, run_id)
+            if not (
+                provider_state.merged
+                and report
+                and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True
+                and (report.review_receipt or {}).get("recorded") is True
+            ):
+                raise CycleBlockedError("reviewer_still_active")
         return await load_merge_review(
             session,
             context=context,
@@ -515,6 +524,15 @@ class MergeController:
                 raise CycleBlockedError("implementation_pr_closed_without_merge", BlockCode.HUMAN_INPUT_REQUIRED)
             if state.head_sha != binding.head_sha:
                 return MergeObservation(ObservationKind.FAILED, snapshot={"return_to_review": True}, detail="Reviewed head changed.")
+            from .run_reports import OrchestrationRunReport
+
+            report = await session.get(OrchestrationRunReport, run)
+            if report and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True:
+                # Reviewer delivery owns mutation; the engine only adopts the
+                # independently verified merged state above.
+                if not report.terminal_receipt:
+                    return MergeObservation(ObservationKind.WAITING, detail="Reviewer is delivering the merge.")
+                raise CycleBlockedError("reviewer_merge_not_delivered", BlockCode.HUMAN_INPUT_REQUIRED)
             if state.queue_id:
                 if latest is None or latest.detail.get("method") != "queue":
                     raise CycleBlockedError("merge_queue_admission_unattributed")

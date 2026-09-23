@@ -87,9 +87,16 @@ spec:
           limits:
             cpu: "1"
             memory: "1Gi"
+        # Readiness is NOT the same question as liveness here (#5658).
+        #
+        # /ready reports 503 while the ACL store is unreachable, so a Door that
+        # cannot authorise a read is pulled from Service endpoints instead of
+        # receiving traffic it would have to refuse. /health stays on liveness:
+        # the process is alive and its error is observable, so restarting it
+        # would only hide the misconfiguration in a crash loop.
         readinessProbe:
           httpGet:
-            path: /health
+            path: /ready
             port: 5100
           initialDelaySeconds: 5
           periodSeconds: 10

@@ -84,7 +84,9 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database):
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "016_add_organization_grants"
+    # The head `alembic upgrade head` actually reached, so it advances with the chain:
+    # w6-10 (#5533) adds 017 for `workspace_bootstrap_reservations`.
+    assert observed["revision"] == "017_add_workspace_bootstrap_reservations"
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))

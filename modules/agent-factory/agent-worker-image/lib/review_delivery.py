@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from lib import review_result, status_gateway_client
+from lib import review_result, run_report, status_gateway_client
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class ReviewDelivery:
                 )
             with self.result_path.open("rb") as source:
                 data = source.read(256 * 1024 + 1)
+            run_report.spool_review(data)
             key = status_gateway_client.upload_review_result(data)
             return f"{note}\n\n> Review evidence recorded at `{key}`. Recording grants no merge approval."
         except Exception as error:

@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import installation, skypilot_proxy
-from app.schema_boundary import connect_args, schema_name
+from app.schema_boundary import schema_connect_args, schema_name
 
 
 @pytest.mark.parametrize(
@@ -28,10 +28,14 @@ def test_schema_cannot_escape_domain(value):
 
 
 def test_api_and_migration_use_actual_asyncpg_setting():
-    assert connect_args("superplane") == {
+    # Search-path selection only. Transport is a separate decision now
+    # (issue #5676, A22) and has its own coverage in
+    # tests/test_database_transport_tls.py; asserting on the combined dict here
+    # is what previously let a schema change move the encryption posture.
+    assert schema_connect_args("superplane") == {
         "server_settings": {"search_path": "superplane"}
     }
-    assert connect_args("") == {}
+    assert schema_connect_args("") == {}
 
 
 def test_absent_adapters_cannot_be_declared_available(monkeypatch, capsys):

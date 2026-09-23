@@ -32,6 +32,43 @@ FIXTURE_TARGET_ACCOUNT = "000000000002"
 FIXTURE_MANAGEMENT_CLUSTER = "fixture-management-cluster"
 FIXTURE_WORKSPACE = "ws-fixture"
 FIXTURE_REGION = "us-west-2"
+# Synthetic organizational unit, of legal `ou-<root>-<suffix>` shape and obviously a fixture.
+# Required by new-account-managed since #5531 (w6-08): a created account is placed somewhere
+# in the organization tree, and an unstated placement means the organization root — the least
+# restricted position available — so it is required rather than defaulted.
+FIXTURE_ORGANIZATIONAL_UNIT = "ou-test-fixture01"
+# The account the governed creation path recorded for this workspace, as
+# new-account-managed rendering now requires (#5531, w6-08). Distinct from
+# `FIXTURE_TARGET_ACCOUNT`, which is an ADOPTED account: rendering must refuse a
+# creation-record id in the adopting modes and require one in the creating mode, so a single
+# shared constant could not tell a test that mixed them up from one that did not.
+FIXTURE_CREATED_ACCOUNT = "000000000777"
+
+
+def governed_account_id(request: AccountFactoryRequest):
+    """The `account_id` a mode's render requires, or `None` where one is forbidden.
+
+    Rendering new-account-managed needs the id of the account the fenced creation path opened,
+    because that mode's `AccountOwnership` binds to an existing account instead of declaring an
+    ACK `Account` that would create one (#5531). The adopting modes take their account from
+    `target_account_id` and REFUSE an id here.
+
+    Exists so a mode-parametrized test can render every mode without either hardcoding that
+    asymmetry at each call site or — worse — passing an id to every mode and silently losing
+    the refusal that keeps the two sources of account identity from being interchangeable.
+    """
+    if not request.mode.creates_account:
+        return None
+    from account_factory.registration import CreatedAccountRegistration
+    from account_factory.creation import account_identity_key
+
+    return CreatedAccountRegistration(
+        "op-fixture",
+        request.organization_id,
+        request.workspace_id,
+        FIXTURE_CREATED_ACCOUNT,
+        account_identity_key(request),
+    )
 
 
 def new_account_request(**overrides) -> AccountFactoryRequest:
@@ -44,6 +81,7 @@ def new_account_request(**overrides) -> AccountFactoryRequest:
         "region": FIXTURE_REGION,
         "workspace_id": FIXTURE_WORKSPACE,
         "account_email": "fixture-workspace@example.invalid",
+        "organizational_unit_id": FIXTURE_ORGANIZATIONAL_UNIT,
         "vpc_cidr": "10.64.0.0/16",
         "availability_zones": (f"{FIXTURE_REGION}a", f"{FIXTURE_REGION}b"),
         "cluster_version": "1.31",
@@ -122,6 +160,13 @@ def matching_authorization(
         "permitted_target_accounts": (
             frozenset({request.target_account_id})
             if request.target_account_id
+            else frozenset()
+        ),
+        # Same shape as permitted_target_accounts, for the same reason: authorizing a
+        # placement is an explicit act, and a mode that places no account never consults it.
+        "permitted_organizational_units": (
+            frozenset({request.organizational_unit_id})
+            if request.organizational_unit_id
             else frozenset()
         ),
     }

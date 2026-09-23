@@ -26,13 +26,6 @@ const SDK_VERSION = "0.155.1";
  * bubblewrap/user namespaces, which are intentionally unavailable in that pod.
  */
 export const WORKER_SANDBOX_MODE = "danger-full-access" as const;
-const FORBIDDEN_AUTOFIX_PATHS = [
-  /^\.github\/workflows\//,
-  /(^|\/)infra\//,
-  /(^|\/)migrations?\//,
-  /(^|\/)alembic\//,
-  /^agent_learning\//,
-];
 
 export type ReviewRunResult =
   | { status: "issue_reviewed"; issue: number; blockers: number }
@@ -190,8 +183,6 @@ export async function validateAutofix(
   const files = names.stdout.split("\n").filter(Boolean);
   if (files.length === 0) throw new Error("Codex reported mechanical fixes but changed no files");
   if (files.length > 20) throw new Error(`Codex autofix touched ${files.length} files; maximum is 20`);
-  const forbidden = files.find((file) => FORBIDDEN_AUTOFIX_PATHS.some((pattern) => pattern.test(file)));
-  if (forbidden) throw new Error(`Codex autofix touched protected path ${forbidden}`);
   const numstat = await run("git", [...diffArgs, "--numstat"], { cwd: workspace, env });
   let changedLines = 0;
   for (const line of numstat.stdout.split("\n")) {

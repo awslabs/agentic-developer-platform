@@ -1,6 +1,7 @@
 import type { FlowGraph, GraphNode } from '@/types/orchestration';
 import { nodeDependencies, type WaveGroup } from '@/utils/flowLayout';
 import { countByDisplayState } from '@/utils/nodeState';
+import { countStories } from '@/utils/storyCounts';
 import { NodeChip } from './NodeChip';
 import { GateControls } from './GateControls';
 
@@ -25,10 +26,10 @@ interface WaveCardProps {
 
 export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecution }: WaveCardProps) {
   const counts = countByDisplayState(wave.nodes);
-  const stories = wave.nodes.filter((node) => node.kind === 'story');
+  const stories = countStories(wave.nodes);
   const gates = wave.nodes.filter((node) => node.kind === 'gate').length;
-  const evaluations = wave.nodes.filter((node) => node.kind === 'eval').length;
-  const done = stories.filter((node) => node.state === 'passed').length;
+  const checkpoints = wave.nodes.filter((node) => node.kind === 'eval').length - stories.evaluation;
+  const storyType = stories.implementation === 0 ? 'evaluation ' : stories.evaluation === 0 ? 'implementation ' : '';
   const changed = wave.nodes.some((node) => node.state === 'rejected_at_gate');
   const status = changed ? 'Changes requested'
     : counts.stalled ? 'Needs attention'
@@ -68,7 +69,11 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
             <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <span className="text-base font-semibold text-gray-900 dark:text-gray-100">{waveLabel(wave.waveRef)}</span>
               <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                {stories.length} {stories.length === 1 ? 'story' : 'stories'}
+                {stories.total > 0
+                  ? <>{stories.total} {storyType}{stories.total === 1 ? 'story' : 'stories'}</>
+                  : checkpoints > 0
+                    ? <>{checkpoints} evaluation {checkpoints === 1 ? 'checkpoint' : 'checkpoints'}</>
+                    : <>{gates} approval {gates === 1 ? 'gate' : 'gates'}</>}
               </span>
               <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${changed || counts.stalled
                 ? 'bg-orange-100 text-orange-900 dark:bg-orange-900/40 dark:text-orange-200'
@@ -79,7 +84,9 @@ export function WaveCard({ epicRef, wave, graph, expanded, onToggle, renderExecu
               </span>
             </span>
             <span className="block text-xs font-normal text-gray-500 dark:text-gray-400">
-              {done} of {stories.length} stories complete · {gates} approval {gates === 1 ? 'gate' : 'gates'} · {evaluations} {evaluations === 1 ? 'evaluation' : 'evaluations'}
+              {stories.total > 0 && <>{stories.complete} of {stories.total} stories complete · {stories.implementation} implementation · {stories.evaluation} evaluation · </>}
+              {gates} approval {gates === 1 ? 'gate' : 'gates'}
+              {checkpoints > 0 && <> · {checkpoints} evaluation {checkpoints === 1 ? 'checkpoint' : 'checkpoints'}</>}
             </span>
             <span className="block text-xs font-normal text-gray-600 dark:text-gray-400">
               {wave.dependsOn.length

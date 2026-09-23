@@ -421,6 +421,10 @@ class TestModelMigrationParity:
         engine = await _engine_at_pre_039()
         try:
             await _upgrade(engine)
+            # Current-model parity includes later flow columns; the historical
+            # 039 upgrade/downgrade assertions above remain pinned to 039.
+            async with engine.begin() as conn:
+                await conn.run_sync(_run_migration, _load_migration("067_flow_execution_pause.py").upgrade)
             async with engine.connect() as conn:
                 migrated = set(await conn.run_sync(_columns))
             assert {column.name for column in OrchestrationFlow.__table__.columns} == migrated

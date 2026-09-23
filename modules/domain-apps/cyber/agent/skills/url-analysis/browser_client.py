@@ -8,6 +8,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from case_contract import MAX_RESPONSE_BYTES
 from browser_guard import DestinationRefused
 from denylist import DenylistResult
 
@@ -44,28 +45,69 @@ def analyze_url(
     request_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Analyze ``url`` through the broker that exclusively owns browser access."""
-    endpoint = (
-        broker_url
-        or os.environ.get("URL_ANALYSIS_BROWSER_BROKER")
-        or DEFAULT_BROKER_URL
-    ).rstrip("/")
-    body = json.dumps(
+    return _request(
+        "analyze",
         {
             "url": url,
             "wait_until": wait_until,
             "timeout_ms": timeout_ms,
             "ignore_https_errors": ignore_https_errors,
-        }
-    ).encode()
+        },
+        broker_url,
+        request_timeout_seconds,
+    )
+
+
+def capture_url(
+    url: str,
+    *,
+    profile: str = "desktop",
+    wait_seconds: int = 0,
+    timeout_ms: int = 30000,
+    broker_url: str | None = None,
+    request_timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Collect a versioned research bundle through the guarded broker."""
+    return _request(
+        "capture",
+        {
+            "url": url,
+            "profile": profile,
+            "wait_seconds": wait_seconds,
+            "timeout_ms": timeout_ms,
+        },
+        broker_url,
+        request_timeout_seconds,
+    )
+
+
+def investigation_request(operation, payload, *, broker_url=None):
+    """One reasoning-selected operation; never replay a timed-out browser action."""
+    if operation not in {"start", "step", "close"}:
+        raise ValueError("Unsupported investigation operation")
+    return _request("investigation/" + operation, payload, broker_url, 75)
+
+
+def _request(operation, payload, broker_url, request_timeout_seconds):
+    url = payload.get("url", "")
+    endpoint = (
+        broker_url
+        or os.environ.get("URL_ANALYSIS_BROWSER_BROKER")
+        or DEFAULT_BROKER_URL
+    ).rstrip("/")
+    body = json.dumps(payload).encode()
     request = Request(
-        f"{endpoint}/v1/analyze",
+        f"{endpoint}/v1/{operation}",
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
         with urlopen(request, timeout=request_timeout_seconds) as response:
-            result = _decode_json(response.read())
+            body = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise BrowserBrokerError("browser response exceeded byte budget")
+            result = _decode_json(body)
     except HTTPError as error:
         payload = _decode_json(error.read(MAX_ERROR_BYTES))
         if error.code == 403 and payload.get("error") == "destination_refused":
@@ -77,7 +119,7 @@ def analyze_url(
             raise DestinationRefused(url, decision) from error
         message = str(payload.get("message") or "browser broker request failed")
         raise BrowserBrokerError(message) from error
-    except URLError as error:
+    except (URLError, TimeoutError) as error:
         raise BrowserBrokerError("browser broker is unavailable") from error
 
     if result.get("status") != "ok" or not isinstance(result.get("analysis"), dict):

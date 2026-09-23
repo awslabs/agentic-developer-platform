@@ -1368,6 +1368,7 @@ class TestEndpoint:
         summary = body["flows"][0]
 
         assert summary["id"] == flow.id
+        assert summary["execution_paused"] is True
         assert summary["slug"] == "aidlc-delivery-loop-4645"
         assert summary["title"] == "Delivery loop for #4645"
         assert summary["intent_ref"] == "4645"
@@ -1533,6 +1534,36 @@ class TestEndpoint:
 
         assert response.status_code == 403
         assert statements == [], f"queries ran before the permission check: {statements}"
+
+
+async def test_evaluation_story_counts_include_only_current_issue_linked_work(session, app_with_router):
+    flow = await seed_flow(session, slug="task-api-5792")
+    for index in range(9):
+        await seed_node(session, flow, node_ref=f"t{index}", state="passed" if index == 0 else "pending")
+    for index in range(5):
+        node = await seed_node(session, flow, node_ref=f"v{index}", kind="eval", state="passed" if index == 0 else "pending")
+        node.issue_ref = str(5802 + index)
+    await seed_node(session, flow, node_ref="checkpoint", kind="eval", state="passed")
+    await seed_node(session, flow, node_ref="accept", kind="gate", state="passed")
+    for ref, state, org, issue in [
+        ("old-evaluation", "superseded", ORG_A, "5802"),
+        ("foreign-evaluation", "passed", ORG_B, "5802"),
+        ("empty-checkpoint", "passed", ORG_A, ""),
+        ("blank-checkpoint", "passed", ORG_A, "   "),
+    ]:
+        node = await seed_node(session, flow, node_ref=ref, kind="eval", state=state, org_id=org)
+        node.issue_ref = issue
+    await session.flush()
+
+    response = client_for(app_with_router).get(ROUTE)
+    assert response.status_code == 200
+    summary = response.json()["flows"][0]
+    assert summary["story_count"] == 9  # Engine-kind count remains compatible.
+    assert summary["eval_story_count"] == 5
+    assert summary["eval_count"] == 8  # Five stories and three unlinked checkpoints.
+    assert summary["completed_story_count"] == 1
+    assert summary["completed_eval_story_count"] == 1
+    assert summary["story_count"] + summary["eval_story_count"] == 14
 
 
 class TestRequestedChangesSummary:

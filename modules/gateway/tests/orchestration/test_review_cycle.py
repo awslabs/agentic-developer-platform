@@ -87,7 +87,7 @@ async def cycle(pg_url, store, monkeypatch, request):  # noqa: F811
         limits=PolicyLimits(max_wall_clock_seconds=3600, max_spend_usd=Decimal(25), max_attempts_per_node=8, max_concurrent_actions=1),
     )
     async with factory() as db:
-        flow = OrchestrationFlow(org_id=ORG, slug="cycle", title="Cycle", state="running")
+        flow = OrchestrationFlow(execution_paused=False, org_id=ORG, slug="cycle", title="Cycle", state="running")
         db.add(flow)
         await db.flush()
         approval = OrchestrationDecision(org_id=ORG, flow_id=flow.id, kind="plan_accepted", actor_kind="human", actor_id="human", actor_role="owner")
@@ -580,3 +580,23 @@ async def test_result_adapter_cannot_pass_policy_story_from_worker_or_merge(cycl
     assert result.waiting == 1 and result.advanced == 0
     assert not merged.called
     assert (await state(cycle))[2].state == "running"
+
+
+async def test_paused_reviewer_waits_and_resume_dispatches_once(cycle):
+    async with cycle.factory() as db:
+        flow = await db.get(OrchestrationFlow, cycle.node.flow_id)
+        flow.execution_paused = True
+        await db.commit()
+    for _ in range(2):
+        report = await tick(cycle)
+        assert report.errors == 0 and report.effects_attempted == 0
+    execution, _, _, actions = await state(cycle)
+    assert execution.attempts == 0 and actions == []
+    assert cycle.calls == []
+    async with cycle.factory() as db:
+        flow = await db.get(OrchestrationFlow, cycle.node.flow_id)
+        flow.execution_paused = False
+        await db.commit()
+    report = await tick(cycle)
+    assert report.effects_succeeded == 1
+    assert len(cycle.calls) == 1

@@ -48,7 +48,8 @@ async def prepare(session):
     return node
 
 
-async def test_dispatch_commit_publish_crash_and_authenticated_completion(session, session_factory, monkeypatch):
+@pytest.mark.parametrize("paused", [False, True])
+async def test_dispatch_commit_publish_crash_and_authenticated_completion(session, session_factory, monkeypatch, paused):
     node = await prepare(session)
     cfg = _config()
     first = await run_dispatch_pass(session, cfg)
@@ -68,6 +69,12 @@ async def test_dispatch_commit_publish_crash_and_authenticated_completion(sessio
     sqs = FakeSQS()
     publish_pending(second, cfg, client=sqs)
     assert sqs.envelope() == envelope
+
+    from src.orchestration.models import OrchestrationFlow
+
+    flow = await session.get(OrchestrationFlow, node.flow_id)
+    flow.execution_paused = paused
+    await session.commit()
 
     # Worker completion follows the exact published capability; no run ID is in
     # the request body. The same binding powers normal legacy reconciliation.
@@ -154,3 +161,46 @@ async def test_governed_replay_rechecks_current_policy_before_queueing(session, 
     recovered = await run_dispatch_pass(session, _config())
     assert recovered.pending == [] and recovered.publish_failed == 1
     authorizer.assert_awaited_once()
+
+
+async def test_pause_holds_outbox_and_resume_reuses_original_assignment(session):
+    from datetime import UTC, datetime, timedelta
+
+    from src.orchestration.models import OrchestrationFlow
+    from src.orchestration.stall import detect_stalls
+
+    node = await prepare(session)
+    first = await run_dispatch_pass(session, _config())
+    await session.commit()
+    original = first.pending[0].envelope
+    flow = await session.get(OrchestrationFlow, node.flow_id)
+    flow.execution_paused = True
+    await session.commit()
+    paused = await run_dispatch_pass(session, _config())
+    assert paused.pending == [] and paused.dispatched == 0
+    stalls = await detect_stalls(session, now=datetime.now(UTC) + timedelta(hours=7))
+    assert stalls.stalls_detected == 0
+    await session.refresh(node)
+    assert (node.state, node.attempts) == ("running", 1)
+    resumed_at = datetime.now(UTC) + timedelta(hours=7)
+    session.add(
+        OrchestrationDecision(
+            org_id=node.org_id,
+            flow_id=flow.id,
+            kind="flow_resumed",
+            actor_id="operator",
+            actor_kind="human",
+            actor_role="owner",
+            created_at=resumed_at,
+        )
+    )
+    flow.execution_paused = False
+    await session.commit()
+    after_resume = await detect_stalls(session, now=resumed_at + timedelta(seconds=1))
+    assert after_resume.stalls_detected == 0
+    resumed = await run_dispatch_pass(session, _config())
+    assert resumed.pending[0].envelope == original
+    assert node.attempts == 1
+    # A genuinely missing worker after Resume still gets normal stall detection.
+    late = await detect_stalls(session, now=resumed_at + timedelta(hours=7))
+    assert late.stalls_detected == 1

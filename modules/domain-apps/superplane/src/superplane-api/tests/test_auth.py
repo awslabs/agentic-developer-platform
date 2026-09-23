@@ -18,8 +18,8 @@ the status class is what distinguishes "refused" from "malformed".
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import jwt
 import pytest
-from jose import jwt
 
 from app.middleware.auth import create_access_token, decode_token
 from app.routers.auth import _generate_api_key, _hash_api_key, _verify_api_key
@@ -131,6 +131,7 @@ from app.endpoint_inventory import (  # noqa: E402
     DOMAIN_ROUTES,
     all_inventoried,
     classify,
+    mounted_operations,
 )
 from app.main import app as fastapi_app  # noqa: E402
 from app.models.organization import Organization  # noqa: E402
@@ -159,9 +160,11 @@ def _rsa_keypair():
     material in this repository, and none of these values is a credential for
     anything that exists.
     """
+    import json
+
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
-    from jose import jwk
+    from jwt.algorithms import RSAAlgorithm
 
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pem = private.private_bytes(
@@ -169,18 +172,13 @@ def _rsa_keypair():
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
-    public_pem = (
-        private.public_key()
-        .public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        .decode()
-    )
-    jwk_dict = jwk.construct(public_pem, "RS256").to_dict()
-    jwk_dict = {
-        k: (v.decode() if isinstance(v, bytes) else v) for k, v in jwk_dict.items()
-    }
+    # Issue #5601 (S02): PyJWT's `RSAAlgorithm.to_jwk` replaces
+    # `jose.jwk.construct(pem, "RS256").to_dict()`. It returns a JSON STRING rather
+    # than a mapping, and its members are already `str`, so the bytes-decoding pass
+    # the jose version needed is gone. The result is the same public JWK the user
+    # pool would publish — `kty`, `n`, `e` — which is what `jwks_cache` holds and
+    # what `verify_access_token` builds its key from.
+    jwk_dict = json.loads(RSAAlgorithm.to_jwk(private.public_key()))
     jwk_dict.update({"kid": TEST_KID, "alg": "RS256", "use": "sig"})
     return pem, jwk_dict
 
@@ -485,10 +483,11 @@ class TestTokenSignatureVerification:
     def test_unsigned_alg_none_token_is_refused(self, enforcing):
         """`alg: none` must never verify — the classic bypass.
 
-        Hand-assembled rather than minted: python-jose refuses to *produce* an
-        `alg: none` token, but an attacker is under no such constraint, so
-        building the bytes directly is the only way to actually probe the
-        verifier instead of probing the signing library.
+        Hand-assembled rather than minted: the signing library refuses to
+        *produce* an `alg: none` token (this held for python-jose and holds for
+        PyJWT), but an attacker is under no such constraint, so building the bytes
+        directly is the only way to actually probe the verifier instead of probing
+        the signing library.
         """
         import base64
         import json
@@ -543,7 +542,8 @@ class TestTokenSignatureVerification:
 
     def test_token_without_kid_is_refused(self, enforcing):
         forged = jwt.encode({"sub": "a", "exp": 9999999999}, enforcing, "RS256")
-        # python-jose omits `kid` only if not supplied; assert on behaviour.
+        # The library omits `kid` only if not supplied; assert on behaviour rather
+        # than on that promise, so the test survives a library change either way.
         header = jwt.get_unverified_header(forged)
         if "kid" not in header:
             with pytest.raises(TokenRejectedError, match="key id"):
@@ -568,30 +568,93 @@ class TestTokenSignatureVerification:
         returns happily, and an unhashable value then raised `TypeError` out of
         the key-cache dict lookup — a 500 on a path reachable with no credential
         at all, where this module's contract is that a bad token is a 401.
+
+        HAND-ASSEMBLED, for the same reason as the `alg: none` case above. This test
+        used to mint the token with the signing library, which worked under
+        python-jose. PyJWT validates its own `kid` on the ENCODE side
+        (`PyJWS._validate_kid`) and raises `InvalidTokenError` rather than producing
+        the token, so after issue #5601 (S02) minting it here failed in the test
+        helper and never reached the verifier at all.
+
+        That is a signing-side courtesy, NOT a defence: an attacker writes the bytes
+        directly and PyJWT's encode-side check never runs. So the bytes are built by
+        hand to keep probing the verifier rather than the signing library.
+
+        WHICH BRANCH REFUSES IT NOW, stated precisely because it moved. PyJWT also
+        validates `kid` on the DECODE side, inside `get_unverified_header`, so the
+        forged token is refused one branch earlier than before — as "token header is
+        unreadable" rather than by this module's own `isinstance(kid, str)` check.
+        Under python-jose the header parsed fine and that check was the only thing
+        between an unhashable `kid` and a `TypeError` out of the cache lookup.
+
+        The assertion is therefore on the OUTCOME — a `TokenRejectedError`, i.e. a
+        401 — and not on the message, because the message now names a different
+        branch and pinning it would assert an implementation detail of the library.
+        This module's guard is kept as defence in depth: it is what holds if a future
+        library version stops validating `kid` for us, and it costs one `isinstance`.
         """
-        forged = jwt.encode(
-            {"sub": "a", "exp": 9999999999},
-            enforcing,
-            "RS256",
-            headers={"kid": {"nested": "object"}},
+        import base64
+        import json
+
+        def b64(payload: dict) -> str:
+            raw = json.dumps(payload, separators=(",", ":")).encode()
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        # The signature is deliberately junk: `kid` is rejected before any key
+        # lookup or signature check, so a real signature would prove nothing here.
+        forged = (
+            f"{b64({'alg': 'RS256', 'typ': 'JWT', 'kid': {'nested': 'object'}})}."
+            f"{b64({'sub': 'a', 'exp': 9999999999})}."
+            "c2lnbmF0dXJl"
+        )
+        with pytest.raises(TokenRejectedError):
+            domain_auth.verify_access_token(forged)
+
+    def test_module_kid_guard_still_holds_if_the_library_stops_checking(
+        self, enforcing, monkeypatch
+    ):
+        """The defence-in-depth half of the test above, exercised directly.
+
+        The previous test can no longer reach this module's `isinstance(kid, str)`
+        guard, because PyJWT rejects a non-string `kid` inside
+        `get_unverified_header` first. That makes the guard unreachable in practice
+        and therefore untested — and untested code is what quietly stops working.
+
+        So the library's check is stubbed out to simulate a future version that does
+        not perform it, leaving this module's guard as the only thing between an
+        unhashable `kid` and a `TypeError` out of the `jwks_cache` dict lookup. That
+        TypeError would be an unauthenticated 500; the contract is a 401.
+        """
+        monkeypatch.setattr(
+            domain_auth.jwt,
+            "get_unverified_header",
+            lambda token: {"alg": "RS256", "kid": {"nested": "object"}},
         )
         with pytest.raises(TokenRejectedError, match="key id"):
-            domain_auth.verify_access_token(forged)
+            domain_auth.verify_access_token("irrelevant-the-header-is-stubbed")
 
     def test_unusable_published_key_is_refused_not_a_server_error(
         self, enforcing, monkeypatch
     ):
-        """`JWKError` is a SIBLING of `JWTError`, not a subclass.
+        """A structurally unusable published key is a denial, not a 500.
 
-        So a structurally unusable key in the published JWKS escaped a
-        `JWTError`-only handler, as did the `ValueError` the underlying key
-        construction raises ("e must be >= 3 and < n"). Both are triggered by an
-        unauthenticated request and must be denials, not 500s.
+        Both cases are reachable by an unauthenticated request — the JWKS content
+        is the user pool's, not the caller's, but the caller chooses the `kid` that
+        selects which entry is used — so neither may surface as a server error.
+
+        Under python-jose these escaped through two DIFFERENT holes, which is why
+        both are still asserted: `JWKError` was a SIBLING of `JWTError` rather than
+        a subclass, so it passed straight through a `JWTError`-only handler, and the
+        underlying key construction raised a bare `ValueError` that was in no jose
+        hierarchy at all. Issue #5601 (S02) moved this path to PyJWT, where both now
+        raise `InvalidKeyError` under the single `PyJWTError` root. The test is kept
+        at full breadth rather than narrowed to the new library's behaviour: it
+        pins the OUTCOME (a denial) for the same two malformed keys, so it would
+        still catch a regression if the key construction moved back out of the
+        handled hierarchy.
         """
-        # `kty: oct` raises `JWKError` ("Incorrect key type"), which is the
-        # sibling class. A short `n` on an RSA key raises a bare `ValueError`
-        # ("e must be >= 3 and < n") from the key construction. Both are asserted
-        # because they escaped through different holes.
+        # `kty: oct` is the wrong key type for RS256 ("Not an RSA key"). A short `n`
+        # on an RSA key fails the construction itself ("e must be >= 3 and < n").
         for unusable in (
             {"kty": "oct", "kid": TEST_KID, "k": "c2VjcmV0"},
             {"kty": "RSA", "kid": TEST_KID, "n": "AQAB", "e": "AQAB"},
@@ -906,26 +969,43 @@ class TestRouteInventoryCoverage:
     """Every mounted route must carry a recorded authorization decision."""
 
     def _mounted(self):
-        from fastapi.routing import APIRoute
+        """The routes the app really serves.
 
-        mounted = set()
-        for route in fastapi_app.routes:
-            path = getattr(route, "path", None)
-            methods = getattr(route, "methods", None) or set()
-            if path is None:
-                continue
-            if not isinstance(route, APIRoute) and path not in {
-                "/openapi.json",
-                "/docs",
-                "/docs/oauth2-redirect",
-                "/redoc",
-            }:
-                continue
-            for method in methods:
-                if method in {"HEAD", "OPTIONS"}:
-                    continue
-                mounted.add((method.upper(), path))
-        return mounted
+        Delegates to `app/endpoint_inventory.py::mounted_operations`, which is
+        shared with the other enumeration sites and refuses to return an empty
+        set. This helper used to do its own `isinstance(route, APIRoute)` walk over
+        `app.routes` and, after FastAPI started storing included routers lazily,
+        found ZERO routes — so every assertion below passed while examining
+        nothing. See issue #5682 (A02).
+        """
+        return mounted_operations(fastapi_app)
+
+    def test_enumeration_finds_the_routes_it_is_supposed_to_check(self):
+        """The guard on the guard.
+
+        Every other test in this class compares the mounted set against the
+        inventory, and `mounted - inventoried` is empty when `mounted` is empty.
+        So an enumeration that breaks makes this whole class pass vacuously —
+        which is exactly what happened. Asserting a plausible floor here means a
+        future framework change fails loudly instead of going quietly green.
+        """
+        mounted = self._mounted()
+        assert len(mounted) > 50, (
+            f"only {len(mounted)} routes enumerated; the app serves far more, so "
+            "the inventory checks in this class are not examining the real surface"
+        )
+        assert ("GET", "/api/v1/research/findings") in mounted
+        assert ("POST", "/workspaces/{workspace_id}/kubeconfig") in mounted
+
+    def test_enumeration_refuses_to_report_an_empty_app_as_success(self):
+        """An app with no routes raises rather than returning an empty set."""
+        from fastapi import FastAPI
+
+        from app.endpoint_inventory import NoRoutesEnumerated
+
+        empty = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+        with pytest.raises(NoRoutesEnumerated):
+            mounted_operations(empty)
 
     def test_every_mounted_route_is_inventoried(self):
         """A new route cannot ship without a decision — collection fails first.
@@ -1580,21 +1660,62 @@ class TestUninventoriedRouteFailsClosed:
         assert response.status_code == 404
 
 
-class TestLegacyActorFallback:
-    """With enforcement off, the legacy body field is still the only actor."""
+class TestRecordedActorComesFromTheCredential:
+    """The approval audit trail is never authored by the request body.
 
-    def test_body_value_is_used_when_no_verified_caller(self):
-        """Documents the legacy path rather than pretending it is gone.
+    This class replaces TestLegacyActorFallback, which asserted the opposite:
+    that with enforcement off, an `approved_by` field in the request body was
+    the recorded actor. That was the weakness A02 (issue #5682) exists to
+    close — an anonymous caller could stamp any name onto an approval. The
+    body field is no longer read at all, so the property worth pinning now is
+    that every branch of _recorded_actor derives from a server-verified
+    identity. U21 still owns retiring the legacy HS256 path itself.
+    """
 
-        U21 owns retiring it. What matters here is that the body value is used
-        ONLY when no verified caller exists — never in preference to one.
-        """
+    def test_verified_caller_subject_is_preferred(self):
         from types import SimpleNamespace
 
         from app.routers.research import _recorded_actor
 
-        unenforced = SimpleNamespace(state=SimpleNamespace())
-        assert _recorded_actor(unenforced, "legacy-actor") == "legacy-actor"
+        caller = SimpleNamespace(principal=SimpleNamespace(subject="cognito-sub-1"))
+        request = SimpleNamespace(state=SimpleNamespace(caller=caller))
+        actor = _recorded_actor(request, {"org_id": uuid.uuid4(), "user_id": None})
+        assert actor == "cognito-sub-1"
+
+    def test_legacy_token_user_id_is_used_when_there_is_no_domain_caller(self):
+        """The HS256 path has no subject, but its user_id is still server-derived."""
+        from types import SimpleNamespace
+
+        from app.routers.research import _recorded_actor
+
+        user_id = uuid.uuid4()
+        request = SimpleNamespace(state=SimpleNamespace())
+        actor = _recorded_actor(request, {"org_id": uuid.uuid4(), "user_id": user_id})
+        assert actor == str(user_id)
+
+    def test_org_scoped_token_records_the_org_not_an_unverified_name(self):
+        """Worst case is an honest org attribution, never a caller-chosen string."""
+        from types import SimpleNamespace
+
+        from app.routers.research import _recorded_actor
+
+        org_id = uuid.uuid4()
+        request = SimpleNamespace(state=SimpleNamespace())
+        actor = _recorded_actor(request, {"org_id": org_id, "user_id": None})
+        assert actor == f"org:{org_id}"
+
+    def test_a_body_supplied_actor_cannot_be_recorded(self):
+        """The regression guard: approve/reject must ignore body-supplied names."""
+        import inspect
+
+        from app.routers import research
+
+        source = inspect.getsource(research)
+        assert "_recorded_actor(http_request, request.approved_by" not in source
+        assert "_recorded_actor(http_request, request.rejected_by" not in source
+
+        signature = inspect.signature(research._recorded_actor)
+        assert list(signature.parameters) == ["http_request", "user_context"]
 
 
 class TestEnvironmentStateIsObservable:

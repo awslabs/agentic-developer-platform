@@ -828,6 +828,44 @@ describe('the nine→five projection covers every engine state', () => {
 });
 
 
+it('counts Task API evaluation issues as stories and keeps checkpoints and historical attempts separate', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
+    ...Array.from({ length: 9 }, (_, i) => makeNode({
+      node_ref: `t${i}`, wave_ref: 'component-delivery', issue_ref: String(5793 + i),
+      state: i === 0 ? 'passed' : 'pending',
+    })),
+    ...Array.from({ length: 5 }, (_, i) => makeNode({
+      node_ref: `v${i + 1}`, kind: 'eval', wave_ref: `validation-v${i + 1}`, issue_ref: String(5802 + i),
+      state: i === 0 ? 'passed' : 'pending',
+    })),
+    makeNode({ node_ref: 'checkpoint', kind: 'eval', wave_ref: 'component-delivery', state: 'passed' }),
+    makeNode({ node_ref: 'accept', kind: 'gate', wave_ref: 'component-delivery', state: 'passed' }),
+    makeNode({ node_ref: 'old-v1', kind: 'eval', wave_ref: 'validation-v1', issue_ref: '5802', state: 'superseded' }),
+  ] }));
+  renderGraph();
+  const summary = await screen.findByTestId('plan-summary');
+  expect(summary).toHaveTextContent('14 stories across 6 waves');
+  expect(summary).toHaveTextContent('9 implementation · 5 evaluation · 1 approval gate · 1 evaluation checkpoint');
+  expect(screen.getByTestId('story-completion-count')).toHaveTextContent('2 of 14 stories complete');
+  expect(screen.getByTestId('wave-epic-1-component-delivery')).toHaveTextContent('9 implementation stories');
+  for (let i = 1; i <= 5; i++) {
+    const wave = screen.getByTestId(`wave-epic-1-validation-v${i}`);
+    expect(within(wave).getByRole('heading')).toHaveTextContent('1 evaluation story');
+    expect(within(wave).getByRole('heading')).not.toHaveTextContent('0 stories');
+    expect(wave).toHaveTextContent(`${i === 1 ? 1 : 0} of 1 stories complete`);
+    expect(within(wave).getByText('Evaluation story')).toBeInTheDocument();
+  }
+});
+
+it('does not label a checkpoint-only wave as an evaluation story', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [makeNode({ node_ref: 'check', kind: 'eval' })] }));
+  renderGraph();
+  const wave = await screen.findByTestId('wave-epic-1-wave-1');
+  expect(within(wave).getByRole('heading')).toHaveTextContent('1 evaluation checkpoint');
+  expect(wave).not.toHaveTextContent('0 of 0 stories complete');
+  expect(screen.queryByTestId('story-completion-count')).not.toBeInTheDocument();
+});
+
 it('separates stories from controls and explains a persisted change request', async () => {
   mockGetFlowGraph.mockResolvedValue(makeGraph({ nodes: [
     makeNode({ node_ref: 'story-1' }),
@@ -839,7 +877,7 @@ it('separates stories from controls and explains a persisted change request', as
   ] }));
   renderGraph();
   expect(await screen.findByText('2 stories across 2 waves')).toBeInTheDocument();
-  expect(screen.getByText('1 approval gate · 1 evaluation')).toBeInTheDocument();
+  expect(screen.getByTestId('plan-summary')).toHaveTextContent('2 implementation · 0 evaluation · 1 approval gate · 1 evaluation checkpoint');
   // Two alerts can coexist on this page now: the change request asserted here and
   // the #5145 ledger-read notice, which this suite's rejected `getFlowExecution`
   // baseline raises in every test. The query names which one it means rather than
@@ -924,4 +962,11 @@ it('shows shared-gate fan-out and fan-in as separate groups', async () => {
   expect(within(parallel).getByTestId('node-b')).toBeVisible();
   expect(within(parallel).queryByTestId('node-review')).not.toBeInTheDocument();
   expect(screen.getByTestId('node-blocked-by-review')).toHaveTextContent('Waiting on 2 steps');
+});
+
+it('shows the persisted per-flow pause state alongside graph progress', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ execution_paused: true }));
+  renderGraph();
+  expect(await screen.findByText('Paused')).toBeInTheDocument();
+  expect(screen.getByText(/Resume preserves progress and attempts/)).toBeInTheDocument();
 });

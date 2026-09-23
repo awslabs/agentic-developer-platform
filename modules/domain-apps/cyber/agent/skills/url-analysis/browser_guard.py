@@ -11,6 +11,7 @@ is offline, has service workers disabled and has all routes installed.
 
 from __future__ import annotations
 
+import base64
 import http.client
 import io
 import logging
@@ -204,6 +205,7 @@ class PinnedResponse:
     status: int
     headers: dict[str, str]
     body: bytes
+    connected_ip: str = ""
 
 
 class PinnedHTTPTransport:
@@ -378,7 +380,9 @@ class PinnedHTTPTransport:
                     response_headers[name] = f"{response_headers[name]}\n{value}"
                 else:
                     response_headers[name] = value
-            return PinnedResponse(response.status, response_headers, response_body)
+            return PinnedResponse(
+                response.status, response_headers, response_body, connect_ip
+            )
         except TimeoutError as error:
             raise self._refuse(
                 url,
@@ -387,6 +391,53 @@ class PinnedHTTPTransport:
             ) from error
         finally:
             connection.close()
+
+
+class _CDPRequest:
+    """Request facade for Fetch interception, including redirected requests."""
+
+    def __init__(self, event, main_frame_id=None):
+        self._request = event["request"]
+        self.url = self._request["url"]
+        self.method = self._request["method"]
+        self.post_data_buffer = None
+        self._navigation = event.get("resourceType") == "Document"
+        self.is_main_navigation = self._navigation and (
+            main_frame_id is None or event.get("frameId") == main_frame_id
+        )
+
+    def all_headers(self):
+        return self._request.get("headers", {})
+
+    def is_navigation_request(self):
+        return self._navigation
+
+
+class _CDPRoute:
+    def __init__(self, cdp, request_id):
+        self._cdp = cdp
+        self._request_id = request_id
+
+    def abort(self, reason):
+        self._cdp.send(
+            "Fetch.failRequest",
+            {"requestId": self._request_id, "errorReason": "BlockedByClient"},
+        )
+
+    def fulfill(self, *, status, headers, body):
+        self._cdp.send(
+            "Fetch.fulfillRequest",
+            {
+                "requestId": self._request_id,
+                "responseCode": status,
+                "responseHeaders": [
+                    {"name": k, "value": part}
+                    for k, v in headers.items()
+                    for part in v.split("\n")
+                ],
+                "body": base64.b64encode(body).decode(),
+            },
+        )
 
 
 @dataclass
@@ -398,6 +449,11 @@ class NavigationGuard:
     config: DenylistConfig | None = None
     transport: PinnedHTTPTransport = field(default_factory=PinnedHTTPTransport)
     refusals: list[dict[str, str | bool]] = field(default_factory=list)
+    read_only: bool = False
+    connections: list[dict] = field(default_factory=list)
+    connections_dropped: int = 0
+    refusals_dropped: int = 0
+    navigation_check: object = None
 
     def decide(self, url: str) -> DenylistResult:
         """Re-resolve every request and bind the original host to its vetted set."""
@@ -409,17 +465,28 @@ class NavigationGuard:
             and parsed_host == self.target_host
             and self.vetted.resolved_ips
         ):
-            for address in result.resolved_ips:
-                bound = check_connect_address(
-                    address, self.vetted.resolved_ips, self.config
+            # Public load balancers rotate their DNS answers between observations.
+            # Keep only addresses approved at session start and still advertised
+            # now. check_url above rejects the entire answer if any IP is unsafe;
+            # this intersection never expands the session's approved addresses.
+            retained = [
+                address
+                for address in result.resolved_ips
+                if address in self.vetted.resolved_ips
+            ]
+            if not retained:
+                return check_connect_address(
+                    result.resolved_ips[0], self.vetted.resolved_ips, self.config
                 )
-                if not bound.allowed:
-                    return bound
+            return DenylistResult(allowed=True, resolved_ips=retained)
         return result
 
     def _record_refusal(
         self, url: str, result: DenylistResult, *, navigation: bool = False
     ) -> None:
+        if len(self.refusals) >= 200:
+            self.refusals_dropped += 1
+            return
         safe_url = scrub_url_credentials(url)
         logger.warning(
             "url-analysis blocked request: url=%s code=%s reason=%s",
@@ -442,6 +509,32 @@ class NavigationGuard:
         url = getattr(target, "url", "") or ""
         is_navigation_request = getattr(target, "is_navigation_request", None)
         navigation = bool(is_navigation_request and is_navigation_request())
+        if self.read_only and getattr(target, "method", "GET") not in {
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        }:
+            self._record_refusal(
+                url,
+                DenylistResult(
+                    allowed=False,
+                    reason="State-changing HTTP methods are disabled",
+                    reason_code="method_not_allowed",
+                ),
+                navigation=navigation,
+            )
+            route.abort("blockedbyclient")
+            return
+        if (
+            navigation
+            and getattr(target, "is_main_navigation", True)
+            and self.navigation_check is not None
+        ):
+            result = self.navigation_check(url)
+            if not result.allowed:
+                self._record_refusal(url, result, navigation=True)
+                route.abort("blockedbyclient")
+                return
         result = self.decide(url)
         if not result.allowed:
             self._record_refusal(url, result, navigation=navigation)
@@ -463,6 +556,17 @@ class NavigationGuard:
             route.abort("connectionfailed")
             return
 
+        if len(self.connections) < 200:
+            self.connections.append(
+                {
+                    "url": scrub_url_credentials(url),
+                    "connected_ip": response.connected_ip,
+                    "status": response.status,
+                    "response_bytes": len(response.body),
+                }
+            )
+        else:
+            self.connections_dropped += 1
         route.fulfill(
             status=response.status, headers=response.headers, body=response.body
         )
@@ -477,6 +581,27 @@ class NavigationGuard:
         )
         self._record_refusal(url, result)
         websocket_route.close(code=1008, reason="destination refused")
+
+    def install_cdp(self, context, page) -> None:
+        """Fetch sees every redirect; Playwright routes handle only the first hop.
+
+        Browser networking remains offline. Unattached targets fail closed.
+        No continueRequest/continue route operation exists in this path.
+        """
+        cdp = context.new_cdp_session(page)
+        tree = cdp.send("Page.getFrameTree") or {}
+        main_frame_id = tree.get("frameTree", {}).get("frame", {}).get("id")
+        cdp.on(
+            "Fetch.requestPaused",
+            lambda event: self.handle_route(
+                _CDPRoute(cdp, event["requestId"]), _CDPRequest(event, main_frame_id)
+            ),
+        )
+        cdp.send(
+            "Fetch.enable",
+            {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
+        )
+        context.route_web_socket("**/*", self.handle_websocket)
 
     def install(self, context) -> None:
         """Install policy before any page exists in the guarded context."""
@@ -519,8 +644,47 @@ class GuardedBrowserSession:
     def main_frame(self):
         return self._page.main_frame
 
+    @property
+    def frames(self):
+        return self._page.frames
+
+    @property
+    def browser_version(self):
+        return self._browser.version
+
+    def wait_for_timeout(self, milliseconds: int):
+        return self._page.wait_for_timeout(milliseconds)
+
     def goto(self, url: str, **kwargs):
         return self._page.goto(url, **kwargs)
+
+    def go_back(self):
+        return self._page.go_back(wait_until="domcontentloaded", timeout=30000)
+
+    def click_observed(self, selector: str, index: int, expected: dict):
+        """Only broker-owned selectors and inspected elements enter this facade."""
+        element = self._page.locator(selector).nth(index)
+        actual = element.evaluate(
+            "e => ({href:e.href || '', text:(e.innerText || e.textContent || '').slice(0,150), download:e.hasAttribute('download'), target:e.getAttribute('target') || ''})"
+        )
+        if actual != expected:
+            raise ValueError("Observed element changed; inspect a fresh view")
+        if actual["download"]:
+            raise ValueError("Download clicks are disabled")
+        same_tab = bool(
+            actual["href"] and actual["target"] not in {"", "_self", "_top", "_parent"}
+        )
+        if same_tab:
+            # Follow the selected link without allowing an unguarded new target.
+            # The source click handler still runs, preserving its session state.
+            element.evaluate("e => e.setAttribute('target', '_self')")
+        element.click(timeout=10000, no_wait_after=False)
+        self._page.wait_for_timeout(200)
+        return {"target_rewritten_to_self": same_tab}
+
+    def scroll_view(self):
+        self._page.evaluate("window.scrollBy(0, Math.min(window.innerHeight, 900))")
+        self._page.wait_for_timeout(200)
 
     def screenshot(self, **kwargs):
         return self._page.screenshot(**kwargs)
@@ -570,6 +734,8 @@ def open_guarded_browser(
     client_factory=None,
     context_options: dict | None = None,
     transport: PinnedHTTPTransport | None = None,
+    read_only: bool = False,
+    navigation_check=None,
 ) -> GuardedBrowserSession:
     """Create and return the only supported URL-analysis browser interface."""
     vetted = vet_destination(url, config)
@@ -593,6 +759,8 @@ def open_guarded_browser(
         options["service_workers"] = "block"
         context = browser.new_context(**options)
         guard = NavigationGuard(
+            read_only=read_only,
+            navigation_check=navigation_check,
             vetted=vetted,
             target_host=_host_of(url),
             config=config,
@@ -601,8 +769,13 @@ def open_guarded_browser(
                 verify_tls=not bool(options.get("ignore_https_errors"))
             ),
         )
-        guard.install(context)
+        if not read_only:
+            guard.install(context)
         page = context.new_page()
+        if read_only:
+            guard.install_cdp(context, page)
+            context.on("page", lambda other: other.close() if other != page else None)
+            page.set_default_timeout(10000)
         return GuardedBrowserSession(
             client=client,
             session_id=session_id,

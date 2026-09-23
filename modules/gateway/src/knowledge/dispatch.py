@@ -25,6 +25,7 @@ from typing import Any, Protocol
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.knowledge.source_admission import SourceAdmissionError, admit_source
 from src.knowledge.type_registry import ASSET_TYPE_REGISTRY
 
 logger = logging.getLogger("bedrockgateway.knowledge.dispatch")
@@ -200,6 +201,11 @@ async def dispatch_ingestion(
             asset_type,
             asset_id,
         )
+        return False
+
+    try:
+        await admit_source(asset_type, source_ref, tenant_id, owner_sub)
+    except SourceAdmissionError:
         return False
 
     # Build the SQS message

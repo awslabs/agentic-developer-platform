@@ -207,6 +207,7 @@ class TestNoOpResponseBody:
 
 class TestTriggeringPathUnaffected:
     @pytest.mark.parametrize("event_type", ["issues", "pull_request"])
+    @patch.dict("os.environ", {"GITHUB_AUTO_PR_REVIEW_ENABLED": "true"})
     def test_dispatched_run_writes_no_skip_reason(self, event_type):
         """Regression: a real dispatch must not acquire a skip_reason.
 

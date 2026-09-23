@@ -1,0 +1,62 @@
+name: cyber-k8s-deploy
+description: Cyber-owned implementation for cyber-k8s-deploy.
+runs:
+  using: composite
+  steps:
+  - name: Load cyber configuration
+    shell: bash
+    env:
+      AWS_REGION: us-east-1
+      EKS_CLUSTER: adp-dev-cyber-eks
+    run: |
+      python3 - <<'PYENV'
+      import os, uuid
+      with open(os.environ["GITHUB_ENV"], "a") as stream:
+          for key in ['AWS_REGION', 'EKS_CLUSTER']:
+              marker = uuid.uuid4().hex
+              stream.write(f"{key}<<{marker}\n{os.environ[key]}\n{marker}\n")
+      PYENV
+  - name: Verify reviewed runner tools
+    run: |
+      set -euo pipefail
+      for tool in aws terraform kubectl jq python3 psql; do
+        command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+      done
+      python3 -c 'import yaml'
+    shell: bash
+  - name: Configure kubectl for cyber EKS
+    run: |
+      aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "${{ env.EKS_CLUSTER }}"
+      kubectl cluster-info
+    shell: bash
+  - name: Resolve deployment variables
+    id: vars
+    run: |
+      ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      REGION="${{ env.AWS_REGION }}"
+      {
+        echo "account_id=${ACCOUNT_ID}"
+        echo "ecr_image=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/adp-cyber-worker:latest"
+        echo "triage_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-tasks.fifo"
+        echo "triage_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-responses.fifo"
+        echo "static_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-tasks.fifo"
+        echo "static_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-responses.fifo"
+      } >> "$GITHUB_OUTPUT"
+    shell: bash
+  - name: Apply cyber-workers manifests
+    run: |
+      for f in modules/domain-apps/cyber/k8s/*.yaml; do
+        echo "=== Applying $f ==="
+        sed \
+          -e "s|REPLACE_WITH_CYBER_WORKER_IMAGE|${{ steps.vars.outputs.ecr_image }}|g" \
+          -e "s|REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL|${{ steps.vars.outputs.triage_tasks_queue }}|g" \
+          -e "s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue }}|g" \
+          -e "s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g" \
+          -e "s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g" \
+          "$f" | kubectl apply -f -
+      done
+    shell: bash
+  - name: Summary
+    run: "echo \"## Cyber K8s deploy \u2014 applied\" >> \"$GITHUB_STEP_SUMMARY\"\nfor f in modules/domain-apps/cyber/k8s/*.yaml;\
+      \ do\n  echo \"- \\`$f\\`\" >> \"$GITHUB_STEP_SUMMARY\"\ndone\n"
+    shell: bash

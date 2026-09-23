@@ -1,0 +1,18 @@
+{
+  "cyber-worker": {
+    "buildspec": "modules/domain-apps/cyber/codebuild/bs-cyber-worker.yml",
+    "ecr_repos": [
+      "adp-cyber-worker"
+    ],
+    "privileged": true,
+    "privileged_why": "docker build of the cyber-worker image"
+  },
+  "cyber-browser": {
+    "buildspec": "modules/domain-apps/cyber/codebuild/bs-cyber-browser.yml",
+    "ecr_repos": [
+      "adp-cyber-browser"
+    ],
+    "privileged": true,
+    "privileged_why": "docker build of the cyber-browser image"
+  }
+}

@@ -76,3 +76,9 @@ def test_ready_pr_push_preserves_bot_loop_guard(pr_event):
     else:
         assert intent.persona == "agent-codex-reviewer"
         assert reason is None
+
+
+@pytest.fixture(autouse=True)
+def automatic_pr_reviews_enabled(monkeypatch):
+    """These legacy review/branch tests exercise the explicit opt-in path."""
+    monkeypatch.setenv("GITHUB_AUTO_PR_REVIEW_ENABLED", "true")

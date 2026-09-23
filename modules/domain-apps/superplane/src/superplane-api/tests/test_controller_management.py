@@ -75,7 +75,7 @@ async def test_management_startup_never_starts_legacy_reconcilers(monkeypatch):
     from app import installation, main
     monkeypatch.setenv("SUPERPLANE_MANAGEMENT_ONLY", "true")
     monkeypatch.setattr(app.state, "domain_policy", object())
-    monkeypatch.setattr(installation, "database_check", AsyncMock(return_value={"revision": "016_add_organization_grants"}))
+    monkeypatch.setattr(installation, "database_check", AsyncMock(return_value={"revision": "017_add_workspace_bootstrap_reservations"}))
     workspace_start, vault_start = AsyncMock(), AsyncMock()
     monkeypatch.setattr(main.workspace_reconciler, "start", workspace_start)
     monkeypatch.setattr(main.vault_sync_reconciler, "start", vault_start)
