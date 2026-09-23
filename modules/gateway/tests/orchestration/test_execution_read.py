@@ -613,17 +613,30 @@ async def test_denied_caller_cannot_learn_whether_the_flow_exists(session, app_w
 
 
 @pytest.mark.asyncio
-async def test_no_control_or_acceptance_permission_is_introduced(app_with_router):
-    """The route is read-only: GET exists, mutating verbs do not.
+async def test_progress_visibility_does_not_grant_pause_resume_permission(session, app_with_router, monkeypatch):
+    """Reading progress remains available without the separate control authority."""
+    from unittest.mock import AsyncMock
 
-    The issue forbids adding a control or acceptance permission. This asserts the
-    surface rather than the intent — a POST/PATCH/DELETE on this path must not be
-    routable at all, so no future edit can quietly attach a write to the read model.
-    """
+    from src.admin.exceptions import AccessDeniedError
+
+    flow = await seed_flow(session)
     client = client_for(app_with_router)
-    path = route("any-flow-id")
+    path = route(flow.id)
+    check = AsyncMock(
+        side_effect=AccessDeniedError(
+            message="Permission 'plan:approve' is required for this operation",
+            required_permission=Permission.PLAN_APPROVE.value,
+            user_role="member",
+        )
+    )
+    monkeypatch.setattr("src.orchestration.flow_controls.AccessControl.check_permission", check)
 
-    assert client.post(path, json={}).status_code == 405
+    assert client.get(path).status_code == 200
+    assert client.post(path, json={"paused": False}).status_code == 403
+    check.assert_awaited_once()
+    assert check.call_args.args[1] == Permission.PLAN_APPROVE
+    await session.refresh(flow)
+    assert flow.execution_paused is True
     assert client.patch(path, json={}).status_code == 405
     assert client.delete(path).status_code == 405
 

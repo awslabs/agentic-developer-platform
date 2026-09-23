@@ -19,6 +19,11 @@
 #   python3 -m account_factory.cli render --config my-request.yaml
 #   python3 -m account_factory.cli validate --config my-request.yaml
 #   python3 -m account_factory.cli cleanup-plan --config my-request.yaml
+#   python3 -m account_factory.cli creation-status --config my-request.yaml \
+#     --attempt-ledger recorded-attempts.yaml
+#   python3 -m account_factory.cli bootstrap-plan --config my-request.yaml
+#   python3 -m account_factory.cli recovery-report --config my-request.yaml \
+#     --attempt-ledger recorded-attempts.yaml --observed bootstrap-role=established
 #
 # ─────────────────────────────────────────────────────────────────────────────────────
 # MODE 1: new-account-managed — ADP vends a new AWS account and builds everything in it.
@@ -62,6 +67,16 @@ workspace_id: ws-example
 # Use an address your organization controls and that is not a personal mailbox.
 account_email: adp-ws-example@example.invalid
 
+# Required in this mode only (#5531): the organizational unit the new account is placed into
+# AT CREATION. There is deliberately no default, because omitting a parent does not mean "no
+# OU" to AWS — it places the account at the organization ROOT, which is the LEAST restricted
+# placement and outside whatever guardrails the OU carries. An organization root id (r-xxxx)
+# is refused by shape for the same reason.
+#
+# Placement happens at creation rather than create-then-move so there is no window in which a
+# live account sits outside its guardrails.
+organizational_unit_id: ou-EXAMPLE1-example123
+
 # Cluster inputs, required when the request creates a cluster.
 vpc_cidr: 10.64.0.0/16
 availability_zones:
@@ -75,6 +90,77 @@ node_instance_type: m6i.large
 # Deliberately absent in this mode:
 #   target_account_id      — the account does not exist yet, so any id names another account
 #   existing_cluster_name  — the cluster is created by this request
+#
+# ── Before the account is actually created ──────────────────────────────────────────
+#
+# Creating the account is asynchronous, so `creation-status` decides whether calling
+# CreateAccount is a first attempt, a duplicate, or a permitted retry:
+#
+#   python3 -m account_factory.cli creation-status --config my-request.yaml \
+#     --attempt-ledger recorded-attempts.yaml
+#
+# It exits non-zero whenever creation is NOT permitted, and emits the record to persist
+# BEFORE the call as `record_before_calling`. A record written afterwards is missing in
+# exactly the case it is needed for: the call happened and the answer was lost.
+#
+# Report what AWS said about a recorded attempt with `--aws-status`, `--aws-request-id`,
+# `--aws-failure` and `--aws-account-id`. When AWS could not be consulted at all, use
+# `--aws-unreadable "<why>"` — there is no `--aws-status unknown`, because "I could not
+# check" is not something AWS reported. It blocks BOTH a retry and releasing the workspace:
+# repeating the call could open a second account, and concluding failure could abandon a real
+# one. An omitted `--attempt-ledger` means no attempt was recorded; a ledger path that cannot
+# be read is refused rather than treated as empty.
+#
+# ── After the account exists, before a workspace is built in it ──────────────────────
+#
+# A vended account has no role ADP can assume, no baseline controls and no
+# AWSServiceRoleForAutoScaling. `bootstrap-plan` lists what must be established and in what
+# order:
+#
+#   python3 -m account_factory.cli bootstrap-plan --config my-request.yaml
+#
+# The Auto Scaling service-linked role has to come BEFORE any workspace KMS key, because the
+# key policy names that role's ARN and KMS validates principals at key-CREATION time — without
+# it the key cannot be created, and the error reads as a malformed policy rather than a missing
+# role. Every step is account-wide: none of it may enter per-workspace Terraform state, because
+# a workspace that adopted it would delete it on teardown and break every other workspace in
+# the account. Existing resources are reused after a read that VERIFIES absence, never
+# recreated and never by swallowing an already-exists error.
+#
+# Like every other subcommand this only describes. No role is created, read or assumed.
+#
+# ── When the account was created but bootstrap did not finish ─────────────────────────
+#
+# The account is real and billable while the roles that make it usable are partly absent. Both
+# instincts are wrong: retrying from the top can open a SECOND account if the creation outcome
+# was never read, and tearing it down is the same irreversible 90-day suspension of an id nobody
+# can reuse. `recovery-report` separates what exists, what is incomplete, what a retry would and
+# would not repeat, and what is retained regardless:
+#
+#   python3 -m account_factory.cli recovery-report --config my-request.yaml \
+#     --attempt-ledger recorded-attempts.yaml \
+#     --observed bootstrap-role=established \
+#     --observed controller-role=absent \
+#     --observed autoscaling-service-linked-role=denied \
+#     --observed-detail autoscaling-service-linked-role="iam:CreateServiceLinkedRole denied"
+#
+# `--observed STEP=STATE` reports what a read established: `established`, `absent`, `denied` or
+# `not-checked`. A step you do NOT report is `not-checked`, not "fine" — nobody looked, so it is
+# neither known present (which would let the account read as ready) nor known absent (which would
+# invite creating something that may already exist). Any unread step keeps the report incomplete
+# and a bootstrap retry unsafe. `denied` REQUIRES an `--observed-detail`: a denial nobody described
+# cannot be told from a guess, and the remedy depends on which permission was refused. A detail
+# naming a step the plan does not have is REFUSED rather than dropped — the likely cause is a typo
+# in the step name, and a dropped detail loses the one part of the report nobody can reconstruct.
+#
+# Like `bootstrap-plan`, this reports which authorization comparisons were NOT made (`NOT VERIFIED`
+# on stderr, `authorization_not_verified` in the payload). These two subcommands describe writing
+# account-wide roles and can call an account ready for a workspace, so an unverified run must not
+# read like a verified one.
+#
+# It exits non-zero while the account is not ready for a workspace, including when the recorded
+# creation outcome is unresolved. Nothing is read and nothing is repaired: every state comes from
+# whoever actually looked, and `next_action` is text for an operator to carry out elsewhere.
 
 # ─────────────────────────────────────────────────────────────────────────────────────
 # MODE 2: existing-account-managed — the account exists; ADP builds the network + cluster.
@@ -104,7 +190,11 @@ node_instance_type: m6i.large
 # node_instance_type: m6i.large
 #
 # Deliberately absent: account_email (the account exists; its address is not ours to set),
-# existing_cluster_name (the cluster is created by this request).
+# existing_cluster_name (the cluster is created by this request), organizational_unit_id.
+#
+# organizational_unit_id is REFUSED here rather than ignored: acting on it would RE-PARENT an
+# account that already exists — moving it between guardrail sets as a side effect of a
+# workspace request — while ignoring it would mislead whoever wrote it.
 
 # ─────────────────────────────────────────────────────────────────────────────────────
 # MODE 3: bring-existing-cluster — ADP adopts an existing cluster and creates no AWS
@@ -128,9 +218,14 @@ node_instance_type: m6i.large
 # existing_cluster_name: EXAMPLE-cluster   # required: the cluster being adopted
 #
 # Deliberately absent, and REFUSED rather than ignored if supplied: account_email,
-# vpc_cidr, availability_zones, cluster_version, node_instance_type. None of them can take
+# organizational_unit_id, vpc_cidr, availability_zones, cluster_version, node_instance_type.
+# None of them can take
 # effect here, and a value that is silently dropped is a value whose author was wrong about
 # what this request does.
+#
+# `bootstrap-plan` is also REFUSED in this mode, and `recovery-report` with it, since the report
+# is about a bootstrap plan. Bootstrapping writes roles and baseline controls account-wide, and
+# here the account belongs to whoever runs the adopted cluster.
 
 # ─────────────────────────────────────────────────────────────────────────────────────
 # AUTHORIZATION IS NOT IN THIS FILE
@@ -154,6 +249,7 @@ node_instance_type: m6i.large
 #     --authorized-management-account 000000000000 \
 #     --authorized-management-cluster EXAMPLE-management-cluster \
 #     --authorized-target-account 000000000000 \
+#     --authorized-organizational-unit ou-EXAMPLE1-example123 \
 #     --permit-mode new-account-managed
 #
 # Every flag omitted is a comparison NOT MADE, and the run says so on stderr ("NOT VERIFIED")

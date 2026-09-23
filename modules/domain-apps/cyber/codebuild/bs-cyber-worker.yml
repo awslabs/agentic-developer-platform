@@ -1,36 +1,51 @@
-# =============================================================================
-# CodeBuild Buildspec — Cyber Worker Docker image
-# =============================================================================
-# Issue #230: Builds and pushes adp-cyber-worker to ECR.
-# Copied from codebuild/bs-chat-agent.yml pattern.
-# =============================================================================
 version: 0.2
 
-env:
-  variables:
-    AWS_DEFAULT_REGION: us-east-1
-    IMAGE_REPO_NAME: adp-cyber-worker
-    IMAGE_TAG: latest
+# CodeBuild buildspec for the cyber worker image.
+#
+# Builds the Python worker at modules/domain-apps/cyber/workers/Dockerfile.
+# Pushes to ECR repo adp-cyber-worker with git-SHA + latest tags.
+#
+# Environment variables injected by the start-build caller:
+#   AWS_REGION, ENVIRONMENT, ACCOUNT_ID, REGISTRY, IMAGE_TAG
 
 phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - echo "Using Python $(python3 --version)"
+
   pre_build:
     commands:
-      - echo Logging in to Amazon ECR...
-      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-      - REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $REGISTRY
-      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
-      - IMAGE_URI="${REGISTRY}/${IMAGE_REPO_NAME}"
+      - |
+        if [ -z "${ADP_SOURCE_SHA:-}" ]; then
+          echo "ERROR: ADP_SOURCE_SHA not set. Build was started without --source-location-override." >&2
+          echo "All builds must use codebuild-run.sh or the codebuild-run composite action." >&2
+          exit 1
+        fi
+      - ECR_REPO="adp-cyber-worker"
+      - IMAGE_TAG="${IMAGE_TAG:-latest}"
+      - |
+        if ! aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+          aws ecr create-repository --repository-name "$ECR_REPO" --region "$AWS_REGION" >/dev/null
+        fi
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+
   build:
     commands:
-      - echo Building Docker image...
-      - cd modules/domain-apps/cyber/workers
-      - docker build -t ${IMAGE_REPO_NAME}:${IMAGE_TAG} .
-      - docker tag ${IMAGE_REPO_NAME}:${IMAGE_TAG} ${IMAGE_URI}:${IMAGE_TAG}
-      - docker tag ${IMAGE_REPO_NAME}:${IMAGE_TAG} ${IMAGE_URI}:${COMMIT_HASH}
+      - cd modules/domain-apps/cyber
+      - docker build --target runtime --build-arg IMAGE_TAG="$IMAGE_TAG" -f workers/Dockerfile --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
+      - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
+      - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
+      - docker push "$REGISTRY/$ECR_REPO:latest"
+
   post_build:
     commands:
-      - echo Pushing Docker image to ECR...
-      - docker push ${IMAGE_URI}:${IMAGE_TAG}
-      - docker push ${IMAGE_URI}:${COMMIT_HASH}
-      - echo Build completed on $(date)
+      - |
+        set -euo pipefail
+        test "$CODEBUILD_BUILD_SUCCEEDING" = 1
+        docker run --rm --network none --entrypoint cat "$REGISTRY/$ECR_REPO:$IMAGE_TAG" /opt/worker-manifest.json > /tmp/worker-manifest.json
+        python3 -c "import json; json.load(open('/tmp/worker-manifest.json'))"
+        aws s3 cp /tmp/worker-manifest.json "s3://adp-${ENVIRONMENT}-cape-assets/worker-manifests/by-tag/${IMAGE_TAG}.json" --region "$AWS_REGION"
+        aws s3 cp /tmp/worker-manifest.json "s3://adp-${ENVIRONMENT}-cape-assets/worker-manifests/latest.json" --region "$AWS_REGION"
+      - echo "Pushed ${REGISTRY}/${ECR_REPO}:${IMAGE_TAG} (and :latest)"

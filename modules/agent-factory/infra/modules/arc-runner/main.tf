@@ -75,10 +75,29 @@ resource "helm_release" "arc_runner_set" {
     yamlencode({
       githubConfigUrl    = var.github_repo != "" ? "https://github.com/${var.github_org}/${var.github_repo}" : "https://github.com/${var.github_org}"
       githubConfigSecret = kubernetes_secret.arc_runner.metadata[0].name
-      # 20: deploy + security-scan + agent runs contend for the pool; at 10 the
-      # deploy pipeline sat queued behind Security Scan bursts (live-patched
-      # 2026-07-03, codified here so the next apply doesn't revert it).
-      maxRunners = 20
+      # 10 -> 20 (2026-07-03): deploy + security-scan + agent runs contend for the
+      # pool; at 10 the deploy pipeline sat queued behind Security Scan bursts
+      # (live-patched then, codified here so the next apply doesn't revert it).
+      #
+      # 20 -> 40 (2026-09-23): 20 was oversubscribed at ordinary concurrency once
+      # Gateway CI was sharded. Measured over 58 Gateway CI runs, overlapping runs
+      # were 3-5 typical and 11 at peak; each run needs its shards plus 4 other
+      # jobs, so three concurrent runs at 4 shards already wanted 24 runners
+      # against a ceiling of 20. That queueing is why shards measuring 4m19s in
+      # isolation were completing in 7m24s, and it is the contention that showed
+      # up as a 1.75x throughput drop between a quiet and a busy cluster.
+      # Gateway CI moves to 8 shards in the same change, taking one run to 12
+      # runners, so the ceiling has to move with it or the extra shards just
+      # convert test time into queue time.
+      #
+      # Cost: minRunners = 0, so idle capacity is free and this only bills during
+      # bursts. But combined with the cpu=4 request below, a full burst now
+      # provisions up to 40 x 4 = 160 vCPU where it previously asked for 40. That
+      # is the deliberate trade -- compute during bursts instead of every
+      # developer waiting in a queue. Raise deliberately, not reflexively: past
+      # ~40 the per-shard overhead floor (~46s of checkout + pip install) means
+      # more runners stop buying wall clock.
+      maxRunners = 40
       minRunners = 0
       # Pod template. Always supply the full container spec (image, command,
       # resources) — the chart has no image-only override and overriding

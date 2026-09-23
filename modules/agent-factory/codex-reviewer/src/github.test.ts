@@ -7,6 +7,24 @@ import {
   GitHubClient,
 } from "./github.js";
 
+test("merge and queue mutations carry the exact reviewed head", async t => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const requests: Array<{ url: string; body: any }> = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    return new Response(JSON.stringify(String(url).endsWith("/graphql")
+      ? { data: { enqueuePullRequest: { mergeQueueEntry: { id: "entry" } } } }
+      : { merged: true, sha: "c".repeat(40) }));
+  };
+  const github = new GitHubClient("org/repo", async () => "test-token");
+  await github.merge(7, "a".repeat(40), "rebase");
+  await github.enqueue("PR_7", "a".repeat(40), "operation");
+  assert.deepEqual(requests[0]?.body, { sha: "a".repeat(40), merge_method: "rebase" });
+  assert.deepEqual(requests[1]?.body.variables.input,
+    { pullRequestId: "PR_7", expectedHeadOid: "a".repeat(40), clientMutationId: "operation" });
+});
+
 test("review comments identify the exact reviewed head and engine", () => {
   const body = formatReviewComment(
     { verdict: "approve", summary: "Verified.", findings: [], validationGaps: [] },

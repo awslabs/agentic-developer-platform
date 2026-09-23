@@ -151,3 +151,31 @@ def test_owned_no_progress_repair_keeps_real_findings_instead_of_runtime_error(s
     monkeypatch.setattr(finalizer.pr_binding, "register_pull_request", Mock())
     finish(setup)
     assert setup.uploaded[0]["verdict"] == "request-changes"
+
+
+def test_merge_poll_and_parent_finalization_reuse_the_exact_review(setup):
+    finish(setup)
+    setup.result["merged"] = True
+    finish(setup)
+    setup.submit.assert_called_once()
+    assert setup.uploaded[0] == setup.uploaded[1]
+
+
+def test_lost_upload_response_replays_evidence_without_repeating_formal_review(setup, monkeypatch):
+    original = finalizer.status_gateway_client.upload_review_result
+    calls = 0
+
+    def upload(data):
+        nonlocal calls
+        calls += 1
+        result = original(data)
+        if calls == 1:
+            raise finalizer.run_report.RunReportError("response_lost")
+        return result
+
+    monkeypatch.setattr(finalizer.status_gateway_client, "upload_review_result", upload)
+    with pytest.raises(finalizer.run_report.RunReportError):
+        finish(setup)
+    finish(setup)
+    setup.submit.assert_called_once()
+    assert setup.uploaded[0] == setup.uploaded[1]

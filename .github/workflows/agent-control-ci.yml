@@ -281,7 +281,24 @@ jobs:
             test_knowledge_service.py test_knowledge_service_postgres.py; do
             test -f "tests/agentauth/$suite" || exit 1
           done
-          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py -v --tb=short --timeout=120
+          # -n 4 pinned to the runner's cpu limit (arc-runner/main.tf). This step
+          # was 12m29s of a ~15m job — every other step here is under a minute —
+          # because it ran ~1700 tests serially on one core while tests/agentauth
+          # grew by 313 tests in three days. Measured on the exact selection
+          # above: 328s serial -> 126s at -n 4, 2.6x, with byte-identical results
+          # (1703 passed, 5 skipped both ways).
+          #
+          # NEVER `-n auto`: nproc inside the runner pod reports the NODE's 32
+          # cores, not the pod's cgroup limit, so auto oversubscribes and runs
+          # slower than a pinned value.
+          #
+          # `--dist loadfile` keeps every test in a file on one worker. The
+          # gateway suite has cross-file ordering dependencies that the default
+          # round-robin distribution breaks (see gateway-ci.yml for the measured
+          # case: 9 phantom failures without it, 6 with). Removing it here
+          # invites the same class of flake.
+          pytest tests/agentauth/ tests/orchestration/test_dispatch_pass.py \
+            -v --tb=short --timeout=120 -n 4 --dist loadfile
 
       # Coverage is enforced per-file with `--cov-fail-under`, not as a repo-wide
       # average. The story requires >=85% line AND branch on the NEW control

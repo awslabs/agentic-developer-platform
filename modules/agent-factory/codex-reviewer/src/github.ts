@@ -95,7 +95,7 @@ export interface ChecksState {
 // in .github/workflows/gitlab-integration-tests.yml.
 const NON_BLOCKING_CHECKS = new Set(["GitLab Live Fleet"]);
 
-class GitHubRequestError extends Error {
+export class GitHubRequestError extends Error {
   constructor(
     readonly status: number,
     message: string,
@@ -238,16 +238,37 @@ export class GitHubClient {
     return { ready: total > 0 && failing.length === 0 && pending.length === 0, failing, pending, total };
   }
 
-  async merge(number: number, sha: string): Promise<string> {
+  async merge(number: number, sha: string, method: "squash" | "merge" | "rebase" = "squash"): Promise<string> {
     const result = await this.request<{ merged: boolean; message: string; sha?: string }>(
       `/repos/${this.repository}/pulls/${number}/merge`,
       {
         method: "PUT",
-        body: JSON.stringify({ sha, merge_method: "squash" }),
+        body: JSON.stringify({ sha, merge_method: method }),
       },
     );
     if (!result.merged) throw new Error(`GitHub refused merge: ${result.message}`);
     return result.sha ?? "";
+  }
+
+  async queueEntry(nodeId: string, sha: string): Promise<string | null> {
+    const result = await this.request<{ errors?: unknown; data?: { node?: { headRefOid: string; mergeQueueEntry: { id: string } | null } } }>("/graphql", {
+      method: "POST", body: JSON.stringify({
+        query: "query($id:ID!) { node(id:$id) { ... on PullRequest { headRefOid mergeQueueEntry { id } } } }",
+        variables: { id: nodeId },
+      }),
+    });
+    if (result.errors || result.data?.node?.headRefOid !== sha) throw new Error("Merge queue observation unavailable or head changed");
+    return result.data.node.mergeQueueEntry?.id ?? null;
+  }
+
+  async enqueue(nodeId: string, sha: string, operation: string): Promise<void> {
+    const result = await this.request<{ errors?: unknown; data?: { enqueuePullRequest?: { mergeQueueEntry?: { id: string } } } }>("/graphql", {
+      method: "POST", body: JSON.stringify({
+        query: "mutation($input:EnqueuePullRequestInput!) { enqueuePullRequest(input:$input) { mergeQueueEntry { id } } }",
+        variables: { input: { pullRequestId: nodeId, expectedHeadOid: sha, clientMutationId: operation } },
+      }),
+    });
+    if (result.errors || !result.data?.enqueuePullRequest?.mergeQueueEntry?.id) throw new Error("Merge queue admission outcome unknown");
   }
 }
 

@@ -388,9 +388,10 @@ def test_every_mismatch_is_reported_not_just_the_first():
         management_cluster="other-cluster",
         permitted_modes=frozenset({OwnershipMode.BRING_EXISTING_CLUSTER}),
         workspace_id="ws-someone-elses",
+        permitted_organizational_units=frozenset({"ou-other-999999zz"}),
     )
     problems, unchecked = validate(request, authorization)
-    assert len(problems) == 5, problems
+    assert len(problems) == 6, problems
     assert unchecked == []
 
 
@@ -411,6 +412,10 @@ def test_absent_authorization_reports_every_comparison_as_unchecked():
         "management_cluster",
         "mode",
         "workspace_id",
+        # This mode places the account in the organization tree (#5531), so the placement
+        # is one more comparison that was not made — and an unverified placement is the one
+        # that decides which service control policies the new account is born under.
+        "organizational_unit_id",
     }
 
 
@@ -441,6 +446,7 @@ def test_partial_authorization_reports_exactly_the_missing_comparisons():
         "management_cluster",
         "mode",
         "workspace_id",
+        "organizational_unit_id",
     }
 
 

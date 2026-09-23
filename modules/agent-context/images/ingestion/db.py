@@ -185,54 +185,48 @@ def ensure_repo_exists(
     tenant_id: str | None = None,
     owner_sub: str | None = None,
 ) -> str:
-    """Ensure a repository row exists, returning its UUID.
+    """Create a denied-by-default row or refresh ACLs without changing its owner.
 
-    Creates the row if it doesn't exist (INSERT ... ON CONFLICT DO NOTHING)
-    then fetches the id.
-
-    Issue #2082: When allowed_principals is provided, sets it on insert and
-    updates existing rows that have empty principals (fixes the #1920 root
-    cause where repos were invisible due to empty allowed_principals).
-    When tenant_id is provided, stamps it on the row for correct scoping.
-
-    Issue #3529: When owner_sub is provided, stamps it on the row so the
-    registering user's scoped queries (door/acl.py) correctly include this
-    repo. Without this, the ACL row gets tenant_id derived from the GitHub
-    org name instead of the scope envelope's values.
+    Ownership comes from the validated producer scope and is immutable during
+    ingestion. Legacy ownership migrations require the reviewed backfill path;
+    a new queue message cannot transfer a repository to a different customer.
+    Explicitly derived ACLs replace old values, including the public sentinel,
+    so re-ingestion also revokes permissions. Callers omitting the optional ACL
+    preserve an existing row's ACL (the SBOM path) and create new rows denied.
     """
     import json as _json
 
     owner = org_repo.split("/")[0] if "/" in org_repo else org_repo
-    # Default: public if no principals specified (backward-compatible)
-    principals_json = _json.dumps(allowed_principals if allowed_principals is not None else ["*"])
+    principals_json = _json.dumps(allowed_principals if allowed_principals is not None else [])
     cursor = conn.cursor()
     try:
         cursor.execute(
             """
             INSERT INTO repositories (repo_name, git_url, owner, allowed_principals, tenant_id, owner_sub)
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (repo_name) DO UPDATE
-                SET allowed_principals = CASE
-                        WHEN repositories.allowed_principals = '[]'::jsonb
-                          OR repositories.allowed_principals IS NULL
-                        THEN EXCLUDED.allowed_principals
-                        ELSE repositories.allowed_principals
-                    END,
-                    tenant_id = COALESCE(EXCLUDED.tenant_id, repositories.tenant_id),
-                    owner_sub = COALESCE(EXCLUDED.owner_sub, repositories.owner_sub)
+            ON CONFLICT (repo_name) DO NOTHING
             """,
             (org_repo, git_url, owner, principals_json, tenant_id, owner_sub),
         )
-        conn.commit()
-
         cursor.execute(
-            "SELECT id FROM repositories WHERE repo_name = %s",
+            "SELECT id, tenant_id, owner_sub FROM repositories WHERE repo_name = %s FOR UPDATE",
             (org_repo,),
         )
         row = cursor.fetchone()
         if row is None:
             raise RuntimeError(f"Repository {org_repo} not found after ensure")
+        if (row[1], row[2]) != (tenant_id, owner_sub):
+            raise RuntimeError(f"Repository {org_repo} ownership conflicts with ingestion scope")
+        if allowed_principals is not None:
+            cursor.execute(
+                "UPDATE repositories SET allowed_principals = %s::jsonb WHERE id = %s",
+                (principals_json, row[0]),
+            )
+        conn.commit()
         return str(row[0])
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cursor.close()
 

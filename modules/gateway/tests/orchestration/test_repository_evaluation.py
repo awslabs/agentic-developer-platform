@@ -21,6 +21,7 @@ async def repository_evaluation(shared, monkeypatch):  # noqa: F811
     async with protocol.prepared_merge(shared, monkeypatch) as ctx:
         ctx.remote["rules"], ctx.remote["protection"], ctx.remote["reviews"] = [], None, []
         ctx.remote["graphql"]["data"]["repository"]["pullRequest"]["reviewDecision"] = None
+        ctx.merge_remote()  # Reviewer-owned delivery is already merged; the engine observes it.
         await protocol.tick(ctx)
         await protocol.tick(ctx)
         async with ctx.factory() as db:

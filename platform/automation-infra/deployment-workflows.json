@@ -28,6 +28,7 @@
   "gateway-infra-apply.yml",
   "gateway-infra-destroy.yml",
   "gateway-infra-plan.yml",
+  "gateway-smoke.yml",
   "gbrain-infra-destroy.yml",
   "github-auth-broker-deploy.yml",
   "gitlab-infra-apply.yml",

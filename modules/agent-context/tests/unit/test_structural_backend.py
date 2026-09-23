@@ -286,7 +286,7 @@ class TestUnderstand:
     async def test_understand_symbol(self, mock_s3_client):
         # Short-name format: "repo::symbol"
         hits = await understand(
-            "fixture-repo::connect_db",
+            "org/fixture-repo::connect_db",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",
@@ -300,7 +300,7 @@ class TestUnderstand:
     async def test_understand_file(self, mock_s3_client):
         # Short-name format: "repo/path"
         hits = await understand(
-            "fixture-repo/src/db.py",
+            "org/fixture-repo::src/db.py",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",
@@ -324,7 +324,7 @@ class TestUnderstand:
     async def test_understand_repo_level_target(self, mock_s3_client):
         """FIX #1535: understand("repo-name") should return definitions, not empty."""
         hits = await understand(
-            "fixture-repo",
+            "org/fixture-repo",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",
@@ -334,7 +334,12 @@ class TestUnderstand:
         # All hits should have source = "code-index-fallback"
         for hit in hits:
             assert hit.data.get("source") == "code-index-fallback"
-            assert hit.data.get("repo_id") == "fixture-repo"
+            # The caller asked by short name; the hit is attributed to the
+            # fully-qualified repo the loaded index declares (#5658). Provenance
+            # is what the ACL check compares, so it must come from the index and
+            # not from the caller's spelling of the target.
+            assert hit.data.get("repo_id") == "org/fixture-repo"
+            assert hit.repo_name == "org/fixture-repo"
 
     @pytest.mark.asyncio
     async def test_understand_org_repo_overview(self, mock_s3_client):
@@ -384,7 +389,7 @@ class TestImpact:
     @pytest.mark.asyncio
     async def test_impact_symbol_with_callers(self, mock_s3_client):
         hits = await impact(
-            "fixture-repo::handle_request",
+            "org/fixture-repo::handle_request",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",
@@ -398,7 +403,7 @@ class TestImpact:
     async def test_impact_leaf_symbol(self, mock_s3_client):
         # connect_db has no callers in the fixture
         hits = await impact(
-            "fixture-repo::connect_db",
+            "org/fixture-repo::connect_db",
             s3_client=mock_s3_client,
             bucket="test-bucket",
             prefix="content/code-indexes",

@@ -3,6 +3,8 @@ name: Webhook Ingress Deploy
 on:
   push:
     paths:
+      - 'modules/domain-apps/cyber/infra/platform-integration/**'
+      - 'modules/domain-apps/cyber/releases/browser-runtime.json'
       - 'modules/agent-factory/webhook-ingress/**'
       - 'environments/dev/modules/webhook-ingress.tfvars*'
       - '.github/workflows/webhook-ingress-deploy.yml'

@@ -1,21 +1,16 @@
 name: cyber-k8s-deploy
-
-on:
+'on':
   push:
-    branches: [main]
+    branches:
+    - main
     paths:
-      - 'modules/domain-apps/cyber/k8s/**'
-      - '.github/workflows/cyber-k8s-deploy.yml'
+    - modules/domain-apps/cyber/k8s/**
+    - .github/workflows/cyber-k8s-deploy.yml
+    - modules/domain-apps/cyber/ci/cyber-k8s-deploy/**
   workflow_dispatch: {}
-
 concurrency:
   group: cyber-k8s-deploy
   cancel-in-progress: false
-
-env:
-  AWS_REGION: us-east-1
-  EKS_CLUSTER: adp-dev-cyber-eks
-
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
@@ -27,96 +22,17 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Verify source belongs to reviewed main history
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git merge-base --is-ancestor HEAD FETCH_HEAD
-
-      - name: Establish trusted deployment identity
-        uses: ./.github/actions/trusted-deployment
-        with:
-          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
-          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
-
-      - name: Verify reviewed runner tools
-        run: |
-          set -euo pipefail
-          for tool in aws terraform kubectl jq python3 psql; do
-            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
-          done
-          python3 -c 'import yaml'
-
-      - name: Configure kubectl for cyber EKS
-        run: |
-          aws eks update-kubeconfig --region "${{ env.AWS_REGION }}" --name "${{ env.EKS_CLUSTER }}"
-          kubectl cluster-info
-
-      - name: Resolve deployment variables
-        id: vars
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          REGION="${{ env.AWS_REGION }}"
-          {
-            echo "account_id=${ACCOUNT_ID}"
-            echo "ecr_image=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/adp-cyber-worker:latest"
-            echo "triage_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-tasks.fifo"
-            echo "triage_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-triage-responses.fifo"
-            echo "static_tasks_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-tasks.fifo"
-            echo "static_responses_queue=https://sqs.${REGION}.amazonaws.com/${ACCOUNT_ID}/adp-dev-cyber-static-responses.fifo"
-          } >> "$GITHUB_OUTPUT"
-
-          # Issue #5616: buckets the workers may read samples from. The workers
-          # deny every read whose bucket is not in this set, so this list is the
-          # allowlist, not a hint. Keep it as narrow as the pipeline needs.
-          echo "allowed_sample_buckets=${{ vars.CYBER_ALLOWED_BUCKETS || 'adp-dev-chat-artifacts,adp-dev-cape-assets' }}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify no placeholders survived substitution
-        # A placeholder that reaches the cluster is not a cosmetic problem:
-        # REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS would be read as a bucket name, so
-        # the workers would deny every sample read and the whole pipeline would
-        # fail closed with no obvious cause. Fail the deploy here instead.
-        run: |
-          set -euo pipefail
-          MISSED=0
-          for f in modules/domain-apps/cyber/k8s/*.yaml; do
-            RENDERED=$(sed \
-              -e "s|REPLACE_WITH_CYBER_WORKER_IMAGE|${{ steps.vars.outputs.ecr_image }}|g" \
-              -e "s|REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL|${{ steps.vars.outputs.triage_tasks_queue }}|g" \
-              -e "s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue }}|g" \
-              -e "s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g" \
-              -e "s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g" \
-              -e "s|REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS|${{ steps.vars.outputs.allowed_sample_buckets }}|g" \
-              "$f")
-            if echo "$RENDERED" | grep -n "REPLACE_WITH_"; then
-              echo "::error file=$f::unsubstituted placeholder(s) in $f"
-              MISSED=1
-            fi
-          done
-          [ "$MISSED" -eq 0 ] || exit 1
-          echo "All placeholders substituted."
-
-      - name: Apply cyber-workers manifests
-        run: |
-          set -euo pipefail
-          for f in modules/domain-apps/cyber/k8s/*.yaml; do
-            echo "=== Applying $f ==="
-            sed \
-              -e "s|REPLACE_WITH_CYBER_WORKER_IMAGE|${{ steps.vars.outputs.ecr_image }}|g" \
-              -e "s|REPLACE_WITH_TRIAGE_TASKS_QUEUE_URL|${{ steps.vars.outputs.triage_tasks_queue }}|g" \
-              -e "s|REPLACE_WITH_TRIAGE_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.triage_responses_queue }}|g" \
-              -e "s|REPLACE_WITH_STATIC_TASKS_QUEUE_URL|${{ steps.vars.outputs.static_tasks_queue }}|g" \
-              -e "s|REPLACE_WITH_STATIC_RESPONSES_QUEUE_URL|${{ steps.vars.outputs.static_responses_queue }}|g" \
-              -e "s|REPLACE_WITH_ALLOWED_SAMPLE_BUCKETS|${{ steps.vars.outputs.allowed_sample_buckets }}|g" \
-              "$f" | kubectl apply -f -
-          done
-
-      - name: Summary
-        run: |
-          echo "## Cyber K8s deploy — applied" >> "$GITHUB_STEP_SUMMARY"
-          for f in modules/domain-apps/cyber/k8s/*.yaml; do
-            echo "- \`$f\`" >> "$GITHUB_STEP_SUMMARY"
-          done
+    - uses: actions/checkout@v7
+    - name: Verify source belongs to reviewed main history
+      shell: bash
+      run: |
+        set -euo pipefail
+        git fetch --no-tags origin "$GITHUB_SHA"
+        git merge-base --is-ancestor HEAD FETCH_HEAD
+    - name: Establish trusted deployment identity
+      uses: ./.github/actions/trusted-deployment
+      with:
+        role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+        region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+    - name: Run cyber app automation
+      uses: ./modules/domain-apps/cyber/ci/cyber-k8s-deploy

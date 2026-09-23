@@ -4,6 +4,7 @@ export interface RunOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   allowFailure?: boolean;
+  input?: string;
 }
 
 export interface RunResult {
@@ -21,8 +22,9 @@ export async function run(
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env ?? process.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    child.stdin.end(options.input);
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");

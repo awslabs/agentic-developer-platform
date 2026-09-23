@@ -12,7 +12,8 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "cyber_worker" {
-  name = "${local.name_prefix}-worker-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.name_prefix}-worker-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

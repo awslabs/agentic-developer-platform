@@ -97,7 +97,7 @@ def test_runner_has_no_ambient_credential_and_uses_separate_nodes():
     assert sa["automountServiceAccountToken"] is False
 
 
-@pytest.mark.parametrize("kind", ["deployment", "build", "scan", "rules"])
+@pytest.mark.parametrize("kind", ["deployment", "build", "scan", "rules", "checks"])
 def test_credential_action_cannot_fall_back_to_irsa(kind):
     action = yaml.safe_load((ROOT / f".github/actions/trusted-{kind}/action.yml").read_text())
     config = next(s["with"] for s in action["runs"]["steps"] if s.get("uses", "").startswith("aws-actions/configure-aws-credentials@"))
@@ -166,3 +166,115 @@ test "$PGSSLMODE" = require
     else:
         assert result.returncode == 9
         assert not calls.exists()
+
+
+def expanded_steps(steps, seen=()):
+    """Inspect app-owned local composites as part of their calling workflow."""
+    for step in steps:
+        yield step
+        use = step.get('uses', '')
+        if not use.startswith('./'):
+            continue
+        path = (ROOT / use.removeprefix('./') / 'action.yml').resolve()
+        if not path.exists():
+            continue  # Checkouts under an alternate workspace are external input.
+        assert ROOT in path.parents and path not in seen, f'Invalid composite graph: {path}'
+        action = yaml.safe_load(path.read_text())
+        if action.get('runs', {}).get('using') == 'composite':
+            yield from expanded_steps(action['runs']['steps'], (*seen, path))
+
+
+def test_cyber_composites_preserve_trusted_runner_execution_contract():
+    for name in ['cyber-infra-apply', 'cyber-infra-plan', 'cyber-windows-image-build', 'cyber-worker-build', 'cyber-k8s-deploy']:
+        workflow = yaml.safe_load((ROOT / f'.github/workflows/{name}.yml').read_text())
+        for job in workflow['jobs'].values():
+            if not isinstance(job.get('runs-on'), dict):
+                continue
+            for step in expanded_steps(job['steps']):
+                script = step.get('run', '')
+                assert not re.search(r'\b(sudo|docker)\s', script), f'{name}/{step.get("name")}: host runtime/privilege'
+                assert not re.search(r'\$\{\{\s*(?:inputs\.|github\.event\.inputs\.)', script), f'{name}: interpolated dispatch input'
+
+
+def test_every_security_ledger_job_assumes_scan_identity_before_aws():
+    workflow = yaml.safe_load((ROOT / '.github/workflows/security-agent-nightly.yml').read_text())
+    for name in ['code-review', 'scan_gate', 'triage', 'deliver']:
+        job = workflow['jobs'][name]
+        assert job['environment'].startswith('adp-scan-')
+        assert job['permissions']['id-token'] == 'write'
+        index = next(i for i, s in enumerate(job['steps']) if s.get('uses') == 'aws-e/adp/.github/actions/trusted-scan@main')
+        assert not any(re.search(r'\baws\s', s.get('run', '')) for s in job['steps'][:index])
+
+
+def test_post_deploy_and_scheduled_checks_have_independent_credentials():
+    for filename, name in [('gateway-smoke.yml', 'smoke'), ('gateway-live-tests.yml', 'live')]:
+        job = yaml.safe_load((ROOT / '.github/workflows' / filename).read_text())['jobs'][name]
+        assert job['if'] == "github.ref == 'refs/heads/main'"
+        assert job['environment'].startswith('adp-checks-')
+        index = next(i for i, s in enumerate(job['steps']) if s.get('uses') == 'aws-e/adp/.github/actions/trusted-checks@main')
+        assert job['permissions']['id-token'] == 'write'
+        assert not any(re.search(r'\baws\s', s.get('run', '')) for s in job['steps'][:index])
+    caller = yaml.safe_load((ROOT / '.github/workflows/gateway-deploy.yml').read_text())['jobs']['smoke-test']
+    assert caller['permissions']['id-token'] == 'write'  # Reusable calls cannot elevate the caller.
+
+
+def test_github_agents_use_repository_tracking_without_shared_beads_or_skypilot():
+    names = ['developer', 'pm', 'operations', 'reviewer', 'architect', 'pt-superpower', 'product']
+    for name in names:
+        workflow = yaml.safe_load((ROOT / f'.github/workflows/agent-{name}.yml').read_text())
+        steps = [s for job in workflow['jobs'].values() for s in job.get('steps', [])]
+        assert all('setup-beads' not in s.get('uses', '') for s in steps)
+        assert any(s.get('env', {}).get('BEADS_ENABLED') == 'false' for s in steps)
+        assert not any(re.search(r'\baws (?:ssm|eks)\s|\bsky api login\b', s.get('run', '')) for s in steps)
+    skill = (ROOT / '.github/workflows/skill-agent.yml').read_text()
+    assert 'sky api login' not in skill and 'aws eks update-kubeconfig' not in skill
+
+
+def test_shared_gateway_build_and_app_artifact_ownership():
+    action = yaml.safe_load((ROOT / 'modules/domain-apps/cyber/ci/cyber-worker-build/action.yml').read_text())
+    assert not any('docker run' in s.get('run', '') for s in action['runs']['steps'])
+    buildspec = (ROOT / 'modules/domain-apps/cyber/codebuild/bs-cyber-worker.yml').read_text()
+    assert 'docker run --rm --network none' in buildspec
+    assert 'worker-manifests/by-tag/${IMAGE_TAG}.json' in buildspec
+    descriptor = json.loads((ROOT / 'modules/domain-apps/cyber/codebuild/projects.json').read_text())
+    assert descriptor['cyber-worker']['artifact_writes'] == [{'bucket_suffix': 'cape-assets', 'prefix': 'worker-manifests'}]
+    assert 'artifact_writes' not in descriptor['cyber-browser']
+
+
+def ordinary_cloud_inventory():
+    result = {}
+    for path in sorted((ROOT / '.github/workflows').glob('*.y*ml')):
+        workflow = yaml.safe_load(path.read_text())
+        for name, job in workflow.get('jobs', {}).items():
+            if isinstance(job.get('runs-on'), dict):
+                continue
+            steps = list(expanded_steps(job.get('steps', [])))
+            if any('trusted-' in s.get('uses', '') for s in steps):
+                continue
+            calls = sorted(set(re.findall(r'\baws\s+([a-z][a-z0-9-]+)\s+([a-z][a-z0-9-]+)', '\n'.join(s.get('run', '') for s in steps))))
+            if not calls:
+                continue
+            credential = next((i for i, s in enumerate(steps) if 'configure-aws-credentials' in s.get('uses', '')), None)
+            first_cloud = next(i for i, s in enumerate(steps) if re.search(r'\baws\s+[a-z][a-z0-9-]+\s+[a-z][a-z0-9-]+', s.get('run', '')))
+            if credential is not None:
+                assert credential < first_cloud, f'{path.name}/{name}: AWS operation precedes its operational identity'
+            result[f'{path.name}/{name}'] = {
+                'authority': 'existing-oidc' if credential is not None else 'runtime',
+                'operations': [' '.join(call) for call in calls],
+            }
+    return result
+
+
+def test_ordinary_cloud_operations_match_reviewed_inventory():
+    # New ambient calls require an explicit authority decision; moved app-owned
+    # composites are inspected too. Spawn-deploy's quoted examples are retained
+    # in the inventory (they do not execute), rather than silently filtered out.
+    expected = json.loads((AUTOMATION / 'ordinary-workflow-aws.json').read_text())
+    assert ordinary_cloud_inventory() == expected
+    for job, record in expected.items():
+        if record['authority'] == 'runtime' and job != 'spawn-deploy-instance.yml/spawn':
+            assert set(record['operations']) <= {
+                'secretsmanager get-secret-value',  # exact retained GitHub transport inputs
+                'sts get-caller-identity', 's3 cp',  # isolated gateway PR source
+                'codebuild batch-get-builds', 'codebuild batch-get-projects', 'codebuild start-build',
+            }, job

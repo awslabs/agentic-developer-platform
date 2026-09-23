@@ -55,6 +55,9 @@ def test_all_tables_registered():
         "provider_allocations",
         "provider_reference_conflicts",
         "provider_allocation_resources",
+        # PostgreSQL journals used by the domain bootstrap SQL adapters.
+        "workspace_bootstrap_reservations",
+        "workspace_bootstrap_authority",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (
@@ -1060,6 +1063,7 @@ class TestTheMirroredSecretRulesAgreeWithTheContract:
 
     def test_contract_rejects_prefixed_recoverable_material(self):
         from superplane_contracts.secrets import looks_like_arn, value_is_secret_shaped
+
         assert looks_like_arn("_arn:aws:secretsmanager:us-east-1:123456789012:secret:k")
         assert value_is_secret_shaped("xAKIAIOSFODNN7EXAMPLE")
 
@@ -1285,7 +1289,9 @@ class TestProviderConnectionPersistence:
         )
 
         corpus = TestTheReferenceRuleCannotBeSteppedAround.SECRET_SHAPED
-        assert corpus, "the shared secret-shape corpus is empty; this test proves nothing"
+        assert corpus, (
+            "the shared secret-shape corpus is empty; this test proves nothing"
+        )
         for label, value in sorted(corpus.items()):
             try:
                 CredentialRegistry(adp_credential_id=value)

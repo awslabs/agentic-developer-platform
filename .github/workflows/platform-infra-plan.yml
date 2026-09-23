@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'platform/infra/**'
+      - 'modules/domain-apps/*/codebuild/projects.json'
       - '.github/workflows/platform-infra-plan.yml'
       - 'modules/agent-factory/infra/modules/runner-iam/**'
       - 'environments/dev/platform.tfvars'

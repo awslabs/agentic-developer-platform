@@ -88,3 +88,9 @@ variable "transport_secret_arns" {
   default     = []
   description = "Exact legacy engine transport secret ARNs; validated by the shared runtime policy."
 }
+
+variable "gateway_execution_arns" {
+  type        = list(string)
+  default     = []
+  description = "Reviewed exact API Gateway execution ARNs for runner transport; no API, stage or method wildcards."
+}

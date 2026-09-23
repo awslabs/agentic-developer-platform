@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import {
@@ -43,7 +43,7 @@ test("Codex relies on the shared worker pod sandbox", () => {
   assert.equal(WORKER_SANDBOX_MODE, "danger-full-access");
 });
 
-async function fixture(): Promise<{
+async function fixture(files = ["tracked.txt"]): Promise<{
   branch: string;
   config: string;
   directory: string;
@@ -53,8 +53,11 @@ async function fixture(): Promise<{
   await exec("git", ["init", "--initial-branch=main"], { cwd: directory });
   await exec("git", ["config", "user.name", "test"], { cwd: directory });
   await exec("git", ["config", "user.email", "test@example.com"], { cwd: directory });
-  await writeFile(join(directory, "tracked.txt"), "before\n");
-  await exec("git", ["add", "tracked.txt"], { cwd: directory });
+  for (const file of files) {
+    await mkdir(dirname(join(directory, file)), { recursive: true });
+    await writeFile(join(directory, file), "before\n");
+  }
+  await exec("git", ["add", "--", ...files], { cwd: directory });
   await exec("git", ["commit", "-m", "initial"], { cwd: directory });
   const branch = "agent/issue-7";
   await exec("git", ["checkout", "-b", branch], { cwd: directory });
@@ -76,6 +79,30 @@ test("autofix validation includes staged changes", async () => {
     await rm(state.directory, { recursive: true, force: true });
   }
 });
+
+for (const file of [
+  "infra/main.tf",
+  "services/example/infra/worker-irsa.tf",
+  "services/example/infra/account/creation_runner.py",
+  ".github/workflows/ci.yml",
+  "migration/001.sql",
+  "services/example/migrations/002.sql",
+  "services/example/alembic/versions/003.py",
+  "agent_learning/notes.md",
+]) {
+  test(`autofix accepts source repairs regardless of directory: ${file}`, async () => {
+    const state = await fixture([file]);
+    try {
+      await writeFile(join(state.directory, file), "repaired\n");
+      assert.deepEqual(
+        await validateAutofix(state.directory, state.sha, state.branch, state.config),
+        [file],
+      );
+    } finally {
+      await rm(state.directory, { recursive: true, force: true });
+    }
+  });
+}
 
 test("autofix validation rejects protected Git configuration changes", async () => {
   const state = await fixture();
@@ -99,6 +126,20 @@ test("autofix validation rejects a changed local head", async () => {
     await exec("git", ["commit", "--allow-empty", "-m", "replace reviewed head"], {
       cwd: state.directory,
     });
+    await assert.rejects(
+      validateAutofix(state.directory, state.sha, state.branch, state.config),
+      /altered Git state/,
+    );
+  } finally {
+    await rm(state.directory, { recursive: true, force: true });
+  }
+});
+
+test("autofix validation rejects a different branch at the reviewed head", async () => {
+  const state = await fixture();
+  try {
+    await exec("git", ["checkout", "-b", "other-story"], { cwd: state.directory });
+    await writeFile(join(state.directory, "tracked.txt"), "after\n");
     await assert.rejects(
       validateAutofix(state.directory, state.sha, state.branch, state.config),
       /altered Git state/,

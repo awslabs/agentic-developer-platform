@@ -449,6 +449,7 @@ class TestTenantIsolation:
 
         assert response.status_code == 200, response.text
         assert response.json()["flow_id"] == flow.id
+        assert response.json()["execution_paused"] is True
 
 
 class TestPermissionGate:

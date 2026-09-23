@@ -109,9 +109,14 @@ maintained_resource_graph_definitions:
     adp-account-ownership.yaml:
       declares: AccountOwnership
       role: >-
-        owns the AWS account and the cross-account role reference that depends on it, and
-        nothing else — so a workspace teardown can remove infrastructure without closing the
-        account, and retaining the account does not retain the infrastructure's declaration
+        records which AWS account a workspace owns and declares the cross-account role
+        reference into it, and nothing else — so a workspace teardown can remove
+        infrastructure without closing the account, and retaining the account does not retain
+        the infrastructure's declaration. Per #5531 it no longer declares an ACK `Account`:
+        creating the account is the fenced, durably-recorded operation in
+        `account-provisioning/account_provisioning/creation_runner.py`, and this graph binds
+        to the id that path recorded. A graph that cannot create an account cannot create a
+        duplicate one
     adp-workspace-infrastructure.yaml:
       declares: WorkspaceInfrastructure
       role: >-

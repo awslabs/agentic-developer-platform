@@ -102,6 +102,28 @@ def resume_handoff() -> bool:
         raise run_report.SupersededDelivery()
     if snapshot.get("terminal_receipt"):
         return True
+    if (run_report._assignment or {}).get("reviewer_owned_delivery"):
+        spool = run_report.read_spool()
+        if spool and spool["phase"] == "review":
+            if spool.get("ownership_nonce") != (snapshot.get("worker_receipt") or {}).get("ownership_nonce"):
+                raise run_report.RunReportError("delivery_recovery_required", retryable=False)
+            from lib import status_gateway_client
+
+            status_gateway_client.upload_review_result(spool["review_content"].encode())
+            document = json.loads(spool["review_content"])
+            if document.get("verdict") == "approve":
+                view = subprocess.run(["gh", "pr", "view", str(document["subject"]["pr_number"]),
+                    "-R", document["repository"]["repo"], "--json", "mergedAt,headRefOid"],
+                    check=True, capture_output=True, text=True, timeout=_GH_TIMEOUT_SECONDS)
+                pr = json.loads(view.stdout)
+                if not pr.get("mergedAt") or pr.get("headRefOid") != document["subject"]["reviewed_head_sha"]:
+                    # Evidence alone is not delivery and may belong to a worker
+                    # still merging. Never launch another model from redelivery.
+                    raise run_report.RunReportError("delivery_recovery_required", retryable=False)
+            run_report.terminal("complete")
+            return True
+        if (snapshot.get("review_receipt") or {}).get("recorded") is True:
+            raise run_report.RunReportError("delivery_recovery_required", retryable=False)
     if (snapshot.get("review_receipt") or {}).get("recorded") is True:
         run_report.terminal("complete")
         return True

@@ -113,6 +113,43 @@ class ReviewCycleHandler:
             # dispatch. No cached decision licenses a new worker.
             if pending is not None:
                 return await self.services.observe_dispatch(context, pending)
+            if dispatches:
+                from .review_cycle_dispatch import continuation_run_id
+                from .run_reports import OrchestrationRunReport
+
+                report = await session.get(OrchestrationRunReport, continuation_run_id(dispatches[-1].operation_key))
+                if (
+                    report
+                    and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True
+                    and (report.review_receipt or {}).get("recorded") is True
+                ):
+                    head = await self.services.head(binding)
+                    for evidence in reversed(rows):
+                        data = evidence.detail or {}
+                        cycle = json.loads(data.get("cycle_input", "{}"))
+                        if (
+                            evidence.kind == "review_evidence"
+                            and evidence.status == "succeeded"
+                            and data.get("reviewed_head_sha") == head
+                            and data.get("complete_review") == "true"
+                            and data.get("publication_outstanding") != "true"
+                            and cycle.get("reviewer_run_id") == report.run_id
+                            and cycle.get("author_run_id") == dispatches[-1].detail.get("author_run_id")
+                        ):
+                            # Observe delivery as soon as review evidence exists.
+                            # A missing terminal report after merge must not cause
+                            # another reviewer to be scheduled.
+                            return CycleObservation(
+                                ObservationKind.SUCCEEDED,
+                                snapshot={
+                                    "merge_ready": True,
+                                    "binding_id": binding.id,
+                                    "binding_revision": binding.revision,
+                                    "accepted_scope": binding.accepted_scope,
+                                    "head_sha": head,
+                                },
+                                receipt_ref=evidence.receipt_ref,
+                            )
             recover = getattr(self.services, "recovery_snapshot", None)
             recovered = await recover(session, context, node, binding, dispatches) if recover else None
             if recovered is not None:
@@ -149,7 +186,7 @@ class ReviewCycleHandler:
                     review_artifact=repair_request.receipt_ref,
                     author_run_id=latest.detail["author_run_id"] if latest else facts["active_run_id"],
                 )
-            elif latest is None or latest.detail.get("action") == Action.REPAIR.value:
+            elif latest is None:
                 snapshot["next_action"] = Action.REVIEW.value
                 snapshot["author_run_id"] = facts["active_run_id"]
             else:
@@ -167,9 +204,14 @@ class ReviewCycleHandler:
                     if item.get("reviewer_run_id") == facts["active_run_id"] and item.get("author_run_id") == latest.detail.get("author_run_id"):
                         matching.append((row, item))
                 if not matching:
+                    # Older author-only repairs have no review receipt. A new
+                    # reviewer-owned repair supplies its own exact-head evidence
+                    # and proceeds through the same merge-ready path below.
+                    if latest.detail.get("action") == Action.REPAIR.value:
+                        snapshot.update(next_action=Action.REVIEW.value, author_run_id=facts["active_run_id"])
                     # A push invalidates the prior approval; it requires another
                     # exact-head review, never a repair based on stale findings.
-                    if latest.detail.get("head_sha") != facts["head_sha"]:
+                    elif latest.detail.get("head_sha") != facts["head_sha"]:
                         snapshot.update(next_action=Action.REVIEW.value, author_run_id=latest.detail["author_run_id"])
                     else:
                         raise CycleBlockedError("fresh_verified_review_missing")
@@ -186,6 +228,13 @@ class ReviewCycleHandler:
                         )
                     if review.detail.get("publication_outstanding") == "true":
                         raise CycleBlockedError("review_publication_outstanding")
+                    from .run_reports import OrchestrationRunReport
+
+                    report = await session.get(OrchestrationRunReport, facts["active_run_id"])
+                    if report and (report.dispatch_metadata.get("review_cycle_input") or {}).get("reviewer_owned_delivery") is True:
+                        # This reviewer already owned repair. An explicit blocker
+                        # is not permission to dispatch the same work again.
+                        raise CycleBlockedError("reviewer_delivery_blocked", BlockCode.HUMAN_INPUT_REQUIRED)
                     findings = data.get("findings")
                     if not isinstance(findings, list) or not findings or data.get("blocked"):
                         raise CycleBlockedError("review_inconclusive")

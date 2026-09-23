@@ -155,6 +155,9 @@ export NAMESPACE AWS_REGION SQS_QUEUE_URL DYNAMO_TABLE DEEPWIKI_ENABLED
 export GRAPHRAG_ENABLED NEPTUNE_ENDPOINT NEPTUNE_PORT OPENSEARCH_ENDPOINT
 export WIKI_LLM_MODEL GITHUB_APP_ID_SECRET GITHUB_APP_KEY_SECRET GITHUB_APP_OWNER
 export S3_VECTORS_BUCKET_NAME S3_VECTORS_REGION S3_FILES_BUCKET S3_CONTENT_PREFIX ZOEKT_URL
+# Refuse to replace working configuration with an absent ACL datastore.
+resolve_acl_config
+
 template_file "${SCRIPT_DIR}/manifests/agent-context-configmap.yaml" | kubectl apply -f -
 echo "  ConfigMap agent-context-config deployed"
 

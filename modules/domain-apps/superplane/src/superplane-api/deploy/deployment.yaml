@@ -92,6 +92,27 @@ spec:
                   name: superplane-api-secrets
                   key: JWT_SECRET_KEY
                   optional: false
+            # The trusted PEM bundle for this environment's database endpoint
+            # (issue #5676, A22). Without it the API refuses to start, because
+            # it can no longer verify that the endpoint answering on the other
+            # end of the connection is actually our database.
+            #
+            # `optional: false` for the same reason as the two above, and it
+            # matters more here than it looks: if this reference were optional,
+            # a missing or misnamed key would leave the variable unset, and an
+            # unset CA is exactly the state the A22 finding describes. Fail to
+            # start instead.
+            #
+            # PROVISION THIS BEFORE ROLLING THIS MANIFEST. A pod that cannot
+            # resolve the key will not start, so an environment that has never
+            # had a CA bundle needs it created first — see
+            # docs/runbooks/superplane-database-tls.md.
+            - name: SUPERPLANE_DATABASE_CA
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-api-db
+                  key: ca-pem
+                  optional: false
           ports:
             - name: http
               containerPort: 8000

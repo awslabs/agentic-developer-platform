@@ -2821,13 +2821,9 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
                     )
                 except Exception as exc:
                     logger.warning("Codex engine evidence delivery failed (%s)", type(exc).__name__)
-                    if run_report.enabled():
-                        # A failed receipt is real terminal evidence. A zero exit
-                        # without review evidence must not leave an executing owner.
-                        run_report.terminal("failed")
-                    update_invocation_status(message_id, arrived_at, "failed", error_message="Codex engine evidence delivery failed")
-                    _delete_message(queue_url, region, receipt_handle)
-                    return 1
+                    # Reporting failure is not an agent crash and must not admit
+                    # another paid review. Keep the delivery available for replay.
+                    return AGENT_EXIT_RETRYABLE
             if run_report.enabled():
                 try:
                     run_report.terminal("complete")

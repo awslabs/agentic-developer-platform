@@ -62,3 +62,9 @@ variable "transport_secret_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "gateway_execution_arns" {
+  type        = list(string)
+  default     = []
+  description = "Reviewed exact API Gateway execution ARNs for runner transport; no API, stage or method wildcards."
+}

@@ -142,8 +142,12 @@ class Settings(BaseSettings):
     adp_gateway_internal_url: str = ""
     adp_gateway_internal_api_key: str = ""
 
-    # CORS
-    cors_origins: list[str] = ["*"]
+    # Cross-origin browser access requires an explicit allowlist (#5682).
+    # Empty supports same-origin gateway deployments; the installer supplies its
+    # reviewed origin. CORS does not authenticate a caller or supply a bearer
+    # token. Wildcard credentialed preflights can reflect arbitrary origins, so
+    # resolve_cors_origins() rejects that configuration at startup.
+    cors_origins: list[str] = []
 
     # Rate limiting
     rate_limit_per_minute: int = 60
@@ -152,6 +156,26 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+class WildcardCORSWithCredentials(RuntimeError):
+    """A wildcard origin was configured on a credentialed API."""
+
+
+def resolve_cors_origins() -> list[str]:
+    """Reject unsupported wildcard CORS configuration before serving requests.
+
+    A configuration error is explicit rather than silently replacing an operator's
+    configured allowlist and leaving browser clients with unexplained failures.
+    """
+    origins = [origin.strip() for origin in settings.cors_origins if origin.strip()]
+    if "*" in origins:
+        raise WildcardCORSWithCredentials(
+            "CORS_ORIGINS contains '*', which is not allowed with credentialed "
+            "cross-origin requests. List each reviewed origin explicitly, or "
+            "leave CORS_ORIGINS unset if the frontend is served same-origin."
+        )
+    return origins
 
 
 class DatabaseURLMissing(RuntimeError):

@@ -1,5 +1,4 @@
-/** Engine review/fix controller. Publication and terminal receipts belong to Python;
- * checks, merge and subsequent scheduling belong to the engine. */
+/** One reviewer owns inspection, repairs, CI and deterministic merge delivery. */
 import { Codex } from "@openai/codex-sdk";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -14,6 +13,7 @@ import { run } from "./process.js";
 import { runResumableTurn } from "./turn.js";
 import { ModelExecutionBudget } from "./model-budget.js";
 import { observeReviewerChecks, type ReviewerChecks } from "./reviewer-checks.js";
+import { deliverEngineReview, type ReviewerMerge } from "./engine-delivery.js";
 
 export interface EngineVerdict extends ReviewVerdict {
   stages: { functional: "completed" | "failed"; security: "completed" | "failed" };
@@ -60,8 +60,11 @@ export interface EngineReviewServices {
   review(prompt: string): Promise<EngineVerdict>;
   fix(prompt: string): Promise<void>;
   checks?(head: string): Promise<ReviewerChecks>;
+  deliver?(result: EngineReviewResult, envelope: CodexEngineReviewEnvelope): Promise<ReviewerMerge>;
   wait?(milliseconds: number): Promise<unknown>;
 }
+
+export type EngineReviewResult = Awaited<ReturnType<typeof runEngineReviewPass>>;
 
 export async function observePublishedRepair(
   github: EngineReviewServices["github"], number: number, before: string, after: string,
@@ -94,13 +97,15 @@ function services(runtime: ReviewRuntime & { repository: string }): EngineReview
   // conversations separate. A retry resumes its own thread and working tree.
   const inspection = thread();
   const repair = thread();
-  return {
-    github: new GitHubClient(runtime.repository ?? "", runtime.getGitHubToken ?? (async () => {
+  const github = new GitHubClient(runtime.repository ?? "", runtime.getGitHubToken ?? (async () => {
       // The shared worker rotates this file; long reviews must not retain an expired token.
       try { return (await readFile(process.env.ADP_TOKEN_FILE ?? "/tmp/.adp-gh-token", "utf8")).trim() || runtime.githubToken; }
       catch { return runtime.githubToken; }
-    })),
+    }));
+  return {
+    github,
     checks: observeReviewerChecks,
+    deliver: (result, envelope) => deliverEngineReview(github, result, envelope),
     review: async prompt => budget.run(async signal => parseEngineVerdict((await runResumableTurn(inspection, prompt,
       { outputSchema: engineReviewSchema, signal })).finalResponse)),
     fix: async prompt => { await budget.run(signal => runResumableTurn(repair, prompt, { signal })); },
@@ -175,7 +180,7 @@ async function runEngineReviewPass(
   const persona = await readFile(new URL("../prompts/reviewer.md", import.meta.url), "utf8");
   const story = JSON.stringify({ issue: { number: envelope.issue_number, title: issue.title, body: issue.body },
     pullRequest: { title: initialPr.title, body: initialPr.body }, priorFindings: cycle.findings });
-  const context = `${persona}\n\nThis is an engine assignment. The story and acceptance criteria define the work; no additional scope approval is required. The engine owns merge and scheduling. Do not publish, merge, dispatch another agent, or write review reports into the repository.\n\n<story-data>${story.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</story-data>`;
+  const context = `${persona}\n\nThis is an engine assignment. The story and acceptance criteria define the work; no additional scope approval is required. Your controller publishes and merges after verified review and CI; the engine completes the story. Do not publish, merge, dispatch another agent, or write review reports into the repository.\n\n<story-data>${story.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</story-data>`;
   const verifyGit = async (head: string) => {
     if (await git(["rev-parse", "HEAD"]) !== head
         || await git(["symbolic-ref", "--short", "HEAD"]) !== branch
@@ -206,7 +211,9 @@ async function runEngineReviewPass(
     finding !== null && typeof finding === "object" && "source" in finding
     && finding.source === "merge-controller" && "summary" in finding
     && /merge conflict|out-of-date base/i.test(String(finding.summary)));
-  const conflict = initialPr.mergeable === false || initialPr.mergeable_state === "dirty"
+  const behind = envelope.cycle.reviewer_owned_delivery && (await run("git", ["merge-base", "--is-ancestor", baseSha, expected],
+    { cwd: runtime.workspace, env: localEnv, allowFailure: true })).exitCode !== 0;
+  const conflict = behind || initialPr.mergeable === false || initialPr.mergeable_state === "dirty"
     || assignedBaseRepair || (cycle.action === "repair" && initialPr.mergeable !== true);
   const assignedRepair = cycle.action === "repair" || conflict;
   // Repair assignments already carry findings. Reviewing the unchanged head
@@ -298,27 +305,27 @@ async function runEngineReviewPass(
     if (current.head.sha !== head) throw new Error("PR head changed before review delivery");
   }
   if (!verdict) throw new Error("Engine review produced no inspection");
-  return { status: "engine_reviewed", sha: head, merged,
+  return { status: "engine_reviewed", sha: head, merged, reviewed_base_sha: baseSha,
     repair_base_sha: head !== expected ? expected : null,
     report: engineReport(verdict),
     body: engineReviewBody(verdict, head),
   };
 }
 
-/** Keep the same controller and both SDK threads alive until checks settle.
- * Python publishes final evidence/terminal receipts only after this returns;
- * the engine then performs its existing fenced merge and story completion. */
+/** Retain both SDK threads through CI and merge. Polling makes no model calls. */
 export async function runEngineReview(
   envelope: CodexEngineReviewEnvelope, runtime: ReviewRuntime, supplied?: EngineReviewServices,
 ) {
   const controller = supplied ?? services({ ...runtime, repository: envelope.repository });
   let result = await runEngineReviewPass(envelope, runtime, controller);
   if (!envelope.cycle.reviewer_owned_delivery || result.merged) return result;
-  if (!controller.checks) throw new Error("Reviewer-owned delivery requires canonical check observations");
+  if (!controller.checks || !controller.deliver) throw new Error("Reviewer-owned delivery requires checks and deterministic merge delivery");
   const root = envelope.cycle.head_sha;
   const finish = () => ({ ...result, repair_base_sha: result.sha === root ? null : root });
   const wait = controller.wait ?? pause;
   let observationFailures = 0;
+  let deliveryFailures = 0;
+  let queued = false;
   while (true) {
     if (Object.values(result.report.stages).some(stage => stage !== "completed")) return finish();
     let checks: ReviewerChecks;
@@ -326,19 +333,52 @@ export async function runEngineReview(
       checks = await controller.checks(result.sha);
       observationFailures = 0;
     } catch (error) {
-      if (!(error instanceof Error) || !("retryable" in error) || error.retryable !== true || ++observationFailures >= 3) throw error;
+      if (!(error instanceof Error) || !("retryable" in error) || error.retryable !== true || ++observationFailures >= 3) {
+        return { ...finish(), delivery_blocked: "CI observation unavailable or authorization withdrawn" };
+      }
       await wait(60000);
       continue;
     }
-    if (checks.head_sha !== result.sha) throw new Error("PR head changed while waiting for checks");
-    if (!checks.open && !checks.merged) throw new Error("PR closed while waiting for checks");
-    if (checks.merged) return finish();
+    if (checks.head_sha !== result.sha) return { ...finish(), delivery_blocked: "PR head changed while waiting for checks" };
+    if (!checks.open && !checks.merged) return { ...finish(), delivery_blocked: "PR closed while waiting for checks" };
+    if (checks.merged) {
+      const delivery = await controller.deliver(finish(), envelope);
+      if (delivery.state === "merged") return { ...finish(), merged: true };
+      throw new Error("Merged PR delivery could not be verified");
+    }
+    if (queued) {
+      try {
+        const delivery = await controller.deliver(finish(), envelope);
+        if (delivery.state === "merged") return { ...finish(), merged: true };
+        if (delivery.state === "blocked") return { ...finish(), delivery_blocked: delivery.reason ?? "Merge queue blocked" };
+        if (delivery.queued) { await wait(60000); continue; }
+        queued = false; // Queue removed the entry; current CI/base may need repair.
+      } catch {
+        return { ...finish(), delivery_blocked: "Merge queue observation unavailable" };
+      }
+    }
+    if (checks.base_sha !== result.reviewed_base_sha) checks = { ...checks, base_repair_required: true };
     if (checks.state === "pending" && !checks.base_repair_required) {
       // No model call and no terminal receipt while applicable CI is running.
       await wait(60000);
       continue;
     }
-    if (checks.state === "passed" && !checks.base_repair_required && result.report.verdict === "approve") return finish();
+    if (checks.state === "passed" && !checks.base_repair_required && result.report.verdict === "approve") {
+      let delivery: ReviewerMerge;
+      try { delivery = await controller.deliver(finish(), envelope); }
+      catch (error) {
+        if (!(error instanceof Error) || !("retryable" in error) || error.retryable !== true || ++deliveryFailures >= 3) {
+          return { ...finish(), delivery_blocked: "Review publication or merge unavailable; inspect delivery evidence" };
+        }
+        await wait(60000);
+        continue;
+      }
+      deliveryFailures = 0;
+      if (delivery.state === "merged") return { ...finish(), merged: true };
+      if (delivery.state === "blocked") return { ...finish(), delivery_blocked: delivery.reason ?? "Merge blocked" };
+      if (delivery.state === "pending") { queued = delivery.queued === true; await wait(60000); continue; }
+      checks = { ...checks, base_repair_required: true, failures: [delivery.reason] };
+    }
     const previous = result;
     const needsRepair = checks.state === "failed" || checks.base_repair_required;
     const findings = [...result.report.findings, {

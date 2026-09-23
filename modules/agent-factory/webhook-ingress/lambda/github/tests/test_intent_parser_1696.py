@@ -5,6 +5,8 @@ marker-gated bot-guard relaxation for PR events, and fan-out.
 """
 
 import sys
+
+import pytest
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -648,3 +650,9 @@ class TestSelfReTriggerGuard:
         )
         assert result is not None
         assert result.persona == "developer"
+
+
+@pytest.fixture(autouse=True)
+def automatic_pr_reviews_enabled(monkeypatch):
+    """These legacy review/branch tests exercise the explicit opt-in path."""
+    monkeypatch.setenv("GITHUB_AUTO_PR_REVIEW_ENABLED", "true")

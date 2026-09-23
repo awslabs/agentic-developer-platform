@@ -1,6 +1,6 @@
 {
   "_comment": "Fixture for #3374: Go struct vs Python generated stub ranking.",
-  "repo_id": "microservices-demo",
+  "repo_id": "GoogleCloudPlatform/microservices-demo",
   "indexed_at": "2026-07-08T00:00:00Z",
   "definitions": [
     {

@@ -72,19 +72,17 @@ resource "kubernetes_network_policy" "agent_scaledjob_egress" {
       }
     }
 
-    # The browser broker is the sole URL-analysis browsing boundary. Workers
-    # can submit a URL for a guarded capture but cannot access AgentCore itself.
-    egress {
-      to {
-        pod_selector {
-          match_labels = {
-            "app.kubernetes.io/name" = "url-analysis-browser-broker"
-          }
+    # App-owned destinations extend the shared worker's network policy.
+    dynamic "egress" {
+      for_each = local.domain_worker_egress
+      content {
+        to {
+          pod_selector { match_labels = egress.value.pod_labels }
         }
-      }
-      ports {
-        port     = 8765
-        protocol = "TCP"
+        ports {
+          port     = egress.value.port
+          protocol = egress.value.protocol
+        }
       }
     }
 

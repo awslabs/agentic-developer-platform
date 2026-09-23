@@ -47,8 +47,8 @@ resource "aws_iam_role_policy" "build_dispatch" {
       Sid = "ImageAuthentication", Effect = "Allow", Action = ["ecr:GetAuthorizationToken", "sts:GetCallerIdentity"], Resource = "*"
     },
     {
-      Sid      = "PublishWorkerManifest", Effect = "Allow", Action = ["s3:PutObject"],
-      Resource = "arn:aws:s3:::adp-${var.environment}-cape-assets/manifests/*"
+      Sid      = "PublishWorkerBuildTag", Effect = "Allow", Action = ["ssm:PutParameter"],
+      Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/cyber/worker-image-tag"
     },
   ] })
 }

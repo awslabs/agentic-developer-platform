@@ -75,7 +75,30 @@ async def current_author_run(session, *, node, default):
         if (row.detail or {}).get("action") == Action.REPAIR.value:
             committed = await session.get(OrchestrationDecision, receipt_id(row.operation_key))
             if committed is not None and committed.org_id == node.org_id and committed.actor_id == ACTOR:
-                return continuation_run_id(row.operation_key)
+                saved = json.loads(committed.reason)
+                envelope = saved.get("envelope") or {}
+                cycle = envelope.get("review_cycle_input") or {}
+                expected = envelope.get("review_expect") or {}
+                run_id = continuation_run_id(row.operation_key)
+                # This capability comes from the committed dispatcher receipt,
+                # never from review-document claims. Review-and-fix continuations
+                # retain the implementation author just as review assignments do.
+                if (
+                    committed.node_id == node.id
+                    and committed.flow_id == node.flow_id
+                    and committed.actor_kind == "service"
+                    and committed.kind == "agent_dispatched"
+                    and saved.get("authority_mode") == "shared_worker_role"
+                    and saved.get("run_id") == run_id
+                    and saved.get("action") == Action.REPAIR.value
+                    and envelope.get("persona") == "agent-codex-reviewer"
+                    and cycle.get("reviewer_owned_delivery") is True
+                    and expected.get("author_run_id") == row.detail.get("author_run_id")
+                    and expected.get("author_run_id")
+                    and expected["author_run_id"] != run_id
+                ):
+                    return expected["author_run_id"]
+                return run_id
     return default
 
 

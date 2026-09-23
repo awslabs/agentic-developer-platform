@@ -594,3 +594,20 @@ variable "gateway_authority_managed_policies" {
   type        = bool
   default     = false
 }
+
+variable "domain_app_images" {
+  type        = map(string)
+  default     = {}
+  description = "Optional immutable image overrides for installed domain applications."
+  validation {
+    condition     = alltrue([for image in values(var.domain_app_images) : can(regex("@sha256:[0-9a-f]{64}$", image))])
+    error_message = "Domain application image overrides must use an immutable sha256 digest."
+  }
+}
+
+# This controls only pull_request event reviews, not mentions, labels or engine work.
+variable "github_auto_pr_review_enabled" {
+  description = "Automatically review agent PRs from GitHub PR events. Keep disabled when the engine owns reviewer dispatch. Explicit issue triggers remain available."
+  type        = bool
+  default     = false
+}

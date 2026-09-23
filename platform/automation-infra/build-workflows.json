@@ -1,11 +1,12 @@
 [
-  "arc-runner-build.yml",
-  "cyber-worker-build.yml",
-  "agent-worker-image.yml",
   "agent-context-images-build.yml",
+  "agent-worker-image.yml",
+  "arc-runner-build.yml",
+  "cyber-browser-build.yml",
+  "cyber-worker-build.yml",
+  "psycopg2-layer-build.yml",
+  "pyjwt-layer-build.yml",
   "superplane-api-build.yml",
   "superplane-controller-build.yml",
-  "superplane-monitor-build.yml",
-  "pyjwt-layer-build.yml",
-  "psycopg2-layer-build.yml"
+  "superplane-monitor-build.yml"
 ]

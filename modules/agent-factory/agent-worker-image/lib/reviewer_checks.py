@@ -18,7 +18,7 @@ def main():
         "attempt": int(os.environ["ADP_ORCHESTRATION_ATTEMPT"]),
     }
     try:
-        result = run_report.request("/review-checks", {"head_sha": head}, timeout=60)
+        result = run_report.request("/review-checks", {"head_sha": head, "for_merge": "--for-merge" in sys.argv}, timeout=60)
     except run_report.RunReportError as error:
         print(json.dumps({"error": error.code, "retryable": error.retryable}))
         return

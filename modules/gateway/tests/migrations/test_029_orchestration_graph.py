@@ -75,7 +75,7 @@ MIG_029 = _load_migration("029_orchestration_graph.py")
 # Append to this list when a migration touches an orchestration table; that is
 # cheaper than the alternative (running the whole alembic chain here), which would
 # couple this file to every unrelated migration in the repo.
-MIGRATIONS_AFTER_029 = [_load_migration("039_flow_design_capture.py")]
+MIGRATIONS_AFTER_029 = [_load_migration("039_flow_design_capture.py"), _load_migration("067_flow_execution_pause.py")]
 
 
 def _run_migration(sync_conn, fn):

@@ -3,7 +3,8 @@
 # =============================================================================
 
 resource "aws_iam_role" "cluster" {
-  name = "${local.cluster_name}-cluster-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.cluster_name}-cluster-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -52,7 +53,8 @@ resource "aws_iam_role_policy_attachment" "cluster_AmazonEKSVPCResourceControlle
 # =============================================================================
 
 resource "aws_iam_role" "node" {
-  name = "${local.cluster_name}-node-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.cluster_name}-node-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -204,9 +206,11 @@ resource "aws_iam_role_policy_attachment" "runner_services" {
   policy_arn = aws_iam_policy.runner_services.arn
 }
 module "runtime_policy" {
-  source                = "../../infra/modules/runner-runtime-policy"
-  account_id            = data.aws_caller_identity.current.account_id
-  aws_region            = var.aws_region
-  name_prefix           = "adp-${var.environment}"
-  transport_secret_arns = var.transport_secret_arns
+  environment            = var.environment
+  gateway_execution_arns = var.gateway_execution_arns
+  source                 = "../../infra/modules/runner-runtime-policy"
+  account_id             = data.aws_caller_identity.current.account_id
+  aws_region             = var.aws_region
+  name_prefix            = "adp-${var.environment}"
+  transport_secret_arns  = var.transport_secret_arns
 }

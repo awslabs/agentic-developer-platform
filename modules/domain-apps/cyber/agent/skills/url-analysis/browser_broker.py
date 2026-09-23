@@ -12,6 +12,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from case_capture import collect_case, validate_options
+from case_contract import MAX_RESPONSE_BYTES
 from browser_guard import DEFAULT_REGION, DestinationRefused, open_guarded_browser
 from denylist import DenylistResult, scrub_url_credentials
 
@@ -54,7 +56,7 @@ def _validated_request(payload: object) -> dict[str, Any]:
             "url must be a non-empty string of at most 8192 characters"
         )
     wait_until = payload.get("wait_until", "networkidle")
-    if wait_until not in ALLOWED_WAIT_STATES:
+    if not isinstance(wait_until, str) or wait_until not in ALLOWED_WAIT_STATES:
         raise InvalidBrokerRequest("wait_until is not supported")
     timeout_ms = payload.get("timeout_ms", 30_000)
     if (
@@ -179,6 +181,7 @@ def analyze_destination(request: dict[str, Any], playwright) -> dict[str, Any]:
 
 class BrowserBrokerHandler(BaseHTTPRequestHandler):
     server_version = "URLAnalysisBrowserBroker/1"
+    _manager_lock = threading.Lock()
 
     def _write_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode()
@@ -194,8 +197,69 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
             return
         self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
+    def do_investigation(self) -> None:
+        from investigation_browser import InvestigationError, InvestigationManager
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= MAX_REQUEST_BYTES:
+                raise ValueError("Invalid request size")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("An object is required")
+            with self._manager_lock:
+                if not hasattr(self.server, "investigation_manager"):
+                    self.server.investigation_manager = InvestigationManager()
+                manager = self.server.investigation_manager
+            operation = self.path.rsplit("/", 1)[-1]
+            if operation == "start":
+                result = manager.start(payload)
+            elif operation == "close":
+                if set(payload) != {"session_token"}:
+                    raise ValueError("Only the browser lease is accepted for close")
+                result = manager.request({**payload, "action": "close"})
+            else:
+                result = manager.request(payload)
+            response = {"status": "ok", "analysis": result}
+            if len(json.dumps(response).encode()) > MAX_RESPONSE_BYTES:
+                token = result.get("session_token") or payload.get("session_token")
+                if token:
+                    manager.request({"session_token": token, "action": "close"})
+                raise InvestigationError("Investigation response budget exceeded")
+            self._write_json(HTTPStatus.OK, response)
+        except DestinationRefused as error:
+            self._write_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "error": "destination_refused",
+                    "reason": error.reason,
+                    "reason_code": error.reason_code,
+                },
+            )
+        except (ValueError, TypeError) as error:
+            self._write_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "invalid_investigation", "message": str(error)[:500]},
+            )
+        except Exception as error:
+            logger.error("investigation failed error_type=%s", type(error).__name__)
+            self._write_json(
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "error": "analysis_failed",
+                    "message": "Investigation failed; retain earlier evidence and close the lease",
+                },
+            )
+
     def do_POST(self) -> None:
-        if self.path != "/v1/analyze":
+        if self.path in {
+            "/v1/investigation/start",
+            "/v1/investigation/step",
+            "/v1/investigation/close",
+        }:
+            self.do_investigation()
+            return
+        if self.path not in {"/v1/analyze", "/v1/capture"}:
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
         try:
@@ -207,11 +271,25 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
             return
         try:
             payload = json.loads(self.rfile.read(content_length))
-            request = _validated_request(payload)
+            if self.path == "/v1/capture" and isinstance(payload, dict):
+                base = {
+                    k: v
+                    for k, v in payload.items()
+                    if k not in {"profile", "wait_seconds"}
+                }
+                request = _validated_request(base)
+                profile, delay = validate_options(payload)
+                if request["ignore_https_errors"]:
+                    raise InvalidBrokerRequest(
+                        "Research capture requires TLS verification"
+                    )
+                request.update(profile=profile, wait_seconds=delay)
+            else:
+                request = _validated_request(payload)
         except (
             UnicodeDecodeError,
             json.JSONDecodeError,
-            InvalidBrokerRequest,
+            ValueError,
         ) as error:
             self._write_json(
                 HTTPStatus.BAD_REQUEST,
@@ -223,7 +301,11 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as playwright:
-                analysis = analyze_destination(request, playwright)
+                analysis = (
+                    collect_case(request, playwright)
+                    if self.path == "/v1/capture"
+                    else analyze_destination(request, playwright)
+                )
         except DestinationRefused as error:
             self._write_json(
                 HTTPStatus.FORBIDDEN,
@@ -241,7 +323,17 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
                 {"error": "analysis_failed", "message": "guarded analysis failed"},
             )
             return
-        self._write_json(HTTPStatus.OK, {"status": "ok", "analysis": analysis})
+        response = {"status": "ok", "analysis": analysis}
+        if len(json.dumps(response).encode()) > MAX_RESPONSE_BYTES:
+            self._write_json(
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "error": "analysis_failed",
+                    "message": "capture exceeded response budget",
+                },
+            )
+            return
+        self._write_json(HTTPStatus.OK, response)
 
     def log_message(self, format: str, *args: object) -> None:
         logger.info("browser broker request: " + format, *args)
@@ -263,6 +355,8 @@ def main() -> None:
     try:
         server.serve_forever()
     finally:
+        if hasattr(server, "investigation_manager"):
+            server.investigation_manager.close_all()
         server.server_close()
 
 

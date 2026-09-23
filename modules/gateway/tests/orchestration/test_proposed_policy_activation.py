@@ -118,6 +118,8 @@ async def register_policy_bearing_draft(session, registrar, *, policy=None, prop
     await seed_principal(session, org_id=ORG_A, role=_reg.AdminRole.ORG_ADMIN.value)
     submitted = (proposal or gateless_proposal()).model_copy(update={"execution_policy": policy or policy_for_these_fixtures()})
     result, _ = await register_draft_proposal(session, submitted, registrar)
+    (await session.get(_reg.OrchestrationFlow, result.flow_id)).execution_paused = False
+    await session.flush()
     return result, submitted
 
 

@@ -11,7 +11,28 @@ dependencies = [
     "alembic>=1.14.0",
     "pydantic[email]>=2.7.0",
     "pydantic-settings>=2.3.0",
-    "python-jose[cryptography]>=3.3.0",
+    # Issue #5601 (S02). PyJWT, NOT python-jose. `python-jose` declares `ecdsa` as an
+    # UNCONDITIONAL requirement — `Requires-Dist: ecdsa!=0.15`, outside every extra —
+    # so `[cryptography]` adds the modern backend without removing `ecdsa`. That
+    # resolved to ecdsa 0.19.2 here, carrying GHSA-wj6h-64fc-37mp (a P-256 timing
+    # attack) with NO fixed version published: there is no upgrade to take, so the
+    # package can only be removed.
+    #
+    # The vulnerable code was not reachable before this change, and that is recorded
+    # so the severity is not overstated: with the `cryptography` extra, jose routes
+    # every algorithm — ES256 included — to `CryptographyECKey`, and `ecdsa` is never
+    # imported into the process. This service additionally pins HS256/RS256 and
+    # rejects any other `alg`, so no caller could steer it onto a curve path. It was
+    # an unfixable package in the tree, not a live exploit.
+    #
+    # `PyJWT[crypto]` installs `cryptography` and NOTHING else transitively — no
+    # ecdsa, no rsa, no pyasn1 — and it is already this repository's JWT library
+    # (modules/gateway/pyproject.toml, modules/gateway/lambda/api-authorizer). The
+    # supported range starts at the gateway's tested version and excludes a new
+    # major JWT API. `tests/test_jwt_dependency.py` asserts no
+    # jose-shaped requirement returns here, so a future edit reintroducing `ecdsa`
+    # fails a test rather than shipping.
+    "PyJWT[crypto]>=2.13.0,<3",
     "passlib[bcrypt]>=1.7.4",
     "boto3>=1.34.0",
     "httpx>=0.27.0",

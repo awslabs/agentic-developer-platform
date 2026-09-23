@@ -21,7 +21,7 @@ from src.admin.access_control import AdminRole
 from src.auth.dependencies import get_current_user
 from src.orchestration import controls, routes
 from src.orchestration.dispatch_pass import publish_pending, run_dispatch_pass
-from src.orchestration.models import DecisionKind, OrchestrationDecision, OrchestrationNode
+from src.orchestration.models import DecisionKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from src.orchestration.proposal import LoopProposal
 from src.orchestration.registration import register_draft_proposal
 from src.orchestration.results import observe_results
@@ -137,6 +137,9 @@ async def setup_plan(session, registrar, proposal=None):
         if node.kind == "eval":
             node.issue_ref = str(9000 + i)
     result, _ = await register_draft_proposal(session, proposal, registrar)
+    flow = await session.get(OrchestrationFlow, result.flow_id)
+    assert flow.execution_paused is True
+    flow.execution_paused = False  # This delivery harness explicitly enables its test flow.
     await session.commit()
     return result.flow_id
 

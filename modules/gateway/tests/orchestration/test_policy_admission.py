@@ -213,7 +213,7 @@ async def _make_org(session: AsyncSession, *, org_id: str = ORG_A) -> Organizati
 
 
 async def _make_flow(session: AsyncSession, *, org_id: str = ORG_A, slug: str = FLOW_SLUG) -> OrchestrationFlow:
-    flow = OrchestrationFlow(org_id=org_id, slug=slug, title="Demo flow")
+    flow = OrchestrationFlow(org_id=org_id, slug=slug, title="Demo flow", execution_paused=False)
     session.add(flow)
     await session.flush()
     return flow

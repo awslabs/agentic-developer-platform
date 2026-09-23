@@ -78,6 +78,7 @@ MAX_PARAMETER_COUNT = 50
 MAX_PARAMETER_KEY_LENGTH = 100
 MAX_PARAMETER_VALUE_LENGTH = 2000
 MAX_TOTAL_PARAMETER_BYTES = 16_384
+MAX_ALLOCATION_ID_LENGTH = 255
 
 # Identity-asserting parameter keys, refused even when correct. Compact, lowercased
 # comparison so `Org-ID`, `org_id` and `orgid` are the same attempt: a

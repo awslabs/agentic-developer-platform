@@ -92,6 +92,7 @@ from src.orchestration.display_state import FlowStatus
 from src.orchestration.evaluation_acceptance_routes import router as evaluation_acceptance_router
 from src.orchestration.execution_policy import PolicySummary, summarize_policy
 from src.orchestration.execution_read import MAX_EXECUTIONS_PER_PAGE, load_flow_execution_view
+from src.orchestration.flow_controls import router as flow_controls_router
 from src.orchestration.models import DecisionKind, NodeState
 from src.orchestration.node_activity import NodeActivity, StoryExecution, load_story_execution
 from src.orchestration.policy_admission import load_in_force_policy
@@ -1056,6 +1057,7 @@ class FlowSummaryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    execution_paused: bool = True
     slug: str
     title: str
     intent_ref: str | None
@@ -1085,6 +1087,8 @@ class FlowSummaryResponse(BaseModel):
     eval_count: int
     changes_requested_count: int
     completed_story_count: int
+    eval_story_count: int
+    completed_eval_story_count: int
     epic_count: int
     wave_count: int
     current_wave_ref: str | None
@@ -1218,6 +1222,7 @@ async def list_flows_route(
         flows.append(
             FlowSummaryResponse(
                 id=aggregate.flow.id,
+                execution_paused=aggregate.flow.execution_paused,
                 slug=aggregate.flow.slug,
                 title=aggregate.flow.title,
                 intent_ref=aggregate.flow.intent_ref,
@@ -1233,6 +1238,8 @@ async def list_flows_route(
                 eval_count=aggregate.eval_count,
                 changes_requested_count=aggregate.changes_requested_count,
                 completed_story_count=aggregate.completed_story_count,
+                eval_story_count=aggregate.eval_story_count,
+                completed_eval_story_count=aggregate.completed_eval_story_count,
                 epic_count=aggregate.epic_count,
                 wave_count=len(aggregate.waves),
                 current_wave_ref=aggregate.current_wave_ref,
@@ -1386,6 +1393,7 @@ class FlowGraphResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     flow_id: str
+    execution_paused: bool = True
     slug: str
     title: str
     intent_ref: str | None
@@ -1615,6 +1623,7 @@ async def get_flow_graph(
 
     return FlowGraphResponse(
         flow_id=flow.id,
+        execution_paused=flow.execution_paused,
         slug=flow.slug,
         title=flow.title,
         intent_ref=flow.intent_ref,
@@ -1895,6 +1904,7 @@ async def get_flow_execution(
 
 
 router.include_router(continuation_router)
+router.include_router(flow_controls_router)
 router.include_router(shared_amendment_router)
 router.include_router(shared_budget_router)
 router.include_router(shared_concurrency_router)

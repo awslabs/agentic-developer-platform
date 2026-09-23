@@ -60,3 +60,22 @@ resource "aws_iam_role_policy" "scan" {
   }]) })
 }
 output "scan_role_arn" { value = aws_iam_role.scan.arn }
+
+variable "scan_gateway_execution_arns" {
+  type        = list(string)
+  default     = []
+  description = "Exact reviewed gateway routes used by the scan triage transport."
+}
+module "scan_transport" {
+  source                 = "../../modules/agent-factory/infra/modules/runner-runtime-policy"
+  account_id             = data.aws_caller_identity.current.account_id
+  aws_region             = var.aws_region
+  name_prefix            = var.name_prefix
+  environment            = var.environment
+  gateway_execution_arns = var.scan_gateway_execution_arns
+}
+resource "aws_iam_role_policy" "scan_transport" {
+  name   = "scan-model-transport"
+  role   = aws_iam_role.scan.id
+  policy = jsonencode({ Version = "2012-10-17", Statement = [for statement in module.scan_transport.grants : statement if contains(["ModelInference", "GatewayEndpoint", "GatewayTransport"], statement.Sid)] })
+}

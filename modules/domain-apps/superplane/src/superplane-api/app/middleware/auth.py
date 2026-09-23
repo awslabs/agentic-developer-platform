@@ -4,9 +4,10 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+from jwt.exceptions import PyJWTError
 
 from app.config import settings
 from app.schemas.auth import TokenPayload
@@ -44,10 +45,27 @@ def require_jwt_secret_key() -> str:
     unavoidable: a future code path that reads `settings.jwt_secret_key` directly
     would reintroduce the fallback, so there is exactly one reader.
 
-    An empty key is treated as "unset" rather than as a key, because
-    `jose.jwt.encode` will sign with an empty string — see the note in
-    `app/config.py` for why that makes an empty default no safer than the
-    placeholder it replaced.
+    An empty key is treated as "unset" rather than as a key. Under `python-jose`
+    that was the whole load-bearing reason for this function: `jose.jwt.encode`
+    signed happily with an empty string, so an unset variable produced working
+    tokens anyone could forge. Issue #5601 (S02) replaced jose with PyJWT, which
+    raises `InvalidKeyError` on an empty HMAC key, so the library now refuses too.
+
+    This check is kept, and is still the right place for the rule, for reasons the
+    library's refusal does not cover:
+
+    - It fails at STARTUP with a named cause (`app/main.py` calls this), so a
+      deployment missing the variable is a refusal to serve rather than a 500 on
+      the first login attempt.
+    - It guards the VERIFY path as well as signing. `jwt.decode` with an empty key
+      would surface as "invalid or expired token", telling an operator the caller's
+      token was bad when the real fault is that the deployment has no key.
+    - It is the single reader of `settings.jwt_secret_key` (asserted structurally by
+      `tests/test_jwt_secret_required.py`), so the rule cannot be bypassed by a
+      future direct read of the setting.
+
+    See the note in `app/config.py` for why an empty default is no safer than the
+    committed placeholder it replaced.
 
     The message names the variable to set and never includes the value, so a
     startup failure in a shared log does not become the credential disclosure the
@@ -110,6 +128,11 @@ def decode_token(token: str) -> TokenPayload:
     # a total login outage. A configuration fault is not an authentication result.
     key = require_jwt_secret_key()
     try:
+        # `algorithms` is the server's list, never the token header's `alg`. This is
+        # what makes a token from the OTHER path unusable here: a domain RS256 token
+        # presented to this decoder raises `InvalidAlgorithmError` rather than being
+        # verified with the HMAC secret, and an `alg: none` token is refused for the
+        # same reason. Both are asserted in `tests/test_jwt_dependency.py`.
         payload = jwt.decode(token, key, algorithms=[settings.jwt_algorithm])
         return TokenPayload(
             sub=payload["sub"],
@@ -118,7 +141,14 @@ def decode_token(token: str) -> TokenPayload:
             user_id=uuid.UUID(payload["user_id"]) if payload.get("user_id") else None,
             role=payload.get("role"),
         )
-    except (JWTError, KeyError, ValueError) as exc:
+    # `PyJWTError` is PyJWT's root exception and replaces jose's `JWTError` here.
+    # It is the base of the whole family this call can raise — `DecodeError`,
+    # `ExpiredSignatureError`, `InvalidSignatureError`, `InvalidAlgorithmError`,
+    # `InvalidKeyError` — so the "any bad token is one indistinguishable 401"
+    # property holds without enumerating them. `KeyError`/`ValueError` still cover
+    # a verified-but-malformed payload (a missing `org_id`, or one that is not a
+    # UUID), which are raised by the claim reads below `decode`, not by PyJWT.
+    except (PyJWTError, KeyError, ValueError) as exc:
         logger.warning("JWT decode failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

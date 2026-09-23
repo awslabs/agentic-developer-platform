@@ -45,10 +45,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import jwt
-from jose.exceptions import JOSEError, JWTError
+from jwt.exceptions import PyJWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from superplane_auth.policy import (
@@ -203,7 +203,7 @@ def verify_access_token(token: str) -> dict[str, Any]:
     """
     try:
         header = jwt.get_unverified_header(token)
-    except JWTError as exc:
+    except PyJWTError as exc:
         raise TokenRejectedError("token header is unreadable") from exc
 
     kid = header.get("kid")
@@ -245,28 +245,49 @@ def verify_access_token(token: str) -> dict[str, Any]:
         # one place that decides it; audience verification is off because
         # Cognito access tokens carry `client_id` rather than `aud`, and the
         # policy checks that against its allowlist.
+        #
+        # The JWK->key construction is INSIDE this try, deliberately. `jose.jwt.decode`
+        # accepted the raw JWK mapping and built the key internally, so a structurally
+        # unusable published key raised from inside `decode` and was caught here. PyJWT
+        # requires the key to be built first (`PyJWK`), which moves that failure to a
+        # separate statement — left outside the try it would become an uncaught 500 on
+        # an unauthenticated path, which is the regression this placement prevents.
+        signing_key = jwt.PyJWK(key, algorithm="RS256").key
         return jwt.decode(
             token,
-            key,
+            signing_key,
+            # The server's list, never the token header's `alg`. Honouring the header
+            # is what permits the `alg: none` and HS256-with-the-public-key
+            # confusions; `verify_access_token` also rejects a non-RS256 header
+            # before reaching here, so the pin is asserted twice on purpose.
             algorithms=["RS256"],
             options={
                 "verify_signature": True,
                 "verify_exp": True,
                 "verify_aud": False,
                 "verify_iss": False,
-                "require_exp": True,
+                # PyJWT spells "this claim must be present" as `require`, a list.
+                # jose's `require_exp` boolean has no equivalent and is SILENTLY
+                # IGNORED by PyJWT if left in place — an unknown option is not an
+                # error — so a token with a valid signature and no `exp` at all
+                # would have been admitted as non-expiring. Asserted by
+                # `tests/test_jwt_dependency.py::test_token_without_exp_is_rejected`.
+                "require": ["exp"],
             },
         )
-    except (JOSEError, ValueError, TypeError) as exc:
+    except (PyJWTError, ValueError, TypeError, KeyError) as exc:
         # The reason is logged, not returned: a denial should not tell a caller
         # which part of their forgery was wrong.
         #
-        # JOSEError rather than JWTError: `JWKError` is a sibling of `JWTError`
-        # under `JOSEError`, not a subclass, so a structurally unusable published
-        # key escaped a `JWTError`-only handler. `ValueError`/`TypeError` cover
-        # the same class from the underlying key construction (e.g. "e must be
-        # >= 3 and < n"), which raises neither. All of them are reachable without
-        # a credential, so none may become a 500.
+        # `PyJWTError` is PyJWT's root exception, so — unlike jose, where `JWKError`
+        # was a SIBLING of `JWTError` rather than a subclass and escaped a
+        # `JWTError`-only handler — one base covers both the token failures
+        # (`InvalidSignatureError`, `ExpiredSignatureError`, `MissingRequiredClaimError`,
+        # `InvalidAlgorithmError`, `DecodeError`) and the published-key failures
+        # (`PyJWKError`, `InvalidKeyError`). `ValueError`/`TypeError`/`KeyError` remain
+        # for the underlying `cryptography` key construction and for a JWK mapping
+        # missing a required member, which raise outside PyJWT's hierarchy. Every one
+        # of these is reachable without a credential, so none may become a 500.
         logger.warning("domain token verification failed: %s", exc)
         raise TokenRejectedError("token signature or expiry is invalid") from exc
 

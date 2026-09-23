@@ -3,7 +3,8 @@
 terraform {
   required_version = ">= 1.7.0"
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 6.0" }
+    aws      = { source = "hashicorp/aws", version = "~> 6.0" }
+    external = { source = "hashicorp/external", version = "~> 2.3" }
   }
   backend "s3" {}
 }
@@ -35,6 +36,12 @@ variable "deployment_secret_arns" {
 }
 
 resource "aws_iam_role" "deployment" {
+  lifecycle {
+    precondition {
+      condition     = length(var.deployment_role_boundaries) == 0 ? true : data.external.workload_admission[0].result.verified == "true"
+      error_message = "Workload permission ceilings and the complete executable role inventory must pass operator admission."
+    }
+  }
   name                 = "${var.name_prefix}-trusted-deployment"
   max_session_duration = 10800
   assume_role_policy = jsonencode({
@@ -55,38 +62,11 @@ resource "aws_iam_role_policy" "deployment_identity_management" {
   name = "reviewed-infrastructure-identity-management"
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
-        Sid = "DeploymentRoleLifecycle", Effect = "Allow",
-        Action = [
-          "iam:GetRole", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:GetRolePolicy",
-          "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:ListRoleTags",
-          "iam:ListInstanceProfilesForRole", "iam:GetInstanceProfile", "iam:ListPolicyVersions",
-          "iam:ListPolicyTags", "iam:ListInstanceProfileTags",
-          "iam:CreateRole", "iam:DeleteRole", "iam:UpdateRole", "iam:UpdateAssumeRolePolicy",
-          "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
-          "iam:PutRolePermissionsBoundary", "iam:DeleteRolePermissionsBoundary", "iam:TagRole", "iam:UntagRole",
-          "iam:CreatePolicy", "iam:DeletePolicy", "iam:CreatePolicyVersion", "iam:DeletePolicyVersion",
-          "iam:SetDefaultPolicyVersion", "iam:TagPolicy", "iam:UntagPolicy",
-          "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
-        ]
-        Resource = [
-          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-*",
-          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/adp-*",
-          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:instance-profile/adp-*",
-          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/bedrockgw-*",
-          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/bedrockgw-*",
-        ]
-      },
-      {
-        Sid       = "PassDeploymentWorkloadRoles", Effect = "Allow", Action = ["iam:PassRole"],
-        Resource  = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/adp-*", "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/bedrockgw-*"],
-        Condition = { StringEquals = { "iam:PassedToService" = ["lambda.amazonaws.com", "codebuild.amazonaws.com", "ec2.amazonaws.com", "eks.amazonaws.com", "pods.eks.amazonaws.com", "events.amazonaws.com", "apigateway.amazonaws.com"] } }
-      },
-      {
-        Sid      = "DeploymentFederation", Effect = "Allow",
-        Action   = ["iam:GetOpenIDConnectProvider", "iam:ListOpenIDConnectProviderTags", "iam:CreateOpenIDConnectProvider", "iam:DeleteOpenIDConnectProvider", "iam:UpdateOpenIDConnectProviderThumbprint", "iam:TagOpenIDConnectProvider", "iam:UntagOpenIDConnectProvider"],
-        Resource = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/oidc.eks.${var.aws_region}.amazonaws.com/id/*"]
+        Sid      = "ReadDeploymentIdentities", Effect = "Allow",
+        Action   = ["iam:GetRole", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:ListRoleTags", "iam:ListInstanceProfilesForRole", "iam:GetInstanceProfile", "iam:ListPolicyVersions", "iam:ListPolicyTags", "iam:ListInstanceProfileTags"],
+        Resource = "*"
       },
       {
         Sid       = "ServiceLinkedRoles", Effect = "Allow", Action = ["iam:CreateServiceLinkedRole"], Resource = "*",
@@ -96,17 +76,31 @@ resource "aws_iam_role_policy" "deployment_identity_management" {
         Sid      = "NeverTenantVaults", Effect = "Deny", Action = ["secretsmanager:*"],
         Resource = [for prefix in ["adp/users/", "adp/teams/", "adp/orgs/", "adp/domain-apps/", "adp/*/tenants/"] : "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:${prefix}*"]
       },
-    ]
+      {
+        Sid = "ImmutableAutomationAndCeilings", Effect = "Deny", NotAction = ["iam:Get*", "iam:List*"],
+        Resource = concat([
+          aws_iam_role.deployment.arn, aws_iam_role.build.arn, aws_iam_role.scan.arn, aws_iam_role.rules.arn, aws_iam_role.checks.arn,
+          aws_iam_policy.deployment_base.arn, aws_iam_policy.deployment_services.arn,
+        ], distinct(values(var.deployment_role_boundaries)), [for policy in aws_iam_policy.deployment_role_lifecycle : policy.arn])
+      },
+      {
+        Sid = "NeverRemoveWorkloadCeilings", Effect = "Deny", Action = ["iam:DeleteRolePermissionsBoundary"], Resource = "*"
+      },
+      ], length(var.deployment_role_boundaries) == 0 ? [{
+        Sid = "AwaitWorkloadAdmission", Effect = "Deny", Action = ["*"], Resource = "*"
+    }] : [])
   })
 }
 
 resource "aws_eks_access_entry" "deployment" {
+  count             = length(var.deployment_role_boundaries) == 0 ? 0 : 1
   cluster_name      = var.cluster_name
   principal_arn     = aws_iam_role.deployment.arn
   kubernetes_groups = ["adp:trusted-deployment"]
   type              = "STANDARD"
 }
 resource "aws_eks_access_policy_association" "deployment" {
+  count         = length(var.deployment_role_boundaries) == 0 ? 0 : 1
   cluster_name  = var.cluster_name
   principal_arn = aws_iam_role.deployment.arn
   policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"

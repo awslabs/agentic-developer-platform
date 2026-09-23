@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.shared.logging import get_logger
@@ -42,6 +42,7 @@ from .execution_state import (
     PhaseAdvance,
 )
 from .execution_store import advance_execution, load_execution, record_observation
+from .flow_execution import flow_is_paused
 from .models import ClaimState, OrchestrationAction, OrchestrationExecution, OrchestrationWorkClaim
 from .notify import Notification, NotificationError, notify
 from .policy_admission import load_in_force_policy
@@ -1048,6 +1049,21 @@ async def _process_one(
 
     effect = decision.effect
     assert effect is not None
+    # Observation, evidence and completion above continue while paused. Only
+    # new effects wait; neither attempts nor an existing block are cleared.
+    async with factory() as session:
+        if await flow_is_paused(session, org_id=initial.org_id, flow_id=initial.flow_id):
+            await session.execute(
+                update(OrchestrationExecution)
+                .where(
+                    OrchestrationExecution.org_id == initial.org_id,
+                    OrchestrationExecution.id == initial.id,
+                    OrchestrationExecution.revision == initial.revision,
+                )
+                .values(next_check_at=_next(now, config), revision=initial.revision + 1)
+            )
+            await session.commit()
+            return
     # Authority is time-limited, so the expiry fence is only meaningful when it is
     # asked at the moment permission is being claimed. `now` was captured before
     # `observe`, which is bounded only by `io_timeout_seconds` — comparing against it
@@ -1070,21 +1086,9 @@ async def _process_one(
         report.bump(initial.org_id, "blocked")
         return
 
-    attempt_limit = config.max_attempts
-    if initial.attempts >= attempt_limit:
-        # A human platform approval may lift this flow above the runner default.
-        # Only a verified supplement for this execution's exact plan can do so;
-        # unrelated flows and notification retries retain their configured cap.
-        async with factory() as session:
-            admission = await load_in_force_policy(session, org_id=initial.org_id, flow_id=initial.flow_id)
-            if (
-                admission.refusal is None
-                and admission.policy is not None
-                and admission.plan_version == initial.accepted_plan_version
-                and admission.policy._shared_retry_decision_id
-            ):
-                attempt_limit = admission.policy.limits.max_attempts_per_node
-    if initial.attempts >= attempt_limit:
+    # The runner ceiling applies even when a flow has a larger approved retry
+    # allowance. Reconciliation above can still record work already completed.
+    if initial.attempts >= config.max_attempts:
         await _notify_block(
             factory,
             record=initial,
@@ -1093,6 +1097,7 @@ async def _process_one(
                 owner="platform-operator",
                 required_input="authorized recovery decision",
                 progressed_at=initial.progressed_at,
+                detail=f"engine continuation attempt limit exhausted ({initial.attempts}/{config.max_attempts})",
             ),
             now=now,
             config=config,

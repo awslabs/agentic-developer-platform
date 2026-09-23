@@ -251,8 +251,10 @@ ${local.agent_worker_pause_annotation}
                     value: "${var.codex_reviewer_merge_enabled}"
                   - name: CODEX_REVIEWER_MODEL
                     value: "${var.codex_reviewer_model}"
-                  - name: URL_ANALYSIS_EVIDENCE_BUCKET
-                    value: adp-${var.environment}-url-analysis-evidence-v2-${local.account_id}
+%{for name, value in local.domain_worker_environment~}
+                  - name: ${name}
+                    value: ${jsonencode(value)}
+%{endfor~}
                   - name: AGENT_RUN_LOGS_BUCKET
                     value: adp-${var.environment}-agent-run-logs-${local.account_id}
                   # Issue #4184: AGENT_FALLBACK_BUCKET had six readers in the

@@ -370,12 +370,12 @@ describe('a flow card', () => {
       display_counts: { queued: 14, in_progress: 4, gate: 0, stalled: 3, complete: 5 },
     })] }));
     renderFlowsList();
-    await waitFor(() => expect(screen.getByTestId('story-completion-count')).toHaveTextContent('4 of 24 stories complete'));
+    await waitFor(() => expect(screen.getByTestId('story-completion-count')).toHaveTextContent('4 of 24 implementation stories complete'));
     expect(screen.getByTestId('stalled-count')).toHaveTextContent('3 stalled');
     expect(screen.getByTestId('legend-stalled')).toHaveTextContent('3');
     expect(screen.getByTestId('legend-in_progress')).toHaveTextContent('4');
     expect(screen.getByTestId('legend-complete')).toHaveTextContent('5');
-    expect(screen.getByText('All 26 work items, including stories, gates and evaluations')).toBeVisible();
+    expect(screen.getByText('All 26 work items, including implementation stories, evaluations and approval gates')).toBeVisible();
   });
 
   it('shows neither affordance when nothing needs a human', async () => {
@@ -961,14 +961,35 @@ describe('the status chips and the summary line', () => {
 });
 
 
+it('includes evaluation stories in the flow total and completion count', async () => {
+  mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({
+    story_count: 9, eval_story_count: 5, gate_count: 1, eval_count: 6, wave_count: 6, total_nodes: 16,
+    completed_story_count: 1, completed_eval_story_count: 1,
+  })] }));
+  renderFlowsList();
+  const summary = await screen.findByTestId('plan-summary');
+  expect(summary).toHaveTextContent('14 stories across 6 waves');
+  expect(summary).toHaveTextContent('9 implementation · 5 evaluation · 1 approval gate · 1 evaluation checkpoint');
+  expect(screen.getByTestId('story-completion-count')).toHaveTextContent('2 of 14 stories complete');
+});
+
 it('shows the story count and requested-change hold on the summary card', async () => {
   mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({
     status: 'attention_needed', changes_requested_count: 1,
     story_count: 27, gate_count: 14, eval_count: 4, wave_count: 4, total_nodes: 45,
   })] }));
   renderFlowsList();
-  expect(await screen.findByText('27 stories across 4 waves')).toBeInTheDocument();
+  expect(await screen.findByText('27 implementation stories across 4 waves')).toBeInTheDocument();
   expect(screen.getByText('14 approval gates · 4 evaluations')).toBeInTheDocument();
   expect(screen.getByText('Changes requested')).toBeInTheDocument();
   expect(screen.getByTestId('changes-requested-summary')).toHaveTextContent('Work behind these gates is paused');
+});
+
+it('renders flow pause controls outside the navigation link', async () => {
+  mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ execution_paused: true })] }));
+  mockUsePermissions.mockReturnValue({ hasPermission: () => true });
+  renderFlowsList();
+  const button = await screen.findByRole('button', { name: 'Resume flow' });
+  expect(button.closest('a')).toBeNull();
+  expect(screen.getByText('Paused')).toBeInTheDocument();
 });

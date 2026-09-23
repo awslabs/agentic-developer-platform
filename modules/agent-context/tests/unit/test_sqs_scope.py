@@ -2,9 +2,8 @@
 
 Tests cover:
 - Scoped message round-trips scope through producer → consumer
-- Legacy no-scope message defaults to shared (backward-compat)
-- Invalid visibility normalizes to shared
-- parse_scope handles None / empty / partial dicts
+- Missing, invalid and contradictory ownership is refused
+- Trusted producers continue to emit an explicit shared scope
 - publish_message includes scope in the message body
 """
 
@@ -23,7 +22,7 @@ _INGESTION_DIR = str(Path(__file__).parent.parent.parent / "images" / "ingestion
 if _INGESTION_DIR not in sys.path:
     sys.path.insert(0, _INGESTION_DIR)
 
-from scope import DEFAULT_SCOPE, IngestionScope, parse_scope
+from scope import DEFAULT_SCOPE, IngestionScope, ScopeValidationError, parse_scope
 
 
 def _load_publish_ingestion():
@@ -81,21 +80,17 @@ class TestIngestionScope:
 class TestParseScope:
     """Tests for parse_scope backward compatibility."""
 
-    def test_none_returns_default(self):
-        """None input returns DEFAULT_SCOPE (backward-compat)."""
-        assert parse_scope(None) == DEFAULT_SCOPE
+    def test_none_is_refused(self):
+        with pytest.raises(ScopeValidationError):
+            parse_scope(None)
 
-    def test_empty_dict_returns_default(self):
-        """Empty dict returns DEFAULT_SCOPE (backward-compat)."""
-        assert parse_scope({}) == DEFAULT_SCOPE
+    def test_empty_dict_is_refused(self):
+        with pytest.raises(ScopeValidationError):
+            parse_scope({})
 
-    def test_partial_dict_fills_defaults(self):
-        """A partial scope dict fills missing fields with defaults."""
-        scope = parse_scope({"tenant_id": "acme"})
-        assert scope.tenant_id == "acme"
-        assert scope.owner_sub is None
-        assert scope.project_id is None
-        assert scope.visibility == "shared"
+    def test_partial_dict_cannot_become_shared(self):
+        with pytest.raises(ScopeValidationError):
+            parse_scope({"tenant_id": "acme"})
 
     def test_full_scope_parsed(self):
         """A complete scope dict is fully parsed."""
@@ -111,10 +106,18 @@ class TestParseScope:
         assert scope.project_id == "proj-789"
         assert scope.visibility == "personal"
 
-    def test_invalid_visibility_defaults_to_shared(self):
-        """Unknown visibility value normalizes to 'shared' for safety."""
-        scope = parse_scope({"visibility": "bogus"})
-        assert scope.visibility == "shared"
+    def test_invalid_visibility_is_rejected(self):
+        """Unknown visibility value is fatal, not normalized to shared (#5658).
+
+        This test previously asserted the opposite, on the stated rationale that
+        shared was the "safe" default. It is the unsafe one: an unrecognised
+        visibility means producer and consumer disagree about the vocabulary, and
+        resolving that disagreement by publishing to the prefix every tenant can
+        read is the disclosure. Missing scope is likewise refused; trusted
+        producers must provide an explicit shared scope.
+        """
+        with pytest.raises(ScopeValidationError):
+            parse_scope({"visibility": "bogus"})
 
     def test_tenant_visibility(self):
         """Tenant visibility is valid."""
@@ -218,26 +221,10 @@ class TestConsumerScopeExtraction:
         assert parsed.project_id == "proj-42"
         assert parsed.visibility == "personal"
 
-    def test_legacy_message_no_scope_defaults_to_shared(self):
-        """A legacy message without scope field defaults to shared (backward-compat)."""
-        # Legacy message format (pre-Story 7)
-        message_body = {
-            "source": "oss/public-lib",
-            "content_type": "repo",
-            "steps": ["s3_upload", "cgc", "deepwiki", "graphrag"],
-            "force": False,
-            "tags": {},
-            "triggered_by": "daily_refresh",
-            "enqueued_at": "2026-06-24T06:00:00+00:00",
-        }
-
-        # Consumer side: message.get("scope") returns None
-        parsed = parse_scope(message_body.get("scope"))
-        assert parsed == DEFAULT_SCOPE
-        assert parsed.visibility == "shared"
-        assert parsed.tenant_id is None
-        assert parsed.owner_sub is None
-        assert parsed.project_id is None
+    def test_legacy_message_needs_authoritative_scope_before_replay(self):
+        message_body = {"source": "oss/public-lib", "content_type": "repo"}
+        with pytest.raises(ScopeValidationError):
+            parse_scope(message_body.get("scope"))
 
     def test_scope_json_serialization_roundtrip(self):
         """Scope survives JSON encode/decode (as happens in SQS)."""
@@ -255,3 +242,55 @@ class TestConsumerScopeExtraction:
         assert parsed.owner_sub is None
         assert parsed.project_id == "p-1"
         assert parsed.visibility == "tenant"
+
+
+# ---------------------------------------------------------------------------
+# Scope downgrade is not a safe default (#5658)
+# ---------------------------------------------------------------------------
+
+
+class TestScopeDowngradeIsRefused:
+    """Missing ownership and invalid restrictions both deny; explicit sharing works."""
+
+    def test_only_explicit_shared_scope_is_allowed(self):
+        for missing in (None, {}):
+            with pytest.raises(ScopeValidationError):
+                parse_scope(missing)
+        assert parse_scope({"visibility": "shared"}) == DEFAULT_SCOPE
+
+    def test_tenant_scope_without_tenant_id_raises(self):
+        with pytest.raises(ScopeValidationError) as excinfo:
+            parse_scope({"visibility": "tenant"})
+        # The message names the missing field: an operator reading the DLQ needs
+        # to know what the producer omitted.
+        assert "tenant_id" in str(excinfo.value)
+
+    def test_personal_scope_without_owner_sub_raises(self):
+        with pytest.raises(ScopeValidationError) as excinfo:
+            parse_scope({"visibility": "personal"})
+        assert "owner_sub" in str(excinfo.value)
+
+    def test_a_valid_restriction_is_honoured_unchanged(self):
+        """The guard must not break scoped ingestion, or it will be reverted."""
+        scope = parse_scope(
+            {"visibility": "personal", "owner_sub": "us-east-1:user-abc", "tenant_id": "acme"}
+        )
+        assert scope.is_personal
+        assert scope.owner_sub == "us-east-1:user-abc"
+
+    def test_no_restricted_visibility_can_silently_become_shared(self):
+        """Exhaustive over the restricted visibilities, so a new one is not missed.
+
+        If a fourth visibility is added with a required identifier, this test does
+        not automatically cover it — but it does document the invariant that every
+        restricted visibility either validates or raises, never downgrades.
+        """
+        from scope import VALID_VISIBILITIES
+
+        restricted = [v for v in VALID_VISIBILITIES if v != "shared"]
+        assert restricted, "expected at least one restricted visibility"
+
+        for visibility in restricted:
+            # Stated with none of its required identifiers present.
+            with pytest.raises(ScopeValidationError):
+                parse_scope({"visibility": visibility})
