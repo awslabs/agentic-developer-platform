@@ -82,7 +82,11 @@ The proposed revision preserves the acceptance gate address and its unanswered d
 The GitHub epic and all 15 native children carry this wave plan. The existing
 ADP flow `1275a30d-a84d-4f98-9ddb-f461c5aeb2d1` (`task-api-5792`) remains at
 plan version 1, paused, with its acceptance gate unanswered and no active
-execution policy. The six-wave replacement is prepared; it has not been applied.
+execution policy. The six-wave replacement is prepared; it has not been applied. The exact
+authored document is [flow-proposal.json](flow-proposal.json), pinned to the
+committed wave-definition revision. It omits the acceptance gate that the server
+inserts during draft preview. This is a review artifact for the same flow, not
+an instruction to create or approve another flow.
 
 The current API cannot revise this inert plan while retaining its proposed
 policy. Draft registration rejects a different document for an existing flow;
