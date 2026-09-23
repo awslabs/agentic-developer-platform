@@ -81,8 +81,15 @@ def capture_url(
     )
 
 
+def investigation_request(operation, payload, *, broker_url=None):
+    """One reasoning-selected operation; never replay a timed-out browser action."""
+    if operation not in {"start", "step", "close"}:
+        raise ValueError("Unsupported investigation operation")
+    return _request("investigation/" + operation, payload, broker_url, 75)
+
+
 def _request(operation, payload, broker_url, request_timeout_seconds):
-    url = payload["url"]
+    url = payload.get("url", "")
     endpoint = (
         broker_url
         or os.environ.get("URL_ANALYSIS_BROWSER_BROKER")

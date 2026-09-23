@@ -396,12 +396,15 @@ class PinnedHTTPTransport:
 class _CDPRequest:
     """Request facade for Fetch interception, including redirected requests."""
 
-    def __init__(self, event):
+    def __init__(self, event, main_frame_id=None):
         self._request = event["request"]
         self.url = self._request["url"]
         self.method = self._request["method"]
         self.post_data_buffer = None
         self._navigation = event.get("resourceType") == "Document"
+        self.is_main_navigation = self._navigation and (
+            main_frame_id is None or event.get("frameId") == main_frame_id
+        )
 
     def all_headers(self):
         return self._request.get("headers", {})
@@ -449,6 +452,8 @@ class NavigationGuard:
     read_only: bool = False
     connections: list[dict] = field(default_factory=list)
     connections_dropped: int = 0
+    refusals_dropped: int = 0
+    navigation_check: object = None
 
     def decide(self, url: str) -> DenylistResult:
         """Re-resolve every request and bind the original host to its vetted set."""
@@ -471,6 +476,9 @@ class NavigationGuard:
     def _record_refusal(
         self, url: str, result: DenylistResult, *, navigation: bool = False
     ) -> None:
+        if len(self.refusals) >= 200:
+            self.refusals_dropped += 1
+            return
         safe_url = scrub_url_credentials(url)
         logger.warning(
             "url-analysis blocked request: url=%s code=%s reason=%s",
@@ -509,6 +517,16 @@ class NavigationGuard:
             )
             route.abort("blockedbyclient")
             return
+        if (
+            navigation
+            and getattr(target, "is_main_navigation", True)
+            and self.navigation_check is not None
+        ):
+            result = self.navigation_check(url)
+            if not result.allowed:
+                self._record_refusal(url, result, navigation=True)
+                route.abort("blockedbyclient")
+                return
         result = self.decide(url)
         if not result.allowed:
             self._record_refusal(url, result, navigation=navigation)
@@ -563,10 +581,12 @@ class NavigationGuard:
         No continueRequest/continue route operation exists in this path.
         """
         cdp = context.new_cdp_session(page)
+        tree = cdp.send("Page.getFrameTree") or {}
+        main_frame_id = tree.get("frameTree", {}).get("frame", {}).get("id")
         cdp.on(
             "Fetch.requestPaused",
             lambda event: self.handle_route(
-                _CDPRoute(cdp, event["requestId"]), _CDPRequest(event)
+                _CDPRoute(cdp, event["requestId"]), _CDPRequest(event, main_frame_id)
             ),
         )
         cdp.send(
@@ -630,6 +650,34 @@ class GuardedBrowserSession:
     def goto(self, url: str, **kwargs):
         return self._page.goto(url, **kwargs)
 
+    def go_back(self):
+        return self._page.go_back(wait_until="domcontentloaded", timeout=30000)
+
+    def click_observed(self, selector: str, index: int, expected: dict):
+        """Only broker-owned selectors and inspected elements enter this facade."""
+        element = self._page.locator(selector).nth(index)
+        actual = element.evaluate(
+            "e => ({href:e.href || '', text:(e.innerText || e.textContent || '').slice(0,150), download:e.hasAttribute('download'), target:e.getAttribute('target') || ''})"
+        )
+        if actual != expected:
+            raise ValueError("Observed element changed; inspect a fresh view")
+        if actual["download"]:
+            raise ValueError("Download clicks are disabled")
+        same_tab = bool(
+            actual["href"] and actual["target"] not in {"", "_self", "_top", "_parent"}
+        )
+        if same_tab:
+            # Follow the selected link without allowing an unguarded new target.
+            # The source click handler still runs, preserving its session state.
+            element.evaluate("e => e.setAttribute('target', '_self')")
+        element.click(timeout=10000, no_wait_after=False)
+        self._page.wait_for_timeout(200)
+        return {"target_rewritten_to_self": same_tab}
+
+    def scroll_view(self):
+        self._page.evaluate("window.scrollBy(0, Math.min(window.innerHeight, 900))")
+        self._page.wait_for_timeout(200)
+
     def screenshot(self, **kwargs):
         return self._page.screenshot(**kwargs)
 
@@ -679,6 +727,7 @@ def open_guarded_browser(
     context_options: dict | None = None,
     transport: PinnedHTTPTransport | None = None,
     read_only: bool = False,
+    navigation_check=None,
 ) -> GuardedBrowserSession:
     """Create and return the only supported URL-analysis browser interface."""
     vetted = vet_destination(url, config)
@@ -703,6 +752,7 @@ def open_guarded_browser(
         context = browser.new_context(**options)
         guard = NavigationGuard(
             read_only=read_only,
+            navigation_check=navigation_check,
             vetted=vetted,
             target_host=_host_of(url),
             config=config,

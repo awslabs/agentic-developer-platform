@@ -1,5 +1,9 @@
 # Researcher URL cases
 
+For reasoning-led exploration across multiple pages, use the
+[domain investigation workflow](domain-investigations.md). The commands below
+describe the compatible single-URL case collector and shared evidence artifacts.
+
 The cyber agent can collect a reproducible browser case, choose bounded follow-up
 views, and assess findings against captured evidence. The maintained collector
 runs in the trusted browser broker; the existing cyber agent supplies the

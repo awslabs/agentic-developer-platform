@@ -112,8 +112,12 @@ def _navigation_refusal(session) -> None:
             )
 
 
-def collect_case(request: dict, playwright) -> dict:
-    """One fresh session, initial capture, optionally a delayed same-session capture."""
+def recorded_browser(request: dict, playwright, *, opener=None):
+    """Broker-owned recorder; yield between agent decisions without closing context.
+
+    Commands are trusted Python callbacks supplied by the broker, never caller code.
+    The generator and all Playwright operations must stay on their owning thread.
+    """
     profile, delay = validate_options(request)
     started = utcnow()
     subject = digest(request["url"])
@@ -134,6 +138,8 @@ def collect_case(request: dict, playwright) -> dict:
     dropped = {"network": 0, "redirects": 0, "downloads": 0, "timeline": 0}
     status = 0
     previous_url = request["url"]
+    subjects_by_url = {}
+    manual_navigation = None
     errors = []
 
     def append(kind, items, value):
@@ -142,12 +148,13 @@ def collect_case(request: dict, playwright) -> dict:
         else:
             dropped[kind] += 1
 
-    session = open_guarded_browser(
+    session = (opener or open_guarded_browser)(
         request["url"],
         playwright,
         region=result["region"],
         context_options={**PROFILES[profile], "accept_downloads": False},
         read_only=True,
+        navigation_check=request.get("_navigation_check"),
     )
 
     def on_response(response):
@@ -196,17 +203,23 @@ def collect_case(request: dict, playwright) -> dict:
             )
 
     def on_navigation(frame):
-        nonlocal previous_url
+        nonlocal previous_url, manual_navigation
         if frame == session.main_frame:
             append("timeline", timeline, {"event": "navigation", "url": frame.url})
             if frame.url != previous_url:
+                kind = "navigation"
+                if manual_navigation and (
+                    manual_navigation == "back" or frame.url == manual_navigation
+                ):
+                    kind = "agent_navigation"
+                manual_navigation = None
                 append(
                     "redirects",
                     redirects,
                     {
                         "from_url": previous_url,
                         "to_url": frame.url,
-                        "kind": "navigation",
+                        "kind": kind,
                         "status": 0,
                     },
                 )
@@ -319,6 +332,7 @@ def collect_case(request: dict, playwright) -> dict:
             o["errors"].append("page_capture_truncated")
         o["content_sha256"] = content_digest(o)
         result["observations"].append(o)
+        subjects_by_url[session.url] = subject
 
     try:
         result["session_id"] = session.session_id
@@ -358,6 +372,45 @@ def collect_case(request: dict, playwright) -> dict:
             except Exception as exc:
                 errors.append(f"wait:{type(exc).__name__}")
             snapshot("wait")
+        result["cleanup_status"] = "open"
+        command = yield result, session
+        while command is not None:
+            manual_navigation = (
+                "back"
+                if command["action"] == "back"
+                else command["target_url"]
+                if command["action"] in {"follow", "root"}
+                else None
+            )
+            if command["action"] in {"follow", "root"}:
+                subject = digest(command["target_url"])
+            before_url = session.url
+            try:
+                response = command["perform"](session)
+                if response is not None and hasattr(response, "status"):
+                    status = response.status
+                if command["action"] == "back":
+                    subject = subjects_by_url.get(session.url, digest(session.url))
+                snapshot(command["action"])
+                if isinstance(response, dict):
+                    result["observations"][-1]["interaction"] = response
+                if (
+                    command["action"] == "follow"
+                    and session.url == before_url
+                    and command["target_url"].split("#", 1)[0]
+                    != before_url.split("#", 1)[0]
+                ):
+                    result["observations"][-1]["status"] = "partial"
+                    result["observations"][-1]["errors"].append(
+                        "selected_navigation_not_observed"
+                    )
+            except DestinationRefused:
+                raise
+            except Exception as exc:
+                _navigation_refusal(session)
+                errors.append(f"action:{type(exc).__name__}")
+                snapshot(command["action"])
+            command = yield result, session
     finally:
         try:
             session.close()
@@ -369,4 +422,13 @@ def collect_case(request: dict, playwright) -> dict:
                 o["status"] = "partial"
                 o["errors"].append("session_cleanup_failed")
         result["completed_at"] = utcnow()
-    return result
+
+
+def collect_case(request: dict, playwright) -> dict:
+    """One fresh session, initial capture, optionally a delayed same-session capture."""
+    recorder = recorded_browser(request, playwright)
+    try:
+        result, _ = next(recorder)
+        return result
+    finally:
+        recorder.close()

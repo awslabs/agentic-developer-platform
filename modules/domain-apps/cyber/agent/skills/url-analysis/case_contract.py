@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "url-research/1"
-COLLECTOR_VERSION = "1.0.0"
+COLLECTOR_VERSION = "1.1.0"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
@@ -92,6 +92,19 @@ class Assessment(Contract):
         for finding in self.findings:
             if not set(finding.evidence_ids) <= by_id.keys():
                 raise ValueError("Finding cites an unknown observation")
+            cited_observations = [by_id[i] for i in finding.evidence_ids]
+            if finding.kind == "redirect" and not any(
+                r.get("kind") in {"http", "navigation"}
+                for o in cited_observations
+                for r in o.get("redirects", [])
+            ):
+                raise ValueError(
+                    "Redirect findings require observed navigation/redirect evidence; form actions are configuration"
+                )
+            if finding.kind == "download_offer" and not any(
+                o.get("downloads") for o in cited_observations
+            ):
+                raise ValueError("Download findings require a captured download offer")
             if finding.kind == "content_variation":
                 cited = [by_id[i] for i in set(finding.evidence_ids)]
                 if len(cited) < 2 or len({o["subject_sha256"] for o in cited}) != 1:

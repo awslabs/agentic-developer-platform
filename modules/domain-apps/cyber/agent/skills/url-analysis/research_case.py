@@ -212,6 +212,20 @@ def assess_case(output: Path, assessment: dict) -> dict:
         verify_case(output)
         case = json.loads((output / CASE_FILE).read_text())
         parsed = Assessment.model_validate(assessment)
+        if case.get("case_kind") == "domain_investigation" and (
+            not case.get("stop_reason")
+            or (
+                parsed.verdict != "inconclusive"
+                and (
+                    case.get("unconfirmed_browser_start", False)
+                    or not case.get("sessions")
+                    or any(s["cleanup_status"] != "stopped" for s in case["sessions"])
+                )
+            )
+        ):
+            raise ValueError(
+                "Record the stopping reason; unconfirmed cleanup permits only inconclusive assessment"
+            )
         parsed.validate_evidence(case["observations"])
         if parsed.verdict == "no_adverse_behavior_observed" and any(
             p["status"] != "complete" for p in case["probes"]
@@ -302,6 +316,78 @@ def _md(value) -> str:
     )
 
 
+def _investigation_report(case):
+    if case.get("case_kind") != "domain_investigation":
+        return [], ""
+    lines = [
+        "",
+        "## Investigation path and hypothesis updates",
+        "",
+        "Scope: " + _md(case.get("scope", "host")),
+        "",
+    ]
+    items = []
+    for probe in case["probes"]:
+        decision = probe.get("decision", {})
+        observations = [o for o in case["observations"] if o["probe_id"] == probe["id"]]
+        refs = " ".join(f'<a href="#{o["id"]}">{o["id"]}</a>' for o in observations)
+        question = decision.get("question", "Inspect the seed")
+        action = probe.get("action", "capture")
+        reason = decision.get("reason", "")
+        lines += [
+            f"### {probe['id']}: {_md(action)}",
+            "",
+            "Question: " + _md(question),
+            "",
+            "Reason: " + _md(reason),
+            "",
+        ]
+        updates = []
+        for review in case.get("reviews", []):
+            if review["probe_id"] != probe["id"]:
+                continue
+            lines += [
+                f"Hypothesis ({review['outcome']}): {_md(review['hypothesis'])}",
+                "",
+                _md(review["explanation"]),
+                "",
+                "Next question: " + _md(review["next_question"]),
+                "",
+            ]
+            updates.append(
+                f"<p><strong>{_escaped(review['outcome'])}:</strong> "
+                f"{_escaped(review['hypothesis'])}</p><p>{_escaped(review['explanation'])}</p>"
+                f"<p><small>Next question: {_escaped(review['next_question'])}</small></p>"
+            )
+        items.append(
+            f"<li><h3>{_escaped(action)} {refs}</h3>"
+            f"<p><strong>Question:</strong> {_escaped(question)}</p>"
+            f"<p>{_escaped(reason)}</p>" + "".join(updates) + "</li>"
+        )
+    stop = case.get("stop_reason", "Investigation remains open")
+    lines += ["Stopping reason: " + _md(stop), ""]
+    leads = case.get("external_leads", [])
+    if leads:
+        lines += ["### External or unavailable leads", ""]
+        lines += [f"- {_md(x['url'])} ({_md(x['observation_id'])})" for x in leads]
+    lead_html = "".join(
+        f"<li>{_escaped(x['url'])} <small>{_escaped(x['observation_id'])}</small></li>"
+        for x in leads
+    )
+    markup = (
+        "<h2>Investigation path and hypothesis updates</h2>"
+        f"<p>Scope: {_escaped(case.get('scope', 'host'))}</p><ol>"
+        + "".join(items)
+        + f"</ol><p><strong>Stopping reason:</strong> {_escaped(stop)}</p>"
+        + (
+            f"<details><summary>External or unavailable leads ({len(leads)})</summary><ul>{lead_html}</ul></details>"
+            if leads
+            else ""
+        )
+    )
+    return lines, markup
+
+
 def save_case(output: Path, case: dict) -> None:
     """JSON is authoritative. Reports are regenerated from the same captured evidence."""
     _write_json(output / CASE_FILE, case)
@@ -390,6 +476,8 @@ def save_case(output: Path, case: dict) -> None:
             f"<p>Coverage errors: {_escaped(', '.join(o.get('errors', [])) or 'none recorded')}</p>"
             f"<details><summary>Structured observation</summary><pre>{_escaped(json.dumps(o, indent=2))}</pre></details></section>"
         )
+    investigation_lines, investigation_html = _investigation_report(case)
+    lines += investigation_lines
     lines += ["", "## Limitations", ""] + [f"- {_md(x)}" for x in a["limitations"]]
     limits = set(a["limitations"])
     for probe in case["probes"]:
@@ -412,12 +500,13 @@ def save_case(output: Path, case: dict) -> None:
     (output / "report.html").write_text(
         '<!doctype html><html lang="en"><meta charset="utf-8">'
         "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'\">"
-        "<title>URL research case</title><style>body{font:16px system-ui;max-width:1100px;margin:40px auto;padding:20px;background:#f6f8fa;color:#17212b}"
+        "<title>URL research case</title><style>body{font:16px system-ui;max-width:1100px;margin:40px auto;padding:20px;background:#f6f8fa;color:#17212b;overflow-wrap:anywhere}"
         "section{background:white;padding:24px;margin:24px 0;border:1px solid #d0d7de;overflow-wrap:anywhere}img{max-width:100%;max-height:420px;border:1px solid #ddd}pre{white-space:pre-wrap;overflow-wrap:anywhere}"
         "small{color:#57606a}</style>"
         f"<h1>{_escaped(a['verdict'])}</h1><p>{_escaped(case['target_url'])}</p>"
         '<p><a href="case.json">Case JSON</a> · <a href="indicators.csv">Observed indicators CSV</a></p>'
         f"<h2>Findings</h2><ul>{findings}</ul><details><summary>Investigation choices and provenance</summary><pre>{_escaped(json.dumps(case['probes'], indent=2))}</pre></details>"
+        + investigation_html
         + "".join(cards)
         + "<h2>Limitations</h2><ul>"
         + "".join(f"<li>{_escaped(x)}</li>" for x in sorted(limits))

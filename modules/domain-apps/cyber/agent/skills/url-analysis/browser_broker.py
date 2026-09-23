@@ -181,6 +181,7 @@ def analyze_destination(request: dict[str, Any], playwright) -> dict[str, Any]:
 
 class BrowserBrokerHandler(BaseHTTPRequestHandler):
     server_version = "URLAnalysisBrowserBroker/1"
+    _manager_lock = threading.Lock()
 
     def _write_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode()
@@ -196,7 +197,68 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
             return
         self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
+    def do_investigation(self) -> None:
+        from investigation_browser import InvestigationError, InvestigationManager
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= MAX_REQUEST_BYTES:
+                raise ValueError("Invalid request size")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("An object is required")
+            with self._manager_lock:
+                if not hasattr(self.server, "investigation_manager"):
+                    self.server.investigation_manager = InvestigationManager()
+                manager = self.server.investigation_manager
+            operation = self.path.rsplit("/", 1)[-1]
+            if operation == "start":
+                result = manager.start(payload)
+            elif operation == "close":
+                if set(payload) != {"session_token"}:
+                    raise ValueError("Only the browser lease is accepted for close")
+                result = manager.request({**payload, "action": "close"})
+            else:
+                result = manager.request(payload)
+            response = {"status": "ok", "analysis": result}
+            if len(json.dumps(response).encode()) > MAX_RESPONSE_BYTES:
+                token = result.get("session_token") or payload.get("session_token")
+                if token:
+                    manager.request({"session_token": token, "action": "close"})
+                raise InvestigationError("Investigation response budget exceeded")
+            self._write_json(HTTPStatus.OK, response)
+        except DestinationRefused as error:
+            self._write_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "error": "destination_refused",
+                    "reason": error.reason,
+                    "reason_code": error.reason_code,
+                },
+            )
+        except (ValueError, TypeError) as error:
+            self._write_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "invalid_investigation", "message": str(error)[:500]},
+            )
+        except Exception as error:
+            logger.error("investigation failed error_type=%s", type(error).__name__)
+            self._write_json(
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "error": "analysis_failed",
+                    "message": "Investigation failed; retain earlier evidence and close the lease",
+                },
+            )
+
     def do_POST(self) -> None:
+        if self.path in {
+            "/v1/investigation/start",
+            "/v1/investigation/step",
+            "/v1/investigation/close",
+        }:
+            self.do_investigation()
+            return
         if self.path not in {"/v1/analyze", "/v1/capture"}:
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
@@ -293,6 +355,8 @@ def main() -> None:
     try:
         server.serve_forever()
     finally:
+        if hasattr(server, "investigation_manager"):
+            server.investigation_manager.close_all()
         server.server_close()
 
 

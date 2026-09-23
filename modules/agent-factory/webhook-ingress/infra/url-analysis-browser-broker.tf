@@ -123,6 +123,9 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
         # driver process and stalls startup. Preserve the driver's stdio protocol.
         # This fixed Python service opts out; container logs remain available.
         annotations = merge(
+          # Browser context lives in this replica during agent reasoning. Avoid
+          # voluntary consolidation interrupting an otherwise healthy lease.
+          { "karpenter.sh/do-not-disrupt" = "true" },
           { for language in ["java", "nodejs", "python", "dotnet"] :
           "cloudwatch.aws.amazon.com/auto-annotate-${language}" => "false" },
           { for language in ["java", "nodejs", "python", "dotnet"] :
@@ -209,7 +212,10 @@ resource "kubernetes_service" "url_analysis_browser_broker" {
     namespace = kubernetes_namespace.adp_agents.metadata[0].name
   }
   spec {
-    selector = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
+    # A worker's investigation steps must reach the replica owning its short-lived
+    # browser lease. Replica loss fails closed; contexts are never silently replayed.
+    session_affinity = "ClientIP"
+    selector         = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
     port {
       name        = "http"
       port        = 8765
