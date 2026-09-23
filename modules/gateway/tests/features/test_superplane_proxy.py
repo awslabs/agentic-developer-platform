@@ -55,6 +55,33 @@ def test_missing_bearer_and_feature_off(client, monkeypatch):
     assert client.get("/superplane/v1/workspaces", headers={"Authorization": "Bearer test"}).status_code == 404
 
 
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "api/v1/research/findings"),
+        ("GET", "api/v1/research/stats"),
+        ("GET", "api/v1/research/proposals"),
+        ("PATCH", "api/v1/research/proposals/11111111-1111-1111-1111-111111111111/approve"),
+    ],
+)
+def test_research_routes_need_a_bearer_at_the_edge_too(client, method, path):
+    """No unauthenticated caller reaches the research surface — issue #5682 (A02).
+
+    These are the routes that were the reachability path for the A02 finding:
+    the domain API served them to an anonymous caller with every tenant's rows
+    merged, and all 12 are in this proxy's public allowlist, so the exposure was
+    reachable from the internet rather than cluster-local.
+
+    The API side is fixed (each handler now requires a server-derived tenant),
+    and that is the fix that matters — this asserts the edge does not forward an
+    anonymous request either, so the two layers agree. Pinned per-route rather
+    than trusting the shared bearer check, because the allowlist is generated
+    from the domain inventory and a future route could arrive without anyone
+    re-reading this proxy.
+    """
+    assert client.request(method, "/superplane/v1/" + path).status_code == 401
+
+
 def test_forward_only_trusted_transport_headers_and_preserve_denial(client, monkeypatch):
     calls = []
 

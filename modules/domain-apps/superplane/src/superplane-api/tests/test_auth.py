@@ -131,6 +131,7 @@ from app.endpoint_inventory import (  # noqa: E402
     DOMAIN_ROUTES,
     all_inventoried,
     classify,
+    mounted_operations,
 )
 from app.main import app as fastapi_app  # noqa: E402
 from app.models.organization import Organization  # noqa: E402
@@ -968,26 +969,43 @@ class TestRouteInventoryCoverage:
     """Every mounted route must carry a recorded authorization decision."""
 
     def _mounted(self):
-        from fastapi.routing import APIRoute
+        """The routes the app really serves.
 
-        mounted = set()
-        for route in fastapi_app.routes:
-            path = getattr(route, "path", None)
-            methods = getattr(route, "methods", None) or set()
-            if path is None:
-                continue
-            if not isinstance(route, APIRoute) and path not in {
-                "/openapi.json",
-                "/docs",
-                "/docs/oauth2-redirect",
-                "/redoc",
-            }:
-                continue
-            for method in methods:
-                if method in {"HEAD", "OPTIONS"}:
-                    continue
-                mounted.add((method.upper(), path))
-        return mounted
+        Delegates to `app/endpoint_inventory.py::mounted_operations`, which is
+        shared with the other enumeration sites and refuses to return an empty
+        set. This helper used to do its own `isinstance(route, APIRoute)` walk over
+        `app.routes` and, after FastAPI started storing included routers lazily,
+        found ZERO routes — so every assertion below passed while examining
+        nothing. See issue #5682 (A02).
+        """
+        return mounted_operations(fastapi_app)
+
+    def test_enumeration_finds_the_routes_it_is_supposed_to_check(self):
+        """The guard on the guard.
+
+        Every other test in this class compares the mounted set against the
+        inventory, and `mounted - inventoried` is empty when `mounted` is empty.
+        So an enumeration that breaks makes this whole class pass vacuously —
+        which is exactly what happened. Asserting a plausible floor here means a
+        future framework change fails loudly instead of going quietly green.
+        """
+        mounted = self._mounted()
+        assert len(mounted) > 50, (
+            f"only {len(mounted)} routes enumerated; the app serves far more, so "
+            "the inventory checks in this class are not examining the real surface"
+        )
+        assert ("GET", "/api/v1/research/findings") in mounted
+        assert ("POST", "/workspaces/{workspace_id}/kubeconfig") in mounted
+
+    def test_enumeration_refuses_to_report_an_empty_app_as_success(self):
+        """An app with no routes raises rather than returning an empty set."""
+        from fastapi import FastAPI
+
+        from app.endpoint_inventory import NoRoutesEnumerated
+
+        empty = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
+        with pytest.raises(NoRoutesEnumerated):
+            mounted_operations(empty)
 
     def test_every_mounted_route_is_inventoried(self):
         """A new route cannot ship without a decision — collection fails first.
@@ -1642,21 +1660,62 @@ class TestUninventoriedRouteFailsClosed:
         assert response.status_code == 404
 
 
-class TestLegacyActorFallback:
-    """With enforcement off, the legacy body field is still the only actor."""
+class TestRecordedActorComesFromTheCredential:
+    """The approval audit trail is never authored by the request body.
 
-    def test_body_value_is_used_when_no_verified_caller(self):
-        """Documents the legacy path rather than pretending it is gone.
+    This class replaces TestLegacyActorFallback, which asserted the opposite:
+    that with enforcement off, an `approved_by` field in the request body was
+    the recorded actor. That was the weakness A02 (issue #5682) exists to
+    close — an anonymous caller could stamp any name onto an approval. The
+    body field is no longer read at all, so the property worth pinning now is
+    that every branch of _recorded_actor derives from a server-verified
+    identity. U21 still owns retiring the legacy HS256 path itself.
+    """
 
-        U21 owns retiring it. What matters here is that the body value is used
-        ONLY when no verified caller exists — never in preference to one.
-        """
+    def test_verified_caller_subject_is_preferred(self):
         from types import SimpleNamespace
 
         from app.routers.research import _recorded_actor
 
-        unenforced = SimpleNamespace(state=SimpleNamespace())
-        assert _recorded_actor(unenforced, "legacy-actor") == "legacy-actor"
+        caller = SimpleNamespace(principal=SimpleNamespace(subject="cognito-sub-1"))
+        request = SimpleNamespace(state=SimpleNamespace(caller=caller))
+        actor = _recorded_actor(request, {"org_id": uuid.uuid4(), "user_id": None})
+        assert actor == "cognito-sub-1"
+
+    def test_legacy_token_user_id_is_used_when_there_is_no_domain_caller(self):
+        """The HS256 path has no subject, but its user_id is still server-derived."""
+        from types import SimpleNamespace
+
+        from app.routers.research import _recorded_actor
+
+        user_id = uuid.uuid4()
+        request = SimpleNamespace(state=SimpleNamespace())
+        actor = _recorded_actor(request, {"org_id": uuid.uuid4(), "user_id": user_id})
+        assert actor == str(user_id)
+
+    def test_org_scoped_token_records_the_org_not_an_unverified_name(self):
+        """Worst case is an honest org attribution, never a caller-chosen string."""
+        from types import SimpleNamespace
+
+        from app.routers.research import _recorded_actor
+
+        org_id = uuid.uuid4()
+        request = SimpleNamespace(state=SimpleNamespace())
+        actor = _recorded_actor(request, {"org_id": org_id, "user_id": None})
+        assert actor == f"org:{org_id}"
+
+    def test_a_body_supplied_actor_cannot_be_recorded(self):
+        """The regression guard: approve/reject must ignore body-supplied names."""
+        import inspect
+
+        from app.routers import research
+
+        source = inspect.getsource(research)
+        assert "_recorded_actor(http_request, request.approved_by" not in source
+        assert "_recorded_actor(http_request, request.rejected_by" not in source
+
+        signature = inspect.signature(research._recorded_actor)
+        assert list(signature.parameters) == ["http_request", "user_context"]
 
 
 class TestEnvironmentStateIsObservable:

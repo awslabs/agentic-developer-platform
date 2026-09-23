@@ -107,11 +107,20 @@ variable "account_id" {
 # ---------------------------------------------------------------------------
 # CORS (acceptance criterion 4)
 #
-# Upstream ships `cors_origins: list[str] = ["*"]` (src/superplane-api/app/config.py)
-# while `app/main.py` adds CORSMiddleware with `allow_credentials=True`. That pairing lets
-# any origin make credentialed calls against the domain API. Browsers reject the exact
-# combination `Access-Control-Allow-Origin: *` with credentials, but the upstream default
-# is still what a deploy would inherit, and a single permissive entry in a list is enough.
+# The app used to ship `cors_origins: list[str] = ["*"]` (src/superplane-api/app/config.py)
+# while `app/main.py` added CORSMiddleware with `allow_credentials=True`. That pairing lets
+# any origin make credentialed calls against the domain API.
+#
+# As of issue #5682 (A02) the app-side default is `[]` and `resolve_cors_origins()` refuses
+# "*" at startup, so the dangerous default is no longer inheritable from the image. This
+# allowlist is KEPT rather than relaxed: it catches the wildcard at plan time, before a
+# deploy that would otherwise fail on startup, and it is the layer that survives someone
+# reintroducing a permissive app default later.
+#
+# Starlette reflects arbitrary requesting origins on credentialed wildcard
+# preflights. Explicit origins keep browser policy bounded. This is separate from
+# authentication: a successful preflight neither supplies a bearer token nor proves
+# that a site can read an authenticated response.
 #
 # So: an explicit allowlist, and `*` is rejected as a MEMBER — not merely as the whole
 # value, because ["https://legit.example", "*"] is exactly as permissive as ["*"] and far
@@ -154,9 +163,9 @@ variable "cors_allowed_origins" {
       var.cors_allow_credentials && contains(var.cors_allowed_origins, "*")
     )
     error_message = <<-EOT
-      cors_allowed_origins contains "*" while cors_allow_credentials is true: any origin
-      could make credentialed calls against the domain API. This is upstream's default
-      (cors_origins = ["*"] with allow_credentials=True) and must not be inherited.
+      cors_allowed_origins contains "*" while cors_allow_credentials is true, allowing
+      arbitrary origins through credentialed CORS preflight. The app also refuses this
+      at startup (issue #5682); plan-time validation catches it before rollout.
       Replace "*" with an explicit allowlist.
     EOT
   }

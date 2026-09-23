@@ -132,9 +132,13 @@ data:
   DEBUG: "true"
   AWS_REGION: "us-east-1"
   AWS_ACCOUNT_ID: "605440105851"
-  # WARNING: Wildcard CORS is acceptable for integration testing only.
-  # Production must use explicit origins.
-  CORS_ORIGINS: '["*"]'
+  # CORS (issue #5682, A02). Was '["*"]' with a warning that production must
+  # differ. Removed rather than re-warned: the wildcard is now refused at
+  # startup, so this value would fail the integration run it was meant to
+  # enable. Nothing here needs it — these tests call the API in-cluster over
+  # the service DNS name, not from a browser, and CORS only governs
+  # browser-enforced cross-origin requests.
+  CORS_ORIGINS: '[]'
   JWT_ALGORITHM: "HS256"
   JWT_EXPIRE_MINUTES: "60"
   RATE_LIMIT_PER_MINUTE: "60"

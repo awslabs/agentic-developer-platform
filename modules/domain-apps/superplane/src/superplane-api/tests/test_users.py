@@ -186,10 +186,14 @@ class TestListUsersEndpoint:
         We verify the route exists and does not require elevated RBAC role
         by checking the OpenAPI spec for the route.
         """
+        from app.endpoint_inventory import mounted_operations
         from app.main import app as fastapi_app
 
-        routes = [r.path for r in fastapi_app.routes if hasattr(r, "path")]
-        assert "/users" in routes
+        # Shared enumeration (issue #5682, A02): the previous `r.path for r in
+        # fastapi_app.routes` listed only the four Starlette docs routes once
+        # FastAPI began storing included routers lazily, so this asserted the
+        # absence of a route that is in fact mounted.
+        assert ("GET", "/users") in mounted_operations(fastapi_app)
 
 
 class TestUpdateRoleEndpoint:
