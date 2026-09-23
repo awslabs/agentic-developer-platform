@@ -42,6 +42,64 @@ HEADER_OWNER_SUB = "x-owner-sub"
 # Sentinel value in allowed_principals meaning "visible to everyone"
 PUBLIC_SENTINEL = "*"
 
+# Object-store prefixes holding genuinely shared, non-tenant platform assets.
+#
+# This is an enumerated allow-list, and that shape is the point (#5658). The
+# previous rule was "a hit with no repo label is shared content", which made
+# every unattributable result public — including personal-context memory and
+# any repo-scoped object whose provenance was simply lost on the way through a
+# backend. Anything not positively matched here is denied.
+#
+# Entries are matched as whole path segments against the canonicalised key, so
+# "content/catalog" matches "content/catalog/repos.json" but never
+# "content/catalog-private/..." or "content/../personal/...".
+SHARED_CONTENT_PREFIXES: tuple[str, ...] = (
+    "content/catalog",
+    "content/capabilities",
+)
+
+
+def is_shared_content_path(key: str) -> bool:
+    """True if an object-store key is in the enumerated shared-platform set.
+
+    Fails closed: an empty, absolute, traversing or non-canonical key is never
+    shared content.
+    """
+    if not key:
+        return False
+    canonical = canonicalize_key(key)
+    if canonical is None:
+        return False
+    for prefix in SHARED_CONTENT_PREFIXES:
+        if canonical == prefix or canonical.startswith(prefix + "/"):
+            return True
+    return False
+
+
+def canonicalize_key(key: str) -> str | None:
+    """Canonicalise an object-store key to a relative, traversal-free form.
+
+    Returns None when the key cannot be represented safely — absolute paths,
+    any ".." segment, backslashes, NUL bytes or percent-encoding that could
+    decode into a separator after this check. Rejecting rather than rewriting
+    is deliberate: a sanitiser that silently repairs a hostile path hides the
+    attempt, and the caller has no legitimate reason to send one.
+    """
+    if not key or "\x00" in key:
+        return None
+    if key.startswith("/") or "\\" in key:
+        return None
+    # Percent-encoding is not meaningful in an S3 key supplied through our own
+    # API, but it IS a way to smuggle "%2e%2e%2f" past a literal ".." check.
+    if "%" in key:
+        return None
+    segments = [seg for seg in key.split("/") if seg and seg != "."]
+    if any(seg == ".." for seg in segments):
+        return None
+    if not segments:
+        return None
+    return "/".join(segments)
+
 
 # ---------------------------------------------------------------------------
 # Types
@@ -175,26 +233,32 @@ def _normalize_repo_name(name: str) -> str:
 
 
 def _build_allowed_lookup(allowed_repos: set[str]) -> set[str]:
-    """Build a lookup set covering all repo name formats.
+    """Build a lookup set of fully-qualified allowed repo names.
 
-    For each allowed repo "HKUDS/Vibe-Trading", adds:
-    - "HKUDS/Vibe-Trading" (exact, as stored in DB)
-    - "Vibe-Trading" (short name — used by structural backend)
+    Only the domain prefix is stripped, and case is folded, so that the same
+    repository written "github.com/HKUDS/Vibe-Trading" and "HKUDS/Vibe-Trading"
+    compares equal. Both sides of the comparison are normalised identically by
+    ``_repo_is_allowed``.
+
+    Short names are deliberately NOT added (#5658). A previous version also
+    inserted the bare "Vibe-Trading", which meant a caller permitted on
+    "HKUDS/Vibe-Trading" matched any other tenant's "OtherOrg/Vibe-Trading" —
+    a cross-tenant read through name collision alone.
     """
-    lookup: set[str] = set()
-    for repo in allowed_repos:
-        normalized = _normalize_repo_name(repo)
-        lookup.add(normalized)
-        # Also add the short name (part after first /)
-        if "/" in normalized:
-            lookup.add(normalized.split("/", 1)[1])
-    return lookup
+    return {_normalize_repo_name(repo).casefold() for repo in allowed_repos if repo}
 
 
 def _repo_is_allowed(repo_name: str, allowed_lookup: set[str]) -> bool:
-    """Check if a repo name (in any format) is in the allowed set."""
-    # Normalize the hit's repo name (strip domain prefix)
-    normalized = _normalize_repo_name(repo_name)
+    """Check if a fully-qualified repo name is in the allowed set.
+
+    Fail-closed on an unqualified name: a bare "Vibe-Trading" carries no owner,
+    so it cannot be attributed to a tenant and must not match.
+    """
+    if not repo_name:
+        return False
+    normalized = _normalize_repo_name(repo_name).casefold()
+    if "/" not in normalized:
+        return False
     return normalized in allowed_lookup
 
 
@@ -245,24 +309,66 @@ def filter_results(
         )
         return []
 
-    # Filter: only pass hits whose repo is in the allowed set.
-    # Handle format mismatch between different sources:
-    # - DB stores: "HKUDS/Vibe-Trading" (org/repo)
-    # - Structural backend uses: "Vibe-Trading" (short name)
-    # - Zoekt returns: "github.com/HKUDS/Vibe-Trading" (domain-qualified)
-    # Normalize by building lookup sets for all formats.
+    # Filter: only pass hits whose fully-qualified repo is in the allowed set.
+    # Both sides are normalised the same way (domain prefix stripped, case
+    # folded) so "github.com/HKUDS/Vibe-Trading" from Zoekt matches
+    # "HKUDS/Vibe-Trading" from the catalog. Short names no longer match at all
+    # — see _build_allowed_lookup.
     allowed_normalized = _build_allowed_lookup(allowed_repos)
-    filtered = [hit for hit in results if _repo_is_allowed(hit.repo_name, allowed_normalized)]
+    filtered: list[SearchHit] = []
+    denied: list[str] = []
+    for hit in results:
+        if _repo_is_allowed(hit.repo_name, allowed_normalized):
+            filtered.append(hit)
+        else:
+            denied.append(hit.repo_name or "<no-provenance>")
 
-    if len(filtered) < len(results):
-        log.debug(
-            "filter_results: dropped %d/%d hits for principal %s",
-            len(results) - len(filtered),
-            len(results),
-            caller.github_login or "<teams-only>",
+    if denied:
+        # Log the compared values. A denial is either an attack or a
+        # normalisation mismatch on a tenant's own repo, and the two are
+        # indistinguishable from an empty result alone.
+        record_acl_denial(
+            caller=caller,
+            requested=sorted(set(denied)),
+            reason="repo_not_in_allowed_set",
+            allowed_sample=sorted(allowed_normalized)[:10],
         )
 
     return filtered
+
+
+def record_acl_denial(
+    *,
+    caller: CallerPrincipal | None,
+    requested: list[str],
+    reason: str,
+    allowed_sample: list[str] | None = None,
+) -> None:
+    """Log and count an ACL denial. Fail-open on the telemetry itself.
+
+    Emits the caller, the scope they asked for and why it was refused, so that
+    a misconfigured repo-name form is diagnosable and probing is visible.
+    Never raises — a metrics failure must not change an authorisation outcome.
+    """
+    log.warning(
+        "acl_denied: caller=%s tenant=%s owner_sub=%s requested=%s reason=%s allowed_sample=%s",
+        (caller.github_login if caller else "") or "<none>",
+        (caller.tenant_id if caller else "") or "<none>",
+        (caller.owner_sub if caller else "") or "<none>",
+        requested,
+        reason,
+        allowed_sample if allowed_sample is not None else "<not-computed>",
+    )
+    try:
+        from .metrics import record_denial
+
+        record_denial(
+            tenant_id=(caller.tenant_id if caller else "") or "",
+            reason=reason,
+            count=max(len(requested), 1),
+        )
+    except Exception:
+        pass  # fail-open: telemetry never blocks an authorisation decision
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +399,19 @@ class PostgresACLStore:
         """
         self._pool = db_pool
         self._tenant_scope_enabled = tenant_scope_enabled
+
+    def check_health(self) -> None:
+        """Verify access to the ACL schema without retrieving repository rows."""
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = '1000ms'")
+                cur.execute(
+                    "SELECT repo_name, allowed_principals, tenant_id, owner_sub "
+                    "FROM repositories LIMIT 0"
+                )
+        finally:
+            self._pool.putconn(conn)
 
     def get_allowed_repos(self, principal: CallerPrincipal) -> set[str]:
         """Query Postgres for repos this principal can access.
@@ -333,7 +452,7 @@ class PostgresACLStore:
         """Tenant-scoped query: visibility rule per design §7.2–§7.4.
 
         Visibility:
-        1. Shared repos (tenant_id IS NULL) — require principals match
+        1. Shared repos (tenant_id and owner_sub NULL) — require public sentinel
         2. Per-tenant repos (tenant_id == caller's) — require principals match
         3. Per-individual repos (owner_sub == caller's) — visible unconditionally
         4. Cross-tenant repos — excluded (fail-closed)
@@ -343,35 +462,32 @@ class PostgresACLStore:
         tenant_id = principal.tenant_id or ""
         owner_sub = principal.owner_sub or ""
 
-        # The query combines three visibility paths via UNION to keep logic clear.
-        # Path 1+2: shared + same-tenant repos where principals match
-        # Path 3: individual repos where owner_sub matches (no principal check)
-        # allowed_principals is jsonb (array of strings).
-        # Use ? (element exists) and ?| (any element exists) operators.
+        # Unknown legacy ownership is not shared content. Only positively public
+        # rows can use the unowned branch. Personal rows never inherit the
+        # tenant-wide principal branch; their owner is the authority.
         query = """
             SELECT repo_name FROM repositories
             WHERE (
-                (tenant_id IS NULL OR tenant_id = %s)
-                AND (
-                    allowed_principals ? %s
-                    OR allowed_principals ? %s
-                    OR allowed_principals ?| %s
-                )
-            )
-            OR (
+                tenant_id = %s AND owner_sub IS NULL
+                AND (allowed_principals ? %s OR allowed_principals ? %s
+                     OR allowed_principals ?| %s)
+            ) OR (
+                tenant_id IS NULL AND owner_sub IS NULL
+                AND allowed_principals ? '*'
+            ) OR (
                 %s != '' AND owner_sub = %s
             )
         """
         params = [tenant_id, PUBLIC_SENTINEL, login, teams, owner_sub, owner_sub]
         if principal.run_bound:
-            # The legacy owner-only branch can span tenants for the same login.
-            # A run is delegated in exactly one tenant, including personal data.
-            query = """
-                SELECT repo_name FROM repositories
-                WHERE (tenant_id IS NULL OR tenant_id = %s)
-                  AND (allowed_principals ? %s OR allowed_principals ? %s
-                       OR allowed_principals ?| %s OR (%s != '' AND owner_sub = %s))
-            """
+            # A delegated run is confined to its originating tenant even when
+            # its owner has personal material under another tenant.
+            query = (
+                "SELECT repo_name FROM repositories WHERE repo_name IN ("
+                + query
+                + ") AND (tenant_id IS NULL OR tenant_id = %s)"
+            )
+            params.append(tenant_id)
 
         conn = self._pool.getconn()
         try:

@@ -234,3 +234,17 @@ def make_client(knowledge_app: FastAPI):
         )
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _public_source_dns(monkeypatch):
+    """Example public sources resolve deterministically; real URL checks still run."""
+    import ipaddress
+
+    from src.knowledge.source_policy import url_denylist
+
+    monkeypatch.setattr(
+        url_denylist,
+        "_resolve_hostname",
+        lambda hostname: [ipaddress.ip_address("93.184.216.34")] if hostname in {"docs.example.com", "example.com"} else [],
+    )

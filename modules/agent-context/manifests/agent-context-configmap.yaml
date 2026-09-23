@@ -7,7 +7,7 @@
 #   GRAPHRAG_ENABLED, NEPTUNE_ENDPOINT, NEPTUNE_PORT, OPENSEARCH_ENDPOINT,
 #   WIKI_LLM_MODEL, GITHUB_APP_ID_SECRET, GITHUB_APP_KEY_SECRET, GITHUB_APP_OWNER,
 #   S3_VECTORS_BUCKET_NAME, S3_VECTORS_REGION, S3_FILES_BUCKET, S3_CONTENT_PREFIX,
-#   ZOEKT_URL
+#   ZOEKT_URL, AC_RDS_HOST, AC_DB_NAME, AC_DB_USERNAME
 #
 # Secrets (OPENVIKING_ROOT_KEY) stay in agent-context-secrets — NOT in this ConfigMap.
 apiVersion: v1
@@ -50,6 +50,24 @@ data:
 
   # --- SBOM ---
   SBOM_ENABLED: "true"
+
+  # --- Postgres (catalog + the Door's ACL store) ---
+  # This is NOT an optional enrichment (#5658). repositories.allowed_principals
+  # is the entire cross-tenant boundary for the Door's read path, so without a
+  # reachable database the Door authorises nothing: create_db_pool raises,
+  # /ready reports 503, and every ACL-enforced verb refuses.
+  #
+  # These were previously absent from this ConfigMap, leaving the Door to rely
+  # on a DATABASE_URL from agent-context-secrets marked optional:true. When that
+  # secret was absent the pod came up, reported healthy on /health, and served
+  # unfiltered results -- so the unconfigured case was the as-deployed default
+  # rather than a local-dev affordance. Production connects via RDS IAM auth
+  # (no static password), matching images/ingestion/db.py.
+  DB_USE_IAM_AUTH: "true"
+  DB_HOST: "${AC_RDS_HOST}"
+  DB_PORT: "5432"
+  DB_NAME: "${AC_DB_NAME}"
+  DB_USER: "${AC_DB_USERNAME}"
 
   # --- SQS + DynamoDB ---
   SQS_QUEUE_URL: "${SQS_QUEUE_URL}"

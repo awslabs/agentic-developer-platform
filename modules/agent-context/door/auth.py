@@ -53,15 +53,23 @@ HEADER_API_KEY = "x-internal-api-key"
 
 # Paths served without authentication.
 #
-# ``/health`` only: the kubelet issues the readiness/liveness probes in
-# ``manifests/context-mcp.yaml`` and cannot present a secret. Gating it would
-# fail every probe and CrashLoop the Deployment. It returns a static
-# ``{"status": "ok"}`` and discloses nothing.
+# The probe paths only: the kubelet issues the readiness/liveness probes in
+# ``manifests/context-mcp.yaml`` and cannot present a secret. Gating them would
+# fail every probe and take the Deployment down.
+#
+# ``/health`` (liveness) returns a static ``{"status": "ok"}``.
+#
+# ``/ready`` (readiness, #5658) reports whether the ACL store is usable. Its
+# body is deliberately limited to that one fact plus an exception summary — it
+# names no repository, tenant or principal, and reveals nothing about what is
+# indexed. An unauthenticated caller learns only that this Door is or is not
+# currently able to authorise reads, which is the same thing it learns from the
+# refusal it would get anyway.
 #
 # ``/tools`` is deliberately NOT here: the tool catalogue is a disclosure
 # surface (it enumerates the verbs and their parameters), and it is not on any
 # probe path.
-_PUBLIC_PATHS = frozenset({"/health"})
+_PUBLIC_PATHS = frozenset({"/health", "/ready"})
 
 
 def _is_public_path(path: str) -> bool:

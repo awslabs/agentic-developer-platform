@@ -189,6 +189,9 @@ jobs:
           export S3_VECTORS_BUCKET_NAME S3_VECTORS_REGION S3_FILES_BUCKET S3_CONTENT_PREFIX ZOEKT_URL
           export GATEWAY_CALLBACK_URL
 
+          # Use the same existing ACL database configuration as deploy.sh.
+          resolve_acl_config || exit 1
+
           template_file manifests/agent-context-configmap.yaml | kubectl apply -f -
           echo "ConfigMap agent-context-config deployed"
 

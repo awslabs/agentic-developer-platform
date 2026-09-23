@@ -20,6 +20,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,8 @@ log = get_logger("ingest-repo")
 from config import settings
 from lang_go import extract_go_func_name as _extract_go_func_name
 from lang_go import extract_go_type as _extract_go_type
-from scope import IngestionScope, compute_s3_prefix, parse_scope_from_env
+from repo_acl import resolve_allowed_principals
+from scope import IngestionScope, ScopeValidationError, compute_s3_prefix, parse_scope_from_env
 from scip_indexer import index_repo as scip_index_repo, detect_languages, cleanup_indexing_artifacts
 from scip_ingester import ingest_scip, merge_graphs
 from scip_neptune_csv import (
@@ -449,15 +451,21 @@ def _build_basic_code_index(clone_path: str, org_repo: str) -> dict[str, Any]:
     }
 
 
-def _write_code_index_to_filesystem(code_index_json: str, safe_name: str, org_repo: str) -> bool:
+def _scoped_code_index_dir(scope: IngestionScope) -> str:
+    root, leaf = os.path.split(CODE_INDEX_DIR.rstrip("/"))
+    return os.path.join(root, compute_s3_prefix(scope, leaf))
+
+
+def _write_code_index_to_filesystem(code_index_json: str, safe_name: str, org_repo: str, *, scope: IngestionScope | None = None) -> bool:
     """Write code-index JSON to the shared filesystem (platform-data PVC).
 
     This is the primary storage for structured code-index data, read by the
     MCP server's understand and impact tools.
     """
     try:
-        os.makedirs(CODE_INDEX_DIR, exist_ok=True)
-        path = os.path.join(CODE_INDEX_DIR, f"{safe_name}.json")
+        directory = _scoped_code_index_dir(scope or parse_scope_from_env())
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, f"{safe_name}.json")
         with open(path, "w", encoding="utf-8") as f:
             f.write(code_index_json)
         log.info("Wrote code-index to filesystem: %s", path)
@@ -1421,10 +1429,13 @@ def _generate_source_sbom(
                 try:
                     git_url = f"https://github.com/{org_repo}"
                     # Issue #3529: propagate scope for SBOM path too
+                    # Issue #5658: and the derived ACL, for the same reason as
+                    # the main path — an omitted ACL used to default to public.
                     repo_id = sbom_db.ensure_repo_exists(
                         conn,
                         org_repo,
                         git_url,
+                        allowed_principals=resolve_allowed_principals(org_repo),
                         tenant_id=scope.tenant_id if scope else None,
                         owner_sub=scope.owner_sub if scope else None,
                     )
@@ -1550,8 +1561,14 @@ def ingest_repo(
         "sbom_source": "skipped",
     }
 
-    # Read scope from environment (propagated by sqs-worker for tenant isolation)
-    scope = parse_scope_from_env()
+    # Read scope from environment (propagated by sqs-worker for tenant isolation).
+    # Fails the run rather than falling back to shared (#5658): if a restricted
+    # scope arrived incomplete, writing to the shared prefix would expose it.
+    try:
+        scope = parse_scope_from_env()
+    except ScopeValidationError as e:
+        log.error("Refusing ingestion with unsatisfiable scope: %s", e)
+        sys.exit(1)
     scoped_content_prefix = compute_s3_prefix(scope, S3_CONTENT_PREFIX)
     scoped_wiki_prefix = compute_s3_prefix(scope, WIKI_S3_PREFIX)
     scoped_code_index_prefix = compute_s3_prefix(scope, CODE_INDEX_S3_PREFIX)
@@ -1573,8 +1590,8 @@ def ingest_repo(
     )
     s3_writer = _S3WriterAdapter(s3_store)
 
-    # --- Stage tracking setup (Postgres) ---
-    # Best-effort: if DB is unavailable, fall back to legacy behavior
+    # Register the access-control row before fetching or publishing any bytes.
+    # Stage telemetry is optional; authoritative ownership is mandatory.
     tracker = None
     db_conn = None
     try:
@@ -1584,17 +1601,22 @@ def ingest_repo(
         # Issue #3529: propagate scope envelope's tenant_id/owner_sub into the
         # repositories ACL row so tenant-scoped queries include this repo for
         # the registering user (not the GitHub org name).
+        # Issue #5658: state the ACL explicitly. This call used to omit it and
+        # rely on a ["*"] default, so the row the Door filters reads on was
+        # stamped public for every repo including private ones.
         repo_id = stage_db.ensure_repo_exists(
             db_conn,
             org_repo,
             f"https://github.com/{org_repo}",
+            allowed_principals=resolve_allowed_principals(org_repo),
             tenant_id=scope.tenant_id,
             owner_sub=scope.owner_sub,
         )
     except Exception as e:
-        log.warning("DB unavailable for stage tracking — legacy mode: %s", e)
-        db_conn = None
-        repo_id = None
+        if db_conn is not None:
+            db_conn.close()
+        log.error("Repository access registration failed: %s", type(e).__name__)
+        raise RuntimeError("Repository ownership could not be registered; refusing ingestion") from e
 
     # Step 1: Clone to persistent storage (S3 Files mount) — shared across enrichment consumers
     # If clone exists, do git fetch instead of full re-clone
@@ -1774,7 +1796,7 @@ def ingest_repo(
 
                     # Write to filesystem (primary — for programmatic access by MCP server)
                     fs_written = _write_code_index_to_filesystem(
-                        code_index_json, safe_name, org_repo
+                        code_index_json, safe_name, org_repo, scope=scope
                     )
 
                     # Upload as markdown summary to S3 (for semantic search/understand)
@@ -1856,7 +1878,14 @@ def ingest_repo(
                 wiki = deepwiki_generate(org_repo)
                 if wiki:
                     org_id = org_repo.split("/")[0]
-                    allowed_principals = ["*"]
+
+                    # Derive the ACL from GitHub instead of stamping the public
+                    # sentinel (#5658). This line was `["*"]` unconditionally, so
+                    # every private repo's wiki was published readable to every
+                    # principal. resolve_allowed_principals returns ["*"] only when
+                    # GitHub reports the repo public, and [] (deny) on any error —
+                    # never "*" as a fallback.
+                    allowed_principals = resolve_allowed_principals(org_repo)
 
                     wiki_result = store_wiki(
                         wiki_text=wiki,
@@ -1867,6 +1896,9 @@ def ingest_repo(
                         s3_bucket=S3_BUCKET_NAME,
                         wiki_s3_prefix=scoped_wiki_prefix,
                         shard_count=S3_VECTORS_SHARD_COUNT,
+                        visibility=scope.visibility,
+                        tenant_id=scope.tenant_id,
+                        owner_sub=scope.owner_sub,
                     )
 
                     if wiki_result.s3_success:
@@ -1925,7 +1957,7 @@ def ingest_repo(
             try:
                 ci_data = None
                 if result.get("code_index") == "written":
-                    ci_path = os.path.join(CODE_INDEX_DIR, f"{org_repo.replace('/', '-')}.json")
+                    ci_path = os.path.join(_scoped_code_index_dir(scope), f"{org_repo.replace('/', '-')}.json")
                     if os.path.isfile(ci_path):
                         with open(ci_path) as f:
                             ci_data = json.load(f)
