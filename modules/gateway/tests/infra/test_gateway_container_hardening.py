@@ -25,15 +25,12 @@ only FAILS a root image — it cannot make one non-root — so an image regressi
 would otherwise surface as a CrashLoopBackOff on deploy rather than a red test.
 
 This static suite does not prove startup under these settings. The PR-time
-CodeBuild gate in codebuild/bs-gateway-smoke.yml builds the exact image and runs
+credential-free gate using codebuild/bs-gateway-smoke.yml builds the exact image and runs
 startup, readiness, and representative-request checks with the manifest-equivalent
 UID, read-only root, scratch mounts, capability drop, and no-new-privileges controls.
 """
 
-import json
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -221,77 +218,45 @@ def test_codebuild_runs_the_exact_image_with_manifest_restrictions():
     assert "-e DATABASE_URL=" not in buildspec, "gateway settings ignore database overrides without the BG_ prefix"
 
 
-def test_overlapping_smoke_builds_consume_their_own_source(tmp_path):
-    """Run the workflow shells with interleaved uploads against a fake cloud.
-
-    All uploads happen before any build downloads source, reproducing the
-    shared-key race without accessing AWS or running a container.
-    """
+def test_pr_image_gate_needs_no_platform_identity_or_deployed_build_project():
     workflow = yaml.safe_load((ROOT / ".github/workflows/gateway-ci.yml").read_text())
-    steps = workflow["jobs"]["build"]["steps"]
-    upload = next(step for step in steps if step.get("id") == "smoke-source")
-    start = next(step for step in steps if step.get("name") == "Smoke-build image (CodeBuild, no push)")
-    assert start["env"]["SMOKE_SOURCE_LOCATION"] == "${{ steps.smoke-source.outputs.location }}"
-    binaries = tmp_path / "bin"
-    binaries.mkdir()
-    scripts = tmp_path / "platform/scripts"
-    scripts.mkdir(parents=True)
-    stubs = {
-        binaries / "git": '#!/bin/sh\nprintf "%s\\n" "$CHECKED_OUT_SHA"\n',
-        scripts / "zip-source.sh": '#!/bin/sh\nprintf "%s" "$GITHUB_SHA" > "$2"\n',
-        binaries / "aws": f"#!{sys.executable}\n"
-        + """
-import json, os, shutil, sys
-from pathlib import Path
-args = sys.argv[1:]
-cloud = Path(os.environ["FAKE_CLOUD"])
-if args[:2] == ["sts", "get-caller-identity"]:
-    print("123456789012")
-elif args[:2] == ["s3", "cp"]:
-    destination = cloud / args[3].removeprefix("s3://")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(args[2], destination)
-elif args[:2] == ["codebuild", "start-build"]:
-    source = args[args.index("--source-location-override") + 1]
-    with (cloud / "builds.jsonl").open("a") as log:
-        log.write(json.dumps({"source": source, "revision": (cloud / source).read_text()}) + "\\n")
-    print("smoke:build")
-elif args[:2] == ["codebuild", "batch-get-builds"]:
-    print("SUCCEEDED")
-else:
-    raise AssertionError(args)
-""",
-    }
-    for path, contents in stubs.items():
-        path.write_text(contents)
-        path.chmod(0o755)
-    pending = []
-    # Include an overlapping revision and a rerun of the same revision.
-    for index, (revision, run_id, attempt) in enumerate([("a" * 40, "10", "1"), ("b" * 40, "11", "1"), ("a" * 40, "10", "2")]):
-        output = tmp_path / f"output-{index}"
-        env = dict(
-            os.environ,
-            PATH=f"{binaries}:{os.environ['PATH']}",
-            FAKE_CLOUD=str(tmp_path / "cloud"),
-            GITHUB_SHA=revision,
-            CHECKED_OUT_SHA=revision,
-            GITHUB_RUN_ID=run_id,
-            GITHUB_RUN_ATTEMPT=attempt,
-            GITHUB_JOB="build",
-            GITHUB_OUTPUT=str(output),
-            RUNNER_TEMP=str(tmp_path),
+    job = workflow["jobs"]["build"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["permissions"] == {"contents": "read"}
+    checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"]["persist-credentials"] is False
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "python platform/scripts/gateway-image-smoke.py" in commands
+    assert "aws " not in commands and "docker push" not in commands
+    assert not any("configure-aws-credentials" in step.get("uses", "") for step in job["steps"])
+
+
+@pytest.mark.parametrize("fail_build", [False, True])
+def test_canonical_smoke_phases_share_the_directory_and_stop_on_build_failure(tmp_path, fail_build):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("image_smoke", ROOT / "platform/scripts/gateway-image-smoke.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    path = tmp_path / "spec.yml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 0.2,
+                "phases": {
+                    "build": {"commands": ["mkdir stage", "cd stage", "exit 7" if fail_build else "printf built > image"]},
+                    "post_build": {"commands": ['test "$(cat image)" = built', "touch checked"]},
+                },
+            }
         )
-        subprocess.run(["bash", "-c", upload["run"]], cwd=tmp_path, env=env, check=True, capture_output=True)
-        location = output.read_text().strip().removeprefix("location=")
-        pending.append((revision, dict(env, SMOKE_SOURCE_LOCATION=location)))
-    for _, env in pending:
-        subprocess.run(["bash", "-c", start["run"]], cwd=tmp_path, env=env, check=True, capture_output=True)
-    builds = [json.loads(line) for line in (tmp_path / "cloud/builds.jsonl").read_text().splitlines()]
-    assert [build["revision"] for build in builds] == [revision for revision, _ in pending]
-    assert len({build["source"] for build in builds}) == len(pending)
-    mismatched = dict(pending[0][1], CHECKED_OUT_SHA="c" * 40)
-    result = subprocess.run(["bash", "-c", upload["run"]], cwd=tmp_path, env=mismatched, capture_output=True)
-    assert result.returncode != 0, "a different checked-out revision must fail before uploading"
+    )
+    if fail_build:
+        with pytest.raises(subprocess.CalledProcessError):
+            module.run_buildspec(path, cwd=tmp_path)
+        assert not (tmp_path / "stage/checked").exists()
+    else:
+        module.run_buildspec(path, cwd=tmp_path)
+        assert (tmp_path / "stage/checked").exists()
 
 
 # ---------------------------------------------------------------------------
