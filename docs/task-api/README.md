@@ -8,13 +8,17 @@
 
 **Validation plan:** [validation.md](validation.md).
 
+**Delivery epic:** [#5792](https://github.com/aws-e/adp/issues/5792) in the
+[ADP Platform Roadmap](https://github.com/orgs/aws-e/projects/4), with 14 native
+child stories linked in section 12 and the validation plan.
+
 This document records the design agreed in the Task API discussion. Section 2
 contains the decisions of record. The detailed API, record layouts, module names
 and delivery slices below are implementation proposals that make those decisions
 concrete; they are not claims that every field or technology choice was separately
 approved. Section 13 identifies the remaining decisions before implementation.
 
-The document is the starting point for a new epic, GitHub-native child stories
+The document is the reference for the epic, GitHub-native child stories
 and separate validation stories. Creating that backlog does not start agent
 execution, deploy infrastructure, enable task traffic or retire existing paths.
 
@@ -494,22 +498,22 @@ paths. No immediate rewrite into one universal dispatcher is required.
 
 ## 12. Delivery slices and parallel ownership
 
-These are proposed story boundaries for the requested epic, not issued tasks or
-dispatches. Each implementation story must name its tests, owned files, deployment
+These are the story boundaries recorded in the epic; creating the stories does
+not dispatch agents. Each implementation story must name its tests, owned files, deployment
 effects and required later validation. The contract owner resolves shared-file
 changes so parallel agents do not redefine the same interface.
 
 | Slice | Scope / ownership | Dependencies |
 |---|---|---|
-| T0 | Freeze v1 schema, auth/identity binding, record layout, event/command semantics and open decisions in section 13. Own shared fixtures. | This design. |
-| T1 | Task persistence, protected ownership/input binding, idempotency and recoverable dispatch records in existing DynamoDB infrastructure. | T0. |
-| T2 | New task handler, external authentication/authorization integration and main API Gateway POST integration to existing Lambda. | T0; integrate with T1 and T3. |
-| T3 | Task-specific admission, SQS publisher/reconciler and execution-authority adapter. | T0; integrate with T1. |
-| T4 | Early Python task flow, task assignment/credentials, process/event contract and isolated completion. Own shared entrypoint changes. | T0; integrate with T3. |
-| T5 | First independent task-agent implementation and isolated build/package in the same image. | T0; integrate with T4. |
-| T6 | Gateway task snapshot/results/artifacts APIs, run-bound event ingestion, ordered persistence and SSE/replay. | T0; integrate with T1/T4. |
-| T7 | Durable clarification/input and cancellation delivery, receipts and lifecycle integration. | T0; integrate with T1/T4/T5/T6. |
-| T8 | SDK-free external client example, configuration/deployment/rollback documentation and end-to-end qualification fixtures. | Contract T0; integrate with T2-T7. |
+| [T0 #5793](https://github.com/aws-e/adp/issues/5793) | Freeze v1 schema, auth/identity binding, record layout, event/command semantics and open decisions in section 13. Own shared fixtures. | This design. |
+| [T1 #5794](https://github.com/aws-e/adp/issues/5794) | Task persistence, protected ownership/input binding, idempotency and recoverable dispatch records in existing DynamoDB infrastructure. | T0. |
+| [T2 #5795](https://github.com/aws-e/adp/issues/5795) | New task handler, external authentication/authorization integration and main API Gateway POST integration to existing Lambda. | T0; integrate with T1 and T3. |
+| [T3 #5796](https://github.com/aws-e/adp/issues/5796) | Task-specific admission, SQS publisher/reconciler and execution-authority adapter. | T0; integrate with T1. |
+| [T4 #5797](https://github.com/aws-e/adp/issues/5797) | Early Python task flow, task assignment/credentials, process/event contract and isolated completion. Own shared entrypoint changes. | T0; integrate with T3. |
+| [T5 #5798](https://github.com/aws-e/adp/issues/5798) | First independent task-agent implementation and isolated build/package in the same image. | T0; integrate with T4. |
+| [T6 #5799](https://github.com/aws-e/adp/issues/5799) | Gateway task snapshot/results/artifacts APIs, run-bound event ingestion, ordered persistence and SSE/replay. | T0; integrate with T1/T4. |
+| [T7 #5800](https://github.com/aws-e/adp/issues/5800) | Durable clarification/input and cancellation delivery, receipts and lifecycle integration. | T0; integrate with T1/T4/T5/T6. |
+| [T8 #5801](https://github.com/aws-e/adp/issues/5801) | SDK-free external client example, configuration/deployment/rollback documentation and end-to-end qualification fixtures. | Contract T0; integrate with T2-T7. |
 
 After T0, T1/T2/T3/T4/T5/T6 can progress in parallel against fixtures. Integration
 dependencies still gate acceptance; mocks do not demonstrate the combined path.
@@ -517,7 +521,9 @@ T4 owns `entrypoint.py`, T5 owns task-package Dockerfile additions, T2 owns API
 Gateway/Lambda routing, T1 owns table/index changes, and T3 coordinates narrowly
 required IAM/authority changes. Split overlapping edits into a prerequisite
 commit or serialize them explicitly. Native child relationships and dependency
-links will be added when the epic is filed.
+links are recorded in the epic. For implementation stories, native blockers mark
+the contract prerequisite to start; the additional integration dependencies
+still gate acceptance. Validation blockers mark prerequisites to complete proof.
 
 Separate validation stories V1-V5 are specified in [validation.md](validation.md).
 Do not close the epic merely because its implementation PRs merge.

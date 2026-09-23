@@ -6,6 +6,16 @@
 
 **Purpose:** Define separate, assignable validation stories for the requested epic.
 
+**Delivery epic:** [#5792](https://github.com/aws-e/adp/issues/5792).
+
+| Validation story | GitHub-native child |
+|---|---|
+| V1 — Contract, authorization and storage | [#5802](https://github.com/aws-e/adp/issues/5802) |
+| V2 — Worker independence and regression | [#5803](https://github.com/aws-e/adp/issues/5803) |
+| V3 — Recovery, streaming and control | [#5804](https://github.com/aws-e/adp/issues/5804) |
+| V4 — Live external integration and coexistence | [#5805](https://github.com/aws-e/adp/issues/5805) |
+| V5 — Rollout, rollback and release acceptance | [#5806](https://github.com/aws-e/adp/issues/5806) |
+
 The first release must prove a complete external task and preserve the existing
 GitHub/Claude/Codex paths. Implementation PR checks and post-deployment evidence
 are distinct. A passing mocked test, queued message, HTTP 200 or merged PR does
@@ -137,8 +147,8 @@ uses their reports to close the real deployment cells; V5 proves rollout and
 rollback after end-to-end behavior is established. Each evaluator should have
 clear fixture ownership to avoid modifying another evaluation's task or flag.
 
-Native GitHub child stories will carry these V1-V5 scopes and dependencies when
-the epic is created. Implementation agents own fixes for failed criteria;
+The native GitHub child stories carry these V1-V5 scopes and dependencies.
+Implementation agents own fixes for failed criteria;
 evaluators record evidence and rerun affected criteria. No validation story
 authorizes unrestricted traffic, infrastructure changes, paid model runs or
 retirement of the existing paths by itself.
