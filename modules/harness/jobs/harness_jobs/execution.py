@@ -53,6 +53,33 @@ It does not decide whether a reporter may speak for an operation -- report autho
 #5529's (w6-06). It does not release or retain budget itself; it says which of the two
 is owed, and the ledger call is the caller's, because the reservation ledger is the
 domain's (`__init__.py`'s ownership table).
+
+## Why a closed allocation is checked HERE (#5529)
+
+This module is the one that actually contacts the provider, so it is the only place
+where refusing still prevents spend. `inventory.seal_allocation` closes an allocation to
+further membership, and closing it used to withdraw only the ability to RECORD what the
+allocation contains -- not the authority to create something new in it.
+
+Two separately approved operations may name one allocation, and their lease locks are
+two different locks. So after operation A sealed and its ABSENT report authorized
+releasing the allocation's budget, operation B could still record an intent here and
+invoke the provider. B's membership write was then correctly refused by the seal, which
+is the worst possible combination: the resource exists and is billing, nothing names it,
+and the money that would have paid for it has been returned.
+
+So `record_intent` takes the allocation-wide claim (`allocation.lock_allocation`) and
+refuses a call that can CREATE into a sealed allocation, before the intent commits; and
+`_execute_provider` checks again immediately before the hook runs. Calls that destroy or
+merely ask are never refused -- a sealed allocation must still be tearable-down, and
+refusing teardown would keep resources billing for the opposite reason. Which of the
+three a planned call is comes from the approved plan's `operation_kind`
+(`allocation.call_effect`), never from a worker argument.
+
+The other half of that invariant lives in `inventory.seal_allocation`, which refuses to
+close an allocation while a creating call recorded against it is still unaccounted for.
+`allocation.py`'s module docstring states the pair and why neither half is sufficient
+alone.
 """
 
 from __future__ import annotations
@@ -63,6 +90,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 
+from .allocation import (
+    approved_allocation,
+    lock_allocation,
+    may_create,
+    sealed_revision,
+)
 from .identity import ContractViolation, OperationState
 from .leases import (
     ExecutionLease,
@@ -257,6 +290,62 @@ class ProviderCall:
         return self.outcome is CallOutcome.UNKNOWN
 
 
+async def _refuse_creation_into_a_sealed_allocation(
+    connection: Connection,
+    lease: ExecutionLease,
+    *,
+    operation_kind: str,
+    provider: str,
+) -> str | None:
+    """Claim the allocation, and refuse a creating call once it is closed.
+
+    Returns the allocation this call belongs to, or `None` when the approved plan names
+    none. Callers persist the returned value on the intent row, so the seal-time
+    accounting check can find the call by allocation without decoding every operation's
+    stored request payload.
+
+    **Must be called inside the transaction that writes the intent**, and before the
+    lease lock, for the two reasons `allocation.lock_allocation` documents: the lock is
+    what makes the seal check and the write atomic against a concurrent seal, and taking
+    the pair in one fixed order is what stops this path from deadlocking against
+    `inventory`'s writes, which take them in the same order.
+
+    `may_create` reads the effect from the approved `operation_kind` and answers yes for
+    a verb it does not recognise. A teardown call is never refused: an allocation that
+    was sealed and then could not be torn down keeps billing for the opposite reason.
+
+    The refusal is `ProviderCallRefused` rather than inventory's `OperationRefused`,
+    because that is the type every caller on this path already handles -- and it says
+    the right thing: the caller is being told it may not make this call.
+    """
+    allocation_id = await approved_allocation(connection, lease.operation_id)
+    if allocation_id is None:
+        return None
+    await lock_allocation(
+        connection,
+        org_id=lease.org_id,
+        workspace_id=lease.workspace_id,
+        allocation_id=allocation_id,
+    )
+    if not may_create(operation_kind, provider=provider):
+        return allocation_id
+    sealed = await sealed_revision(
+        connection,
+        org_id=lease.org_id,
+        workspace_id=lease.workspace_id,
+        allocation_id=allocation_id,
+    )
+    if sealed is not None:
+        raise ProviderCallRefused(
+            f"allocation {allocation_id!r} is sealed at revision {sealed}; a call that "
+            f"can create ({operation_kind!r}) must not be made into an allocation "
+            "whose inventory has been declared final, because what it creates could "
+            "never be recorded as membership and its cost would be released as though "
+            "nothing existed"
+        )
+    return allocation_id
+
+
 def derive_idempotency_key(operation_id: str, attempt_id: str, step: str) -> str:
     """The key a call presents to the provider, derivable by a recovering process.
 
@@ -304,9 +393,22 @@ async def record_intent(
 
     Internal service API: callers must commit before external I/O. Workers use
     OperationExecutor, which owns and enforces that commit boundary.
+
+    Takes the ALLOCATION claim before the lease lock when the approved plan names an
+    allocation, and refuses a creating call into a sealed one -- see the module
+    docstring's "#5529" section and `allocation.py`. Both locks in that order from this
+    one place, because two callers taking the same pair in opposite orders deadlock and
+    `inventory` takes them in this order too (`InventoryAuthority._hold_allocation`).
+
+    The lock is held for the whole transaction, so the seal check and the intent INSERT
+    cannot straddle a concurrent seal: either this intent commits and a seal attempted
+    afterwards must account for it, or the seal commits and this call is refused.
     """
     _require_lease(lease)
     async with connection.transaction():
+        allocation_id = await _refuse_creation_into_a_sealed_allocation(
+            connection, lease, operation_kind=operation_kind, provider=provider
+        )
         if not await lock_lease(connection, lease):
             raise ProviderCallRefused(
                 "Provider intent requires the live tenant-bound lease"
@@ -318,6 +420,7 @@ async def record_intent(
             provider=provider,
             operation_kind=operation_kind,
             target=target,
+            allocation_id=allocation_id,
         )
 
 
@@ -329,6 +432,7 @@ async def _record_intent_locked(
     provider: str,
     operation_kind: str,
     target: str,
+    allocation_id: str | None,
 ) -> ProviderCall:
     """Commit the intent to make a provider call. **Call this before the call.**
 
@@ -343,10 +447,22 @@ async def _record_intent_locked(
     lapsed must not be able to record a new provider call: recording one is the first
     half of spending, and the second half is a call it is no longer entitled to make.
 
+    `allocation_id` is REQUIRED with no default, including the `None` that means "the
+    approved plan names no allocation". A default would let a future caller record a
+    provider call without having taken the allocation claim
+    (`_refuse_creation_into_a_sealed_allocation`) -- and the missing claim is invisible,
+    whereas a missing argument is a `TypeError` at the call site. It is stored, not
+    checked here: the caller has already refused a creating call into a sealed
+    allocation, and re-reading the seal under the lock it holds could only return the
+    same answer.
+
     Raises `ProviderCallRefused` when the lease is not held, and when the key is already
     recorded by a *different* attempt. The same attempt re-recording the same key gets
     its existing row back -- that is a duplicate queue delivery, and answering it
     idempotently is how the same envelope arriving twice makes one call instead of two.
+    A duplicate delivery is answered this way even for a since-sealed allocation: the
+    intent was recorded before the seal, so sealing had to account for it already, and
+    refusing the replay would strand a call the provider may have received.
     """
     _require_lease(lease)
     if not isinstance(idempotency_key, str) or not idempotency_key.strip():
@@ -430,10 +546,10 @@ async def _record_intent_locked(
         """
         INSERT INTO harness_provider_call_intent (
             idempotency_key, operation_id, org_id, workspace_id, job_id, attempt_id,
-            fence_token, provider, operation_kind, target, stage
+            fence_token, provider, operation_kind, target, stage, allocation_id
         )
         SELECT $1, o.operation_id, o.org_id, o.workspace_id, o.job_id, $3, $4,
-               $5, $6, $7, 'intended'
+               $5, $6, $7, 'intended', $9
           FROM harness_operations o
           JOIN harness_operation_leases l ON l.operation_id = o.operation_id
          WHERE o.operation_id = $2
@@ -450,6 +566,7 @@ async def _record_intent_locked(
         operation_kind,
         target,
         lease.holder,
+        allocation_id,
     )
     if row is None:
         raise ProviderCallRefused(
@@ -900,9 +1017,30 @@ class OperationExecutor:
     async def _record(
         self, *, idempotency_key, provider, operation_kind, target, fresh=False
     ):
+        """Commit the intent to call, with every reason not to checked first.
+
+        The allocation claim is taken BEFORE the lease lock and `_record_intent_locked`
+        is then called directly, rather than going through the module-level
+        `record_intent`. Both matter:
+
+        * the order is the documented one (`allocation.lock_allocation`), and going
+          through `record_intent` here would take the lease lock first and the
+          allocation lock second -- the opposite order from `inventory`'s writes, which
+          is a deadlock between an executor recording a call and an authority sealing
+          the allocation it belongs to;
+        * one transaction, so the seal check, the cancellation check and the INSERT are
+          atomic against a concurrent seal. A check in an earlier transaction would be a
+          statement about the past.
+        """
         async with self._connection() as connection:
             try:
                 async with connection.transaction():
+                    allocation_id = await _refuse_creation_into_a_sealed_allocation(
+                        connection,
+                        self._lease,
+                        operation_kind=operation_kind,
+                        provider=provider,
+                    )
                     if not await lock_lease(connection, self._lease):
                         raise ProviderCallRefused("Executor lease is no longer live")
                     from .identity import TERMINAL_STATES
@@ -927,13 +1065,14 @@ class OperationExecutor:
                             "Provider intent already exists; "
                             "reconcile instead of repeating the call"
                         )
-                    call = await record_intent(
+                    call = await _record_intent_locked(
                         connection,
                         self._lease,
                         idempotency_key=idempotency_key,
                         provider=provider,
                         operation_kind=operation_kind,
                         target=target,
+                        allocation_id=allocation_id,
                     )
                     await self._audit(connection, "record_intent", True)
             except ProviderCallRefused:
@@ -997,6 +1136,11 @@ class OperationExecutor:
 
         Hook failures are uncertain outcomes. A repeated intent never reissues the
         side effect automatically; crash recovery observes the original key instead.
+
+        A sealed allocation is checked twice: once in `_record`, before the intent
+        commits, and once in `_refuse_sealed_before_dispatch`, in the last transaction
+        before the hook runs. See that method for why the second check is not redundant
+        with the first.
         """
         if self._provider_call is None:
             raise ContractViolation(
@@ -1009,6 +1153,7 @@ class OperationExecutor:
             target=target,
             fresh=True,
         )
+        await self._refuse_sealed_before_dispatch(call)
         cancelled = await self._cancel_before_dispatch(call)
         if cancelled is not None:
             raise CancellationPending(*cancelled)
@@ -1077,6 +1222,69 @@ class OperationExecutor:
                 await self._audit(connection, "observe.refused", False)
                 raise
         return result
+
+    async def _refuse_sealed_before_dispatch(self, call):
+        """Refuse to contact the provider if the allocation closed since the intent.
+
+        The second of the two seal checks on this path, and it is the one that stops
+        spend. `_record` refuses before the intent commits, which is where the fence
+        belongs; but the intent commits, its transaction ends, and the hook then runs in
+        a window during which nothing held the allocation. An allocation sealed inside
+        that window would otherwise still be created into: the resource exists, the seal
+        means its membership can never be recorded, and the sealed inventory authorizes
+        releasing the budget that would have paid for it.
+
+        A sealer cannot commit here either, because it must account for this call's
+        intent row -- `inventory.seal_allocation` refuses while a creating call is
+        outstanding, and this row is `intended`. So a seal that lands between the two
+        checks came from an allocation whose accounting says this call is settled, which
+        it is not; refusing is the only safe answer, and it is free because nothing has
+        been created yet.
+
+        The intent row is LEFT `intended` rather than resolved as absent. That looks
+        untidy and is deliberate: this method runs before the hook, so the provider was
+        provably never contacted, but writing `absent` from here would mean an
+        `observed/absent` row asserting the provider answered when it was never asked --
+        precisely the confusion the module docstring's "Why `unknown` is not `failed`"
+        section exists to prevent. A recovery pass reading `intended` asks the provider
+        about the key and gets the true answer. Retaining budget for a call that never
+        happened costs a reservation nobody spends; the alternative risks reporting
+        absence that was never established.
+
+        Cancellation, by contrast, IS resolved as absent by `_cancel_before_dispatch` --
+        that path owns the operation's own lifecycle and settles it as cancelled,
+        whereas a seal is another authority closing a shared allocation, and this
+        operation may still have legitimate teardown work to do.
+        """
+        async with self._connection() as connection, connection.transaction():
+            allocation_id = await approved_allocation(connection, self.operation_id)
+            if allocation_id is None or not may_create(
+                call.operation_kind, provider=call.provider
+            ):
+                return
+            await lock_allocation(
+                connection,
+                org_id=self.org_id,
+                workspace_id=self.workspace_id,
+                allocation_id=allocation_id,
+            )
+            sealed = await sealed_revision(
+                connection,
+                org_id=self.org_id,
+                workspace_id=self.workspace_id,
+                allocation_id=allocation_id,
+            )
+            if sealed is None:
+                return
+            await self._audit(
+                connection, "provider.sealed_allocation_refused", False, allocation_id
+            )
+        raise ProviderCallRefused(
+            f"allocation {allocation_id!r} was sealed at revision {sealed} after this "
+            f"intent was recorded; the provider has NOT been contacted for "
+            f"{call.idempotency_key!r} and must not be, because anything it created "
+            "could never be recorded as membership"
+        )
 
     async def _cancel_before_dispatch(self, call):
         """Persist known absence if cancellation wins before invoking the hook."""

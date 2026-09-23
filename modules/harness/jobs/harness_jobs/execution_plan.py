@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 
+from .effects import CallEffect, call_effect
 from .identity import ContractViolation
 from .store import _record
 
@@ -93,6 +94,17 @@ async def confirmed_plan_progress(connection, operation_id):
     calls = await connection.fetch(
         "SELECT * FROM harness_provider_call_intent WHERE operation_id=$1", operation_id
     )
+    planned_keys = {step_key(record, step) for step in steps}
+    # Trusted post-plan provider observations are diagnostic reads, not extra
+    # mutating plan steps. Planned reads still need their exact descriptor and
+    # successful observation. Unknown/mutating extra calls remain a refusal.
+    calls = [
+        call
+        for call in calls
+        if call["idempotency_key"] in planned_keys
+        or call_effect(call["operation_kind"], provider=call["provider"])
+        is not CallEffect.OBSERVES
+    ]
     if not calls or len(calls) > len(steps):
         return PlanProgress.UNKNOWN
     expected = {step_key(record, step): step for step in steps[: len(calls)]}

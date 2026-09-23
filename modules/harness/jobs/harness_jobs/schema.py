@@ -76,6 +76,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .effects import _READ_ONLY_ACTIONS, _REMOVAL_ACTIONS
+from .identity import MAX_ALLOCATION_ID_LENGTH
+
 # The schema version this code is written against. Bumped by any change to
 # `UPGRADES`; `check_schema_version` compares it to what the database reports.
 #
@@ -94,7 +97,41 @@ from typing import Protocol
 # cancellation-request columns on `harness_operations`. Same reasoning a third time --
 # v3 has merged, so folding these into it would make them appear only on databases that
 # had not yet applied v3, which is the silent-skip failure the v2 comment describes.
-SCHEMA_VERSION = 6
+#
+# 7 adds the allocation-inventory layer (#5529, w6-06): `harness_provider_report`,
+# `harness_allocation_resource`, and the two completeness proofs those two cannot supply
+# for themselves -- `harness_allocation_enumeration` (what the PROVIDER says it holds)
+# and `harness_allocation_seal` (the allocation is closed to further membership). All
+# four arrive together because a release is authorized from the four read as one answer:
+# membership without a provider listing cannot show it is whole, and membership that can
+# still grow cannot be released against at all.
+#
+# The two proofs also have to be tied to the report that relies on them, which is why
+# `harness_allocation_enumeration.generation` and
+# `harness_provider_report.enumeration_binding` are part of v7 rather than a later
+# version: without them a listing could be replaced under a published report, so a
+# LATER provider listing retroactively validated an EARLIER report -- including when the
+# later listing said the handle was still present. A v7 without those columns has the
+# defect, so it is not a schema this code can be asked to run against.
+#
+# `harness_provider_call_intent.allocation_id` is part of v7 for the third instance of
+# the same reasoning. Sealing withdrew only the ability to RECORD membership, not the
+# authority to CREATE, so a separately approved operation could still call the provider
+# into a sealed allocation; the resource was created and billing, its membership write
+# was refused by the seal, and the sealed inventory authorized releasing the budget that
+# would have paid for it. Closing that needs two questions answerable at the two moments
+# that matter -- "is this allocation closed?" before the provider is contacted, and "is
+# any creating call against it still unaccounted for?" before it is closed -- and the
+# second is a query over the call rows, which cannot be asked at all without knowing
+# which allocation each call belongs to.
+#
+# Same reasoning a fourth time, and here the silent-skip failure has a specific cost. A
+# database missing `harness_allocation_resource` cannot establish allocation membership,
+# so every release assessment against it reports UNRESOLVED and no budget is ever
+# returned. That is the safe direction, but it fails quietly as "nothing to release"
+# rather than loudly as "the schema is behind", which is exactly what
+# `check_schema_version` exists to convert into the latter.
+SCHEMA_VERSION = 7
 
 
 class SupportsExecute(Protocol):
@@ -924,6 +961,667 @@ ALTER TABLE harness_operations
     ADD COLUMN IF NOT EXISTS cleanup_required boolean NOT NULL DEFAULT false
 """
 
+# ## Why a provider report is a stored row rather than a returned value
+#
+# Issue #5529 (w6-06). The domain's release path asks this package a question it cannot
+# answer from its own records: "did this exact set of provider observations really come
+# from the authenticated executor that held this operation?" A function that took the
+# caller's digest and compared it to itself would answer yes to anything, which is the
+# manufactured-attestation failure `provider_inventory.py:52` names outright ("Never
+# merely echo the digest").
+#
+# So the report is COMMITTED here, by the executor, under its fence, before anyone can
+# ask about it -- and the digest is recomputed from this stored payload at read time.
+# That ordering is the whole property: the value being verified against was written by
+# an authenticated holder at a time the verifier controls, not supplied alongside
+# the question.
+_PROVIDER_REPORT_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_provider_report (
+    -- The canonical SHA-256 digest of `observations`, RECOMPUTED on every read and
+    -- compared against the stored value (`inventory._verify_report`).
+    --
+    -- Part of the key rather than the whole of it. A digest-only key looked correct
+    -- because a digest is all the domain can present, and it was wrong in both
+    -- directions at once:
+    --
+    -- * It refused legitimate reports. Identical canonical observations are ROUTINE --
+    --   a successor attempt re-querying a provider whose state has not changed
+    --   produces byte-identical bytes, and unrelated operations observing unrelated
+    --   resources can collide too. The first publisher owned the digest globally, so
+    --   every later one was refused, and a refused publication means no attestation,
+    --   which means cleanup can never be authorized. Permanently fail-closed is safe
+    --   and it is also a release path that never runs.
+    --
+    -- * It admitted concurrent false success. Two publications of the same bytes under
+    --   DIFFERENT grants both saw no row; one INSERT was discarded by
+    --   `ON CONFLICT DO NOTHING` and BOTH callers were told they had succeeded, though
+    --   only one attestation existed -- and the survivor was whichever committed first,
+    --   not the caller being answered.
+    --
+    -- So identity is the full attestation binding: these bytes, attested by THIS
+    -- executor, on THIS attempt, at THIS fence, for THIS operation. The domain still
+    -- presents only a digest; the lookup adds the binding from the resolved grant
+    -- rather than from the request, which is what stops an old grant's row from
+    -- authorizing a successor's cleanup.
+    report_digest   text        NOT NULL,
+
+    -- Provenance of the operation this report is about. Deliberately NOT
+    -- `ON DELETE CASCADE`: an attestation is evidence about resources that may still
+    -- be billing, and evidence that disappears when an operation row is retired is
+    -- evidence that was not durable. Same reasoning as
+    -- `harness_allocation_resource.operation_id` below, and the same consequence if it
+    -- were wrong -- a later read finds no attestation, reports unverified, and the
+    -- allocation is retained rather than released. Safe, but it means operation
+    -- housekeeping silently disables cleanup.
+    operation_id    text        NOT NULL,
+
+    -- Tenant, attempt and executor, copied for the reason
+    -- `harness_provider_call_intent` copies them: a recovery or release pass reads this
+    -- row after the operation's current attempt has moved on, so a join would report
+    -- the wrong attempt and attest the wrong run.
+    --
+    -- `executor_id` is the resolved principal's subject -- the lease HOLDER at publish
+    -- time, never a value from a request body. The domain compares it against its own
+    -- authenticated submitter (`provider_handles.py:800`), so a forged value here would
+    -- let one executor's report authorize another's cleanup.
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+    attempt_id      text        NOT NULL,
+    executor_id     text        NOT NULL,
+
+    -- The fence token the publishing holder had. Retained rather than checked-and-
+    -- discarded because "was this report published under authority that is still
+    -- current?" is asked again at READ time, potentially minutes later and by a
+    -- different process. A report published under a token that has since been
+    -- superseded is refused then, not silently honoured.
+    fence_token     bigint      NOT NULL CHECK (fence_token >= 1),
+
+    -- The allocation the report is about. Derived from the approved, digest-bound plan
+    -- (`inventory.allocation_id_for`), never from a worker argument -- otherwise an
+    -- executor could publish a valid report naming an allocation it does not hold and
+    -- collect cleanup authority over somebody else's resources.
+    allocation_id   text        NOT NULL,
+
+    -- The observation payload, in the exact canonical JSON the digest is computed over.
+    -- Stored rather than only digested for the reason `harness_operations` stores its
+    -- request payload: a digest answers "is this the same?" and cannot answer "what was
+    -- attested?". A release dispute needs the second question answered.
+    --
+    -- Provider states and error details only. NOT a credential: same absence as
+    -- `harness_provider_call_intent.target`, and load-bearing for the same reason --
+    -- this row is written by the process that holds the provider credential.
+    observations    text        NOT NULL,
+
+    -- The sealed membership revision this report was published against, and the column
+    -- that makes the report's ORDERING provable rather than merely plausible.
+    --
+    -- Without it, publication required only a live operation lease. An executor could
+    -- therefore query the provider BEFORE creating anything, receive a truthful "the
+    -- cluster is absent", publish that, then create the cluster, seal, and present the
+    -- earlier report to authorize release. Every later check passed on its own: the
+    -- attestation verified, the inventory was complete, the observation said ABSENT.
+    -- What no check could see is that the observation was taken before the membership
+    -- it was being used to clear existed -- so zero exposure was reported over a
+    -- running cluster.
+    --
+    -- A report is evidence about the moment it was taken, and this records which moment
+    -- that was in terms of the only thing that matters: the membership that was final
+    -- when it was taken. `inventory.publish_report` refuses a report while the
+    -- allocation is still open (there is no revision to name yet, and a list that can
+    -- still grow cannot be vouched for), and `inventory._verify_report` requires this
+    -- value to equal the revision the allocation is sealed over NOW. A report published
+    -- against an earlier seal is therefore not merely old, it is unusable.
+    sealed_revision text        NOT NULL,
+
+    -- The provider listings this report was taken against: a digest over every
+    -- `(provider, generation)` pair current for the allocation at publication
+    -- (`inventory._enumeration_binding`). `sealed_revision` above proves the report
+    -- came after membership was FINAL; this proves it came after the provider was last
+    -- ASKED, which is a different claim and the one that was missing.
+    --
+    -- The gap it closes. Publication required a seal, and a seal requires a listing --
+    -- so a listing always existed by then. But the listing remained replaceable
+    -- afterwards, and nothing tied a report to the one that was current when it was
+    -- published. So the sequence below had no check that could see it:
+    --
+    --   a successor publishes "the cluster is absent"     -- truthful about what it saw
+    --   the successor then records its required listing   -- the provider says PRESENT
+    --   a reader verifies the earlier report              -- and releases the budget
+    --
+    -- Every individual check passed. The seal was in force, the attestation was the
+    -- successor's own, the observation said ABSENT. The later listing -- the one piece
+    -- of evidence that contradicted the report outright -- made the report VALID
+    -- instead of invalid, because it satisfied completeness for the very read that
+    -- honoured it. Fresh evidence retroactively validating an older, contradicted
+    -- report is the exact inversion of what a freshness proof is for.
+    --
+    -- With this column, replacing a listing advances its generation, so the binding a
+    -- report carries stops matching and the report becomes unusable. The only way
+    -- forward after re-asking the provider is to publish a NEW report -- and a report
+    -- saying ABSENT about a handle the provider has just listed as present cannot be
+    -- published, because `record_provider_enumeration` and `_reconcile` both see the
+    -- handle. Fresh evidence therefore supersedes old evidence instead of rescuing it.
+    enumeration_binding text    NOT NULL,
+
+    created_at      timestamptz NOT NULL DEFAULT now(),
+
+    -- The attestation binding. `attempt_id` and `fence_token` are IN the key, not
+    -- merely stored beside it: without them a successor attempt observing unchanged
+    -- provider state collides with its own predecessor's row and is refused, which is
+    -- the legitimate-report case that made cleanup permanently unavailable.
+    --
+    -- With them, the same bytes from a different attempt are a different attestation,
+    -- and `inventory._verify_report` requires every one of these columns to match the
+    -- grant being verified -- so a predecessor's row is found and REJECTED rather than
+    -- honoured. Two attestations of the same bytes coexisting is correct: they attest
+    -- different runs, and a release dispute needs to know which run said what.
+    PRIMARY KEY (
+        report_digest, operation_id, org_id, workspace_id, attempt_id, executor_id,
+        fence_token
+    )
+)
+"""
+
+# Lookup by allocation: given an allocation being released, find the reports published
+# for it. Ordered by recency because a release consults the current attestation.
+_PROVIDER_REPORT_ALLOCATION_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_provider_report_allocation_idx
+    ON harness_provider_report (org_id, workspace_id, allocation_id, created_at DESC)
+"""
+
+# ## Why membership is its own table, and why it only grows
+#
+# `harness_provider_call_intent.provider_ref` already records "this call created
+# something", which is nearly an inventory and is not one. It is one reference per
+# CALL, and a single provider call routinely creates several independently billable
+# things -- a cluster that brings its own disks and load balancer. Releasing budget on
+# the strength of one reference per call therefore misses exactly the resources that
+# keep costing money after the named one is gone, which is the "retained storage/network
+# cost" case AC-01 requires evidence for.
+#
+# Rows are INSERTed and never deleted by this package. Membership that could shrink is
+# membership that can be made to look complete by removing the inconvenient row, and
+# "complete" is the flag that authorizes returning money. The domain's own persistence
+# makes the same choice (`provider_handles.py:34` -- "persisted independently of
+# operation rows and only grows").
+#
+# "Never deleted by this package" was not enough, because the DATABASE was deleting
+# them. `operation_id` originally carried
+# `REFERENCES harness_operations ON DELETE CASCADE`,
+# which contradicts both the comment above and the consumer contract: retiring or
+# deleting an operation row took its resource rows with it, leaving a still-billing
+# resource unenumerated and an inventory that reads as whole. Operation retention is
+# routine housekeeping; membership outliving it is the entire point of a separate table.
+# So the operation is recorded as PROVENANCE -- a value, not a parent.
+_ALLOCATION_RESOURCE_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_allocation_resource (
+    -- Identity is the tenant plus the allocation plus the resource, not a serial:
+    -- enumerating the same resource twice under one allocation is one member, so a
+    -- retried or resumed enumeration converges instead of inflating the count. The
+    -- tenant is INSIDE the key for the reason `harness_operations_idempotent` puts it
+    -- there -- a provider-derived resource id contains no tenant, so a global key
+    -- would let one tenant's resource name collide with another's.
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+    allocation_id   text        NOT NULL,
+    resource_id     text        NOT NULL,
+
+    -- Which operation first enumerated this member. PROVENANCE, deliberately with no
+    -- foreign key: membership must survive the removal or retirement of the operation
+    -- that created it, and a `REFERENCES ... ON DELETE CASCADE` here made the database
+    -- silently shrink an inventory whose whole contract is that it only grows. Kept as
+    -- a plain value so "which operation established this member?" stays answerable
+    -- after that operation row is gone -- which is exactly when an operator is asking.
+    operation_id    text        NOT NULL,
+
+    -- The provider's OWN durable handle for the thing, and what kind of thing it is.
+    -- `provider_reference` is the value a teardown presents to the provider to ask
+    -- "does this still exist?", so it must be the provider's identifier rather than a
+    -- name chosen here; a locally-invented name produces a confident answer about
+    -- nothing (`reconciliation.py:113` -- "A query by the wrong identity can be
+    -- answered confidently and still be about the wrong resource").
+    --
+    -- `kind` is what makes completeness checkable across categories rather than
+    -- assumed: the contract requires compute, storage AND network to be enumerated
+    -- (`provider_inventory.py:3`), and an inventory of three machines and no disks is
+    -- indistinguishable from a complete one without it.
+    provider            text    NOT NULL,
+    provider_reference  text    NOT NULL,
+    kind                text    NOT NULL,
+
+    -- The step keys this resource is attributed to. An array rather than a join table
+    -- because one resource can be created by one step and later observed by another,
+    -- and the domain merges these sets rather than replacing them
+    -- (`provider_handles.py:889`).
+    operation_keys  text[]      NOT NULL DEFAULT '{}',
+
+    -- The fence token held when this member was enumerated, and the attempt that did
+    -- it. Recorded so a stale holder's contribution is identifiable after the fact:
+    -- the write itself is already refused by the fenced predicate, but an inventory
+    -- read must also be able to say WHICH attempt established membership.
+    attempt_id      text        NOT NULL,
+    fence_token     bigint      NOT NULL CHECK (fence_token >= 1),
+
+    created_at      timestamptz NOT NULL DEFAULT now(),
+
+    PRIMARY KEY (org_id, workspace_id, allocation_id, resource_id)
+)
+"""
+
+# Read path: one allocation's full membership. The release assessment reads every member
+# of an allocation, and the primary key's leading columns already serve that prefix --
+# but the operation-scoped lookup ("what did THIS operation contribute?") does not fall
+# out of it, and the completeness check needs exactly that.
+_ALLOCATION_RESOURCE_OPERATION_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_allocation_resource_operation_idx
+    ON harness_allocation_resource (operation_id)
+"""
+
+# ## Why membership alone cannot prove membership is complete
+#
+# The original completeness rule checked that every succeeded provider call's own
+# `(provider, provider_ref)` appeared in membership. That is a check that the executor
+# wrote down what it was already telling us about, and it cannot detect the case that
+# costs money: ONE provider call creating SEVERAL independently billed resources.
+# Ask for a cluster and the provider also creates its disk and its load balancer. An
+# executor that enumerates the cluster handle and omits the disk passed that check --
+# the inventory read as complete, an ABSENT report on the cluster produced RELEASED
+# with zero exposure, and the disk carried on billing with nothing in the system
+# aware of it.
+#
+# Counting what the caller chose to send can never establish that the caller sent
+# everything. The missing evidence has to come from the provider, so this table
+# records that the executor asked the provider to ENUMERATE what it holds for the
+# allocation, and what came back.
+# `inventory.record_provider_enumeration` refuses the write when the
+# provider names anything that is not already a member -- so the omitted disk is caught
+# by the provider contradicting the executor rather than by trusting its count.
+_ALLOCATION_ENUMERATION_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_allocation_enumeration (
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+    allocation_id   text        NOT NULL,
+
+    -- The provider that was asked. Per-provider rather than per-allocation because one
+    -- allocation can hold resources from more than one provider, and a listing from one
+    -- says nothing about another's. Completeness requires a current listing from EVERY
+    -- provider that appears in membership (`inventory._completeness`); a single
+    -- allocation-wide row would let one provider's answer vouch for all of them.
+    provider        text        NOT NULL,
+
+    -- The digest of the provider handles the listing returned, canonicalized the same
+    -- way membership is. Compared against the handles currently enumerated for this
+    -- provider, so a listing taken when membership was smaller cannot vouch for
+    -- membership as it is now -- and a listing that has gone stale because something
+    -- new was created reads as a mismatch rather than as a proof.
+    enumerated_digest text      NOT NULL,
+
+    -- How many handles the provider reported. Stored for the operator's benefit: a
+    -- mismatch between this and the member count is the first thing worth seeing.
+    handle_count    integer     NOT NULL CHECK (handle_count >= 0),
+
+    -- Which listing this is, counted from 1 and incremented every time the row is
+    -- replaced. The column that makes a listing IDENTIFIABLE rather than merely
+    -- present, and it exists because a proof that can be rewritten in place is not a
+    -- proof of anything.
+    --
+    -- A report names the listing generation it was published against
+    -- (`harness_provider_report.enumeration_binding`), and verification requires that
+    -- to still be current. Without a generation, two genuinely different answers from
+    -- the provider were indistinguishable here -- the digest and the binding columns
+    -- can both be identical across a re-listing -- so re-asking the provider silently
+    -- re-validated every report taken before the question was asked again. That is the
+    -- retroactive-validation defect: a successor could publish "the cluster is absent"
+    -- and record its required listing afterwards, and if the listing came back saying
+    -- the cluster was PRESENT the contradiction was invisible, because the earlier
+    -- report was still valid and still released the budget.
+    --
+    -- Incrementing rather than timestamping: `recorded_at` has clock resolution and
+    -- clock skew, and two listings within the same tick would compare equal. A counter
+    -- advanced by the database under the allocation lock cannot.
+    generation      bigint      NOT NULL DEFAULT 1 CHECK (generation >= 1),
+
+    -- Provenance and the authority the listing was recorded under. The fence matters
+    -- because a listing is only evidence about the moment it was taken: one recorded by
+    -- a holder that has since been superseded is not evidence about now, and
+    -- `_completeness` refuses it.
+    operation_id    text        NOT NULL,
+    attempt_id      text        NOT NULL,
+    executor_id     text        NOT NULL,
+    fence_token     bigint      NOT NULL CHECK (fence_token >= 1),
+
+    recorded_at     timestamptz NOT NULL DEFAULT now(),
+
+    -- One current listing per provider per AUTHORITY, not per allocation. Re-asking
+    -- under the same grant replaces that grant's row (`ON CONFLICT ... DO UPDATE`) and
+    -- advances its generation, because the question is always "what does the provider
+    -- hold now?" and an accumulating history under one authority would let a reader
+    -- pick the convenient answer.
+    --
+    -- The grant is IN the key because a listing is only ever evidence for the authority
+    -- that took it -- `inventory._completeness` has always filtered on all four
+    -- columns, so a row belonging to another attempt, holder or fence was never usable
+    -- anyway.
+    -- Keying on the allocation alone additionally made the rows mutually exclusive: two
+    -- separately approved operations naming one allocation, or a recovery successor
+    -- alongside its predecessor's record, overwrote each other, so whichever asked the
+    -- provider last silently removed the other's proof and made its report
+    -- unpublishable AND unrepublishable. That is a total release outage for the loser,
+    -- caused by a legitimate act by an unrelated authority.
+    --
+    -- Keeping both rows costs a bounded number of rows per attempt and is worth having
+    -- for its own sake: a release dispute wants to know which authority asked the
+    -- provider what, and when.
+    PRIMARY KEY (
+        org_id, workspace_id, allocation_id, provider, operation_id, attempt_id,
+        executor_id, fence_token
+    )
+)
+"""
+
+# ## Which allocation a provider call creates into
+#
+# Added to the v4 intent table at v7, because until v7 nothing here knew what an
+# allocation was. The seal is allocation-wide, so the question "is any creating call
+# against this allocation still unaccounted for?" has to be answerable from the call
+# rows -- and it has to be answerable by a QUERY. The alternative was to decode every
+# operation's stored request payload to find out which allocation each call belonged to,
+# on the release path, under the allocation lock. That is a per-row payload decode and a
+# digest verification (`store._record`) for calls that mostly are not about this
+# allocation at all.
+#
+# Denormalized deliberately, on the same reasoning as `attempt_id` in this table: the
+# value is read when the operation's current state has moved on, and the row must say
+# what was true when it was written. It is copied from the approved, digest-bound plan
+# (`allocation.allocation_id_for`) at the moment the intent is recorded, never from a
+# worker argument -- a worker that could name its own allocation could create into a
+# sealed one by naming a different one.
+#
+# Nullable, and that is a real answer rather than a gap: most operations name no
+# allocation, and a call under such an operation is outside every inventory, so no seal
+# governs it and none can release budget against it. A NOT NULL with a sentinel would
+# make "no allocation" indistinguishable from "this allocation", which is the comparison
+# the fence depends on.
+_PROVIDER_CALL_INTENT_ALLOCATION_COLUMN = """
+ALTER TABLE harness_provider_call_intent
+    ADD COLUMN IF NOT EXISTS allocation_id text
+"""
+
+# Partial, because the query it serves reads only rows that HAVE an allocation, and on a
+# store where most operations name none a full index would be mostly dead entries. The
+# lookup is the seal-time accounting check in
+# `allocation.creating_calls_unaccounted_for`, which runs while the allocation lock is
+# held -- so a sequential scan here would hold the lock for the duration of a growing
+# table.
+_PROVIDER_CALL_INTENT_ALLOCATION_INDEX = """
+CREATE INDEX IF NOT EXISTS harness_provider_call_intent_allocation_idx
+    ON harness_provider_call_intent (org_id, workspace_id, allocation_id, created_at)
+    WHERE allocation_id IS NOT NULL
+"""
+
+# ## Why an allocation has to be sealed before it can authorize a release
+#
+# `read_inventory` releases its transaction before the domain applies the result, and
+# `enumerate_resources` remained permitted under the same lease afterwards. So
+# membership could GROW immediately after a snapshot that had just been used to
+# authorize a release:
+# the answer "this allocation holds only the cluster, and the cluster is gone" was true
+# when computed and false when acted on. A snapshot that authorizes returning money must
+# be the last word on what the allocation contains, and nothing in a
+# read-then-release-the-lock sequence can make it that.
+#
+# So sealing is explicit and it is a WRITE. Once an allocation is sealed, further
+# membership writes are refused outright (`inventory.enumerate_resources`), and an
+# allocation that is not sealed is never reported complete -- so no release can be
+# authorized against a list that is still open to additions.
+_ALLOCATION_SEAL_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_allocation_seal (
+    org_id          text        NOT NULL,
+    workspace_id    text        NOT NULL,
+    allocation_id   text        NOT NULL,
+
+    -- The membership revision this seal was taken over -- the same content digest
+    -- `inventory._revision` computes. Re-derived on every read and compared, so a row
+    -- inserted behind this package's back (a direct INSERT, a restored backup, a future
+    -- writer that forgets the seal) moves the revision and the allocation reads as
+    -- INCOMPLETE rather than as a sealed whole inventory. The seal is therefore a claim
+    -- about specific membership, not a flag that outlives what it described.
+    sealed_revision text        NOT NULL,
+
+    -- Provenance and the authority that sealed it, on the same reasoning as the
+    -- enumeration row above.
+    operation_id    text        NOT NULL,
+    attempt_id      text        NOT NULL,
+    executor_id     text        NOT NULL,
+    fence_token     bigint      NOT NULL CHECK (fence_token >= 1),
+
+    sealed_at       timestamptz NOT NULL DEFAULT now(),
+
+    -- One seal per allocation, and re-sealing the same membership is idempotent rather
+    -- than an error (a retried seal after a transport failure converges). Re-sealing
+    -- DIFFERENT membership is refused in `inventory.seal_allocation`: that is an
+    -- allocation that grew after being declared final, which is the case this table
+    -- exists to make impossible.
+    PRIMARY KEY (org_id, workspace_id, allocation_id)
+)
+"""
+
+_PROVIDER_LISTING_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_provider_listing (
+    org_id text NOT NULL,
+    workspace_id text NOT NULL,
+    allocation_id text NOT NULL,
+    provider text NOT NULL,
+    query_id text NOT NULL CHECK (query_id ~ '^[a-f0-9]{32}$'),
+    operation_id text NOT NULL,
+    attempt_id text NOT NULL,
+    executor_id text NOT NULL,
+    fence_token bigint NOT NULL,
+    generation bigint NOT NULL,
+    state text NOT NULL CHECK (state IN ('in_progress', 'completed', 'failed')),
+    PRIMARY KEY (org_id, workspace_id, allocation_id, provider)
+)
+"""
+
+_PROVIDER_QUERY_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_provider_query (
+    org_id text NOT NULL,
+    workspace_id text NOT NULL,
+    allocation_id text NOT NULL,
+    operation_id text NOT NULL,
+    attempt_id text NOT NULL,
+    executor_id text NOT NULL,
+    fence_token bigint NOT NULL,
+    observation_id text NOT NULL CHECK (observation_id ~ '^[a-f0-9]{32}$'),
+    PRIMARY KEY (org_id, workspace_id, allocation_id)
+)
+"""
+
+_ALLOCATION_EPOCH_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_allocation_epoch (
+    org_id text NOT NULL,
+    workspace_id text NOT NULL,
+    allocation_id text NOT NULL,
+    generation bigint NOT NULL DEFAULT 0,
+    quarantined boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (org_id, workspace_id, allocation_id)
+)
+"""
+
+# Mutating or unknown provider calls advance the cutoff, including same/null-handle
+# settlement and recovery. A proven observation does not change provider state and
+# must not invalidate the listing it is reading against. The epoch outlives calls.
+_ALLOCATION_DISCOVERY_TABLE = """
+CREATE TABLE IF NOT EXISTS harness_allocation_discovery (
+    org_id text NOT NULL,
+    workspace_id text NOT NULL,
+    allocation_id text NOT NULL,
+    provider text NOT NULL,
+    provider_ref text NOT NULL,
+    PRIMARY KEY (org_id, workspace_id, allocation_id, provider, provider_ref)
+)
+"""
+_ALLOCATION_EPOCH_TRIGGER_FUNCTION = """
+CREATE OR REPLACE FUNCTION harness_advance_allocation_epoch() RETURNS trigger AS $$
+DECLARE r record;
+BEGIN
+    IF TG_OP = 'DELETE' THEN r := OLD; ELSE r := NEW; END IF;
+    IF r.allocation_id IS NOT NULL AND
+       NOT (__READ_ONLY__) THEN
+        INSERT INTO harness_allocation_epoch
+            (org_id, workspace_id, allocation_id, generation)
+        VALUES (r.org_id, r.workspace_id, r.allocation_id, 1)
+        ON CONFLICT (org_id, workspace_id, allocation_id)
+        DO UPDATE SET generation = harness_allocation_epoch.generation + 1;
+    END IF;
+    RETURN NULL;
+END
+$$ LANGUAGE plpgsql
+""".replace(
+    "__READ_ONLY__",
+    " OR ".join(
+        "(r.provider='"
+        + provider
+        + "' AND lower(r.operation_kind) = ANY(ARRAY["
+        + ",".join("'" + kind + "'" for kind in sorted(kinds))
+        + "]))"
+        for provider, kinds in sorted(_READ_ONLY_ACTIONS.items())
+    ),
+)
+
+_ALLOCATION_EPOCH_TRIGGER = """
+CREATE OR REPLACE TRIGGER harness_provider_call_allocation_epoch
+AFTER INSERT OR UPDATE OR DELETE ON harness_provider_call_intent
+FOR EACH ROW EXECUTE FUNCTION harness_advance_allocation_epoch()
+"""
+
+# Bind both v6 history and rolling v6 writes before publishing version 7. The
+# trigger installation takes PostgreSQL's table lock and waits for earlier writers;
+# the subsequent UPDATE sees their committed calls. Later writers already run the
+# trigger. A failed/interrupted backfill leaves version 6 and is safe to retry.
+#
+# Reproduce identity.payload_digest's length-prefixed UTF-8 hash, including Python's
+# Unicode codepoint ordering (C collation over UTF-8). Never trust a JSON selector
+# without checking the approved digest. JSONB rejects escaped NUL on conversion.
+_PROVIDER_CALL_BINDING_FUNCTION = (
+    """
+CREATE OR REPLACE FUNCTION harness_bind_provider_allocation() RETURNS trigger AS $$
+DECLARE
+    op record;
+    payload jsonb;
+    params jsonb;
+    part text;
+    joined text := '';
+    pair record;
+    allocation text;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+    END IF;
+    IF TG_OP = 'UPDATE' AND
+       ROW(NEW.operation_id, NEW.org_id, NEW.workspace_id, NEW.job_id,
+           NEW.provider, NEW.operation_kind, NEW.target) IS DISTINCT FROM
+       ROW(OLD.operation_id, OLD.org_id, OLD.workspace_id, OLD.job_id,
+           OLD.provider, OLD.operation_kind, OLD.target) THEN
+        RAISE EXCEPTION 'provider call binding is immutable';
+    END IF;
+    SELECT * INTO STRICT op FROM harness_operations
+        WHERE operation_id = NEW.operation_id;
+    IF ROW(NEW.org_id, NEW.workspace_id, NEW.job_id) IS DISTINCT FROM
+       ROW(op.org_id, op.workspace_id, op.job_id) THEN
+        RAISE EXCEPTION 'provider call tenant/job differs from approved operation';
+    END IF;
+    payload := op.request_payload::jsonb;
+    params := payload->'parameters';
+    IF jsonb_typeof(payload) IS DISTINCT FROM 'object' OR
+       jsonb_typeof(params) IS DISTINCT FROM 'object' OR
+       jsonb_typeof(payload->'contract_version') IS DISTINCT FROM 'string' OR
+       jsonb_typeof(payload->'action') IS DISTINCT FROM 'string' OR
+       jsonb_typeof(payload->'idempotency_key') IS DISTINCT FROM 'string' OR
+       ROW(payload->>'contract_version', payload->>'action',
+           payload->>'idempotency_key') IS DISTINCT FROM
+       ROW(op.contract_version, op.action, op.idempotency_key) THEN
+        RAISE EXCEPTION 'invalid approved operation payload';
+    END IF;
+    FOREACH part IN ARRAY ARRAY[payload->>'contract_version', payload->>'action',
+                               payload->>'idempotency_key'] LOOP
+        joined := joined || char_length(part)::text || ':' || part;
+    END LOOP;
+    FOR pair IN SELECT key, value FROM jsonb_each(params) ORDER BY key COLLATE "C"
+    LOOP
+        IF jsonb_typeof(pair.value) IS DISTINCT FROM 'string' THEN
+            RAISE EXCEPTION 'approved parameters must be strings';
+        END IF;
+        part := pair.value #>> '{}';
+        joined := joined || char_length(pair.key)::text || ':' || pair.key ||
+                  char_length(part)::text || ':' || part;
+    END LOOP;
+    IF encode(sha256(convert_to(joined, 'UTF8')), 'hex') <> op.plan_digest THEN
+        RAISE EXCEPTION 'approved operation payload digest mismatch';
+    END IF;
+    IF params ? 'allocation_id' THEN
+        allocation := params->>'allocation_id';
+        IF char_length(allocation) > __ALLOCATION_LIMIT__ OR
+           btrim(allocation, __WHITESPACE__) = '' THEN
+            RAISE EXCEPTION 'invalid approved allocation_id';
+        END IF;
+    END IF;
+    IF (NEW.allocation_id IS NOT NULL AND
+        NEW.allocation_id IS DISTINCT FROM allocation) OR
+       (TG_OP = 'UPDATE' AND OLD.allocation_id IS NOT NULL AND
+        OLD.allocation_id IS DISTINCT FROM allocation) THEN
+        RAISE EXCEPTION 'provider call allocation differs from approved operation';
+    END IF;
+    NEW.allocation_id := allocation;
+    -- Only inserts claim new creation authority. Settlements retain the immutable
+    -- binding and invalidate evidence via the AFTER epoch trigger. Do not acquire
+    -- the allocation lock after a v6 worker's lease/row lock on UPDATE/DELETE.
+    IF allocation IS NOT NULL AND TG_OP = 'INSERT' THEN
+        PERFORM pg_advisory_xact_lock(hashtextextended(
+            'harness-allocation:' || NEW.org_id || '/' || NEW.workspace_id ||
+            '/' || allocation, 0));
+        IF NOT (__NON_CREATING__) AND (
+            EXISTS (SELECT 1 FROM harness_allocation_seal s
+                    WHERE (s.org_id, s.workspace_id, s.allocation_id) =
+                          (NEW.org_id, NEW.workspace_id, allocation)) OR
+            EXISTS (SELECT 1 FROM harness_allocation_epoch e
+                    WHERE (e.org_id, e.workspace_id, e.allocation_id) =
+                          (NEW.org_id, NEW.workspace_id, allocation)
+                      AND e.quarantined)
+        ) THEN
+            RAISE EXCEPTION 'allocation sealed or quarantined; creation refused';
+        END IF;
+    END IF;
+    RETURN NEW;
+END
+$$ LANGUAGE plpgsql
+""".replace("__ALLOCATION_LIMIT__", str(MAX_ALLOCATION_ID_LENGTH))
+    .replace(
+        "__WHITESPACE__",
+        " || ".join(f"chr({code})" for code in range(0x3001) if chr(code).isspace()),
+    )
+    .replace(
+        "__NON_CREATING__",
+        " OR ".join(
+            "(NEW.provider='"
+            + provider
+            + "' AND lower(NEW.operation_kind) = ANY(ARRAY["
+            + ",".join("'" + kind + "'" for kind in sorted(kinds))
+            + "]))"
+            for actions in (_READ_ONLY_ACTIONS, _REMOVAL_ACTIONS)
+            for provider, kinds in sorted(actions.items())
+        ),
+    )
+)
+_PROVIDER_CALL_BINDING_TRIGGER = """
+CREATE OR REPLACE TRIGGER harness_provider_call_allocation_binding
+BEFORE INSERT OR UPDATE OR DELETE ON harness_provider_call_intent
+FOR EACH ROW EXECUTE FUNCTION harness_bind_provider_allocation()
+"""
+_PROVIDER_CALL_ALLOCATION_BACKFILL = """
+UPDATE harness_provider_call_intent SET allocation_id = allocation_id
+"""
+
 UPGRADES: dict[int, tuple[str, ...]] = {
     1: (
         _VERSION_TABLE,
@@ -957,9 +1655,88 @@ UPGRADES: dict[int, tuple[str, ...]] = {
            ADD COLUMN IF NOT EXISTS max_attempts integer NOT NULL DEFAULT 5
            CHECK (max_attempts > 0)""",
     ),
+    7: (
+        _PROVIDER_LISTING_TABLE,
+        _PROVIDER_QUERY_TABLE,
+        _PROVIDER_REPORT_TABLE,
+        _PROVIDER_REPORT_ALLOCATION_INDEX,
+        _ALLOCATION_RESOURCE_TABLE,
+        _ALLOCATION_RESOURCE_OPERATION_INDEX,
+        _ALLOCATION_ENUMERATION_TABLE,
+        _ALLOCATION_SEAL_TABLE,
+        _PROVIDER_CALL_INTENT_ALLOCATION_COLUMN,
+        _PROVIDER_CALL_INTENT_ALLOCATION_INDEX,
+        _ALLOCATION_EPOCH_TABLE,
+        _ALLOCATION_DISCOVERY_TABLE,
+        (
+            "ALTER TABLE harness_allocation_enumeration ADD COLUMN IF NOT EXISTS "
+            "allocation_generation bigint NOT NULL DEFAULT -1"
+        ),
+        _ALLOCATION_EPOCH_TRIGGER_FUNCTION,
+        _ALLOCATION_EPOCH_TRIGGER,
+        _PROVIDER_CALL_BINDING_FUNCTION,
+        _PROVIDER_CALL_BINDING_TRIGGER,
+        _PROVIDER_CALL_ALLOCATION_BACKFILL,
+    ),
 }
 
 DOWNGRADES: dict[int, tuple[str, ...]] = {
+    # Rolling back to v6 drops allocation membership and every provider-report
+    # attestation. The hazard is the same shape as `DOWNGRADES[4]`'s and points the same
+    # way: what is lost is the record of things that may still be BILLING.
+    #
+    # `harness_allocation_resource` is the only enumeration of an allocation's
+    # independently billable resources -- the disks and load balancers a per-call
+    # `provider_ref` never named. After this runs, a release assessment cannot establish
+    # membership at all, so it correctly reports UNRESOLVED and retains the budget: the
+    # money is not silently released, but it is also not reclaimable, because nothing
+    # remains that names the resources to go and check. The failure is safe and
+    # permanent, which is the better of the two directions and still not free.
+    #
+    # `harness_provider_report` drops the attestations. That is the subtler half: a
+    # report is the evidence that a given set of provider observations came from the
+    # authenticated executor, and it is keyed by its own digest. Losing it does not
+    # forge anything -- a missing row is a refusal, not a pass -- but any release
+    # already assessed against an attestation becomes unauditable after the fact.
+    #
+    # `harness_allocation_seal` and `harness_allocation_enumeration` drop the two proofs
+    # that make `complete` mean anything: that the provider was asked to list what it
+    # holds, and that the allocation was closed to further additions before its snapshot
+    # authorized a release. Losing them is safe in the same direction -- with no seal an
+    # allocation is never reported complete -- and it is the same permanence.
+    #
+    # The safe sequence is therefore: complete or abandon outstanding releases and
+    # EXPORT all four tables first, then roll back. An inventory is not reconstructible
+    # from the remaining tables (that non-reconstructibility is why they were added at
+    # all) so there is no recovering this afterwards. A rollback is not a retention
+    # policy.
+    #
+    # `harness_provider_call_intent.allocation_id` goes with them, and dropping it
+    # removes the denormalized binding until a subsequent v7 upgrade backfills it
+    # from the surviving approved operation. That does not reconstruct deleted
+    # membership/listings/reports, so resolve outstanding cleanup before rollback.
+    7: (
+        (
+            "DROP TRIGGER IF EXISTS harness_provider_call_allocation_binding "
+            "ON harness_provider_call_intent"
+        ),
+        "DROP FUNCTION IF EXISTS harness_bind_provider_allocation()",
+        "DROP TABLE IF EXISTS harness_provider_listing",
+        "DROP TABLE IF EXISTS harness_provider_query",
+        (
+            "DROP TRIGGER IF EXISTS harness_provider_call_allocation_epoch "
+            "ON harness_provider_call_intent"
+        ),
+        "DROP FUNCTION IF EXISTS harness_advance_allocation_epoch()",
+        "DROP TABLE IF EXISTS harness_allocation_discovery",
+        "DROP TABLE IF EXISTS harness_allocation_epoch",
+        "DROP TABLE IF EXISTS harness_allocation_seal",
+        "DROP TABLE IF EXISTS harness_allocation_enumeration",
+        "DROP TABLE IF EXISTS harness_allocation_resource",
+        "DROP TABLE IF EXISTS harness_provider_report",
+        "DROP INDEX IF EXISTS harness_provider_call_intent_allocation_idx",
+        "ALTER TABLE harness_provider_call_intent DROP COLUMN IF EXISTS allocation_id",
+    ),
     6: ("ALTER TABLE harness_operation_leases DROP COLUMN IF EXISTS max_attempts",),
     # Drain reconciliation and resolve pending cleanup before removing their evidence.
     5: (

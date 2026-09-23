@@ -140,6 +140,7 @@ class ObservationPayload(BaseModel):
     queried_by: str = Field(min_length=1, max_length=255)
     provider_state: str | None = None
     detail: str = ""
+    observation_id: str = Field(default="", max_length=32)
 
 
 class ConcludeRequest(BaseModel):
@@ -254,6 +255,7 @@ def _observation_from(payload: ObservationPayload | None) -> ProviderObservation
             queried_by=payload.queried_by,
             provider_state=payload.provider_state,
             detail=payload.detail,
+            observation_id=payload.observation_id,
         )
     except ContractViolation as violation:
         raise HTTPException(

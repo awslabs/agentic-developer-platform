@@ -119,8 +119,19 @@ class ProviderObservation:
     queried_by: str
     provider_state: str | None = None
     detail: str = ""
+    observation_id: str = ""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.observation_id, str) or (
+            self.observation_id
+            and (
+                len(self.observation_id) != 32
+                or any(c not in "0123456789abcdef" for c in self.observation_id)
+            )
+        ):
+            raise ContractViolation(
+                "observation_id must be empty or a trusted query nonce"
+            )
         if not isinstance(self.presence, ProviderPresence):
             raise ContractViolation("presence must be a ProviderPresence")
         if not isinstance(self.queried_by, str) or not self.queried_by.strip():
