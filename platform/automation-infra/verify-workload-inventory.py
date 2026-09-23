@@ -83,16 +83,22 @@ def verify_ceiling(policy, roles, execution_resources):
         if action == "iam:PassRole":
             continue
         assert not denied_resource_ceiling(policy, action), f"Workload ceiling permits identity mutation/role chaining: {action}"
-    # Altering or starting an existing executable can inherit its service role
-    # without another PassRole call. Bound the complete execution graph.
-    for action in [
-        "lambda:CreateFunction", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:InvokeFunction",
-        "codebuild:CreateProject", "codebuild:UpdateProject", "codebuild:StartBuild", "codebuild:RetryBuild", "codebuild:StartBuildBatch",
-        "ssm:SendCommand", "ssm:StartSession", "ec2-instance-connect:SendSSHPublicKey", "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
-        "ecs:RunTask", "ecs:UpdateService", "ecs:ExecuteCommand", "glue:UpdateJob", "glue:StartJobRun",
-        "states:UpdateStateMachine", "states:StartExecution", "cloudformation:UpdateStack", "cloudformation:ExecuteChangeSet",
-        "sagemaker:CreateNotebookInstance", "sagemaker:UpdateNotebookInstance", "eks:AccessKubernetesApi",
-    ]:
+    # Require a finite explicit deny, including for future/unknown AWS APIs.
+    # A blacklist of today's execution APIs misses services such as Glue or
+    # Step Functions that inherit an existing role without a new PassRole.
+    registry = json.loads((Path(__file__).parent / "workload-actions.json").read_text())
+    supported = {a.lower() for a in registry["data"] + registry["execution"] + ["iam:PassRole"]}
+    ceilings = [many(s["NotAction"]) for s in policy["Statement"]
+        if s["Effect"] == "Deny" and not s.get("Condition")
+        and s.get("Resource") in ("*", ["*"]) and "NotAction" in s
+        and all(not any(c in a for c in "*?") for a in many(s["NotAction"]))]
+    assert ceilings, "Workload requires a finite explicit API deny ceiling"
+    possible = set.intersection(*[{a.lower() for a in ceiling} for ceiling in ceilings])
+    for action in possible - supported:
+        assert not denied_resource_ceiling(policy, action), f"Unsupported workload API: {action}"
+    # Supported executable services have an actual role lookup below. All
+    # others must be explicitly denied until their verifier is implemented.
+    for action in registry["execution"]:
         assert denied_resource_ceiling(policy, action) <= execution_resources, f"Uninventoried executable capability: {action}"
     assert denied_resource_ceiling(policy, "iam:PassRole") <= roles, "Workload can pass an unbounded role"
 
@@ -109,12 +115,32 @@ def cluster_nodes(cluster, region, aws):
         return json.load(response)["items"]
 
 
+def verify_mutable_policies(config, roles, aws):
+    for arn in config.get("deployment_managed_policy_arns", []):
+        assert arn.split(":")[4] == config["account_id"], "Cross-account mutable policy"
+        assert arn not in roles.values(), "A workload ceiling cannot be mutable"
+        # Listing also supports a not-yet-created admitted policy without
+        # swallowing access errors from GetPolicy/ListEntitiesForPolicy.
+        existing = aws("iam", "list-policies", "--scope", "Local")["Policies"]
+        if not any(p["Arn"] == arn for p in existing):
+            continue
+        for usage in ("PermissionsPolicy", "PermissionsBoundary"):
+            entities = aws("iam", "list-entities-for-policy", "--policy-arn", arn, "--policy-usage-filter", usage)
+            assert not entities.get("PolicyUsers") and not entities.get("PolicyGroups"), f"Mutable policy reaches users/groups: {arn}"
+            attached = entities.get("PolicyRoles", [])
+            assert usage != "PermissionsBoundary" or not attached, f"Mutable policy is an identity ceiling: {arn}"
+            for role in attached:
+                actual = aws("iam", "get-role", "--role-name", role["RoleName"])["Role"]["Arn"]
+                assert actual in roles, f"Mutable policy reaches an unbounded role: {arn} -> {actual}"
+
+
 def verify_inventory(config, aws=read, nodes=cluster_nodes):
     account = aws("sts", "get-caller-identity")["Account"]
     assert account == config["account_id"], "Wrong AWS account"
     roles = config["deployment_role_boundaries"]
     targets = set(config["deployment_execution_resources"])
     assert roles, "No workload roles have been admitted"
+    verify_mutable_policies(config, roles, aws)
     policies = {}
     for arn, boundary in roles.items():
         assert arn.split(":")[4] == account and boundary.split(":")[4] == account, "Cross-account role or ceiling"
