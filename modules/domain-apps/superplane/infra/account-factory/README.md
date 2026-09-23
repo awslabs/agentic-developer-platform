@@ -30,6 +30,21 @@ python3 -m account_factory.cli dependencies                      # the verified 
 python3 -m account_factory.cli validate     --config request.yaml
 python3 -m account_factory.cli render       --config request.yaml
 python3 -m account_factory.cli cleanup-plan --config request.yaml
+
+# whether CreateAccount may be called at all, given what is recorded about a prior attempt
+python3 -m account_factory.cli creation-status --config request.yaml \
+  --attempt-ledger recorded-attempts.yaml
+
+# what bootstrapping the child account requires, in the order it must be done
+python3 -m account_factory.cli bootstrap-plan --config request.yaml
+
+# the account was created but bootstrap failed: what exists, what a retry would repeat,
+# what is retained. Steps you do not report are NOT-CHECKED, never "fine".
+python3 -m account_factory.cli recovery-report --config request.yaml \
+  --attempt-ledger recorded-attempts.yaml \
+  --observed bootstrap-role=established \
+  --observed autoscaling-service-linked-role=denied \
+  --observed-detail autoscaling-service-linked-role="iam:CreateServiceLinkedRole denied"
 ```
 
 Start from [`config.example.yaml`](config.example.yaml) — it documents all three modes with
@@ -85,12 +100,15 @@ by both `render` and `cleanup.plan`).
 | `account_factory/dependencies.py` | reads and **verifies** the lock; refuses anything unpinned or drifted; exposes each graph's declared input schema |
 | `account_factory/render.py` | the object set a request would apply, as ordered stages, + the shared prerequisite plan |
 | `account_factory/cleanup.py` | workspace delete plans, ownership evidence, and the separate account-closure request |
+| `account_factory/creation.py` | the durable creation-attempt record, the duplicate-account fence, and the retry decision (#5531) |
+| `account_factory/bootstrap.py` | what child-account bootstrap must establish and in what order — the three scoped roles, the Auto Scaling service-linked role a workspace KMS key depends on, and the baseline controls (#5531) |
+| `account_factory/recovery.py` | the create-succeeded/bootstrap-failed report — what exists, what is incomplete, what a retry would and would not repeat, what is retained; unchecked is never absent (#5531) |
 | `account_factory/cli.py` | offline entry point; no apply subcommand |
 | `dependencies.lock.yaml` | digest pins for 5 charts, checksums for 3 vendored graphs, `target: unresolved` |
 | `vendor/kro-account-factory/` | the three upstream RGDs at a pinned commit, with the Apache-2.0 LICENSE — **read-only** |
 | `manifests/` | ADP's own two RGDs: `adp-account-ownership.yaml`, `adp-workspace-infrastructure.yaml` |
 | `config.example.yaml` | all three modes, placeholders only |
-| `tests/` | 318 offline tests |
+| `tests/` | 483 offline tests |
 
 `vendor/` and `manifests/` are both resource graphs and are deliberately treated differently.
 Vendored files are third-party, so the lock records a checksum and `dependencies.load` recomputes
@@ -221,6 +239,146 @@ the guard **refuses** — never skips with a warning — shared cluster kinds, c
 and other workspaces' namespaces. Resources discovered from live cluster state go through the
 same guard, rather than being trusted because they were found.
 
+### 5. Creating an account is a named mode, and asking twice cannot open two (#5531)
+
+`CreateAccount` does not return an account. It returns a `CreateAccountStatus` id, and the
+outcome arrives later. The reference applied an `Account` resource and moved on, so there was
+nowhere recording that an attempt had been made and no way to ask what became of it.
+
+The expensive case is a **lost answer**: the reply never arrives, the process handling it dies,
+or a throttle response hides whether the call landed. The only recovery move available is to ask
+again — and asking again when the first attempt in fact succeeded opens a **second AWS account**.
+Both are real and both cost money. Removing the spare is not a cleanup; it is the same
+irreversible 90-day suspension, of an account whose id cannot be reused in that window.
+
+`creation.py` provides offline classification. `may_create_account` is always false,
+and `creation-status` always exits nonzero with no executable pre-call record, even
+when caller-supplied authorization flags are complete. Its legacy disposition names
+classify evidence; they grant no authority. The maintained account-provisioning runner
+loads trusted durable history, checks complete admitted-operation authorization, and
+commits a new generation before every permitted first call or retry.
+
+The offline ledger searches immutable organization/workspace identity before comparing
+the approved payload. Changing email or OU cannot hide an unresolved attempt. The
+runtime fence additionally binds the operation and generation. Cluster-input changes
+remain distinct from account-identity changes.
+
+New-account rendering requires an operation-bound `CreatedAccountRegistration` from
+`account_provisioning.registration.load_created_account`. A free `--account-id` or
+`account_id` argument is refused. Existing-account onboarding continues to use the
+explicitly authorized request target.
+
+**Unknown is not failure.** This is the distinction the module turns on, the same one
+`contracts/superplane_contracts/reconciliation.py` draws: "the provider says this did not happen"
+and "I could not find out what happened" are different facts with opposite safe actions. A
+confirmed failure created nothing, so repeating is safe. An unreadable outcome means an account
+may exist that nobody is tracking — repeating is the duplicate-spend bug, and concluding failure
+is the leak. `UNRESOLVED` therefore authorizes *nothing*, and there is no `--aws-status unknown`
+flag, because "I could not check" is not something AWS reported.
+
+Failure reasons are enumerated rather than free text because two of them must never be retried
+with the same input: a taken root-user address fails identically forever, and an exhausted
+account quota needs a human, not a backoff. Both surface as
+`REFUSED_INPUT_CANNOT_SUCCEED` — and a taken address is reported rather than worked around, since
+it may belong to an account in another organization entirely.
+
+Placement is part of creation, not a follow-up. `organizational_unit_id` is **required** in
+`new-account-managed` and has no default, because omitting a parent does not mean "no OU" to
+AWS — it places the account at the organization root, the least restricted placement available.
+The rendered `Account` carries `parentIDs` so the account lands inside its guardrails at
+creation, with no window in which it is live outside them. In `existing-account-managed` the same
+field is **refused**: acting on it would re-parent an account that already exists as a side
+effect of a workspace request, and ignoring it would mislead whoever wrote it.
+
+### 6. A vended account is bootstrapped before a workspace touches it (#5531)
+
+A newly created AWS account is not usable. It has no identity ADP can assume, no baseline
+controls, and — the specific gap #5532's review surfaced — no `AWSServiceRoleForAutoScaling`.
+
+That last one is not cosmetic. The workspace side creates a KMS key whose **key policy names
+that role's ARN**, and KMS validates every principal in a key policy at key-**creation** time.
+If the role does not exist, the key cannot be created at all, and the error reads as a
+malformed policy about a principal rather than as a missing account-wide role. So
+`workspaces/scripts/workspace_kms.py::verify_account_prerequisites` does a read-only
+`iam get-role` and fails closed with remediation naming bootstrap as the owner:
+*"workspace provisioning never creates or adopts this account-wide role."* `bootstrap.py` is
+the other half of that contract, and `bootstrap-plan` orders the role **before** anything that
+would create a key.
+
+The role belongs to the account, not to a workspace, and that boundary is the point. A
+workspace that took it into its own Terraform state would delete it on teardown — and every
+*other* workspace in that account would then fail its next encrypted-node operation. One
+workspace's cleanup breaking its neighbours is a hard failure to diagnose, so
+`adoptable_by_workspace` is `False` and `retained_through_workspace_retirement` is `True` for
+every step in the plan, and claiming both at once is refused at construction.
+
+Idempotency is by **reading first**, not by swallowing errors. `PresenceRule.CREATE_IF_ABSENT`
+means create only after a read has *verified* absence; a create that ignores an
+already-exists error cannot distinguish "it was already there" from "the create was denied",
+and those need opposite responses. Existing roles are reused exactly, and
+`iam:CreateServiceLinkedRole` is remediated as **scoped to `autoscaling.amazonaws.com`** —
+unscoped, it would let bootstrap mint a service-linked role for any AWS service in the account.
+
+Bootstrap establishes **three** scoped roles rather than one. A single role would hold the
+union of all three tiers' permissions, so the workload — the least trusted, running arbitrary
+tenant work — would inherit the ability to create IAM roles and read the account's baseline
+controls. Only `RoleTier.BOOTSTRAP` may write IAM, which makes "the workload cannot
+re-bootstrap the account" a property of the credential rather than of a review.
+
+The ordering is **checked**, not merely arranged. `check_order` refuses a plan that omits the
+service-linked role, omits the bootstrap identity, or orders either the service-linked role or
+a lesser role before the identity that creates it — because the steps all look reasonable in
+any order, and a property maintained only by the order someone happened to write a tuple in is
+one a later edit silently breaks.
+
+`bring-existing-cluster` gets **no** plan: it adopts a cluster someone else runs, so
+"bootstrapping" it would rewrite roles and baseline controls in an account ADP does not own.
+Both account-owning modes do get one — skipping it for an adopted account is precisely what
+leaves the service-linked role unchecked until a KMS key creation fails confusingly.
+
+### 7. Create-succeeded/bootstrap-failed is a report, not a status (#5531)
+
+The worst state this module has to handle is the half-built one: the AWS account is real and
+billable, and the roles, service-linked role or baseline controls that make it usable are partly
+or wholly absent. Both obvious moves are wrong. **Retry from the top** can open a second account
+if the creation outcome was never read. **Tear it down and start over** is not a reset — closure
+is the same irreversible 90-day suspension of an id nobody can reuse in that window, so it costs
+a permanent account *and* buys a new one.
+
+A "failed" status collapses four questions that have different answers, so `recovery.py` returns
+a report instead: what **exists**, what is **incomplete**, what a retry would and would not
+**repeat**, and what is **retained** regardless. `recovery-report` emits all four, plus the
+`next_action` each step's own state implies.
+
+**Unchecked is not absent.** This is `creation.py`'s unknown-≠-failure distinction applied to
+bootstrap, and it is why `StepState` has four members rather than a boolean. "The role is not
+there" invites creating it; "I did not look" invites looking. So `NOT_CHECKED` is what a step a
+caller did not report **defaults to** — a caller cannot shrink the report by supplying fewer
+observations — it keeps `every_step_accounted_for` false, and it makes `bootstrap_retry_is_safe`
+false. `DENIED` is separate from `ABSENT` for the same reason in the other direction: retrying
+over a denial changes nothing until the permission is granted, which is an infinite loop that
+looks like progress. A `DENIED` finding with no detail is refused at construction, because a
+denial nobody described cannot be told from an assumption, and the remedy depends on *which*
+permission was refused.
+
+Three further properties are deliberate:
+
+* **`creation_retry_is_safe` is a constant `False`**, not an omission, because the question gets
+  asked. Bootstrap recovery never re-runs `CreateAccount`; whether creating is permitted at all
+  is `creation.assess_attempt`'s answer from the recorded ledger.
+* **`ready_for_workspace_provisioning` requires a recorded account, not just clean steps.**
+  Observations can report every step established while no recorded attempt says this workspace
+  has an account — meaning the observations are about some *other* account, or the attempt was
+  never recorded. Neither is a state to build a workspace in, so a clean step list is not
+  allowed to stand in for a real account, and the summary says `NO RECORDED ACCOUNT` rather than
+  `COMPLETE`. The account id comes from the creation decision's recorded attempt and is not a
+  caller argument at all.
+* **`blocking_prerequisites` keys on the step's own `blocks_workspace_provisioning` flag**, not
+  on whether it `precedes` something. Every step precedes something, so that test would call the
+  whole plan blocking and tell the reader nothing. The distinction it has to carry is real: a
+  missing baseline control is a gap to close, while a missing service-linked role means the next
+  workspace KMS key creation *fails*.
+
 ## Account ownership and infrastructure ownership are separate objects
 
 The vendored `FullAccountInfrastructure` declares the AWS account *and* the VPC *and* the cluster
@@ -337,7 +495,7 @@ configuration.
 ## Verification
 
 ```bash
-# the module's own suite (318 tests, offline, no credentials)
+# the module's own suite (483 tests, offline, no credentials)
 python3 -m pytest modules/domain-apps/superplane/infra/account-factory/tests/ -v
 
 # the required check this module must not break: "Superplane domain tests"
@@ -357,7 +515,10 @@ Coverage maps to the issue's acceptance criteria:
 | `test_cleanup.py` | cleanup outside owned resources refused; ownership evidence required for discovered resources; every plan converges; closure never implicit and only for the recorded account |
 | `test_render.py` | no legacy target, secret literal, or core-namespace write in rendered output; every object satisfies its graph's declared inputs; the cluster is wired to its network; stages carry their preconditions |
 | `test_no_legacy_targets.py` | the module as committed carries no usable legacy target and cannot fetch or execute |
-| `test_cli.py` | no apply path exists; refusals exit non-zero; unverified ≠ verified |
+| `test_creation.py` | the attempt is recorded before the call; a replay of the same request is fenced as a duplicate; a retry requires a read prior status; an unreadable outcome is `UNRESOLVED`, never failure; failures a retry cannot fix are separated from ones it can; the persisted record round-trips and a mismatched or ambiguous store is refused |
+| `test_bootstrap.py` | the Auto Scaling service-linked role is established before any workspace KMS key, using the bootstrap identity and never before it; an existing role is reused after a verified read rather than recreated; a denial fails closed with scoped remediation that does not hand the role to workspace provisioning; no step is adoptable into per-workspace state; the ordering is refused when violated rather than merely arranged; a plan states which authorization comparisons were not made; `bring-existing-cluster` gets no plan |
+| `test_recovery.py` | a step nobody read is neither absent nor established, and defaults to `NOT_CHECKED`; a retry is never reported safe while the creation outcome is unresolved, a step is denied, or a step is unread; a retry acts only on verified-absent steps; a denial with no detail is refused; clean steps with no recorded account are not `COMPLETE`; the report covers the whole plan and refuses observations — or details — about steps outside it; what is retained is stated, and no closure is ever produced |
+| `test_cli.py` | no apply path exists; refusals exit non-zero; unverified ≠ verified; `creation-status` exits non-zero on a duplicate or unresolved outcome, and `unknown` cannot be spelled as an AWS status; `bootstrap-plan` emits the ordering and the account-wide boundary, and refuses an unauthorized workspace or an account ADP does not own; `recovery-report` defaults unreported steps to not-checked, refuses an unparsable state instead of defaulting it, and exits non-zero on an unresolved outcome or an account not ready; both bootstrap subcommands report unmade authorization comparisons on stderr |
 
 ### What this evidence does not establish
 
@@ -365,6 +526,29 @@ Offline tests cannot close live criteria, and this suite does not claim to. Noth
 that a chart installs, that kro reconciles a rendered graph, that an account can be vended, or
 that the recorded digests are what the registries serve today. A digest records **which**
 artifact a reviewed install would use.
+
+The creation tests are the sharpest case of this. They establish the **decision rule** — given
+what is recorded about a prior attempt, whether calling `CreateAccount` is safe — using AWS
+answers the tests construct. No AWS Organizations call is made, so nothing here is evidence that
+a real `CreateAccount` behaves as modelled, that a created account lands in the intended OU, or
+that any account was ever opened or closed. Live account creation requires separate named
+authorization and remains open.
+
+The bootstrap tests are a **description** under test, not an account. They establish which steps
+`bootstrap.py` names, in what order, with which presence rule and which remediation text.
+Nothing calls AWS, creates or reads a role, or bootstraps anything: no role exists as a result
+of running the suite or the `bootstrap-plan` subcommand. That a live account ends up with
+`AWSServiceRoleForAutoScaling`, that `iam:CreateServiceLinkedRole` is in fact scoped on a live
+identity, and that a workspace KMS key creation then succeeds are live criteria that separately
+named authorization has to cover.
+
+The recovery report is **arithmetic on observations somebody else made**. It reads nothing: every
+`StepState` it reasons about is supplied by whoever actually looked, and `recovery-report` verifies
+none of them. So the suite establishes that a correct set of observations yields a correct verdict —
+and, more importantly, that an *incomplete* set cannot yield a clean one — but it is not evidence
+about the state of any account. A report saying `COMPLETE` is only as true as the reads behind it,
+and no read happens offline. Recovery also never repairs anything: `next_action` is text for an
+operator, and no subcommand can carry it out.
 
 Two things are also genuinely unresolved rather than merely untested:
 
@@ -375,7 +559,10 @@ Two things are also genuinely unresolved rather than merely untested:
   optional so the validator runs offline, but an absent field means the comparison **was not
   performed**, and that is reported explicitly (`unchecked`, and `NOT VERIFIED` on stderr)
   rather than counted as a pass. "The management account was not verified" and "the management
-  account matched" must not look alike in a report.
+  account matched" must not look alike in a report. `BootstrapPlan` carries the same list, so
+  `bootstrap-plan` and `recovery-report` report it too — those two describe writing
+  account-wide roles and can call an account ready for a workspace, which makes an unverified
+  run reading like a verified one worst there.
 
 ## Upstream provenance
 

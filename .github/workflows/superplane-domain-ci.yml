@@ -181,6 +181,9 @@ jobs:
             --cov=../domain-apps/superplane/auth/superplane_auth --cov-fail-under=90
 
       - name: Run domain module tests
+        env:
+          # Account-create fencing and recovery require the real PostgreSQL fixture.
+          ACCOUNT_PROVISIONING_REQUIRE_POSTGRES: '1'
         run: |
           set -euo pipefail
           # Scoped to the module ROOT, not modules/domain-apps/superplane/tests/ alone.

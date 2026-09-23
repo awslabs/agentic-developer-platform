@@ -39,8 +39,10 @@ is still unambiguously a mock: `is_mock` is `True`, and the class name says so.
 from __future__ import annotations
 
 import inspect
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import _contracts_path  # noqa: F401  (imported for its sys.path side effect)
 import pytest
@@ -359,7 +361,6 @@ class TestInitiatedThroughTheFacade:
         U9 renames the permission, this fails instead of the two drifting into
         silently different authority models.
         """
-        import sys
         from pathlib import Path
 
         auth_root = Path(__file__).resolve().parent.parent / "auth"
@@ -688,8 +689,6 @@ class TestNoCredentialSurfaceIsTouched:
 
     @staticmethod
     def _sources() -> dict[str, str]:
-        from pathlib import Path
-
         root = (
             Path(__file__).resolve().parent.parent
             / "contracts"
@@ -799,41 +798,9 @@ class TestTheFacadeIsAMock:
         assert provider.is_mock is True
         assert type(provider).__name__.startswith("Mock")
 
-    def test_no_real_operation_facade_is_composed_into_this_app(self) -> None:
-        """The premise of the mock, asserted rather than assumed.
-
-        Fires when the real facade becomes *reachable from this app* — the correct
-        trigger to revisit whether the mock is still the right double and whether R14
-        acceptance 2 can be attempted. A mock whose premise silently expires is how a
-        story stays mocked long after it needed to be.
-
-        ## Why this no longer tests for the directory
-
-        It used to assert `modules/harness/jobs/` does not exist. That fired when
-        #5525 (w6-02) landed the shared store, and it was checked as the message
-        asks: the package is built and tested, but **nothing composes it**. It opens
-        no connection and is imported nowhere under `src/` or `contracts/`, so the
-        adapter still runs against a double and every "does not establish" statement
-        in this file's header still holds, unchanged.
-
-        So the directory was the wrong thing to watch. A package existing is not a
-        dependency; being imported is. Retargeted at the boundary that actually
-        changes the meaning of a green run here rather than deleted, because deleting
-        it would remove the trigger for the transition it exists to catch — and
-        left as an existence check it would now fail forever, which trains a reader
-        to ignore it.
-        """
-        import importlib.util
-
-        composed = importlib.util.find_spec("harness_jobs")
-        assert composed is None, (
-            "`harness_jobs` is importable from this app, so B's operation facade may "
-            "now be composed rather than mocked. Re-examine whether "
-            "MockOperationFacade should be replaced and whether R14 acceptance 2 "
-            "(live) can now be attempted. Note that importability is still not "
-            "live evidence: a composed facade needs its schema applied and its "
-            "delivery loop running before any live criterion is closable."
-        )
+    # These fixtures remain unit doubles. Runtime creation/registration composition
+    # and restart recovery are exercised with the real leased harness and PostgreSQL
+    # in infra/account-provisioning/account_provisioning_tests/test_durability_postgres.py.
 
     def test_the_mock_implements_exactly_the_consumed_protocol(
         self, facade: MockOperationFacade, provider: MockProvider
@@ -938,7 +905,6 @@ class TestContractGuards:
 
 def _golden() -> dict:
     import json
-    from pathlib import Path
 
     path = Path(__file__).resolve().parent / "fixtures" / "operation-facade.golden.json"
     return json.loads(path.read_text())

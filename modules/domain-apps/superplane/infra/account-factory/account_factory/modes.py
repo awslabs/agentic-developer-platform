@@ -153,6 +153,13 @@ LEGACY_FORBIDDEN_VALUES: dict[str, str] = {
 
 _ACCOUNT_ID_RE = re.compile(r"^\d{12}$")
 _ORG_ID_RE = re.compile(r"^o-[a-z0-9]{10,32}$")
+# AWS Organizational Unit id. Required for new-account-managed by #5531 (w6-08): a created
+# account lands SOMEWHERE in the organization tree, and the OU decides which service control
+# policies and guardrails apply to it from its first moment. Omitting it does not mean "no
+# OU" — it means the organization ROOT, which is the least restricted placement available.
+# So an un-stated OU is not a neutral default; it is the most permissive one, chosen by
+# nobody. Required and compared, never defaulted.
+_OU_ID_RE = re.compile(r"^ou-[a-z0-9]{4,32}-[a-z0-9]{8,32}$")
 # Deliberately not a full RFC 5322 implementation: this rejects obviously-unusable values
 # so a request fails here rather than inside the Organizations API, and nothing more.
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]+$")
@@ -225,6 +232,14 @@ class ValidationAuthorization:
     # set rather than a single value because an operator may be authorized for several; an
     # EMPTY set is meaningful and authorizes none, which is why the absent case is `None`.
     permitted_target_accounts: frozenset[str] | None = None
+    # The organizational units a created account may be placed into (#5531, w6-08). Only
+    # meaningful for new-account-managed, which is the only mode that places an account.
+    #
+    # An EMPTY set authorizes no placement at all, which is why the absent case is `None`
+    # and reported as unchecked: "this run may place into no OU" and "nobody said which OUs
+    # this run may place into" are different facts, and only the second one is a missing
+    # check. Collapsing them would let an unauthorized placement read as a verified pass.
+    permitted_organizational_units: frozenset[str] | None = None
 
     @classmethod
     def from_operation_binding(
@@ -235,6 +250,7 @@ class ValidationAuthorization:
         management_cluster: str | None = None,
         permitted_modes: frozenset[OwnershipMode] | None = None,
         permitted_target_accounts: frozenset[str] | None = None,
+        permitted_organizational_units: frozenset[str] | None = None,
     ) -> ValidationAuthorization:
         """Derive authorization from a provisioning `OperationBinding`.
 
@@ -269,6 +285,7 @@ class ValidationAuthorization:
             permitted_modes=permitted_modes,
             workspace_id=str(workspace_id),
             permitted_target_accounts=permitted_target_accounts,
+            permitted_organizational_units=permitted_organizational_units,
         )
 
 
@@ -301,6 +318,12 @@ class AccountFactoryRequest:
     target_account_id: str | None = None
     # Required in new-account-managed only: the address the new account is created with.
     account_email: str | None = None
+    # Required in new-account-managed only (#5531, w6-08): where in the organization tree
+    # the created account is placed. Forbidden in the adopted modes, where the account
+    # already sits somewhere and moving it is not this request's to do — a value supplied
+    # there would either be ignored (so its author was wrong about what the request does) or
+    # acted on (so a workspace request silently re-parents an existing account).
+    organizational_unit_id: str | None = None
     # Required in bring-existing-cluster only: the cluster ADP adopts rather than creates.
     existing_cluster_name: str | None = None
     vpc_cidr: str | None = None
@@ -394,6 +417,16 @@ def _check_shapes(request: AccountFactoryRequest, problems: _Problems) -> None:
         )
     if request.account_email is not None and not _EMAIL_RE.match(request.account_email):
         problems.add(f"account_email={request.account_email!r} is not an email address")
+    if request.organizational_unit_id is not None and not _OU_ID_RE.match(
+        request.organizational_unit_id
+    ):
+        problems.add(
+            f"organizational_unit_id={request.organizational_unit_id!r} is not an AWS "
+            f"organizational unit id (expected ou-xxxx-xxxxxxxx). An organization ROOT id "
+            f"(r-xxxx) is refused here specifically: the root is the least restricted "
+            f"placement in the organization, so accepting it would put a new account outside "
+            f"every guardrail an OU carries"
+        )
     if request.existing_cluster_name is not None and not _CLUSTER_NAME_RE.match(
         request.existing_cluster_name
     ):
@@ -428,6 +461,14 @@ def _check_mode_fields(request: AccountFactoryRequest, problems: _Problems) -> N
                 "account_email is required in new-account-managed: AWS Organizations "
                 "requires a unique address per account and this module does not default one"
             )
+        if not request.organizational_unit_id:
+            problems.add(
+                "organizational_unit_id is required in new-account-managed: a created "
+                "account is placed somewhere in the organization tree, and an unstated "
+                "placement is not 'no OU' — it is the organization ROOT, the least "
+                "restricted placement available. That default must be chosen deliberately "
+                "or not at all, so it is required rather than defaulted"
+            )
         if request.existing_cluster_name is not None:
             problems.add(
                 "existing_cluster_name must be absent in new-account-managed: the cluster "
@@ -449,6 +490,13 @@ def _check_mode_fields(request: AccountFactoryRequest, problems: _Problems) -> N
                 "existing_cluster_name must be absent in existing-account-managed: the "
                 "cluster is created by this request"
             )
+        if request.organizational_unit_id is not None:
+            problems.add(
+                "organizational_unit_id must be absent in existing-account-managed: the "
+                "account already sits somewhere in the organization tree. Acting on this "
+                "value would re-parent an existing account as a side effect of a workspace "
+                "request; ignoring it would mislead its author. Refused instead"
+            )
     elif mode is OwnershipMode.BRING_EXISTING_CLUSTER:
         if not request.target_account_id:
             problems.add(
@@ -464,6 +512,11 @@ def _check_mode_fields(request: AccountFactoryRequest, problems: _Problems) -> N
             problems.add(
                 "account_email must be absent in bring-existing-cluster: no account is "
                 "created"
+            )
+        if request.organizational_unit_id is not None:
+            problems.add(
+                "organizational_unit_id must be absent in bring-existing-cluster: no "
+                "account is created, so there is no placement to choose"
             )
         for unusable, why in (
             ("vpc_cidr", "the VPC already exists"),
@@ -517,6 +570,7 @@ def _check_authorization(
     docstring.
     """
     applicable_target = _target_account_applies(request)
+    applicable_ou = _organizational_unit_applies(request)
 
     if authorization is None:
         return [
@@ -526,6 +580,7 @@ def _check_authorization(
             "mode",
             "workspace_id",
             *(["target_account_id"] if applicable_target else []),
+            *(["organizational_unit_id"] if applicable_ou else []),
         ]
 
     unchecked: list[str] = []
@@ -593,6 +648,27 @@ def _check_authorization(
             f"account nobody authorized is refused"
         )
 
+    if not applicable_ou:
+        # Only new-account-managed places an account; the adopted modes are required to
+        # leave this field absent, so there is nothing a comparison could apply to.
+        pass
+    elif authorization.permitted_organizational_units is None:
+        unchecked.append("organizational_unit_id")
+    elif (
+        request.organizational_unit_id
+        not in authorization.permitted_organizational_units
+    ):
+        permitted_units = ", ".join(
+            sorted(authorization.permitted_organizational_units)
+        )
+        problems.add(
+            f"organizational_unit_id={request.organizational_unit_id!r} is not an "
+            f"organizational unit this run may place an account into (permitted: "
+            f"{permitted_units or 'none'}). The OU decides which service control policies "
+            f"apply to the account from its first moment, so placing into a unit nobody "
+            f"authorized is refused"
+        )
+
     return unchecked
 
 
@@ -607,6 +683,21 @@ def _target_account_applies(request: AccountFactoryRequest) -> bool:
     """
     return request.mode is not OwnershipMode.NEW_ACCOUNT_MANAGED and bool(
         request.target_account_id
+    )
+
+
+def _organizational_unit_applies(request: AccountFactoryRequest) -> bool:
+    """Whether this request names an OU placement a comparison could apply to.
+
+    True only for new-account-managed, the one mode that places an account in the
+    organization tree. Kept as one function for the same reason as
+    `_target_account_applies`: `validate` and the `authorization is None` branch must agree
+    about which comparisons are applicable, or a check will be reported as missing when it
+    never existed — which misleads in the opposite direction from reporting an unmade check
+    as a pass, but misleads nonetheless.
+    """
+    return request.mode is OwnershipMode.NEW_ACCOUNT_MANAGED and bool(
+        request.organizational_unit_id
     )
 
 
@@ -643,6 +734,7 @@ def validate(
             "target_account_id": request.target_account_id,
             "account_email": request.account_email,
             "existing_cluster_name": request.existing_cluster_name,
+            "organizational_unit_id": request.organizational_unit_id,
         },
         problems,
     )
@@ -695,6 +787,7 @@ def from_mapping(data: object) -> AccountFactoryRequest:
         "workspace_id",
         "target_account_id",
         "account_email",
+        "organizational_unit_id",
         "existing_cluster_name",
         "vpc_cidr",
         "availability_zones",
@@ -762,6 +855,7 @@ def from_mapping(data: object) -> AccountFactoryRequest:
         workspace_id=str(data["workspace_id"]),
         target_account_id=_optional_str("target_account_id"),
         account_email=_optional_str("account_email"),
+        organizational_unit_id=_optional_str("organizational_unit_id"),
         existing_cluster_name=_optional_str("existing_cluster_name"),
         vpc_cidr=_optional_str("vpc_cidr"),
         availability_zones=tuple(zones),

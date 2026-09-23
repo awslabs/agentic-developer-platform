@@ -1080,6 +1080,43 @@ class OperationExecutor:
                 raise
         return call
 
+    async def provider_calls(
+        self, *, provider: str, operation_kind: str
+    ) -> tuple[ProviderCall, ...]:
+        """Load history from this admitted operation; callers cannot supply rows."""
+        async with self._connection() as connection:
+            async with connection.transaction():
+                if not await lock_lease(connection, self._lease):
+                    raise ProviderCallRefused("Executor lease is no longer live")
+                from .identity import TERMINAL_STATES
+
+                operation = await connection.fetchrow(
+                    "SELECT state, cancel_requested_at FROM harness_operations "
+                    "WHERE operation_id=$1",
+                    self.operation_id,
+                )
+                if (
+                    operation["cancel_requested_at"] is not None
+                    or OperationState(operation["state"]) in TERMINAL_STATES
+                ):
+                    raise ProviderCallRefused(
+                        "Cancelled or terminal operations cannot authorize registration"
+                    )
+                rows = await connection.fetch(
+                    "SELECT * FROM harness_provider_call_intent "
+                    "WHERE operation_id=$1 "
+                    "AND org_id=$2 AND workspace_id=$3 "
+                    "AND provider=$4 AND operation_kind=$5 "
+                    "ORDER BY created_at, idempotency_key",
+                    self.operation_id,
+                    self.org_id,
+                    self.workspace_id,
+                    provider,
+                    operation_kind,
+                )
+                await self._audit(connection, "provider_calls.read", True)
+        return tuple(_call_from_row(row) for row in rows)
+
     async def record_intent(
         self, *, idempotency_key: str, provider: str, operation_kind: str, target: str
     ) -> ProviderCall:
@@ -1163,11 +1200,46 @@ class OperationExecutor:
                 raise ContractViolation("Provider hook must return CallOutcome")
         except Exception:  # noqa: BLE001
             outcome = CallOutcome.UNKNOWN
+            provider_ref = None
         if outcome is CallOutcome.UNKNOWN:
             # Intent remains recoverable: a transport failure is not a terminal
             # decision to abandon reconciliation. Never serialize exception details.
+            # An asynchronous reply can still supply the only handle recovery has.
+            # Persist it without observe(UNKNOWN), which terminalizes the intent.
             async with self._connection() as connection, connection.transaction():
                 live = await lock_lease(connection, self._lease)
+                if live:
+                    row = await connection.fetchrow(
+                        """
+                        UPDATE harness_provider_call_intent AS i
+                           SET provider_ref = COALESCE($5, i.provider_ref),
+                               updated_at = now()
+                         WHERE i.idempotency_key = $1 AND i.stage = 'intended'
+                           AND i.operation_id = $2 AND i.attempt_id = $3
+                           AND i.fence_token = $4
+                           AND i.org_id = $6 AND i.workspace_id = $7
+                           AND EXISTS (
+                               SELECT 1 FROM harness_operation_leases l
+                                WHERE l.operation_id = i.operation_id
+                                  AND l.holder = $8 AND l.fence_token = $4
+                                  AND l.closed_at IS NULL
+                                  AND l.expires_at > clock_timestamp()
+                                  AND l.runtime_deadline > clock_timestamp()
+                           )
+                        RETURNING i.*
+                        """,
+                        call.idempotency_key,
+                        self.operation_id,
+                        self._lease.attempt_id,
+                        self._lease.fence_token,
+                        provider_ref,
+                        self.org_id,
+                        self.workspace_id,
+                        self._lease.holder,
+                    )
+                    live = row is not None
+                    if live:
+                        call = _call_from_row(row)
                 if live:
                     await connection.execute(
                         "UPDATE harness_operations SET cleanup_required=true "
@@ -1189,6 +1261,17 @@ class OperationExecutor:
         if await self.cancel_requested():
             raise CancellationPending(*result)
         return result
+
+    async def observe_success(
+        self, *, idempotency_key: str, detail: str, provider_ref: str
+    ) -> tuple[ProviderCall, BudgetDisposition]:
+        """Trusted read-back confirmation using the store's outcome vocabulary."""
+        return await self.observe(
+            idempotency_key=idempotency_key,
+            outcome=CallOutcome.SUCCEEDED,
+            detail=detail,
+            provider_ref=provider_ref,
+        )
 
     async def observe(
         self,
