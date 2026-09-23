@@ -353,7 +353,8 @@ def test_root_based_eval_pods_use_the_dedicated_namespace():
 def test_automatic_deploy_never_mutates_cluster_scoped_namespaces():
     workflow = (ROOT / ".github/workflows/gateway-deploy.yml").read_text()
     assert "kubectl create namespace ${{ env.NAMESPACE }}" not in workflow
-    assert "kubectl get namespace ${{ env.NAMESPACE }}" in workflow
+    assert 'kubectl create namespace "${NAMESPACE}"' not in workflow
+    assert 'kubectl get namespace "${NAMESPACE}"' in workflow
     assert "kubectl apply -f modules/gateway/k8s/namespace.yaml" not in workflow
     assert "verify-restricted-admission.sh" not in workflow
     assert 'kubectl create --dry-run=client --validate=false -f "$f"' in workflow
@@ -363,6 +364,16 @@ def test_automatic_deploy_never_mutates_cluster_scoped_namespaces():
     namespace_role = rbac[rbac.index('resource "kubernetes_cluster_role" "runner_namespace_manage"') :]
     assert "adp-gateway-evals" not in namespace_role
     assert 'verbs          = ["get", "list", "delete"]' in namespace_role
+
+
+def test_long_gateway_deploy_scripts_do_not_become_github_expressions():
+    """GitHub rejects interpolated scripts exceeding its expression-size limit."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/gateway-deploy.yml").read_text())
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            script = step.get("run", "")
+            if len(script) > 21000:
+                assert "${{" not in script, step.get("name", step.get("id"))
 
 
 def test_deploy_all_enforces_after_rollout_and_probes_admission():
