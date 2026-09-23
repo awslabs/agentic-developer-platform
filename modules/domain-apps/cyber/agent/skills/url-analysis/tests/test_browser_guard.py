@@ -603,6 +603,36 @@ class TestNavigationAndSubresources:
         assert guard.refusals[0]["reason_code"] == REASON_BLOCKED_ADDRESS
 
     @patch("socket.getaddrinfo")
+    def test_rotating_public_answers_only_use_still_advertised_original_ips(self, mock_dns) -> None:
+        mock_dns.return_value = _dns("93.184.216.34", "1.1.1.1")
+        vetted = check_url("https://rotating.example.com/")
+        transport = FakeTransport()
+        guard = NavigationGuard(vetted, "rotating.example.com", transport=transport)
+        mock_dns.return_value = _dns("8.8.8.8", "93.184.216.34")
+
+        route = FakeRoute("https://rotating.example.com/next")
+        guard.handle_route(route)
+
+        assert route.fulfilled_with is not None
+        assert transport.calls[0][1].resolved_ips == ["93.184.216.34"]
+        assert vetted.resolved_ips == ["93.184.216.34", "1.1.1.1"]
+
+    @patch("socket.getaddrinfo")
+    def test_retained_original_ip_does_not_allow_a_mixed_private_answer(self, mock_dns) -> None:
+        mock_dns.return_value = _dns("93.184.216.34")
+        vetted = check_url("https://rotating.example.com/")
+        transport = FakeTransport()
+        guard = NavigationGuard(vetted, "rotating.example.com", transport=transport)
+        mock_dns.return_value = _dns("93.184.216.34", "169.254.169.254")
+
+        route = FakeRoute("https://rotating.example.com/next")
+        guard.handle_route(route)
+
+        assert route.aborted_with == "blockedbyclient"
+        assert guard.refusals[0]["reason_code"] == REASON_BLOCKED_ADDRESS
+        assert not transport.calls
+
+    @patch("socket.getaddrinfo")
     def test_target_rebinding_to_unvetted_public_ip_is_aborted(self, mock_dns) -> None:
         mock_dns.return_value = _dns("93.184.216.34")
         vetted = check_url("https://rebind.example.com/")

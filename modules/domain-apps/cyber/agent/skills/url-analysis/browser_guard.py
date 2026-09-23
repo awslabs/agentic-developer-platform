@@ -465,12 +465,20 @@ class NavigationGuard:
             and parsed_host == self.target_host
             and self.vetted.resolved_ips
         ):
-            for address in result.resolved_ips:
-                bound = check_connect_address(
-                    address, self.vetted.resolved_ips, self.config
+            # Public load balancers rotate their DNS answers between observations.
+            # Keep only addresses approved at session start and still advertised
+            # now. check_url above rejects the entire answer if any IP is unsafe;
+            # this intersection never expands the session's approved addresses.
+            retained = [
+                address
+                for address in result.resolved_ips
+                if address in self.vetted.resolved_ips
+            ]
+            if not retained:
+                return check_connect_address(
+                    result.resolved_ips[0], self.vetted.resolved_ips, self.config
                 )
-                if not bound.allowed:
-                    return bound
+            return DenylistResult(allowed=True, resolved_ips=retained)
         return result
 
     def _record_refusal(
