@@ -132,8 +132,25 @@ async def get_workspace_quotas(
     # Start with org-level quotas
     _, org_quotas = await get_org_quotas(org_id, db)
 
-    # Overlay workspace-level quotas
-    ws_quotas = parse_quotas(workspace.quotas_json, "free")
+    # Overlay only the workspace's OWN explicit overrides.
+    #
+    # This used to call `parse_quotas(workspace.quotas_json, "free")`, which falls back
+    # to the FREE plan's defaults whenever a workspace records no overrides of its own —
+    # and those defaults then overlaid the org's quotas. So every workspace without an
+    # explicit `quotas_json` silently capped its enterprise org at the free plan's 4
+    # GPUs, and the inheritance this function documents ran backwards (issue #5671, A15).
+    #
+    # Found by the A15 regression test for "a workspace with no recorded budget falls
+    # back to the plan default": the workspace inherited 4 instead of its org's 256. The
+    # failure mode is over-strict rather than permissive, so it refuses legitimate
+    # requests instead of admitting over-budget ones — but a quota that refuses at 1/64th
+    # of the entitlement is not the enforcement this issue is asked to deliver, and it
+    # would be read as the new check being broken.
+    #
+    # Absent overrides now mean "inherit", which is what the docstring says. A workspace
+    # that wants a tighter ceiling states it, via `quotas_json` or the `budget_*` columns
+    # applied below.
+    ws_quotas = parse_quotas(workspace.quotas_json) if workspace.quotas_json else {}
     effective = org_quotas.copy()
     for key, val in ws_quotas.items():
         if val is not None:
@@ -386,37 +403,21 @@ async def enforce_node_provisioning_quota(
             raise_quota_exceeded("max_gpus", org_gpus, org_max_gpus, "org", str(org_id))
 
 
-async def enforce_deployment_quota(
-    workspace_id: uuid.UUID,
-    org_id: uuid.UUID,
-    total_gpus_requested: int,
-    db: AsyncSession,
-) -> None:
-    """Check GPU and daily-spend quotas before creating a deployment.
-
-    Args:
-        workspace_id: Target workspace.
-        org_id: Owning organization.
-        total_gpus_requested: Total GPU count for the deployment (replicas * gpu_per_replica).
-        db: Async database session.
-
-    Raises:
-        HTTPException 429 if GPU quota would be exceeded.
-
-    Note:
-        This is the check WITHOUT a reservation. Callers on the provisioning path must
-        use :func:`reserve_deployment_gpus` instead: checking and then writing as two
-        steps lets two concurrent requests both pass against the same headroom. This
-        remains for read-only previews of a decision.
-    """
-    workspace, ws_quotas = await get_workspace_quotas(workspace_id, org_id, db)
-    _assert_deployment_within_quota(
-        workspace_id,
-        ws_quotas,
-        current_gpus=await count_workspace_gpus(workspace, db),
-        total_gpus_requested=total_gpus_requested,
-    )
-    await _assert_daily_spend_within_budget(workspace, ws_quotas, db)
+# `enforce_deployment_quota` was REMOVED here (issue #5671, A15).
+#
+# It performed exactly the check this change needed, and it had no call site anywhere in
+# the repository — the contracts analysis had already flagged that ("declared with no
+# call site anywhere — do not read their existence as enforcement",
+# contracts/INTEGRATION-CONTRACT.md). Its body now lives inside
+# `reserve_deployment_gpus`, which additionally holds the workspace lock and writes the
+# reservation, so the two cannot be used interchangeably: this one checked and returned,
+# leaving the caller to write the row in a second step, and that gap is precisely how two
+# concurrent requests both pass against the same headroom.
+#
+# Deleted rather than kept "for previews", because a quota function with no caller is the
+# defect this issue exists to fix, not a spare part. A preview endpoint, if one is ever
+# wanted, should call the same routine the provisioning path does so the preview cannot
+# drift from the decision.
 
 
 def _assert_deployment_within_quota(

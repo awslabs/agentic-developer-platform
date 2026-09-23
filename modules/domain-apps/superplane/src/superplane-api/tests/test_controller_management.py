@@ -75,7 +75,10 @@ async def test_management_startup_never_starts_legacy_reconcilers(monkeypatch):
     from app import installation, main
     monkeypatch.setenv("SUPERPLANE_MANAGEMENT_ONLY", "true")
     monkeypatch.setattr(app.state, "domain_policy", object())
-    monkeypatch.setattr(installation, "database_check", AsyncMock(return_value={"revision": "017_add_workspace_bootstrap_reservations"}))
+    # Must be the alembic head: `main.lifespan` refuses to start a management service
+    # whose schema revision does not match the image. Advances with the chain — A15
+    # (#5671) adds 018 for the `deployments.namespace` column.
+    monkeypatch.setattr(installation, "database_check", AsyncMock(return_value={"revision": "018_deployment_namespace_and_workspace_backfill"}))
     workspace_start, vault_start = AsyncMock(), AsyncMock()
     monkeypatch.setattr(main.workspace_reconciler, "start", workspace_start)
     monkeypatch.setattr(main.vault_sync_reconciler, "start", vault_start)
