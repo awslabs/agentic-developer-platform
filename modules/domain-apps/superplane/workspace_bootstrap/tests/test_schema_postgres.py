@@ -39,10 +39,11 @@ from __future__ import annotations
 import pytest
 
 from .postgres_support import (
-    head_revision_module,
+    chain_revision_ids,
     render_migration_ddl,
     require_asyncpg,
     require_pgserver,
+    revision_module,
     _Loop,
 )
 
@@ -138,18 +139,23 @@ def migrated(server, loop, request):
 # --- the revision is part of the chain -------------------------------------------
 
 
-def test_this_storys_migration_is_the_single_head_of_the_chain():
+def test_this_storys_migration_is_reached_by_the_single_headed_chain():
     """An orphan revision creates nothing, and every offline assertion about it passes.
 
-    `render_migration_ddl` walks the chain Alembic resolves; a revision that is not the
-    head — or a chain with two heads — means `alembic upgrade head` either skips this table
-    or refuses to run at all. Checked without a database, so it runs in the offline lane
-    too.
-    """
-    head = head_revision_module()
+    `render_migration_ddl` walks the chain Alembic resolves; a revision the walk does not
+    reach — or a chain with two heads — means `alembic upgrade head` either skips this
+    table or refuses to run at all. Checked without a database, so it runs in the offline
+    lane too.
 
-    assert head.revision == REVISION
-    assert head.down_revision == "016_add_organization_grants"
+    Reachability, not "is the newest revision in the repository". The original form
+    asserted this revision was the head, which made every later story's migration fail
+    this test (#5671's 018 did). What this story needs is that the chain reaches its
+    revision and still resolves to one head; what comes after it is not its business.
+    """
+    chain = chain_revision_ids()
+
+    assert REVISION in chain, f"{REVISION} is not reached by the chain: {chain}"
+    assert revision_module(REVISION).down_revision == "016_add_organization_grants"
 
 
 def test_the_chain_renders_the_reservations_table_as_postgresql_ddl():
@@ -350,7 +356,11 @@ def test_the_downgrade_removes_the_table_and_its_indexes(migrated):
     dropped by a name that does not match the one created — which renders perfectly and
     fails only against a database that has the index.
     """
-    _, downgrade = render_migration_ddl(upgrade_only=False)
+    # Names the revision explicitly: this used to take the chain's last revision, which
+    # stopped being this story's the moment another was appended (#5671's 018).
+    _, downgrade = render_migration_ddl(
+        upgrade_only=False, downgrade_revision=REVISION
+    )
     migrated.execute(*_insert())
 
     migrated.execute(downgrade)
