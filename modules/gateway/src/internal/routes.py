@@ -198,8 +198,14 @@ class GithubInstallationTokenResponse(BaseModel):
 
 
 def _get_magic_link_secret() -> str:
-    settings = get_settings()
-    return settings.magic_link_secret or settings.token_secret_key
+    """Resolve the magic-link signing key — and only that key.
+
+    Issue #5656 (A05): see src/auth/vault_routes.py._get_magic_link_secret. Both
+    resolvers had the same `or token_secret_key` fallback and both had to lose it,
+    or the internal issuing path would keep minting identity-linking tokens under
+    the session key while the operator-facing path refused.
+    """
+    return get_settings().magic_link_secret
 
 
 def _build_magic_link_url(token: str) -> str:

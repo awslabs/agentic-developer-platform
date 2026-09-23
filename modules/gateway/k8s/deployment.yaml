@@ -225,6 +225,22 @@ spec:
                   name: bedrockgateway-secrets
                   key: apigw-provenance-secret
                   optional: true
+            # Issue #5656 (A05): signing key for single-use identity-linking
+            # ("magic link") tokens. Its own key, NOT the session-signing key —
+            # src/shared/config.py no longer falls back to BG_TOKEN_SECRET_KEY, so
+            # the two are independently rotatable and a leaked magic-link token no
+            # longer has to be contained by signing every user out. Generated into
+            # Secrets Manager by gateway-deploy.yml and projected here by
+            # reference; no literal value is committed or passed as a container argument.
+            # Optional so the pod still starts before the secret exists — the
+            # magic-link endpoints answer 503 not_configured until it does, rather
+            # than quietly issuing tokens under the session key.
+            - name: BG_MAGIC_LINK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bedrockgateway-secrets
+                  key: magic-link-secret
+                  optional: true
             # GitHub App private key — used by the connections "Link GitHub"
             # install-callback to fetch installation metadata (GitHubAppClient).
             # Slug + App ID come from the configmap (BG_GITHUB_APP_SLUG /

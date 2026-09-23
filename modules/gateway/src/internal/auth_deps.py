@@ -44,6 +44,7 @@ principals that have it, shared secret for the ClusterIP callback that does not.
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 
@@ -83,11 +84,47 @@ logger = logging.getLogger(__name__)
 INTERNAL_PLANE_SCOPES = frozenset({"internal", "platform"})
 
 
+def _reject_internal_key() -> HTTPException:
+    """The single rejection used for every shared-secret failure.
+
+    Issue #5656 (A05): absent, empty, wrong-length and wrong-content keys must be
+    indistinguishable to the caller. Building the response in one place keeps the
+    status code, error code and message identical across all of them, so a caller
+    cannot tell *which* way they were wrong from the reply body either.
+    """
+    return HTTPException(status_code=403, detail={"error": "forbidden", "message": "Invalid internal API key"})
+
+
 def _verify_internal_key(x_internal_api_key: str | None) -> None:
     """Validate the shared internal API key.
 
     Missing or wrong key -> 403 (not 401) so external scanners don't learn that
     the endpoint exists from a WWW-Authenticate header.
+
+    Issue #5656 (A05): the comparison is constant-time. It previously used `!=`,
+    which short-circuits at the first differing byte, so the time to reject was a
+    function of how many leading bytes the caller got right. Since this one secret
+    is the only gate in front of raw credential reads, credential materialisation,
+    installation-token issuance and request proxying (src/internal/routes.py,
+    credential_routes.py), a caller able to time many rejections could recover it
+    byte-by-byte instead of brute-forcing 256 bits. hmac.compare_digest examines
+    every byte regardless, matching the pattern already used for edge provenance
+    (src/auth/caller_provenance.py), run-credential MACs
+    (src/agentauth/run_credential.py) and the Knowledge Door service key
+    (modules/agent-context/door/auth.py).
+
+    Both sides are encoded to bytes before comparison. compare_digest rejects str
+    inputs containing non-ASCII (TypeError) and raises on None, so the
+    absent/empty case is handled *before* the call — a raised TypeError here would
+    become a 500 on every internal request, turning a hardening change into an
+    outage of the internal plane. Encoding also means a key whose stored and
+    presented forms differ only in encoding fails closed rather than crashing.
+
+    The length check that compare_digest performs internally is not a leak we can
+    avoid and is not the one that mattered: it distinguishes only "wrong length"
+    from "right length", not *where* the content diverges, and it is the documented
+    behaviour of every constant-time comparison primitive. What it does NOT do is
+    let the caller walk the secret one byte at a time, which is what `!=` allowed.
     """
     settings = get_settings()
     expected = settings.internal_api_key
@@ -97,8 +134,12 @@ def _verify_internal_key(x_internal_api_key: str | None) -> None:
             status_code=503,
             detail={"error": "not_configured", "message": "Internal API not configured"},
         )
-    if not x_internal_api_key or x_internal_api_key != expected:
-        raise HTTPException(status_code=403, detail={"error": "forbidden", "message": "Invalid internal API key"})
+    # Absent/empty first: compare_digest raises on None, and an empty presented key
+    # can never be valid (an empty `expected` was already rejected as 503 above).
+    if not x_internal_api_key:
+        raise _reject_internal_key()
+    if not hmac.compare_digest(x_internal_api_key.encode("utf-8"), expected.encode("utf-8")):
+        raise _reject_internal_key()
 
 
 async def verify_internal_or_irsa(
