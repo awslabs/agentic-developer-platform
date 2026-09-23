@@ -1085,6 +1085,8 @@ class FlowSummaryResponse(BaseModel):
     eval_count: int
     changes_requested_count: int
     completed_story_count: int
+    eval_story_count: int
+    completed_eval_story_count: int
     epic_count: int
     wave_count: int
     current_wave_ref: str | None
@@ -1233,6 +1235,8 @@ async def list_flows_route(
                 eval_count=aggregate.eval_count,
                 changes_requested_count=aggregate.changes_requested_count,
                 completed_story_count=aggregate.completed_story_count,
+                eval_story_count=aggregate.eval_story_count,
+                completed_eval_story_count=aggregate.completed_eval_story_count,
                 epic_count=aggregate.epic_count,
                 wave_count=len(aggregate.waves),
                 current_wave_ref=aggregate.current_wave_ref,

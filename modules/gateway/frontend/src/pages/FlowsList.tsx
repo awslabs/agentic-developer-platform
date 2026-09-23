@@ -379,7 +379,7 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
 
         <div className="mt-3 space-y-3">
           {flow.story_count !== undefined && flow.gate_count !== undefined && flow.eval_count !== undefined && (
-            <PlanSummary stories={flow.story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />
+            <PlanSummary stories={flow.story_count} evaluationStories={flow.eval_story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />
           )}
           {(flow.changes_requested_count ?? 0) > 0 && (
             <p className="text-sm text-orange-800 dark:text-orange-200" data-testid="changes-requested-summary">
@@ -393,8 +393,12 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           <RollupBar
             counts={flow.display_counts}
             total={flow.total_nodes}
+            storyScope={flow.eval_story_count !== undefined && flow.completed_eval_story_count !== undefined ? 'all' : 'implementation'}
             stories={flow.completed_story_count !== undefined && flow.story_count !== undefined
-              ? { complete: flow.completed_story_count, total: flow.story_count }
+              ? {
+                complete: flow.completed_story_count + (flow.eval_story_count !== undefined ? flow.completed_eval_story_count ?? 0 : 0),
+                total: flow.story_count + (flow.completed_eval_story_count !== undefined ? flow.eval_story_count ?? 0 : 0),
+              }
               : undefined}
           />
           <WaveRail flow={flow} />

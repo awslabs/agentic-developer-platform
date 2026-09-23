@@ -44,6 +44,7 @@ def node_progress_rows(*, org_id: str, flow_ids: list[str] | None = None):
             node.epic_ref,
             node.wave_ref,
             node.kind,
+            node.issue_ref,
             node.state,
             node.created_at,
             display.label("display_state"),
