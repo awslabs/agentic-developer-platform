@@ -422,6 +422,11 @@ def _handle_pr_event(payload: dict, action: str, sender: dict) -> tuple[Intent |
         )
         return None, skip_reasons.BOT_SYNCHRONIZE_DEDUP
 
+    # Automatic PR reviews are independent of explicit issue mentions/labels
+    # and of the engine's flow controls. Only an explicit opt-in enables them.
+    if os.environ.get("GITHUB_AUTO_PR_REVIEW_ENABLED", "false").strip().lower() != "true":
+        return None, skip_reasons.AUTOMATIC_PR_REVIEW_DISABLED
+
     return Intent(persona="agent-codex-reviewer", trigger=f"pr_{action}", label=None), None
 
 

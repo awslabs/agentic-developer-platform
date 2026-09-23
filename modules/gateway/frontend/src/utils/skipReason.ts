@@ -41,6 +41,7 @@ const SKIP_REASON_TEXT: Record<string, string> = {
   label_unmapped: 'The label applied here is not mapped to any agent persona.',
   pr_branch_not_agent: 'This pull request is not on an agent branch, so no agent owns it.',
   pr_draft: 'This pull request is a draft. Review starts after the author marks it ready.',
+  automatic_pr_review_disabled: 'Automatic pull request reviews are paused. Explicit agent requests remain available.',
   bot_synchronize_dedup:
     'A bot pushed to this branch — ignored to avoid re-running on the agent’s own commits.',
   no_aidlc_label: 'This issue does not carry an AIDLC label, so no agent was selected.',

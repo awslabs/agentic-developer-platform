@@ -581,7 +581,9 @@ class TestADraftIsInert:
         single-tick test.
         """
         await seed_org(session)
-        await register_draft_proposal(session, gateless_proposal(), registrar)
+        result, _ = await register_draft_proposal(session, gateless_proposal(), registrar)
+        (await session.get(OrchestrationFlow, result.flow_id)).execution_paused = False
+        await session.flush()
 
         for _ in range(10):
             report = await run_tick(session)
@@ -598,7 +600,9 @@ class TestADraftIsInert:
         cannot come from an unconfigured environment.
         """
         await seed_org(session)
-        await register_draft_proposal(session, gateless_proposal(), registrar)
+        result, _ = await register_draft_proposal(session, gateless_proposal(), registrar)
+        (await session.get(OrchestrationFlow, result.flow_id)).execution_paused = False
+        await session.flush()
 
         for _ in range(10):
             await run_tick(session)
@@ -869,6 +873,8 @@ class TestRegistrationCannotExtendAnApprovedFlow:
             input_path=InputPath.GITHUB_COMMENT,
         )
         assert outcome.status is GateAnswerStatus.APPLIED
+        (await session.get(OrchestrationFlow, result.flow_id)).execution_paused = False
+        await session.flush()
         return result.flow_id
 
     def injected_proposal(self) -> LoopProposal:
@@ -1104,6 +1110,9 @@ class TestGateArming:
     """Both author-declared and inserted gates become answerable (#4575)."""
 
     async def drive(self, session, rounds: int = 10) -> None:
+        for flow in await session.scalars(sa.select(OrchestrationFlow)):
+            flow.execution_paused = False
+        await session.flush()
         for _ in range(rounds):
             await run_tick(session)
             await run_dispatch_pass(session, dispatch_config())
@@ -1175,6 +1184,8 @@ class TestOnlyAnApprovalRewritesThePlanOfRecord:
             input_path=InputPath.GITHUB_COMMENT,
         )
         assert outcome.status is GateAnswerStatus.APPLIED
+        (await session.get(OrchestrationFlow, result.flow_id)).execution_paused = False
+        await session.flush()
         return result.flow_id
 
     def injected_proposal(self) -> LoopProposal:

@@ -984,3 +984,12 @@ it('shows the story count and requested-change hold on the summary card', async 
   expect(screen.getByText('Changes requested')).toBeInTheDocument();
   expect(screen.getByTestId('changes-requested-summary')).toHaveTextContent('Work behind these gates is paused');
 });
+
+it('renders flow pause controls outside the navigation link', async () => {
+  mockListFlows.mockResolvedValue(makeList({ flows: [makeFlow({ execution_paused: true })] }));
+  mockUsePermissions.mockReturnValue({ hasPermission: () => true });
+  renderFlowsList();
+  const button = await screen.findByRole('button', { name: 'Resume flow' });
+  expect(button.closest('a')).toBeNull();
+  expect(screen.getByText('Paused')).toBeInTheDocument();
+});

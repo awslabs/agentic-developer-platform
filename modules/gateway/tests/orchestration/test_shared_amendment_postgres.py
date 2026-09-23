@@ -88,6 +88,8 @@ async def test_worker_committing_while_append_waits_refreshes_active_node_state(
 
 async def test_append_yields_to_production_dispatch_node_then_flow_lock_order(session, appendable):  # noqa: F811
     ctx = appendable
+    flow = await session.get(OrchestrationFlow, ctx.flow.id)
+    flow.execution_paused = False
     ready = await session.get(OrchestrationNode, ctx.nodes[address("story-a")])
     ready.state = "ready"
     await session.commit()

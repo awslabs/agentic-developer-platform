@@ -1368,6 +1368,7 @@ class TestEndpoint:
         summary = body["flows"][0]
 
         assert summary["id"] == flow.id
+        assert summary["execution_paused"] is True
         assert summary["slug"] == "aidlc-delivery-loop-4645"
         assert summary["title"] == "Delivery loop for #4645"
         assert summary["intent_ref"] == "4645"

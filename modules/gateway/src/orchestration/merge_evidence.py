@@ -583,6 +583,32 @@ def parse_requirements(rules: Any, protection: Any) -> RepositoryRequirements:
     )
 
 
+def evaluate_required_checks(observation: PullRequestObservation):
+    """Canonical CI selection shared by merge and the retained reviewer."""
+    req = observation.requirements
+    blocked: list[EligibilityReason] = []
+    waiting: list[EligibilityReason] = []
+    selected: list[CheckEvidence] = []
+    if not req.complete:
+        blocked.append(EligibilityReason.RULES_UNAVAILABLE)
+    checks_to_require = req.checks if req.checks_declared else tuple(CheckRequirement(c.name, c.app_id) for c in observation.checks)
+    for check in checks_to_require:
+        matches = [c for c in observation.checks if c.name == check.name and (check.app_id is None or c.app_id == check.app_id)]
+        # GitHub requires both when a check-run and a legacy status share a context.
+        if matches and check.app_id is not None:
+            matches += [c for c in observation.checks if c.name == check.name and c.source == "status"]
+        selected.extend(c for c in matches if c not in selected)
+        if not matches:
+            blocked.append(EligibilityReason.REQUIRED_CHECK_MISSING)
+        elif any(
+            c.state not in ({"success", "skipped", "neutral", "pending"} if c.source == "check_run" else {"success", "pending"}) for c in matches
+        ):
+            blocked.append(EligibilityReason.REQUIRED_CHECK_FAILED)
+        elif any(c.state == "pending" for c in matches):
+            waiting.append(EligibilityReason.REQUIRED_CHECK_PENDING)
+    return tuple(dict.fromkeys(blocked + waiting)), tuple(selected)
+
+
 def evaluate_observation(observation: PullRequestObservation) -> MergeEligibility:
     """Repository eligibility only; the public adapter also checks R1 and current A1."""
     blocked: list[EligibilityReason] = []
@@ -617,20 +643,9 @@ def evaluate_observation(observation: PullRequestObservation) -> MergeEligibilit
     # one here strands reviewed documentation/tooling changes indefinitely.
     if not req.allowed_merge_methods:
         blocked.append(EligibilityReason.UNSUPPORTED_RULE)
-    checks_to_require = req.checks if req.checks_declared else tuple(CheckRequirement(c.name, c.app_id) for c in observation.checks)
-    for check in checks_to_require:
-        matches = [c for c in observation.checks if c.name == check.name and (check.app_id is None or c.app_id == check.app_id)]
-        # GitHub requires both when a check-run and a legacy status share a context.
-        if matches and check.app_id is not None:
-            matches += [c for c in observation.checks if c.name == check.name and c.source == "status"]
-        if not matches:
-            blocked.append(EligibilityReason.REQUIRED_CHECK_MISSING)
-        elif any(
-            c.state not in ({"success", "skipped", "neutral", "pending"} if c.source == "check_run" else {"success", "pending"}) for c in matches
-        ):
-            blocked.append(EligibilityReason.REQUIRED_CHECK_FAILED)
-        elif any(c.state == "pending" for c in matches):
-            waiting.append(EligibilityReason.REQUIRED_CHECK_PENDING)
+    check_reasons, _ = evaluate_required_checks(observation)
+    blocked.extend(r for r in check_reasons if r is not EligibilityReason.REQUIRED_CHECK_PENDING)
+    waiting.extend(r for r in check_reasons if r is EligibilityReason.REQUIRED_CHECK_PENDING)
     if observation.mergeable_state == "blocked" and not blocked and not waiting:
         blocked.append(EligibilityReason.PROVIDER_BLOCKED)
     if observation.mergeable_state not in {"clean", "unstable", "has_hooks", "behind", "blocked", "dirty", "unknown"}:

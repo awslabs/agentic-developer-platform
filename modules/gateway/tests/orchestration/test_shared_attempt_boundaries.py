@@ -222,13 +222,16 @@ async def test_different_story_admissions_serialize_before_worker_count(shared, 
             await asyncio.gather(pending, return_exceptions=True)
 
 
-@pytest.mark.parametrize("used,approved,allowed", [(3, False, False), (3, True, True), (18, True, True), (19, True, False)])
-async def test_approved_retry_increase_lifts_runner_default_but_preserves_combined_attempts(shared, used, approved, allowed):  # noqa: F811
+@pytest.mark.parametrize(
+    "used,approved,allowed", [(2, False, True), (2, True, True), (3, False, False), (3, True, False), (18, True, False), (19, True, False)]
+)
+async def test_runner_ceiling_stops_retries_despite_approved_increase_and_preserves_attempts(shared, used, approved, allowed):  # noqa: F811
     from src.orchestration.compile import ApprovalContext
     from src.orchestration.continuation import digest
     from src.orchestration.execution_policy import stamp_policy
     from src.orchestration.execution_runner import RunnerConfig, run_execution_runner
     from src.orchestration.models import OrchestrationExecution
+    from src.orchestration.repository import OrchestrationRepository
     from src.orchestration.review_cycle import PHASES, ReviewCycleHandler
     from src.orchestration.shared_retry import RetryIncreaseRequest, accept_retry_increase, preview_retry_increase
 
@@ -257,11 +260,12 @@ async def test_approved_retry_increase_lifts_runner_default_but_preserves_combin
             )
         await db.commit()
     handler = ReviewCycleHandler(ctx.factory, ctx.service)
+    notifier = AsyncMock(return_value="notice")
     result = await run_execution_runner(
         ctx.factory,
         handlers=dict.fromkeys(PHASES, handler),
         config=RunnerConfig(enabled=True, max_attempts=3, io_timeout_seconds=10),
-        notifier=AsyncMock(return_value="notice"),
+        notifier=notifier,
     )
     assert not result.errors
     assert result.effects_succeeded == int(allowed)
@@ -269,4 +273,58 @@ async def test_approved_retry_increase_lifts_runner_default_but_preserves_combin
     assert node.attempts == 1 and execution.attempts == used + int(allowed)
     assert len(ctx.calls) == len(actions) == int(allowed)
     if not allowed:
+        assert execution.status == "blocked"
         assert execution.block_code == "attempts_exhausted"
+        # Later scheduler ticks must neither reset spent attempts nor dispatch
+        # another worker, even with the old twenty-attempt approval still active.
+        for _ in range(3):
+            async with ctx.factory() as db:
+                states = await OrchestrationRepository(db).node_display_states(org_id=node.org_id, flow_id=node.flow_id)
+                assert states[node.id] == "stalled"
+                row = await db.get(OrchestrationExecution, execution.id)
+                row.next_check_at = datetime.now(UTC) - timedelta(seconds=1)
+                await db.commit()
+            result = await run_execution_runner(
+                ctx.factory,
+                handlers=dict.fromkeys(PHASES, handler),
+                config=RunnerConfig(enabled=True, max_attempts=3, io_timeout_seconds=10),
+                notifier=notifier,
+            )
+            assert not result.errors and result.blocked == 1
+            assert result.reserved == result.effects_attempted == 0
+            execution, _, node, actions = await protocol.state(ctx)
+            assert execution.status == "blocked" and execution.block_code == "attempts_exhausted"
+            assert execution.attempts == used and node.attempts == 1
+            assert not ctx.calls and not actions
+        notifier.assert_awaited_once()
+
+
+@pytest.mark.parametrize("used", [3, 20])
+async def test_exhausted_story_can_still_record_reviewer_merge(shared, monkeypatch, used):  # noqa: F811
+    from src.orchestration.execution_runner import RunnerConfig, run_execution_runner
+    from src.orchestration.merge_controller import PHASES, MergeController
+    from src.orchestration.models import OrchestrationExecution
+    from tests.orchestration import test_merge_controller as merge_protocol
+
+    async with merge_protocol.prepared_merge(shared, monkeypatch) as ctx:
+        async with ctx.factory() as db:
+            execution = await db.get(OrchestrationExecution, ctx.execution.id)
+            execution.attempts = used
+            execution.status = "blocked"
+            execution.block_code = "attempts_exhausted"
+            execution.next_check_at = datetime.now(UTC) - timedelta(seconds=1)
+            await db.commit()
+        ctx.merge_remote()
+        result = await run_execution_runner(
+            ctx.factory,
+            handlers=dict.fromkeys(PHASES, MergeController(ctx.factory, ctx.merge_services)),
+            config=RunnerConfig(enabled=True, max_attempts=3, io_timeout_seconds=10),
+            notifier=AsyncMock(return_value="notice"),
+        )
+        assert not result.errors and result.advanced == 1
+        assert result.reserved == result.effects_attempted == result.blocked == 0
+        execution, _, node, _ = await protocol.state(ctx)
+        assert node.state == "passed"
+        assert execution.phase == "deployment_pending" and execution.status == "runnable"
+        assert execution.attempts == used and execution.block_code is None
+        assert ctx.mutations == [] and len(ctx.calls) == 1

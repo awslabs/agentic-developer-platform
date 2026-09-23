@@ -1,4 +1,5 @@
 import { BudgetEnforcementControl } from '@/components/budget/BudgetEnforcementControl';
+import { FlowExecutionControl } from '@/components/orchestration/FlowExecutionControl';
 /** Delivery flow: collapsible waves with dependency-ordered parallel groups. */
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
@@ -124,6 +125,7 @@ export function GraphView() {
           </div>
         </div>
 
+        <FlowExecutionControl flowId={flowId!} paused={data.execution_paused} />
         <BudgetEnforcementControl key={flowId} flowId={flowId} />
 
         <PlanSummary

@@ -15,6 +15,11 @@ spec:
   # momentarily resets scale to 2 and the HPA re-raises it within a sync
   # period (~15s).
   replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: bedrockgateway
@@ -26,6 +31,9 @@ spec:
         app.kubernetes.io/part-of: bedrock-gateway
     spec:
       serviceAccountName: gateway-service
+      # Let endpoint removal propagate, then allow in-flight model streams to
+      # finish during Uvicorn shutdown (the ALB idle timeout is 900 seconds).
+      terminationGracePeriodSeconds: 960
       # Issue #5675: pod-level hardening. This pod holds BG_TOKEN_SECRET_KEY (the
       # platform's token-signing key), BG_INTERNAL_API_KEY (the internal shared
       # secret), BG_GITHUB_APP_PRIVATE_KEY and the two agent signing keys. Running
@@ -55,6 +63,10 @@ spec:
       containers:
         - name: bedrockgateway
           image: REPLACE_WITH_GATEWAY_IMAGE
+          lifecycle:
+            preStop:
+              exec:
+                command: ["python", "-S", "-c", "import time; time.sleep(30)"]
           # Container-level hardening (#5675). readOnlyRootFilesystem and
           # capabilities have NO pod-level equivalent — they only exist here — so
           # this block is required, not a restatement of the pod's.

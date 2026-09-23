@@ -68,6 +68,17 @@ async def test_shared_review_exact_bytes_acknowledged_and_replay_converges(uploa
     assert (await state(upload.ctx))[0].phase == "merge_ready"
 
 
+async def test_accepted_review_enters_merge_observation_before_worker_terminal(upload):
+    async with upload.ctx.factory() as db:
+        assert (await record(upload, db))["recorded"]
+        await db.commit()
+    await tick(upload.ctx)
+    assert (await state(upload.ctx))[0].phase == "merge_ready"
+    async with upload.ctx.factory() as db:
+        assert (await db.get(OrchestrationRunReport, upload.envelope["message_id"])).terminal_receipt is None
+    assert len(upload.ctx.calls) == 1
+
+
 async def test_codex_review_repair_evidence_advances_without_developer_handoff(upload):
     assert upload.envelope["persona"] == "agent-codex-reviewer"
     assert upload.envelope["review_cycle_input"]["allow_story_repairs"] is True
@@ -107,3 +118,44 @@ async def test_old_reviewer_cannot_report_after_claim_moves(upload):
         with pytest.raises(RunReportError, match="superseded"):
             await record(upload, db)
     assert not upload.stored
+
+
+async def test_same_reviewer_repairs_keeps_author_and_advances_directly_to_merge(upload):
+    from src.orchestration.review_cycle_dispatch import current_author_run
+
+    repair = upload.ctx.calls[-1]
+    assert repair["review_cycle_input"]["action"] == "review"
+    assert repair["review_cycle_input"]["reviewer_owned_delivery"] is True
+    assert repair["review_expect"]["author_run_id"] == upload.ctx.root
+    upload.envelope = repair
+    upload.ctx.head = "b" * 40
+    upload.document = document_for(upload.ctx, repair)
+    async with upload.ctx.factory() as db:
+        assert await current_author_run(db, node=upload.ctx.node, default=upload.ctx.binding.run_id) == upload.ctx.root
+        receipt = await record(upload, db)
+        assert receipt["recorded"], receipt
+        await db.commit()
+    assert repair["pr_binding_required"] is False
+    from src.orchestration.models import OrchestrationPullRequestBinding
+    from src.orchestration.run_reports import record_terminal
+
+    async with upload.ctx.factory() as db:
+        row = await db.get(OrchestrationRunReport, repair["message_id"])
+        record_terminal(row, "complete")
+        await db.commit()
+    await tick(upload.ctx)
+    assert (await state(upload.ctx))[0].phase == "merge_ready"
+    async with upload.ctx.factory() as db:
+        binding = await db.get(OrchestrationPullRequestBinding, upload.ctx.binding.id)
+        assert binding.role == "implementation" and binding.run_id == upload.ctx.root
+    assert len(upload.ctx.calls) == 1  # same reviewer inspects and repairs
+
+
+async def test_owned_repair_cannot_substitute_author_or_claim_self_review(upload):
+    repair = upload.ctx.calls[-1]
+    upload.envelope = repair
+    upload.document = document_for(upload.ctx, repair)
+    upload.document["lineage"]["author_run_id"] = repair["message_id"]
+    async with upload.ctx.factory() as db:
+        receipt = await record(upload, db)
+        assert not receipt["recorded"]

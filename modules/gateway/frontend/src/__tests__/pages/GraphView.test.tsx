@@ -963,3 +963,10 @@ it('shows shared-gate fan-out and fan-in as separate groups', async () => {
   expect(within(parallel).queryByTestId('node-review')).not.toBeInTheDocument();
   expect(screen.getByTestId('node-blocked-by-review')).toHaveTextContent('Waiting on 2 steps');
 });
+
+it('shows the persisted per-flow pause state alongside graph progress', async () => {
+  mockGetFlowGraph.mockResolvedValue(makeGraph({ execution_paused: true }));
+  renderGraph();
+  expect(await screen.findByText('Paused')).toBeInTheDocument();
+  expect(screen.getByText(/Resume preserves progress and attempts/)).toBeInTheDocument();
+});

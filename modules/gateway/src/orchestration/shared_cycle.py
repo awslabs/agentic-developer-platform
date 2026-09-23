@@ -471,6 +471,13 @@ class SharedCycleServices(ReviewCycleServices):
                 return envelope
             raw, _, inputs, principal, _ = await self.authorize(session, context, node, binding, detail["active_run_id"], effect.action, reserve=True)
             allow_story_repairs = effect.action is Action.REPAIR
+            allow_review_evidence = effect.action is Action.REVIEW
+            if effect.action is Action.REPAIR:
+                try:
+                    await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REVIEW, reserve=False)
+                    allow_review_evidence = True
+                except CycleBlockedError:
+                    pass
             if effect.action is Action.REVIEW:
                 try:
                     await self.authorize(session, context, node, binding, detail["active_run_id"], Action.REPAIR, reserve=False)
@@ -511,7 +518,7 @@ class SharedCycleServices(ReviewCycleServices):
             )
             envelope.update(message_id=run_id, arrived_at=detail["arrived_at"], work_claim_required=True)
             envelope["action"] = effect.action.value
-            envelope["pr_binding_required"] = effect.action is Action.REPAIR
+            envelope["pr_binding_required"] = effect.action is Action.REPAIR and not allow_review_evidence
             envelope["bound_pull_request"] = {
                 "repo": binding.repo,
                 "pr_number": binding.pr_number,
@@ -526,6 +533,7 @@ class SharedCycleServices(ReviewCycleServices):
             }
             envelope["review_cycle_input"].update(
                 allow_story_repairs=allow_story_repairs,
+                reviewer_owned_delivery=allow_review_evidence,
                 findings=detail.get("findings", []),
                 review_artifact=detail.get("review_artifact"),
                 operation_key=action.operation_key,
@@ -536,7 +544,7 @@ class SharedCycleServices(ReviewCycleServices):
                 "claim_id": context.identity.claim_id,
                 "claim_generation": context.identity.claim_generation,
             }
-            if effect.action is Action.REVIEW:
+            if allow_review_evidence:
                 envelope["review_expect"] = {
                     **envelope["execution_continuation"],
                     "org_id": node.org_id,

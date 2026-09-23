@@ -277,6 +277,7 @@ class TestTriggeringEventsCarryNoReason:
         assert intent.persona == "developer"
         assert reason is None
 
+    @patch.dict("os.environ", {"GITHUB_AUTO_PR_REVIEW_ENABLED": "true"})
     def test_agent_pr_opened_returns_intent_and_no_reason(self):
         payload = {
             "action": "opened",

@@ -594,3 +594,10 @@ variable "gateway_authority_managed_policies" {
   type        = bool
   default     = false
 }
+
+# This controls only pull_request event reviews, not mentions, labels or engine work.
+variable "github_auto_pr_review_enabled" {
+  description = "Automatically review agent PRs from GitHub PR events. Keep disabled when the engine owns reviewer dispatch. Explicit issue triggers remain available."
+  type        = bool
+  default     = false
+}

@@ -36,6 +36,7 @@
  */
 
 import { Link } from 'react-router-dom';
+import { FlowExecutionControl } from '@/components/orchestration/FlowExecutionControl';
 import { RollupBar } from '@/components/orchestration/RollupBar';
 import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
@@ -309,11 +310,11 @@ function DesignStrip({ history }: { history: DesignHistory | null }) {
  */
 function FlowCard({ flow }: { flow: FlowSummary }) {
   return (
-    <li>
+    <li className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
       <Link
         to={`/flows/${flow.id}`}
         data-testid={`flow-card-${flow.id}`}
-        className="block rounded-lg border border-gray-200 p-4 transition-colors hover:border-primary-400 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:hover:bg-gray-800"
+        className="block p-4 transition-colors hover:border-primary-400 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:hover:bg-gray-800"
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -408,6 +409,9 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           <DesignStrip history={flow.design_history} />
         </div>
       </Link>
+      <div className="border-t border-gray-200 px-4 py-3 dark:border-gray-700">
+        <FlowExecutionControl flowId={flow.id} paused={flow.execution_paused} compact />
+      </div>
     </li>
   );
 }

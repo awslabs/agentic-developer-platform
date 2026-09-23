@@ -47,14 +47,22 @@ The gateway still enforces the flow's policy window, spend and claim on every
 observation and model call. A repair that makes no progress returns its real
 findings rather than repeating model calls on the same head.
 
-Python publishes the final exact-head verdict and uploads R1 evidence before
-acknowledging completion. An owned repair retains the original implementation
-binding/author and can advance directly to merge readiness. The engine rechecks
-current review, checks, authority and PR state, performs its fenced merge, and
-completes the story. It never uses the adapter's standalone direct-merge path.
-Legacy assignments keep their original single-pass delivery behavior. Review
-reports stay outside implementation commits. Already merged PRs can be reviewed
-from their retained head without recreating deleted branches.
+The TypeScript reviewer publishes its exact-head verdict through the existing
+Python evidence adapter, then checks current merge permission and repository
+rules. It calls GitHub with the reviewed SHA and the allowed merge method (or
+joins the required merge queue). It observes an actual merge before finishing;
+a lost response is reconciled before retrying. New CI failures or base changes
+return to the same retained repair thread.
+
+The engine observes the merged PR, validates the accepted review evidence and
+completes the story. It does not perform a competing merge for these assignments.
+A missing worker terminal report after merge does not require another review.
+Explicit blockers stop delivery; they do not dispatch another paid agent.
+
+Completed review bytes are retained in the worker's existing S3 reporting spool
+before upload and merge. Reporting retries reuse those bytes and never start a
+model. Legacy assignments retain their original single-pass behavior. Review
+reports stay outside implementation commits.
 
 Codex uses the same loopback SigV4 proxy as every other hosted agent. Its SDK
 base URL is `http://127.0.0.1:9090/openai/v1`; the proxy signs and forwards
@@ -78,7 +86,8 @@ Git and bounded-fix checks remain in force.
 - `CODEX_REVIEWER_MERGE_ENABLED` defaults to `true`; set it to `false` to stop
   after approval instead of squash-merging the current, successfully checked
   head.
-- `CODEX_REVIEWER_MODEL` selects the gateway model identifier.
+- `CODEX_REVIEWER_MODEL` selects the model identifier. `ADP_MODEL_RESOLVED` takes
+  precedence; the fallback is `openai.gpt-5.6-sol`, with high reasoning.
 
 ## Adding another Codex persona
 

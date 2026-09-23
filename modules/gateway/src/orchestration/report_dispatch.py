@@ -9,6 +9,7 @@ from sqlalchemy import JSON, or_, select
 
 from src.shared.models.base import utcnow
 
+from .flow_execution import flow_is_paused
 from .models import DecisionKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .run_reports import OrchestrationRunReport, RunReportError, prepare_run_report, run_result_for_assignment
 
@@ -55,7 +56,12 @@ async def recover_pending_reports(session, *, config, report) -> None:
     rows = (
         await session.scalars(
             select(OrchestrationRunReport)
+            .join(
+                OrchestrationFlow,
+                (OrchestrationFlow.id == OrchestrationRunReport.flow_id) & (OrchestrationFlow.org_id == OrchestrationRunReport.org_id),
+            )
             .where(
+                OrchestrationFlow.execution_paused.is_(False),
                 OrchestrationRunReport.expires_at > utcnow(),
                 or_(OrchestrationRunReport.worker_receipt.is_(None), OrchestrationRunReport.worker_receipt == JSON.NULL),
                 or_(OrchestrationRunReport.terminal_receipt.is_(None), OrchestrationRunReport.terminal_receipt == JSON.NULL),
@@ -65,6 +71,8 @@ async def recover_pending_reports(session, *, config, report) -> None:
         )
     ).all()
     for row in rows:
+        if await flow_is_paused(session, org_id=row.org_id, flow_id=row.flow_id, lock=True):
+            continue
         if row.run_id in pending_ids:
             continue
         node = await session.get(OrchestrationNode, row.node_id)

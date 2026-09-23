@@ -261,6 +261,7 @@ export interface PolicySummary {
 }
 
 export interface FlowGraph {
+  execution_paused?: boolean;
   flow_id: string;
   slug: string;
   title: string;
@@ -435,6 +436,7 @@ export interface DesignHistory {
 
 /** One flow as the list page reads it: identity plus everything derived. */
 export interface FlowSummary {
+  execution_paused?: boolean;
   id: string;
   slug: string;
   title: string;

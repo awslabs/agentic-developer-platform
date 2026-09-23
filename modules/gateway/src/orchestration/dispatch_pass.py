@@ -152,9 +152,10 @@ from src.shared.models.base import utcnow
 from src.shared.models.organization import Organization
 
 from .dispatch import DispatchStatus, dispatch_node
+from .flow_execution import flow_is_paused
 from .genesis import APPROVAL_DECISION_KINDS, EngineGenesis, GenesisRefusedError, resolve_engine_genesis
 from .handoff import HANDOFF_RECEIPT_CONTRACT_VERSION
-from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationNode
+from .models import DecisionKind, NodeKind, OrchestrationDecision, OrchestrationFlow, OrchestrationNode
 from .policy_admission import authorize_node_dispatch
 from .state import ActorKind, NodeState
 
@@ -549,7 +550,9 @@ async def _fetch_ready_nodes(session: AsyncSession, *, limit: int) -> list[Orche
     """
     stmt = (
         select(OrchestrationNode)
+        .join(OrchestrationFlow, (OrchestrationFlow.id == OrchestrationNode.flow_id) & (OrchestrationFlow.org_id == OrchestrationNode.org_id))
         .where(
+            OrchestrationFlow.execution_paused.is_(False),
             OrchestrationNode.state == NodeState.READY.value,
             OrchestrationNode.kind.in_([NodeKind.STORY.value, NodeKind.EVAL.value]),
         )
@@ -1454,6 +1457,8 @@ async def _dispatch_one(session, node, *, config, report) -> None:
 
     # Capture scalar identity before any savepoint rollback expires the ORM node.
     node_id, org_id, flow_id = node.id, node.org_id, node.flow_id
+    if await flow_is_paused(session, org_id=org_id, flow_id=flow_id, lock=True):
+        return
     inputs = await load_in_force_policy(session, org_id=org_id, flow_id=flow_id)
     scope = {
         "attempt": node.attempts,

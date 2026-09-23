@@ -179,3 +179,30 @@ async def test_stall_uses_current_worker_clock(shared, worker):  # noqa: F811
 
 def test_engine_cannot_reopen_an_outer_timeout():
     assert not transition(NodeState.FAILED, NodeState.RUNNING, actor_kind=ActorKind.SERVICE, reason="retry").allowed
+
+
+async def test_paused_reviewer_outbox_resumes_with_same_identity_and_attempt(shared, monkeypatch):  # noqa: F811
+    from src.orchestration.models import OrchestrationFlow
+
+    monkeypatch.setenv("ADP_SHARED_RUN_REPORTING_ENABLED", "true")
+    assert (await protocol.tick(shared)).effects_succeeded == 1
+    before = await protocol.state(shared)
+    original = shared.calls[-1]
+    async with shared.factory() as db:
+        flow = await db.get(OrchestrationFlow, shared.flow.id)
+        flow.execution_paused = True
+        await db.commit()
+        pending = DispatchPassReport(enabled=True)
+        await recover_pending_reports(db, config=shared.service.config, report=pending)
+        assert pending.pending == []
+        flow.execution_paused = False
+        await db.commit()
+        await recover_pending_reports(db, config=shared.service.config, report=pending)
+        assert len(pending.pending) == 1
+        assert pending.pending[0].envelope == original
+        assert pending.pending[0].deduplication_id == original["message_id"]
+        await db.commit()
+    after = await protocol.state(shared)
+    assert after[0].attempts == before[0].attempts
+    assert after[1].active_run_id == before[1].active_run_id
+    assert len(shared.calls) == 1
