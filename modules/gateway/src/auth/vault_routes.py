@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.config import get_settings
 from src.shared.database import get_db
+from src.shared.identity.providers import is_linkable_provider
 from src.shared.models.audit import AuditLog
 from src.shared.models.organization import User
 from src.shared.models.vault import MagicLinkNonce, UserIdentity
@@ -366,6 +367,44 @@ async def _append_audit(
     db.add(log)
 
 
+def _require_linkable_provider(provider: str) -> None:
+    """Reject a non-linkable provider BEFORE any state is written (#5664, A10).
+
+    Two distinct refusals collapse into one here:
+
+    * an unknown value (typo, probe, path-traversal attempt), and
+    * one of the INTERNAL setup namespaces (`github_install`,
+      `github_app_register`), which are not identities at all.
+
+    The second case was a privilege escalation, not a validation gap. `provider`
+    arrives as a free-form path segment and used to flow straight into
+    ``store_nonce``, so any signed-in user could mint a nonce in the admin
+    namespace — and that nonce is the SOLE authenticator on
+    ``register_app_callback``, which overwrites the deployment's shared GitHub App
+    credentials, the webhook signing secret and the GitHub sign-in secret. One
+    ordinary account was therefore enough to take over the inbound trust path and
+    break every existing tenant's connection at the same time.
+
+    Why here and not the ORM validator: ``UserIdentity.validate_provider`` fires
+    when the identity row is written, which on this flow is a LATER request. By
+    then ``store_nonce`` has committed the row and the token has already been
+    handed to the caller — the escalation is complete before the validator ever
+    runs.
+
+    The message deliberately does not enumerate the internal namespaces; both
+    cases return the same ``unsupported_provider`` so the response cannot be used
+    to discover them.
+    """
+    if not is_linkable_provider(provider):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unsupported_provider",
+                "message": "That identity provider is not supported for linking.",
+            },
+        )
+
+
 @router.post(
     "/identities/{provider}/link",
     response_model=MagicLinkIssueResponse,
@@ -384,6 +423,11 @@ async def issue_identity_magic_link(
     token_context=Depends(get_current_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> MagicLinkIssueResponse:
+    # Provider validity is a property of the request alone, so it is settled
+    # before anything else — including before the signing-key check, so the
+    # answer to "is this provider linkable" cannot vary with deployment config.
+    _require_linkable_provider(provider)
+
     secret = _get_magic_link_secret()
     if not secret:
         raise HTTPException(
@@ -483,6 +527,12 @@ async def magic_link_landing_get(
         raise HTTPException(status_code=400, detail={"error": "token_expired", "message": "Magic-link token has expired"})
     except TokenInvalidError as exc:
         raise HTTPException(status_code=400, detail={"error": "token_invalid", "message": str(exc)})
+
+    # A token minted before #5664, or one carrying an internal setup namespace,
+    # must not be honoured on the identity surface either. The nonce store is
+    # shared, so the landing page has to re-check the namespace rather than
+    # assume issuance validated it.
+    _require_linkable_provider(payload["provider"])
 
     # Verify nonce exists and is not consumed (do not consume yet — just peek)
     jti = payload["jti"]
