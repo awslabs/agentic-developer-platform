@@ -48,6 +48,13 @@ jobs:
       # Playwright drives a browser against the SPA and S3 is only reachable via the
       # distribution (OAC). That is also why runbook 6.1 cannot drop the NAT EIPs
       # from the CloudFront allowlist: this workflow needs them.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_E2E_ROLE_ARN || secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+
       - name: Resolve dashboard URL
         run: |
           set -e
@@ -73,11 +80,6 @@ jobs:
           fi
           echo "E2E_CLOUDFRONT_URL=${URL}" >> "$GITHUB_ENV"
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_E2E_ROLE_ARN || secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v7

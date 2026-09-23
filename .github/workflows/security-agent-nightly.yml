@@ -388,8 +388,10 @@ jobs:
   scan_gate:
     name: Scan Gate
     needs: code-review
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
+      id-token: write
       contents: read
     outputs:
       processed: ${{ steps.check.outputs.processed }}
@@ -405,6 +407,15 @@ jobs:
       RUN_LOG: security-agent/processed-runs.json
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Resolve account ID
         run: echo "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
@@ -484,8 +495,10 @@ jobs:
     # Skipped WHOLE when this scan file has already been turned into issues. No
     # step inside carries a condition — see the `scan_gate` job on why.
     if: needs.scan_gate.outputs.processed != 'true'
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
+      id-token: write
       contents: read
       # Files the dated EPIC and its story issues. Read-only cannot create them.
       issues: write
@@ -508,6 +521,15 @@ jobs:
       BEDROCK_VIA: ${{ inputs.bedrock_via == '' && 'direct' || inputs.bedrock_via }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Resolve account ID
         run: |
@@ -638,7 +660,7 @@ jobs:
       # step enriches this same file in place with each cluster's issue number.
       # `--gateway-url` is resolved from SSM only on the gateway path, so the
       # default `direct` run needs no extra permission and no extra call. The
-      # runner's own IRSA identity is what authenticates the gateway call -- there
+      # protected scan identity authenticates the gateway call -- there
       # is no token to mint, store or rotate -- so nothing secret is read here.
       - name: Author the night's grouping plan
         run: |
@@ -831,8 +853,10 @@ jobs:
     # hard-fail the barrier as STALLED, blaming a triage pass that had not yet
     # run. `needs` is what makes an absent marker mean "triage is broken".
     needs: [code-review, triage]
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
     runs-on: arc-runner-org
     permissions:
+      id-token: write
       contents: read
       # The barrier files the night's plan issue. Read-only cannot create one,
       # and #4559 §7.2 is explicit that this path attaches an agent to an
@@ -855,6 +879,15 @@ jobs:
       LEDGER_DIR: security-agent-ledger
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Assume scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Resolve account ID
         run: |

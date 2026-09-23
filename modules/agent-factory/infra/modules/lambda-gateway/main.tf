@@ -59,7 +59,8 @@ resource "aws_lambda_function" "ingest" {
 }
 
 resource "aws_iam_role" "ingest" {
-  name = "${var.name_prefix}-gateway-ingest"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-gateway-ingest"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -321,7 +322,8 @@ resource "aws_lambda_event_source_mapping" "response_sqs" {
 }
 
 resource "aws_iam_role" "response" {
-  name = "${var.name_prefix}-gateway-response"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-gateway-response"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

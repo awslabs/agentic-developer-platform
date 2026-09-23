@@ -133,7 +133,13 @@ variable "disable_execute_api_endpoint" {
 }
 
 variable "runner_transport_secret_arns" {
-  type = list(string)
-  default = []
+  type        = list(string)
+  default     = []
   description = "Exact existing GitHub engine transport secret ARNs retained during the separately authorized cutover; validated by runner IAM."
+}
+
+variable "runner_gateway_execution_arns" {
+  type        = list(string)
+  default     = null
+  description = "Reviewed exact gateway routes. Null derives the existing environment's API/stage from its operator-owned SSM endpoint when gateway_deployed; [] disables transport."
 }

@@ -5,7 +5,13 @@
       "adp-cyber-worker"
     ],
     "privileged": true,
-    "privileged_why": "docker build of the cyber-worker image"
+    "privileged_why": "docker build of the cyber-worker image",
+    "artifact_writes": [
+      {
+        "bucket_suffix": "cape-assets",
+        "prefix": "worker-manifests"
+      }
+    ]
   },
   "cyber-browser": {
     "buildspec": "modules/domain-apps/cyber/codebuild/bs-cyber-browser.yml",

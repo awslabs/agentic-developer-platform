@@ -427,6 +427,12 @@ resource "aws_iam_role_policy" "project" {
         Action   = ["s3:PutObject"]
         Resource = [for key in each.value.s3_write : "arn:aws:s3:::${var.state_bucket}/${key}"]
       }],
+      # App-owned build descriptors declare their artifact publication paths.
+      [for output in lookup(each.value, "artifact_writes", []) : {
+        Sid      = "AppArtifactPublish${substr(sha256(output.prefix), 0, 12)}"
+        Effect   = "Allow", Action = ["s3:PutObject"],
+        Resource = "arn:aws:s3:::${var.name_prefix}-${output.bucket_suffix}/${output.prefix}/*"
+      }],
       # Scanners write findings to the security-scans bucket.
       [for _ in range(lookup(each.value, "scan_upload", false) ? 1 : 0) : {
         Sid    = "ScanFindingsUpload"

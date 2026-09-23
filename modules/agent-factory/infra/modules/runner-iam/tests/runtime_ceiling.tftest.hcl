@@ -25,10 +25,9 @@ run "service_escalation_is_explicitly_denied" {
   }
   assert {
     condition = toset(one([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if s.Sid == "DenyOtherOwnSmokeSourceResources"]).NotResource) == toset([
-      "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-gateway-build-pr/*",
-      "arn:aws:s3:::adp-test-security-scans-123456789012/security-agent/*"
+      "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-gateway-build-pr/*"
     ])
-    error_message = "Object access must remain restricted to smoke source and the existing scan ledger; never tenant objects or Terraform state."
+    error_message = "Object access must remain restricted to smoke source only; never tenant objects or Terraform state."
   }
   assert {
     condition     = alltrue([for policy in [aws_iam_policy.runner_base.policy, aws_iam_policy.runner_services.policy, aws_iam_policy.runner_boundary.policy] : length(policy) <= 6144])
@@ -91,5 +90,25 @@ run "shared_gateway_project_requires_the_nonpublishing_role" {
   assert {
     condition     = !contains(one([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if s.Sid == "DenyOutsideRuntimeActions"]).NotAction, "codebuild:RetryBuild") && !contains(one([for s in jsondecode(aws_iam_policy.runner_boundary.policy).Statement : s if s.Sid == "DenyOutsideRuntimeActions"]).NotAction, "codebuild:StartBuildBatch")
     error_message = "Retry/batch APIs must not bypass the StartBuild role condition."
+  }
+}
+
+run "active_runner_uses_environment_resources_and_exact_gateway_routes" {
+  command = plan
+  variables {
+    name_prefix            = "adp-test-agent"
+    gateway_execution_arns = ["arn:aws:execute-api:eu-west-1:123456789012:api123/test/POST/agent/*"]
+  }
+  assert {
+    condition     = one([for s in module.runtime_policy.grants : s if s.Sid == "GatewayEndpoint"]).Resource == ["arn:aws:ssm:eu-west-1:123456789012:parameter/adp/test/gateway/apigw-invoke-url"]
+    error_message = "The active runner suffix must not alter the deployed gateway parameter."
+  }
+  assert {
+    condition     = one([for s in module.runtime_policy.grants : s if s.Sid == "StartSmokeBuild"]).Resource == ["arn:aws:codebuild:eu-west-1:123456789012:project/adp-test-gateway-build"]
+    error_message = "The active runner must use the existing shared gateway project."
+  }
+  assert {
+    condition     = toset(one([for s in module.runtime_policy.boundary : s if s.Sid == "DenyOtherGatewayTransportResources"]).NotResource) == toset(["arn:aws:execute-api:eu-west-1:123456789012:api123/test/POST/agent/*"])
+    error_message = "Other API IDs, environments, methods and routes must remain explicitly denied."
   }
 }

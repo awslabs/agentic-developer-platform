@@ -1167,6 +1167,9 @@ jobs:
           # fails, apply that reviewed plan, then dispatch pricing-finalize.yml
           # at this release ref. The schedule stays disabled on failure.
   smoke-test:
+    permissions:
+      contents: read
+      id-token: write
     name: Post-deploy Smoke Test
     needs: [deploy-backend, deploy-frontend, run-migrations, finalize-pricing]
     # Issue #3031: Real-token smoke against the deployed gateway.

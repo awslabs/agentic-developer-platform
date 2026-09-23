@@ -173,7 +173,8 @@ module "networking" {
 # Base IAM Roles (cluster + node group service roles)
 # -----------------------------------------------------------------------------
 module "iam" {
-  source = "./modules/iam"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/iam"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -195,7 +196,8 @@ module "iam" {
 # EKS Cluster (Auto Mode)
 # -----------------------------------------------------------------------------
 module "eks" {
-  source = "./modules/eks"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/eks"
 
   environment = var.environment
   name_prefix = local.name_prefix

@@ -3,6 +3,22 @@
 variable "account_id" { type = string }
 variable "aws_region" { type = string }
 variable "name_prefix" { type = string }
+variable "environment" {
+  type = string
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]*$", var.environment))
+    error_message = "Use the deployment environment, independently of the runner role name."
+  }
+}
+variable "gateway_execution_arns" {
+  type        = list(string)
+  default     = []
+  description = "Operator-reviewed gateway routes. Empty disables gateway transport. API ID, stage and method must be exact."
+  validation {
+    condition     = alltrue([for arn in var.gateway_execution_arns : can(regex("^arn:aws:execute-api:[a-z0-9-]+:[0-9]{12}:[a-z0-9]+/[A-Za-z0-9_$-]+/(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/(agent|internal)/([A-Za-z0-9_/-]+|\\*)$", arn))])
+    error_message = "Use exact API/stage/method execution ARNs for required agent/internal routes; only the final route suffix may be a wildcard."
+  }
+}
 variable "transport_secret_arns" {
   type        = list(string)
   default     = []
@@ -17,11 +33,12 @@ variable "transport_secret_arns" {
 }
 
 locals {
-  gateway_pr_role = "arn:aws:iam::${var.account_id}:role/${var.name_prefix}-codebuild-gateway-pr"
+  resource_prefix = "adp-${var.environment}"
+  gateway_pr_role = "arn:aws:iam::${var.account_id}:role/${local.resource_prefix}-codebuild-gateway-pr"
   capabilities = {
     StartSmokeBuild = {
       actions   = ["codebuild:StartBuild"]
-      resources = ["arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${var.name_prefix}-gateway-build"]
+      resources = ["arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${local.resource_prefix}-gateway-build"]
       condition = { StringEquals = { "codebuild:serviceRole" = local.gateway_pr_role } }
     }
     PassSmokeRole = {
@@ -32,21 +49,15 @@ locals {
     SafeSmokeBuild = {
       actions = ["codebuild:BatchGetBuilds", "codebuild:BatchGetProjects", "codebuild:StopBuild"]
       resources = [
-        "arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${var.name_prefix}-gateway-build",
-        "arn:aws:codebuild:${var.aws_region}:${var.account_id}:build/${var.name_prefix}-gateway-build:*",
+        "arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${local.resource_prefix}-gateway-build",
+        "arn:aws:codebuild:${var.aws_region}:${var.account_id}:build/${local.resource_prefix}-gateway-build:*",
       ]
     }
     OwnSmokeSource = {
       actions = ["s3:PutObject", "s3:GetObject"]
       resources = [
-        "arn:aws:s3:::adp-terraform-state-${var.account_id}/codebuild/src/${var.name_prefix}-gateway-build-pr/*",
-        "arn:aws:s3:::${var.name_prefix}-security-scans-${var.account_id}/security-agent/*",
+        "arn:aws:s3:::adp-terraform-state-${var.account_id}/codebuild/src/${local.resource_prefix}-gateway-build-pr/*",
       ]
-    }
-    ScanLedgerList = {
-      actions   = ["s3:ListBucket"]
-      resources = ["arn:aws:s3:::${var.name_prefix}-security-scans-${var.account_id}"]
-      condition = { StringLike = { "s3:prefix" = ["security-agent/*"] } }
     }
     Identity = {
       actions   = ["sts:GetCallerIdentity"]
@@ -61,14 +72,7 @@ locals {
     }
     GatewayEndpoint = {
       actions   = ["ssm:GetParameter"]
-      resources = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/adp/${trimprefix(var.name_prefix, "adp-")}/gateway/apigw-invoke-url"]
-    }
-    GatewayTransport = {
-      actions = ["execute-api:Invoke"]
-      resources = [
-        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:*/*/*/agent/*",
-        "arn:aws:execute-api:${var.aws_region}:${var.account_id}:*/*/*/internal/*",
-      ]
+      resources = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/adp/${var.environment}/gateway/apigw-invoke-url"]
     }
     ImagePull = {
       actions   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]
@@ -89,7 +93,13 @@ locals {
       resources = var.transport_secret_arns
     }
   }
-  allowed = merge(local.capabilities, local.transport)
+  gateway = length(var.gateway_execution_arns) == 0 ? {} : {
+    GatewayTransport = {
+      actions   = ["execute-api:Invoke"]
+      resources = var.gateway_execution_arns
+    }
+  }
+  allowed = merge(local.capabilities, local.transport, local.gateway)
   grants = [for name, capability in local.allowed : merge({
     Sid = name, Effect = "Allow", Action = capability.actions, Resource = capability.resources
   }, try({ Condition = capability.condition }, {}))]
@@ -115,11 +125,6 @@ locals {
     {
       Sid       = "DenyOutsideRuntimeActions", Effect = "Deny",
       NotAction = flatten([for capability in local.allowed : capability.actions]), Resource = "*"
-    },
-    {
-      Sid       = "DenyOtherLedgerPrefixes", Effect = "Deny", Action = ["s3:ListBucket"],
-      Resource  = "arn:aws:s3:::${var.name_prefix}-security-scans-${var.account_id}",
-      Condition = { StringNotLike = { "s3:prefix" = ["security-agent/*"] } }
     }
     ], [for name, capability in local.allowed : {
       Sid    = "DenyOther${name}Resources", Effect = "Deny",

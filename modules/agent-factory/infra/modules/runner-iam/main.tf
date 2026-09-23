@@ -133,9 +133,11 @@ resource "aws_iam_role_policy_attachment" "runner_services" {
   policy_arn = aws_iam_policy.runner_services.arn
 }
 module "runtime_policy" {
-  source                = "../runner-runtime-policy"
-  account_id            = data.aws_caller_identity.current.account_id
-  aws_region            = var.aws_region
-  name_prefix           = var.name_prefix
-  transport_secret_arns = var.transport_secret_arns
+  environment            = var.environment
+  gateway_execution_arns = var.gateway_execution_arns
+  source                 = "../runner-runtime-policy"
+  account_id             = data.aws_caller_identity.current.account_id
+  aws_region             = var.aws_region
+  name_prefix            = var.name_prefix
+  transport_secret_arns  = var.transport_secret_arns
 }

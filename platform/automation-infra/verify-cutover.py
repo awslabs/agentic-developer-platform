@@ -29,16 +29,16 @@ def main():
     parser.add_argument("--repository", required=True)
     parser.add_argument("--environment", required=True)
     parser.add_argument("--group-id")
-    parser.add_argument("--purpose", choices=["deployment", "build", "scan", "rules"], default="deployment")
+    parser.add_argument("--purpose", choices=["deployment", "build", "scan", "rules", "checks"], default="deployment")
     args = parser.parse_args()
     identity = read("aws", "sts", "get-caller-identity")
     assert identity["Account"] == args.account, "Wrong AWS account"
     assert ":assumed-role/" in identity["Arn"] and ("trusted-" + args.purpose + "/") in identity["Arn"], "Run the canary under the trusted deployment identity"
-    environment = {"deployment": "adp-deploy-", "build": "adp-build-", "scan": "adp-scan-", "rules": "adp-rules-"}[args.purpose] + args.environment
+    environment = {"deployment": "adp-deploy-", "build": "adp-build-", "scan": "adp-scan-", "rules": "adp-rules-", "checks": "adp-checks-"}[args.purpose] + args.environment
     verify_environment(read("gh", "api", f"repos/{args.repository}/environments/{environment}"))
     branches = read("gh", "api", f"repos/{args.repository}/environments/{environment}/deployment-branch-policies")["branch_policies"]
     assert [(b["name"], b.get("type", "branch")) for b in branches] == [("main", "branch")], "Only main may deploy"
-    if args.purpose in {"scan", "rules"}:
+    if args.purpose in {"scan", "rules", "checks"}:
         print("Protected content-processing environment and account verified; no deployment permissions granted.")
         return
     assert args.group_id, "The deployment/build runner group ID is required"

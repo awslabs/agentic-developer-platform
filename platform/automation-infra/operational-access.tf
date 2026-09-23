@@ -36,7 +36,7 @@ variable "additional_cluster_names" {
   }
 }
 resource "aws_eks_access_entry" "domain_deployment" {
-  for_each          = setsubtract(var.additional_cluster_names, toset([var.cluster_name]))
+  for_each          = length(var.deployment_role_boundaries) == 0 ? toset([]) : setsubtract(var.additional_cluster_names, toset([var.cluster_name]))
   cluster_name      = each.value
   principal_arn     = aws_iam_role.deployment.arn
   kubernetes_groups = ["adp:trusted-deployment"]
@@ -72,4 +72,72 @@ resource "aws_iam_role_policy" "cape_registration" {
     },
     { Effect = "Allow", Action = ["ssm:GetCommandInvocation"], Resource = "*" },
   ] })
+}
+
+# Smoke/live checks have credentials independent of the deploying job. Cognito
+# InitiateAuth does not use IAM authorization; possession of the scoped test
+# refresh token is the authority. Do not add a fictitious Cognito IAM grant.
+variable "smoke_refresh_token_arn" {
+  type    = string
+  default = ""
+  validation {
+    condition     = var.smoke_refresh_token_arn == "" || can(regex("^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:adp/[a-z0-9-]+/gateway/smoke-user-refresh-token-[A-Za-z0-9]{6}$", var.smoke_refresh_token_arn))
+    error_message = "Supply the exact smoke-user refresh-token ARN, including its generated suffix."
+  }
+}
+resource "aws_iam_role" "checks" {
+  name = "${var.name_prefix}-trusted-checks"
+  assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{
+    Effect    = "Allow", Action = "sts:AssumeRoleWithWebIdentity",
+    Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+    Condition = { StringEquals = {
+      "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com",
+      "token.actions.githubusercontent.com:sub" = "repo:${var.repository}:environment:adp-checks-${var.environment}"
+    } }
+  }] })
+}
+resource "aws_iam_role_policy" "checks" {
+  name = "gateway-post-deploy-checks"
+  role = aws_iam_role.checks.id
+  policy = jsonencode({ Version = "2012-10-17", Statement = concat([
+    { Effect = "Allow", Action = ["ssm:GetParameter"], Resource = [for parameter in ["cognito-user-pool-id", "cognito-client-id", "cloudfront-domain"] : "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/gateway/${parameter}"] },
+    { Effect = "Allow", Action = ["sts:GetCallerIdentity"], Resource = "*" },
+    ], var.smoke_refresh_token_arn == "" ? [] : [
+    { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.smoke_refresh_token_arn }
+  ]) })
+}
+output "checks_role_arn" { value = aws_iam_role.checks.arn }
+
+# The GitLab deployed-contract tests also sign webhook requests. Those secrets
+# must never be loaded into a pull-request job; PRs exercise the local handler.
+variable "gitlab_checks_secret_arns" {
+  type    = list(string)
+  default = []
+  validation {
+    condition     = alltrue([for arn in var.gitlab_checks_secret_arns : can(regex("^arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}$", arn)) && !can(regex("adp/(users|teams|orgs|domain-apps)/|/tenants/", arn))])
+    error_message = "Use the exact GitLab/test webhook secret ARNs; tenant vaults and wildcard prefixes are forbidden."
+  }
+}
+variable "gitlab_checks_queue_arn" {
+  type    = string
+  default = ""
+  validation {
+    condition     = var.gitlab_checks_queue_arn == "" || can(regex("^arn:aws:sqs:[a-z0-9-]+:[0-9]{12}:adp-[A-Za-z0-9_.-]+$", var.gitlab_checks_queue_arn))
+    error_message = "Supply the exact webhook queue ARN used by fleet diagnostics."
+  }
+}
+resource "aws_iam_role_policy" "gitlab_checks" {
+  name = "gitlab-deployed-contract-checks"
+  role = aws_iam_role.checks.id
+  policy = jsonencode({ Version = "2012-10-17", Statement = concat([
+    { Effect = "Allow", Action = ["ssm:GetParameter"], Resource = [for path in [
+      "webhook-ingress/gitlab-endpoint", "webhook-ingress/gitlab-webhook-secret-arn",
+      "gitlab/url", "gitlab/api-token-arn", "gitlab/test-project-id", "gitlab/test-project-path",
+      "webhook-ingress/endpoint", "webhook-ingress/webhook-secret-arn", "webhook-ingress/sqs-queue-url",
+    ] : "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/adp/${var.environment}/${path}"] },
+    ], [for _ in range(length(var.gitlab_checks_secret_arns) == 0 ? 0 : 1) : {
+      Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.gitlab_checks_secret_arns
+      }], [for _ in range(var.gitlab_checks_queue_arn == "" ? 0 : 1) : {
+      Effect = "Allow", Action = ["sqs:GetQueueAttributes"], Resource = var.gitlab_checks_queue_arn
+  }]) })
 }

@@ -10,28 +10,20 @@ runs:
       ENVIRONMENT: dev
       ECR_REPO: adp-cyber-worker
       CODEBUILD_PROJECT: adp-dev-cyber-worker
-    run: |
-      python3 - <<'PYENV'
-      import os, uuid
-      with open(os.environ["GITHUB_ENV"], "a") as stream:
-          for key in ['AWS_REGION', 'ENVIRONMENT', 'ECR_REPO', 'CODEBUILD_PROJECT']:
-              marker = uuid.uuid4().hex
-              stream.write(f"{key}<<{marker}\n{os.environ[key]}\n{marker}\n")
-      PYENV
+    run: "python3 - <<'PYENV'\nimport os, uuid\nwith open(os.environ[\"GITHUB_ENV\"], \"a\") as stream:\n    for key in ['AWS_REGION',\
+      \ 'ENVIRONMENT', 'ECR_REPO', 'CODEBUILD_PROJECT']:\n        marker = uuid.uuid4().hex\n        stream.write(f\"{key}<<{marker}\\\
+      n{os.environ[key]}\\n{marker}\\n\")\nPYENV\n"
   - name: Load deployment config
     uses: ./.github/actions/load-deploy-config
   - name: Install zip + AWS CLI
-    run: |
-      set -euo pipefail
-      for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
-        command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
-      done
+    run: "set -euo pipefail\nfor tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do\n  command\
+      \ -v \"$tool\" >/dev/null || { echo \"::error::Reviewed runner image is missing $tool\"; exit 1; }\ndone\n"
     shell: bash
   - name: Verify Terraform-managed CodeBuild project
-    run: "set -euo pipefail\nEXISTS=$(aws codebuild batch-get-projects \\\n  --names \"${CODEBUILD_PROJECT}\" \\\
-      \n  --region \"${AWS_REGION}\" \\\n  --query 'projects | length(@)' --output text 2>/dev/null || echo \"0\"\
-      )\nif [ \"$EXISTS\" -ne 1 ]; then\n  echo \"::error::${CODEBUILD_PROJECT} is missing \u2014 apply platform/infra\
-      \ before running this build lane.\"\n  exit 1\nfi\n"
+    run: "set -euo pipefail\nEXISTS=$(aws codebuild batch-get-projects \\\n  --names \"${CODEBUILD_PROJECT}\" \\\n  --region\
+      \ \"${AWS_REGION}\" \\\n  --query 'projects | length(@)' --output text 2>/dev/null || echo \"0\")\nif [ \"$EXISTS\"\
+      \ -ne 1 ]; then\n  echo \"::error::${CODEBUILD_PROJECT} is missing \u2014 apply platform/infra before running this build\
+      \ lane.\"\n  exit 1\nfi\n"
     shell: bash
   - name: Build image via CodeBuild
     id: build
@@ -40,43 +32,34 @@ runs:
       project_name: ${{ env.CODEBUILD_PROJECT }}
       region: ${{ env.AWS_REGION }}
       state_bucket: ${{ env.STATE_BUCKET }}
-      environment_variables: '"name=AWS_REGION,value=${{ env.AWS_REGION }}" "name=ENVIRONMENT,value=${{ env.ENVIRONMENT
-        }}" "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" "name=REGISTRY,value=${{ env.ACCOUNT_ID }}.dkr.ecr.${{
-        env.AWS_REGION }}.amazonaws.com" "name=IMAGE_TAG,value=${{ github.sha }}"'
+      environment_variables: '"name=AWS_REGION,value=${{ env.AWS_REGION }}" "name=ENVIRONMENT,value=${{ env.ENVIRONMENT }}"
+        "name=ACCOUNT_ID,value=${{ env.ACCOUNT_ID }}" "name=REGISTRY,value=${{ env.ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION
+        }}.amazonaws.com" "name=IMAGE_TAG,value=${{ github.sha }}"'
   - name: Export build outputs
     id: build_info
-    run: |
-      REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+    run: 'REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
       echo "image_tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
       echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
-    shell: bash
-  - name: Extract and publish manifest
-    run: "IMAGE_URI=\"${{ steps.build_info.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build_info.outputs.image_tag\
-      \ }}\"\nIMAGE_TAG=\"${{ steps.build_info.outputs.image_tag }}\"\nASSETS_BUCKET=\"adp-dev-cape-assets\"\n\n\
-      # Log in to ECR to pull the image\naws ecr get-login-password --region \"${AWS_REGION}\" | \\\n  docker login\
-      \ --username AWS --password-stdin \"${{ steps.build_info.outputs.registry }}\" 2>/dev/null || true\n\n# Extract\
-      \ manifest from built image\ndocker run --rm --entrypoint cat \"${IMAGE_URI}\" /opt/worker-manifest.json >\
-      \ /tmp/worker-manifest.json\n\n# Validate it's valid JSON\npython3 -c \"import json; json.load(open('/tmp/worker-manifest.json'))\"\
-      \n\n# Publish to immutable location (keyed by image tag \u2014 never overwritten)\naws s3 cp /tmp/worker-manifest.json\
-      \ \\\n  \"s3://${ASSETS_BUCKET}/worker-manifests/by-tag/${IMAGE_TAG}.json\" \\\n  --region \"${AWS_REGION}\"\
-      \n\n# Publish to \"latest\" pointer\naws s3 cp /tmp/worker-manifest.json \\\n  \"s3://${ASSETS_BUCKET}/worker-manifests/latest.json\"\
-      \ \\\n  --region \"${AWS_REGION}\"\n\necho \"Manifest published for tag: ${IMAGE_TAG}\"\n"
+
+      '
     shell: bash
   - name: Update SSM image tag parameter
-    run: |
-      IMAGE_TAG="${{ steps.build_info.outputs.image_tag }}"
-      aws ssm put-parameter \
-        --name "/adp/dev/cyber/worker-image-tag" \
-        --value "${IMAGE_TAG}" \
-        --type String \
-        --overwrite \
-        --region "${AWS_REGION}"
-      echo "SSM parameter /adp/dev/cyber/worker-image-tag updated to: ${IMAGE_TAG}"
+    run: "IMAGE_TAG=\"${{ steps.build_info.outputs.image_tag }}\"\naws ssm put-parameter \\\n  --name \"/adp/dev/cyber/worker-image-tag\"\
+      \ \\\n  --value \"${IMAGE_TAG}\" \\\n  --type String \\\n  --overwrite \\\n  --region \"${AWS_REGION}\"\necho \"SSM\
+      \ parameter /adp/dev/cyber/worker-image-tag updated to: ${IMAGE_TAG}\"\n"
     shell: bash
   - name: Summary
-    run: |
-      echo "## Cyber Worker Build" >> "$GITHUB_STEP_SUMMARY"
-      echo "- **Image**: ${{ steps.build_info.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build_info.outputs.image_tag }}" >> "$GITHUB_STEP_SUMMARY"
+    run: 'echo "## Cyber Worker Build" >> "$GITHUB_STEP_SUMMARY"
+
+      echo "- **Image**: ${{ steps.build_info.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.build_info.outputs.image_tag
+      }}" >> "$GITHUB_STEP_SUMMARY"
+
       echo "- **CodeBuild**: ${{ steps.build.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
-      echo "- **Manifest**: s3://adp-dev-cape-assets/worker-manifests/by-tag/${{ steps.build_info.outputs.image_tag }}.json" >> "$GITHUB_STEP_SUMMARY"
+
+      echo "- **Manifest**: s3://adp-dev-cape-assets/worker-manifests/by-tag/${{ steps.build_info.outputs.image_tag }}.json"
+      >> "$GITHUB_STEP_SUMMARY"
+
+      '
     shell: bash

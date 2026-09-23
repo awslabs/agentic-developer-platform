@@ -15,7 +15,8 @@ engine transport as part of a PR review.
 | On-demand scan dispatcher | Existing Security Agent space and exact service role; nonpublishing Grype/Syft projects; scan source/evidence prefixes | Deployment, tenant/state reads, secrets, publishing builds |
 | Public-rule ingestion | Read benign canaries and publish only public YARA rule versions under a separate protected rules identity, away from deployment nodes | Other bucket objects, builds, deployment, tenant data and secrets |
 | Each CodeBuild project | Its own source prefix, log group and declared output repositories/artifacts | Sibling projects, identity mutation, service control, secrets/state; its service trust pins the exact project ARN |
-| Trusted deployment | Existing infrastructure API inventory in `deployment-services.tf`, bounded ADP role/policy lifecycle, explicit deployment secret reads, EKS deployment | Tenant vault namespaces and unlisted secret reads |
+| Trusted deployment | Infrastructure APIs, exact admitted workload roles and executable targets, immutable operator-owned ceilings, explicit deployment secret reads, admitted EKS clusters | Unbounded roles, mutation of automation identities/ceilings/operator state, tenant vaults, role chaining |
+| Gateway smoke/live checks | Exact smoke-token ARN and three environment-specific gateway configuration parameters | Deployment, arbitrary secrets and parameters |
 
 `deployment-workflows.json` and `build-workflows.json` enumerate the workflows
 admitted to the trusted group. The ordinary runner's action and resource ceilings
@@ -68,8 +69,8 @@ not add upfront GitHub setup to the canonical fresh-deployment guide.
    exact `deployment_db_user_arns` for retained database diagnostics/evaluations,
    `additional_cluster_names` for the Cyber/domain clusters, `cape_instance_ids` for
    the existing image-registration host, and `build_project_names` from the reviewed
-   platform/agent-context outputs. Use a distinct backend key such as
-   `dev/trusted-automation/terraform.tfstate`. The GitHub OIDC provider must already
+   platform/agent-context outputs. Use the protected backend key
+   `<environment>/trusted-automation/terraform.tfstate` (the deployment identity explicitly denies this prefix). The GitHub OIDC provider must already
    exist; this state does not silently replace or broaden it.
 3. Create GitHub environments `adp-deploy-<environment>` and
    `adp-build-<environment>` and `adp-scan-<environment>` and `adp-rules-<environment>`. Require an independent reviewer, prevent self-review,
@@ -138,3 +139,85 @@ scan identity preserved; never give scanning jobs the deployment identity.
 Workflow/cutover tests exercise the GitHub trust requirements without contacting
 GitHub or AWS. These are code-level checks, not evidence that a live installation
 has completed the migration.
+
+## Workload admission and operational identity repairs
+
+The deployment role no longer gets a prefix-wide role factory. Supply
+`deployment_role_boundaries` (exact role ARN to exact ceiling ARN),
+`deployment_managed_policy_arns`, `deployment_instance_profile_arns`, and
+`deployment_execution_resources` (exact
+Lambda, CodeBuild, and EC2 targets). Role creation, inline-policy writes,
+managed-policy attachment, trust changes and boundary assignment require the
+registered ceiling. Boundary removal is denied. Boundary policies and automation
+identities/policies are immutable to deployment; their metadata stays readable
+for Terraform refresh. `PassRole` is confined to the admitted role list and AWS
+services; it deliberately does **not** use `iam:PermissionsBoundary`, which AWS
+does not provide for that action. Existing executable mutation is also scoped,
+because updating Lambda code can inherit a role without a new PassRole check.
+
+Admission runs automatically in this independent state's plan, under the
+operator identity. `verify-workload-inventory.py` checks actual role boundaries,
+rejects IAM mutation, role chaining, open-ended workload API ceilings and
+unbounded executable capabilities. It verifies each executable's current service
+role, every local role trusting the cluster's IRSA provider, managed/self-managed node roles, Fargate roles
+and Pod Identity associations. The empty inventory denies all deployment AWS actions and grants no Kubernetes access;
+an IAM API deny alone would not prevent kubectl authentication. Unknown node identities or cross-account workload targets fail admission.
+`iam-write-actions.json` is the write-action inventory from AWS's IAM service
+reference (retrieved 2026-09-23); review it when changing supported IAM APIs.
+
+Prepare approved workload ceilings with the operator, then attach them using
+`automation_permissions_boundary_arn` in the platform, gateway, agent-factory,
+legacy runner and cyber Terraform roots. The input reaches their local role
+modules; existing specialized runner/build boundaries stay in place. Null is
+only for operator bootstrap. Keep the approved value in each root's deployment
+configuration so Terraform never attempts to remove it. New roles are admitted
+by the operator after bootstrap; subsequent automation can reconcile or recreate
+them only with the same required ceiling. Up to eight grouped lifecycle policies
+are available under IAM's attachment quota. Plans fail if the reviewed inventory
+exceeds that quota. Complete admission **before** enabling the protected GitHub
+environments or removing the old runner's permissions.
+
+Configure `runner_gateway_execution_arns` in the active root (or
+`gateway_execution_arns` in the legacy root) with the reviewed API ID, stage,
+HTTP method and required `/agent/` or `/internal/` route. An example is
+`arn:aws:execute-api:us-east-1:123456789012:abc123def4/dev/POST/internal/bedrock/invoke`.
+Explicit `[]` disables gateway invocation; no API, stage or method wildcard is accepted. In a fresh active-factory installation, null derives the API and stage from the already-deployed environment's operator-owned SSM endpoint and enumerates POST agent/internal and GET internal methods, preserving the canonical gateway-before-factory deployment order.
+The environment now determines shared CodeBuild/SSM resource names independently
+of the runner role's `-agent` suffix. For scan triage's optional gateway mode,
+supply `scan_gateway_execution_arns`; direct Bedrock inference remains available.
+All four nightly ledger jobs use the existing scan identity. Ordinary runners
+have no ledger object/list grants.
+
+Create `adp-checks-<environment>` with the same main-only independent review
+protection. Set `ADP_CHECKS_ROLE_ARN` from `checks_role_arn`, and set
+`ADP_SMOKE_REFRESH_TOKEN_ARN` to the exact value of `smoke_refresh_token_arn`.
+The reusable smoke call explicitly forwards `id-token: write`. The scheduled
+live check gets its own credentials as well. If no smoke token is configured,
+smoke reports that it is skipped; IAM errors with a configured token still fail.
+Cognito `InitiateAuth` is authenticated by that refresh token, not an IAM grant.
+Stage 1 Terraform/Kubernetes diagnostics remain a separate protected deployment
+job. The existing E2E role is obtained before its first configuration read.
+
+GitHub issue agent workflows now select their existing repository-scoped GitHub
+task tracking (`BEADS_ENABLED=false`) and do not initialize/sync the shared
+cross-account Beads database. This changes workflow authority, not stored data.
+Export any Beads-only tasks into the repository's GitHub tracker as a separately
+reviewed data migration before relying on them in those workflows. Local Beads
+and explicitly configured standalone integrations remain available. Repository
+agents also no longer automatically acquire platform Kubernetes or SkyPilot
+credentials; infrastructure work uses the protected deployment workflows or the
+existing separately bound customer-task credential path.
+
+Cyber workflow wrappers retain app-owned composite implementations. Worker
+manifest extraction executes inside its existing CodeBuild job with Docker
+networking disabled, and only that project's declared artifact prefix is
+writable. The publishing dispatcher updates only the exact worker build-tag
+parameter; no Docker daemon is mounted into the protected ARC runner.
+
+The GitLab required PR check executes the real handler/helper unit contracts
+without live credentials. Deployed webhook-contract and fleet checks run on
+protected main with the checks identity. Configure their exact
+`gitlab_checks_secret_arns` and `gitlab_checks_queue_arn`; SSM reads enumerate
+only the existing GitLab/webhook test configuration keys. The browser image
+build now uses the same protected publishing lane and Terraform-owned project
+contract as the worker image build.
