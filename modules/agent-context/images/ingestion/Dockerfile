@@ -21,6 +21,7 @@ SHELL ["/bin/sh", "-c"]
 RUN cp "$(command -v zoekt-git-index || find / -name zoekt-git-index -type f 2>/dev/null | head -1)" /tmp/zoekt-git-index
 
 FROM public.ecr.aws/docker/library/python:3.13-slim
+#checkov:skip=CKV_DOCKER_3:Runtime executes language indexers and browser/scanner toolchains whose root-owned caches and writable paths have not yet been relocated; keep this exception local to the ingestion image.
 
 # System deps: git for cloning, build tools for tree-sitter native extensions
 RUN apt-get update && \
@@ -136,7 +137,11 @@ RUN crawl4ai-setup || echo "crawl4ai-setup not available or optional — continu
 # registry_reader.py is imported by publish-ingestion.py's --from-registry path
 # (publish_from_registry, #2172); without it the daily refresh crashes at Step 1
 # with ModuleNotFoundError (#2800).
-COPY config.py telemetry.py tracing.py metrics.py s3_store.py wiki_store.py code_embedder.py sbom_parser.py db.py stage_tracker.py github_auth.py scope.py status_callback.py registry_reader.py lang_go.py /app/
+# url_denylist.py / url_fetch.py / s3_source_guard.py are the SSRF + source
+# ownership guards imported by ingest-url.py and ingest-doc.py (#5658). Without
+# them those scripts die at import, which is the correct failure mode but a
+# needless one — they are listed here and asserted by the smoke check below.
+COPY config.py telemetry.py tracing.py metrics.py s3_store.py wiki_store.py code_embedder.py sbom_parser.py db.py stage_tracker.py github_auth.py scope.py status_callback.py registry_reader.py lang_go.py url_denylist.py url_fetch.py browser_fetch.py s3_source_guard.py source_admission.py repo_acl.py /app/
 COPY scip_ingester.py scip_indexer.py scip_neptune_csv.py scip_neptune_loader.py /app/
 COPY iac_terraform_parser.py iac_neptune_csv.py /app/
 COPY scip_proto/ /app/scip_proto/
@@ -150,7 +155,8 @@ COPY ingest-repo.py ingest-url.py ingest-doc.py refresh-repos.py \
 # if a top-level /app module is missing from the COPY list. registry_reader was
 # shipped in source but never copied, silently breaking the daily refresh (#2800).
 # Only pure-import modules (no env/DB needed at import time) are listed here.
-RUN cd /app && python -c "import registry_reader, scope, status_callback, lang_go"
+RUN cd /app && python -c "import registry_reader, scope, status_callback, lang_go" \
+    && python -c "import url_denylist, url_fetch, browser_fetch, s3_source_guard, source_admission, repo_acl"
 
 # Vulnerability scanner pipeline package (used by scan-vulns.py, #2536)
 COPY pipeline/ /app/pipeline/

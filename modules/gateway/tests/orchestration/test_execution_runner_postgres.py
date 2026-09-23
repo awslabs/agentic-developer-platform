@@ -109,7 +109,7 @@ def pg_session_factory(pg_engine):
 @pytest.fixture
 async def execution(pg_session_factory):
     async with pg_session_factory() as session:
-        flow = OrchestrationFlow(org_id=ORG, slug="runner-pg", title="Runner PostgreSQL")
+        flow = OrchestrationFlow(execution_paused=False, org_id=ORG, slug="runner-pg", title="Runner PostgreSQL")
         session.add(flow)
         await session.flush()
         node = OrchestrationNode(
@@ -299,3 +299,28 @@ async def test_due_query_uses_positive_statuses_and_oldest_due_order(pg_session_
         plan = "\n".join(str(row[0]) for row in explained)
         assert "ix_orchestration_executions_due" in plan, plan
         assert "next_check_at" in plan, plan
+
+
+async def test_pause_wins_race_after_observation_without_spending_attempt(pg_session_factory, execution):
+    """A pause committed between the runner read and reservation wins in SQL."""
+    from sqlalchemy import update
+
+    async def pause_before_reservation(factory, record, effect, now):
+        async with factory() as session:
+            await session.execute(update(OrchestrationFlow).where(OrchestrationFlow.id == record.flow_id).values(execution_paused=True))
+            await session.commit()
+        return None
+
+    handler = RacingHandler(parties=1)
+    report = await run_execution_runner(
+        pg_session_factory,
+        handlers={ExecutionPhase.ADMITTED: handler},
+        config=RunnerConfig(enabled=True, io_timeout_seconds=5),
+        clock=Clock(),
+        authority_verifier=pause_before_reservation,
+    )
+    assert report.reserved == 0 and handler.perform_count == 0 and report.errors == 0
+    async with pg_session_factory() as session:
+        row = await session.get(OrchestrationExecution, execution.id)
+        assert row.attempts == 0 and row.pending_action_key is None
+        assert await session.scalar(select(func.count()).select_from(OrchestrationAction)) == 0

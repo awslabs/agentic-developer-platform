@@ -48,7 +48,7 @@ jest.mock('fs', () => ({
   writeFileSync: jest.fn(),
 }));
 
-import { S3ArtifactStore } from './s3-artifact-store';
+import { S3ArtifactStore, keyIsReadableBy } from './s3-artifact-store';
 import { CallerIdentity } from './port';
 
 // ---------------------------------------------------------------------------
@@ -82,6 +82,11 @@ function makeDdbItem(overrides: Record<string, any> = {}): Record<string, any> {
 const teamA: CallerIdentity = { orgId: 'org-1', teamId: 'team-A', userId: 'user-1' };
 const teamB: CallerIdentity = { orgId: 'org-1', teamId: 'team-B', userId: 'user-2' };
 
+/** The hierarchical key an identity's own upload actually lands on. */
+function ownKey(identity: CallerIdentity, sessionId = 'sess-1', filename = 'report.pdf'): string {
+  return `o/${identity.orgId}/t/${identity.teamId}/u/${identity.userId}/s/${sessionId}/default/in/${filename}`;
+}
+
 beforeEach(() => {
   mockS3Send.mockReset();
   mockDdbSend.mockReset();
@@ -110,27 +115,24 @@ describe('S3ArtifactStore — identity & access control (#185)', () => {
       expect(putCall.Item.user_id).toBe('user-1');
     });
 
-    it('omits identity fields when none provided (backward compat)', async () => {
+    it('refuses a write when no owner identity is provided', async () => {
       mockS3Send.mockResolvedValue({});
       mockDdbSend.mockResolvedValue({});
 
       const store = makeStore();
-      await store.publish({
+      await expect(store.publish({
         sessionId: 'sess-1',
         localPath: '/tmp/report.pdf',
-      });
-
-      const putCall = mockDdbSend.mock.calls[0][0];
-      expect(putCall.Item.org_id).toBeUndefined();
-      expect(putCall.Item.team_id).toBeUndefined();
-      expect(putCall.Item.user_id).toBeUndefined();
+      })).rejects.toThrow(/complete, safe artifact owner identity/);
+      expect(mockS3Send).not.toHaveBeenCalled();
+      expect(mockDdbSend).not.toHaveBeenCalled();
     });
   });
 
   describe('listBySession()', () => {
-    it('returns artifacts from the same team', async () => {
+    it('returns artifacts stored under the caller’s own derived prefix', async () => {
       mockDdbSend.mockResolvedValue({
-        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1' })],
+        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1', s3Key: ownKey(teamA) })],
       });
 
       const store = makeStore();
@@ -140,9 +142,9 @@ describe('S3ArtifactStore — identity & access control (#185)', () => {
       expect(refs[0].id).toBe('art_abc123');
     });
 
-    it('filters out artifacts from a different team', async () => {
+    it('filters out artifacts stored under another principal’s prefix', async () => {
       mockDdbSend.mockResolvedValue({
-        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1' })],
+        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1', s3Key: ownKey(teamA) })],
       });
 
       const store = makeStore();
@@ -151,23 +153,59 @@ describe('S3ArtifactStore — identity & access control (#185)', () => {
       expect(refs).toHaveLength(0);
     });
 
-    it('shows legacy rows (no team_id) to any caller within the session', async () => {
+    it('withholds a planted row whose team_id matches the reader but whose key does not (#5660)', async () => {
+      // The row's team_id is written by whoever created it, so an attacker can
+      // plant an entry into the victim's session carrying the victim's own team
+      // label. Only the storage path is evidence the reader did not author.
       mockDdbSend.mockResolvedValue({
-        Items: [makeDdbItem({ /* no team_id or org_id */ })],
+        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1', s3Key: ownKey(teamB) })],
       });
 
       const store = makeStore();
       const refs = await store.listBySession('sess-1', undefined, teamA);
 
-      expect(refs).toHaveLength(1);
-      expect(refs[0].id).toBe('art_abc123');
+      expect(refs).toHaveLength(0);
+    });
+
+    it('withholds legacy flat-key rows instead of guessing an owner (#5660)', async () => {
+      // Pre-hierarchy rows carry no ownership evidence in their key. They are
+      // quarantined rather than shown on the strength of session scoping alone.
+      mockDdbSend.mockResolvedValue({
+        Items: [makeDdbItem({ /* legacy flat s3Key, no team_id or org_id */ })],
+      });
+
+      const store = makeStore();
+      const refs = await store.listBySession('sess-1', undefined, teamA);
+
+      expect(refs).toHaveLength(0);
+      expect(mockDdbSend.mock.calls.some((call: any[]) => call[0]._cmd === 'Update')).toBe(false);
+    });
+
+    it('does not backfill a foreign row withheld from listing', async () => {
+      mockDdbSend.mockResolvedValue({
+        Items: [makeDdbItem({ s3Key: ownKey(teamB) })],
+      });
+
+      const store = makeStore();
+      expect(await store.listBySession('sess-1', undefined, teamA)).toHaveLength(0);
+      expect(mockDdbSend.mock.calls.some((call: any[]) => call[0]._cmd === 'Update')).toBe(false);
+    });
+
+    it('withholds every row when the caller has no or partial identity (#5660)', async () => {
+      mockDdbSend.mockResolvedValue({
+        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1', s3Key: ownKey(teamA) })],
+      });
+
+      const store = makeStore();
+      expect(await store.listBySession('sess-1', undefined, undefined)).toHaveLength(0);
+      expect(await store.listBySession('sess-1', undefined, { orgId: 'org-1' })).toHaveLength(0);
     });
 
     it('triggers lazy migration for legacy rows when identity is available', async () => {
       mockDdbSend
         .mockResolvedValueOnce({
           // Query response
-          Items: [makeDdbItem({ /* no org_id */ })],
+          Items: [makeDdbItem({ s3Key: ownKey(teamA) })],
         })
         .mockResolvedValueOnce({}); // UpdateCommand response
 
@@ -188,65 +226,154 @@ describe('S3ArtifactStore — identity & access control (#185)', () => {
     });
   });
 
-  describe('fetch()', () => {
-    it('allows same-team access', async () => {
+  describe('fetch() — authorized by storage path, not by row metadata (#5660)', () => {
+    it.each(['sess-2', 'sess-1-extra'])('refuses the same owner in another session: %s', async otherSession => {
+      mockDdbSend.mockResolvedValue({ Items: [makeDdbItem({ s3Key: ownKey(teamA, otherSession) })] });
+      const store = makeStore();
+      await expect(store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', teamA)).rejects.toThrow(/Access denied/);
+      expect(mockS3Send).not.toHaveBeenCalled();
+      expect(mockDdbSend.mock.calls.some(call => call[0]._cmd === 'Update')).toBe(false);
+      expect(await store.listBySession('sess-1', undefined, teamA)).toEqual([]);
+    });
+
+    it('binds the fetch tool to its trusted turn session', async () => {
+      const store = makeStore();
+      const fetch = jest.spyOn(store, 'fetch').mockResolvedValue();
+      const tool = store.toolsForTurn({ sessionId: 'sess-1', identity: teamA }).find(t => t.name === 'fetch_artifact')!;
+      await tool.handler({ id: 'art_abc123', dest_path: '/tmp/out.pdf', sessionId: 'sess-2' });
+      expect(fetch).toHaveBeenCalledWith('art_abc123', '/tmp/out.pdf', 'sess-1', teamA);
+    });
+
+    it('allows a read of an object under the caller\'s own derived prefix', async () => {
       mockDdbSend.mockResolvedValue({
-        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1' })],
+        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1', s3Key: ownKey(teamA) })],
       });
       mockS3Send.mockResolvedValue({
         Body: { transformToByteArray: () => Promise.resolve(Buffer.from('data')) },
       });
 
       const store = makeStore();
-      await expect(store.fetch('art_abc123', '/tmp/out.pdf', teamA)).resolves.toBeUndefined();
+      await expect(store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', teamA)).resolves.toBeUndefined();
     });
 
-    it('rejects cross-team access', async () => {
+    it('refuses a read of an object under another principal\'s prefix', async () => {
       mockDdbSend.mockResolvedValue({
-        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1' })],
+        Items: [makeDdbItem({ team_id: 'team-A', org_id: 'org-1', s3Key: ownKey(teamA) })],
       });
 
       const store = makeStore();
-      await expect(store.fetch('art_abc123', '/tmp/out.pdf', teamB)).rejects.toThrow(
-        'Access denied: artifact art_abc123 belongs to a different team',
+      await expect(store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', teamB)).rejects.toThrow(
+        /not stored under the caller's own prefix/,
       );
     });
 
-    it('allows access to legacy rows (no team_id) and backfills identity', async () => {
+    it('refuses even when the row\'s team metadata MATCHES the reader', async () => {
+      // The case the old team_id check could not catch, and the reason this
+      // check moved to the path. `recordUpload` used to accept a client-supplied
+      // key, so an attacker could point a row at another tenant's object and
+      // stamp their own team on it. The metadata then authorized its own forger.
+      mockDdbSend.mockResolvedValue({
+        Items: [
+          makeDdbItem({
+            org_id: teamB.orgId,
+            team_id: teamB.teamId, // matches the reader below
+            user_id: teamB.userId,
+            s3Key: ownKey(teamA), // but the object lives in teamA's area
+          }),
+        ],
+      });
+
+      const store = makeStore();
+      await expect(store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', teamB)).rejects.toThrow(
+        /not stored under the caller's own prefix/,
+      );
+      // No S3 read may be attempted at all.
+      expect(mockS3Send).not.toHaveBeenCalled();
+    });
+
+    it('refuses a legacy flat key, which cannot prove ownership', async () => {
+      // `sess-1/default/report.pdf` carries no identity in its path, so there is
+      // no evidence it belongs to the reader. Quarantined, not guessed.
+      mockDdbSend.mockResolvedValue({
+        Items: [makeDdbItem({ s3Key: 'sess-1/default/report.pdf' })],
+      });
+
+      const store = makeStore();
+      await expect(store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', teamA)).rejects.toThrow(
+        /not stored under the caller's own prefix/,
+      );
+    });
+
+    it('refuses a read with no caller identity', async () => {
+      // Previously allowed as "backward compat": an absent identity skipped the
+      // check entirely, so the cheapest bypass was to send no identity at all.
+      mockDdbSend.mockResolvedValue({
+        Items: [makeDdbItem({ team_id: 'team-A', s3Key: ownKey(teamA) })],
+      });
+
+      const store = makeStore();
+      await expect(store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1')).rejects.toThrow(
+        /not stored under the caller's own prefix/,
+      );
+    });
+
+    it('refuses a partial identity rather than deriving a wider prefix', async () => {
+      // Missing team/user would otherwise collapse the prefix to `o/org-1/`,
+      // which spans every team and user in the org.
+      mockDdbSend.mockResolvedValue({
+        Items: [makeDdbItem({ s3Key: ownKey(teamA) })],
+      });
+
+      const store = makeStore();
+      await expect(
+        store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', { orgId: 'org-1' }),
+      ).rejects.toThrow(/not stored under the caller's own prefix/);
+    });
+
+    it('refuses a traversal key even under a matching prefix', async () => {
+      mockDdbSend.mockResolvedValue({
+        Items: [
+          makeDdbItem({
+            s3Key: `o/${teamA.orgId}/t/${teamA.teamId}/u/${teamA.userId}/../../../../etc/secret`,
+          }),
+        ],
+      });
+
+      const store = makeStore();
+      await expect(store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', teamA)).rejects.toThrow(
+        /not stored under the caller's own prefix/,
+      );
+    });
+
+    it('backfills identity only after the path check has passed', async () => {
+      // Lazy migration is still useful, but it must not be reachable for a row
+      // the caller does not own — otherwise the read that was refused still
+      // stamps the caller's identity onto someone else's row.
       mockDdbSend
-        .mockResolvedValueOnce({
-          // Query
-          Items: [makeDdbItem({ /* no team_id */ })],
-        })
-        .mockResolvedValueOnce({}) // UpdateCommand for backfill
-        .mockResolvedValueOnce({}); // (unused, but safe)
-
+        .mockResolvedValueOnce({ Items: [makeDdbItem({ s3Key: ownKey(teamA) })] })
+        .mockResolvedValueOnce({});
       mockS3Send.mockResolvedValue({
         Body: { transformToByteArray: () => Promise.resolve(Buffer.from('data')) },
       });
 
       const store = makeStore();
-      await store.fetch('art_abc123', '/tmp/out.pdf', teamA);
+      await store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', teamA);
 
-      // UpdateCommand should have been called for lazy migration
-      const updateCall = mockDdbSend.mock.calls.find(
-        (call: any[]) => call[0]._cmd === 'Update',
-      );
+      const updateCall = mockDdbSend.mock.calls.find((call: any[]) => call[0]._cmd === 'Update');
       expect(updateCall).toBeDefined();
       expect(updateCall![0].ConditionExpression).toBe('attribute_not_exists(org_id)');
     });
 
-    it('works without identity (backward compat)', async () => {
-      mockDdbSend.mockResolvedValueOnce({
-        Items: [makeDdbItem({ team_id: 'team-A' })],
-      });
-      mockS3Send.mockResolvedValueOnce({
-        Body: { transformToByteArray: () => Promise.resolve(Buffer.from('data')) },
+    it('does not backfill a row whose read was refused', async () => {
+      mockDdbSend.mockResolvedValue({
+        Items: [makeDdbItem({ s3Key: ownKey(teamA) })],
       });
 
       const store = makeStore();
-      // No identity provided — should still work (no team check when caller has no team)
-      await expect(store.fetch('art_abc123', '/tmp/out.pdf')).resolves.toBeUndefined();
+      await expect(store.fetch('art_abc123', '/tmp/out.pdf', 'sess-1', teamB)).rejects.toThrow();
+
+      const updateCall = mockDdbSend.mock.calls.find((call: any[]) => call[0]._cmd === 'Update');
+      expect(updateCall).toBeUndefined();
     });
   });
 
@@ -280,32 +407,18 @@ describe('S3ArtifactStore — identity & access control (#185)', () => {
   });
 
   describe('backfillIdentity() edge cases', () => {
-    it('handles partial identity (orgId only, no teamId/userId) without DDB error', async () => {
+    it('does not backfill when a partial identity cannot authorize the path', async () => {
       const partialIdentity: CallerIdentity = { orgId: 'org-1' };
-      mockDdbSend
-        .mockResolvedValueOnce({
-          // Query
-          Items: [makeDdbItem({ /* legacy row, no identity */ })],
-        })
-        .mockResolvedValueOnce({}); // UpdateCommand
-
-      mockS3Send.mockResolvedValue({
-        Body: { transformToByteArray: () => Promise.resolve(Buffer.from('data')) },
-      });
+      mockDdbSend.mockResolvedValueOnce({ Items: [makeDdbItem({ s3Key: ownKey(teamA) })] });
 
       const store = makeStore();
-      // Should NOT throw — backfill builds UpdateExpression dynamically
-      await expect(store.fetch('art_abc123', '/tmp/out.pdf', partialIdentity)).resolves.toBeUndefined();
+      await store.listBySession('sess-1', undefined, partialIdentity);
+      await new Promise(resolve => setImmediate(resolve));
 
-      // UpdateCommand should only SET org_id (no team_id or user_id)
       const updateCall = mockDdbSend.mock.calls.find(
         (call: any[]) => call[0]._cmd === 'Update',
       );
-      expect(updateCall).toBeDefined();
-      expect(updateCall![0].UpdateExpression).toBe('SET org_id = :org');
-      expect(updateCall![0].ExpressionAttributeValues[':org']).toBe('org-1');
-      expect(updateCall![0].ExpressionAttributeValues[':team']).toBeUndefined();
-      expect(updateCall![0].ExpressionAttributeValues[':user']).toBeUndefined();
+      expect(updateCall).toBeUndefined();
     });
   });
 });
@@ -337,27 +450,23 @@ describe('S3ArtifactStore — hierarchical keys & user uploads (#186)', () => {
       expect(key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/screenshot.png');
     });
 
-    it('falls back to legacy flat key when identity is incomplete', () => {
-      const key = S3ArtifactStore.buildS3Key({
+    it('refuses a key when identity is incomplete', () => {
+      expect(() => S3ArtifactStore.buildS3Key({
         identity: { orgId: 'org-1' }, // missing teamId/userId
         sessionId: 'sess-1',
         taskId: 'task-1',
         direction: 'out',
         filename: 'report.pdf',
-      });
-      // Legacy flat key does not include direction
-      expect(key).toBe('sess-1/task-1/report.pdf');
+      })).toThrow(/complete, safe artifact owner identity/);
     });
 
-    it('falls back to legacy flat key when no identity', () => {
-      const key = S3ArtifactStore.buildS3Key({
+    it('refuses a key when no identity is provided', () => {
+      expect(() => S3ArtifactStore.buildS3Key({
         sessionId: 'sess-1',
         taskId: 'task-1',
         direction: 'out',
         filename: 'report.pdf',
-      });
-      // Legacy flat key does not include direction
-      expect(key).toBe('sess-1/task-1/report.pdf');
+      })).toThrow(/complete, safe artifact owner identity/);
     });
   });
 
@@ -400,19 +509,17 @@ describe('S3ArtifactStore — hierarchical keys & user uploads (#186)', () => {
       expect(s3Call.Key).toContain('/in/');
     });
 
-    it('uses legacy key when no identity (backward compat)', async () => {
+    it('refuses publish when no identity is available', async () => {
       mockS3Send.mockResolvedValue({});
       mockDdbSend.mockResolvedValue({});
 
       const store = makeStore();
-      await store.publish({
+      await expect(store.publish({
         sessionId: 'sess-1',
         taskId: 'task-1',
         localPath: '/tmp/report.pdf',
-      });
-
-      const s3Call = mockS3Send.mock.calls[0][0];
-      expect(s3Call.Key).toBe('sess-1/task-1/report.pdf');
+      })).rejects.toThrow(/complete, safe artifact owner identity/);
+      expect(mockS3Send).not.toHaveBeenCalled();
     });
   });
 
@@ -442,21 +549,18 @@ describe('S3ArtifactStore — hierarchical keys & user uploads (#186)', () => {
       expect(lastPutCall.ContentType).toBe('application/pdf');
     });
 
-    it('uses legacy key when identity is incomplete', async () => {
+    it('refuses a presign when identity is incomplete', async () => {
       const { getSignedUrl: mockGetSignedUrl } = require('@aws-sdk/s3-request-presigner');
       mockGetSignedUrl.mockResolvedValue('https://presigned.example.com/upload');
 
       const store = makeStore();
-      const result = await store.presignUpload({
+      await expect(store.presignUpload({
         identity: { orgId: 'org-1' },
         sessionId: 'sess-1',
         taskId: 'task-1',
         filename: 'doc.pdf',
         contentType: 'application/pdf',
-      });
-
-      // Legacy key doesn't include the direction segment
-      expect(result.s3Key).toBe('sess-1/task-1/doc.pdf');
+      })).rejects.toThrow(/complete, safe artifact owner identity/);
     });
   });
 
@@ -492,10 +596,17 @@ describe('S3ArtifactStore — hierarchical keys & user uploads (#186)', () => {
     });
 
     it('returns existing ref when checksum matches (idempotent)', async () => {
+      const { getSignedUrl: mockGetSignedUrl } = require('@aws-sdk/s3-request-presigner');
+      mockGetSignedUrl.mockResolvedValueOnce('https://presigned.example.com/fresh-read');
       const existingItem = makeDdbItem({
         id: 'art_existing',
         checksum: 'abc123',
         source: 'user',
+        url: 'https://stale-or-untrusted.example.com/artifact',
+        s3Key: 'o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf',
+        org_id: 'org-1',
+        team_id: 'team-A',
+        user_id: 'user-1',
       });
       mockDdbSend.mockResolvedValueOnce({ Items: [existingItem] });
 
@@ -513,8 +624,172 @@ describe('S3ArtifactStore — hierarchical keys & user uploads (#186)', () => {
 
       // Should return existing ref, not create a new one
       expect(ref.id).toBe('art_existing');
+      expect(ref.url).toBe('https://presigned.example.com/fresh-read');
+      expect(ref.url).not.toBe(existingItem.url);
       // Only 1 DDB call (query), no PutCommand
       expect(mockDdbSend).toHaveBeenCalledTimes(1);
     });
+
+    it.each([
+      [
+        'foreign key with caller-looking metadata',
+        {
+          s3Key: 'o/org-9/t/team-Z/u/user-victim/s/sess-victim/task-1/in/secret.pdf',
+          org_id: 'org-1',
+          team_id: 'team-A',
+          user_id: 'user-1',
+        },
+      ],
+      [
+        'legacy row missing ownership',
+        { s3Key: 'o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf' },
+      ],
+    ])('quarantines a checksum match from a %s', async (_label, poisonedFields) => {
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      mockDdbSend
+        .mockResolvedValueOnce({
+          Items: [makeDdbItem({
+            id: 'art_poisoned',
+            checksum: 'abc123',
+            url: 'https://victim.example.com/secret',
+            ...poisonedFields,
+          })],
+        })
+        .mockResolvedValueOnce({});
+
+      const store = makeStore();
+      const ref = await store.recordUpload({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+        sizeBytes: 2048,
+        checksum: 'abc123',
+        identity: teamA,
+      });
+
+      expect(ref.id).not.toBe('art_poisoned');
+      expect(ref.url).not.toBe('https://victim.example.com/secret');
+      expect(mockDdbSend).toHaveBeenCalledTimes(2);
+      const putCall = mockDdbSend.mock.calls[1][0];
+      expect(putCall.Item.s3Key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf');
+    });
+
+    // #5660 (A07): the recorded location is always server-derived.
+    it('records the server-derived key, ignoring the key in the request', async () => {
+      mockDdbSend.mockResolvedValueOnce({ Items: [] }).mockResolvedValueOnce({});
+
+      const store = makeStore();
+      await store.recordUpload({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        // A key in another tenant's area. Accepting this is what let a caller
+        // register someone else's object as their own artifact.
+        s3Key: 'o/org-9/t/team-Z/u/user-victim/s/sess-victim/task-1/in/secret.pdf',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+        sizeBytes: 2048,
+        checksum: 'abc123',
+        identity: teamA,
+      });
+
+      const putCall = mockDdbSend.mock.calls[1][0];
+      expect(putCall.Item.s3Key).toBe('o/org-1/t/team-A/u/user-1/s/sess-1/task-1/in/doc.pdf');
+      expect(putCall.Item.s3Key).not.toContain('user-victim');
+    });
+
+    it('derives the same key presignUpload issued, so a real upload still resolves', async () => {
+      // The two must agree or legitimate uploads would record a key that holds
+      // no object.
+      mockS3Send.mockResolvedValue({});
+      const store = makeStore();
+      const presigned = await store.presignUpload({
+        identity: teamA,
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+      });
+
+      mockDdbSend.mockResolvedValueOnce({ Items: [] }).mockResolvedValueOnce({});
+      await store.recordUpload({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+        sizeBytes: 2048,
+        checksum: 'abc123',
+        identity: teamA,
+      });
+
+      const putCall = mockDdbSend.mock.calls[1][0];
+      expect(putCall.Item.s3Key).toBe(presigned.s3Key);
+    });
+
+    it('records a key the uploader can then read back', async () => {
+      // Ties the write path to the read check: what recordUpload stores must
+      // satisfy keyIsReadableBy for its own uploader, or uploads would be
+      // recorded and then be unreadable.
+      mockDdbSend.mockResolvedValueOnce({ Items: [] }).mockResolvedValueOnce({});
+
+      const store = makeStore();
+      await store.recordUpload({
+        sessionId: 'sess-1',
+        taskId: 'task-1',
+        filename: 'doc.pdf',
+        contentType: 'application/pdf',
+        sizeBytes: 2048,
+        checksum: 'abc123',
+        identity: teamA,
+      });
+
+      const recordedKey = mockDdbSend.mock.calls[1][0].Item.s3Key;
+      expect(keyIsReadableBy(recordedKey, 'sess-1', teamA)).toBe(true);
+      expect(keyIsReadableBy(recordedKey, 'sess-1', teamB)).toBe(false);
+    });
+
+    it('refuses a session id that is not a safe single segment', async () => {
+      const store = makeStore();
+      for (const sessionId of ['o', '../escape', 'a/b']) {
+        await expect(
+          store.recordUpload({
+            sessionId,
+            taskId: 'task-1',
+            filename: 'doc.pdf',
+            contentType: 'application/pdf',
+            sizeBytes: 2048,
+            checksum: 'abc123',
+            identity: teamA,
+          }),
+        ).rejects.toThrow(/Invalid session id/);
+      }
+      expect(mockDdbSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('session id shape is enforced on every path-building entry point (#5660)', () => {
+    it.each([['o'], ['t'], ['u'], ['s'], ['../escape'], ['a/b']])(
+      'refuses %j in presignUpload, publish and listBySession',
+      async sessionId => {
+        const store = makeStore();
+        await expect(
+          store.presignUpload({
+            identity: teamA,
+            sessionId,
+            taskId: 'task-1',
+            filename: 'doc.pdf',
+            contentType: 'application/pdf',
+          }),
+        ).rejects.toThrow(/Invalid session id/);
+
+        await expect(
+          store.publish({ sessionId, localPath: '/tmp/report.pdf', identity: teamA }),
+        ).rejects.toThrow(/Invalid session id/);
+
+        await expect(store.listBySession(sessionId, undefined, teamA)).rejects.toThrow(
+          /Invalid session id/,
+        );
+      },
+    );
   });
 });

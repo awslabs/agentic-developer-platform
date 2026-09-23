@@ -11,6 +11,7 @@ Design reference: docs/agent-context/design-1721-tenant-isolation.md §9.1, §9.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -65,8 +66,7 @@ class IngestionScope:
         }
 
 
-# Default scope for backward compatibility (§9.3):
-# Messages without a scope field default to shared visibility.
+# Explicit shared scope for trusted publishers. Missing consumer scope is refused.
 DEFAULT_SCOPE = IngestionScope(
     tenant_id=None,
     owner_sub=None,
@@ -75,71 +75,48 @@ DEFAULT_SCOPE = IngestionScope(
 )
 
 
+class ScopeValidationError(ValueError):
+    """Ownership is absent, contradictory, or cannot form a safe storage prefix."""
+
+
 def parse_scope(raw: dict[str, Any] | None) -> IngestionScope:
-    """Parse a scope dict from an SQS message body into an IngestionScope.
-
-    Returns DEFAULT_SCOPE when raw is None or empty (backward compatibility).
-    Normalizes unknown visibility values to "shared" for safety.
-    """
-    if not raw:
-        return DEFAULT_SCOPE
-
-    visibility = raw.get("visibility", "shared")
+    """Validate an explicit producer scope; missing ownership never means shared."""
+    if not isinstance(raw, dict) or not raw or "visibility" not in raw:
+        raise ScopeValidationError("scope.visibility must be explicitly provided")
+    visibility = raw["visibility"]
     if visibility not in VALID_VISIBILITIES:
-        visibility = "shared"
-
-    tenant_id = raw.get("tenant_id") or None
-    owner_sub = raw.get("owner_sub") or None
-
-    # Validate: tenant visibility requires tenant_id
-    if visibility == "tenant" and not tenant_id:
-        log.warning("scope.visibility=tenant but tenant_id is missing — defaulting to shared")
-        return DEFAULT_SCOPE
-
-    # Validate: personal visibility requires owner_sub
-    if visibility == "personal" and not owner_sub:
-        log.warning("scope.visibility=personal but owner_sub is missing — defaulting to shared")
-        return DEFAULT_SCOPE
-
-    return IngestionScope(
-        tenant_id=tenant_id,
-        owner_sub=owner_sub,
-        project_id=raw.get("project_id") or None,
-        visibility=visibility,
-    )
+        raise ScopeValidationError(
+            f"scope.visibility={visibility!r} is not one of {VALID_VISIBILITIES}"
+        )
+    identifiers = {}
+    for field in ("tenant_id", "owner_sub", "project_id"):
+        value = raw.get(field)
+        if value in (None, ""):
+            identifiers[field] = None
+        elif not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@:-]*", value):
+            raise ScopeValidationError(f"scope.{field} must be a safe, nonempty identifier")
+        else:
+            identifiers[field] = value
+    if visibility == "tenant" and not identifiers["tenant_id"]:
+        raise ScopeValidationError("scope.visibility=tenant but tenant_id is missing")
+    if visibility == "personal" and not identifiers["owner_sub"]:
+        raise ScopeValidationError("scope.visibility=personal but owner_sub is missing")
+    if visibility == "shared" and (identifiers["tenant_id"] or identifiers["owner_sub"]):
+        raise ScopeValidationError("shared scope cannot carry tenant or owner restrictions")
+    return IngestionScope(visibility=visibility, **identifiers)
 
 
 def parse_scope_from_env() -> IngestionScope:
-    """Read scope from INGESTION_SCOPE_* environment variables.
-
-    Used by child processes (ingest-repo.py, etc.) to receive scope
-    propagated by sqs-worker.py via environment.
-    Returns DEFAULT_SCOPE when env vars are absent (backward-compatible).
-    """
+    """Validate the same explicit scope passed by the queue worker to children."""
     import os
 
-    visibility = os.environ.get("INGESTION_SCOPE_VISIBILITY", "shared")
-    if visibility not in VALID_VISIBILITIES:
-        visibility = "shared"
-
-    tenant_id = os.environ.get("INGESTION_SCOPE_TENANT_ID") or None
-    owner_sub = os.environ.get("INGESTION_SCOPE_OWNER_SUB") or None
-
-    # Validate: tenant visibility requires tenant_id
-    if visibility == "tenant" and not tenant_id:
-        log.warning("INGESTION_SCOPE_VISIBILITY=tenant but no TENANT_ID — defaulting to shared")
-        return DEFAULT_SCOPE
-
-    # Validate: personal visibility requires owner_sub
-    if visibility == "personal" and not owner_sub:
-        log.warning("INGESTION_SCOPE_VISIBILITY=personal but no OWNER_SUB — defaulting to shared")
-        return DEFAULT_SCOPE
-
-    return IngestionScope(
-        tenant_id=tenant_id,
-        owner_sub=owner_sub,
-        project_id=os.environ.get("INGESTION_SCOPE_PROJECT_ID") or None,
-        visibility=visibility,
+    return parse_scope(
+        {
+            "visibility": os.environ.get("INGESTION_SCOPE_VISIBILITY"),
+            "tenant_id": os.environ.get("INGESTION_SCOPE_TENANT_ID"),
+            "owner_sub": os.environ.get("INGESTION_SCOPE_OWNER_SUB"),
+            "project_id": os.environ.get("INGESTION_SCOPE_PROJECT_ID"),
+        }
     )
 
 
@@ -154,6 +131,8 @@ def compute_s3_prefix(scope: IngestionScope, base_prefix: str) -> str:
     The leaf is the last path component of base_prefix (after stripping
     any leading "content/" path segment that is an S3ContentStore artifact).
     """
+    # Also validate direct dataclass callers before interpolating identifiers.
+    scope = parse_scope(scope.to_dict())
     # Normalize: strip trailing slash
     base_prefix = base_prefix.rstrip("/")
 

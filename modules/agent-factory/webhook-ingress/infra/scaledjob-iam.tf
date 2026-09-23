@@ -8,7 +8,7 @@
 # Permissions:
 #   - SQS: receive + delete messages from agent-submit.fifo
 #   - Bedrock: invoke models for agent reasoning
-#   - Bedrock AgentCore: ephemeral browser sessions (url-analysis skill)
+#   - Bedrock AgentCore: explicitly denied; the URL-analysis broker owns it
 #   - Secrets Manager: read GitHub App keys, tenant credentials
 #     (explicitly DENIED on the four customer vault namespaces — #4130)
 #   - STS: assume customer AWS roles for operations-persona tasks
@@ -16,7 +16,7 @@
 #   - DynamoDB: update correlation pointers (UpdateItem, not PutItem — #1716)
 #   - KMS: decrypt the marker-signing key only (condition-scoped — #4028)
 #   - CloudWatch Logs: agent execution + bootstrap logging
-#   - S3: beads state + url-analysis evidence + agent-run-logs
+#   - S3: beads state + domain app artifacts + agent-run-logs
 #   - Preflight: read-only checks (multiple services)
 #
 # Issue: #346, #1204, #4028, #4130
@@ -135,25 +135,14 @@ locals {
         ]
       },
       {
-        # Region restriction prevents a misconfigured skill from spinning up
-        # browser sessions in other regions (cost + audit containment).
-        Sid    = "BedrockAgentCoreBrowser"
-        Effect = "Allow"
-        Action = [
-          "bedrock-agentcore:ConnectBrowserAutomationStream",
-          "bedrock-agentcore:GetBrowserSession",
-          "bedrock-agentcore:InvokeBrowser",
-          "bedrock-agentcore:ListBrowserSessions",
-          "bedrock-agentcore:StartBrowserSession",
-          "bedrock-agentcore:StopBrowserSession",
-          "bedrock-agentcore:UpdateBrowserStream"
-        ]
+        # Generated orchestration is untrusted code. An explicit service-wide
+        # deny remains effective even if this shared role has another broad
+        # identity policy attached. Only the separate browser broker role can
+        # create or control an AgentCore Browser session.
+        Sid      = "DenyDirectAgentCoreBrowser"
+        Effect   = "Deny"
+        Action   = ["bedrock-agentcore:*"]
         Resource = "*"
-        Condition = {
-          StringEquals = {
-            "aws:RequestedRegion" = var.aws_region
-          }
-        }
       },
       {
         # UpdateItem, NOT PutItem (issue #4028). The worker's write_pointer()
@@ -294,11 +283,10 @@ locals {
           "s3:GetObject",
           "s3:PutObject"
         ]
-        Resource = [
+        Resource = concat([
           "arn:aws:s3:::adp-*-agent-beads-state-*/*",
           "arn:aws:s3:::adp-*-agent-run-logs-*/*",
-          "arn:aws:s3:::adp-*-url-analysis-evidence-v2-*/*"
-        ]
+        ], local.domain_worker_artifact_resources)
       },
       {
         Sid    = "SecretsManagerOps"

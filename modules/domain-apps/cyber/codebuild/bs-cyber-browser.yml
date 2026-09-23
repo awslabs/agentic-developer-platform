@@ -1,9 +1,9 @@
 version: 0.2
 
-# CodeBuild buildspec for the cyber worker image.
+# CodeBuild buildspec for the cyber browser broker image.
 #
-# Builds the Python worker at modules/domain-apps/cyber/workers/Dockerfile.
-# Pushes to ECR repo adp-cyber-worker with git-SHA + latest tags.
+# Builds the Python worker at modules/domain-apps/cyber/browser/Dockerfile.
+# Pushes to ECR repo adp-cyber-browser with git-SHA + latest tags.
 #
 # Environment variables injected by the start-build caller:
 #   AWS_REGION, ENVIRONMENT, ACCOUNT_ID, REGISTRY, IMAGE_TAG
@@ -23,7 +23,7 @@ phases:
           echo "All builds must use codebuild-run.sh or the codebuild-run composite action." >&2
           exit 1
         fi
-      - ECR_REPO="adp-cyber-worker"
+      - ECR_REPO="adp-cyber-browser"
       - IMAGE_TAG="${IMAGE_TAG:-latest}"
       - |
         if ! aws ecr describe-repositories --repository-names "$ECR_REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
@@ -33,8 +33,8 @@ phases:
 
   build:
     commands:
-      - cd modules/domain-apps/cyber/workers
-      - docker build --no-cache --pull -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
+      - cd modules/domain-apps/cyber
+      - docker build --no-cache --pull -f browser/Dockerfile -t "$REGISTRY/$ECR_REPO:$IMAGE_TAG" .
       - docker tag "$REGISTRY/$ECR_REPO:$IMAGE_TAG" "$REGISTRY/$ECR_REPO:latest"
       - docker push "$REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$REGISTRY/$ECR_REPO:latest"

@@ -43,7 +43,7 @@ def migration_job(deployment, image, namespace, name):
     }
 
 
-def migrate(manifest, image, namespace):
+def rendered_migration_job(manifest, image, namespace):
     deployment = json.loads(
         command(
             [
@@ -59,7 +59,12 @@ def migrate(manifest, image, namespace):
         )
     )
     name = f"gateway-migrate-{uuid.uuid4().hex[:12]}"
-    job = migration_job(deployment, image, namespace, name)
+    return migration_job(deployment, image, namespace, name)
+
+
+def migrate(manifest, image, namespace):
+    job = rendered_migration_job(manifest, image, namespace)
+    name = job["metadata"]["name"]
     command(["kubectl", "create", "-f", "-"], input_text=json.dumps(job))
     print(f"Waiting for {namespace}/{name} before serving {image}", flush=True)
     deadline = time.monotonic() + 930
@@ -75,10 +80,20 @@ def migrate(manifest, image, namespace):
     raise RuntimeError(f"Migration wait expired: inspect Job {namespace}/{name}. Serving release was not changed.")
 
 
+def verify_admission(manifest, image, namespace):
+    job = rendered_migration_job(manifest, image, namespace)
+    command(["kubectl", "create", "--dry-run=server", "-f", "-"], input_text=json.dumps(job))
+    print(f"Migration Job is admissible in {namespace}.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--namespace", default="adp-gateway")
+    parser.add_argument("--verify-admission", action="store_true")
     args = parser.parse_args()
-    migrate(args.manifest, args.image, args.namespace)
+    if args.verify_admission:
+        verify_admission(args.manifest, args.image, args.namespace)
+    else:
+        migrate(args.manifest, args.image, args.namespace)

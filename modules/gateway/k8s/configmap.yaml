@@ -52,6 +52,11 @@ data:
   # CLI app client for web CLI login (/auth/cli). Empty until the Terraform
   # that creates the client applies — endpoints answer 503 until then.
   BG_COGNITO_CLI_CLIENT_ID: "__COGNITO_CLI_CLIENT_ID__"
+  BG_COGNITO_AGENT_CLIENT_ID: "__COGNITO_AGENT_CLIENT_ID__"
+  BG_COGNITO_GITLAB_CLIENT_ID: "__COGNITO_GITLAB_CLIENT_ID__"
+  # Dev-only pentest actor client. Empty outside dev or before agent-factory applies.
+  BG_COGNITO_PENTEST_CLIENT_ID: "__COGNITO_PENTEST_CLIENT_ID__"
+  BG_AGENT_CLIENTS_TABLE: "__AGENT_CLIENTS_TABLE__"
   BG_COGNITO_CLIENT_ID: "__COGNITO_CLIENT_ID__"
   BG_COGNITO_DOMAIN: "__COGNITO_DOMAIN__"
 
@@ -127,7 +132,16 @@ data:
   # Scrub levels:
   # - off: No scrubbing (debugging only, not for production)
   # - basic: Headers + regex patterns (fast, no AWS API calls)
-  # - standard: Headers + regex + Amazon Comprehend PII detection (recommended)
+  # - standard: Headers + regex + Amazon Comprehend PII detection (DEFAULT)
+  #
+  # #5672: the deploy pipeline used to substitute the literal "basic" here,
+  # overriding the application default in every environment, so personal data in
+  # prompts was stored as typed. The value now comes from
+  # /adp/<env>/gateway/chat-logging-scrub-level and defaults to "standard" when
+  # that parameter is unset. Do not hard-code a weaker level in this file or in a
+  # deploy script — a weaker level must be a per-environment, reviewed choice.
+  # An unset or unrecognised value resolves UP to "standard" in the app
+  # (src/chat_logging/config.py), so a typo cannot silently downgrade redaction.
   # =============================================================================
   BG_CHAT_LOGGING_ENABLED: "__CHAT_LOGGING_ENABLED__"
   BG_CHAT_LOGGING_BUCKET: "__CHAT_LOGGING_BUCKET__"
@@ -194,6 +208,8 @@ data:
   # =============================================================================
   AGENT_CONTEXT_ENABLED: "true"
   INGESTION_QUEUE_URL: "__INGESTION_QUEUE_URL__"
+  # Same existing bucket as agent-context/terraform; no new storage.
+  AGENT_CONTEXT_S3_BUCKET: "agent-context-platform-data-__PLATFORM_BEDROCK_ACCOUNT_ID__"
   BG_AGENT_CONTEXT_DBNAME: "agent_context"
 
   # =============================================================================

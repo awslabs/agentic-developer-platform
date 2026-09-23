@@ -22,9 +22,11 @@ export interface RollupBarProps {
   counts: Record<DisplayState, number>;
   /** Total segmented nodes. Pass explicitly so `superseded` exclusions are visible. */
   total: number;
+  stories?: { complete: number; total: number };
+  storyScope?: 'all' | 'implementation';
 }
 
-export function RollupBar({ counts, total }: RollupBarProps) {
+export function RollupBar({ counts, total, stories, storyScope = 'all' }: RollupBarProps) {
   const present = DISPLAY_STATE_ORDER.filter((state) => counts[state] > 0);
 
   // Built from the same ordered array the segments render from (§9.4).
@@ -37,6 +39,14 @@ export function RollupBar({ counts, total }: RollupBarProps) {
 
   return (
     <div className="space-y-2">
+      {stories && stories.total > 0 && (
+        <p className="text-sm font-medium" data-testid="story-completion-count">
+          {stories.complete} of {stories.total} {storyScope === 'implementation' ? 'implementation ' : ''}stories complete
+        </p>
+      )}
+      <p className="text-xs text-gray-600 dark:text-gray-400">
+        All {total} work items, including implementation stories, evaluations and approval gates
+      </p>
       <div
         role="img"
         aria-label={description}

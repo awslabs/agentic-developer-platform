@@ -168,6 +168,41 @@ locals {
   internal_plane_alb_arn = var.internal_plane_alb_arn != "" ? var.internal_plane_alb_arn : var.internal_alb_arn
 }
 
+resource "random_password" "edge_provenance" {
+  length  = 64
+  special = false
+}
+
+# Issue #5653 (A01): the identity header must never be forwarded from the client.
+#
+# X-Caller-Identity is proof of identity to the gateway pod: it names an IAM
+# principal, and the pod resolves it against the agent registry to a privileged
+# TokenContext. That is only sound when API GATEWAY wrote the value, which it does
+# on the AWS_IAM routes via `context.identity.userArn` — a value taken from the
+# verified SigV4 signature that a client cannot influence.
+#
+# AWS_IAM routes also inject an independently generated edge proof. The pod
+# validates that proof before trusting the identity, so a direct-cluster caller
+# cannot bypass API Gateway by supplying only the identity header. Auth-NONE
+# routes blank both headers, replacing any inbound values.
+#
+# Blank (not absent) is deliberate — an integration request parameter can only be
+# mapped to a value, not dropped, and the pod treats empty as "no identity"
+# (`headers.get(...).strip()` is falsy), so blank and absent are equivalent to the
+# application while blank is what API Gateway can actually guarantee.
+#
+# 'single-quoted' is API Gateway mapping syntax for a static string literal.
+locals {
+  blank_caller_identity = {
+    "integration.request.header.X-Caller-Identity"     = "''"
+    "integration.request.header.X-Adp-Edge-Provenance" = "''"
+  }
+  verified_caller_identity = {
+    "integration.request.header.X-Caller-Identity"     = "context.identity.userArn"
+    "integration.request.header.X-Adp-Edge-Provenance" = "'${random_password.edge_provenance.result}'"
+  }
+}
+
 resource "aws_api_gateway_rest_api" "main" {
   name        = "${var.name_prefix}-api"
   description = "Bedrock Gateway REST API with response streaming (Issue #236)"
@@ -213,6 +248,9 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = var.internal_alb_arn
+            # Issue #5653: BLANK the identity header on this NONE-auth route.
+            # See the local.blank_caller_identity rationale above.
+            requestParameters = local.blank_caller_identity
           }
         }
       }
@@ -238,9 +276,19 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = var.internal_alb_arn
-            requestParameters = {
-              "integration.request.path.proxy" = "method.request.path.proxy"
-            }
+            # Issue #5653: BLANK the identity header. This route is auth NONE —
+            # API Gateway verifies no signature here — so a client-supplied
+            # X-Caller-Identity would otherwise be forwarded to the pod verbatim
+            # and honoured as proof of identity. CloudFront deletes the header,
+            # but the API Gateway invoke URL is directly reachable, so the edge
+            # function is not the only way in. Blanking it here means the value
+            # the pod sees on this route is always empty, whatever the client sent.
+            requestParameters = merge(
+              {
+                "integration.request.path.proxy" = "method.request.path.proxy"
+              },
+              local.blank_caller_identity,
+            )
             cacheKeyParameters = ["method.request.path.proxy"]
           }
         }
@@ -260,9 +308,7 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = var.internal_alb_arn
-            requestParameters = {
-              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
-            }
+            requestParameters    = local.verified_caller_identity
           }
         }
       }
@@ -289,10 +335,12 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = var.internal_alb_arn
-            requestParameters = {
-              "integration.request.path.proxy"               = "method.request.path.proxy"
-              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
-            }
+            requestParameters = merge(
+              {
+                "integration.request.path.proxy" = "method.request.path.proxy"
+              },
+              local.verified_caller_identity,
+            )
             cacheKeyParameters = ["method.request.path.proxy"]
           }
         }
@@ -328,10 +376,12 @@ resource "aws_api_gateway_rest_api" "main" {
             connectionType       = "VPC_LINK"
             connectionId         = aws_apigatewayv2_vpc_link.main.id
             integrationTarget    = local.internal_plane_alb_arn
-            requestParameters = {
-              "integration.request.path.proxy"               = "method.request.path.proxy"
-              "integration.request.header.X-Caller-Identity" = "context.identity.userArn"
-            }
+            requestParameters = merge(
+              {
+                "integration.request.path.proxy" = "method.request.path.proxy"
+              },
+              local.verified_caller_identity,
+            )
             cacheKeyParameters = ["method.request.path.proxy"]
           }
         }
@@ -358,6 +408,12 @@ resource "aws_api_gateway_rest_api" "main" {
               passthroughBehavior = "when_no_match"
               contentHandling     = "CONVERT_TO_TEXT"
               timeoutInMillis     = 29000
+              # Issue #5653: BLANK the identity header on this NONE-auth route
+              # too. The broker Lambda does not consume X-Caller-Identity today,
+              # but leaving a client-settable identity header flowing into any
+              # auth-NONE integration is the pattern this issue exists to remove,
+              # and the invariant test below asserts it holds for every route.
+              requestParameters = local.blank_caller_identity
             }
           }
         }
@@ -396,6 +452,64 @@ resource "aws_api_gateway_rest_api" "main" {
     Service = "api-gateway"
     Purpose = "llm-streaming-alternate-route"
   })
+
+  # ===========================================================================
+  # Issue #5653 (A01): the route invariant, asserted at plan time
+  # ===========================================================================
+  # Every route must either SET X-Caller-Identity from the verified SigV4
+  # identity, or BLANK it. No route may leave it unmapped, because unmapped
+  # means "forward whatever the client sent" — and the pod treats that header
+  # as proof of identity, resolving it against the agent registry to a
+  # privileged TokenContext.
+  #
+  # This is asserted here rather than only in a test because the failure mode is
+  # a route ADDED LATER. The blanking on today's five routes is easy to review;
+  # what is not easy is remembering, months from now, that a new auth-NONE path
+  # added to this same `paths` map silently reopens an unauthenticated path to
+  # platform-scope authority. A plan-time postcondition makes that omission fail
+  # the deploy that introduces it, at the moment it is introduced, instead of
+  # depending on a reviewer noticing an absent line.
+  #
+  # Reading `self.body` checks the ACTUAL rendered document — after the
+  # conditionals and merges — so it cannot drift from what is deployed the way a
+  # parallel list of expected paths would.
+  lifecycle {
+    postcondition {
+      # The MOCK placeholder body (no ALB yet) has no integrations to the pod at
+      # all, so the invariant is vacuous there and the check is skipped.
+      condition = alltrue([
+        for path_key, path_item in try(jsondecode(self.body).paths, {}) :
+        alltrue([
+          for required_header in [
+            "integration.request.header.X-Caller-Identity",
+            "integration.request.header.X-Adp-Edge-Provenance",
+            ] : contains(
+            keys(try(path_item["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"].requestParameters, {})),
+            required_header
+          )
+        ])
+        if can(path_item["x-amazon-apigateway-any-method"]["x-amazon-apigateway-integration"])
+      ])
+      error_message = <<-EOT
+        Issue #5653: every API Gateway route must map both caller identity and edge provenance headers.
+
+        A route that does not map it forwards the client's value to the gateway pod,
+        which treats X-Caller-Identity as proof of identity and resolves it against
+        the agent registry — granting an unauthenticated caller a privileged
+        internal/platform TokenContext.
+
+        Add ONE of the following to the new route's x-amazon-apigateway-integration:
+
+          AWS_IAM route (API Gateway verified a SigV4 signature):
+            requestParameters = local.verified_caller_identity
+
+          any other route (auth NONE, Lambda proxy, etc.):
+            requestParameters = local.blank_caller_identity
+
+        Do not remove this check to make a deploy pass.
+      EOT
+    }
+  }
 }
 
 # =============================================================================
@@ -563,9 +677,28 @@ resource "aws_api_gateway_method_settings" "all" {
   method_path = "*/*"
 
   settings {
-    metrics_enabled    = true
-    logging_level      = "INFO"
-    data_trace_enabled = var.environment != "prod"
+    metrics_enabled = true
+    logging_level   = "INFO"
+
+    # Issue #5672. This was `var.environment != "prod"`, i.e. full request/response
+    # payload tracing was ON in every environment whose name was not literally
+    # "prod". data_trace_enabled writes complete requests and responses — headers
+    # included — into the CloudWatch log group. Headers are where callers present
+    # their bearer tokens and the internal-plane shared secret; bodies are the
+    # prompts and completions. That put replayable credentials and private user
+    # content in front of everyone with log read access: CI roles, build roles,
+    # any operator.
+    #
+    # Deriving it from the environment NAME is the part that made this durable: a
+    # new environment is exposed by default because nobody added its name to a
+    # comparison. Now it is an explicit input, default false, set true nowhere.
+    # Turning payload tracing on has to be a deliberate, reviewed, per-environment
+    # act with a plan diff that shows it.
+    #
+    # The access_log_settings format on the stage above stays the single sanctioned
+    # gateway log source: request id, source IP, time, method, path, status, length
+    # and latencies — metadata only, no headers and no bodies.
+    data_trace_enabled = var.enable_payload_tracing
 
     throttling_burst_limit = var.throttle_burst_limit
     throttling_rate_limit  = var.throttle_rate_limit
@@ -626,4 +759,59 @@ resource "aws_lambda_permission" "broker_api_gateway" {
   function_name = var.broker_lambda_function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/*"
+}
+
+# =============================================================================
+# Edge provenance signal for the ConfigMap renderers (Issue #5653, A01)
+# =============================================================================
+# BG_TRUST_APIGW_HEADERS tells the gateway pod "an X-Caller-Identity that
+# reaches you was written by API Gateway from a verified SigV4 signature, so you
+# may believe it". That claim is only true once the blanking above is deployed —
+# it is a statement about THIS module's state.
+#
+# Until now both ConfigMap renderers hard-coded it to `true`, which meant the
+# application's safe default (trust_apigw_headers = False in src/shared/config.py)
+# was overridden on every deploy regardless of whether any edge control existed.
+# The flag asserted a property nothing had established.
+#
+# Publishing it from the same module that installs the blanking couples the two:
+# the renderers read this param, so the pod believes the header only in an
+# environment whose edge actually blanks it. An environment that has not applied
+# this module has no param, the renderers fall back to "false", and forged
+# assertions are inert rather than authoritative.
+#
+# Rollout ordering (important, and the reason this is a param and not a literal):
+# apply this module BEFORE rolling out the app build that reads the param. In the
+# reverse order the pod is merely stricter than necessary for one rollout —
+# vouched agent traffic is refused until the param exists, which is an availability
+# regression, not a security one. The dangerous order is the opposite one, and it
+# is now impossible: the flag cannot be true without the blanking.
+resource "aws_ssm_parameter" "trust_apigw_headers" {
+  name        = "/adp/${var.environment}/gateway/trust-apigw-headers"
+  description = "Whether the gateway may evaluate API Gateway identity headers. Identity still requires the SecureString-backed edge proof. Issue #5653."
+  type        = "String"
+  value       = "true"
+
+  tags = var.common_tags
+
+  # Operators need a break-glass: if the tightening rejects a caller nobody
+  # anticipated, set this to "false" (SSM put + rollout restart) to make the
+  # header inert while the cause is diagnosed. Terraform must not revert that on
+  # the next apply. Matches the budget-fail-mode lever in gateway/infra/main.tf.
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  # The param is a claim about the blanking, so it must not exist before the
+  # route table that does the blanking.
+  depends_on = [aws_api_gateway_rest_api.main]
+}
+
+resource "aws_ssm_parameter" "edge_provenance_secret" {
+  name        = "/adp/${var.environment}/gateway/apigw-provenance-secret"
+  description = "Shared proof injected only by API Gateway AWS_IAM integrations and validated by the gateway pod. Issue #5653."
+  type        = "SecureString"
+  value       = random_password.edge_provenance.result
+
+  tags = var.common_tags
 }

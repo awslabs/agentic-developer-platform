@@ -162,6 +162,7 @@ class TestGetCurrentUserIamIdentity:
         headers = {}
         if caller_identity is not None:
             headers["x-caller-identity"] = caller_identity
+            headers["x-adp-edge-provenance"] = "test-edge-provenance"
 
         class _State:
             pass
@@ -175,6 +176,7 @@ class TestGetCurrentUserIamIdentity:
     def _trust_enabled():
         settings = MagicMock()
         settings.trust_apigw_headers = True
+        settings.apigw_provenance_secret = "test-edge-provenance"
         return settings
 
     async def test_unregistered_role_arn_raises_403(self):

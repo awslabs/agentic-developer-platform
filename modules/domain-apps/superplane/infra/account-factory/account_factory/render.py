@@ -73,6 +73,11 @@ __all__ = [
 # and the reader of that evidence cannot disagree about the string.
 MANAGED_BY = "adp-superplane-account-factory"
 
+# An AWS account id. A local copy rather than an import, matching how `modes.py` and
+# `cleanup.py` each hold their own: the shape is a fact about AWS, and a module that checks it
+# should not be unable to do so because another module's private name moved.
+_ACCOUNT_ID_RE = re.compile(r"^\d{12}$")
+
 # A workspace's object set must not reach ADP's core namespaces. Same reasoning as
 # ../scripts/check_rendered_manifests.py: this is a second, independent tripwire behind the
 # workspace-id check in `modes.py`.
@@ -352,8 +357,10 @@ def _infrastructure_object(request: AccountFactoryRequest) -> dict:
     }
 
 
-def _new_account_stages(request: AccountFactoryRequest) -> list[RenderStage]:
-    """new-account-managed: open the account, then build infrastructure inside it.
+def _new_account_stages(
+    request: AccountFactoryRequest, account_id: str | None
+) -> list[RenderStage]:
+    """new-account-managed: bind to the account the governed path opened, then build in it.
 
     Two stages, and two separate root objects, rather than the vendored
     `FullAccountInfrastructure` that owns both. That graph is not instantiated here because
@@ -366,7 +373,39 @@ def _new_account_stages(request: AccountFactoryRequest) -> list[RenderStage]:
     The cost of splitting is that the ordering between the two is no longer expressed by a
     reference inside one graph, so it is stated as a stage precondition instead — explicit
     and resumable rather than assumed.
+
+    ## Why stage 1 refuses to render without an account id (#5531, w6-08)
+
+    Stage 1 used to render an `AccountOwnership` that declared an ACK `Account`, so APPLYING
+    it was what opened the AWS account. That made the rendered manifest the thing that
+    created an account, on the Organizations controller's own reconciliation schedule,
+    outside the durable fence — no committed intent, no lease, no recorded
+    `CreateAccountRequestId` bound to the operation, and a controller-level retry on a lost
+    response that is indistinguishable from a second `CreateAccount`.
+
+    Creation now happens in `account_provisioning.creation_runner.create_account` under one
+    fenced operation, and this stage binds to its result. `account_id` is therefore required
+    input, and rendering without it is REFUSED rather than defaulted or omitted:
+
+    * Refusing is what makes the ordering checkable offline. An optional id would render an
+      object that reconciles against an empty account number, which is a runtime failure in a
+      cluster instead of a refusal in review.
+    * The id must come from the durable record, which only exists if the governed call
+      happened. So "was the account opened through the audited path?" is answered by whether
+      this render is possible at all.
     """
+    if not account_id:
+        raise RenderError(
+            "new-account-managed cannot be rendered without the id of the account this "
+            "workspace owns. This mode's account is opened by the governed, fenced creation "
+            "path (account_provisioning.creation_runner.create_account) under one durable "
+            "operation, and rendering binds to the account it recorded. Rendering without an "
+            "id is refused rather than deferred: the previous behaviour declared an ACK "
+            "`Account` resource, which made applying this manifest the act that called "
+            "CreateAccount — outside the fence, with no committed intent and no request id "
+            "tied to the operation, so a controller retry could open a second billable "
+            "account. Pass the account id from the durable creation record"
+        )
     return [
         RenderStage(
             number=1,
@@ -382,10 +421,26 @@ def _new_account_stages(request: AccountFactoryRequest) -> list[RenderStage]:
                     },
                     "spec": {
                         "accountName": request.workspace_id,
+                        # The account this binds to. An INPUT, not a status field a
+                        # controller fills in — see the docstring.
+                        "accountId": account_id,
                         "accountEmail": request.account_email,
                         "region": request.region,
+                        # Required by the graph with no default (#5531). Now a record of
+                        # where the governed call PLACED the account rather than an
+                        # instruction to place it: placement happens at creation, because an
+                        # account created at the organization root and moved afterwards is
+                        # live outside its guardrails for the duration of the move.
+                        "organizationalUnitId": request.organizational_unit_id,
                     },
                 },
+            ),
+            precondition=(
+                f"account {account_id} was opened for this workspace by the governed "
+                f"creation path and is recorded durably against that operation. This stage "
+                f"binds to it and creates no account: nothing here can call CreateAccount, "
+                f"so applying it cannot open a duplicate. The recorded id is also the only "
+                f"account `closure_request` will later accept"
             ),
         ),
         RenderStage(
@@ -404,7 +459,9 @@ def _new_account_stages(request: AccountFactoryRequest) -> list[RenderStage]:
     ]
 
 
-def _existing_account_stages(request: AccountFactoryRequest) -> list[RenderStage]:
+def _existing_account_stages(
+    request: AccountFactoryRequest, account_id: str | None
+) -> list[RenderStage]:
     """existing-account-managed: reference the adopted account, then build infrastructure.
 
     No `Account` and no `AccountOwnership`: an `Account` custom resource naming an existing
@@ -413,6 +470,12 @@ def _existing_account_stages(request: AccountFactoryRequest) -> list[RenderStage
 
     One stage, because the role selector's ARN is built from the account id the REQUEST
     supplies rather than from another object's status — there is no output to wait for.
+
+    `account_id` is accepted and unused: this mode's account comes from
+    `request.target_account_id`, which `modes.py` requires here and FORBIDS in
+    new-account-managed. Taking the parameter keeps every builder one shape (see
+    `_STAGE_BUILDERS`) so a mode cannot be dispatched with the wrong arity; `render` refuses a
+    creation-record id supplied against an adopting mode before reaching here.
     """
     return [
         RenderStage(
@@ -500,9 +563,12 @@ def _bring_existing_cluster_objects(request: AccountFactoryRequest) -> list[dict
 
 
 def _bring_existing_cluster_stages(
-    request: AccountFactoryRequest,
+    request: AccountFactoryRequest, account_id: str | None
 ) -> list[RenderStage]:
-    """bring-existing-cluster: reference what exists; create no AWS infrastructure."""
+    """bring-existing-cluster: reference what exists; create no AWS infrastructure.
+
+    `account_id` is accepted and unused, for the reason `_existing_account_stages` gives.
+    """
     return [
         RenderStage(
             number=1,
@@ -666,6 +732,8 @@ def render(
     authorization: ValidationAuthorization | None = None,
     *,
     lock_path: Path | None = None,
+    account_id: str | None = None,
+    creation_record: object | None = None,
 ) -> RenderResult:
     """Render the object set a request would apply. Mutates nothing.
 
@@ -682,9 +750,48 @@ def render(
 
     Performs no AWS call, no Kubernetes call and no network access. Runs with no
     credentials.
+
+    New-account rendering requires `creation_record`, loaded by the maintained
+    account-provisioning registration adapter from this operation's successful
+    durable creation history and verified OU placement. The legacy `account_id`
+    argument refuses every supplied value. A string is not creation evidence.
+    Existing-account modes continue to use their explicitly authorized target
+    account and may not consume a new-account creation record.
     """
     unchecked = ensure_valid(request, authorization)
     deps = dependencies.load(lock_path)
+
+    from .registration import CreatedAccountRegistration
+    from .creation import account_identity_key
+
+    if account_id is not None and not request.mode.creates_account:
+        raise RenderError(
+            "adopting modes use target_account_id and cannot consume a creation record"
+        )
+    if account_id is not None:
+        raise RenderError(
+            "caller-supplied account_id is not creation evidence; use the trusted durable registration adapter"
+        )
+    if request.mode.creates_account:
+        if not isinstance(creation_record, CreatedAccountRegistration):
+            raise RenderError(
+                "new-account rendering requires the operation-bound CreateAccount record from creation_runner through the trusted registration adapter"
+            )
+        if (
+            creation_record.organization_id,
+            creation_record.workspace_id,
+            creation_record.approved_identity,
+        ) != (
+            request.organization_id,
+            request.workspace_id,
+            account_identity_key(request),
+        ):
+            raise RenderError(
+                "creation record belongs to a different operation payload or workspace"
+            )
+        account_id = creation_record.account_id
+    elif creation_record is not None:
+        raise RenderError("adopted-account onboarding must not use a creation record")
 
     builder = _STAGE_BUILDERS.get(request.mode)
     if builder is None:  # pragma: no cover - defensive; validated above
@@ -697,7 +804,7 @@ def render(
         RenderStage(
             number=0, name="workspace namespace", objects=(_namespace_object(request),)
         ),
-        *builder(request),
+        *builder(request, account_id.strip() if account_id else None),
     ]
     objects = [obj for stage in stages for obj in stage.objects]
 

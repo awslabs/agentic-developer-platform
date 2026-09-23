@@ -93,6 +93,7 @@ resource "aws_lambda_function" "github_webhook" {
     variables = {
       ENVIRONMENT                   = var.environment
       SUBMIT_QUEUE_URL              = aws_sqs_queue.agent_submit.url
+      GITHUB_AUTO_PR_REVIEW_ENABLED = tostring(var.github_auto_pr_review_enabled)
       IDENTITY_INDEX_TABLE          = var.identity_index_table_name
       USER_IDENTITY_INDEX_TABLE     = "adp-${var.environment}-user-identity-index"
       EVENTS_TABLE                  = aws_dynamodb_table.webhook_events.name
@@ -172,6 +173,7 @@ resource "aws_lambda_function" "github_webhook" {
 }
 
 resource "aws_cloudwatch_log_group" "lambda" {
+  #checkov:skip=CKV_AWS_338: GitHub webhook Lambda logs use an explicitly bounded 14-day operational retention.
   name              = "/aws/lambda/${local.name_prefix}-github-webhook"
   retention_in_days = 14
   kms_key_id        = aws_kms_key.cloudwatch.arn

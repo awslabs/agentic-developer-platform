@@ -1,0 +1,30 @@
+name: Cyber URL Analysis CI
+'on':
+  pull_request:
+    branches:
+    - main
+    paths:
+    - modules/domain-apps/cyber/infra/platform-integration/**
+    - modules/domain-apps/cyber/browser/**
+    - modules/domain-apps/cyber/releases/**
+    - modules/domain-apps/cyber/tests/**
+    - modules/agent-factory/webhook-ingress/infra/**
+    - modules/domain-apps/cyber/agent/skills/url-analysis/**
+    - modules/domain-apps/cyber/agent/personas/malware-analysis-agent.md
+    - .github/workflows/cyber-url-analysis-ci.yml
+    - modules/domain-apps/cyber/ci/cyber-url-analysis-ci/**
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: cyber-url-analysis-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  research-fixtures:
+    name: URL researcher browser fixtures
+    runs-on: arc-runner-org
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v7
+    - name: Run cyber app automation
+      uses: ./modules/domain-apps/cyber/ci/cyber-url-analysis-ci

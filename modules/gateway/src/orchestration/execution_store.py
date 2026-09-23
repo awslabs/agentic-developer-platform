@@ -996,6 +996,13 @@ async def advance_execution(
     # with standing can move it, and raised via `_adopt_generation` so it is monotonic
     # rather than a plain assignment — see that helper for why lowering it must be
     # impossible even though today's authority check never admits a lower one.
+    if advance.consume_attempt:
+        from .flow_execution import flow_is_paused
+
+        # _live_authority_conflict already holds the flow lock. A pause that
+        # wins the reservation race must not consume an attempt or create intent.
+        if await flow_is_paused(session, org_id=identity.org_id, flow_id=flow_id):
+            return ExecutionOutcome(kind=OutcomeKind.CONFLICT, record=_to_record(row), reason="flow_paused")
     _adopt_generation(row, identity)
 
     status = ExecutionStatus.BLOCKED if block is not None else advance.status

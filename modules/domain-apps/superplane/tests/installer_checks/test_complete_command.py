@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from installation.config import Refusal
+from installation.database_preparation import observation_secret_value
 from installation.runner import Installer
 
 
@@ -78,6 +79,11 @@ class ExternalTools:
                 "controller-credential": "controller-private",
                 "controller-signing-key": "controller-key",
                 "skypilot-token": "s" * 32,
+                # Issue #5683 (A04). An obviously-synthetic filler of the minimum
+                # accepted length, not a key: these installer checks assert the
+                # renderer's wiring and the refusals, and none of them needs a
+                # value that could be mistaken for real material.
+                "jwt-signing-key": "j" * 32,
             },
             "workspace_access": {"kubeconfig": yaml.safe_dump(config)},
         }
@@ -201,7 +207,15 @@ class ExternalTools:
                 ),
                 "database": env["database"]["database"],
                 "role": "domain-role",
-                "revision": "016_add_organization_grants" if "exec" in args else None,
+                # Derived from the lock, like every other provenance value this fake
+                # reports (`source_revision` above), rather than a retyped literal. The
+                # installer asserts the running API's revision EQUALS the lock's head, so a
+                # hardcoded id here turns every advance of the chain into a fleet of
+                # failures in tests about pod restarts and DNS, which is how w6-10 (#5533)
+                # found this line.
+                "revision": self.release["schema"]["observed"]["head"]
+                if "exec" in args
+                else None,
             }
         elif "--check-database" == args[-1]:
             result = {
@@ -498,6 +512,21 @@ def setup(tmp_path, environment, release, monkeypatch, failure=None, auto_mode=F
     return installer, tools
 
 
+def test_preparation_observation_secret_satisfies_installer_contract(
+    tmp_path, environment, release, monkeypatch
+):
+    installer, tools = setup(tmp_path, environment, release, monkeypatch)
+    generated = observation_secret_value(installer)
+    tools.secrets["observation"] = generated
+    installer.secret_values.clear()
+    installer.secret_versions.clear()
+
+    installer.secrets()
+
+    assert installer.secret_values["observation"] == generated
+    assert len(generated["jwt-signing-key"]) >= 32
+
+
 def test_one_command_reaches_all_four_services_and_public_verification(
     tmp_path, environment, release, monkeypatch
 ):
@@ -505,7 +534,14 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     installer.preflight()
     installer.execute(installer.receipt["plan_sha256"], "verified-user")
     assert installer.receipt["status"] == "installed-and-verified"
-    assert installer.receipt["migration"]["schema"] == "016_add_organization_grants"
+    # Deliberately the literal head rather than `release[...]["head"]`: this is the one
+    # assertion that pins WHICH chain a receipt claims to have migrated, and deriving it
+    # from the same lock the receipt is built from would pass for any value at all.
+    # Advanced to 017 by w6-10 (#5533).
+    assert (
+        installer.receipt["migration"]["schema"]
+        == "017_add_workspace_bootstrap_reservations"
+    )
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
     ) == {"monitor", "controller"}

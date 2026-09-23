@@ -45,8 +45,8 @@ The original v1 diagram (see EPIC #224 §Architecture) was drawn when the cyber 
 │   ╰────────────────────────────────────────────────────────╯        │
 │                                                                     │
 │   ╭─── URL analysis (single-turn skill) ───────────────────╮        │
-│   │  Pre-flight denylist → AgentCore Browser session        │        │
-│   │  → Playwright-over-CDP (BrowserClient generates SigV4)  │        │
+│   │  Unprivileged client → trusted guarded-browser broker   │        │
+│   │  → pinned transport → AgentCore Browser session         │        │
 │   │  → Enrichment (WHOIS, PDNS, crt.sh, VT, URLhaus, MISP)  │        │
 │   │  → verdict.py (deterministic) → markdown report         │        │
 │   │  Evidence envelope + screenshots to cyber S3 bucket     │        │
@@ -56,8 +56,8 @@ The original v1 diagram (see EPIC #224 §Architecture) was drawn when the cyber 
 │           chat-artifacts bucket · agent-factory runtime             │
 │                                                                     │
 └───┬───────────────────────┬────────────────────┬────────────────────┘
-    │ SQS FIFO + S3         │ SigV4 CDP WebSocket│ S3 PutObject +
-    │ (per-sample tasks)    │ + InvokeBrowser    │ presigned GET
+    │ SQS FIFO + S3         │ Broker-owned CDP   │ S3 PutObject +
+    │ (per-sample tasks)    │ + pinned transport │ presigned GET
     ▼                       ▼                    ▼
 ┌───────────────────┐ ┌──────────────────────┐ ┌─────────────────────┐
 │ THREAT RESEARCH   │ │ AWS Bedrock          │ │ url-analysis        │
@@ -153,7 +153,7 @@ Each directory contains a `SKILL.md` (playbook the agent reads at runtime) and, 
 
 ### 5.1. Shape
 
-One skill, one agent turn, one or more AgentCore Browser sessions. No multi-stage pipeline. The agent loads `url-analysis/SKILL.md`, writes an orchestration script per URL, executes it, populates an Evidence object, runs `verdict.py`, renders a report, posts a comment.
+One skill and one agent turn. The agent loads `url-analysis/SKILL.md`, writes an orchestration script per URL, and submits each URL to a trusted browser broker. The reasoning pod is explicitly denied AgentCore Browser access; the broker owns the guarded session and returns bounded evidence. The script populates an Evidence object, runs `verdict.py`, renders a report, and posts a comment.
 
 ```
         GitHub issue with URL(s)
@@ -161,21 +161,13 @@ One skill, one agent turn, one or more AgentCore Browser sessions. No multi-stag
                  ▼
    malware-analysis-agent pod
                  │
-                 ├── Pre-flight denylist check
-                 │   (refuse internal/private URLs)
-                 │
                  ├── For each URL:
                  │     │
-                 │     ├── AgentCore Browser session
-                 │     │   (StartBrowserSession →
-                 │     │    generate_ws_headers →
-                 │     │    Playwright connect_over_cdp)
+                 │     ├── POST URL to guarded browser broker
+                 │     │   (worker has explicit AgentCore deny)
                  │     │
-                 │     ├── Navigate + capture:
-                 │     │   page.goto → page.screenshot
-                 │     │   page.title → page.inner_text
-                 │     │   page.evaluate(forms, redirects)
-                 │     │   page.on(response, download)
+                 │     ├── Broker vets + pins every request,
+                 │     │   owns CDP, and returns bounded capture
                  │     │
                  │     ├── Resize screenshot for Claude
                  │     │   (shrink_for_claude, max 1024px)
@@ -210,11 +202,12 @@ One skill, one agent turn, one or more AgentCore Browser sessions. No multi-stag
 ### 5.2. Substrate: AWS Bedrock AgentCore Browser
 
 - AWS-managed ephemeral browser runtime. We do not operate or peer with it.
-- Access is two-channel:
-  - **CDP WebSocket** (`automationStream.streamEndpoint`) — SigV4-signed; reached via `bedrock_agentcore.tools.browser_client.BrowserClient.generate_ws_headers()`. Driven by Playwright (`chromium.connect_over_cdp(ws_url, headers=headers)`).
-  - **InvokeBrowser REST** — OS-level actions (mouseClick, keyType, screenshot). Fallback when CDP isn't viable for a specific site.
-- Sessions are short-lived (skill target: 30-60 s per URL). Always stopped in a `finally` block.
-- IAM on the scaledjob role grants: `StartBrowserSession`, `GetBrowserSession`, `StopBrowserSession`, `ListBrowserSessions`, `InvokeBrowser`, `ConnectBrowserAutomationStream`, `UpdateBrowserStream`, scoped by `aws:RequestedRegion`.
+- Only the trusted broker can open the SigV4-signed CDP stream. It never returns
+  that stream or a browser object to the reasoning worker.
+- `InvokeBrowser` is not granted because it cannot provide pinned transport.
+- Sessions are short-lived and always stopped by the broker before it responds.
+- Worker IAM explicitly denies `bedrock-agentcore:*`; the broker role permits
+  only lifecycle and `ConnectBrowserAutomationStream`, scoped by region.
 
 ### 5.3. Evidence schema (`evidence_schema.py`)
 
@@ -284,7 +277,7 @@ Real #500 run numbers (morning 4-URL triage):
 |---|---|
 | Wall time | ~5 min |
 | Sessions | 4 AgentCore Browser sessions (one per URL), all TERMINATED |
-| CDP vs InvokeBrowser | 4/4 CDP (no fallback) |
+| Browser transport | 4/4 broker-owned CDP (no direct fallback) |
 | Enrichment sources reached | WHOIS (partial), PassiveDNS (all), crt.sh (degraded), VT / URLhaus / MISP (skipped — creds pending) |
 | Reports posted | 4 forensic reports + 1 run summary |
 | Verdict accuracy | 4/4 correct (2 malicious phish, 1 malicious malware, 1 clean gov) |
@@ -442,7 +435,7 @@ Reference #304 (T1059.004 closed-loop):
 | Platform infra (VPC, EKS, IAM, Secrets Manager, CloudTrail) | Threat Research VPC peers to ADP VPC on port 443. AgentCore Browser access via IAM only. Standard IRSA everywhere. |
 | Chat-artifacts bucket | Case files land in the existing artifact layout. Existing UI renders them. |
 
-Cyber-specific code footprint stays at roughly 1:10 vs. platform code. The URL path added ~1.2k lines (skill + examples + tests + 2 Terraform files) with zero platform changes.
+The URL path is isolated to the Cyber skill and its dedicated broker boundary.
 
 ---
 
@@ -454,13 +447,18 @@ Cyber-specific code footprint stays at roughly 1:10 vs. platform code. The URL p
 - Bedrock `InvokeModel*` on foundation models + inference profiles
 - Secrets Manager `GetSecretValue` on `adp/*`
 - STS `AssumeRole` with ExternalId `adp-dev-hosted-agent` for tenant ops
-- **AgentCore Browser:** `StartBrowserSession`, `GetBrowserSession`, `StopBrowserSession`, `ListBrowserSessions`, `InvokeBrowser`, `ConnectBrowserAutomationStream`, `UpdateBrowserStream`
+- **AgentCore Browser:** explicit `bedrock-agentcore:*` deny; calls go only to the guarded broker service
+
+### URL-analysis browser-broker role
+
+- `StartBrowserSession`, `GetBrowserSession`, `StopBrowserSession`, `ListBrowserSessions`, and `ConnectBrowserAutomationStream`
+- Permissions boundary excludes `InvokeBrowser` and every non-browser service
 
 ### Byte-handling-tier role (`adp-dev-cyber-worker`)
 
 - SQS receive/delete on cyber stage queues
 - S3 Get/Put on cyber prefixes (samples, rules, reports)
-- Additional AgentCore Browser grants (for cyber ARC flow when it runs URL analysis directly)
+- **AgentCore Browser:** explicit `bedrock-agentcore:*` deny; URL analysis has no direct cyber-worker fallback
 
 ### Evidence bucket resource policy
 
@@ -474,7 +472,7 @@ Cyber-specific code footprint stays at roughly 1:10 vs. platform code. The URL p
 |---|---|
 | File bytes never leave Threat Research VPC | VPC peering port 443 only; sandbox network default-deny; no NAT egress from sandbox subnet |
 | URL bytes never leave AgentCore Browser session | Session-scoped; ≤ 5-min TTL; not attached to any customer VPC; Chromium destroyed at session stop |
-| No malware payload persistence | Stage 4 evidence includes hashes + metadata only; Stage 7 case file has no executable bytes; URL-analysis `page.on("download")` captures SHA-256 and discards |
+| No malware payload persistence | Stage 4 evidence includes hashes + metadata only; Stage 7 case file has no executable bytes; the URL broker cancels downloads and returns metadata only |
 | No credential storage outside vault | VT / Shodan / URLhaus / MISP keys only in Secrets Manager, delivered at run-time, never in code / logs / images |
 | No interstitial bypass | Persona hard rule: capture vendor block pages as evidence, mark `status=partial`, do NOT solve captchas or click through |
 | Audit trail | Every run produces an immutable record: stage envelopes, rule versions, source queries, verdict, reasoning, timestamps — exportable to SIEM |

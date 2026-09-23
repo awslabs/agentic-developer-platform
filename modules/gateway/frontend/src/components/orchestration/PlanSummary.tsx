@@ -5,6 +5,8 @@ interface PlanSummaryProps {
   waves: number;
   gates: number;
   evaluations: number;
+  /** Issue-linked evaluations; absent on older list API responses. */
+  evaluationStories?: number;
   /**
    * The authorized execution policy, when the flow has one (#5128).
    *
@@ -52,7 +54,8 @@ function expiryLabel(expiresAt: string): string {
 }
 
 /**
- * Planned implementation work is distinct from its approval and evaluation steps.
+ * Stories include implementation and issue-linked evaluation work. Unlinked
+ * evaluation checkpoints and approval gates are counted separately.
  *
  * When a policy is in force this also answers "what did I authorize?" — the targets
  * it applies to, what agents may do unattended, what still waits for a person, and
@@ -68,14 +71,20 @@ function expiryLabel(expiresAt: string): string {
  * Nothing here is a control: it describes authority that was already granted
  * elsewhere. Approving, amending and revoking stay on their existing surfaces.
  */
-export function PlanSummary({ stories, waves, gates, evaluations, policy }: PlanSummaryProps) {
+export function PlanSummary({ stories, waves, gates, evaluations, evaluationStories, policy }: PlanSummaryProps) {
+  const totalStories = stories + (evaluationStories ?? 0);
+  const checkpoints = evaluations - (evaluationStories ?? 0);
   return (
     <div className="text-sm text-gray-700 dark:text-gray-300" data-testid="plan-summary">
       <p className="font-medium">
-        {stories} {stories === 1 ? 'story' : 'stories'} across {waves} {waves === 1 ? 'wave' : 'waves'}
+        {totalStories} {evaluationStories === undefined ? 'implementation ' : ''}{totalStories === 1 ? 'story' : 'stories'} across {waves} {waves === 1 ? 'wave' : 'waves'}
       </p>
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        {gates} approval {gates === 1 ? 'gate' : 'gates'} · {evaluations} {evaluations === 1 ? 'evaluation' : 'evaluations'}
+        {evaluationStories !== undefined && <>{stories} implementation · {evaluationStories} evaluation · </>}
+        {gates} approval {gates === 1 ? 'gate' : 'gates'}
+        {evaluationStories === undefined
+          ? <> · {evaluations} {evaluations === 1 ? 'evaluation' : 'evaluations'}</>
+          : checkpoints > 0 && <> · {checkpoints} evaluation {checkpoints === 1 ? 'checkpoint' : 'checkpoints'}</>}
       </p>
 
       {policy && (

@@ -105,6 +105,38 @@ class ServerConfig:
             "DOOR_AUTH_ENABLED", "true"
         ).strip().lower() not in ("false", "0", "no")
 
+    @property
+    def db_configured(self) -> bool:
+        """Whether a usable ACL-store connection is configured.
+
+        Mirrors the branch order in ``db.create_db_pool`` exactly: IAM auth
+        needs both the flag and a host, otherwise a static DSN is required.
+        """
+        return bool(self.db_use_iam_auth and self.db_host) or bool(self.database_url)
+
+    def missing_required(self) -> list[str]:
+        """Names of absent settings the Door cannot safely serve reads without.
+
+        Only genuinely load-bearing settings belong here. The ACL store is the
+        whole cross-tenant boundary, so an unconfigured database is a hard
+        startup failure rather than a degraded mode (#5658). Optional
+        enrichments — Neptune, S3 Vectors, semantic search — are deliberately
+        excluded: their absence loses features, not containment.
+
+        ``DOOR_API_KEY`` is likewise excluded on purpose. ``door/auth.py``
+        already rejects every authenticated path with 503 "not_configured" when
+        it is unset, so a missing key denies reads instead of allowing them.
+
+        ``S3_BUCKET_NAME`` is excluded for the same reason: with no bucket the
+        object-store backends return nothing, which is a loss of function and
+        not a loss of isolation. Gating readiness on it would strand otherwise
+        safe configurations without improving containment.
+        """
+        missing: list[str] = []
+        if not self.db_configured:
+            missing.append("DB_USE_IAM_AUTH+DB_HOST or DATABASE_URL")
+        return missing
+
 
 # Singleton — import this in server modules
 config = ServerConfig()

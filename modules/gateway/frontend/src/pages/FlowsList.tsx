@@ -36,6 +36,7 @@
  */
 
 import { Link } from 'react-router-dom';
+import { FlowExecutionControl } from '@/components/orchestration/FlowExecutionControl';
 import { RollupBar } from '@/components/orchestration/RollupBar';
 import { PlanSummary } from '@/components/orchestration/PlanSummary';
 import { CostFigureDisplay } from '@/components/orchestration/CostFigureDisplay';
@@ -309,11 +310,11 @@ function DesignStrip({ history }: { history: DesignHistory | null }) {
  */
 function FlowCard({ flow }: { flow: FlowSummary }) {
   return (
-    <li>
+    <li className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
       <Link
         to={`/flows/${flow.id}`}
         data-testid={`flow-card-${flow.id}`}
-        className="block rounded-lg border border-gray-200 p-4 transition-colors hover:border-primary-400 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:hover:bg-gray-800"
+        className="block p-4 transition-colors hover:border-primary-400 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:border-gray-700 dark:hover:bg-gray-800"
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -354,7 +355,7 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
         {/* The two calls to action, surfaced separately from `status`. `status` is
             first-match-wins, so a flow that is both stalled and gated reports only
             `attention_needed` — and the gate still needs answering. */}
-        {(flow.awaiting_gate_count > 0 || flow.stalled_count > 0) && (
+        {(flow.awaiting_gate_count > 0 || flow.display_counts.stalled > 0) && (
           <div className="mt-2 flex flex-wrap gap-2">
             {flow.awaiting_gate_count > 0 && (
               <span
@@ -365,13 +366,13 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
                 {flow.awaiting_gate_count} waiting on you
               </span>
             )}
-            {flow.stalled_count > 0 && (
+            {flow.display_counts.stalled > 0 && (
               <span
                 data-testid="stalled-count"
                 className="inline-flex items-center gap-1 rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-900 dark:bg-orange-900 dark:text-orange-100"
               >
                 <span aria-hidden="true">⚠</span>
-                {flow.stalled_count} stalled
+                {flow.display_counts.stalled} stalled
               </span>
             )}
           </div>
@@ -379,7 +380,7 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
 
         <div className="mt-3 space-y-3">
           {flow.story_count !== undefined && flow.gate_count !== undefined && flow.eval_count !== undefined && (
-            <PlanSummary stories={flow.story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />
+            <PlanSummary stories={flow.story_count} evaluationStories={flow.eval_story_count} waves={flow.wave_count} gates={flow.gate_count} evaluations={flow.eval_count} />
           )}
           {(flow.changes_requested_count ?? 0) > 0 && (
             <p className="text-sm text-orange-800 dark:text-orange-200" data-testid="changes-requested-summary">
@@ -390,7 +391,17 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           {/* The same five-value rollup the graph page draws, from the same
               component — a second bar is how a legend ends up describing a fill
               the graph no longer uses. */}
-          <RollupBar counts={flow.display_counts} total={flow.total_nodes} />
+          <RollupBar
+            counts={flow.display_counts}
+            total={flow.total_nodes}
+            storyScope={flow.eval_story_count !== undefined && flow.completed_eval_story_count !== undefined ? 'all' : 'implementation'}
+            stories={flow.completed_story_count !== undefined && flow.story_count !== undefined
+              ? {
+                complete: flow.completed_story_count + (flow.eval_story_count !== undefined ? flow.completed_eval_story_count ?? 0 : 0),
+                total: flow.story_count + (flow.completed_eval_story_count !== undefined ? flow.eval_story_count ?? 0 : 0),
+              }
+              : undefined}
+          />
           <WaveRail flow={flow} />
           {/* Last: the design loop is how this plan came to exist, which matters
               less at a glance than what it is doing now. Renders nothing at all when
@@ -398,6 +409,9 @@ function FlowCard({ flow }: { flow: FlowSummary }) {
           <DesignStrip history={flow.design_history} />
         </div>
       </Link>
+      <div className="border-t border-gray-200 px-4 py-3 dark:border-gray-700">
+        <FlowExecutionControl flowId={flow.id} paused={flow.execution_paused} compact />
+      </div>
     </li>
   );
 }

@@ -1,0 +1,11 @@
+name: Cyber Browser Build
+'on':
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: arc-runner-org
+    steps:
+    - uses: actions/checkout@v7
+    - uses: ./modules/domain-apps/cyber/ci/cyber-browser-build

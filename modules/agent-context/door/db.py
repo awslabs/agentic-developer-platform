@@ -8,6 +8,14 @@ Supports two modes:
   2. Static DSN (local/CI): uses DATABASE_URL or DB_PASSWORD directly.
 
 Pattern reused from images/ingestion/db.py — same env vars, same boto3 call.
+
+This database is REQUIRED configuration, not an optional enrichment. It holds
+the ``repositories.allowed_principals`` rows that are the Door's entire
+cross-tenant boundary (see ``door/acl.py``). ``create_db_pool`` therefore
+raises ``DatabaseConfigurationError`` when nothing is configured rather than
+returning ``None`` — an unconfigured Door previously started, reported healthy
+and served every tenant's indexed code to every caller, because the read path
+read "no ACL store" as "no restrictions" (#5658).
 """
 
 from __future__ import annotations
@@ -18,6 +26,15 @@ import threading
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+class DatabaseConfigurationError(RuntimeError):
+    """Raised when no usable database configuration is present.
+
+    The Door cannot authorise a single read without the ACL store, so this is
+    a hard startup failure surfaced on the readiness probe — never a degraded
+    mode that still serves results.
+    """
 
 
 def _get_iam_auth_token(host: str, port: int, user: str, region: str) -> str:
@@ -152,13 +169,16 @@ class IAMConnectionPool:
             self._used.clear()
 
 
-def create_db_pool(config: Any) -> Any | None:
+def create_db_pool(config: Any) -> Any:
     """Create a database connection pool based on configuration.
 
     Returns:
         IAMConnectionPool when DB_USE_IAM_AUTH=true (production).
         psycopg2.pool.SimpleConnectionPool when using static DSN (local/CI).
-        None if no database configuration is available.
+
+    Raises:
+        DatabaseConfigurationError: no IAM host and no DATABASE_URL. The Door
+            has no ACL store in that state, so it must not start serving.
     """
     use_iam = os.environ.get("DB_USE_IAM_AUTH", "false").lower() in (
         "true",
@@ -196,5 +216,8 @@ def create_db_pool(config: Any) -> Any | None:
         log.info("Creating static-DSN connection pool")
         return psycopg2.pool.SimpleConnectionPool(1, 5, config.database_url)
 
-    log.warning("No database configuration available (DB_USE_IAM_AUTH=false, DATABASE_URL empty)")
-    return None
+    raise DatabaseConfigurationError(
+        "No database configuration available: set DB_USE_IAM_AUTH=true with DB_HOST, "
+        "or provide DATABASE_URL. The Door requires this database for its ACL store "
+        "(repositories.allowed_principals) and refuses to serve reads without it."
+    )

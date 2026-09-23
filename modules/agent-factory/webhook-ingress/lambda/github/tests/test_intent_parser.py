@@ -6,6 +6,8 @@ for the split bot guard by event type.
 
 import json
 import sys
+
+import pytest
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -912,3 +914,9 @@ class TestChainAwareBotLogic:
         )
         # No mention in body → None. Handler will NOT write pointer.
         assert result is None
+
+
+@pytest.fixture(autouse=True)
+def automatic_pr_reviews_enabled(monkeypatch):
+    """These legacy review/branch tests exercise the explicit opt-in path."""
+    monkeypatch.setenv("GITHUB_AUTO_PR_REVIEW_ENABLED", "true")

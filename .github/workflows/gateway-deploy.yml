@@ -286,10 +286,18 @@ jobs:
       - name: Ensure namespace and render K8s prerequisites
         run: |
           EFFECTIVE_ACCOUNT="$ACCOUNT_ID"
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${AWS_REGION}
+          aws eks update-kubeconfig --name "${EKS_CLUSTER}" --region ${AWS_REGION}
 
-          # --- Namespace ---
-          kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          # --- Namespace prerequisite ---
+          # Namespace lifecycle and Pod Security Admission labels are deliberately
+          # cluster-scoped platform operations. The gateway deploy principal has
+          # namespaced edit access only and must never create or patch namespaces.
+          # Fresh-account deployments create the namespace in deploy-all.sh before
+          # this workflow can run.
+          if ! kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1; then
+            echo "::error::Namespace ${NAMESPACE} is missing. Run the platform deployment prerequisite first."
+            exit 1
+          fi
 
           # --- Helper: read SSM param with fallback ---
           get_ssm() { aws ssm get-parameter --name "$1" --query Parameter.Value --output text 2>/dev/null || echo "${2:-}"; }
@@ -313,6 +321,10 @@ jobs:
           # the CLI client applies, and deploys before that must not fail —
           # the /auth/cli endpoints 503 cleanly while this is empty.
           COGNITO_CLI_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
+          COGNITO_AGENT_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-agent-client-id" "")
+          AGENT_CLIENTS_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-clients-table" "bedrockgw-${ENVIRONMENT}-agent-clients")
+          COGNITO_GITLAB_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gitlab/oidc-client-id" "")
+          COGNITO_PENTEST_CLIENT_ID=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-pentest-client-id" "")
           COGNITO_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-domain")
           CF_DOMAIN=$(get_ssm "/adp/${ENVIRONMENT}/gateway/cloudfront-domain")
           # User-facing origin: the custom domain when gateway-infra published one,
@@ -331,6 +343,23 @@ jobs:
           AGENT_REGISTRY_TABLE=$(get_ssm "/adp/${ENVIRONMENT}/gateway/agent-registry-table")
           CHAT_LOGS_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-logs-bucket")
           FRONTEND_BUCKET=$(get_ssm "/adp/${ENVIRONMENT}/gateway/frontend-bucket")
+
+          # #5672: chat-transcript redaction level. This was the literal "basic"
+          # substituted below, which silently overrode the application's own default
+          # of "standard" in EVERY environment — so customer content pasted into a
+          # prompt (names, emails, phone numbers, identity numbers, addresses,
+          # payment details) was stored in S3 exactly as typed.
+          #
+          # Now per-environment and fail-closed: unset means "standard", the
+          # strongest level. An environment that genuinely needs something weaker
+          # sets the parameter, which leaves a review trail, instead of the choice
+          # being a constant buried in a deploy pipeline. The app also resolves an
+          # unrecognised value up to "standard" (see src/chat_logging/config.py), so
+          # a typo here cannot downgrade redaction either.
+          CHAT_LOGGING_SCRUB_LEVEL=$(get_ssm "/adp/${ENVIRONMENT}/gateway/chat-logging-scrub-level" "standard")
+          if [ -z "$CHAT_LOGGING_SCRUB_LEVEL" ] || [ "$CHAT_LOGGING_SCRUB_LEVEL" = "None" ]; then
+            CHAT_LOGGING_SCRUB_LEVEL="standard"
+          fi
 
           # Fail-fast on missing required SSM params — don't silently render a broken ConfigMap.
           # If any of these are empty, gateway-infra-apply hasn't been run yet.
@@ -384,6 +413,21 @@ jobs:
           # service->host map covers live traffic before anyone gets a 403. Flip to
           # "true" per env via SSM once the WARN logs are clean.
           VAULT_ENFORCE_CREDENTIAL_HOST_BINDING=$(get_ssm "/adp/${ENVIRONMENT}/gateway/vault-enforce-credential-host-binding" "false")
+
+          # #5653 (A01): whether the pod may believe X-Caller-Identity, which it
+          # treats as proof of identity (resolved against the agent registry to a
+          # privileged internal/platform context). This was hard-coded "true"
+          # here, which overrode the application's safe default on every deploy
+          # and asserted a property nothing had established.
+          #
+          # The param is published by the api-gateway Terraform module — the same
+          # module that blanks the header on every non-AWS_IAM route. So "true"
+          # now means "the edge control that makes this claim sound is deployed
+          # in this environment", instead of being an unconditional literal.
+          # Default "false": an environment without that apply treats a forged
+          # assertion as inert rather than authoritative.
+          TRUST_APIGW_HEADERS=$(get_ssm "/adp/${ENVIRONMENT}/gateway/trust-apigw-headers" "false")
+          if [ -z "$TRUST_APIGW_HEADERS" ] || [ "$TRUST_APIGW_HEADERS" = "None" ]; then TRUST_APIGW_HEADERS="false"; fi
 
           # Issue #4743: Bedrock routing shadow mode. Observation only — the
           # resolved destination is recorded in usage_logs.bedrock_account_id and
@@ -463,6 +507,10 @@ jobs:
               -e "s|__COGNITO_USER_POOL_ID__|${COGNITO_USER_POOL_ID}|g" \
               -e "s|__COGNITO_CLIENT_ID__|${COGNITO_CLIENT_ID}|g" \
               -e "s|__COGNITO_CLI_CLIENT_ID__|${COGNITO_CLI_CLIENT_ID}|g" \
+              -e "s|__COGNITO_AGENT_CLIENT_ID__|${COGNITO_AGENT_CLIENT_ID}|g" \
+              -e "s|__AGENT_CLIENTS_TABLE__|${AGENT_CLIENTS_TABLE}|g" \
+              -e "s|__COGNITO_GITLAB_CLIENT_ID__|${COGNITO_GITLAB_CLIENT_ID}|g" \
+              -e "s|__COGNITO_PENTEST_CLIENT_ID__|${COGNITO_PENTEST_CLIENT_ID}|g" \
               -e "s|__COGNITO_DOMAIN__|${COGNITO_DOMAIN}|g" \
               -e "s|__CORS_ALLOWED_ORIGINS__|${CORS_ORIGINS}|g" \
               -e "s|__GATEWAY_BASE_URL__|${FRONTEND_URL}|g" \
@@ -470,8 +518,8 @@ jobs:
               -e "s|__GATEWAY_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
               -e "s|__CHAT_LOGGING_ENABLED__|$([ -n "$CHAT_LOGS_BUCKET" ] && echo true || echo false)|g" \
               -e "s|__CHAT_LOGGING_BUCKET__|${CHAT_LOGS_BUCKET}|g" \
-              -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|basic|g" \
-              -e "s|__TRUST_APIGW_HEADERS__|true|g" \
+              -e "s|__CHAT_LOGGING_SCRUB_LEVEL__|${CHAT_LOGGING_SCRUB_LEVEL}|g" \
+              -e "s|__TRUST_APIGW_HEADERS__|${TRUST_APIGW_HEADERS}|g" \
               -e "s|__AGENT_REGISTRY_TABLE__|${AGENT_REGISTRY_TABLE}|g" \
               -e "s|__VAULT_PROXY_HOST_ALLOWLIST__|${VAULT_PROXY_HOST_ALLOWLIST}|g" \
               -e "s|__INGESTION_QUEUE_URL__|${INGESTION_QUEUE_URL}|g" \
@@ -544,10 +592,30 @@ jobs:
               --region "${AWS_REGION}"
           fi
 
+          # Issue #5656 (A05): dedicated signing key for single-use identity-linking
+          # ("magic link") tokens. src/shared/config.py no longer falls back to the
+          # session-signing key, so this must exist for those endpoints to work —
+          # and because it is separate, it can be replaced without signing every
+          # user out. Generate-if-absent, same pattern as the keys above; never
+          # echoed. Rotation: docs/runbooks/gateway-secret-rotation.md
+          MAGIC_LINK_SM_NAME="adp/${ENVIRONMENT}/gateway/magic-link-secret"
+          MAGIC_LINK_SECRET=$(python3 modules/gateway/scripts/ensure-signing-secret.py \
+            --name "$MAGIC_LINK_SM_NAME" --region "$AWS_REGION")
+
+          APIGW_PROVENANCE_SECRET=$(aws ssm get-parameter \
+            --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
+            --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ "$TRUST_APIGW_HEADERS" = "true" ] && { [ -z "$APIGW_PROVENANCE_SECRET" ] || [ "$APIGW_PROVENANCE_SECRET" = "None" ]; }; then
+            echo "ERROR: API Gateway header trust is enabled but its provenance secret is unavailable" >&2
+            exit 1
+          fi
+
           kubectl create secret generic bedrockgateway-secrets \
             --from-literal=token-secret-key="$TOKEN_SECRET" \
             --from-literal=internal-api-key="$INTERNAL_API_KEY" \
-            -n ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+            --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
+            --from-literal=magic-link-secret="$MAGIC_LINK_SECRET" \
+            -n "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
           # --- Render and apply ServiceAccount (Section 3) ---
           sed -e "s|__GATEWAY_IRSA_ROLE_ARN__|${GATEWAY_ROLE_ARN}|g" \
@@ -557,8 +625,17 @@ jobs:
           for f in modules/gateway/k8s/*.yaml; do
             case "$(basename "$f")" in
               configmap.yaml|serviceaccount.yaml|deployment.yaml|targetgroupbinding.yaml) continue ;;
-              *) kubectl apply -f "$f" -n ${{ env.NAMESPACE }} ;;
             esac
+            # Namespace resources are cluster-scoped even when -n is supplied.
+            # Detect by rendered Kind rather than filename so a future rename or
+            # additional namespace manifest cannot broaden this runner's scope.
+            if kubectl create --dry-run=client --validate=false -f "$f" \
+                 -o jsonpath='{.kind}{"\n"}{range .items[*]}{.kind}{"\n"}{end}' \
+                 | grep -qx Namespace; then
+              echo "Skipping platform-owned Namespace manifest: $f"
+              continue
+            fi
+            kubectl apply -f "$f" -n "${NAMESPACE}"
           done
 
       - name: Migrate schema then roll out new image

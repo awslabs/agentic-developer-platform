@@ -32,6 +32,11 @@ agent-behavior layer on top of it.
   explicit scope flags describe partial maintenance only.
 - **Never commit `agent_learning/*.md`** — that directory is gitignored; an
   explicit `git add` bypasses the ignore and has caused drift before.
+- **Never make a Lambda publicly invocable.** Do not create unauthenticated
+  Function URLs or grant world-accessible Lambda invocation permissions, including
+  for temporary test fixtures. Use authenticated, explicitly scoped access.
+  A need for browser-test content does not permit an exception, and account
+  security automation that removes public permissions must not be bypassed.
 
 ## Confirm the target account first
 

@@ -336,8 +336,16 @@ class MagicLinkIssueResponse(BaseModel):
 
 
 def _get_magic_link_secret() -> str:
-    settings = get_settings()
-    return settings.magic_link_secret or settings.token_secret_key
+    """Resolve the magic-link signing key — and only that key.
+
+    Issue #5656 (A05): previously `magic_link_secret or token_secret_key`. The
+    fallback made the identity-linking key and the session-signing key the same
+    secret whenever the former was unset, so the two could not be rotated
+    independently and an unset key was invisible. Callers treat "" as
+    503 not_configured, which is the intended behaviour for a missing key: refuse
+    to issue rather than issue something signed with the session key.
+    """
+    return get_settings().magic_link_secret
 
 
 def _build_magic_link_url(token: str) -> str:

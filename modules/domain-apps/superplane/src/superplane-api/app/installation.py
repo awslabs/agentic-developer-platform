@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.capability_probes import probe_all
-from app.config import settings
+from app.config import require_database_url, settings
 from app.database import engine
 from app.schema_boundary import connect_args, schema_name
 
@@ -80,7 +80,10 @@ async def database_check(
     if verify_role_default:
         # SkyPilot uses a different driver. Verify the server-side role default,
         # rather than assuming asyncpg's per-connection override applies to it.
-        raw_engine = create_async_engine(settings.database_url, connect_args=connect_args(""))
+        raw_engine = create_async_engine(
+            require_database_url(),
+            connect_args=connect_args("", require_database_url()),
+        )
         try:
             async with raw_engine.connect() as raw:
                 actual = (

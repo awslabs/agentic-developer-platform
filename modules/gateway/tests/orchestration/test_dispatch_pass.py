@@ -187,7 +187,7 @@ async def _make_org(session: AsyncSession, *, org_id: str = ORG_A, installations
 
 
 async def _make_flow(session: AsyncSession, *, org_id: str = ORG_A, slug: str = "flow-1") -> OrchestrationFlow:
-    flow = OrchestrationFlow(org_id=org_id, slug=slug, title="Demo flow")
+    flow = OrchestrationFlow(execution_paused=False, org_id=org_id, slug=slug, title="Demo flow")
     session.add(flow)
     await session.flush()
     return flow
@@ -2100,3 +2100,19 @@ async def test_unverifiable_retry_pr_does_not_consume_attempt_or_publish(session
     assert report.dispatched == 0 and not report.pending
     assert node.state == "ready" and node.attempts == 1
     assert report.policy_block_reasons == {"repair_binding_unverifiable": 1}
+
+
+async def test_paused_flows_do_not_consume_dispatch_capacity_or_attempts(session):
+    await _make_org(session)
+    paused = await _make_flow(session, slug="paused")
+    paused.execution_paused = True
+    await _make_approval(session, paused)
+    waiting = await _make_node(session, paused, node_ref="waiting", issue_ref="4196")
+    enabled = await _make_flow(session, slug="enabled")
+    await _make_approval(session, enabled)
+    ready = await _make_node(session, enabled, node_ref="ready", issue_ref="4197")
+    result = await run_dispatch_pass(session, _config(max_dispatches_per_tick=1))
+    assert result.dispatched == 1
+    assert result.pending[0].node_id == ready.id
+    await session.refresh(waiting)
+    assert (waiting.state, waiting.attempts) == ("ready", 0)

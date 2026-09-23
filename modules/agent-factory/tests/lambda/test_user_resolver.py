@@ -510,7 +510,10 @@ class TestHandlerResolverIntegration:
                 route_key="$default",
                 body={"action": "message", "text": "Hello!", "session_id": "sess-wc"},
                 connection_id="conn-wc",
-                authorizer_claims={"sub": "cognito-user-1", "email": "u@e.com"},
+                authorizer_claims={
+                    "sub": "cognito-user-1", "email": "u@e.com",
+                    "custom:tenant_id": "test-tenant",
+                },
             )
             result = handler.lambda_handler(event, None)
 

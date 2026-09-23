@@ -18,6 +18,7 @@ from src.agentauth.routes import require_agent_transport
 from src.shared.database import get_session_factory
 
 from .review_ingest import ingest_review_result
+from .reviewer_checks import review_checks
 
 router = APIRouter(prefix="/internal/v1/agent/report", dependencies=[Depends(require_agent_transport)])
 
@@ -118,3 +119,7 @@ async def upload_shared_review(body: SharedReviewUpload, request: Request, stora
         return receipt
     except RunReportError as error:
         raise HTTPException(503 if error.retryable else 404, "report unavailable" if error.retryable else "not found") from None
+
+
+# Same authenticated report transport; the route cannot select a repository/run.
+router.add_api_route("/review-checks", review_checks, methods=["POST"])

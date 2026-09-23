@@ -60,7 +60,7 @@ forfeit JSONB; the migration declares the identical variant so the two agree.
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, event
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, event, true
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -328,6 +328,7 @@ class OrchestrationFlow(Base, TenantMixin):
     # migration every time that list changed.
     design_history: Mapped[dict | None] = mapped_column(JSON_DOC, nullable=True)
 
+    execution_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=true())
     state: Mapped[str] = mapped_column(String(32), nullable=False, default=NodeState.PENDING.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, onupdate=utcnow)

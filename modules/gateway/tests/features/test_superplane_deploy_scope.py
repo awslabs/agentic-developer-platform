@@ -62,6 +62,8 @@ case "$1 $2" in
   "dynamodb describe-table") echo '{"Table":{}}' ;;
   "eks describe-cluster") echo "ACTIVE" ;;
   "eks update-kubeconfig") exit 0 ;;
+  "secretsmanager get-secret-value")
+    echo '{"SecretString":"offline-scope-test-signing-key"}' ;;
   "ssm get-parameter")
     case "$*" in
       *model-root-bindings*|*arc-model-bindings*) echo '[]' ;;
@@ -93,6 +95,8 @@ exit 0
 _TERRAFORM_STUB = """#!/usr/bin/env bash
 if [ "$1 $2 $3" = "output -json redis_endpoint" ]; then
   echo '[{"address":"redis.example.internal"}]'
+elif [ "$1 $2 $3" = "output -raw pentest_actor_client_id" ]; then
+  echo "pentest-client-123"
 fi
 exit 0
 """
@@ -114,6 +118,7 @@ _SUB_SCRIPTS = {
     "modules/gateway/scripts/bootstrap-admin.sh": "STUB-BOOTSTRAP-ADMIN",
     "modules/gateway/scripts/deploy-frontend.sh": "STUB-DEPLOY-FRONTEND",
     "modules/gateway/scripts/apply-internal-plane-deny.sh": "STUB-INTERNAL-DENY",
+    "modules/gateway/scripts/verify-restricted-admission.sh": "STUB-RESTRICTED-ADMISSION",
     "modules/agent-factory/webhook-ingress/scripts/deploy-webhook-ingress.sh": "STUB-WEBHOOK-INGRESS",
     "modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh": "STUB-DEPLOY-CHAT-SCALEDJOB",
     # Invoked as `bash deploy.sh` after a cd into the module, so it is a relative path.
@@ -186,6 +191,9 @@ def harness(tmp_path):
     # External tools remain stubbed; these helpers only run against the temp tree.
     for name in ("terraform-update.sh", "upgrade-scope.sh", "gateway-alb-vars.sh", "prepare-backends.py", "render-model-root-config.py"):
         _write_exec(root / "platform" / "scripts" / name, (_DEPLOY_ALL.parent / name).read_text())
+
+    signing_helper = Path("modules/gateway/scripts/ensure-signing-secret.py")
+    _write_exec(root / signing_helper, (_REPO_ROOT / signing_helper).read_text())
 
     # deploy-all invokes this validator with python3 before continuing the
     # gateway phase.  Keep the offline scope harness self-contained: the
@@ -391,7 +399,7 @@ class TestSuperplaneOnlyScope:
 
     @pytest.mark.parametrize(
         "marker",
-        ["STUB-DEPLOY-BROKER", "STUB-BOOTSTRAP-ADMIN", "STUB-WEBHOOK-INGRESS", "STUB-WIRE-ALB", "STUB-DEPLOY-FRONTEND"],
+        ["STUB-DEPLOY-BROKER", "STUB-BOOTSTRAP-ADMIN", "STUB-WEBHOOK-INGRESS", "STUB-WIRE-ALB", "STUB-DEPLOY-FRONTEND", "STUB-RESTRICTED-ADMISSION"],
     )
     def test_out_of_scope_sub_script_never_executes(self, output, marker):
         """Proves the guard, not just the label.
@@ -451,6 +459,9 @@ class TestDefaultDeployIsUnchanged:
 
     def test_agent_context_still_gated_off_by_default(self, output):
         assert_skipped(output, "agent_context")
+
+    def test_gateway_admission_check_runs_with_the_gateway_phase(self, output):
+        assert "STUB-RESTRICTED-ADMISSION" in phase_section(output, "gateway_deploy")
 
     def test_explicit_enable_runs_the_phase(self, harness):
         """`SUPERPLANE_ENABLED=true` is the documented opt-in and must work."""

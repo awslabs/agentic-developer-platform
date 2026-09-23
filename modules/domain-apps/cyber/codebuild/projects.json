@@ -1,0 +1,8 @@
+{
+  "cyber-worker": {
+    "buildspec": "modules/domain-apps/cyber/codebuild/bs-cyber-worker.yml"
+  },
+  "cyber-browser": {
+    "buildspec": "modules/domain-apps/cyber/codebuild/bs-cyber-browser.yml"
+  }
+}

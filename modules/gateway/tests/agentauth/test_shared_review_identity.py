@@ -84,6 +84,15 @@ async def test_stale_or_unstarted_report_cannot_mint_reviewer_identity(review_id
 
 async def test_repair_action_cannot_assume_review_identity(review_identity):
     ctx = review_identity
+    # A legacy review can hand off a separate repair. The repair still cannot
+    # mint the formal review identity, even when it owns subsequent delivery.
+    async with ctx.factory() as db:
+        row = await db.get(OrchestrationRunReport, ctx.calls[-1]["message_id"])
+        row.dispatch_metadata = {
+            **row.dispatch_metadata,
+            "review_cycle_input": {**row.dispatch_metadata["review_cycle_input"], "reviewer_owned_delivery": False},
+        }
+        await db.commit()
     await review(ctx, findings=[{"summary": "fix", "finding_id": "F1", "evidence_refs": []}])
     assert (await tick(ctx)).effects_succeeded == 1
     assert ctx.calls[-1]["review_cycle_input"]["action"] == "repair"

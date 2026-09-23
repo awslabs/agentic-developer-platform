@@ -52,6 +52,7 @@ from src.knowledge.schemas import (
     QuotaDetail,
     QuotaInfo,
 )
+from src.knowledge.source_admission import SourceAdmissionError, admit_source
 from src.knowledge.type_registry import is_valid_asset_type, validate_source_ref
 from src.shared.database import get_db
 from src.shared.database_agent_context import get_agent_context_db
@@ -160,6 +161,11 @@ async def register_asset(
             )
         if accessibility:
             installation_id = accessibility.installation_id
+
+    try:
+        await admit_source(body.asset_type, body.source_ref, tenant_id, owner_sub)
+    except SourceAdmissionError as exc:
+        raise HTTPException(status_code=400, detail=f"Source admission refused: {exc}") from exc
 
     # Soft quota check
     quota_limit = _get_quota_limit(scope_key, body.asset_type)
@@ -798,11 +804,11 @@ async def bulk_commit(
     for item in body.items:
         # Validate asset_type
         if not is_valid_asset_type(item.asset_type):
-            continue  # Skip invalid types silently (should have been caught in preview)
+            raise HTTPException(status_code=400, detail="Asset type has no source validator")
 
         # Validate source_ref
         if not validate_source_ref(item.asset_type, item.source_ref):
-            continue
+            raise HTTPException(status_code=400, detail="Source does not match its registered validator")
 
         # Determine scope overrides (Issue #2087 + #3266)
         item_tenant_id = tenant_id
@@ -822,6 +828,10 @@ async def bulk_commit(
                 # Membership-resolved assets are org-scoped, not personal
                 item_owner_sub = None
 
+        try:
+            await admit_source(item.asset_type, item.source_ref, item_tenant_id, item_owner_sub)
+        except SourceAdmissionError as exc:
+            raise HTTPException(status_code=400, detail=f"Source admission refused: {exc}") from exc
         resolved_items.append((item, item_tenant_id, item_owner_sub, item_installation_id))
 
     # --- Quota check per resolved scope (Issue #3358) ---

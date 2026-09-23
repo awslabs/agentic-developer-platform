@@ -18,22 +18,22 @@ atomically.
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.shared.models.base import utcnow
 
 from .cost import escape_like
-from .display_state import DISPLAY_TO_ENGINE, DisplayState, FlowStatus, derive_flow_status
+from .display_state import DisplayState, FlowStatus, derive_flow_status
 from .models import (
-    DecisionKind,
     OrchestrationAcceptedPlan,
     OrchestrationDecision,
     OrchestrationEdge,
     OrchestrationFlow,
     OrchestrationNode,
 )
+from .progress_projection import node_progress_rows
 
 # The sorts `GET /orchestration/flows` accepts. `cost` is deliberately absent:
 # cost lives in `usage_logs`, joinable only by address prefix, so it cannot
@@ -42,20 +42,19 @@ from .models import (
 FLOW_SORTS: tuple[str, ...] = ("created", "updated", "stalled")
 
 KIND_COUNTS = {"story_count": "story", "gate_count": "gate", "eval_count": "eval"}
+FLOW_COUNT_FIELDS = (*KIND_COUNTS, "changes_requested_count", "completed_story_count", "eval_story_count", "completed_eval_story_count")
 
 
-def _kind_count_columns():
-    return [
-        func.count().filter(OrchestrationNode.kind == kind, OrchestrationNode.state != "superseded").label(name) for name, kind in KIND_COUNTS.items()
-    ]
+def _kind_count_columns(nodes):
+    return [func.count().filter(nodes.c.kind == kind, nodes.c.state != "superseded").label(name) for name, kind in KIND_COUNTS.items()]
 
 
 @dataclass(frozen=True)
 class FlowDisplayCounts:
     """Node counts per display state for one flow or one wave.
 
-    `stalled` covers failed, halted and rejected nodes. The narrower
-    `FlowAggregate.stalled_count` identifies retry stalls from decision records.
+    Each node occupies one current bucket. Blocked executions need attention;
+    capacity waits are queued. Historical stall decisions do not add counts.
     """
 
     queued: int = 0
@@ -107,15 +106,17 @@ class FlowAggregate:
 
     flow: OrchestrationFlow
     display_counts: FlowDisplayCounts
-    # Nodes whose most recent stall-or-halt decision was a *stall*. Distinct from
-    # `display_counts.stalled`, which is state-derived and also covers plain
-    # failures, halts and gate rejections.
+    # Compatibility field: always equals display_counts.stalled.
     stalled_count: int
     status: FlowStatus
     story_count: int = 0
     gate_count: int = 0
     eval_count: int = 0
     changes_requested_count: int = 0
+    completed_story_count: int = 0
+    # Additive presentation counts; preserve the existing engine-kind counts.
+    eval_story_count: int = 0
+    completed_eval_story_count: int = 0
     waves: tuple[WaveAggregate, ...] = field(default_factory=tuple)
 
     @property
@@ -300,78 +301,31 @@ class OrchestrationRepository:
     # -- flows list page (derived aggregates) ---------------------------------
 
     def _node_agg(self, *, org_id: str):
-        """Per-flow node counts, one row per flow, five `COUNT(*) FILTER` buckets.
-
-        The bucket state lists come from `DISPLAY_TO_ENGINE`, which is the
-        inversion of the single 9→5 mapping — they are never written out here. Two
-        consequences worth being explicit about:
-
-        - Adding a tenth engine state cannot leave it silently uncounted.
-        - `superseded` maps to no display state, so it appears in no bucket's list
-          and matches no `FILTER`. It is excluded **structurally**; there is no
-          `state != 'superseded'` predicate to accidentally drop, and `total_nodes`
-          is just the sum of the five buckets.
-
-        `COUNT(*) FILTER (WHERE …)` is portable to both SQLite 3.40.1 and
-        PostgreSQL; `.filter()` in SQLAlchemy Core emits exactly that.
-        """
-        columns = [func.count().filter(OrchestrationNode.state.in_(DISPLAY_TO_ENGINE[display])).label(display.value) for display in DisplayState]
+        """Aggregate current display buckets in SQL, without per-flow reads."""
+        nodes = node_progress_rows(org_id=org_id)
+        evaluation_story = and_(nodes.c.kind == "eval", func.trim(nodes.c.issue_ref) != "", nodes.c.state != "superseded")
+        columns = [func.count().filter(nodes.c.display_state == display.value).label(display.value) for display in DisplayState]
         return (
             select(
-                OrchestrationNode.flow_id.label("flow_id"),
+                nodes.c.flow_id,
                 *columns,
-                *_kind_count_columns(),
-                func.count().filter(OrchestrationNode.state == "rejected_at_gate").label("changes_requested_count"),
+                *_kind_count_columns(nodes),
+                func.count().filter(nodes.c.state == "rejected_at_gate").label("changes_requested_count"),
+                func.count().filter(nodes.c.kind == "story", nodes.c.state == "passed").label("completed_story_count"),
+                func.count().filter(evaluation_story).label("eval_story_count"),
+                func.count().filter(evaluation_story, nodes.c.state == "passed").label("completed_eval_story_count"),
             )
-            .where(OrchestrationNode.org_id == org_id)
-            .group_by(OrchestrationNode.flow_id)
+            .group_by(nodes.c.flow_id)
             .subquery()
         )
 
-    def _stall_agg(self, *, org_id: str):
-        """Per-flow count of nodes whose LATEST stall-or-halt decision was a stall.
-
-        Stall detection moves the node to `failed` and records a `node_stalled`
-        decision beside it (`stall.py`), so "stalled" is not readable from `state`
-        — a stall and an ordinary failure are the same state.
-
-        Latest-wins via `ROW_NUMBER()`, not any-match: a node that stalled, was
-        resumed, then halted must not still read as stalled. `id` breaks ties on
-        `created_at`, because two decisions written in one transaction can share a
-        timestamp and `rn = 1` would then be arbitrary.
-
-        `ROW_NUMBER()` rather than `DISTINCT ON` — the latter is PostgreSQL-only
-        and the suite runs on SQLite. Decisions are append-only (`models.py`'s
-        `before_update` guard), which is what makes latest-wins sound: no row is
-        rewritten behind this query.
-        """
-        ranked = (
-            select(
-                OrchestrationDecision.flow_id.label("flow_id"),
-                OrchestrationDecision.kind.label("kind"),
-                func.row_number()
-                .over(
-                    partition_by=[OrchestrationDecision.flow_id, OrchestrationDecision.node_id],
-                    order_by=[OrchestrationDecision.created_at.desc(), OrchestrationDecision.id.desc()],
-                )
-                .label("rn"),
-            )
-            .where(
-                OrchestrationDecision.org_id == org_id,
-                OrchestrationDecision.node_id.is_not(None),
-                OrchestrationDecision.kind.in_((DecisionKind.NODE_STALLED.value, DecisionKind.NODE_HALTED.value)),
-            )
-            .subquery()
-        )
-        return (
-            select(ranked.c.flow_id.label("flow_id"), func.count().label("stalled_count"))
-            .where(ranked.c.rn == 1, ranked.c.kind == DecisionKind.NODE_STALLED.value)
-            .group_by(ranked.c.flow_id)
-            .subquery()
-        )
+    async def node_display_states(self, *, org_id: str, flow_id: str) -> dict[str, str | None]:
+        """The graph uses exactly the same projection as list and wave counts."""
+        nodes = node_progress_rows(org_id=org_id, flow_ids=[flow_id])
+        return dict((await self._session.execute(select(nodes.c.node_id, nodes.c.display_state))).all())
 
     def _joined_flows(self, *, org_id: str) -> tuple[Select, dict[str, Any]]:
-        """`orchestration_flows` LEFT JOINed to both aggregates, org-filtered.
+        """`orchestration_flows` LEFT JOINed to current node aggregates, org-filtered.
 
         LEFT, not inner: a flow with zero nodes must still appear (as
         `status=empty`), and an inner join would drop it — the row would simply be
@@ -383,19 +337,13 @@ class OrchestrationRepository:
         than each having its own copy to drift.
         """
         node_agg = self._node_agg(org_id=org_id)
-        stall_agg = self._stall_agg(org_id=org_id)
 
         derived: dict[str, Any] = {display.value: func.coalesce(getattr(node_agg.c, display.value), 0) for display in DisplayState}
-        derived["stalled_count"] = func.coalesce(stall_agg.c.stalled_count, 0)
-        for name in (*KIND_COUNTS, "changes_requested_count"):
+        derived["stalled_count"] = derived["stalled"]
+        for name in FLOW_COUNT_FIELDS:
             derived[name] = func.coalesce(getattr(node_agg.c, name), 0)
 
-        base = (
-            select(OrchestrationFlow)
-            .outerjoin(node_agg, node_agg.c.flow_id == OrchestrationFlow.id)
-            .outerjoin(stall_agg, stall_agg.c.flow_id == OrchestrationFlow.id)
-            .where(OrchestrationFlow.org_id == org_id)
-        )
+        base = select(OrchestrationFlow).outerjoin(node_agg, node_agg.c.flow_id == OrchestrationFlow.id).where(OrchestrationFlow.org_id == org_id)
         return base, derived
 
     async def list_flows_page_with_aggregates(
@@ -439,7 +387,7 @@ class OrchestrationRepository:
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
             derived["stalled_count"].label("stalled_count"),
-            *(derived[name].label(name) for name in (*KIND_COUNTS, "changes_requested_count")),
+            *(derived[name].label(name) for name in FLOW_COUNT_FIELDS),
             # The honest filtered total, from the same pass as the rows.
             func.count().over().label("total_matching"),
         )
@@ -488,6 +436,9 @@ class OrchestrationRepository:
                     gate_count=agg.gate_count,
                     eval_count=agg.eval_count,
                     changes_requested_count=agg.changes_requested_count,
+                    completed_story_count=agg.completed_story_count,
+                    eval_story_count=agg.eval_story_count,
+                    completed_eval_story_count=agg.completed_eval_story_count,
                     waves=tuple(waves_by_flow.get(agg.flow.id, ())),
                 )
                 for agg in aggregates
@@ -508,14 +459,12 @@ class OrchestrationRepository:
             flow=row[0],
             display_counts=counts,
             stalled_count=stalled_count,
-            **{name: int(getattr(row, name) or 0) for name in (*KIND_COUNTS, "changes_requested_count")},
+            **{name: int(getattr(row, name) or 0) for name in FLOW_COUNT_FIELDS},
             status=derive_flow_status(
                 queued=counts.queued,
                 in_progress=counts.in_progress,
                 gate=counts.gate,
-                # Rejections, failures and halts also need attention. Keep the
-                # narrower retry-stall count for its own badge and sort.
-                stalled=max(counts.stalled, stalled_count),
+                stalled=counts.stalled,
                 complete=counts.complete,
             ),
         )
@@ -530,7 +479,7 @@ class OrchestrationRepository:
         reports `attention_needed` and would otherwise appear under a filter for a
         status it does not have.
         """
-        stalled = derived["stalled"] + derived["stalled_count"]
+        stalled = derived["stalled"]
         gate = derived["gate"]
         in_progress = derived["in_progress"]
         queued = derived["queued"]
@@ -592,7 +541,7 @@ class OrchestrationRepository:
         stmt = base.add_columns(
             *(derived[display.value].label(display.value) for display in DisplayState),
             derived["stalled_count"].label("stalled_count"),
-            *(derived[name].label(name) for name in (*KIND_COUNTS, "changes_requested_count")),
+            *(derived[name].label(name) for name in FLOW_COUNT_FIELDS),
         )
 
         counts: dict[FlowStatus, int] = dict.fromkeys(FlowStatus, 0)
@@ -626,21 +575,12 @@ class OrchestrationRepository:
             # rather than emitting a `WHERE flow_id IN ()`.
             return {}
 
-        columns = [func.count().filter(OrchestrationNode.state.in_(DISPLAY_TO_ENGINE[display])).label(display.value) for display in DisplayState]
+        nodes = node_progress_rows(org_id=org_id, flow_ids=flow_ids)
+        columns = [func.count().filter(nodes.c.display_state == display.value).label(display.value) for display in DisplayState]
         stmt = (
-            select(
-                OrchestrationNode.flow_id.label("flow_id"),
-                OrchestrationNode.epic_ref.label("epic_ref"),
-                OrchestrationNode.wave_ref.label("wave_ref"),
-                *columns,
-                *_kind_count_columns(),
-            )
-            .where(
-                OrchestrationNode.org_id == org_id,
-                OrchestrationNode.flow_id.in_(flow_ids),
-            )
-            .group_by(OrchestrationNode.flow_id, OrchestrationNode.epic_ref, OrchestrationNode.wave_ref)
-            .order_by(func.min(OrchestrationNode.created_at), OrchestrationNode.epic_ref, OrchestrationNode.wave_ref)
+            select(nodes.c.flow_id, nodes.c.epic_ref, nodes.c.wave_ref, *columns, *_kind_count_columns(nodes))
+            .group_by(nodes.c.flow_id, nodes.c.epic_ref, nodes.c.wave_ref)
+            .order_by(func.min(nodes.c.created_at), nodes.c.epic_ref, nodes.c.wave_ref)
         )
 
         waves: dict[str, list[WaveAggregate]] = {flow_id: [] for flow_id in flow_ids}

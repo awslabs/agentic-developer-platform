@@ -251,7 +251,7 @@ Writes, all tagged `eval-bgt-<run_id>`:
 - 1 `organizations` row, 1 `users` row, 1 `tenant_memberships` row (for `a1`)
 - budget configs and rate-limit configs at user / team / department / org level
 - `budget_usage` rows, from case 7's one billable request
-- 1 clean-room pod in `adp-gateway`
+- 1 clean-room pod in `adp-gateway-evals`
 
 **Every admin write asserts the tag first.** `assert_tagged()` runs immediately
 before each one and **dies** rather than recording a failure and continuing — an
@@ -282,7 +282,7 @@ is nothing to clean up. Leaked clean-room pods (`--cleanup-only` already does
 this):
 
 ```bash
-kubectl delete pod -n adp-gateway -l app=eval-bgt
+kubectl delete pod -n adp-gateway-evals -l app=eval-bgt
 ```
 
 ## Triaging a failure
@@ -316,7 +316,7 @@ The job summary renders one row per assertion, plus a separate findings block.
   must allow `rds-db:connect`. The master-password pattern is gone; do not
   resurrect it.
 - **The runner needs `pods create/delete` and `pods/exec create`** in
-  `adp-gateway`, which its existing RBAC already grants.
+  `adp-gateway-evals`, which the dedicated `adp-runner-evals` Role grants.
 - **The Cognito app client must allow `USER_PASSWORD_AUTH`** — that is how
   credential-free identities authenticate from inside the clean room
   (`InitiateAuth` is an unsigned API, which is exactly why a pod with no

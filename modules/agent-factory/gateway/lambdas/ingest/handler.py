@@ -30,7 +30,7 @@ from channels.base import (
 )
 from channels.gateway_api import GATEWAY_API_SOURCE, GatewayApiAdapter
 from channels.slack import SlackAdapter
-from channels.webchat import WebChatAdapter
+from channels.webchat import InvalidWebChatRequest, WebChatAdapter
 from classifier import ClassificationResult, classify_message
 from github_dispatch import create_issue_and_dispatch, label_existing_issue
 from invocation_logger import log_invocation
@@ -82,6 +82,56 @@ PINNABLE_PERSONAS = frozenset({"intent-refinement"})
 # Mirrors PERSONA_NAME_PATTERN in persona-loader.ts. Blocks path traversal
 # (e.g. "../../etc/passwd") even for values that clear the allowlist check.
 PERSONA_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+# ─── Session id shape (#5660 / A07) ───────────────────────────
+# `session_id` arrives from the client and is used BOTH as this table's key and
+# as a path segment in the artifact S3 key layout:
+#
+#   o/<org_id>/t/<team_id>/u/<user_id>/s/<session_id>/<task_id>/{in|out}/<file>
+#
+# Because it lands in a storage path, an id that is not a single harmless
+# segment is a storage-scope bug. A separator or `..` escapes its own prefix,
+# and a bare `o`/`t`/`u`/`s` collides with the FIXED leading segments above —
+# the sweeper's prefix was `${session_id}/`, so a session named `o` deleted
+# every tenant's uploads on that session's ordinary TTL expiry.
+#
+# Mirrors agent/src/complex-task-chat/session-id.ts; keep the two in sync.
+#
+# The charset is set by the id formats ALREADY IN PRODUCTION, all of which must
+# keep working — an over-strict rule here would strand live conversations:
+#   - the SPA's `sess-<epoch>-<rand>`  and the CLI's `sess-<uuid hex>`
+#   - Slack's thread timestamp `1758441600.123456`     → `.` is required
+#     (channels/slack.py passes `thread_ts` through as `thread_id`)
+#   - the `session_key` fallback `webchat:C123:user-1` → `:` is required
+#     (channels/base.py, used when a channel supplies no thread id)
+# Neither `.` nor `:` is a path separator, so neither can widen a derived
+# prefix. `/` is excluded and `..` is rejected below, so nothing can traverse.
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+RESERVED_SESSION_IDS = frozenset({"o", "t", "u", "s"})
+
+# Reserved `session_id` key prefixes on the sessions table. `conn#<id>` holds a
+# connection's durable claims, and `gateway-turn#` rows hold turn-dedupe state —
+# neither is a conversation, and a client that named one could read or overwrite
+# connection identity or replay a turn. The shape rule rejects `#` already, so
+# this is a named second line of defence rather than the only one.
+RESERVED_SESSION_KEY_PREFIXES = ("conn#", "gateway-turn#", "dedupe#")
+
+
+def is_valid_session_id(session_id: Any) -> bool:
+    """True when `session_id` is safe as a DDB key and a single S3 path segment."""
+    if not isinstance(session_id, str):
+        return False
+    if not SESSION_ID_PATTERN.match(session_id):
+        return False
+    # The charset admits `.`, so traversal must be refused explicitly. Rejected
+    # anywhere in the value, not just alone: a consumer that normalises the path
+    # (checkout, sync tool, signed-URL rewriter) can resolve `a/../b` upward and
+    # out of the caller's prefix.
+    if ".." in session_id or session_id == ".":
+        return False
+    if session_id in RESERVED_SESSION_IDS:
+        return False
+    return not session_id.startswith(RESERVED_SESSION_KEY_PREFIXES)
 
 sqs = boto3.client("sqs", region_name=REGION)
 s3_client = boto3.client("s3", region_name=REGION)
@@ -232,10 +282,15 @@ def lambda_handler(event, context):
     # webchat needs the whole event (it reads `requestContext.authorizer.claims`);
     # gateway-api needs it too, because a direct invocation's event IS the envelope
     # — there is no `body` wrapper. Only the HTTP-webhook channels have a body.
-    if channel_name in ("webchat", GATEWAY_API_SOURCE):
-        message = adapter.parse_event(event)
-    else:
-        message = adapter.parse_event(parse_body(event))
+    try:
+        if channel_name in ("webchat", GATEWAY_API_SOURCE):
+            message = adapter.parse_event(event)
+        else:
+            message = adapter.parse_event(parse_body(event))
+    except InvalidWebChatRequest as error:
+        payload = {"error": str(error)}
+        _send_ws_response(connection_id, parse_body(event).get("request_id", ""), payload)
+        return {"statusCode": 400, "body": json.dumps(payload)}
     if message is None:
         return {"statusCode": 200, "body": "OK"}
 
@@ -275,6 +330,25 @@ def lambda_handler(event, context):
 # abandoned connections get cleaned up.
 
 CONNECTION_CLAIMS_TTL_SECONDS = 24 * 3600
+
+
+class SessionOwnershipError(Exception):
+    """The caller named a session that is not theirs (#5660 / A07).
+
+    Raised instead of returning a falsy value so no caller can mistake a refusal
+    for "no session found" and fall through to creating or adopting the row.
+    The message deliberately does not say whether the session exists, who owns
+    it, or how it differs from the caller's own — that would turn the refusal
+    into an oracle for enumerating other tenants' session ids.
+    """
+
+    def __init__(self, session_id: str):
+        super().__init__("Session not found or not accessible")
+        self.session_id = session_id
+
+
+class SessionStoreError(Exception):
+    """The session owner could not be read or written safely."""
 
 
 class ConnectionClaimsError(Exception):
@@ -449,17 +523,142 @@ def _get_upload_claims(event: dict, connection_id: str) -> dict[str, str] | None
     user_id = claims.get("sub", "")
     org_id = claims.get("custom:org_id", "")
     team_id = claims.get("custom:team_id", "")
+    tenant_id = claims.get("custom:tenant_id", "") or org_id
     if not user_id:
         return None
-    return {"user_id": user_id, "org_id": org_id, "team_id": team_id}
+    return {
+        "user_id": user_id, "tenant_id": tenant_id,
+        "org_id": org_id, "team_id": team_id,
+    }
+
+
+def _is_safe_path_segment(value: str) -> bool:
+    """True when `value` cannot escape or widen its own level of the key layout."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and bool(re.match(r"^[A-Za-z0-9_.:-]{1,128}$", value))
+        and ".." not in value
+    )
 
 
 def _build_upload_s3_key(org_id: str, team_id: str, user_id: str,
                          session_id: str, task_id: str, filename: str) -> str:
-    """Build hierarchical S3 key for user upload."""
-    if org_id and team_id:
-        return f"o/{org_id}/t/{team_id}/u/{user_id}/s/{session_id}/{task_id}/in/{filename}"
-    return f"{session_id}/{task_id}/in/{filename}"
+    """Build the hierarchical S3 key for a user upload.
+
+    #5660 (A07): every identity segment is validated, because a segment holding a
+    separator would move the object out of its owner's prefix — which both hides
+    it from the owner's own listing and places it inside somebody else's. Raises
+    rather than falling back, since the legacy flat layout below proves nothing
+    about ownership and must never be reachable for a *new* upload.
+    """
+    for segment in (org_id, team_id, user_id, session_id, task_id):
+        if not _is_safe_path_segment(segment):
+            raise ValueError("upload key segment is not a single safe path segment")
+    return f"o/{org_id}/t/{team_id}/u/{user_id}/s/{session_id}/{task_id}/in/{filename}"
+
+
+def _session_owner_principal(tenant_id: str, org_id: str, team_id: str,
+                             user_id: str, channel: str) -> str:
+    """Return the canonical owner stamped on sessions and task envelopes."""
+    tenant_id = str(tenant_id or "").strip()
+    org_id = str(org_id or "").strip()
+    team_id = str(team_id or "").strip()
+    user_id = str(user_id or "").strip()
+    channel = str(channel or "").strip()
+    if tenant_id.lower() in UNUSABLE_ORG_IDS or not user_id or not channel:
+        raise SessionStoreError("verified session owner is incomplete")
+    return json.dumps(
+        [tenant_id, org_id, team_id, user_id, channel], separators=(",", ":"),
+    )
+
+
+def _assert_session_item_owner(item: dict | None, expected_principal: str,
+                               session_id: str) -> dict:
+    """Return a session row only when its complete recorded owner matches."""
+    if not item:
+        raise SessionOwnershipError(session_id)
+    recorded_principal = str(item.get("owner_principal", "") or "")
+    if not recorded_principal or recorded_principal != expected_principal:
+        logger.warning(
+            "OWNERSHIP REFUSED session=%s: recorded principal is missing or mismatched",
+            session_id,
+        )
+        raise SessionOwnershipError(session_id)
+    return item
+
+
+def _assert_session_owned_by_caller(session_id: str, identity: dict[str, str]) -> None:
+    """Raise SessionOwnershipError unless the complete caller owns the session.
+
+    #5660 (A07): the upload routes take `session_id` from the request body, so
+    without this a caller who learned another user's session id could attach
+    files to that conversation and list its catalogue.
+
+    Upload completion requires a reservation created by token issuance. A
+    missing session and a legacy row without complete ownership are both
+    quarantined rather than adopted.
+    """
+    expected_principal = _session_owner_principal(
+        identity["tenant_id"], identity["org_id"], identity["team_id"],
+        identity["user_id"], "webchat",
+    )
+    try:
+        resp = sessions_table.get_item(Key={"session_id": session_id}, ConsistentRead=True)
+    except Exception as e:
+        # Fail closed. An unavailable ownership record is not permission.
+        logger.error("Ownership lookup failed for session %s: %s", session_id, e)
+        raise SessionOwnershipError(session_id) from e
+
+    _assert_session_item_owner(resp.get("Item"), expected_principal, session_id)
+
+
+def _reserve_upload_session(session_id: str, connection_id: str,
+                            identity: dict[str, str]) -> None:
+    """Atomically reserve a prospective upload session for its verified owner."""
+    expected_principal = _session_owner_principal(
+        identity["tenant_id"], identity["org_id"], identity["team_id"],
+        identity["user_id"], "webchat",
+    )
+    now = int(time.time())
+    item = {
+        "session_id": session_id,
+        "owner_principal": expected_principal,
+        "owner_user_id": identity["user_id"],
+        "user_workspace": f'{identity["user_id"]}#webchat',
+        "org_id": identity["org_id"],
+        "tenant_id": identity["tenant_id"],
+        "team_id": identity["team_id"],
+        "connection_id": connection_id,
+        "channel": "webchat",
+        "messages": [],
+        "threads": {},
+        "created_at": now,
+        "updated_at": now,
+        "expires_at": now + 86400,
+    }
+    try:
+        sessions_table.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(session_id)",
+        )
+        return
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            logger.error("Upload session reservation failed for %s: %s", session_id, error)
+            raise SessionOwnershipError(session_id) from error
+    except Exception as error:
+        logger.error("Upload session reservation failed for %s: %s", session_id, error)
+        raise SessionOwnershipError(session_id) from error
+
+    try:
+        existing = sessions_table.get_item(
+            Key={"session_id": session_id}, ConsistentRead=True,
+        ).get("Item")
+    except Exception as error:
+        logger.error("Upload session collision lookup failed for %s: %s", session_id, error)
+        raise SessionOwnershipError(session_id) from error
+    _assert_session_item_owner(existing, expected_principal, session_id)
 
 
 def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
@@ -489,9 +688,28 @@ def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
     content_type = body.get("content_type", "application/octet-stream")
     size_bytes = body.get("size_bytes", 0)
 
-    if not session_id or not filename:
+    if not session_id or not isinstance(filename, str) or not filename:
         return _respond(400, {"error": "session_id and filename required"})
 
+    # #5660 (A07): shape first — this value becomes an S3 path segment below.
+    if not is_valid_session_id(session_id):
+        logger.warning("Rejected upload-token request with malformed session id %r", session_id)
+        return _respond(400, {"error": "invalid session id"})
+
+    # The upload must land under the caller's own prefix, and only a complete
+    # identity can express one. Without org+team the only expressible location is
+    # the legacy flat `<session>/...`, which proves nothing about who owns it and
+    # is exactly what makes existing rows unauthorizable — so refuse instead of
+    # writing another one.
+    if not ident["org_id"] or not ident["team_id"]:
+        logger.warning(
+            "Refusing upload token for user=%s: incomplete identity claims (org/team missing)",
+            ident["user_id"],
+        )
+        return _respond(403, {"error": "Uploads require a complete tenant identity"})
+
+    if not isinstance(size_bytes, (int, float)) or isinstance(size_bytes, bool):
+        return _respond(400, {"error": "Invalid file size"})
     if size_bytes and size_bytes > UPLOAD_MAX_BYTES:
         return _respond(400, {"error": f"File too large (max {UPLOAD_MAX_BYTES} bytes)"})
 
@@ -500,10 +718,21 @@ def handle_upload_token(event: dict, connection_id: str, body: dict) -> dict:
     if not safe_filename:
         return _respond(400, {"error": "Invalid filename"})
 
-    s3_key = _build_upload_s3_key(
-        ident["org_id"], ident["team_id"], ident["user_id"],
-        session_id, task_id, safe_filename,
-    )
+    try:
+        s3_key = _build_upload_s3_key(
+            ident["org_id"], ident["team_id"], ident["user_id"],
+            session_id, task_id, safe_filename,
+        )
+    except ValueError:
+        logger.warning("Refusing upload token: unsafe key segment for session %r", session_id)
+        return _respond(400, {"error": "Invalid upload parameters"})
+
+    # Reserve only after every client-controlled key component has validated, so
+    # an invalid upload request cannot squat a prospective conversation id.
+    try:
+        _reserve_upload_session(session_id, connection_id, ident)
+    except SessionOwnershipError:
+        return _respond(404, {"error": "session not found"})
 
     try:
         upload_url = s3_client.generate_presigned_url(
@@ -548,18 +777,59 @@ def handle_upload_complete(event: dict, connection_id: str, body: dict) -> dict:
 
     session_id = body.get("session_id", "")
     task_id = body.get("task_id", "")
-    s3_key = body.get("s3_key", "")
     filename = body.get("filename", "")
     content_type = body.get("content_type", "application/octet-stream")
     size_bytes = body.get("size_bytes", 0)
     checksum = body.get("checksum", "")
 
-    if not session_id or not s3_key or not filename or not checksum:
-        return _respond(400, {"error": "session_id, s3_key, filename, and checksum required"})
+    # `s3_key` is NO LONGER read from the request (#5660 / A07). It used to be
+    # written verbatim into the catalogue, so a caller could complete an upload
+    # naming ANY key — pointing a row they own at another tenant's object and
+    # then reading it back through the artifact fetch path. The server issued the
+    # key in handle_upload_token and can derive the identical one here, so the
+    # client's copy is redundant as well as forgeable.
+    if (
+        not session_id or not isinstance(task_id, str) or not task_id
+        or not isinstance(filename, str) or not filename or not checksum
+    ):
+        return _respond(400, {"error": "session_id, task_id, filename, and checksum required"})
+
+    if not is_valid_session_id(session_id):
+        logger.warning("Rejected upload-complete with malformed session id %r", session_id)
+        return _respond(400, {"error": "invalid session id"})
+
+    if not ident["org_id"] or not ident["team_id"]:
+        logger.warning(
+            "Refusing upload completion for user=%s: incomplete identity claims",
+            ident["user_id"],
+        )
+        return _respond(403, {"error": "Uploads require a complete tenant identity"})
+
+    try:
+        _assert_session_owned_by_caller(session_id, ident)
+    except SessionOwnershipError:
+        return _respond(404, {"error": "session not found"})
+
+    # Re-derive, matching handle_upload_token exactly (same sanitisation, so a
+    # filename that was rewritten when the token was issued resolves to the same
+    # key here rather than to a nonexistent one).
+    safe_filename = "".join(c for c in filename if c.isalnum() or c in ".-_")
+    if not safe_filename:
+        return _respond(400, {"error": "Invalid filename"})
+    try:
+        s3_key = _build_upload_s3_key(
+            ident["org_id"], ident["team_id"], ident["user_id"],
+            session_id, task_id, safe_filename,
+        )
+    except ValueError:
+        logger.warning("Refusing upload completion: unsafe key segment for session %r", session_id)
+        return _respond(400, {"error": "Invalid upload parameters"})
 
     artifacts_table = dynamodb.Table(ARTIFACTS_TABLE)
 
-    # Idempotency: check for existing row with same checksum in this session
+    # Idempotency is valid only for the exact server-derived upload. Legacy
+    # rows in this client-selectable partition are untrusted even when their
+    # checksum matches.
     try:
         existing = artifacts_table.query(
             KeyConditionExpression="PK = :pk AND begins_with(SK, :prefix)",
@@ -569,11 +839,22 @@ def handle_upload_complete(event: dict, connection_id: str, body: dict) -> dict:
                 ":prefix": "art#",
                 ":cs": checksum,
             },
-            Limit=1,
         )
-        if existing.get("Items"):
-            item = existing["Items"][0]
-            return _respond(200, {"artifact_id": item["id"], "deduplicated": True})
+        matching_rows = existing.get("Items", [])
+        verified_rows = [candidate for candidate in matching_rows if (
+            candidate.get("s3Key") == s3_key
+            and candidate.get("org_id") == ident["org_id"]
+            and candidate.get("team_id") == ident["team_id"]
+            and candidate.get("user_id") == ident["user_id"]
+        )]
+        unverified_count = len(matching_rows) - len(verified_rows)
+        if unverified_count:
+            logger.warning(
+                "Ignoring %d unverified checksum-matching artifact rows for session=%s user=%s",
+                unverified_count, session_id, ident["user_id"],
+            )
+        if verified_rows:
+            return _respond(200, {"artifact_id": verified_rows[0]["id"], "deduplicated": True})
     except Exception as e:
         logger.warning("Dedup check failed (proceeding): %s", e)
 
@@ -690,8 +971,31 @@ def _handle_unified_message(message: UnifiedMessage) -> dict:
             "body": json.dumps({"error": "invalid persona", "session_id": session_id}),
         }
 
-    # Ensure session exists
-    session = get_or_create_session(session_id, connection_id, message, now)
+    # #5660 (A07): the id is client-supplied and becomes both a table key and an
+    # S3 path segment. Refuse a bad shape before any side effect, for the same
+    # reason the persona pin is validated above.
+    if not is_valid_session_id(session_id):
+        logger.warning("Rejected malformed session id %r", session_id)
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "invalid session id"}),
+        }
+
+    # Ensure session exists — refuses if the id belongs to another owner.
+    try:
+        session = get_or_create_session(session_id, connection_id, message, now)
+    except SessionOwnershipError:
+        # Nothing has been written, no history is returned, and the owner's live
+        # connection is untouched. Indistinguishable from "no such session".
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"error": "session not found", "session_id": session_id}),
+        }
+    except SessionStoreError:
+        return {
+            "statusCode": 503,
+            "body": json.dumps({"error": "session ownership unavailable"}),
+        }
     threads = session.get("threads", {})
 
     # Load recent history and session-thread summaries for classifier.
@@ -766,11 +1070,25 @@ def _handle_unified_message(message: UnifiedMessage) -> dict:
     if classification.path == "direct_response" and classification.response:
         return handle_direct_response(session_id, task_id, connection_id, message, classification, now)
 
+    session_generation = int(session.get("created_at", 0) or 0)
+    if not session_generation:
+        logger.warning("OWNERSHIP REFUSED session=%s: missing session generation", session_id)
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"error": "session not found", "session_id": session_id}),
+        }
+
     if classification.path == "github_actions":
-        return handle_github_dispatch(session_id, task_id, connection_id, message, classification, threads, now)
+        return handle_github_dispatch(
+            session_id, task_id, connection_id, message, classification, threads,
+            now, session_generation,
+        )
 
     # long_running
-    return handle_long_running(session_id, task_id, connection_id, message, classification, threads, now)
+    return handle_long_running(
+        session_id, task_id, connection_id, message, classification, threads,
+        now, session_generation,
+    )
 
 
 # ─── Path Handlers ────────────────────────────────────────────
@@ -872,7 +1190,8 @@ def _tenant_gate_denial(message: UnifiedMessage, repo_owner: str) -> str | None:
     return None
 
 
-def handle_github_dispatch(session_id, task_id, connection_id, message, classification, threads, now):
+def handle_github_dispatch(session_id, task_id, connection_id, message, classification, threads,
+                           now, session_generation):
     """Always dispatch — github_actions tasks are independent, never blocked."""
     repo_parts = (classification.repo or "").split("/", 1)
     repo_owner = repo_parts[0] if len(repo_parts) > 1 else ""
@@ -947,10 +1266,14 @@ def handle_github_dispatch(session_id, task_id, connection_id, message, classifi
         return {"statusCode": 200, "body": json.dumps({"task_id": task_id, "session_id": session_id, "status": "dispatched_github", "issue_url": issue_url, "thread_id": thread_id})}
 
     # Fallback to long_running
-    return handle_long_running(session_id, task_id, connection_id, message, classification, threads, now)
+    return handle_long_running(
+        session_id, task_id, connection_id, message, classification, threads,
+        now, session_generation,
+    )
 
 
-def handle_long_running(session_id, task_id, connection_id, message, classification, threads, now):
+def handle_long_running(session_id, task_id, connection_id, message, classification, threads,
+                        now, session_generation):
     """Per-thread serialization for long_running tasks."""
 
     is_follow_up = (
@@ -998,6 +1321,15 @@ def handle_long_running(session_id, task_id, connection_id, message, classificat
     # X-Owner-Sub on Context MCP requests from trusted dispatch metadata.
     if message.user_id:
         identity_fields["cognito_sub"] = message.user_id
+
+    # Carry the immutable, tenant-qualified owner authorized at enqueue time.
+    # Workers echo this opaque value on every response envelope; response routing
+    # and persistence never reconstruct it from client-controlled metadata.
+    identity_fields["owner_principal"] = _session_owner_principal(
+        pd.get("tenant_id", "") or pd.get("org_id", ""), pd.get("org_id", ""),
+        pd.get("team_id", ""), message.user_id, message.channel.value,
+    )
+    identity_fields["session_generation"] = session_generation
 
     # Stage C (#186): forward artifact ID attachments to the worker so it can
     # inject them into the system prompt. The frontend sends string IDs
@@ -1154,47 +1486,82 @@ def parse_body(event):
 # ─── Session & Thread DynamoDB Operations ─────────────────────
 
 def get_or_create_session(session_id, connection_id, message, now):
-    # `org_id` is stamped on creation so the row records WHICH TENANT the
-    # conversation belongs to (#5331). `user_workspace` is `user#channel` and carries
-    # no tenant, so without this a reader can only compare the user — and one human
-    # who belongs to two workspaces authenticates with the same user_id in both, which
-    # made their tenants indistinguishable to any consumer of this row. The gateway's
-    # operator-plane readback (`orchestration/intake_session.py`) compares this value
-    # and refuses a row that lacks it, so a session created without the stamp is
-    # unreachable there rather than readable across tenants.
     org_id = str(message.platform_data.get("org_id", "") or "")
-    try:
-        resp = sessions_table.get_item(Key={"session_id": session_id})
-        item = resp.get("Item")
-        if item:
-            # Deliberately NOT backfilled onto an existing row. `session_id` comes from
-            # the client (`message.thread_id`), so a caller who learned somebody else's
-            # id could otherwise stamp their OWN tenant onto an unstamped legacy row and
-            # thereby claim it. An unstamped row stays unreachable to the readback until
-            # the table's 24h TTL reaps it; that is the safe end of the trade.
-            sessions_table.update_item(Key={"session_id": session_id},
+    tenant_id = str(message.platform_data.get("tenant_id", "") or org_id)
+    team_id = str(message.platform_data.get("team_id", "") or "")
+    caller_workspace = f"{message.user_id}#{message.channel.value}"
+    expected_principal = _session_owner_principal(
+        tenant_id, org_id, team_id, message.user_id, message.channel.value,
+    )
+
+    def verify_and_rebind(item: dict | None) -> dict:
+        owned = _assert_session_item_owner(item, expected_principal, session_id)
+        try:
+            sessions_table.update_item(
+                Key={"session_id": session_id},
                 UpdateExpression="SET connection_id = :c, updated_at = :t, expires_at = :e",
-                ExpressionAttributeValues={":c": connection_id, ":t": now, ":e": now + 86400})
-            return item
-    except Exception as e:
-        logger.warning("get_session failed: %s", e)
+                ConditionExpression="owner_principal = :owner",
+                ExpressionAttributeValues={
+                    ":c": connection_id, ":t": now, ":e": now + 86400,
+                    ":owner": expected_principal,
+                },
+            )
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                logger.warning(
+                    "OWNERSHIP REFUSED session=%s: owner changed during rebind",
+                    session_id,
+                )
+                raise SessionOwnershipError(session_id) from error
+            raise SessionStoreError("session rebind failed") from error
+        return owned
+
+    try:
+        resp = sessions_table.get_item(Key={"session_id": session_id}, ConsistentRead=True)
+    except Exception as error:
+        logger.error("Session ownership lookup failed for %s: %s", session_id, error)
+        raise SessionStoreError("session lookup failed") from error
+
+    if resp.get("Item"):
+        return verify_and_rebind(resp["Item"])
 
     item = {
         "session_id": session_id,
-        "user_workspace": f"{message.user_id}#{message.channel.value}",
+        "owner_principal": expected_principal,
+        "owner_user_id": message.user_id,
+        "user_workspace": caller_workspace,
+        "tenant_id": tenant_id,
         "connection_id": connection_id, "channel": message.channel.value,
         "messages": [], "threads": {}, "created_at": now, "updated_at": now, "expires_at": now + 86400,
     }
-    # Written only when known. An empty string is not a tenant, and storing one would
-    # turn "no tenant recorded" into a value a caller with an empty org_id could
-    # match — the readback guards that too, but the row should not offer the target.
+    if team_id:
+        item["team_id"] = team_id
     if org_id:
         item["org_id"] = org_id
     if message.platform_data.get("ingress") == "gateway-api":
         item["intake_repository"] = str(message.platform_data.get("intake_repository") or "")
         item["intake_issue"] = str(message.platform_data.get("intake_issue") or "")
-    sessions_table.put_item(Item=item)
-    return item
+    try:
+        sessions_table.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(session_id)",
+        )
+        return item
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise SessionStoreError("session create failed") from error
+    except Exception as error:
+        raise SessionStoreError("session create failed") from error
+
+    # Another caller won the first-create race. Re-read the winner and apply the
+    # same full owner check as the ordinary existing-row path.
+    try:
+        winner = sessions_table.get_item(
+            Key={"session_id": session_id}, ConsistentRead=True,
+        ).get("Item")
+    except Exception as error:
+        raise SessionStoreError("session collision lookup failed") from error
+    return verify_and_rebind(winner)
 
 
 def append_message(session_id, role, content, ts):

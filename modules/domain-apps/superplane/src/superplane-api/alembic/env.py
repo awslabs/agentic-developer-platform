@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Import all models so they register with Base.metadata
 import app.models  # noqa: F401
 from alembic import context
-from app.config import settings
+from app.config import require_database_url, settings
 from app.database import Base
 from app.migration_version import SuperplanePostgresqlImpl  # noqa: F401
 from app.schema_boundary import connect_args, schema_name
@@ -21,8 +21,7 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Override sqlalchemy.url from settings if DATABASE_URL is set
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+config.set_main_option("sqlalchemy.url", require_database_url().replace("%", "%%"))
 domain_schema = schema_name(settings.superplane_db_schema)
 
 
@@ -46,8 +45,11 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata,
-                      version_table_schema=domain_schema)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        version_table_schema=domain_schema,
+    )
     with context.begin_transaction():
         # Preserve existing revision IDs and rows while accommodating the long
         # inherited identifiers. Fresh tables use the public implementation hook.
@@ -63,7 +65,9 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        connect_args=connect_args(settings.superplane_db_schema),
+        connect_args=connect_args(
+            settings.superplane_db_schema, require_database_url()
+        ),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

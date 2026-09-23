@@ -576,6 +576,15 @@ class Installer:
                 "controller-credential",
                 "controller-signing-key",
                 "skypilot-token",
+                # The API's org-scoped token signing key (issue #5683, A04).
+                # Required, not optional: the API now refuses to start without it,
+                # so an installation that could not supply it must fail HERE — while
+                # nothing has been applied — rather than by rolling out pods that
+                # cannot start. The comparison below is set EQUALITY, so an existing
+                # secret without this field is refused until it is added; that is
+                # the intended fail-closed cutover, and the runbook covers the
+                # order of operations.
+                "jwt-signing-key",
             },
         }
         if not self.control_plane_only:
@@ -595,6 +604,15 @@ class Installer:
         require(
             len(observation["skypilot-token"]) >= 32,
             "SkyPilot service credential is too short",
+        )
+        # The token signing key gets the same strength floor as the other service
+        # credentials above (issue #5683, A04). A short HS256 key is brute-forceable
+        # offline from a single captured token, which would leave the placeholder's
+        # forgeability in place while looking fixed — so "a key was supplied" is not
+        # on its own the property worth checking.
+        require(
+            len(observation["jwt-signing-key"]) >= 32,
+            "Token signing key is too short",
         )
         grants = json.loads(observation["submitters"])
         require(

@@ -104,6 +104,8 @@ export interface GraphNode {
   kind: NodeKind;
   title: string;
   state: NodeEngineState;
+  /** Current server projection shared by list, wave and graph counts. */
+  display_state?: keyof FlowDisplayCounts | null;
   /**
    * Derived server-side from the append-only decision log, not readable from
    * `state`. A stall moves a node to `failed` + a `node_stalled` decision, so
@@ -259,6 +261,7 @@ export interface PolicySummary {
 }
 
 export interface FlowGraph {
+  execution_paused?: boolean;
   flow_id: string;
   slug: string;
   title: string;
@@ -317,6 +320,8 @@ export interface ResumeResult {
   node_id: string;
   from_state: NodeEngineState;
   state: NodeEngineState;
+  /** Current server projection shared by list, wave and graph counts. */
+  display_state?: keyof FlowDisplayCounts | null;
   decision_id: string;
   actor_kind: ActorKind;
 }
@@ -431,6 +436,7 @@ export interface DesignHistory {
 
 /** One flow as the list page reads it: identity plus everything derived. */
 export interface FlowSummary {
+  execution_paused?: boolean;
   id: string;
   slug: string;
   title: string;
@@ -458,11 +464,7 @@ export interface FlowSummary {
    * to be able to say "1 waiting on you".
    */
   awaiting_gate_count: number;
-  /**
-   * Decision-derived (latest `node_stalled` wins), **not** the count of `failed`
-   * nodes — stall detection writes `failed`, so a stall and a plain failure share
-   * an engine state.
-   */
+  /** Current attention count; identical to display_counts.stalled. */
   stalled_count: number;
   display_counts: FlowDisplayCounts;
   total_nodes: number;
@@ -471,6 +473,10 @@ export interface FlowSummary {
   gate_count?: number;
   eval_count?: number;
   changes_requested_count?: number;
+  completed_story_count?: number;
+  /** Additional issue-linked evaluation stories; engine kind counts stay unchanged. */
+  eval_story_count?: number;
+  completed_eval_story_count?: number;
   epic_count: number;
   wave_count: number;
   /** The first wave with unfinished work; null when everything is done. */

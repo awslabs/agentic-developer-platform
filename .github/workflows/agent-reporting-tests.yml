@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'modules/domain-apps/*/ci/**'
       - 'modules/agent-factory/agent/**'
       - 'modules/agent-factory/agent-worker-image/**'
       - 'modules/agent-factory/rules/personas/**'

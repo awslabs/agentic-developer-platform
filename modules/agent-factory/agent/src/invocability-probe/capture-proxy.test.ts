@@ -1,5 +1,5 @@
 import * as http from 'node:http';
-import { startCaptureProxy } from './capture-proxy';
+import { resolveProviderUrl, startCaptureProxy } from './capture-proxy';
 import { requestShapeSha256 } from './canonical-json';
 
 async function upstream(handler: http.RequestListener): Promise<{
@@ -17,6 +17,24 @@ async function upstream(handler: http.RequestListener): Promise<{
 }
 
 const credentials = { accessKeyId: 'TEST', secretAccessKey: 'TEST', sessionToken: 'TEST' };
+
+async function postRequestTarget(origin: string, requestTarget: string): Promise<number> {
+  const destination = new URL(origin);
+  return await new Promise<number>((resolve, reject) => {
+    const request = http.request({
+      hostname: destination.hostname,
+      port: destination.port,
+      method: 'POST',
+      path: requestTarget,
+      headers: { 'content-type': 'application/json' },
+    }, response => {
+      response.resume();
+      response.once('end', () => resolve(response.statusCode ?? 0));
+    });
+    request.once('error', reject);
+    request.end('{}');
+  });
+}
 
 describe('Bedrock request capture proxy', () => {
   it.each(['x@evil.com', 'us-east-1/other', 'us-east-1.example', '', 'us-east-1\n'])('rejects malformed region %j before opening a proxy', async (region) => {
@@ -65,6 +83,73 @@ describe('Bedrock request capture proxy', () => {
       await proxy.close();
       await fake.close();
     }
+  });
+
+  it('does not follow a provider redirect to a second origin', async () => {
+    let targetCalls = 0;
+    const target = await upstream((_request, response) => {
+      targetCalls++;
+      response.writeHead(200).end('{}');
+    });
+    const redirector = await upstream((_request, response) => {
+      response.writeHead(302, { location: `${target.origin}/relocated` }).end();
+    });
+    const proxy = await startCaptureProxy({
+      modelId: 'selected-model',
+      region: 'us-east-1',
+      credentials,
+      upstreamBaseUrl: redirector.origin,
+    });
+    try {
+      const captured = proxy.captured().catch(error => error as Error);
+      const response = await fetch(`${proxy.baseUrl}/model/selected-model/invoke`, {
+        method: 'POST',
+        body: '{}',
+      });
+
+      expect(response.status).toBe(502);
+      expect(await captured).toHaveProperty('message');
+      expect(targetCalls).toBe(0);
+    } finally {
+      await proxy.close();
+      await redirector.close();
+      await target.close();
+    }
+  });
+
+  it.each([
+    '//evil.example.com/model/selected-model/invoke',
+    'http://evil.example.com/model/selected-model/invoke',
+  ])('keeps the configured upstream for request target %s', async requestTarget => {
+    let receivedPath = '';
+    const fake = await upstream((request, response) => {
+      receivedPath = request.url ?? '';
+      response.writeHead(200).end('{}');
+    });
+    const proxy = await startCaptureProxy({
+      modelId: 'selected-model',
+      region: 'us-east-1',
+      credentials,
+      upstreamBaseUrl: fake.origin,
+    });
+    try {
+      await expect(postRequestTarget(proxy.baseUrl, requestTarget)).resolves.toBe(200);
+      expect(receivedPath).toBe('/model/selected-model/invoke');
+    } finally {
+      await proxy.close();
+      await fake.close();
+    }
+  });
+
+  it.each([
+    '//evil.example.com/model/selected-model/invoke',
+    'http://evil.example.com/model/selected-model/invoke',
+  ])('rejects provider target %s when it resolves off the configured origin', path => {
+    const configuredUpstream = new URL('https://bedrock-runtime.us-east-1.amazonaws.com');
+
+    expect(() => resolveProviderUrl(path, configuredUpstream)).toThrow(
+      'captured request path does not resolve to the Bedrock upstream',
+    );
   });
 
   it('does not forward a body whose digest differs from the manifest', async () => {

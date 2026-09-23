@@ -34,7 +34,7 @@ run_codebuild() {
         with tempfile.TemporaryDirectory() as tmp:
             calls = Path(tmp) / "calls"
             env = dict(os.environ, ROOT_DIR=str(ROOT), SCRIPT_DIR=str(ROOT / "platform/scripts"),
-                       ENVIRONMENT="dev", AWS_REGION="us-east-1", DEPLOY_FACTORY="true", UPDATE_MODE="true",
+                       ENVIRONMENT="dev", AWS_REGION="us-east-1", DEPLOY_FACTORY="true", DEPLOY_GATEWAY="true", UPDATE_MODE="true",
                        LOCAL_MODE="false", UPGRADE_RUN_DIR=tmp, STATE_BUCKET="state", REGISTRY="registry.test",
                        IMAGE_TAG="release-sha", CALLS=str(calls), PACKAGE_EXIT=str(package_exit), CHAT_EXIT=str(chat_exit))
             result = subprocess.run(["bash", "-c", prefix + block + '\nprintf "tag=%s\\n" "$IMAGE_TAG"'],

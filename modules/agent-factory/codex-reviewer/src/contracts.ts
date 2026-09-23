@@ -71,6 +71,7 @@ export interface CodexEngineReviewEnvelope extends CodexEnvelopeBase {
     head_sha: string;
     findings: unknown[];
     allow_story_repairs: boolean;
+    reviewer_owned_delivery?: boolean;
   };
 }
 
@@ -149,6 +150,7 @@ export function parseEnvelope(raw: string): CodexReviewEnvelope {
         head_sha: cycle.head_sha as string,
         findings: cycle.findings,
         allow_story_repairs: cycle.allow_story_repairs === true,
+        reviewer_owned_delivery: cycle.reviewer_owned_delivery === true,
       },
     };
   }

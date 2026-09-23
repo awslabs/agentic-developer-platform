@@ -55,10 +55,12 @@ export interface NodeChipProps {
  * loses the only information that tells an operator what to actually do.
  */
 function reasonBadge(node: GraphNode): string | null {
+  if (node.state === 'passed' || node.state === 'superseded') return null;
   if (node.state === 'halted') return 'Halted';
   if (node.stalled) return 'Stalled';
   if (node.state === 'rejected_at_gate') return 'Changes requested at gate';
   if (node.state === 'failed') return 'Failed';
+  if (node.display_state === 'stalled') return 'Blocked';
   return null;
 }
 
@@ -107,7 +109,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls, executi
         )}
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-            {node.kind === 'story' ? 'Story' : node.kind === 'gate' ? 'Approval gate' : 'Evaluation'}
+            {node.kind === 'story' ? 'Implementation story' : node.kind === 'gate' ? 'Approval gate' : node.issue_ref?.trim() ? 'Evaluation story' : 'Evaluation checkpoint'}
           </p>
           <div className="flex items-start gap-2">
             <span className="min-w-0 break-words font-medium text-gray-900 dark:text-gray-100">{node.title}</span>

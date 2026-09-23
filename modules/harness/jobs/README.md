@@ -180,6 +180,8 @@ provider did.
 | `harness_jobs/facade.py` | `OperationFacadeService`, the declared port surface; `PORT_REFUSAL_NAMES` |
 | `harness_jobs/approval.py` | `ApprovalRecord`, `ApprovalBinding`, `SpendEnvelope`, `ApprovalResult`, `evaluate_approval`, `APPROVAL_PERMISSION` |
 | `harness_jobs/admission.py` | `admit_operation`, `BudgetLedger`, `CreationFence`, `Reservation`, `ReservationState`, `IntentStage`, `AdmissionIntent`, `DispatchEvidence`, `cancel_before_dispatch`, `retain_for_uncertain_dispatch`, `list_interrupted_admissions`, `reconcile_interrupted_admissions`, `read_consumption`, `read_consumption_privileged` |
+| `harness_jobs/inventory.py` | `InventoryAuthority`: `publish_report`, `enumerate_resources`, `record_provider_enumeration`, `seal_allocation`, `read_inventory`, `assess_cleanup`; `AllocationResource`, `VerifiedInventory`, `CleanupAssessment`, `ResourceObservation`, `ResourcePresence`, `ReleaseState`, `CostExposure`, `report_digest`, `allocation_id_for`, `MAX_INVENTORY_RESOURCES` |
+| `harness_jobs/allocation.py` | What `execution` and `inventory` must agree about, below both: `lock_allocation`, `sealed_revision`, `allocation_id_for`, `approved_allocation`, `CallEffect`, `call_effect`, `may_create`, `creating_calls_unaccounted_for`, `bounded_text`, `MAX_ALLOCATION_ID_LENGTH`. Exists because `inventory` imports `execution`, so `execution` cannot import `inventory` — and `execution` is where refusing still prevents spend |
 
 ### The admission sequence (#5526)
 
@@ -330,6 +332,142 @@ Finite by construction, enforced in `OperationRequest.__post_init__`:
 | `MAX_PARAMETER_VALUE_LENGTH` | 2000 |
 | `MAX_TOTAL_PARAMETER_BYTES` | 16384 |
 
+## Allocation inventory and cleanup authority (#5529)
+
+`inventory.py` answers two questions the domain cannot answer for itself: **what does
+this allocation actually own**, and **may its unused budget be released**. It holds no
+balance and computes no amount — it returns a `BudgetDisposition` per resource for the
+domain ledger to apply, for the reason the ledger-callback section above gives.
+
+Seven rules, each of which is the whole point of the module:
+
+1. **A caller never hands in a digest.** `publish_report(...)` takes observations,
+   canonicalises them itself, stores the payload and derives `report_digest` from what it
+   stored. `read_inventory(..., report_digest=...)` recomputes the digest from the stored
+   payload and compares with `hmac.compare_digest`. Echoing the caller's digest back would
+   make "attested" mean "asserted", which is exactly what an attestation is for. The
+   attestation's *identity* is the full binding — digest plus operation, workspace,
+   attempt, executor and fence — supplied from the resolved grant, never from the request.
+   The digest alone would be wrong both ways: identical canonical observations are routine
+   (a successor re-querying an unchanged provider produces the same bytes), so legitimate
+   publications were refused and cleanup became permanently unavailable; and two
+   publications of the same bytes under different grants both saw no row, one insert was
+   discarded, and both callers were told they had succeeded. The insert is now an upsert
+   whose returned row is verified to be the caller's own. The binding also names the
+   **sealed revision** the report was taken against — see rule 4.
+2. **Membership is a table, not a provider reference.** `provider_ref` on
+   `harness_provider_call_intent` is one reference per *call*, and a single call routinely
+   creates several independently billable things. `enumerate_resources(...)` records each
+   one as a row with a durable provider handle, and the set's identities hash to an
+   inventory `revision` so a grown allocation is visibly a different inventory. Its
+   `operation_id` is **provenance with no foreign key**: membership must outlive the
+   operation row, and a cascade there let routine operation housekeeping silently shrink an
+   inventory whose whole contract is that it only grows.
+3. **Membership cannot prove its own completeness.** Checking each succeeded call's own
+   handle only confirms the executor wrote down what it was already reporting; it cannot
+   see one call creating several billable resources with only the headline one recorded — a
+   cluster enumerated without its disk, which released everything while the disk kept
+   billing. `record_provider_enumeration(..., provider=..., provider_references=..., generation=...)`
+   records what the **provider** says it holds and is refused when the provider names a
+   handle membership does not. The stored listing is a digest compared against the handles
+   enumerated *now*, so a listing that has since been outgrown reads as a mismatch, not as
+   a proof; and it cannot be recorded before creation is confirmed complete. A listing is
+   evidence **for the authority that took it**: the proof must name the operation,
+   attempt, holder and fence relying on it, because comparing only provider and digest
+   let a predecessor's listing satisfy a successor's fence — after recovery advanced the
+   fence, the new holder could seal and release on a provider query it never made. A
+   successor must re-enumerate before it can seal. A report is additionally bound to the
+   **listings that existed when it was taken**: each listing row carries a database-advanced
+   `generation`, a report stores an `enumeration_binding` digest over the
+   `(provider, generation)` pairs current at publication, and verification recomputes it.
+   Without that, a listing taken *later* retroactively validated an earlier report — the
+   executor could observe "absent" and publish, then re-list, and the fresh listing would
+   satisfy the completeness proof for an observation that predated it. The binding makes a
+   report verifiable only against the evidence it was actually taken against.
+4. **A release-authorizing snapshot seals the allocation, and a report is taken after the
+   seal.** `read_inventory` must release its transaction before the domain acts, so while
+   membership stayed writable a release decided from "only the cluster, and it is gone"
+   could be acted on after a disk was added. `seal_allocation(...)` is an explicit write
+   under the live fence; `enumerate_resources` reads the seal inside the same transaction,
+   so additions after it are **refused and audited**. Only a sealed allocation is ever
+   `complete`, and the seal names the revision it covers — recomputed on every read, so a
+   row inserted behind the package's back makes the inventory incomplete rather than
+   sealed. The seal is also what dates a report: publishing only needed a live lease, so
+   an executor could query the provider *before* creating anything, publish the truthful
+   "absent", then create and seal, and present that earlier report to release budget over
+   a resource that exists. `publish_report` therefore refuses to publish into an unsealed
+   allocation, stores the sealed revision it was taken against, and verification requires
+   it to equal the revision sealed now — so membership growth or a reseal retires every
+   attestation taken before it.
+5. **Writes that change what an allocation contains are serialized per allocation, not
+   per operation.** Two separately approved operations in one tenant can name the same
+   allocation, and then their lease locks are two different locks: one checks for a seal,
+   the other reads membership and seals over it, a release is authorized, and the first
+   commits a late resource into an allocation that can never be sealed again. Membership
+   writes, the enumeration proof and the seal all take a transaction-scoped advisory lock
+   on `(org_id, workspace_id, allocation_id)` **before** the lease lock, through one
+   shared helper so the order cannot diverge into a deadlock. Either the seal wins and
+   the growth is refused, or the growth wins and the seal is refused; never both.
+6. **Sealing withdraws the authority to CREATE, not only the ability to record.** Rule 5
+   orders database writes, and that is all the seal used to do. It did not order the
+   **provider call**. Two approved operations naming one allocation: after A sealed, B
+   could still record an intent and invoke the provider, and B's membership write was then
+   refused — so the resource existed and billed, appeared in no inventory, and A's sealed
+   membership plus its ABSENT report authorized releasing the budget for it. Every check
+   passed. Two rules close it, both under rule 5's allocation lock:
+   **(a)** a creating call may not be recorded or dispatched into a sealed allocation —
+   enforced in `execution` (`record_intent`, `OperationExecutor._record`, and again in
+   `_refuse_sealed_before_dispatch` immediately before the provider hook, the last moment
+   at which refusing still costs nothing); **(b)** an allocation may not be sealed while a
+   creating call recorded against it is unaccounted for — enforced in
+   `seal_allocation` and re-derived by `_completeness`. Neither suffices alone: (a) leaves
+   the window between a committed intent and its in-flight provider call, and (b) closes it
+   using the durable intent row rather than a lock held across provider I/O, which would
+   block sealing on unrelated provider latency and is lost on a crash. Whether a call can
+   create is read from the approved plan's `operation_kind` (`allocation.CallEffect`),
+   never from a worker argument, and an **unrecognized verb counts as creating** — "we do
+   not know" must answer yes to "could this start costing money". Teardown and query calls
+   are always permitted, because a sealed allocation that can no longer be torn down bills
+   forever, which is the same loss from the other direction.
+7. **Incomplete is not empty, and unknown is not absent.** Completeness is re-derived on
+   every read from six independent sources — the resource ceiling,
+   `confirmed_plan_progress`, every recorded provider call being resolved *and* represented
+   in membership, a current provider listing per provider, the seal over exactly this
+   revision, and no creating call from *any* operation against the allocation being
+   unaccounted for. None of them is a stored boolean, so a flag cannot outlive the state it
+   described — in particular the seal row is never trusted, so a seal written around rule 6
+   by a restored backup or a future writer makes the inventory read incomplete instead of
+   releasing money. `assess_cleanup` derives the expected set from stored membership,
+   never from the observations handed to it, so an observation set that simply omits a
+   resource cannot release it. A resource the provider could not be consulted about stays
+   `UNKNOWN`, keeps `CostExposure.UNRESOLVED` and `ReleaseState.UNRESOLVED`, and retains
+   budget.
+   `may_return_reservation_unused` is true only when every expected resource was
+   independently established absent.
+
+The executor's full sequence is therefore: `enumerate_resources` (as resources are
+created) → finish the plan → `record_provider_enumeration` per provider →
+`seal_allocation` → `publish_report`. Only then can `read_inventory`/`assess_cleanup`
+report `complete`. **The order is the contract, not a convention:** membership writes and
+the enumeration proof are refused once the seal is taken, and `publish_report` is refused
+until it is — so the sequence above is the only one the authority accepts. Creating
+provider calls belong before the seal for the same reason and are refused after it
+(rule 6); teardown and query calls remain available afterwards, which is how a sealed
+allocation is actually cleaned up.
+
+`read_inventory` returns a single `None` for every failure — absent, another tenant's,
+unattested, fenced out. A caller that could tell those apart would have a cross-tenant
+probe and a fence oracle.
+
+Refusals are audited **outside** the aborted transaction. A refusal audit written inside
+it rolls back with the refusal, so the fence doing its job would leave no trace — the same
+ordering `execution.py` uses.
+
+Composition owes an `authenticate` verifier that turns a caller's credential into an
+`ExecutionGrant`. There is no default, for the same reason `BudgetLedger` has none: a
+permissive default makes cleanup authority satisfiable by omission. Locally submitted
+observations cannot manufacture it.
+
 ## Tests
 
 ```bash
@@ -383,8 +521,10 @@ it (#5535):
 
 1. **Install the schema.** `await apply(connection)` — idempotent, so a retried
    install is safe. It creates `harness_operations`, `harness_dispatch_outbox`,
-   `harness_jobs_schema_version`, (v2) `harness_approval_consumption` and (v3)
-   `harness_admission_intent`.
+   `harness_jobs_schema_version`, (v2) `harness_approval_consumption`, (v3)
+   `harness_admission_intent` and (v7) `harness_provider_report`,
+   `harness_allocation_resource`, `harness_allocation_enumeration` and
+   `harness_allocation_seal`.
 2. **Check compatibility at startup.** `await check_schema_version(connection)`, or
    `OperationStore.ensure_compatible()`. It refuses to run against a schema older *or*
    newer than `SCHEMA_VERSION`, and says which direction to move.
@@ -401,6 +541,9 @@ it (#5535):
    `modules/gateway/src/budget/reservations.py`, whose key is `request_id` rather than
    `(job_id, attempt_id)` and whose ledger is a per-request token budget rather than a
    provisioning envelope. An adapter over it would be a separate, named decision.
+   For `InventoryAuthority`, also an `authenticate` verifier returning an
+   `ExecutionGrant` — undefaultable for the same reason, since a permissive default would
+   let a caller's own observations establish cleanup authority over an allocation.
 4. **Translate the refusals.** The port declares `ProvisioningUnavailable` /
    `ProvisioningRefused`, which live in `app.services.provisioning` — a module this
    package must not import. `PORT_REFUSAL_NAMES` publishes the mapping for a thin
@@ -433,7 +576,7 @@ operation is already terminal.
 
 ### Rollback and compatibility
 
-`SCHEMA_VERSION = 3`. **v2 adds `harness_approval_consumption`** (#5526) — the durable
+`SCHEMA_VERSION = 7`. **v2 adds `harness_approval_consumption`** (#5526) — the durable
 record that one approval was spent on one operation, with `approval_id` as the primary
 key and `operation_id` `NOT NULL UNIQUE`. Those two constraints are the single-use rule:
 the first stops a second admission under one approval, the second stops a second approval
@@ -456,6 +599,81 @@ ordering problem it was added to escape. Its only index is partial on
 `stage <> 'resolved'`, because the interesting set is permanently tiny and a sweep that is
 expensive gets scheduled rarely — and a reconciliation that runs rarely is a hold that
 sits for hours.
+
+**v7 adds the four inventory tables** (#5529): `harness_provider_report`,
+`harness_allocation_resource`, `harness_allocation_enumeration` and
+`harness_allocation_seal`. They arrive together because a release is authorized from all
+four read as one answer — membership without a provider listing cannot show it is whole,
+and membership that can still grow cannot be released against at all.
+
+An attestation is keyed by its full grant — `(report_digest, operation_id, org_id,
+workspace_id, attempt_id, executor_id, fence_token)` — so identical canonical
+observations from two grants are two rows and a predecessor's attestation is simply not
+found for a successor. The digest alone as the key made a legitimate republication
+permanently refusable and let two concurrent publications of the same bytes both report
+success while one insert was discarded. It also carries `sealed_revision text NOT NULL`,
+the revision sealed when it was published: an attestation that cannot say which
+membership it was taken over cannot be dated, and an undated one authorized releasing a
+resource created after it. `NOT NULL` is the point — a nullable column would make
+"published before the seal existed" storable again. Membership is keyed
+`(org_id, workspace_id, allocation_id, resource_id)`, which makes one identity per
+resource per allocation structural rather than checked; the listing is one row per
+`(allocation, provider)` — carrying the operation, attempt, holder and fence that took
+it, so a proof is only current for the authority relying on it — and the seal one row per
+allocation. All carry
+`fence_token bigint NOT NULL CHECK (fence_token >= 1)`, so a row written by something that
+never held a grant is unstorable rather than merely suspicious.
+
+`operation_id` on membership and on the attestation is **provenance with no foreign key**.
+It carried `ON DELETE CASCADE`, which meant routine operation housekeeping made the
+database shrink an inventory whose entire contract is that it only grows — leaving a
+still-billing resource unenumerated and the remainder reading as a complete allocation.
+
+The listing additionally carries `generation bigint`, advanced by the database on each
+replacement, and an attestation carries `enumeration_binding text NOT NULL` — a digest over
+the `(provider, generation)` pairs current when the report was published. Without it a
+listing taken *later* retroactively validated an earlier report, so an "absent" observation
+published before the provider was re-queried could still satisfy the completeness proof.
+The generation is the database's, not a caller's, because a value the publisher chose would
+let it name a listing that suited it.
+
+**v7 also adds `allocation_id text` to `harness_provider_call_intent`** — a v4 table, so
+this is the one v7 change that is not a new table. It is what makes the creation fence
+(rule 6) enforceable: `creating_calls_unaccounted_for` finds *another operation's* in-flight
+creating calls against an allocation, and without the column that check silently matches
+nothing. Denormalized deliberately — the alternative is decoding every operation's payload
+on the release path while holding the allocation lock — and copied from the digest-bound
+approved plan, never from a worker argument. Nullable, because "this call names no
+allocation" is a real answer for the many operations that are not allocation-bound; its
+index is partial on `allocation_id IS NOT NULL` for the same reason the sweep index is
+partial, and because that query runs under the lock every membership write and every seal
+is queued behind.
+
+Before publishing schema version 7, the migration installs a compatibility trigger and
+backfills existing provider calls from each operation's digest-bound request. The trigger
+recomputes the same length-prefixed SHA-256 digest as admission. Malformed allocation IDs
+and corrupt payloads refuse activation; only an omitted allocation ID means no allocation.
+Old workers that omit the new column are bound automatically. Creating inserts take the
+same allocation lock and refuse a sealed or quarantined allocation. Settlements advance
+the allocation epoch, invalidating earlier listings and reports. Unresolved creating calls
+block sealing until their outcomes and resulting membership have been accounted for.
+Interrupted migrations can be retried; no manual worker-drain step establishes correctness.
+This authors the upgrade only; the separately authorized installer applies it.
+
+`await downgrade(connection, target=6)` drops all four tables and that column.
+
+> **Rolling back to v6 discards the only record of which resources an allocation owns.**
+> After it runs, `assess_cleanup` has no expected set to reconcile against, so an
+> allocation holding live compute or retained storage is indistinguishable from an empty
+> one and its budget looks releasable. Published attestations go with it, so a domain
+> holding a digest gets `None` and stays unresolved — the safe direction, but permanently.
+> The completeness proofs go too, and an inventory is not reconstructible from the
+> remaining tables. Dropping `harness_provider_call_intent.allocation_id` additionally
+> removes the allocation binding until v7 is reapplied. Reapplying v7 restores call
+> bindings from surviving approved operations, but cannot restore deleted membership,
+> listings or reports. **Reconcile outstanding
+> allocations to `RELEASED` or escalate their `UNRESOLVED` resources to a human first,
+> then roll back.**
 
 `await downgrade(connection, target=2)` drops only the intent table;
 `await downgrade(connection, target=1)` also drops the consumption table; `target=0`
@@ -497,14 +715,33 @@ responses: install the fresh one, refuse to touch the corrupted one.
 
 ## Status
 
-Written, linted and tested against real PostgreSQL (296 tests, including the admission
+Written, linted and tested against real PostgreSQL (723 tests, including the admission
 sequence, one-time consumption under genuine concurrency, dispatch-evidence
-classification, interrupted-reserve reconciliation, tenant-scoped reads and schema v2/v3).
+classification, interrupted-reserve reconciliation, tenant-scoped reads, forged digests
+and stale fences against the inventory authority, the omitted-child and
+release-then-growth cases, a report taken before creation, a predecessor's listing under
+a successor's fence, a listing taken *after* a report and refused as its attestation,
+two operations contending for one allocation, a sealed allocation refusing a second
+operation's provider creation while still permitting its teardown,
+operation-retirement durability, and schema v2/v3/v7).
 `pgserver` publishes no wheel for Python 3.13, so obtaining a server means a 3.12
 interpreter; where none is available the database half runs only in the CI lane — which is
 why `HARNESS_JOBS_REQUIRE_POSTGRES=1` and the vacuity floor exist rather than trust in a
-local green run. A suite that skips its database half reports 146 passed and 138
-*skipped*, and a skipped test is not a passing one.
+local green run. A suite that skips its database half reports 163 passed and 560
+*skipped*, and a skipped test is not a passing one. #5529 adds 10 to the offline half
+(the inventory contract-agreement guard) and the rest to the database half, which leaves
+CI's vacuity floor of 390 above today's offline 163 and below today's total 723 — check
+that arithmetic when adding offline tests, because a floor that has drifted below the
+offline count is satisfied by the very empty run it exists to catch.
+
+Measuring that offline number means making the database genuinely unobtainable, not
+merely unconfigured: `conftest.py` finds `pgserver`/`embedded_postgres` by `find_spec`,
+so unsetting `HARNESS_JOBS_TEST_POSTGRES_URL` on a machine where either package is
+installed still runs the full suite. An earlier revision of this paragraph claimed an
+offline half of 332 for a total of 678; both halves were measured with a server still
+reachable, and the offline figure — the one the floor is compared against — was more
+than double the truth. Overstating it is the dangerous direction, since it is the number
+that makes a floor look safely above the vacuous run.
 
 That lane earned its keep on the first run: it caught a schema assertion that compared
 against the wrong type (asyncpg decodes PostgreSQL's `"char"` as bytes) and proved a
@@ -682,3 +919,82 @@ released after commit; previously claimed work or historical effects retain budg
 Ledger failures leave terminal/fenced database evidence and the original reservation
 identity for an idempotent cancellation retry. Held operations remain the responsibility
 of their executor or recovery sweep; worker release cannot strand their cancellation.
+
+
+### Provider listing cutoff and contradiction recovery (#5529)
+
+Before calling the provider's allocation-list API, trusted composition calls
+`attempt = await authority.begin_provider_enumeration(connection, lease, provider=...)`.
+After the API returns it passes that exact `attempt` to
+`record_provider_enumeration(connection, lease, provider=..., provider_references=...,
+attempt=attempt)`. The attempt binds a unique durable query ID, provider and creation
+cutoff. Never begin after querying the provider. If the provider call returns an error,
+call `fail_provider_enumeration(connection, lease, attempt=attempt)`; failed listings
+block reports until a fresh successful listing. Do not mark a still-running call failed.
+An interrupted process leaves an in-progress row. A successor can open a fresh listing
+only after that row's recorded execution grant expires, closes or is superseded; the
+old token can never complete the replacement. No manual database step is needed.
+Mutating or unknown provider intent insertion, settlement, reconciliation or deletion
+advances a durable allocation generation, including reused or absent handles.
+Proven read-only calls preserve that generation.
+A changed generation requires a new provider query; seals and reports compare it too.
+The listing write owns its transaction so a refused contradiction cannot be rolled back
+by a caller transaction. This API is for trusted adapters, not isolated workers.
+
+A provider listing that discovers an unrecorded handle commits the discovered identity
+and quarantines the allocation before returning refusal. Every older report is revoked
+across operations. Creating calls remain fenced, while teardown and observation remain
+available. Recovery records all discovered resources, obtains fresh listings, reseals
+the complete inventory and publishes new observations. The quarantine is cleared only
+by successful resealing; an empty later listing cannot erase a recorded discovery.
+These records are part of the pending v7 upgrade/downgrade. No live migration is
+performed by tests or code-only merge.
+
+
+### Provider report freshness
+
+Compose `InventoryAuthority(query_provider=...)` with a trusted fresh-read adapter.
+Its `(lease, resources, query_id)` arguments identify the current operation, durable
+provider handles and a new query nonce. Use the query ID for a fresh read through
+`OperationExecutor`; do not return cached observations. After recording the current
+provider listing and sealing membership, call `receipt = await authority.observe_report(
+connection, lease)`, then `await authority.publish_report(connection, lease,
+observations=receipt)`. Submit the returned receipt's observations to the domain API,
+including each `observation_id`. Raw dictionaries cannot publish attestations.
+
+The authority captures the listing and seal before the query, stamps the provider
+response and checks the same bindings again at publication. A concurrent listing or
+mutation invalidates the receipt. Republishing one receipt is idempotent while its
+bindings remain current; it never overwrites them. A genuinely new query gets a new
+observation ID and digest, so old absence evidence stays invalid after proof replacement.
+Attestations created without a query receipt are refused by the release reader.
+
+The epoch trigger and executor share the exact provider/action allowlist in `effects.py`.
+Only a reviewed read-only action under its bound provider preserves the epoch. An arbitrary name containing
+"read", "describe" or "delete" is not authority: ambiguous actions remain
+creation-capable, including `ec2:PromoteReadReplica` and `read_write_volume`.
+Known teardown actions remain available after sealing; unknown teardown spellings
+require a reviewed allowlist entry. Mutating and unknown calls advance the epoch. This permits a
+post-listing provider query without invalidating its own prerequisite listing while
+retaining the fences for reused/null-handle creation and contradictory discoveries.
+
+The pending v7 migration also creates `harness_provider_query`, whose allocation-scoped
+key `(org_id, workspace_id, allocation_id)` stores the latest query nonce. The nonce commits before provider I/O. A newer
+query therefore invalidates older reports immediately, including when the newer
+query fails or has not yet published. Publication and release both require the
+current query nonce as well as the original seal/listing binding. This prevents
+falling back to old absence evidence after an unsuccessful refresh.
+
+Freshness is shared by every operation on an allocation, matching membership,
+sealing and the creation epoch. A query under operation B invalidates operation A's
+older report for that allocation, even if B's query fails. The report itself still
+binds its authenticated operation, attempt, executor and fence. Independent tenants,
+workspaces and allocations do not supersede each other's observations.
+
+Beginning a provider listing durably advances the allocation's query nonce and records
+an in-progress attempt in `harness_provider_listing`. While any allocation listing is
+in progress or failed, report observation, publication, sealing and completeness
+refuse. A per-resource read cannot supersede a list-all request which might discover
+an omitted child. Only the exact begin token can complete its listing; failed or stale
+responses cannot complete another attempt. Both durable tables belong to the pending,
+retry-safe v7 migration; no live migration runs here.

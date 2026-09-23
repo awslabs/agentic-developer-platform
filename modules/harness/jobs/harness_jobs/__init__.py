@@ -37,12 +37,17 @@ and let a later story disagree with it:
 | Leases, fence tokens, cancellation, crash-recovery executor | #5527 (w6-04) |
 | The reservation ledger -- balances, amounts, spend totals | Superplane (domain) |
 | Credential authorization and trusted delivery | #5528 (w6-05) |
-| Report authority, allocation inventory | #5529 (w6-06) |
 | Installing/composing this facade into the API | #5535 (w6-12) |
 | Applying the schema to any database | #5538 (w6-15) |
 
 ``attempt_id`` and the ``version`` column are stored now so those stories add
 behaviour rather than a migration that rewrites live rows.
+
+`inventory` (#5529) is here and is deliberately narrow about the same boundary: it
+answers *what exists and what may be released*, and returns per-resource
+`BudgetDisposition` values for the domain to apply. It holds no balance and computes no
+amount, because a second place computing cost is a second answer that can disagree with
+the real one.
 
 ## Composition is elsewhere, deliberately
 
@@ -81,6 +86,7 @@ from .admission import (
     reconcile_interrupted_admissions,
     retain_for_uncertain_dispatch,
 )
+from .allocation import CallEffect, call_effect
 from .approval import (
     APPROVAL_PERMISSION,
     NON_PERMISSIVE_RESULTS,
@@ -139,6 +145,19 @@ from .identity import (
     encode_payload,
     forbidden_parameters,
     payload_digest,
+)
+from .inventory import (
+    MAX_INVENTORY_RESOURCES,
+    AllocationResource,
+    CleanupAssessment,
+    CostExposure,
+    InventoryAuthority,
+    ReleaseState,
+    ResourceObservation,
+    ResourcePresence,
+    VerifiedInventory,
+    allocation_id_for,
+    report_digest,
 )
 from .leases import (
     DEFAULT_LEASE_DURATION,
@@ -271,6 +290,20 @@ __all__ = [
     "OperationProgress",
     "OperationUnavailable",
     "PrincipalResolver",
+    # allocation inventory, report attestation and cleanup authority (#5529)
+    "CallEffect",
+    "call_effect",
+    "MAX_INVENTORY_RESOURCES",
+    "AllocationResource",
+    "CleanupAssessment",
+    "CostExposure",
+    "InventoryAuthority",
+    "ReleaseState",
+    "ResourceObservation",
+    "ResourcePresence",
+    "VerifiedInventory",
+    "allocation_id_for",
+    "report_digest",
     # leases (#5527)
     "DEFAULT_LEASE_DURATION",
     "DEFAULT_MAX_CONCURRENT_OPERATIONS",

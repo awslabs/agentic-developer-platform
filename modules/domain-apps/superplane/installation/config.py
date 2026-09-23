@@ -354,9 +354,15 @@ def validate(
             "release schema must have a single head",
         )
         head = lock["schema"].get("observed", {}).get("head")
+        # Exact equality, not "at least": the installer runs `alembic upgrade head` from
+        # the API image and then asserts the reported revision equals this one
+        # (`runner.py`), so an unrecognized head is as much a refusal as a stale one.
+        # w6-10 (#5533) advances it to 017 for `workspace_bootstrap_reservations`, the
+        # same way U11c advanced it to 013, U7b to 014 and U23 to 015.
         require(
-            head == "016_add_organization_grants",
-            "release schema must include U11c013, U7b014 and the U23 identity binding",
+            head == "017_add_workspace_bootstrap_reservations",
+            "release schema must include U11c013, U7b014, the U23 identity binding and"
+            " the w6-10 bootstrap reservations table",
         )
         sources = lock.get("image_sources", {})
         base = load(MODULE / "releases/superplane.lock.yaml")

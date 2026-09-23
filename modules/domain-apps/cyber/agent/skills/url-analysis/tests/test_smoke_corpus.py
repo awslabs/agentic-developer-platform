@@ -201,7 +201,8 @@ class TestSmokeCorpusVerdicts:
             enrichment=enrichment,
         )
 
-        assert verdict.confidence >= CORPUS["broken_tls"]["expected_min_confidence"]
+        assert verdict.severity == "inconclusive"
+        assert verdict.confidence == 0
 
     def test_url3_malware_delivery(self) -> None:
         """URL 3: malware URL produces malicious verdict with IOCs."""
@@ -306,4 +307,4 @@ class TestSmokeCorpusReports:
         )
 
         assert "CLEAN" in md
-        assert "No action required" in md or "no action" in md.lower()
+        assert "tested view" in md

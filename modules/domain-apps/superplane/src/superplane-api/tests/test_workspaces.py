@@ -2447,17 +2447,17 @@ class TestRoutesAreInventoriedAndScopedCorrectly:
 
     def test_the_mounted_routes_match_the_inventory_templates(self):
         """Byte-identical templates. A near-miss classifies as unrecorded and 403s."""
-        from fastapi.routing import APIRoute
-
-        from app.endpoint_inventory import DOMAIN_ROUTES
+        from app.endpoint_inventory import DOMAIN_ROUTES, mounted_operations
         from app.main import app as fastapi_app
 
+        # Shared enumeration (issue #5682, A02). The local `isinstance(route,
+        # APIRoute)` walk this replaced found zero routes once FastAPI began
+        # storing included routers lazily, so `mounted == inventoried` failed here
+        # rather than passing vacuously — the one place the breakage was visible.
         mounted = {
-            (method, route.path)
-            for route in fastapi_app.routes
-            if isinstance(route, APIRoute) and "provider-connections" in route.path
-            for method in route.methods
-            if method != "HEAD"
+            (method, path)
+            for method, path in mounted_operations(fastapi_app)
+            if "provider-connections" in path
         }
         inventoried = {key for key in DOMAIN_ROUTES if "provider-connections" in key[1]}
         assert mounted == inventoried

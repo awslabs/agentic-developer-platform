@@ -383,3 +383,108 @@ def classify(method: str, path_template: str) -> tuple[RouteClass, object]:
 def all_inventoried() -> frozenset[tuple[str, str]]:
     """Every (method, template) with a recorded decision, in any class."""
     return PUBLIC_ROUTES | INTERNAL_ROUTES | frozenset(DOMAIN_ROUTES)
+
+
+# ---------------------------------------------------------------------------
+# Enumerating what the app actually serves
+# ---------------------------------------------------------------------------
+#
+# WHY THIS LIVES HERE RATHER THAN IN THE TEST THAT USES IT
+#
+# Issue #5682 (A02). The inventory is only an inventory because something walks
+# the mounted app and fails when a route is missing from the tables above. Three
+# separate test helpers used to do that walk, each by iterating `app.routes` and
+# keeping `isinstance(route, APIRoute)`.
+#
+# That stopped finding anything. FastAPI now stores an included router as a single
+# `_IncludedRouter` entry in `app.routes` and resolves its child routes on demand,
+# so `app.routes` holds four Starlette docs routes and a dozen opaque router
+# objects, and NONE of them is an `APIRoute`. Every one of those walks silently
+# began enumerating zero endpoints. Measured on fastapi 0.141.1: `app.routes` has
+# 21 entries and `sum(isinstance(r, APIRoute) for r in app.routes)` is 0, while the
+# app really serves 73 operations.
+#
+# The failure mode is the one this module exists to prevent, one level up. A guard
+# that examines nothing passes unconditionally, and a passing guard reads as
+# "every route is classified" — so the inventory could have drifted arbitrarily far
+# from the app without any test objecting. `assert not (mounted - inventoried)` is
+# vacuously true when `mounted` is empty.
+#
+# So enumeration is defined ONCE, here, next to the tables it checks, and
+# `mounted_operations()` raises when it finds nothing. An empty result is now a
+# loud failure rather than a quiet pass.
+
+
+def _walk(routes: list, out: set[tuple[str, str]]) -> None:
+    """Collect (METHOD, template) from a routing table, descending into routers."""
+    from fastapi.routing import APIRoute
+
+    try:
+        from fastapi.routing import _IncludedRouter
+    except ImportError:  # pragma: no cover - older FastAPI without lazy routers
+        _IncludedRouter = ()  # type: ignore[assignment]
+
+    for route in routes:
+        if _IncludedRouter and isinstance(route, _IncludedRouter):
+            # `effective_candidates()` is how the router resolves its own children
+            # for matching, so it yields exactly what the app can actually route to
+            # — including routes hidden from the OpenAPI schema, which a
+            # schema-based enumeration would miss. A hidden route is precisely the
+            # kind that most needs a recorded decision.
+            for candidate in route.effective_candidates():
+                if isinstance(candidate, _IncludedRouter):
+                    _walk([candidate], out)
+                else:
+                    for method in candidate.methods or ():
+                        if method not in {"HEAD", "OPTIONS"}:
+                            out.add((method.upper(), candidate.path))
+            continue
+        path = getattr(route, "path", None)
+        if path is None:
+            continue
+        if isinstance(route, APIRoute) or path in _STARLETTE_DOC_ROUTES:
+            for method in getattr(route, "methods", None) or ():
+                if method not in {"HEAD", "OPTIONS"}:
+                    out.add((method.upper(), path))
+        nested = getattr(route, "routes", None)
+        if nested:
+            _walk(list(nested), out)
+
+
+# The OpenAPI/docs routes Starlette mounts directly. They are plain `Route`
+# objects, not `APIRoute`s, so they are named rather than type-matched — and they
+# are in `PUBLIC_ROUTES`, so omitting them would make the inventory look stale.
+_STARLETTE_DOC_ROUTES = frozenset(
+    {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+)
+
+
+class NoRoutesEnumerated(RuntimeError):
+    """Enumeration found no routes, so any check built on it proves nothing.
+
+    Raised rather than returning an empty set, because an empty set makes every
+    "no route escaped the inventory" assertion pass. This is the guard on the
+    guard: it turns a framework change that breaks enumeration into an immediate,
+    named failure instead of a test suite that goes quietly green.
+    """
+
+
+def mounted_operations(app) -> frozenset[tuple[str, str]]:
+    """Every (METHOD, template) the given FastAPI app actually serves.
+
+    Excludes HEAD and OPTIONS: Starlette synthesizes those, and they carry no
+    authorization decision of their own.
+
+    Raises :class:`NoRoutesEnumerated` if nothing is found — see that class for
+    why an empty result must never be reported as success.
+    """
+    found: set[tuple[str, str]] = set()
+    _walk(list(app.routes), found)
+    if not found:
+        raise NoRoutesEnumerated(
+            "no routes could be enumerated from the app; the inventory checks "
+            "built on this would pass without examining anything. The routing "
+            "internals this walk depends on have probably changed — fix "
+            "app/endpoint_inventory.py::_walk rather than the callers."
+        )
+    return frozenset(found)

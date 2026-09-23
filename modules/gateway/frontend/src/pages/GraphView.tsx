@@ -1,10 +1,12 @@
 import { BudgetEnforcementControl } from '@/components/budget/BudgetEnforcementControl';
+import { FlowExecutionControl } from '@/components/orchestration/FlowExecutionControl';
 /** Delivery flow: collapsible waves with dependency-ordered parallel groups. */
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useFlowGraph } from '@/hooks/useFlowGraph';
 import { useFlowExecution } from '@/hooks/useFlowExecution';
 import { countByDisplayState } from '@/utils/nodeState';
+import { countStories } from '@/utils/storyCounts';
 import { groupIntoEpics } from '@/utils/flowLayout';
 import { RollupBar } from '@/components/orchestration/RollupBar';
 import { PlanSummary } from '@/components/orchestration/PlanSummary';
@@ -63,6 +65,7 @@ export function GraphView() {
   const counts = countByDisplayState(data.nodes);
   const segmented = Object.values(counts).reduce((sum, n) => sum + n, 0);
   const activeNodes = data.nodes.filter((node) => node.state !== 'superseded');
+  const stories = countStories(activeNodes);
   const historicalNodes = data.nodes.filter((node) => node.state === 'superseded');
   const epics = groupIntoEpics({ ...data, nodes: activeNodes });
   const changesRequested = activeNodes.filter((node) => node.state === 'rejected_at_gate');
@@ -122,16 +125,21 @@ export function GraphView() {
           </div>
         </div>
 
+        <FlowExecutionControl flowId={flowId!} paused={data.execution_paused} />
         <BudgetEnforcementControl key={flowId} flowId={flowId} />
 
         <PlanSummary
-          stories={activeNodes.filter((node) => node.kind === 'story').length}
+          stories={stories.implementation}
+          evaluationStories={stories.evaluation}
           waves={new Set(activeNodes.map((node) => `${node.epic_ref}/${node.wave_ref}`)).size}
           gates={activeNodes.filter((node) => node.kind === 'gate').length}
           evaluations={activeNodes.filter((node) => node.kind === 'eval').length}
           policy={data.execution_policy}
         />
-        <RollupBar counts={counts} total={segmented} />
+        <RollupBar counts={counts} total={segmented} stories={{
+          complete: stories.complete,
+          total: stories.total,
+        }} />
       </header>
 
       {changesRequested.length > 0 && (

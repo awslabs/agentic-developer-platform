@@ -405,11 +405,20 @@ class TestChainCompilesForPostgres:
         # A real PostgreSQL run previously failed when a descriptive revision ID
         # exceeded Alembic's default VARCHAR(32), although every stamp compiled.
         import re
-        version_table = re.search(r"CREATE TABLE alembic_version \(.*?version_num VARCHAR\((\d+)\)", sql, re.S)
+
+        version_table = re.search(
+            r"CREATE TABLE alembic_version \(.*?version_num VARCHAR\((\d+)\)", sql, re.S
+        )
         assert version_table is not None
-        longest_revision = max(len(revision.revision) for revision in ScriptDirectory.from_config(config).walk_revisions())
+        longest_revision = max(
+            len(revision.revision)
+            for revision in ScriptDirectory.from_config(config).walk_revisions()
+        )
         assert int(version_table.group(1)) >= longest_revision
-        assert "ALTER TABLE IF EXISTS alembic_version ALTER COLUMN version_num TYPE VARCHAR" in sql
+        assert (
+            "ALTER TABLE IF EXISTS alembic_version ALTER COLUMN version_num TYPE VARCHAR"
+            in sql
+        )
 
         # Every revision must stamp itself into alembic_version, so counting the stamps is
         # a direct check that `upgrade head` walked the entire chain rather than a prefix.
@@ -478,6 +487,13 @@ def _tables_created_by_migrations() -> set[str]:
     created: set[str] = set()
     for path in sorted(VERSIONS_DIR.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        constants = {
+            target.id: node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
         upgrades = [
             node
             for node in tree.body
@@ -492,7 +508,10 @@ def _tables_created_by_migrations() -> set[str]:
                 if name != "create_table":
                     continue
                 try:
-                    table = ast.literal_eval(node.args[0])
+                    argument = node.args[0]
+                    if isinstance(argument, ast.Name):
+                        argument = constants.get(argument.id, argument)
+                    table = ast.literal_eval(argument)
                 except (ValueError, SyntaxError):
                     continue
                 if isinstance(table, str):
@@ -953,9 +972,9 @@ class TestProviderConnectionRevisionAppliesAndReverses:
         constraints = sa.inspect(connection).get_unique_constraints(
             "provider_connection_bindings"
         )
-        assert any(
-            c["column_names"] == ["connection_id"] for c in constraints
-        ), f"one-binding-per-connection is missing from the applied schema: {constraints}"
+        assert any(c["column_names"] == ["connection_id"] for c in constraints), (
+            f"one-binding-per-connection is missing from the applied schema: {constraints}"
+        )
 
     def test_the_applied_schema_enforces_one_binding_per_connection(
         self, connection
@@ -994,7 +1013,7 @@ class TestProviderConnectionRevisionAppliesAndReverses:
     def test_capacity_and_the_validation_readings_are_nullable_in_the_applied_schema(
         self, connection
     ) -> None:
-        """"Not measured" must be representable after the migration, not just in the model.
+        """ "Not measured" must be representable after the migration, not just in the model.
 
         A NOT NULL `observed_capacity` defaulting to 0 would make "we did not look"
         indistinguishable from "there is nothing free" for every row in a real

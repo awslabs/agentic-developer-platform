@@ -36,6 +36,8 @@ spec:
       initContainers:
       - name: prepare-index
         image: busybox:1.36
+        securityContext:
+          allowPrivilegeEscalation: false
         command: ["sh", "-c"]
         args:
           - |
@@ -54,6 +56,8 @@ spec:
       containers:
       - name: zoekt-webserver
         image: ghcr.io/sourcegraph/zoekt:${ZOEKT_IMAGE_TAG}
+        securityContext:
+          allowPrivilegeEscalation: false
         command: ["zoekt-webserver"]
         args:
           - "-index"
@@ -98,6 +102,8 @@ spec:
       # Issue: #3287
       - name: shard-sync
         image: busybox:1.36
+        securityContext:
+          allowPrivilegeEscalation: false
         command: ["sh", "-c"]
         args:
           - |

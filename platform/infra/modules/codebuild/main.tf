@@ -10,18 +10,19 @@
 # =============================================================================
 
 locals {
-  projects = {
+  projects = merge({
     "gateway-build"  = { buildspec = "codebuild/bs-gateway-build.yml" }
     "chat-agent"     = { buildspec = "codebuild/bs-chat-agent.yml" }
     "agent-gateway"  = { buildspec = "codebuild/bs-agent-gateway.yml" }
     "arc-runner"     = { buildspec = "codebuild/bs-arc-runner.yml" }
-    "cyber-worker"   = { buildspec = "codebuild/bs-cyber-worker.yml" }
     "agent-runtime"  = { buildspec = "codebuild/bs-agent-runtime.yml", build_timeout = 90, compute_type = "BUILD_GENERAL1_LARGE" }
     "pyjwt-layer"    = { buildspec = "codebuild/bs-pyjwt-layer.yml" }
     "psycopg2-layer" = { buildspec = "codebuild/bs-psycopg2-layer.yml" }
     "grype-scan"     = { buildspec = "codebuild/bs-grype-scan.yml", build_timeout = 90 }
     "syft-scan"      = { buildspec = "codebuild/bs-syft-scan.yml" }
-  }
+    }, [for manifest in sort(tolist(fileset("${path.module}/../../../../modules/domain-apps", "*/codebuild/projects.json"))) :
+    jsondecode(file("${path.module}/../../../../modules/domain-apps/${manifest}"))
+  ]...)
 }
 
 # -----------------------------------------------------------------------------

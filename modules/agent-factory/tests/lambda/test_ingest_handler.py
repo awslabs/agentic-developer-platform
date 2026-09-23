@@ -240,6 +240,9 @@ class TestFollowUpThreadReuse:
         table = mocked_aws_services["table"]
         table.put_item(Item={
             "session_id": "sess-follow",
+            "owner_principal": '["test-tenant","","","user-3","webchat"]',
+            "owner_user_id": "user-3",
+            "tenant_id": "test-tenant",
             "user_workspace": "user-3#webchat",
             "connection_id": "conn-3",
             "channel": "webchat",
@@ -279,7 +282,7 @@ class TestFollowUpThreadReuse:
             route_key="$default",
             body={"action": "message", "text": "tell me more about that", "session_id": "sess-follow"},
             connection_id="conn-3",
-            authorizer_claims={"sub": "user-3"},
+            authorizer_claims={"sub": "user-3", "custom:tenant_id": "test-tenant"},
         )
         result = handler.lambda_handler(event, None)
 
@@ -332,7 +335,7 @@ class TestFollowUpThreadReuse:
             route_key="$default",
             body={"action": "message", "text": "another question", "session_id": "sess-follow"},
             connection_id="conn-3",
-            authorizer_claims={"sub": "user-3"},
+            authorizer_claims={"sub": "user-3", "custom:tenant_id": "test-tenant"},
         )
         handler.lambda_handler(event, None)
 
@@ -583,6 +586,10 @@ class TestExtendedClaimsPersistence:
         assert task["org_id"] == "org-sqs"
         assert task["team_id"] == "team-sqs"
         assert task["account_type"] == "human"
+        session = mocked_aws_services["table"].get_item(
+            Key={"session_id": "sess-sqs-flow"},
+        )["Item"]
+        assert task["session_generation"] == int(session["created_at"])
 
     def test_missing_org_id_allowed_off_the_dispatch_path(self, mocked_aws_services):
         """Missing custom:org_id does not block non-dispatch paths.

@@ -578,7 +578,40 @@ async def _examine(
     if state is None:
         return
 
-    elapsed = int((now - candidate.since).total_seconds())
+    # Pause holds an unstarted outbox. On Resume its waiting clock starts again
+    # from the existing audit event; a real worker keeps its own liveness clock.
+    from .flow_execution import flow_is_paused
+    from .run_reports import OrchestrationRunReport
+
+    since = candidate.since
+    if state is NodeState.RUNNING:
+        assignment = await session.scalar(
+            select(OrchestrationRunReport)
+            .where(
+                OrchestrationRunReport.org_id == candidate.org_id,
+                OrchestrationRunReport.node_id == candidate.node_id,
+                OrchestrationRunReport.attempt == candidate.attempts,
+            )
+            .order_by(OrchestrationRunReport.created_at.desc())
+            .limit(1)
+        )
+        if assignment is not None and not assignment.worker_receipt and not assignment.terminal_receipt:
+            if await flow_is_paused(session, org_id=candidate.org_id, flow_id=candidate.flow_id):
+                return
+            resumed = await session.scalar(
+                select(OrchestrationDecision.created_at)
+                .where(
+                    OrchestrationDecision.org_id == candidate.org_id,
+                    OrchestrationDecision.flow_id == candidate.flow_id,
+                    OrchestrationDecision.kind == "flow_resumed",
+                )
+                .order_by(OrchestrationDecision.created_at.desc())
+                .limit(1)
+            )
+            if resumed is not None:
+                since = max(since, resumed.replace(tzinfo=UTC) if resumed.tzinfo is None else resumed)
+
+    elapsed = int((now - since).total_seconds())
 
     if state in HALTABLE_STATES and candidate.attempts >= config.defect_cycle_bound:
         await _propose(
@@ -608,7 +641,7 @@ async def _examine(
             # the initial developer's pod deadline here kills review/merge work.
             if worker_since is None:
                 return
-            elapsed = int((now - max(candidate.since, worker_since)).total_seconds())
+            elapsed = int((now - max(since, worker_since)).total_seconds())
 
     if state in STALLABLE_STATES and elapsed > config.stall_threshold_seconds:
         await _propose(

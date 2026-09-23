@@ -11,12 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from superplane_contracts.emission import install_log_redaction, redact_spans, scrub
 
+from app.adapters.adp_vault_client import build_vault_client
 from app.auth import build_domain_policy
-from app.config import settings
+from app.config import require_database_url, resolve_cors_origins, settings
 from app.database import async_session_factory
 from app.domain_guard import enforce_domain_authorization
 from app.management import enforce_management_surface, management_only
 from app.middleware.audit import AuditMiddleware
+from app.middleware.auth import require_jwt_secret_key
 from app.middleware.quota import QuotaEnforcementMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.routers import health
@@ -36,7 +38,6 @@ from app.routers.quota import router as quota_router
 from app.routers.research import router as research_router
 from app.routers.users import router as users_router
 from app.routers.workspaces import router as workspaces_router
-from app.adapters.adp_vault_client import build_vault_client
 from app.services.credential_evidence import (
     get_credential_evidence_reader,
     install_credential_evidence_reader,
@@ -103,6 +104,35 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle — start/stop background reconcilers."""
     # Reapply if the server or an embedding host replaced handlers after import.
     configure_log_redaction()
+
+    require_database_url()
+
+    # Refuse to start without a token signing key (issue #5683, A04).
+    #
+    # WHY AT STARTUP RATHER THAN AT FIRST USE. `require_jwt_secret_key()` already
+    # guards every sign and verify call, so the key can never be silently invented.
+    # But relying on that alone means a deployment missing the key starts, passes
+    # its health probe, serves traffic, and then fails every single login — which
+    # reads as an outage of unknown cause. Failing here names the fault once, in
+    # the logs, at the moment it is cheapest to fix.
+    #
+    # WHY UNCONDITIONAL. `auth_router` is always registered, so POST /auth/login is
+    # always reachable and always signs a token with this key. There is no
+    # supported configuration of this app where the key is unnecessary, so making
+    # the check conditional would only create a way to opt back into the defect.
+    #
+    # WHY BEFORE THE `management_only()` BRANCH BELOW, WHICH RETURNS EARLY. That
+    # mode is not an exception to this requirement: it still registers
+    # `auth_router`, and its permitted surface (`/orgs/current`, `/workspaces`,
+    # `/users`, `/events`) resolves the caller's org through `get_current_org`,
+    # which verifies a token with this key. Placing the check after that branch
+    # would leave exactly one supported configuration that starts without a key and
+    # then rejects every authenticated request — the failure mode this check exists
+    # to remove, reintroduced by ordering alone.
+    #
+    # The exception's message names the variable and never the value.
+    require_jwt_secret_key()
+
     # Before the installation gate: the gate probes installed adapters (see the
     # docstring above).
     compose_vault_client()
@@ -172,10 +202,12 @@ app = FastAPI(
 app.state.domain_policy = build_domain_policy()
 app.include_router(controller_management_router)
 
-# CORS middleware
+# Validate the browser origin allowlist at import, before serving requests.
+# Preserve the existing credentialed CORS contract for explicitly reviewed origins;
+# bearer-token verification remains the authentication boundary.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=resolve_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

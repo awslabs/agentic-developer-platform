@@ -386,3 +386,15 @@ output "tenant_scheduling_prerequisites" {
     ]
   }
 }
+
+# Bootstrap consumes the two distinct SGs; EKS attaches its managed cluster SG
+# to managed-node-group instances because the launch template supplies no SGs.
+output "workspace_api_security_group_id" {
+  description = "Supplemental control-plane security group receiving management API ingress."
+  value       = aws_security_group.cluster.id
+}
+
+output "workspace_node_security_group_id" {
+  description = "EKS-managed security group attached to workspace managed nodes; source of private STS ingress."
+  value       = aws_eks_cluster.workspace.vpc_config[0].cluster_security_group_id
+}

@@ -1,7 +1,7 @@
 # Continue an existing flow with the shared worker role
 
-Existing policyless flows keep their behavior until a plan approver accepts a
-continuation. The continuation uses the existing execution runner and its action
+Once resumed, existing policyless flows keep their behavior until a plan approver
+accepts a continuation. The continuation uses the existing execution runner and its action
 ledger for review, repair, another review of the new commit, and optionally merge.
 Developer and reviewer run IDs remain distinct. They may use the same GitHub App.
 
@@ -112,6 +112,47 @@ proposed policy remains in the historical draft; it is removed from the new
 version so a later gate answer cannot overwrite the accepted shared transport.
 Ordinary continuation refuses a draft that still carries inert proposed bounds.
 
+## Pause or resume one flow
+
+Use **Pause flow** / **Resume flow** in the flow list (`/flows`) or flow detail.
+The **Execution: Paused / Enabled** indicator is separate from story progress.
+The operator needs `PLAN_APPROVE` and an active human session in the flow's tenant.
+The equivalent API is `POST /orchestration/flows/{flow_id}/execution` with
+`{"paused": true}` or `{"paused": false}`. GET on that path remains the execution
+ledger. Flow list and graph responses also carry `execution_paused`.
+
+Pause stops admission of new developer, reviewer, repair and retry work for that
+flow, including dispatch outbox replay. The existing flow-row lock orders pause
+against dispatch admission: if pause commits first, no attempt is reserved; if a
+dispatch was already admitted, that dispatch can finish queuing. Queues and workers
+remain active. Already queued or running work can finish, publish evidence and
+merge its PR. The engine continues observing results and completing merged stories
+while paused. Waiting outbox assignments do not become stalled merely because the
+flow is paused.
+
+Resume changes only this flag. It preserves story states, PRs, claims, budgets,
+attempt counters and the runner's three-attempt ceiling. It does not clear a stall,
+approve a gate, renew expired credentials or extend policy/execution deadlines.
+Existing blocked work still needs its normal recovery. Human plan authoring and
+approval controls remain available while execution is paused.
+
+The global engine switch and scheduler remain the master controls. **Enabled** on
+a flow means it is eligible when the global engine runs; it does not switch the
+engine on. Resuming one flow never resumes other flows or automatic GitHub PR reviews.
+Direct issue mentions and labels remain available independently of engine/flow
+pause. Keep the shared `POST /github` invocation permission in place; disable
+automatic PR reviews using `GITHUB_AUTO_PR_REVIEW_ENABLED=false`.
+Repeated identical requests are harmless; changed values append a human audit
+record (`flow_paused` / `flow_resumed`).
+
+Migration `067_flow_execution_pause` starts **all existing and new flows paused**.
+For rollout, keep the global scheduler/tick and GitHub-triggered review path off,
+apply the migration, then deploy the updated gateway, engine/tick and frontend.
+An old engine ignores the new column, so replace it before restarting the scheduler.
+Check that all flows show Paused, resume only the selected test flows, then enable
+the global engine through the normal deployment procedure. Keep queues active.
+No runtime switch is changed by installing the migration or by these UI controls.
+
 ## Increase retries on an active shared flow
 
 An authenticated human platform admin with `PLAN_APPROVE` can raise the attempt
@@ -127,10 +168,13 @@ Send `expected_plan_version`, `expected_plan_hash`, `max_attempts_per_node`
 to the exact accepted plan and original policy hash. Concurrent approvals or a
 changed plan invalidate the preview. A later plan acceptance does not inherit it.
 
-The value is the total attempt ceiling, including attempts already consumed.
-Story dispatch and review/repair admission use it; the verified supplement also
-raises this flow's execution runner ceiling above `ORCH_RUNNER_MAX_ATTEMPTS`.
-Other flows and notification delivery retries retain their configured limits.
+The value is the policy's total attempt ceiling, including attempts already
+consumed. Story dispatch and review/repair admission use it. The execution runner
+also enforces `ORCH_RUNNER_MAX_ATTEMPTS` (default **3**) on continuation attempts;
+a retry supplement cannot raise that limit. Once exhausted, the story displays
+as **stalled** and the runner cannot dispatch another agent. Waiting and recording
+an already-completed merge do not consume another attempt. Notification delivery
+retries retain their configured limit.
 Existing story and execution counters, assignments, claims, expiry, concurrency,
 spending limits, and gates are retained. Failed stories still require normal
 operator resume; active blocked executions are rechecked by the engine.

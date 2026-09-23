@@ -27,7 +27,7 @@ def render_json_report(
         "stage": "url-analysis",
         "stage_name": "url-analysis",
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "status": "ok",
+        "status": "partial" if verdict.get("severity") == "inconclusive" else "ok",
         "duration_seconds": duration_seconds,
         "findings": findings,
         "verdict": verdict,
@@ -54,7 +54,7 @@ def render_markdown_report(
     )
 
     lines = [
-        f"## URL Analysis — {severity_icon} {severity.upper()} (confidence: {confidence}%)",
+        f"## URL Analysis — {severity_icon} {severity.upper()} (heuristic score: {confidence}/100; uncalibrated)",
         "",
         f"**URL**: `{url}`",
         f"**Category**: {category}",
@@ -275,7 +275,7 @@ def render_html_report(
 <body>
     <h1>URL Analysis Report</h1>
     <div class="verdict">
-        <h2>{severity.upper()} — Confidence: {confidence}%</h2>
+        <h2>{severity.upper()} — Heuristic score: {confidence}/100 (uncalibrated)</h2>
         <p>Category: {category}</p>
         <p>URL: <code>{_html_escape(url)}</code></p>
     </div>

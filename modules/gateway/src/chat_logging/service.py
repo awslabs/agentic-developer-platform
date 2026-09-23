@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 from typing import Any, Literal
 
-from src.chat_logging.comprehend_client import ComprehendPiiDetector
+from src.chat_logging.comprehend_client import PII_DETECTION_FAILED_PLACEHOLDER, ComprehendPiiDetector
 from src.chat_logging.config import ScrubLevel, get_chat_logging_settings
 from src.chat_logging.s3_writer import ChatLogS3Writer
 from src.chat_logging.schemas import ChatLog, ChatLogRequest, ChatLogResponse, ScrubbingMetadata, UsageInfo
@@ -88,6 +88,16 @@ class ChatLoggingService:
         if self._comprehend_detector is None:
             self._comprehend_detector = ComprehendPiiDetector(region_name=self._region)
         return self._comprehend_detector
+
+    @staticmethod
+    def _failed_request_payload() -> dict[str, Any]:
+        """Return a schema-safe request with no unverified transcript content."""
+        return {"messages": [{"content": PII_DETECTION_FAILED_PLACEHOLDER}]}
+
+    @staticmethod
+    def _failed_response_payload() -> dict[str, Any]:
+        """Return a schema-safe response with no unverified transcript content."""
+        return {"content": PII_DETECTION_FAILED_PLACEHOLDER}
 
     @property
     def enabled(self) -> bool:
@@ -234,22 +244,56 @@ class ChatLoggingService:
             pii_types_found: list[str] = []
 
             # Step 2: Apply Comprehend PII detection if standard level
+            pii_detection_failed = False
             if self._scrub_level == ScrubLevel.STANDARD:
+                pii_detection_failures: list[tuple[str, str]] = []
                 try:
                     comprehend = self._get_comprehend_detector()
-
-                    # Process request
-                    scrubbed_request, req_pii_result = await comprehend.detect_and_redact_dict(scrubbed_request)
-                    total_redactions += req_pii_result.redactions_count
-                    pii_types_found.extend(req_pii_result.pii_types_found)
-
-                    # Process response
-                    scrubbed_response, resp_pii_result = await comprehend.detect_and_redact_dict(scrubbed_response)
-                    total_redactions += resp_pii_result.redactions_count
-                    pii_types_found.extend(resp_pii_result.pii_types_found)
-
                 except Exception as e:
-                    logger.warning(f"Comprehend PII detection failed, continuing with regex only: {e}")
+                    failure = type(e).__name__
+                    pii_detection_failures.extend([("request", failure), ("response", failure)])
+                    scrubbed_request = self._failed_request_payload()
+                    scrubbed_response = self._failed_response_payload()
+                    total_redactions += 2
+                else:
+                    try:
+                        scrubbed_request, req_pii_result = await comprehend.detect_and_redact_dict(scrubbed_request)
+                        total_redactions += req_pii_result.redactions_count
+                        pii_types_found.extend(req_pii_result.pii_types_found)
+                        if req_pii_result.error:
+                            pii_detection_failures.append(("request", req_pii_result.error))
+                            scrubbed_request = self._failed_request_payload()
+                    except Exception as e:
+                        pii_detection_failures.append(("request", type(e).__name__))
+                        scrubbed_request = self._failed_request_payload()
+                        total_redactions += 1
+
+                    try:
+                        scrubbed_response, resp_pii_result = await comprehend.detect_and_redact_dict(scrubbed_response)
+                        total_redactions += resp_pii_result.redactions_count
+                        pii_types_found.extend(resp_pii_result.pii_types_found)
+                        if resp_pii_result.error:
+                            pii_detection_failures.append(("response", resp_pii_result.error))
+                            scrubbed_response = self._failed_response_payload()
+                    except Exception as e:
+                        pii_detection_failures.append(("response", type(e).__name__))
+                        scrubbed_response = self._failed_response_payload()
+                        total_redactions += 1
+
+                if pii_detection_failures:
+                    pii_detection_failed = True
+                    failed_sides = sorted({side for side, _ in pii_detection_failures})
+                    logger.error(
+                        "Comprehend PII detection failed; affected transcript sides replaced with fail-closed placeholders",
+                        extra={
+                            "request_id": request_id,
+                            "model": model,
+                            "failed_sides": failed_sides,
+                            "failure_count": len(pii_detection_failures),
+                            "scrub_level_configured": self._scrub_level.value,
+                            "scrub_level_effective": "fail_closed",
+                        },
+                    )
 
             # Step 3: Build chat log record
             chat_log = self._build_chat_log(
@@ -271,6 +315,7 @@ class ChatLoggingService:
                 pii_types_found=list(set(pii_types_found)),
                 patterns_matched=all_patterns,
                 headers_scrubbed=headers_scrubbed,
+                pii_detection_failed=pii_detection_failed,
             )
 
             # Step 4: Write to S3
@@ -292,14 +337,14 @@ class ChatLoggingService:
                 },
             )
 
-        except Exception as e:
+        except Exception as error:
             # Log error but don't propagate - this is fire-and-forget
             logger.error(
-                f"Failed to log chat: {e}",
+                "Failed to log chat",
                 extra={
                     "request_id": request_id,
                     "model": model,
-                    "error_type": type(e).__name__,
+                    "error_type": type(error).__name__,
                 },
             )
 
@@ -323,6 +368,7 @@ class ChatLoggingService:
         patterns_matched: list[str],
         headers_scrubbed: list[str],
         pricing_decision: dict[str, Any] | None = None,
+        pii_detection_failed: bool = False,
     ) -> ChatLog:
         """Build the ChatLog record from components.
 
@@ -371,6 +417,7 @@ class ChatLoggingService:
             pii_types_found=pii_types_found,
             regex_patterns_matched=patterns_matched,
             headers_scrubbed=headers_scrubbed,
+            pii_detection_failed=pii_detection_failed,
         )
 
         return ChatLog(

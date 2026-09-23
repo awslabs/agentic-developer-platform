@@ -43,10 +43,12 @@ from account_factory.render import RenderError, render
 from . import MODULE_DIR
 from .conftest import (
     BUILDERS,
+    FIXTURE_CREATED_ACCOUNT,
     FIXTURE_TARGET_ACCOUNT,
     FIXTURE_WORKSPACE,
     bring_existing_cluster_request,
     existing_account_request,
+    governed_account_id,
     matching_authorization,
     new_account_request,
 )
@@ -85,7 +87,10 @@ def test_new_account_managed_renders_account_and_infrastructure_as_separate_root
     infrastructure's DECLARATION alive for a controller to rebuild. `test_cleanup.py`'s
     convergence tests are the other half of this.
     """
-    result = render(new_account_request())
+    result = render(
+        new_account_request(),
+        creation_record=governed_account_id(new_account_request()),
+    )
     assert kinds(result) == [
         "Namespace",
         "AccountOwnership",
@@ -150,7 +155,9 @@ def test_every_rendered_object_supplies_every_required_input_of_its_graph(
     renderer supplies it. `render` itself performs this check, so reaching a result at all is
     the assertion — the explicit comparison below states what was verified.
     """
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     deps = load()
     for obj in result.objects:
         if not obj["apiVersion"].startswith("kro.run/"):
@@ -244,7 +251,9 @@ def test_the_adoption_record_states_that_adp_did_not_create_the_cluster():
 
 
 def test_every_mode_labels_its_namespace_with_the_ownership_facts(any_mode_request):
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     namespace = next(obj for obj in result.objects if obj["kind"] == "Namespace")
     labels = namespace["metadata"]["labels"]
     assert labels["adp.aws.dev/workspace"] == any_mode_request.workspace_id
@@ -261,8 +270,12 @@ def test_rendering_is_deterministic(any_mode_request):
     The legacy flow could not claim this — it fetched its graphs from a moving branch, and
     reused `/tmp/kro` if present, so the same inputs could produce different output.
     """
-    first = render(any_mode_request)
-    second = render(any_mode_request)
+    first = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
+    second = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     assert json.dumps(first.objects, sort_keys=True) == json.dumps(
         second.objects, sort_keys=True
     )
@@ -272,7 +285,11 @@ def test_rendering_is_deterministic(any_mode_request):
 
 
 def test_no_legacy_target_appears_in_any_rendered_set(any_mode_request):
-    serialized = json.dumps(render(any_mode_request).objects).lower()
+    serialized = json.dumps(
+        render(
+            any_mode_request, creation_record=governed_account_id(any_mode_request)
+        ).objects
+    ).lower()
     for value in LEGACY_FORBIDDEN_VALUES:
         assert value.lower() not in serialized, value
 
@@ -280,19 +297,31 @@ def test_no_legacy_target_appears_in_any_rendered_set(any_mode_request):
 def test_a_legacy_target_smuggled_through_a_request_is_refused_before_rendering():
     """Refused at validation, so no object set is produced at all."""
     with pytest.raises(ModeError) as raised:
-        render(new_account_request(management_cluster="github-arc-runner-eks"))
+        render(
+            new_account_request(management_cluster="github-arc-runner-eks"),
+            creation_record=governed_account_id(new_account_request()),
+        )
     assert "refused before any mutation" in str(raised.value)
 
 
 def test_the_rendered_set_names_only_identities_supplied_by_the_request(
     any_mode_request,
 ):
-    """Nothing is defaulted into the output that the request did not supply.
+    """Nothing is defaulted into the output that the caller did not supply.
 
-    Every account id and cluster name in the rendered set must trace to a request field —
-    otherwise some value is coming from somewhere the caller did not choose.
+    Every account id and cluster name in the rendered set must trace to a request field or to
+    the explicitly-passed creation record — otherwise some value is coming from somewhere the
+    caller did not choose, which is the legacy `config.env` defect.
+
+    The created account's id is in the permitted set because since #5531 it is an explicit
+    argument to `render` rather than a field of the request. That distinction is the fix, not a
+    loosening: `target_account_id` (an account a tenant asks ADP to ADOPT) is request data,
+    while a created account's id is evidence that the fenced creation path already ran. Keeping
+    them separate is why rendering can refuse a creation id in an adopting mode.
     """
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     serialized = json.dumps(result.objects)
     supplied = {
         any_mode_request.organization_id,
@@ -303,6 +332,7 @@ def test_the_rendered_set_names_only_identities_supplied_by_the_request(
         any_mode_request.target_account_id or "",
         any_mode_request.existing_cluster_name or "",
         any_mode_request.account_email or "",
+        FIXTURE_CREATED_ACCOUNT if any_mode_request.mode.creates_account else "",
     }
     # Any 12-digit run in the output must be an account id the request named.
     import re
@@ -315,7 +345,12 @@ def test_the_rendered_set_names_only_identities_supplied_by_the_request(
 
 
 def test_no_secret_object_is_ever_rendered(any_mode_request):
-    assert "Secret" not in kinds(any_mode_request and render(any_mode_request))
+    assert "Secret" not in kinds(
+        any_mode_request
+        and render(
+            any_mode_request, creation_record=governed_account_id(any_mode_request)
+        )
+    )
 
 
 def test_cross_account_access_is_a_role_reference_not_a_credential():
@@ -354,7 +389,10 @@ def test_no_secret_shaped_value_survives_rendering(smuggled, sensitive):
     via `node_instance_type`, which is not a field anyone would check for credentials.
     """
     with pytest.raises((RenderError, ModeError)) as raised:
-        render(new_account_request(node_instance_type=smuggled))
+        render(
+            new_account_request(node_instance_type=smuggled),
+            creation_record=governed_account_id(new_account_request()),
+        )
     message = str(raised.value)
 
     # The refusal must not reproduce the value — not in full, and not as a prefix. An error
@@ -378,14 +416,19 @@ def test_no_secret_shaped_value_survives_rendering(smuggled, sensitive):
 def test_a_rendering_refusal_returns_no_partial_object_set():
     """`render` raises rather than returning what it built before the problem."""
     with pytest.raises((RenderError, ModeError)):
-        render(new_account_request(workspace_id="adp-gateway"))
+        render(
+            new_account_request(workspace_id="adp-gateway"),
+            creation_record=governed_account_id(new_account_request()),
+        )
 
 
 # ── AC-01: no hidden core platform apply ─────────────────────────────────────────────
 
 
 def test_no_rendered_object_touches_a_core_adp_namespace(any_mode_request):
-    for obj in render(any_mode_request).objects:
+    for obj in render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    ).objects:
         namespace = (obj.get("metadata") or {}).get("namespace")
         if obj["kind"] == "Namespace":
             assert obj["metadata"]["name"] not in CORE_NAMESPACES
@@ -396,7 +439,9 @@ def test_no_rendered_object_touches_a_core_adp_namespace(any_mode_request):
 
 def test_every_rendered_object_declares_its_namespace_explicitly(any_mode_request):
     """An object with no namespace lands wherever the kubeconfig context points."""
-    for obj in render(any_mode_request).objects:
+    for obj in render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    ).objects:
         if obj["kind"] == "Namespace":
             continue
         assert (obj.get("metadata") or {}).get("namespace"), obj["kind"]
@@ -416,14 +461,22 @@ def test_no_rendered_object_is_cluster_scoped_except_the_workspace_namespace(
         "MutatingWebhookConfiguration",
         "PersistentVolume",
     }
-    assert not cluster_scoped.intersection(kinds(render(any_mode_request)))
+    assert not cluster_scoped.intersection(
+        kinds(
+            render(
+                any_mode_request, creation_record=governed_account_id(any_mode_request)
+            )
+        )
+    )
 
 
 def test_shared_controller_installs_are_not_in_the_rendered_object_set(
     any_mode_request,
 ):
     """The "implicit whole-platform deployment" item, stated as a property of the output."""
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     serialized = json.dumps(result.objects)
     assert "helm" not in serialized.lower()
     assert "ResourceGraphDefinition" not in serialized
@@ -436,7 +489,9 @@ def test_prerequisites_are_descriptions_that_rendering_does_not_execute(
     any_mode_request,
 ):
     """They carry a command for an operator to run, and rendering runs none of them."""
-    for prerequisite in render(any_mode_request).prerequisites:
+    for prerequisite in render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    ).prerequisites:
         assert prerequisite.command
         assert prerequisite.reason
         assert "shared" in prerequisite.scope
@@ -448,7 +503,9 @@ def test_prerequisites_are_descriptions_that_rendering_does_not_execute(
 def test_prerequisites_are_scoped_to_the_management_cluster_not_the_workspace(
     any_mode_request,
 ):
-    for prerequisite in render(any_mode_request).prerequisites:
+    for prerequisite in render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    ).prerequisites:
         assert "once per cluster" in prerequisite.scope
 
 
@@ -457,7 +514,13 @@ def test_the_prerequisite_set_is_the_minimum_each_mode_needs():
 
     The legacy flow installed all five regardless of what was being asked for.
     """
-    new_account = {p.name for p in render(new_account_request()).prerequisites}
+    new_account = {
+        p.name
+        for p in render(
+            new_account_request(),
+            creation_record=governed_account_id(new_account_request()),
+        ).prerequisites
+    }
     adopted_cluster = {
         p.name for p in render(bring_existing_cluster_request()).prerequisites
     }
@@ -482,7 +545,9 @@ def test_existing_account_managed_needs_no_organizations_controller():
 
 def test_no_broad_iam_policy_is_named_anywhere_in_the_rendered_output(any_mode_request):
     """The legacy `01-setup-iam-roles.sh` attached these four managed policies."""
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     everything = json.dumps(result.objects) + json.dumps(
         [list(p.command) + [p.reason] for p in result.prerequisites]
     )
@@ -501,7 +566,11 @@ def test_no_wildcard_resource_arn_is_rendered(any_mode_request):
     A wildcard account in the resource means the role could assume into ANY account in the
     organization, not the one the request names.
     """
-    serialized = json.dumps(render(any_mode_request).objects)
+    serialized = json.dumps(
+        render(
+            any_mode_request, creation_record=governed_account_id(any_mode_request)
+        ).objects
+    )
     assert "arn:aws:iam::*" not in serialized
     assert '"*"' not in serialized
 
@@ -515,6 +584,7 @@ def test_an_invalid_request_is_refused_before_dependencies_are_even_read():
         render(
             new_account_request(workspace_id="kube-system"),
             lock_path=Path("/nonexistent/dependencies.lock.yaml"),
+            creation_record=governed_account_id(new_account_request()),
         )
 
 
@@ -525,12 +595,18 @@ def test_an_unverifiable_dependency_set_prevents_rendering(tmp_path):
     broken = tmp_path / "dependencies.lock.yaml"
     broken.write_text("charts: {}\n")
     with pytest.raises(DependencyError):
-        render(new_account_request(), lock_path=broken)
+        render(
+            new_account_request(),
+            lock_path=broken,
+            creation_record=governed_account_id(new_account_request()),
+        )
 
 
 def test_rendering_reports_what_authorization_did_not_verify(any_mode_request):
     """Carried forward so a report can say "not checked" rather than implying "passed"."""
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     expected = {
         "organization_id",
         "management_account_id",
@@ -542,12 +618,20 @@ def test_rendering_reports_what_authorization_did_not_verify(any_mode_request):
     }
     if any_mode_request.target_account_id:
         expected.add("target_account_id")
+    if any_mode_request.organizational_unit_id:
+        # Only the account-creating mode states a placement (#5531), and rendering with no
+        # authorization verified it against nothing.
+        expected.add("organizational_unit_id")
     assert set(result.unchecked_authorization) == expected
 
 
 def test_rendering_with_a_matching_authorization_leaves_nothing_unchecked():
     request = new_account_request()
-    result = render(request, matching_authorization(request))
+    result = render(
+        request,
+        matching_authorization(request),
+        creation_record=governed_account_id(new_account_request()),
+    )
     assert result.unchecked_authorization == ()
 
 
@@ -557,7 +641,11 @@ def test_an_unauthorized_request_renders_nothing():
         request, management_account_id="999999999999"
     )
     with pytest.raises(ModeError):
-        render(request, authorization)
+        render(
+            request,
+            authorization,
+            creation_record=governed_account_id(new_account_request()),
+        )
 
 
 def test_every_rendered_kro_kind_is_declared_by_a_graph_in_the_lock(any_mode_request):
@@ -566,7 +654,9 @@ def test_every_rendered_kro_kind_is_declared_by_a_graph_in_the_lock(any_mode_req
     Resolved through `schema_for`, which raises for an undeclared kind, rather than compared
     against a hand-written set here — a second list of kinds would drift from the lock.
     """
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     deps = load()
     for obj in result.objects:
         if obj["apiVersion"].startswith("kro.run/"):
@@ -575,7 +665,9 @@ def test_every_rendered_kro_kind_is_declared_by_a_graph_in_the_lock(any_mode_req
 
 def test_the_render_result_names_the_graphs_it_relied_on(any_mode_request):
     """Provenance travels with the output, so a reviewer can trace what expanded it."""
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     assert set(result.resource_graph_files) == {
         "01-network-stack.yaml",
         "02-eks-cluster-stack.yaml",
@@ -596,7 +688,10 @@ def test_new_account_mode_stages_infrastructure_behind_the_account():
     an explicit stage precondition rather than an assumption — an unstated precondition is one
     an operator discovers by applying stage 2 too early.
     """
-    result = render(new_account_request())
+    result = render(
+        new_account_request(),
+        creation_record=governed_account_id(new_account_request()),
+    )
     stages = {stage.name: stage for stage in result.stages}
     infrastructure = stages["workspace infrastructure"]
     account = stages["account ownership"]
@@ -611,39 +706,71 @@ def test_the_stages_contain_exactly_the_rendered_objects(any_mode_request):
     Two views of one object set that could disagree would let an operator applying stages skip
     an object that the reviewed `objects` output contained.
     """
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
     flattened = [obj for stage in result.stages for obj in stage.objects]
     assert flattened == list(result.objects)
 
 
-def test_a_single_stage_mode_states_no_precondition(any_mode_request):
-    """Only a genuine cross-root dependency gets a precondition.
+def test_only_a_real_dependency_states_a_precondition(any_mode_request):
+    """A precondition must describe something that has to be TRUE first, or it is noise.
 
-    A precondition on everything would be noise, and noise is what stops preconditions from
-    being read.
+    Noise is what stops preconditions from being read at all, so the property under test is
+    that no stage carries one gratuitously — not that early stages never carry one.
+
+    Stage 0 (the namespace) never has one: it depends on nothing. The adopting modes' stage 1
+    never has one: their account and cluster already exist and the request names them.
+
+    new-account-managed's stage 1 DOES, and that is the #5531 change. It used to be the stage
+    that created the account by declaring an ACK `Account`, so there was nothing to require
+    beforehand — applying it was the beginning of the causal chain. Now it binds to an account
+    the fenced creation path already opened, so "that account exists and is durably recorded
+    against this operation" is a genuine, checkable precondition, and an operator applying this
+    stage without it would bind a workspace to an account nothing vouches for.
     """
-    result = render(any_mode_request)
+    result = render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    )
+    # Stage 1 is only exempt for the adopting modes, so the exempt set is stated once rather
+    # than as two branches that must be kept in agreement.
+    stages_depending_on_nothing = (
+        {0} if any_mode_request.mode.creates_account else {0, 1}
+    )
     for stage in result.stages:
-        if stage.number <= 1:
+        if stage.number in stages_depending_on_nothing:
             assert stage.precondition is None, stage.name
+
+    if any_mode_request.mode.creates_account:
+        ownership = next(stage for stage in result.stages if stage.number == 1)
+        assert ownership.precondition is not None
+        # It has to name the account it binds to. A precondition an operator cannot check
+        # against a specific account is advice rather than a condition.
+        assert FIXTURE_CREATED_ACCOUNT in ownership.precondition
 
 
 def test_no_unsubstituted_placeholder_reaches_the_rendered_set(any_mode_request):
     """The legacy `04-provision-account.yaml` shipped `ACCOUNT_NAME_PLACEHOLDER` literals."""
-    serialized = json.dumps(render(any_mode_request).objects)
+    serialized = json.dumps(
+        render(
+            any_mode_request, creation_record=governed_account_id(any_mode_request)
+        ).objects
+    )
     assert "PLACEHOLDER" not in serialized
     assert "${" not in serialized
 
 
 def test_no_spec_field_renders_empty(any_mode_request):
     """An empty required field is applied as empty rather than rejected."""
-    for obj in render(any_mode_request).objects:
+    for obj in render(
+        any_mode_request, creation_record=governed_account_id(any_mode_request)
+    ).objects:
         for key, value in (obj.get("spec") or {}).items():
             assert value not in (None, "", []), f"{obj['kind']}.spec.{key}"
 
 
 def test_the_namespace_matches_the_workspace_for_every_mode():
     for mode, build in BUILDERS.items():
-        result = render(build())
+        result = render(build(), creation_record=governed_account_id(build()))
         assert result.namespace == FIXTURE_WORKSPACE, mode
         assert result.request.mode is mode
