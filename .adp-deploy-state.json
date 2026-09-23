@@ -3,7 +3,7 @@
   "account_id": "879318057152",
   "aws_profile": "embark1",
   "github_org": "aws-e",
-  "scope": "PMM expedited rollout; profiles deferred",
+  "scope": "Scoped cyber URL researcher deployment; historical phases retained without revalidation",
   "phases": {
     "gateway_backend": {
       "status": "complete",
@@ -109,13 +109,73 @@
       "ui_flag_enabled": true,
       "feature_flag_ssm": "/adp/dev/gateway/feature-agent-models",
       "verified_at": "2026-09-20T15:30:00Z"
+    },
+    "cyber_url_researcher": {
+      "status": "complete",
+      "pull_request": 5782,
+      "source_sha": "16e5657e54e4ad070f2874d87a2d36697f6584b9",
+      "account_verified": true,
+      "worker_authority_activation": false,
+      "evidence_directory": "/tmp/adp-cyber-deploy-evidence-20260923",
+      "image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1a32e339c072f2dec9adabd7aa19617cf6fbef50de604a7bb6142138567d99d5",
+      "deployment_pr": 5784,
+      "broker_resources_applied": true,
+      "worker_browser_deny_applied": true,
+      "worker_image_pinned": true,
+      "integration_preservation_verified": true,
+      "validation_status": "passed managed-browser acceptance through worker image and service account",
+      "verified_at": "2026-09-23T10:34:42.530310+00:00",
+      "region": "us-east-1",
+      "instrumentation_fix_pr": 5788,
+      "record_pr": 5789,
+      "release_prs_merged": [
+        5782,
+        5784,
+        5788
+      ],
+      "build_run": 35845538360,
+      "ci_runner_label": "arc-runner-org",
+      "broker_ready_replicas": 2,
+      "prepull_image_update_complete": true,
+      "prepull_ready_at_verification": 15,
+      "prepull_desired_at_verification": 17,
+      "cache_pods_warming_on_new_nodes": [
+        {
+          "pod": "agent-image-prepull-cjh64",
+          "age_seconds": 59,
+          "phase": "Pending",
+          "waiting_reasons": [
+            "ContainerCreating"
+          ]
+        },
+        {
+          "pod": "agent-image-prepull-r24kp",
+          "age_seconds": 58,
+          "phase": "Pending",
+          "waiting_reasons": [
+            "ContainerCreating"
+          ]
+        }
+      ],
+      "public_lambda_invocation_prohibited": true,
+      "warm_pool_desired_replicas": 0,
+      "temporary_resources_removed": true,
+      "all_six_test_sessions_terminated": true,
+      "evidence_archive": "s3://adp-dev-url-analysis-evidence-v2-879318057152/tenant=adp-default/issue=0/run=cyber-deploy-20260923/research-cases.zip",
+      "evidence_archive_sha256": "9e1799c4589aaf984e0936cacc63022d1044fc36adc9c4b6f0d4e9ce3961bcef",
+      "evidence_archive_readback_verified": true,
+      "deployment_record": "docs/cyber/url-researcher-deployment-2026-09-23.md",
+      "llm_ingress_end_to_end_tested": false,
+      "report_header_wrap_followup": "adp-g60"
     }
   },
   "outputs": {
     "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:54037213846dea7db40be8626cfca54dc3ea4fe5",
-    "deployed_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:b0ce9e397658e2c40e1d7ccc440f056f7f0b0a330550aab1a0ccaca33d608a42",
+    "deployed_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1a32e339c072f2dec9adabd7aa19617cf6fbef50de604a7bb6142138567d99d5",
     "deployed_chat_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
-    "agent_models_url": "https://d1g6cal2ts4iis.cloudfront.net/settings/agent-models"
+    "agent_models_url": "https://d1g6cal2ts4iis.cloudfront.net/settings/agent-models",
+    "deployed_url_browser_broker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:1a32e339c072f2dec9adabd7aa19617cf6fbef50de604a7bb6142138567d99d5",
+    "url_browser_broker_endpoint": "http://url-analysis-browser-broker.adp-agents.svc.cluster.local:8765"
   },
   "validation": {
     "gateway_tests": 110,
@@ -171,6 +231,18 @@
     "test_mapping_reset_to_system_default": true,
     "gateway_temporary_disruption_annotations_remaining": false,
     "recurring_model_probes_suspended": true,
-    "gitlab_live_fleet": "non-gating shared-fleet acknowledgement timeout; webhook contract passed"
+    "gitlab_live_fleet": "non-gating shared-fleet acknowledgement timeout; webhook contract passed",
+    "cyber_url_researcher": {
+      "live_acceptance_passed": true,
+      "complete_observations": 5,
+      "verified_case_files": 18,
+      "direct_worker_browser_error": "AccessDeniedException",
+      "private_destination_refusal": "blocked_address",
+      "s3_archive_readback_verified": true,
+      "managed_sessions_terminated": 6,
+      "temporary_resources_removed": true,
+      "integration_preservation_verified": true,
+      "llm_ingress_end_to_end_tested": false
+    }
   }
 }

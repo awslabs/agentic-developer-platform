@@ -147,20 +147,21 @@ coordinated image update and the existing broker identity/service/network-policy
 infrastructure. Do not update workers to the broker-only skill against a cluster
 that lacks the broker. There is no direct-browser fallback.
 
-At the 2026-09-23 review, Embark1 (`879318057152`, `us-east-1`) had an older runtime
-that started AgentCore sessions directly on demand. A harmless `example.com`
-smoke test succeeded and its session was independently confirmed terminated.
-That confirms the old deployed path only. **This collector has not been deployed
-or live-tested in Embark1.** Absence of idle browser sessions is not evidence that
-the on-demand browser path is broken.
+The collector was deployed and live-tested in Embark1 (`879318057152`,
+`us-east-1`) on 2026-09-23. The worker/broker path captured `example.com` and
+controlled delayed desktop/mobile views, verified evidence and S3 readback,
+refused worker direct-browser access and a private destination, and independently
+confirmed session termination. See the
+[deployment record](url-researcher-deployment-2026-09-23.md) for the immutable
+image, merged PRs, evidence archive and validation limits. Sessions still start
+on demand; absence of idle sessions does not indicate a broken browser path.
 
-For rollout, follow the canonical
+For future rollout, follow the canonical
 [agent deployment guide](../adp-platform-deployment/deploy-with-agent.md), confirm
 the account, build/pin the runtime image, and coordinate the worker/broker update.
 Then validate a harmless URL through `/v1/capture`, verify the downloaded case,
 confirm on-demand session termination independently, and test a controlled delayed
-fixture before accepting researcher traffic. Production deployment remains a
-separate step from this implementation.
+fixture before accepting researcher traffic.
 
 Later milestones: authenticated threat-intelligence integration (including
 Intelix), analyst review and comparison in the app, automatic case delivery,
