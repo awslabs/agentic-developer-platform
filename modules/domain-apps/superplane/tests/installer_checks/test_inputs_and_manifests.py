@@ -55,6 +55,35 @@ def test_supported_input_and_four_service_runtime(environment, release):
 
 
 @pytest.mark.parametrize("management_only", [False, True])
+def test_api_liveness_and_readiness_are_probed_separately(
+    environment, release, management_only
+):
+    """Issue #5535: liveness is process health; readiness is control-plane health.
+
+    Two endpoints in the app are worth nothing if the manifest points both probes at
+    the same one. They must differ in both directions:
+
+    * readiness on `/health` would report an API with an unreachable management
+      database as ready, and Kubernetes would send it traffic it cannot serve;
+    * liveness on `/readyz` would have Kubernetes kill and restart the pod whenever
+      the database was briefly unreachable — turning a dependency blip into a crash
+      loop for a fault no restart can fix, and removing the capacity that would
+      serve requests once the dependency recovered.
+
+    Parametrized over both modes because a control-plane-only installation is the
+    case where the distinction matters most: it has no workspaces, so readiness must
+    resolve from the management surface alone.
+    """
+    docs = render(environment, release, control_plane_only=management_only)
+    deployments = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Deployment"}
+    api = deployments["superplane-api"]["spec"]["template"]["spec"]["containers"][0]
+
+    assert api["readinessProbe"]["httpGet"]["path"] == "/readyz"
+    assert api["livenessProbe"]["httpGet"]["path"] == "/health"
+    assert api["startupProbe"]["httpGet"]["path"] == "/health"
+
+
+@pytest.mark.parametrize("management_only", [False, True])
 def test_singleton_disruption_budgets_exclude_bootstrap_jobs(
     environment, release, management_only
 ):
