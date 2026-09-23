@@ -1,5 +1,6 @@
 # Publishing builds are admitted only from protected, reviewed main workflows.
-# PR smoke builds use their own non-publishing project and never this identity.
+# PR smoke builds reuse gateway-build with a restricted service-role override
+# and separate source prefix, never this identity.
 variable "build_project_names" {
   description = "Exact reviewed project names from platform's codebuild_project_names output plus the agent-context image projects. Never prefixes."
   type        = list(string)

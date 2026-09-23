@@ -328,7 +328,26 @@ run "smoke_source_and_service_identity_are_project_bound" {
     error_message = "A project can read another project's source archive."
   }
   assert {
-    condition     = !can(regex("ecr:|kms:|secretsmanager:", aws_iam_role_policy.project["gateway-smoke"].policy))
-    error_message = "The arbitrary-source PR smoke project can publish or access credential/encryption services."
+    condition     = !can(regex("ecr:|kms:|secretsmanager:", aws_iam_role_policy.gateway_pr.policy))
+    error_message = "The arbitrary-source PR role can publish or access credential/encryption services."
+  }
+  assert {
+    condition     = !contains(keys(aws_codebuild_project.main), "gateway-smoke") && contains(keys(aws_codebuild_project.main), "gateway-build")
+    error_message = "PR validation must reuse the existing gateway-build project."
+  }
+  assert {
+    condition = jsondecode(aws_iam_role.gateway_pr.assume_role_policy).Statement[0].Condition.StringEquals == {
+      "aws:SourceArn"     = "arn:aws:codebuild:us-east-1:123456789012:project/adp-test-gateway-build"
+      "aws:SourceAccount" = "123456789012"
+    }
+    error_message = "Only the existing gateway project in this account may use the PR role."
+  }
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.gateway_pr.policy).Statement : s if s.Sid == "PrSourceRead"]).Resource == "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-gateway-build-pr/*" && one([for s in jsondecode(aws_iam_role_policy.gateway_pr.policy).Statement : s if s.Sid == "DenyOtherSource"]).NotResource == "arn:aws:s3:::adp-terraform-state-123456789012/codebuild/src/adp-test-gateway-build-pr/*"
+    error_message = "PR validation must read only PR archives, separate from trusted release input."
+  }
+  assert {
+    condition     = aws_iam_role.gateway_pr.permissions_boundary == aws_iam_policy.codebuild_boundary.arn && !contains(one([for s in jsondecode(aws_iam_role_policy.gateway_pr.policy).Statement : s if s.Sid == "DenyOtherApis"]).NotAction, "ecr:PutImage")
+    error_message = "PR validation must explicitly deny publication and retain the build boundary."
   }
 }

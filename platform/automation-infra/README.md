@@ -9,7 +9,7 @@ engine transport as part of a PR review.
 
 | Caller | Required operations | Deliberately excluded |
 |---|---|---|
-| Ordinary repository runner | Existing model/gateway transport; ECR pull; own logs; upload source and start/poll the non-publishing gateway smoke project | Lambda mutation/invocation, publishing builds, ECR push, tenant objects/state, IAM, role assumption, EKS administration, KMS policies/grants, SSM |
+| Ordinary repository runner | Existing model/gateway transport; ECR pull; own logs; upload PR source and start/poll the existing gateway build project with its exact nonpublishing PR role | Lambda mutation/invocation, publishing builds, ECR push, tenant objects/state, IAM mutation, role assumption, EKS administration, KMS policies/grants, SSM |
 | Gateway PR smoke build | Read its own source archive; write its own build logs; local Docker build/run | ECR publication, secrets, Terraform state, other project archives, deployment |
 | Publishing build dispatcher | Start/poll the exact `build_project_names`; upload their source archives; inspect published image digests | Project mutation, changing service roles, IAM, Kubernetes deployment, secrets |
 | On-demand scan dispatcher | Existing Security Agent space and exact service role; nonpublishing Grype/Syft projects; scan source/evidence prefixes | Deployment, tenant/state reads, secrets, publishing builds |
@@ -21,12 +21,19 @@ engine transport as part of a PR review.
 admitted to the trusted group. The ordinary runner's action and resource ceilings
 are shared by active and legacy Terraform. Explicit `NotAction`/`NotResource`
 denies prevent an attached or resource policy from restoring service escalation.
-The smoke project cannot publish even if a caller overrides its buildspec.
-All GitHub Actions jobs run on ARC. Container smoke checks are dispatched from
-ARC to the nonpublishing `adp-<environment>-gateway-smoke` CodeBuild project;
-there is no GitHub-hosted runner or publishing-project fallback. Provision that
-project in the authorized CodeBuild cutover before running the image gate. The
-preflight refuses before uploading source when the project is missing.
+All GitHub Actions jobs run on ARC. Container smoke checks reuse the existing
+`adp-<environment>-gateway-build` CodeBuild project and smoke buildspec. No extra
+CodeBuild project is created. Release builds retain the project's publishing role
+and existing source path. PR runs explicitly select
+`adp-<environment>-codebuild-gateway-pr`, which can read only
+`codebuild/src/adp-<environment>-gateway-build-pr/*` and write build logs.
+This prefix is separate from the release source prefix; PR callers cannot replace
+release archives, and the PR role explicitly denies publication and other APIs.
+The runner grants `iam:PassRole` only for that exact role to CodeBuild. Its
+boundary also denies `StartBuild` when the `codebuild:serviceRole` condition is
+missing or names another identity. Removing the workflow override therefore
+cannot inherit publishing credentials. AWS documents these controls in the
+[CodeBuild action and condition reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_codebuild.html).
 Infrastructure PR workflows validate with the backend disabled. Their real plans
 remain available by manual dispatch from main under the protected deployment
 environment. One-shot maintenance, diagnostics, ingestion and teardown workflows
@@ -94,8 +101,9 @@ not add upfront GitHub setup to the canonical fresh-deployment guide.
    ceiling; its service role remains separately scoped and service-only.
    This checker reads configuration; it does not grant missing access. Save
    successful identity checks and reviewed Terraform plans as rollout evidence.
-6. Apply per-project build roles/source-prefix changes and the new gateway smoke
-   project with the trusted deployment/operator identity. Exercise a publishing
+6. Apply per-project build roles/source-prefix changes, including the restricted
+   gateway PR role, with the trusted deployment/operator identity. Reuse the
+   existing gateway build project; do not create a second project. Exercise a publishing
    build and a gateway PR smoke build. Then update active/legacy runner policies
    and remove their EKS edit policies and service-account RBAC bindings **together**.
    Include webhook `scaledjob-rbac.tf` in this cutover. Set the retired
@@ -109,6 +117,10 @@ not add upfront GitHub setup to the canonical fresh-deployment guide.
 7. Run an ordinary repository job using the unchanged engine transport; verify
    approved inference/GitHub operations succeed, and Lambda mutation, a publishing
    `StartBuild`, tenant-object reads and Kubernetes deployment are denied. Verify
+   gateway `StartBuild` fails with the role override omitted or changed to the
+   publishing role, and succeeds with the exact PR role. Confirm PR source cannot
+   overwrite a release archive and the PR role cannot publish to ECR.
+   Verify
    a second tenant's secret is denied, including when another policy allows it.
    Confirm the trusted identities can still plan/apply after the boundary update.
 

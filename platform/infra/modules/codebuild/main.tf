@@ -54,11 +54,6 @@ locals {
     "kms:Decrypt", "kms:DescribeKey", "kms:GenerateDataKey", "sts:GetCallerIdentity",
   ]
   projects = {
-    "gateway-smoke" = {
-      buildspec      = "codebuild/bs-gateway-smoke.yml"
-      privileged     = true
-      privileged_why = "Build and run the PR image without publication or deployment credentials"
-    }
     "gateway-build" = {
       buildspec      = "codebuild/bs-gateway-build.yml"
       ecr_repos      = ["adp-gateway"]
@@ -470,6 +465,53 @@ resource "aws_iam_role_policy" "project" {
       }]
     )
   })
+}
+
+# PR validation reuses gateway-build with a restricted service-role override.
+# The ordinary runner must explicitly select this role; its runtime policy
+# denies StartBuild when the role override is absent or names any other role.
+# Publishing keeps the existing project role and source prefix unchanged.
+resource "aws_iam_role" "gateway_pr" {
+  name                 = "${var.name_prefix}-codebuild-gateway-pr"
+  description          = "Nonpublishing PR validation on the existing gateway-build project"
+  permissions_boundary = aws_iam_policy.codebuild_boundary.arn
+  assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{
+    Effect = "Allow", Principal = { Service = "codebuild.amazonaws.com" }, Action = "sts:AssumeRole",
+    Condition = { StringEquals = {
+      "aws:SourceAccount" = var.account_id,
+      "aws:SourceArn"     = "arn:aws:codebuild:${var.aws_region}:${var.account_id}:project/${var.name_prefix}-gateway-build"
+    } }
+  }] })
+  tags = var.common_tags
+}
+
+resource "aws_iam_role_policy" "gateway_pr" {
+  name = "pr-validation-only"
+  role = aws_iam_role.gateway_pr.id
+  policy = jsonencode({ Version = "2012-10-17", Statement = [
+    {
+      Sid    = "OwnBuildLogs", Effect = "Allow",
+      Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+      Resource = [
+        "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/codebuild/${var.name_prefix}-gateway-build",
+        "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/codebuild/${var.name_prefix}-gateway-build:*"
+      ]
+    },
+    {
+      Sid      = "PrSourceRead", Effect = "Allow", Action = ["s3:GetObject", "s3:GetObjectVersion"],
+      Resource = "arn:aws:s3:::${var.state_bucket}/codebuild/src/${var.name_prefix}-gateway-build-pr/*"
+    },
+    {
+      # Also constrain resource-policy grants made directly to a role session.
+      Sid       = "DenyOtherApis", Effect = "Deny",
+      NotAction = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "s3:GetObject", "s3:GetObjectVersion"],
+      Resource  = "*"
+    },
+    {
+      Sid         = "DenyOtherSource", Effect = "Deny", Action = ["s3:GetObject", "s3:GetObjectVersion"],
+      NotResource = "arn:aws:s3:::${var.state_bucket}/codebuild/src/${var.name_prefix}-gateway-build-pr/*"
+    }
+  ] })
 }
 
 # -----------------------------------------------------------------------------
