@@ -286,6 +286,28 @@ spec:
                   name: superplane-integration-test-api-secrets
                   key: DATABASE_URL
                   optional: false
+            # THE DOCUMENTED LOCAL-ONLY EXCEPTION (issue #5676, A22).
+            #
+            # Verified database TLS is mandatory everywhere else. It cannot apply
+            # here because the thing this connects to is the throwaway in-cluster
+            # Postgres defined at the top of this file: it serves no certificate,
+            # so there is nothing to verify and no CA that would make it
+            # verifiable. Pointing a verifying client at it would not be more
+            # secure, it would simply not start.
+            #
+            # Why this is safe HERE and nowhere else: the fixture refuses to
+            # apply outside a loopback kind/k3d/minikube context (see
+            # apply-integration-test-fixture.sh), the database lives on an
+            # emptyDir destroyed with the pod, and it holds only the synthetic
+            # rows seeded below. There are no tenant records, no spend rows and
+            # no audit history on the wire to expose.
+            #
+            # This value must never appear in a real deployment manifest. The
+            # three under deploy/ (deployment.yaml, db-migrate-job.yaml,
+            # db-seed-job.yaml) reference the CA secret instead, and a test
+            # enumerates them to keep it that way.
+            - name: SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS
+              value: "true"
           resources:
             requests:
               cpu: 100m
@@ -327,6 +349,10 @@ spec:
                   name: superplane-integration-test-api-secrets
                   key: DATABASE_URL
                   optional: false
+            # Local-only exception: `alembic check` opens a real connection to the
+            # certificate-less throwaway Postgres. See the migrate Job above.
+            - name: SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS
+              value: "true"
       containers:
         - name: seed
           image: public.ecr.aws/docker/library/postgres:16-alpine
@@ -339,6 +365,14 @@ spec:
                   name: superplane-integration-test-api-secrets
                   key: DATABASE_URL
                   optional: false
+            # This container is `psql` (libpq), not our Python image, so it would
+            # not read the exception variable. It is declared anyway so that every
+            # connection in this fixture states its posture in one consistent way
+            # and the enumerating test in tests/test_deploy_database_tls.py has a
+            # uniform thing to assert. libpq's own default here is `prefer`, which
+            # is what the throwaway Postgres can actually serve.
+            - name: SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS
+              value: "true"
           command:
             - sh
             - -c
@@ -443,6 +477,14 @@ spec:
                   name: superplane-integration-test-api-secrets
                   key: DATABASE_URL
                   optional: false
+            # Local-only exception, same reason as the migrate Job above: this
+            # runs `alembic check` against the certificate-less throwaway
+            # Postgres. Set here too because this is a SEPARATE container and
+            # the exception is per-process — omitting it would leave this init
+            # container failing to start while the ones around it succeed, which
+            # is a confusing way to learn about a missing variable.
+            - name: SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS
+              value: "true"
       containers:
         - name: api
           image: 605440105851.dkr.ecr.us-east-1.amazonaws.com/superplane/api:latest
@@ -465,6 +507,11 @@ spec:
                   name: superplane-integration-test-api-secrets
                   key: DATABASE_URL
                   optional: false
+            # Local-only exception for the fixture API, same reason as the Jobs
+            # above (issue #5676, A22): the throwaway Postgres serves no
+            # certificate. See the migrate Job for the full rationale.
+            - name: SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS
+              value: "true"
           ports:
             - name: http
               containerPort: 8000

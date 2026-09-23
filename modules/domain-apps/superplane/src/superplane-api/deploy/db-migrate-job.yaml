@@ -42,6 +42,22 @@ spec:
                   name: superplane-api-db
                   key: DATABASE_URL
                   optional: false
+            # Verified database transport for the migration path too (issue
+            # #5676, A22). The migration job is not a lesser surface than the
+            # service: it authenticates with a role that can alter every table
+            # in the domain schema, so an unverified connection here hands that
+            # role's credential to whatever answered.
+            #
+            # This job and db-seed-job.yaml are applied separately from the
+            # Deployment, which makes them the most likely place a missing
+            # secret reference surfaces first. Apply them in a non-production
+            # environment before production.
+            - name: SUPERPLANE_DATABASE_CA
+              valueFrom:
+                secretKeyRef:
+                  name: superplane-api-db
+                  key: ca-pem
+                  optional: false
           resources:
             requests:
               cpu: 100m

@@ -667,6 +667,9 @@ def test_finalization_is_discoverable_through_controller_management(
         "database_url",
         "postgresql+asyncpg://localhost/superplane_offline_test",
     )
+    # This unused import-time engine has an explicit local fixture target.
+    # Production connections still require their configured CA bundle.
+    monkeypatch.setenv("SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS", "true")
     from app.routers.controller_management import registered_targets_query
 
     store = database()
