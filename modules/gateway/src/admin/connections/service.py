@@ -59,6 +59,12 @@ _PROVIDER_GITHUB_INSTALL = "github_install"
 _PROVIDER_GITHUB_APP_REGISTER = "github_app_register"
 _NONCE_TTL_SECONDS = 900  # 15 minutes
 
+# Roles that may replace the deployment's SHARED GitHub App / webhook / sign-in
+# secrets (#5664). Mirrors the claim values `auth_service` maps to `is_admin`, but
+# read from the database: the setup callback is a browser redirect with no token,
+# so there is no claim available to trust.
+_PLATFORM_ADMIN_ROLES: frozenset[str] = frozenset({"platform_admin", "admin"})
+
 # Terraform seeds secrets with this literal placeholder at deploy time
 # (modules/agent-factory/webhook-ingress/infra/secrets.tf:39,54).
 # It must never be treated as a real App credential.
@@ -391,17 +397,24 @@ async def install_callback(
     if nonce.consumed_at is not None:
         raise NonceAlreadyConsumedError(f"State token already used: {state}")
 
-    # 2. Resolve the caller's org from the nonce (the nonce IS the authenticator
-    #    — see the docstring). target_user_id is the internal users.id set at
-    #    install-start; provider_user_id is the cognito_sub. The install attaches
-    #    to this user's own org (org + personal installs alike).
-    user_row = None
-    if nonce.target_user_id:
-        user_row = await db.get(User, nonce.target_user_id)
-    if user_row is None and nonce.provider_user_id:
-        user_row = (await db.execute(select(User).where(User.cognito_sub == nonce.provider_user_id))).scalar_one_or_none()
+    # 2. Resolve the initiator from the nonce's recorded users.id — and ONLY from
+    #    that. target_user_id is written by install-start from the authenticated
+    #    caller's own session, so it is the authenticated initiator.
+    #
+    #    Issue #5664 (A10): the `provider_user_id` fallback that used to follow was
+    #    removed. `provider_user_id` is a free-text column on a shared nonce table,
+    #    and resolving a user (hence `caller_org_id`, hence which tenant OWNS the
+    #    installation) from it let the one-time credential nominate its own subject.
+    #    `caller_org_id` drives the routing row, the per-tenant App key seed, the
+    #    org_admin membership grant and the identity-index row — so a value carried
+    #    in the credential could decide all of those. Ownership now comes from the
+    #    authenticated initiator or the callback refuses.
+    user_row = await db.get(User, nonce.target_user_id) if nonce.target_user_id else None
     if user_row is None:
-        logger.warning("GitHub install-callback: no users row for nonce jti=%s", state)
+        logger.warning(
+            "event=install_callback_denied jti=%s reason=initiator_unresolved",
+            state,
+        )
         raise TargetUserMismatchError("Could not resolve the user this install link was issued for")
     caller_org_id = user_row.org_id
 
@@ -761,6 +774,78 @@ async def _caller_has_standing_in_tenant(
         )
     ).scalar_one_or_none()
     return membership is not None
+
+
+class SetupAuthorityError(Exception):
+    """The principal completing a platform-App setup flow lacks authority.
+
+    Distinct from the nonce errors: the state token was structurally fine, but the
+    person it was issued to may not replace the deployment's shared credentials.
+    """
+
+
+async def _assert_platform_setup_authority(
+    *,
+    nonce: MagicLinkNonce,
+    db: AsyncSession,
+) -> Any:
+    """Re-derive platform-admin authority for a browser-redirect setup callback.
+
+    Issue #5664 (A10, f-32c4047a-643a-45cc-821a-e45ca5586239). ``register_app_callback``
+    writes the deployment's shared GitHub App credentials, the webhook signing
+    secret and the GitHub sign-in secret — a replacement that is destructive for
+    every tenant at once and hands control of the trusted inbound path to whoever
+    triggers it. Its only check was possession of a 15-minute state token.
+
+    Why the authority check lives HERE and not as a route dependency: GitHub
+    redirects the operator's browser to the callback as a plain GET with no
+    Authorization header, so ``get_current_user`` cannot run — adding it would make
+    legitimate setup impossible to complete, which is the "gate on the wrong half
+    of the flow" failure mode. The start endpoint IS platform-admin gated and
+    records its initiator on the nonce, so authority is re-derived from that
+    recorded initiator instead:
+
+    * the initiator must still resolve to a real user row, and
+    * that user must still hold platform-admin authority **in the database** — not
+      via a token claim, because there is no token here to claim anything.
+
+    Re-checking at completion (rather than trusting the start-time check) is what
+    makes a revoked admin's in-flight link stop working.
+
+    Returns the initiating user row on success; raises SetupAuthorityError
+    otherwise. The caller must run this BEFORE consuming the nonce and before any
+    secret write, so a refusal leaves no trace and stays retryable.
+    """
+    from src.shared.models.organization import User
+
+    # The nonce records BOTH forms of the initiator: target_user_id is users.id,
+    # provider_user_id is the cognito_sub. Require the users.id form — the
+    # cognito_sub fallback is the same "credential names its own subject" pattern
+    # this issue removes from the installation path.
+    if not nonce.target_user_id:
+        raise SetupAuthorityError("Setup link carries no initiator")
+
+    initiator = await db.get(User, nonce.target_user_id)
+    if initiator is None:
+        raise SetupAuthorityError("Setup link initiator no longer exists")
+
+    # Platform-admin authority, server-side. `users.role` is the authority for
+    # platform admin: `bootstrap_admin.py` and the admin user-update path are its
+    # only writers, and `auth_service` derives the `is_admin` claim from exactly
+    # these values (auth_service.py:301-306). So this is the same authority the
+    # start endpoint enforced via the claim, re-read from the database at
+    # completion time — which is what makes a revoked admin's in-flight link stop
+    # working.
+    #
+    # Deliberately NOT falling back to `tenant_memberships.role`: that column only
+    # ever carries "member" or "org_admin", and an org admin is a TENANT-level
+    # role. Replacing the shared App/webhook/sign-in secrets is platform-level and
+    # affects every tenant, so accepting org_admin here would re-open the
+    # escalation one rung lower.
+    if (initiator.role or "") not in _PLATFORM_ADMIN_ROLES:
+        raise SetupAuthorityError("Setup link initiator is not a platform administrator")
+
+    return initiator
 
 
 def _promotion_allowed_for_provenance(created_via: str | None) -> tuple[bool, str]:
@@ -3020,6 +3105,30 @@ async def register_app_callback(
 
     if nonce.consumed_at is not None:
         raise NonceAlreadyConsumedError(f"State token already used: {state}")
+
+    # 1a. Authority (#5664). Possession of the state token proves only that SOME
+    # request started this flow; it is not authority to replace the deployment's
+    # shared credentials. Re-derive platform-admin standing from the recorded
+    # initiator, BEFORE the nonce is consumed, so a refusal burns nothing and the
+    # legitimate admin can still complete the flow.
+    await _assert_platform_setup_authority(nonce=nonce, db=db)
+
+    # 1b. Overwrite guard (#5664). `_check_existing_app_secret` previously ran only
+    # in register-app-START — a different, earlier request — so by the time this
+    # callback wrote secrets the guard had long since passed and was never
+    # re-evaluated. `_store_app_credentials` then does create_secret -> on
+    # ResourceExistsException -> put_secret_value, an unconditional overwrite of
+    # live App credentials, the webhook signing secret and the OAuth secret. Check
+    # again here, before any write, so a second registration cannot silently
+    # replace a working App and break every tenant's connection.
+    existing_app = _check_existing_app_secret()
+    if existing_app is not None:
+        logger.warning(
+            "register-app-callback: refusing to overwrite already-registered App id=%s jti=%s",
+            existing_app[0],
+            state,
+        )
+        raise SetupAuthorityError("A GitHub App is already registered for this deployment. Disconnect the existing App before registering a new one.")
 
     # Atomically consume (prevents races)
     consume_stmt = (

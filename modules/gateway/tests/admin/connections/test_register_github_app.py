@@ -47,6 +47,48 @@ def _make_user(
     )
 
 
+def _admin_initiator(mock_db: AsyncMock, *, user_id: str = "user-001") -> MagicMock:
+    """Make `mock_db.get(User, ...)` resolve to a platform-admin initiator.
+
+    Issue #5664: register_app_callback now re-derives platform-admin authority from
+    the user recorded on the state nonce, because the callback is a tokenless
+    browser redirect (no Authorization header, so no claim to read). These
+    mock-DB tests assert redirect/logging/secret-handling behaviour on the SUCCESS
+    path, so they need the authority check to pass — the refusal paths have their
+    own coverage in tests/admin/test_register_app_callback_authority.py.
+    """
+    initiator = MagicMock()
+    initiator.id = user_id
+    initiator.org_id = "org-001"
+    initiator.role = "platform_admin"
+    mock_db.get = AsyncMock(return_value=initiator)
+    return initiator
+
+
+@pytest.fixture(autouse=True)
+def _no_app_registered_yet():
+    """Secrets Manager reports no GitHub App registered yet.
+
+    Issue #5664 moved the "an App is already registered" guard INTO the callback,
+    before any secret write (it previously ran only in register-start, a different
+    request, so it never protected the write). `_check_existing_app_secret` builds
+    its own boto3 client from ambient config, so on a machine with live AWS
+    credentials — a dev box, or a CI runner with a role attached — it reads the
+    REAL deployment's App id and every success-path test here fails, while the
+    same tests pass on a laptop with no credentials. Autouse-stubbing it makes
+    them hermetic.
+
+    Tests that want the guard's behaviour patch `_check_existing_app_secret`
+    themselves (the inner patch wins); the guard has dedicated coverage in
+    tests/admin/test_register_app_callback_authority.py.
+    """
+    with patch(
+        "src.admin.connections.service._check_existing_app_secret",
+        return_value=None,
+    ):
+        yield
+
+
 @pytest.fixture
 def app():
     application = FastAPI()
@@ -629,6 +671,8 @@ class TestRegisterAppCallbackService:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        _admin_initiator(mock_db)
 
         # Mock the DB query to return a valid nonce
         mock_result = MagicMock()
@@ -960,6 +1004,8 @@ class TestBrokerOAuthWriteThrough:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -1195,6 +1241,8 @@ class TestLoginEnabledSignal:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -1251,6 +1299,8 @@ class TestLoginEnabledSignal:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -1313,6 +1363,8 @@ class TestLoginEnabledSignal:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce
@@ -1451,6 +1503,8 @@ class TestCallbackRedirectRelativePath:
         mock_nonce = MagicMock()
         mock_nonce.expires_at = datetime.now(UTC) + timedelta(minutes=10)
         mock_nonce.consumed_at = None
+        mock_nonce.target_user_id = "user-001"
+        _admin_initiator(mock_db)
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_nonce

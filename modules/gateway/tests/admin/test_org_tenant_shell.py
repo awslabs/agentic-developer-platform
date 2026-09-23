@@ -61,7 +61,18 @@ def _mock_env(monkeypatch):
             new_callable=AsyncMock,
             return_value=None,
         ) as mock_ddb:
-            yield mock_ddb
+            # Issue #5664 moved the "an App is already registered" guard into
+            # register_app_callback, before any secret write. It builds its own
+            # boto3 client from ambient config, so with live AWS credentials
+            # present (dev box, or a CI runner with a role attached) it reads the
+            # REAL deployment's App id and refuses — making these success-path
+            # tests pass or fail depending on the machine. Guard behaviour itself
+            # is covered in tests/admin/test_register_app_callback_authority.py.
+            with patch(
+                "src.admin.connections.service._check_existing_app_secret",
+                return_value=None,
+            ):
+                yield mock_ddb
 
 
 @pytest.fixture
@@ -312,10 +323,48 @@ class TestUpsertOrgTenantShell:
 # ---------------------------------------------------------------------------
 
 
+async def _seed_register_initiator(db: AsyncSession, *, user_id: str = "user-001") -> None:
+    """Seed the platform-admin who starts a GitHub App registration.
+
+    Issue #5664: register_app_callback re-derives platform-admin authority from the
+    `users` row recorded on the state nonce, because the callback is a tokenless
+    browser redirect — there is no Authorization header, hence no `is_admin` claim
+    to read. These tests assert org-tenant-shell creation on the SUCCESS path, so
+    the initiator has to exist and hold the role. Refusal coverage lives in
+    tests/admin/test_register_app_callback_authority.py.
+    """
+    org_id = "register-initiator-org"
+    if await db.get(Organization, org_id) is None:
+        db.add(
+            Organization(
+                id=org_id,
+                name="Registrar Org",
+                aws_accounts=[],
+                role_mappings={},
+                settings={},
+            )
+        )
+        await db.commit()
+    if await db.get(User, user_id) is None:
+        db.add(
+            User(
+                id=user_id,
+                org_id=org_id,
+                team_id="team-registrar",
+                email=f"{user_id}@registrar.local",
+                cognito_sub="sub-abc",
+                role="platform_admin",
+            )
+        )
+        await db.commit()
+
+
 class TestRegisterAppCallbackOrgTenant:
     async def _setup_nonce(self, db: AsyncSession) -> str:
         """Write a register nonce and return the jti."""
         from src.admin.connections.service import _PROVIDER_GITHUB_APP_REGISTER
+
+        await _seed_register_initiator(db)
 
         jti = "register-jti-001"
         now = datetime.now(UTC)
@@ -1117,6 +1166,8 @@ class TestCreatedViaProvenance:
         jti = "register-jti-prov"
         now = datetime.now(UTC)
         from src.admin.connections.service import _PROVIDER_GITHUB_APP_REGISTER
+
+        await _seed_register_initiator(db_session)
 
         db_session.add(
             MagicLinkNonce(

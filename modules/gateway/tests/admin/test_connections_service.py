@@ -306,7 +306,12 @@ class TestInstallCallback:
 
     async def test_rejects_nonce_with_no_matching_user(self, db_session: AsyncSession, org_in_db):
         """The nonce is the authenticator; if it points at a user that no longer
-        exists (and no cognito_sub match), the caller can't be resolved → reject."""
+        exists, the caller can't be resolved → reject.
+
+        Issue #5664: this used to fall back to a `cognito_sub` lookup keyed on the
+        nonce's own `provider_user_id`. See
+        ``TestInstallCallbackTenantProvenance`` for why that fallback is gone.
+        """
         await self._write_nonce(db_session, jti="orphan-jti", target_user_id="ghost-user", seed_user=False)
 
         from src.auth.magic_link import TargetUserMismatchError
@@ -400,6 +405,184 @@ class TestInstallCallback:
         )
         assert result["success"] is True
         assert result["account_type"] == "User"
+
+
+# ---------------------------------------------------------------------------
+# install_callback — tenant provenance (#5664, A10)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallCallbackTenantProvenance:
+    """The owning tenant must come from the authenticated initiator only.
+
+    `caller_org_id` decides which tenant owns the installation: it keys the
+    ChannelTenantMap routing row, the per-tenant App key seed, the org_admin
+    membership grant and the identity-index row. It used to be resolvable from the
+    nonce's own `provider_user_id` column whenever `target_user_id` did not match a
+    user — so the one-time credential could nominate its own subject, and with it
+    the tenant that ends up owning a GitHub installation.
+    """
+
+    async def _seed_user(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: str,
+        org_id: str,
+        cognito_sub: str,
+        create_org: bool = False,
+    ) -> None:
+        from src.shared.models.organization import User
+
+        if create_org:
+            db.add(
+                Organization(
+                    id=org_id,
+                    name=f"Org {org_id}",
+                    aws_accounts=[],
+                    role_mappings={},
+                    settings={},
+                )
+            )
+            await db.commit()
+        db.add(
+            User(
+                id=user_id,
+                org_id=org_id,
+                team_id="team-5664",
+                email=f"{user_id}@test.local",
+                cognito_sub=cognito_sub,
+            )
+        )
+        await db.commit()
+
+    async def _write_nonce(
+        self,
+        db: AsyncSession,
+        *,
+        jti: str,
+        target_user_id: str | None,
+        provider_user_id: str,
+    ) -> None:
+        db.add(
+            MagicLinkNonce(
+                jti=jti,
+                provider=_PROVIDER_GITHUB_INSTALL,
+                target_user_id=target_user_id,
+                provider_user_id=provider_user_id,
+                channel_context=None,
+                expires_at=datetime.now(UTC) + timedelta(minutes=15),
+                consumed_at=None,
+            )
+        )
+        await db.commit()
+
+    async def _write_nonce_naming_another_user(
+        self,
+        db: AsyncSession,
+        *,
+        jti: str,
+        victim_org_id: str,
+    ) -> None:
+        """A nonce whose target_user_id is unresolvable but whose provider_user_id
+        points at a real user in another tenant — the old fallback's input."""
+        await self._seed_user(
+            db,
+            user_id="victim-user",
+            org_id=victim_org_id,
+            cognito_sub="sub-victim",
+            create_org=True,
+        )
+        await self._write_nonce(
+            db,
+            jti=jti,
+            # Unresolvable initiator...
+            target_user_id="ghost-initiator",
+            # ...but a resolvable cognito_sub for a user in ANOTHER tenant.
+            provider_user_id="sub-victim",
+        )
+
+    async def test_tenant_is_never_derived_from_the_credential(self, db_session: AsyncSession, org_in_db):
+        """With no resolvable authenticated initiator the callback must refuse,
+        not fall back to whoever the credential names."""
+        from src.auth.magic_link import TargetUserMismatchError
+
+        await self._write_nonce_naming_another_user(db_session, jti="prov-jti", victim_org_id="org-victim-5664")
+        gh = _mock_github_client()
+
+        with pytest.raises(TargetUserMismatchError):
+            await install_callback(
+                installation_id=124731131,
+                setup_action="install",
+                state="prov-jti",
+                db=db_session,
+                github_client=gh,
+            )
+
+    async def test_refusal_attaches_the_installation_to_nobody(self, db_session: AsyncSession, org_in_db):
+        """A refusal must leave no routing row behind — otherwise the install is
+        still attached to a tenant that never authorised it."""
+        from sqlalchemy import select
+
+        from src.auth.magic_link import TargetUserMismatchError
+
+        await self._write_nonce_naming_another_user(db_session, jti="prov-jti-2", victim_org_id="org-victim-5664b")
+        gh = _mock_github_client()
+
+        with pytest.raises(TargetUserMismatchError):
+            await install_callback(
+                installation_id=124731131,
+                setup_action="install",
+                state="prov-jti-2",
+                db=db_session,
+                github_client=gh,
+            )
+
+        rows = (await db_session.execute(select(ChannelTenantMap).where(ChannelTenantMap.provider == "github"))).scalars().all()
+        assert rows == [], f"refused install still wrote a routing row: {[r.org_id for r in rows]}"
+
+        nonce = await db_session.get(MagicLinkNonce, "prov-jti-2")
+        assert nonce is not None and nonce.consumed_at is None, "refusal consumed the single-use credential"
+
+    async def test_tenant_comes_from_initiator_not_from_provider_user_id(self, db_session: AsyncSession, org_in_db):
+        """Positive control: when BOTH are resolvable but disagree, the initiator's
+        tenant wins. Without this the fallback's removal could be "proved" by a
+        test that merely never exercises it."""
+        from sqlalchemy import select
+
+        await self._seed_user(
+            db_session,
+            user_id="other-user",
+            org_id="org-other-5664",
+            cognito_sub="sub-other",
+            create_org=True,
+        )
+        # The initiator lives in org-test-001 (the org_in_db fixture)...
+        await self._seed_user(
+            db_session,
+            user_id="user-initiator",
+            org_id="org-test-001",
+            cognito_sub="sub-initiator",
+        )
+        # ...while the credential names sub-other, who lives in org-other-5664.
+        await self._write_nonce(
+            db_session,
+            jti="prov-jti-3",
+            target_user_id="user-initiator",
+            provider_user_id="sub-other",
+        )
+
+        result = await install_callback(
+            installation_id=124731131,
+            setup_action="install",
+            state="prov-jti-3",
+            db=db_session,
+            github_client=_mock_github_client(),
+        )
+        assert result["success"] is True
+
+        rows = (await db_session.execute(select(ChannelTenantMap).where(ChannelTenantMap.provider == "github"))).scalars().all()
+        assert [r.org_id for r in rows] == ["org-test-001"], "installation attached to the credential's tenant, not the initiator's"
 
 
 # ---------------------------------------------------------------------------

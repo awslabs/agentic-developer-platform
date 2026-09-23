@@ -58,6 +58,7 @@ from .schemas import (
     SwitchTenantResponse,
 )
 from .service import (
+    SetupAuthorityError,
     delete_connection,
     disconnect_app,
     get_app_status,
@@ -451,6 +452,14 @@ async def github_app_register_callback(
     except NonceAlreadyConsumedError as exc:
         logger.warning("register-app-callback replayed state jti=%s: %s", state, exc)
         return _redirect_error("state_replayed", "Registration link already used. Please start a new registration.")
+
+    except SetupAuthorityError as exc:
+        # Issue #5664: the state token was valid but the principal it was issued to
+        # may not replace the deployment's shared App/webhook/sign-in secrets — or
+        # an App is already registered. Logged with a greppable event name because
+        # this is the containment for the credential-replacement path.
+        logger.warning("event=register_app_callback_denied jti=%s reason=%s", state, exc)
+        return _redirect_error("not_authorized", str(exc))
 
     except HTTPException as exc:
         logger.error("register-app-callback HTTP error: %s", exc.detail)
