@@ -18,8 +18,8 @@ the status class is what distinguishes "refused" from "malformed".
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import jwt
 import pytest
-from jose import jwt
 
 from app.middleware.auth import create_access_token, decode_token
 from app.routers.auth import _generate_api_key, _hash_api_key, _verify_api_key
@@ -159,9 +159,11 @@ def _rsa_keypair():
     material in this repository, and none of these values is a credential for
     anything that exists.
     """
+    import json
+
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
-    from jose import jwk
+    from jwt.algorithms import RSAAlgorithm
 
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pem = private.private_bytes(
@@ -169,18 +171,13 @@ def _rsa_keypair():
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
-    public_pem = (
-        private.public_key()
-        .public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        .decode()
-    )
-    jwk_dict = jwk.construct(public_pem, "RS256").to_dict()
-    jwk_dict = {
-        k: (v.decode() if isinstance(v, bytes) else v) for k, v in jwk_dict.items()
-    }
+    # Issue #5601 (S02): PyJWT's `RSAAlgorithm.to_jwk` replaces
+    # `jose.jwk.construct(pem, "RS256").to_dict()`. It returns a JSON STRING rather
+    # than a mapping, and its members are already `str`, so the bytes-decoding pass
+    # the jose version needed is gone. The result is the same public JWK the user
+    # pool would publish — `kty`, `n`, `e` — which is what `jwks_cache` holds and
+    # what `verify_access_token` builds its key from.
+    jwk_dict = json.loads(RSAAlgorithm.to_jwk(private.public_key()))
     jwk_dict.update({"kid": TEST_KID, "alg": "RS256", "use": "sig"})
     return pem, jwk_dict
 
@@ -485,10 +482,11 @@ class TestTokenSignatureVerification:
     def test_unsigned_alg_none_token_is_refused(self, enforcing):
         """`alg: none` must never verify — the classic bypass.
 
-        Hand-assembled rather than minted: python-jose refuses to *produce* an
-        `alg: none` token, but an attacker is under no such constraint, so
-        building the bytes directly is the only way to actually probe the
-        verifier instead of probing the signing library.
+        Hand-assembled rather than minted: the signing library refuses to
+        *produce* an `alg: none` token (this held for python-jose and holds for
+        PyJWT), but an attacker is under no such constraint, so building the bytes
+        directly is the only way to actually probe the verifier instead of probing
+        the signing library.
         """
         import base64
         import json
@@ -543,7 +541,8 @@ class TestTokenSignatureVerification:
 
     def test_token_without_kid_is_refused(self, enforcing):
         forged = jwt.encode({"sub": "a", "exp": 9999999999}, enforcing, "RS256")
-        # python-jose omits `kid` only if not supplied; assert on behaviour.
+        # The library omits `kid` only if not supplied; assert on behaviour rather
+        # than on that promise, so the test survives a library change either way.
         header = jwt.get_unverified_header(forged)
         if "kid" not in header:
             with pytest.raises(TokenRejectedError, match="key id"):
@@ -568,30 +567,93 @@ class TestTokenSignatureVerification:
         returns happily, and an unhashable value then raised `TypeError` out of
         the key-cache dict lookup — a 500 on a path reachable with no credential
         at all, where this module's contract is that a bad token is a 401.
+
+        HAND-ASSEMBLED, for the same reason as the `alg: none` case above. This test
+        used to mint the token with the signing library, which worked under
+        python-jose. PyJWT validates its own `kid` on the ENCODE side
+        (`PyJWS._validate_kid`) and raises `InvalidTokenError` rather than producing
+        the token, so after issue #5601 (S02) minting it here failed in the test
+        helper and never reached the verifier at all.
+
+        That is a signing-side courtesy, NOT a defence: an attacker writes the bytes
+        directly and PyJWT's encode-side check never runs. So the bytes are built by
+        hand to keep probing the verifier rather than the signing library.
+
+        WHICH BRANCH REFUSES IT NOW, stated precisely because it moved. PyJWT also
+        validates `kid` on the DECODE side, inside `get_unverified_header`, so the
+        forged token is refused one branch earlier than before — as "token header is
+        unreadable" rather than by this module's own `isinstance(kid, str)` check.
+        Under python-jose the header parsed fine and that check was the only thing
+        between an unhashable `kid` and a `TypeError` out of the cache lookup.
+
+        The assertion is therefore on the OUTCOME — a `TokenRejectedError`, i.e. a
+        401 — and not on the message, because the message now names a different
+        branch and pinning it would assert an implementation detail of the library.
+        This module's guard is kept as defence in depth: it is what holds if a future
+        library version stops validating `kid` for us, and it costs one `isinstance`.
         """
-        forged = jwt.encode(
-            {"sub": "a", "exp": 9999999999},
-            enforcing,
-            "RS256",
-            headers={"kid": {"nested": "object"}},
+        import base64
+        import json
+
+        def b64(payload: dict) -> str:
+            raw = json.dumps(payload, separators=(",", ":")).encode()
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        # The signature is deliberately junk: `kid` is rejected before any key
+        # lookup or signature check, so a real signature would prove nothing here.
+        forged = (
+            f"{b64({'alg': 'RS256', 'typ': 'JWT', 'kid': {'nested': 'object'}})}."
+            f"{b64({'sub': 'a', 'exp': 9999999999})}."
+            "c2lnbmF0dXJl"
+        )
+        with pytest.raises(TokenRejectedError):
+            domain_auth.verify_access_token(forged)
+
+    def test_module_kid_guard_still_holds_if_the_library_stops_checking(
+        self, enforcing, monkeypatch
+    ):
+        """The defence-in-depth half of the test above, exercised directly.
+
+        The previous test can no longer reach this module's `isinstance(kid, str)`
+        guard, because PyJWT rejects a non-string `kid` inside
+        `get_unverified_header` first. That makes the guard unreachable in practice
+        and therefore untested — and untested code is what quietly stops working.
+
+        So the library's check is stubbed out to simulate a future version that does
+        not perform it, leaving this module's guard as the only thing between an
+        unhashable `kid` and a `TypeError` out of the `jwks_cache` dict lookup. That
+        TypeError would be an unauthenticated 500; the contract is a 401.
+        """
+        monkeypatch.setattr(
+            domain_auth.jwt,
+            "get_unverified_header",
+            lambda token: {"alg": "RS256", "kid": {"nested": "object"}},
         )
         with pytest.raises(TokenRejectedError, match="key id"):
-            domain_auth.verify_access_token(forged)
+            domain_auth.verify_access_token("irrelevant-the-header-is-stubbed")
 
     def test_unusable_published_key_is_refused_not_a_server_error(
         self, enforcing, monkeypatch
     ):
-        """`JWKError` is a SIBLING of `JWTError`, not a subclass.
+        """A structurally unusable published key is a denial, not a 500.
 
-        So a structurally unusable key in the published JWKS escaped a
-        `JWTError`-only handler, as did the `ValueError` the underlying key
-        construction raises ("e must be >= 3 and < n"). Both are triggered by an
-        unauthenticated request and must be denials, not 500s.
+        Both cases are reachable by an unauthenticated request — the JWKS content
+        is the user pool's, not the caller's, but the caller chooses the `kid` that
+        selects which entry is used — so neither may surface as a server error.
+
+        Under python-jose these escaped through two DIFFERENT holes, which is why
+        both are still asserted: `JWKError` was a SIBLING of `JWTError` rather than
+        a subclass, so it passed straight through a `JWTError`-only handler, and the
+        underlying key construction raised a bare `ValueError` that was in no jose
+        hierarchy at all. Issue #5601 (S02) moved this path to PyJWT, where both now
+        raise `InvalidKeyError` under the single `PyJWTError` root. The test is kept
+        at full breadth rather than narrowed to the new library's behaviour: it
+        pins the OUTCOME (a denial) for the same two malformed keys, so it would
+        still catch a regression if the key construction moved back out of the
+        handled hierarchy.
         """
-        # `kty: oct` raises `JWKError` ("Incorrect key type"), which is the
-        # sibling class. A short `n` on an RSA key raises a bare `ValueError`
-        # ("e must be >= 3 and < n") from the key construction. Both are asserted
-        # because they escaped through different holes.
+        # `kty: oct` is the wrong key type for RS256 ("Not an RSA key"). A short `n`
+        # on an RSA key fails the construction itself ("e must be >= 3 and < n").
         for unusable in (
             {"kty": "oct", "kid": TEST_KID, "k": "c2VjcmV0"},
             {"kty": "RSA", "kid": TEST_KID, "n": "AQAB", "e": "AQAB"},

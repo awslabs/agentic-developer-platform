@@ -183,22 +183,33 @@ class TestAnUnsetKeyIsRefused:
 class TestAnEmptyKeyIsNotTreatedAsAKey:
     """The claim that is easy to get wrong, pinned against the library's behaviour."""
 
-    def test_the_jwt_library_would_sign_with_an_empty_key(self) -> None:
-        """Why "default to empty" is not by itself the fix.
+    def test_the_jwt_library_now_refuses_an_empty_key(self) -> None:
+        """The hazard this check was written for, and what changed.
 
-        Pinned as an executable fact rather than left in a comment: if a future
-        version of `jose` started rejecting empty keys, this test failing is the
-        signal that the reasoning in `app/config.py` needs revisiting. It asserts the
-        hazard exists, which is what makes `require_jwt_secret_key()` necessary
-        rather than belt-and-braces.
+        THE ORIGINAL FACT. Under `python-jose` this test asserted the OPPOSITE:
+        `jose.jwt.encode({"sub": "x"}, "", algorithm="HS256")` returned a valid
+        token. That is why defaulting `jwt_secret_key` to `""` was not by itself a
+        fix — an unset variable produced working, forgeable tokens instead of an
+        error, and `require_jwt_secret_key()` was the only thing standing in the way.
+
+        WHAT CHANGED. Issue #5601 (S02) replaced python-jose with PyJWT to remove the
+        unfixable `ecdsa` transitive dependency (GHSA-wj6h-64fc-37mp). PyJWT raises
+        `InvalidKeyError` on an empty HMAC key, so the library now refuses what jose
+        allowed. The test is INVERTED rather than deleted, because the fact it pins
+        is still load-bearing in the other direction: if a future library change
+        started silently accepting an empty key again, this failing is the signal
+        that `app/config.py`'s empty default has become dangerous on its own.
+
+        WHY THE APPLICATION CHECK SURVIVES ANYWAY. The library's refusal is narrower
+        than `require_jwt_secret_key()` and does not replace it — see the next two
+        tests. It fires only when something actually tries to sign, and it reports a
+        key problem as a request-time failure; the application check fires at startup
+        with a named cause and covers the verify path too.
         """
-        from jose import jwt
+        import jwt as pyjwt
 
-        token = jwt.encode({"sub": "x"}, "", algorithm="HS256")
-        assert token.count(".") == 2, (
-            "expected jose to sign with an empty key; if it now refuses, the empty "
-            "default in app/config.py is load-bearing and the comment there is stale"
-        )
+        with pytest.raises(pyjwt.exceptions.InvalidKeyError):
+            pyjwt.encode({"sub": "x"}, "", algorithm="HS256")
 
     def test_so_the_application_refuses_what_the_library_would_allow(
         self, monkeypatch
