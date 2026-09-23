@@ -50,33 +50,49 @@ async def reconcile(
         )
     try:
         lease = await leases.acquire(
-            db, submitter=submitter, scope=scope,
-            instance_id=str(body.instance_id), duration=timedelta(seconds=45),
+            db,
+            submitter=submitter,
+            scope=scope,
+            instance_id=str(body.instance_id),
+            duration=timedelta(seconds=45),
         )
     except leases.LeaseUnavailable:
         raise HTTPException(409, "Controller management lease is held") from None
     # Join on both identities. An inconsistent cross-org cluster link must never
     # expose another organization's target, even if old database rows exist.
-    rows = (await db.execute(
-        select(Workspace, Cluster)
-        .outerjoin(Cluster, (Workspace.cluster_id == Cluster.id) & (Cluster.org_id == body.org_id))
-        .where(Workspace.org_id == body.org_id)
-        .order_by(Workspace.id)
-    )).all()
-    targets = []
-    for workspace, cluster in rows:
-        targets.append({
-            "workspace_id": str(workspace.id),
-            "cluster_id": str(cluster.id) if cluster else None,
-            "namespace": workspace.namespace_name,
-            "workspace_status": workspace.status,
-            "cluster_status": cluster.status if cluster else None,
-            "cluster_arn": cluster.eks_cluster_arn if cluster else None,
-            "endpoint": cluster.endpoint if cluster else None,
-        })
+    rows = (await db.execute(registered_targets_query(body.org_id))).mappings().all()
+    targets = [
+        {
+            key: str(value) if isinstance(value, uuid.UUID) else value
+            for key, value in row.items()
+        }
+        for row in rows
+    ]
     return {
-        "version": 1, "org_id": str(body.org_id),
-        "lease_expires_at": lease.expires_at, "fence_token": lease.fence_token,
+        "version": 1,
+        "org_id": str(body.org_id),
+        "lease_expires_at": lease.expires_at,
+        "fence_token": lease.fence_token,
         "targets": targets,
         "governed_provisioning": False,
     }
+
+
+def registered_targets_query(org_id: uuid.UUID):
+    """Canonical discovery query, shared with the bootstrap publication regression."""
+    return (
+        select(
+            Workspace.id.label("workspace_id"),
+            Cluster.id.label("cluster_id"),
+            Workspace.namespace_name.label("namespace"),
+            Workspace.status.label("workspace_status"),
+            Cluster.status.label("cluster_status"),
+            Cluster.eks_cluster_arn.label("cluster_arn"),
+            Cluster.endpoint.label("endpoint"),
+        )
+        .outerjoin(
+            Cluster, (Workspace.cluster_id == Cluster.id) & (Cluster.org_id == org_id)
+        )
+        .where(Workspace.org_id == org_id)
+        .order_by(Workspace.id)
+    )

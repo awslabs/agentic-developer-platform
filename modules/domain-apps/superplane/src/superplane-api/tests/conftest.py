@@ -115,10 +115,18 @@ def _offline_jwt_signing_key():
 async def _setup_db():
     """Create all tables before each test and drop after."""
     async with engine_test.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        # Raw-SQL bootstrap journals require PostgreSQL JSONB/generated columns and
+        # advisory locking. Their real migration/schema/lifecycle tests run against
+        # disposable PostgreSQL in workspace_bootstrap/tests, not this HTTP SQLite double.
+        tables = [
+            t
+            for t in Base.metadata.sorted_tables
+            if not t.info.get("postgresql_bootstrap_journal")
+        ]
+        await conn.run_sync(lambda c: Base.metadata.create_all(c, tables=tables))
     yield
     async with engine_test.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(lambda c: Base.metadata.drop_all(c, tables=tables))
 
 
 @pytest.fixture(autouse=True)

@@ -30,3 +30,8 @@ from app.models.provider_connection import (  # noqa: F401
     ProviderConnection,
     ProviderConnectionBinding,
 )
+
+from app.models.bootstrap import (  # noqa: F401
+    WorkspaceBootstrapReservation,
+    WorkspaceBootstrapAuthority,
+)

@@ -207,7 +207,15 @@ class ExternalTools:
                 ),
                 "database": env["database"]["database"],
                 "role": "domain-role",
-                "revision": "016_add_organization_grants" if "exec" in args else None,
+                # Derived from the lock, like every other provenance value this fake
+                # reports (`source_revision` above), rather than a retyped literal. The
+                # installer asserts the running API's revision EQUALS the lock's head, so a
+                # hardcoded id here turns every advance of the chain into a fleet of
+                # failures in tests about pod restarts and DNS, which is how w6-10 (#5533)
+                # found this line.
+                "revision": self.release["schema"]["observed"]["head"]
+                if "exec" in args
+                else None,
             }
         elif "--check-database" == args[-1]:
             result = {
@@ -526,7 +534,14 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     installer.preflight()
     installer.execute(installer.receipt["plan_sha256"], "verified-user")
     assert installer.receipt["status"] == "installed-and-verified"
-    assert installer.receipt["migration"]["schema"] == "016_add_organization_grants"
+    # Deliberately the literal head rather than `release[...]["head"]`: this is the one
+    # assertion that pins WHICH chain a receipt claims to have migrated, and deriving it
+    # from the same lock the receipt is built from would pass for any value at all.
+    # Advanced to 017 by w6-10 (#5533).
+    assert (
+        installer.receipt["migration"]["schema"]
+        == "017_add_workspace_bootstrap_reservations"
+    )
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
     ) == {"monitor", "controller"}
