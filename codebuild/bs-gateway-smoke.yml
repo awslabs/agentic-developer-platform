@@ -4,10 +4,9 @@ version: 0.2
 # still builds. Build only — NO push, NO tags touched. The deployable image is
 # produced exclusively by bs-gateway-build.yml (gateway-deploy.yml).
 #
-# Used by .github/workflows/gateway-ci.yml "Build Container" via
-# `start-build --buildspec-override codebuild/bs-gateway-smoke.yml` on the
-# gateway-build project (privileged docker). ARC runners have no Docker
-# daemon, so docker builds run here — the platform convention.
+# Canonical checks used by gateway-ci.yml on a credential-free ephemeral Docker
+# host via platform/scripts/gateway-image-smoke.py. The scoped gateway-smoke
+# CodeBuild project can run this same contract after its authorized rollout.
 
 phases:
   build:
@@ -34,7 +33,7 @@ phases:
       - docker run --rm --entrypoint python adp-gateway:pr-smoke -m src.orchestration.review_contract_selfcheck
       - docker run --rm --entrypoint python adp-gateway:pr-smoke -m src.orchestration.evaluation_contract_selfcheck
       # Issue #5675: exercise the exact image under the workload restrictions.
-      # This runs on the privileged CodeBuild project because ARC has no daemon.
+      # These checks require Docker; no platform credentials or image push is used.
       - |
         set -euo pipefail
         RESTRICTIONS="--read-only --cap-drop=ALL --security-opt=no-new-privileges:true"
