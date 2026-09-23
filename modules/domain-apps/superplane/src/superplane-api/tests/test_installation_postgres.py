@@ -85,8 +85,9 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database):
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
     # The head `alembic upgrade head` actually reached, so it advances with the chain:
-    # w6-10 (#5533) adds 017 for `workspace_bootstrap_reservations`.
-    assert observed["revision"] == "017_add_workspace_bootstrap_reservations"
+    # w6-10 (#5533) adds 017 for `workspace_bootstrap_reservations`; A17 (#5673) adds
+    # 018 for the audit trail's principal/outcome columns.
+    assert observed["revision"] == "018_add_event_principal_outcome"
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))

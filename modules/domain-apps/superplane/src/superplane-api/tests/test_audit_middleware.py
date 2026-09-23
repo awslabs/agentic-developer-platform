@@ -35,6 +35,7 @@ environment, which remains unrun and is recorded as such on the issue.
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 import pytest
@@ -95,33 +96,6 @@ async def _events() -> list[Event]:
     async with async_session_test() as session:
         result = await session.execute(select(Event).order_by(Event.created_at))
         return list(result.scalars().all())
-
-
-def _install_verified_caller(monkeypatch, principal: str, org_id: uuid.UUID) -> None:
-    """Publish a verified caller the way `app/domain_guard.py` does under enforcement.
-
-    The guard sets `request.state.caller` after verifying the token signature and
-    re-reading a server-held grant. Simulating that publication is what makes these tests
-    exercise the ENFORCED configuration -- the one that previously wrote nothing -- without
-    standing up Cognito and a JWKS endpoint.
-    """
-
-    class _Principal:
-        subject = principal
-        org_id = str(org_id)
-        client_id = "test-client"
-        account_type = "human"
-
-    class _Caller:
-        principal = _Principal()
-        safe_headers: dict[str, str] = {}
-
-    async def _fake_guard(request):
-        request.state.caller = _Caller()
-
-    monkeypatch.setattr(
-        "app.domain_guard.enforce_domain_authorization", _fake_guard, raising=True
-    )
 
 
 class TestEnforcedConfigurationRecordsRows:
@@ -288,7 +262,18 @@ class TestNoSilentSkip:
 
         monkeypatch.setattr("app.middleware.audit.log_event", _explode)
 
-        with caplog.at_level("WARNING"):
+        # Re-enable the audit logger for the duration of this test. `test_migrations.py`
+        # calls Alembic's `fileConfig`, which sets `disabled = True` on every logger that
+        # already exists -- so whether this test can observe a log record depended on
+        # whether the migration suite had run first. conftest.py documents the same
+        # interference for `test_runtime_logging.py`. Asserted explicitly here rather than
+        # left to test ordering, because "the warning was not logged" and "the logger was
+        # switched off by an unrelated suite" are indistinguishable from the failure output.
+        audit_logger = logging.getLogger("app.services.audit")
+        monkeypatch.setattr(audit_logger, "disabled", False)
+        monkeypatch.setattr(audit_logger, "propagate", True)
+
+        with caplog.at_level("WARNING", logger="app.services.audit"):
             await _drive(
                 monkeypatch, method="POST", path="/workspaces", status_code=401
             )
