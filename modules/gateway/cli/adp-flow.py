@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.parse
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1037,8 +1037,8 @@ def expiry_text(expires_at):
     if moment.tzinfo is None:
         # Every expiry ADP writes is UTC; reading a naive one as local time would
         # shift the comparison by the offset and could call a dead grant live.
-        moment = moment.replace(tzinfo=UTC)
-    if moment <= datetime.now(tz=UTC):
+        moment = moment.replace(tzinfo=timezone.utc)
+    if moment <= datetime.now(tz=timezone.utc):
         return f"{expires_at} — ALREADY EXPIRED: accepting this plan is refused. Request a new plan and accept that one."
     return expires_at
 

@@ -993,7 +993,8 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         assert replay.decision_id == first.decision_id
         assert len(await plan_versions(session)) == 1
 
-    async def test_direct_retry_matches_a_pre_normalization_naive_policy(self, session, monkeypatch):
+    @pytest.mark.parametrize("after_expiry", [False, True])
+    async def test_direct_retry_matches_a_pre_normalization_naive_policy(self, session, monkeypatch, after_expiry):
         from datetime import UTC, datetime, timedelta
 
         from src.orchestration import compile as compile_module
@@ -1018,6 +1019,9 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         await session.commit()
         original = (await plan_versions(session))[0]
         assert original.plan_document["execution_policy"]["expires_at"] == expires_at.isoformat()
+        decisions_before = len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=first.flow_id))
+        if after_expiry:
+            monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at.replace(tzinfo=UTC) + timedelta(seconds=1))
 
         replay = await compile_proposal(session, submitted, approval)
 
@@ -1027,6 +1031,7 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         assert replay.decision_id == first.decision_id
         assert replay.plan_hash == original.plan_hash
         assert len(await plan_versions(session)) == 1
+        assert len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=first.flow_id)) == decisions_before
 
     async def test_amendment_retry_returns_committed_result_after_expiry(self, session, monkeypatch):
         from datetime import UTC, datetime, timedelta
@@ -1063,10 +1068,12 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         assert replay.decision_id == first.decision_id
         assert len(await plan_versions(session)) == 2
 
-    async def test_amendment_retry_matches_a_pre_normalization_naive_policy(self, session, monkeypatch):
+    @pytest.mark.parametrize("after_expiry", [False, True])
+    async def test_amendment_retry_matches_a_pre_normalization_naive_policy(self, session, monkeypatch, after_expiry):
         from datetime import UTC, datetime, timedelta
 
         from src.orchestration import amend as amend_module
+        from src.orchestration import compile as compile_module
         from src.orchestration.amend import AmendmentContext, amend_plan
 
         approval = ApprovalContext(
@@ -1099,6 +1106,9 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         await session.commit()
         accepted = (await plan_versions(session))[1]
         assert accepted.plan_document["execution_policy"]["expires_at"] == expires_at.isoformat()
+        decisions_before = len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=first.flow_id))
+        if after_expiry:
+            monkeypatch.setattr(compile_module, "utcnow", lambda: expires_at.replace(tzinfo=UTC) + timedelta(seconds=1))
 
         replay = await amend_plan(session, original.flow_id, submitted, amender)
 
@@ -1107,6 +1117,7 @@ class TestBoundsAlreadyExpiredAreNotGranted:
         assert replay.decision_id == first.decision_id
         assert replay.plan_hash == accepted.plan_hash
         assert len(await plan_versions(session)) == 2
+        assert len(await OrchestrationRepository(session).list_decisions(org_id=ORG_A, flow_id=first.flow_id)) == decisions_before
 
     def test_unexpired_bounds_are_still_accepted(self):
         """The scope of the refusal, from the other side.

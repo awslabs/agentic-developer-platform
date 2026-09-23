@@ -42,6 +42,24 @@ import pytest
 CLI_DIR = Path(__file__).parents[2] / "cli"
 SCRIPT = CLI_DIR / "adp-flow.py"
 
+
+def test_flow_helper_loads_and_renders_expiry_without_python_311_utc_alias():
+    """Installed helpers use system Python, including Python 3.9 on macOS."""
+    probe = """
+import datetime
+import runpy
+import sys
+
+if hasattr(datetime, "UTC"):
+    del datetime.UTC
+helper = runpy.run_path(sys.argv[1])
+assert "ALREADY EXPIRED" in helper["expiry_text"]("2020-01-01T00:00:00Z")
+assert helper["expiry_text"]("2999-01-01T00:00:00Z") == "2999-01-01T00:00:00Z"
+"""
+    result = subprocess.run([sys.executable, "-c", probe, str(SCRIPT)], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
 spec = importlib.util.spec_from_file_location("adp_flow_cli", SCRIPT)
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
