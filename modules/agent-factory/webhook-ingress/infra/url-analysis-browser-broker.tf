@@ -119,6 +119,15 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
     }
     template {
       metadata {
+        # Auto-instrumentation preloads Node code into Playwright's private
+        # driver process and stalls startup. Preserve the driver's stdio protocol.
+        # This fixed Python service opts out; container logs remain available.
+        annotations = merge(
+          { for language in ["java", "nodejs", "python", "dotnet"] :
+          "cloudwatch.aws.amazon.com/auto-annotate-${language}" => "false" },
+          { for language in ["java", "nodejs", "python", "dotnet"] :
+          "instrumentation.opentelemetry.io/inject-${language}" => "false" }
+        )
         labels = {
           "app.kubernetes.io/name"      = "url-analysis-browser-broker"
           "app.kubernetes.io/part-of"   = "adp-agent-factory"
