@@ -119,8 +119,10 @@ HTML report uses relative image links, so download the complete bundle for revie
   contain sensitive data. Query redaction also limits exact reproduction by a
   recipient who does not retain the original submitted URL.
 
-All cases start inconclusive. Non-inconclusive findings must cite complete
-observations. `no_adverse_behavior_observed` requires every observation and probe
+All cases start inconclusive. Adverse findings must cite complete observations or
+intact, collector-owned evidence items on eligible partial pages, with explicit
+coverage limitations and confirmed cleanup. Failed pages, challenges and truncated
+cited items remain ineligible. `no_adverse_behavior_observed` requires every observation and probe
 to be complete; it describes only tested views. Content variation requires
 same-input observations with different content hashes and does not by itself
 prove evasion. Indicator exports remain unassessed until corroborated.
