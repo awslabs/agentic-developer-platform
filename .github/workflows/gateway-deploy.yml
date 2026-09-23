@@ -163,13 +163,17 @@ jobs:
 
   deploy-backend:
     name: Build and Deploy Backend
-    runs-on: arc-runner-org
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: github.ref == 'refs/heads/main' && (needs.changes.outputs.backend == 'true')
     outputs:
       release_image: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
-    # Runner already has AWS creds via IRSA (adp-dev-agent-runner-role)
+    # AWS authority comes from the protected deployment environment.
     permissions:
+      id-token: write
       contents: read
       actions: write  # Required by "Trigger gateway-infra re-apply" step (gh workflow run)
 
@@ -177,6 +181,19 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -257,7 +274,11 @@ jobs:
           poll_interval: '10'
 
       - name: Export image tag
-        run: echo "IMAGE_TAG=${{ inputs.adp_source_revision || github.sha }}" >> $GITHUB_ENV
+        env:
+          ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
+        run: |
+          echo "IMAGE_TAG=${ADP_INPUT_3965067AD6}" >> $GITHUB_ENV
+
 
       - name: Upload CFN templates to S3
         # Issue #562: the AWS connect flow pre-signs a GET URL on these objects.
@@ -629,6 +650,8 @@ jobs:
           done
 
       - name: Migrate schema then roll out new image
+        env:
+          ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
           RENDERED_DEPLOYMENT=$(mktemp)
@@ -705,23 +728,23 @@ jobs:
           # A bounded lock/index failure leaves the previous release serving.
           python3 modules/gateway/scripts/migrate-before-rollout.py \
             --manifest "$RENDERED_DEPLOYMENT" \
-            --image "${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}" \
+            --image "${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}" \
             --namespace "${{ env.NAMESPACE }}"
-          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}|g" \
+          sed "s|REPLACE_WITH_GATEWAY_IMAGE|${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6}|g" \
             "$RENDERED_DEPLOYMENT" | kubectl apply -f - -n ${{ env.NAMESPACE }}
 
           # Stamp the image tag for this build. The manifest has a generic
           # placeholder; this line pins to the commit SHA for audit.
           kubectl set image deployment/bedrockgateway \
-            bedrockgateway=${REGISTRY}/adp-gateway:${{ inputs.adp_source_revision || github.sha }} \
+            bedrockgateway=${REGISTRY}/adp-gateway:${ADP_INPUT_3965067AD6} \
             -n ${{ env.NAMESPACE }}
 
           kubectl rollout status deployment/bedrockgateway -n ${{ env.NAMESPACE }} --timeout=300s
-
       - name: Update the scheduled orchestration engine
         # The engine runs in Lambda using this same image. An EKS rollout alone
         # leaves ticks on the previous digest indefinitely (#4575).
         env:
+          ADP_INPUT_3965067AD6: ${{ inputs.adp_source_revision || github.sha }}
           ENGINE_IMAGE: ${{ steps.vars.outputs.registry }}/adp-gateway:${{ inputs.adp_source_revision || github.sha }}
         run: |
           set -euo pipefail
@@ -736,7 +759,7 @@ jobs:
             exit 1
           fi
           ENGINE_DIGEST=$(aws ecr describe-images --repository-name adp-gateway \
-            --image-ids imageTag="${{ inputs.adp_source_revision || github.sha }}" --query 'imageDetails[0].imageDigest' --output text)
+            --image-ids imageTag="${ADP_INPUT_3965067AD6}" --query 'imageDetails[0].imageDigest' --output text)
           ENGINE_PINNED_IMAGE="${ENGINE_IMAGE%:*}@${ENGINE_DIGEST}"
           aws lambda update-function-code --function-name "$ENGINE_FUNCTION" \
             --image-uri "$ENGINE_PINNED_IMAGE" --query '{FunctionName:FunctionName,LastUpdateStatus:LastUpdateStatus}'
@@ -745,7 +768,6 @@ jobs:
             --query Code.ResolvedImageUri --output text)
           test "$ENGINE_LIVE_IMAGE" = "$ENGINE_PINNED_IMAGE"
           echo "Scheduled engine now uses ${ENGINE_LIVE_IMAGE}"
-
       - name: Wire ALB to CloudFront (Section 6 — first deploy)
         id: wire_alb
         # On first deploy, the Ingress manifest creates an internal ALB.
@@ -910,20 +932,43 @@ jobs:
 
   deploy-frontend:
     name: Build and Deploy Frontend
-    runs-on: arc-runner-org
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, deploy-backend]
     # Backend job is optional — run the frontend even when backend is skipped.
     # `always()` lets us bypass the default "cancelled if any dependency was
     # skipped" behavior; we still require the backend success if it did run.
     if: |
+      github.ref == 'refs/heads/main' && (
       always() &&
       needs.changes.outputs.frontend == 'true' &&
       (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
+      )
+
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -1063,12 +1108,33 @@ jobs:
   finalize-pricing:
     name: Verify and activate daily pricing
     needs: [deploy-backend, run-migrations]
-    if: needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success'
-    runs-on: arc-runner-org
+    if: github.ref == 'refs/heads/main' && (needs.deploy-backend.result == 'success' && needs.run-migrations.result == 'success')
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
@@ -1082,10 +1148,7 @@ jobs:
           PRICING_RELEASE_IMAGE: ${{ needs.deploy-backend.outputs.release_image }}
         run: |
           set -euo pipefail
-          if ! command -v kubectl >/dev/null; then
-            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          fi
+          command -v kubectl >/dev/null
           aws eks update-kubeconfig --name "adp-${ENVIRONMENT}-eks-cluster" --region "$AWS_REGION" >/dev/null
           python3 modules/gateway/scripts/pricing-rollout.py finalize \
             --account-id "$ACCOUNT_ID" --environment "$ENVIRONMENT" \
@@ -1093,7 +1156,6 @@ jobs:
           # First rollout requires reviewed budget-lambda infra. If this gate
           # fails, apply that reviewed plan, then dispatch pricing-finalize.yml
           # at this release ref. The schedule stays disabled on failure.
-
   smoke-test:
     name: Post-deploy Smoke Test
     needs: [deploy-backend, deploy-frontend, run-migrations, finalize-pricing]

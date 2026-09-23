@@ -40,11 +40,7 @@ on:
         description: 'Issue #5365: enable protected agent authority (per-run credentials + pod admission). Requires agent_authority_worker_image_digests. Empty = leave the committed tfvars value alone.'
         required: false
         default: ''
-        type: choice
-        options:
-          - ''
-          - 'true'
-          - 'false'
+        type: string
       agent_authority_worker_image_digests:
         description: 'Comma-separated sha256:<64 hex> worker image digests to admit. Mutable tags are refused; each digest is verified against ECR before Terraform trusts it.'
         required: false
@@ -79,11 +75,32 @@ jobs:
 
   package:
     name: Package Lambda Code
-    runs-on: arc-runner-org
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: changes
-    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true'
+    if: github.ref == 'refs/heads/main' && (needs.changes.outputs.code == 'true' || needs.changes.outputs.infra == 'true')
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -118,16 +135,33 @@ jobs:
 
   deploy-infra:
     name: Terraform Apply
-    runs-on: arc-runner-org
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, package]
-    if: always() && needs.changes.outputs.infra == 'true' && needs.package.result == 'success'
+    if: github.ref == 'refs/heads/main' && (always() && needs.changes.outputs.infra == 'true' && needs.package.result == 'success')
     permissions:
+      id-token: write
       contents: read
 
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -141,27 +175,10 @@ jobs:
 
       - name: Install required CLI tools
         run: |
-          set -e
-          if ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends zip unzip curl gnupg
-          fi
-          if ! command -v aws >/dev/null 2>&1; then
-            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-            unzip -q /tmp/awscli.zip -d /tmp
-            sudo /tmp/aws/install
-            rm -rf /tmp/awscli.zip /tmp/aws
-          fi
-          if ! command -v terraform >/dev/null 2>&1; then
-            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-            echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
-              | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends terraform
-          fi
-          aws --version
-          terraform version | head -1
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
@@ -250,12 +267,10 @@ jobs:
 
       - name: Install kubectl
         run: |
-          if ! command -v kubectl >/dev/null 2>&1; then
-            curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
-            sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          fi
-          kubectl version --client
-
+          set -euo pipefail
+          for tool in aws terraform kubectl helm jq zip unzip curl git python3 node npm; do
+            command -v "$tool" >/dev/null || { echo "::error::Reviewed runner image is missing $tool"; exit 1; }
+          done
       - name: Resolve agent authority rollout
         id: authority
         # Issue #5365. Protected dispatch admits a pod only by image digest, and
@@ -299,15 +314,38 @@ jobs:
 
   update-code:
     name: Update Lambda Function Code
-    runs-on: arc-runner-org
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [changes, package, deploy-infra]
     if: |
+      github.ref == 'refs/heads/main' && (
       always() &&
       needs.changes.outputs.code == 'true' &&
       needs.package.result == 'success' &&
       (needs.deploy-infra.result == 'success' || needs.deploy-infra.result == 'skipped')
+      )
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
@@ -369,13 +407,36 @@ jobs:
 
   integration-test:
     name: Integration Tests
-    runs-on: arc-runner-org
+    runs-on:
+      group: adp-deployment
+      labels: arc-runner-deployment
+    environment: adp-deploy-${{ inputs.environment || 'dev' }}
     needs: [update-code, deploy-infra]
     if: |
+      github.ref == 'refs/heads/main' && (
       always() &&
       (needs.update-code.result == 'success' || needs.deploy-infra.result == 'success')
+      )
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
+
+      - name: Verify source belongs to reviewed main history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$GITHUB_SHA"
+          git merge-base --is-ancestor HEAD FETCH_HEAD
+
+      - name: Establish trusted deployment identity
+        uses: ./.github/actions/trusted-deployment
+        with:
+          role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config

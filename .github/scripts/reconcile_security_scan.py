@@ -216,13 +216,15 @@ def cleanup_children(state_dir: Path, expected_children: set[str], region: str, 
             state = load_json(state_path)
             build_id = state.get("build_id")
             source_key = state.get("source_key")
-            if not isinstance(source_key, str) or not re.fullmatch(r"codebuild/src/[0-9a-f]{40}-[0-9]+-[0-9]+-[A-Za-z0-9_-]+\.zip", source_key):
+            if not isinstance(source_key, str) or not re.fullmatch(r"codebuild/src/adp-[A-Za-z0-9_-]+-(?:grype|syft)-scan/[0-9a-f]{40}-[0-9]+-[0-9]+-[A-Za-z0-9_-]+\.zip", source_key):
                 raise ValueError("state lacks an invocation-owned source key")
             if not isinstance(build_id, str) or not build_id:
                 aws(["s3api", "delete-object", "--bucket", state_bucket, "--key", source_key, "--region", region])
                 result["children"][name] = {"build_id": None, "terminal_status": "UNPROVEN", "source_removed": True}
                 result["errors"].append(f"{name}: build start was not proven and no build ID was recorded")
                 continue
+            if build_id.split(":", 1)[0] != source_key.split("/")[2]:
+                raise ValueError("child project does not own the recorded source")
             status = None
             for _ in range(21):
                 response = aws(["codebuild", "batch-get-builds", "--ids", build_id, "--region", region])

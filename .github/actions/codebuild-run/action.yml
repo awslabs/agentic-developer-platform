@@ -71,7 +71,8 @@ runs:
           echo "::error::GitHub job name is unsafe for a source object key"
           exit 1
         fi
-        SOURCE_KEY="codebuild/src/${SOURCE_REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
+        [[ "$PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+        SOURCE_KEY="codebuild/src/${PROJECT_NAME}/${SOURCE_REVISION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}.zip"
         export SOURCE_KEY SOURCE_REVISION
         ARCHIVE="${RUNNER_TEMP}/adp-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
 

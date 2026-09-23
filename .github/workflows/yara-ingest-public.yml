@@ -40,9 +40,12 @@ env:
 
 jobs:
   ingest:
-    # Run on self-hosted ARC runners (same pattern as cyber-worker-build,
-    # cyber-windows-image-build). Pod identity / IRSA on the runner supplies
-    # AWS credentials — no `configure-aws-credentials` step needed.
+    # Compile upstream rules away from deployment nodes with a public-rules-only role.
+    if: github.ref == 'refs/heads/main'
+    environment: adp-rules-dev
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
     steps:
       - uses: actions/checkout@v7
@@ -64,6 +67,12 @@ jobs:
           fi
           yara --version
           aws --version
+
+      - name: Establish public rules identity
+        uses: aws-e/adp/.github/actions/trusted-rules@main
+        with:
+          role_arn: ${{ vars.ADP_RULES_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
       - name: Clone upstream signature-base
         run: |
@@ -98,14 +107,14 @@ jobs:
           COMPILE_FAILED=()
           VALID_COUNT=0
 
-          for rule in $(find "$RULES_DIR" -name "*.yar" -type f 2>/dev/null); do
+          while IFS= read -r -d '' rule; do
             if yara -w "$rule" /dev/null 2>/dev/null; then
               cp "$rule" "$VALID_DIR/"
               VALID_COUNT=$((VALID_COUNT + 1))
             else
               COMPILE_FAILED+=("$(basename "$rule")")
             fi
-          done
+          done < <(find "$RULES_DIR" -name "*.yar" -type f -print0)
 
           echo "Valid: $VALID_COUNT. Failed: ${#COMPILE_FAILED[@]}"
 

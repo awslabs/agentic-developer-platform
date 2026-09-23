@@ -232,7 +232,6 @@ REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 STATE_BUCKET="adp-terraform-state-${ACCOUNT_ID}"
 LOCK_TABLE="adp-terraform-locks"
 EKS_CLUSTER="adp-${ENVIRONMENT}-eks-cluster"
-CB_ROLE_NAME="adp-${ENVIRONMENT}-codebuild-role"
 
 # =============================================================================
 # Update mode: precondition checks (§1)
@@ -342,28 +341,6 @@ refresh_credentials() {
 # are deleted. The webhook-secrets CMK now lives in platform infra (Step 2),
 # so it always exists before gateway applies (Step 3). The gateway grant is
 # unconditional — no flag dance needed.
-
-# =============================================================================
-# Helper: ensure CodeBuild IAM role exists
-# =============================================================================
-# The role and the 4 docker-build projects are Terraform-managed in
-# platform/infra/modules/codebuild/. This helper only validates the role
-# exists (it should after platform infra apply). If missing (bootstrap
-# chicken-and-egg), it creates it imperatively as a fallback.
-ensure_codebuild_role() {
-  if aws iam get-role --role-name "$CB_ROLE_NAME" 2>/dev/null > /dev/null; then return; fi
-  echo "Creating CodeBuild service role (bootstrap fallback)..."
-  aws iam create-role --role-name "$CB_ROLE_NAME" \
-    --assume-role-policy-document '{
-      "Version":"2012-10-17",
-      "Statement":[{"Effect":"Allow","Principal":{"Service":"codebuild.amazonaws.com"},"Action":"sts:AssumeRole"}]
-    }' > /dev/null
-  aws iam attach-role-policy --role-name "$CB_ROLE_NAME" \
-    --policy-arn "arn:aws:iam::aws:policy/AdministratorAccess"
-  echo "Waiting for IAM propagation..."
-  sleep 15
-  ok "CodeBuild role created with AdministratorAccess"
-}
 
 # =============================================================================
 # Helper: run a CodeBuild job (project must already exist via Terraform)
@@ -1517,13 +1494,13 @@ EOF
   CHAT_IMAGE_TAG="${IMAGE_TAG}-chat"
   if [ "$LOCAL_MODE" = true ] && docker info &>/dev/null 2>&1; then
     cd "$ROOT_DIR/modules/agent-factory"
-    docker build -f agent/Dockerfile -t "$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG" .
-    docker push "$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG"
+    docker build -f agent/Dockerfile -t "$REGISTRY/adp-chat-agent:$CHAT_IMAGE_TAG" .
+    docker push "$REGISTRY/adp-chat-agent:$CHAT_IMAGE_TAG"
   else
     IMAGE_TAG="$CHAT_IMAGE_TAG" run_codebuild "adp-${ENVIRONMENT}-chat-agent" "codebuild/bs-chat-agent.yml"
   fi
   ENVIRONMENT="$ENVIRONMENT" AWS_REGION="$AWS_REGION" STATE_BUCKET="$STATE_BUCKET" \
-    AGENT_IMAGE="${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-agent-gateway:$CHAT_IMAGE_TAG}" \
+    AGENT_IMAGE="${ADP_RELEASE_CHAT_AGENT_IMAGE:-$REGISTRY/adp-chat-agent:$CHAT_IMAGE_TAG}" \
     bash "$ROOT_DIR/modules/agent-factory/agent/k8s/deploy-chat-scaledjob.sh"
   ok "Chat agent deployed (SHA: $IMAGE_TAG)"
 else

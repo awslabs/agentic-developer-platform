@@ -159,6 +159,7 @@ jobs:
     name: Code Review
     needs: preflight
     runs-on: arc-runner-org
+    environment: adp-scan-${{ inputs.environment || 'dev' }}
     # The night's date, resolved by ONE `date -u` in this job and consumed by
     # `triage` and `deliver`. Every job that addresses the run prefix has to
     # agree on which night it is, and each independent `date` call is another
@@ -178,6 +179,10 @@ jobs:
       # findings would route to the dev bucket with nothing in the log saying
       # so. Once a second environment exists that is a misrouting bug (#4517).
       ENVIRONMENT: ${{ inputs.environment == '' && 'dev' || inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - uses: actions/checkout@v7
 
@@ -200,6 +205,12 @@ jobs:
       # dispatch input cannot inject shell. It is format-checked here so a typo
       # fails loud with its own cause rather than surfacing 20 lines down as an
       # empty S3 sync that the triage job misreads as a quiet night.
+      - name: Establish scoped on-demand scan identity
+        uses: aws-e/adp/.github/actions/trusted-scan@main
+        with:
+          role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
+          region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
+
       - name: Resolve run date
         id: run_date
         env:
@@ -288,14 +299,10 @@ jobs:
       # earlier version of this comment gave, and the difference matters to
       # anyone reasoning about this job's blast radius (#4525).
       #
-      # This job has NO configure-aws-credentials step, so every step in it —
-      # including this publish — runs as the ARC runner's ambient IRSA identity
-      # (adp-<env>-agent-runner-role), NOT as adp-<env>-securityagent-nightly.
-      # The nightly role is a SERVICE role: its trust policy admits only
-      # securityagent.amazonaws.com, so the runner cannot assume it and there is
-      # deliberately no role-to-assume step here. The write below succeeds on the
-      # runner role's s3:PutObject over `arn:aws:s3:::adp-*/*`
-      # (modules/agent-factory/infra/modules/runner-iam/main.tf, S3Combined).
+      # This job uses the protected on-demand scan identity. The service role
+      # remains assumable only by Security Agent; the dispatcher may pass only
+      # that exact role and write only scan source/evidence prefixes.
+
       #
       # So dest-prefix is not what keeps this step from failing AccessDenied —
       # the runner could write anywhere in the bucket. It is what keeps the
