@@ -69,3 +69,18 @@ Broker tests use real RSA signatures, SQL identity resolution and versioned Moto
 S3/SQS. Linux kernel probes exercise allowed analysis and filesystem, network,
 process, timeout and output restrictions without mocks. They do not claim that
 the live cluster has received or validated this rollout.
+
+Result rows carry the broker's organization, team and user scope. Result reads
+require current membership in that original team and recheck authority after the
+DynamoDB request; legacy rows without scope are refused. Removing a user from one
+team cannot be bypassed by their membership in another team.
+
+The rule-fetch initializer validates public rule version pointers as a single
+bounded path segment and writes provenance with the version passed as data.
+The release build uses the Cyber module root and explicitly selects the runtime
+Docker target with its actual image tag. `cyber-security-ci.yml` also builds the
+security-test target and runs it with a read-only root, no network, no added
+capabilities and no privilege escalation. It reuses the gateway CodeBuild project
+with the nonpublishing PR role and separate PR source prefix; no extra project is
+created. The CodeBuild host must support the same Landlock ABI; lack of kernel
+support is a failing check, not a skipped isolation test.

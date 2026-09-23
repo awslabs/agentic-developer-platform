@@ -6,6 +6,7 @@ on:
       - modules/gateway/src/agentauth/cyber_jobs.py
       - modules/gateway/tests/agentauth/test_cyber_jobs.py
       - .github/workflows/cyber-security-ci.yml
+      - .github/actions/codebuild-run/**
   workflow_dispatch:
 concurrency:
   group: cyber-security-${{ github.ref }}
@@ -37,3 +38,26 @@ jobs:
           sudo chmod -R a+rX /tmp/cyber-security-source
       - name: Exercise full worker suite including actual kernel confinement
         run: sudo -u cyber-test env LD_LIBRARY_PATH="$pythonLocation/lib" /tmp/cyber-kernel-tests/bin/python -m pytest -q -p no:cacheprovider /tmp/cyber-security-source/workers/tests
+
+  production-image:
+    runs-on: arc-runner-org
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve the existing nonpublishing build identity
+        id: account
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          echo "id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+      - name: Build and exercise the production worker filesystem
+        uses: ./.github/actions/codebuild-run
+        with:
+          project_name: adp-dev-gateway-build
+          region: us-east-1
+          state_bucket: adp-terraform-state-${{ steps.account.outputs.id }}
+          source_namespace: adp-dev-gateway-build-pr
+          service_role_arn: arn:aws:iam::${{ steps.account.outputs.id }}:role/adp-dev-codebuild-gateway-pr
+          buildspec: modules/domain-apps/cyber/codebuild/bs-cyber-security.yml

@@ -256,3 +256,75 @@ async def test_registered_reusable_workflow_requires_actual_verified_human(conte
     assert delivered(context)
     assert (await post(context, claims={"job_workflow_ref": reusable, "actor_id": "99"})).status_code == 403
     assert not delivered(context)
+
+
+def stored_result(**scope):
+    return {
+        "Items": [
+            {
+                key: {"S": value}
+                for key, value in {
+                    "org_id": "tenant",
+                    "team_id": "team",
+                    "user_id": "sub",
+                    "status": "ok",
+                    "stage": "triage",
+                    "findings": '{"private":true}',
+                    **scope,
+                }.items()
+            }
+        ]
+    }
+
+
+async def test_result_requires_original_team_even_when_another_membership_remains(context, db_session, monkeypatch):
+    from sqlalchemy import delete
+
+    job = {"job_id": (await post(context)).json()["job_id"]}
+    monkeypatch.setattr(context["clients"]["dynamodb"], "query", Mock(return_value=stored_result()))
+    assert (await post(context, "result", job)).json()["findings"] == {"private": True}
+    db_session.add(Team(id="other", org_id="tenant", department_id="dept", name="Other"))
+    await db_session.commit()
+    db_session.add(TeamMembership(user_id="human", team_id="other", org_id="tenant"))
+    await db_session.execute(delete(TeamMembership).where(TeamMembership.team_id == "team"))
+    await db_session.commit()
+    response = await post(context, "result", job)
+    assert response.status_code == 404
+    assert "private" not in response.text
+
+
+@pytest.mark.parametrize("scope", [{"org_id": "victim"}, {"user_id": "other"}, {"team_id": "other"}, {"team_id": ""}])
+async def test_result_scope_must_match_current_owner_and_team(context, monkeypatch, scope):
+    job = {"job_id": (await post(context)).json()["job_id"]}
+    monkeypatch.setattr(context["clients"]["dynamodb"], "query", Mock(return_value=stored_result(**scope)))
+    assert (await post(context, "result", job)).status_code == 404
+
+
+async def test_legacy_unscoped_result_is_unreadable(context, monkeypatch):
+    job = {"job_id": (await post(context)).json()["job_id"]}
+    value = stored_result()
+    for field in ("org_id", "team_id", "user_id"):
+        del value["Items"][0][field]
+    monkeypatch.setattr(context["clients"]["dynamodb"], "query", Mock(return_value=value))
+    assert (await post(context, "result", job)).status_code == 404
+
+
+async def test_revocation_while_reading_result_blocks_response(context, db_session, monkeypatch):
+    from sqlalchemy import delete
+
+    job = {"job_id": (await post(context)).json()["job_id"]}
+    query = Mock(return_value=stored_result())
+    monkeypatch.setattr(context["clients"]["dynamodb"], "query", query)
+    original = cyber_jobs.run_in_threadpool
+
+    async def read_then_revoke(fn, *args, **kwargs):
+        value = await original(fn, *args, **kwargs)
+        if fn is query:
+            await db_session.execute(delete(TeamMembership).where(TeamMembership.user_id == "human"))
+            await db_session.commit()
+        return value
+
+    monkeypatch.setattr(cyber_jobs, "run_in_threadpool", read_then_revoke)
+    response = await post(context, "result", job)
+    assert response.status_code == 403
+    assert "private" not in response.text

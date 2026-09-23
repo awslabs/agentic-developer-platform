@@ -193,3 +193,39 @@ class TestEgressRemainsRestricted:
                 for target in rule.get("to", []):
                     cidr = target.get("ipBlock", {}).get("cidr", "")
                     assert not cidr.startswith("0.0.0.0/0"), "public egress allowed"
+
+
+@pytest.mark.parametrize('version,valid', [
+    ('2026-09-24T00:10Z', True), ('v1_abcd', True),
+    ('../other', False), ('a/b', False), ('', False), (123, False),
+    ("x'}}, open('/tmp/injected','w')); #", False),
+    ('x\nsecond-line', False),
+])
+def test_rule_pointer_is_data_and_invalid_versions_stop_before_sync(tmp_path, version, valid):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    spec = _pod_spec(MANIFESTS['static'])
+    command = spec['initContainers'][0]['command'][-1]
+    rules = tmp_path / 'rules'
+    rules.mkdir()
+    (rules / 'fixture.yar').write_text('rule fixture { condition: false }')
+    pointer = tmp_path / 'current.json'
+    pointer.write_text(json.dumps({'resolves_to': version}))
+    command = command.replace('/tmp/current.json', str(pointer)).replace('/rules/', str(rules) + '/')
+    commands = tmp_path / 'bin'
+    commands.mkdir()
+    calls = tmp_path / 'aws-calls'
+    aws = commands / 'aws'
+    aws.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$AWS_CALLS"\n')
+    aws.chmod(0o755)
+    (commands / 'python3').symlink_to(sys.executable)
+    result = subprocess.run(['sh', '-c', command], env={**os.environ, 'PATH': str(commands)+':'+os.environ['PATH'], 'AWS_CALLS':str(calls)}, text=True, capture_output=True, timeout=10)
+    assert (result.returncode == 0) == valid, result.stderr
+    assert ('s3 sync' in calls.read_text()) == valid
+    if valid:
+        assert json.loads((rules / 'rules-manifest.json').read_text()) == {'public': {'florian-roth': version}}
+    else:
+        assert not (rules / 'rules-manifest.json').exists()

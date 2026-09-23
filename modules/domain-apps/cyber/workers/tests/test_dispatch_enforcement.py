@@ -55,6 +55,8 @@ def test_every_valid_mode_uses_isolation(worker):
     assert run()["status"] == "ok"
     assert download.call_count == sandbox.call_count == 1
     assert table.put_item.called
+    item = table.put_item.call_args.kwargs["Item"]
+    assert {k: item[k] for k in ("org_id", "team_id", "user_id")} == {k: body[k] for k in ("org_id", "team_id", "user_id")}
 
 @pytest.mark.parametrize("change", [
     {"registration_version":0}, {"expires_at":0}, {"issued_at":2**40},
@@ -76,6 +78,8 @@ def test_kernel_unavailable_is_failed_stage(worker):
     body, run, download, sandbox, table = worker
     sandbox.side_effect = IsolationError("unavailable")
     assert run()["status"] == "failed"
+    item = table.put_item.call_args.kwargs["Item"]
+    assert all(item[k] == body[k] for k in ("org_id", "team_id", "user_id"))
 
 
 def test_tampered_script_never_executes(worker):

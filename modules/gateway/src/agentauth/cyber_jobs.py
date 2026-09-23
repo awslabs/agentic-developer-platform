@@ -213,7 +213,8 @@ async def create_job(body: CyberRequest, request: Request, db: AsyncSession = De
 
 @router.post("/result")
 async def result(body: ResultRequest, request: Request, db: AsyncSession = Depends(get_db), clients=Depends(cyber_clients)):
-    *_, prefix = await caller(body, request, db)
+    authority = await caller(body, request, db)
+    org, user, teams, prefix = authority
     if not body.job_id.startswith(prefix):
         raise HTTPException(404, "not found")
     table = os.environ.get("CYBER_RESULTS_TABLE", "")
@@ -229,10 +230,17 @@ async def result(body: ResultRequest, request: Request, db: AsyncSession = Depen
             ScanIndexForward=False,
             Limit=1,
         )
+        # Membership can be revoked while the storage request is in flight.
+        if await caller(body, request, db) != authority:
+            raise HTTPException(403, "Cyber authority changed")
         items = response.get("Items", [])
         if not items:
             return JSONResponse({"status": "pending"}, headers={"Cache-Control": "no-store"})
         row = items[0]
+        # Legacy unscoped results fail closed. The scope is written by the
+        # trusted supervisor from the broker manifest, never by the analyzer.
+        if row.get("org_id", {}).get("S") != org or row.get("user_id", {}).get("S") != user or row.get("team_id", {}).get("S") not in teams:
+            raise HTTPException(404, "not found")
         return JSONResponse(
             {"status": row["status"]["S"], "stage": row["stage"]["S"], "findings": json.loads(row["findings"]["S"])},
             headers={"Cache-Control": "no-store"},

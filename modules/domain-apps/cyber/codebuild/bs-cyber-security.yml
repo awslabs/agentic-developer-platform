@@ -1,0 +1,12 @@
+version: 0.2
+# Uses the existing gateway project with its nonpublishing PR service role.
+# Never logs into ECR or uploads artifacts from an untrusted PR build.
+phases:
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        test -n "$ADP_SOURCE_SHA"
+        cd modules/domain-apps/cyber
+        docker build --pull --target security-test --build-arg IMAGE_TAG="$ADP_SOURCE_SHA" -f workers/Dockerfile -t cyber-worker-security .
+        docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 4g --tmpfs /tmp:rw,nosuid,nodev,size=256m cyber-worker-security

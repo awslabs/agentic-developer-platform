@@ -20,7 +20,7 @@ import sys
 
 from isolation import IsolationError, run_isolated
 
-from job_delivery import download_sample, registered_job
+from job_delivery import result_scope, download_sample, registered_job
 
 from sample_access import AccessDenied, job_context, resolve_sample
 
@@ -221,6 +221,7 @@ def _fail_stage(
     ddb.put_item(
         Item={
             "artifact_id": artifact_id,
+            **result_scope(json.loads(msg["Body"])),
             "stage_timestamp": f"triage#{ts}",
             "stage": "triage",
             "status": "failed",
@@ -311,6 +312,7 @@ def run() -> None:
     ddb.put_item(
         Item={
             "artifact_id": artifact_id,
+            **result_scope(body),
             "stage_timestamp": f"triage#{ts}",
             "stage": "triage",
             "status": "ok",

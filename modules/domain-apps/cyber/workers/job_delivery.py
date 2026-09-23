@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import requests
 
-from sample_access import AccessDenied, ObjectRef
+from sample_access import AccessDenied, ObjectRef, job_context
 
 
 def registered_job(body: dict, stage: str) -> None:
@@ -52,3 +52,12 @@ def download_sample(body: dict, ref: ObjectRef, dest: Path) -> None:
     except (ValueError, KeyError, TypeError, OSError, requests.RequestException):
         dest.unlink(missing_ok=True)
         raise AccessDenied("sample_capability_invalid") from None
+
+
+def result_scope(body: dict) -> dict[str, str]:
+    """Persist only the broker scope; malformed/legacy jobs stay unreadable."""
+    try:
+        ctx = job_context(body)
+    except AccessDenied:
+        return {}
+    return {"org_id": ctx.org_id, "team_id": ctx.team_id, "user_id": ctx.user_id}
