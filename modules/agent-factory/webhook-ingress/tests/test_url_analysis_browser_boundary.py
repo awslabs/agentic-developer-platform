@@ -52,6 +52,18 @@ def test_broker_uses_a_dedicated_port_consistently() -> None:
     assert "port     = 8080" not in worker_netpol
 
 
+def test_browser_deny_can_deploy_without_worker_authority_migration() -> None:
+    broker = (INFRA / "url-analysis-browser-broker.tf").read_text()
+    start = broker.index('resource "aws_iam_role_policy" "agent_scaledjob_browser_deny"')
+    policy = broker[start:broker.index('\nresource ', start + 1)]
+    assert 'role = aws_iam_role.agent_scaledjob.id' in policy
+    assert 'Effect   = "Deny"' in policy
+    assert 'Action   = ["bedrock-agentcore:*"]' in policy
+    assert 'Resource = "*"' in policy
+    assert 'Effect   = "Allow"' not in policy
+    assert 'agent_authority' not in policy
+
+
 def test_orchestration_cannot_select_raw_browser_path() -> None:
     for example in sorted((SKILL / "examples").glob("*.py")):
         tree = ast.parse(example.read_text())
