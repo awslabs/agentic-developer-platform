@@ -17,6 +17,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 APPLICATION_TEST_DATABASE_URL = "postgresql+asyncpg://localhost/superplane_offline_test"
 os.environ["DATABASE_URL"] = APPLICATION_TEST_DATABASE_URL
 
+# Verified database transport is now mandatory (issue #5676, A22), and
+# `app.database` builds its connect args at import time, so importing the
+# application without trust material is a refusal to start -- which is the
+# point of the fix. This suite has no certificate to verify because it never
+# connects to that URL at all (requests use the in-memory SQLite engine below),
+# so it takes the one documented local-only exception rather than shipping a
+# fixture CA that would look like real trust material.
+#
+# `setdefault`, not `=`: test_database_transport_tls.py clears both variables
+# per-test to exercise the fail-closed path, and must stay able to do so.
+os.environ.setdefault("SUPERPLANE_DATABASE_ALLOW_UNVERIFIED_LOCAL_TLS", "true")
+
 from app.database import Base, get_session  # noqa: E402
 from app.main import app  # noqa: E402
 

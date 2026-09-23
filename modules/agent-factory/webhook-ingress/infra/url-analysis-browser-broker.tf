@@ -13,6 +13,24 @@ locals {
   ]
 }
 
+# Independently deployable boundary for existing workers. The broader worker
+# policy also denies these APIs, but updating that policy can pull the separate
+# worker-authority migration into its dependency graph. Keep this deny owned by
+# the browser rollout so adopting the broker does not require that migration.
+resource "aws_iam_role_policy" "agent_scaledjob_browser_deny" {
+  name = "deny-direct-agentcore-browser"
+  role = aws_iam_role.agent_scaledjob.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "DenyDirectAgentCoreBrowser"
+      Effect   = "Deny"
+      Action   = ["bedrock-agentcore:*"]
+      Resource = "*"
+    }]
+  })
+}
+
 resource "aws_iam_policy" "url_analysis_browser_broker_boundary" {
   name = "${local.name_prefix}-url-analysis-browser-broker-boundary"
   policy = jsonencode({
@@ -101,6 +119,15 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
     }
     template {
       metadata {
+        # Auto-instrumentation preloads Node code into Playwright's private
+        # driver process and stalls startup. Preserve the driver's stdio protocol.
+        # This fixed Python service opts out; container logs remain available.
+        annotations = merge(
+          { for language in ["java", "nodejs", "python", "dotnet"] :
+          "cloudwatch.aws.amazon.com/auto-annotate-${language}" => "false" },
+          { for language in ["java", "nodejs", "python", "dotnet"] :
+          "instrumentation.opentelemetry.io/inject-${language}" => "false" }
+        )
         labels = {
           "app.kubernetes.io/name"      = "url-analysis-browser-broker"
           "app.kubernetes.io/part-of"   = "adp-agent-factory"

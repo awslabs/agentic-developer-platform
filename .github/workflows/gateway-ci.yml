@@ -355,7 +355,9 @@ jobs:
 
       - name: Run Vitest
         working-directory: modules/gateway/frontend
-        run: npx vitest run --reporter=verbose
+        # ARC requests two CPUs for this pod. Bound jsdom workers to that share
+        # instead of allowing host CPU discovery to oversubscribe the container.
+        run: npx vitest run --reporter=verbose --maxWorkers=2
 
   build:
     name: Build Container

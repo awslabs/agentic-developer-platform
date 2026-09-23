@@ -1022,6 +1022,18 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
       --secret-string "$INTERNAL_API_KEY" \
       --region "${AWS_REGION}"
   fi
+  # Issue #5656 (A05): dedicated signing key for single-use identity-linking
+  # ("magic link") tokens. src/shared/config.py no longer falls back to the
+  # session-signing key (BG_TOKEN_SECRET_KEY), so this must exist for the
+  # identity-linking endpoints to work — and because it is now separate, it can be
+  # replaced without signing every user out. Kept in step with the same block in
+  # .github/workflows/gateway-deploy.yml; the two paths drifted before (see the
+  # #2824 note above), and a key present on only one leaves the other path's
+  # environments answering 503 on identity linking.
+  # Rotation: docs/runbooks/gateway-secret-rotation.md
+  MAGIC_LINK_SM="adp/${ENVIRONMENT}/gateway/magic-link-secret"
+  MAGIC_LINK_SECRET=$(python3 "$ROOT_DIR/modules/gateway/scripts/ensure-signing-secret.py" \
+    --name "$MAGIC_LINK_SM" --region "$AWS_REGION")
   APIGW_PROVENANCE_SECRET=$(aws ssm get-parameter \
     --name "/adp/${ENVIRONMENT}/gateway/apigw-provenance-secret" \
     --with-decryption --query Parameter.Value --output text --region "$AWS_REGION" 2>/dev/null || echo "")
@@ -1033,6 +1045,7 @@ print(value[0]["address"] if isinstance(value, list) and value else value or "lo
     --from-literal=token-secret-key="$TOKEN_SECRET" \
     --from-literal=internal-api-key="$INTERNAL_API_KEY" \
     --from-literal=apigw-provenance-secret="$APIGW_PROVENANCE_SECRET" \
+    --from-literal=magic-link-secret="$MAGIC_LINK_SECRET" \
     -n adp-gateway --dry-run=client -o yaml | kubectl apply -f -
   COGNITO_CLI_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-cli-client-id" "")
   COGNITO_AGENT_CLIENT_ID=$(_get_ssm "/adp/${ENVIRONMENT}/gateway/cognito-agent-client-id" "")

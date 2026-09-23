@@ -8,6 +8,25 @@ Provides endpoints to:
 - Create, list, and manage research proposals
 - Auto-generate proposals from findings
 - Approve or reject proposals (human-in-the-loop)
+
+AUTHENTICATION (issue #5682, A02)
+---------------------------------
+Every route here reads or writes tenant data, so every route depends on
+``get_current_org`` and is therefore unreachable without a credential. That
+dependency is the load-bearing change: this router was the ONLY group of
+tenant-data routes wired to neither of the service's two identity mechanisms.
+The strict global guard in ``app/domain_guard.py`` closes these routes when
+``domain_auth_enforced`` is on, but that setting is off by default — and with it
+off the guard returns early, no other gate existed here, and all twelve routes
+answered anonymous callers with every organization's rows merged together.
+Verified against the shipping default before the fix.
+
+``get_current_org`` resolves the tenant from the guard's verified caller when
+strict mode is enforcing and from the legacy org-scoped token otherwise, so this
+router needs no mode-specific branch: in both modes the organization is
+server-derived, and in neither is it absent. The tenant scoping helpers below
+consequently take a required ``UUID`` rather than an optional one, so there is no
+argument value that turns the filter off.
 """
 
 import logging
@@ -19,6 +38,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
+from app.middleware.auth import get_current_org, get_current_user_context
 from app.models.research_finding import VALID_SOURCES, ResearchFinding
 from app.models.research_proposal import VALID_STATUSES, ResearchProposal
 from app.models.workspace import Workspace
@@ -46,60 +66,71 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
 
 
-def _recorded_actor(http_request: Request, body_value: str) -> str:
+def _recorded_actor(http_request: Request, user_context: dict) -> str:
     """The identity to record for an approval or rejection.
 
-    Issue #5055 (U14). Returns the VERIFIED principal's subject when domain
-    authorization is enforcing — the guard has already admitted the caller and
-    put it on ``request.state.caller``, and that subject comes entirely from
-    signature-verified token claims.
+    Issue #5682 (A02). NEVER the request body. Approving a proposal commits the
+    organization to work, so ``approved_by`` is the audit trail for that
+    commitment — and a body field is a claim the caller typed, not an identity.
+    Taking it meant the record could name anyone, which makes the audit trail
+    worse than absent: it reads as attribution while being caller-authored.
 
-    The body value is used only when enforcement is off, where there is no
-    verified caller to name and the legacy self-signed token carries no user
-    identity at all. That is a legacy-compatibility fallback for an unenforcing
-    deployment, NOT an authorization decision: it records who *claimed* to act,
-    and the route is unreachable without organization authority once enforcement
-    is on. Retiring that path is U21's conditional story.
+    Three sources, in descending strength, and every one of them is
+    server-derived:
+
+    1. The VERIFIED principal's subject, when strict domain authorization is
+       enforcing. The guard has already admitted the caller and published it on
+       ``request.state.caller``; that subject comes entirely from
+       signature-verified token claims.
+    2. The legacy org-scoped token's ``user_id`` claim, when it carries one. Still
+       a signed claim this server minted, so it is attribution rather than
+       assertion.
+    3. Failing both, the authenticated organization itself, recorded as
+       ``org:<uuid>``. Deliberately NOT the body value: the honest record is
+       "some holder of this organization's credential", which is exactly what the
+       legacy token proves and no more. An org-scoped credential carries no user
+       identity, and inventing one from the body is the defect this closes.
+
+    Unauthenticated callers never reach here — every route that calls this depends
+    on :func:`get_current_org`, which refuses a request with no credential.
     """
     caller = getattr(http_request.state, "caller", None)
     if caller is not None:
         return caller.principal.subject
-    return body_value
+    user_id = user_context.get("user_id")
+    if user_id is not None:
+        return str(user_id)
+    return f"org:{user_context['org_id']}"
 
 
-def _tenant_org_id(http_request: Request) -> UUID | None:
-    """Return the verified tenant when strict domain auth is enforcing.
-
-    The global domain guard publishes only a signature-verified caller.  The
-    legacy unenforced mode deliberately keeps its existing behaviour until U21;
-    strict mode must never infer tenant ownership from a query or request body.
-    """
-    caller = getattr(http_request.state, "caller", None)
-    if caller is None:
-        return None
-    return UUID(caller.principal.org_id)
-
-
-def _scope_to_tenant(query, model, org_id: UUID | None):
+def _scope_to_tenant(query, model, org_id: UUID):
     """Inner-join research rows to their server-held workspace tenant.
 
     An inner join intentionally excludes null, dangling, and otherwise unowned
     legacy rows.  Those rows cannot be exposed merely because strict auth has
     now been enabled.
+
+    Issue #5682 (A02): ``org_id`` is now non-optional. It previously accepted
+    ``None`` and returned the query UNFILTERED, which is how the unenforced
+    default served every organization's rows to any caller — the filter read as
+    present at every call site while matching nothing. The tenant is now always a
+    verified organization resolved by :func:`get_current_org`, so there is no
+    value of this argument that disables the join.
     """
-    if org_id is None:
-        return query
     return query.join(Workspace, Workspace.id == model.workspace_id).where(
         Workspace.org_id == org_id
     )
 
 
 async def _require_owned_workspace(
-    session: AsyncSession, org_id: UUID | None, workspace_id: UUID | None
+    session: AsyncSession, org_id: UUID, workspace_id: UUID | None
 ) -> None:
-    """Fail closed when a strict-mode write lacks tenant-owned workspace state."""
-    if org_id is None:
-        return
+    """Refuse a write whose target workspace this tenant does not own.
+
+    Issue #5682 (A02): no ``org_id is None`` early return any more. That branch
+    made every write unscoped in the default configuration, so a caller could
+    name any workspace in any organization and have the row created against it.
+    """
     if workspace_id is None:
         raise HTTPException(status_code=403, detail="workspace is not authorized")
     owned = await session.scalar(
@@ -124,14 +155,18 @@ async def list_findings(
     workspace_id: UUID | None = Query(None, description="Filter by workspace"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ResearchFindingsList:
     """List research findings with filtering and pagination.
 
     By default, low-relevance findings (<30) are excluded unless
     explicitly requested via min_relevance=0.
+
+    Scoped to the caller's organization (issue #5682, A02). The ``workspace_id``
+    query filter below NARROWS within that organization; it can never widen past
+    it, because the tenant join is applied first and is not caller-supplied.
     """
-    org_id = _tenant_org_id(http_request)
     query = _scope_to_tenant(select(ResearchFinding), ResearchFinding, org_id)
 
     # Apply filters
@@ -181,13 +216,18 @@ async def list_findings(
 @router.get("/findings/{finding_id}", response_model=ResearchFindingDetail)
 async def get_finding(
     finding_id: UUID,
-    http_request: Request,
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ResearchFindingDetail:
-    """Get a single research finding with full details including raw content."""
-    query = _scope_to_tenant(
-        select(ResearchFinding), ResearchFinding, _tenant_org_id(http_request)
-    ).where(ResearchFinding.id == finding_id)
+    """Get a single research finding with full details including raw content.
+
+    A finding belonging to another organization answers 404, not 403: the
+    response must not confirm that an id exists in a tenant the caller cannot
+    read.
+    """
+    query = _scope_to_tenant(select(ResearchFinding), ResearchFinding, org_id).where(
+        ResearchFinding.id == finding_id
+    )
     result = await session.execute(query)
     finding = result.scalar_one_or_none()
 
@@ -200,17 +240,19 @@ async def get_finding(
 @router.post("/scan", response_model=ScanResponse)
 async def trigger_scan(
     request: ScanRequest,
-    http_request: Request,
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ScanResponse:
     """Trigger a manual scan of external data sources.
 
     If sources are not specified, all sources are scanned.
-    This endpoint is also called by the scheduled cron/CloudWatch trigger.
+    This endpoint is also called by the scheduled cron/CloudWatch trigger, which
+    authenticates as an organization like any other caller.
+
+    A scan spends provider budget, so the target workspace must belong to the
+    caller's organization (issue #5682, A02).
     """
-    await _require_owned_workspace(
-        session, _tenant_org_id(http_request), request.workspace_id
-    )
+    await _require_owned_workspace(session, org_id, request.workspace_id)
 
     # Validate sources if provided
     if request.sources:
@@ -242,17 +284,31 @@ async def trigger_scan(
 
 @router.get("/stats", response_model=ScannerStatsResponse)
 async def scanner_stats(
-    http_request: Request,
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ScannerStatsResponse:
-    """Get aggregate statistics about scanner findings."""
-    stats = await get_scanner_stats(session, _tenant_org_id(http_request))
+    """Get aggregate statistics about scanner findings, for this tenant only.
+
+    Counts are as disclosive as rows: an unscoped total tells a caller how much
+    research every other organization is doing.
+    """
+    stats = await get_scanner_stats(session, org_id)
     return ScannerStatsResponse(**stats)
 
 
 @router.get("/sources")
-async def list_sources() -> dict:
-    """List all available scanner sources and their configurations."""
+async def list_sources(
+    org_id: UUID = Depends(get_current_org),
+) -> dict:
+    """List all available scanner sources and their configurations.
+
+    The response is the same for every tenant — a static description of the
+    scanner's capabilities, holding no tenant data. It still requires a
+    credential (issue #5682, A02) because it describes this deployment's
+    configured integrations, and because leaving one route of twelve open is how
+    the family stops being reviewable as a whole. It is NOT classified public:
+    the inventory's public class is for routes that cannot require a credential.
+    """
     from app.services.scanner_sources import ALL_SOURCES
 
     return {
@@ -275,15 +331,14 @@ async def list_sources() -> dict:
 
 @router.get("/proposals", response_model=ResearchProposalsList)
 async def list_proposals(
-    http_request: Request,
     status: str | None = Query(None, description="Filter by status"),
     workspace_id: UUID | None = Query(None, description="Filter by workspace"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalsList:
-    """List research proposals with filtering and pagination."""
-    org_id = _tenant_org_id(http_request)
+    """List research proposals for the caller's organization."""
     query = _scope_to_tenant(select(ResearchProposal), ResearchProposal, org_id)
 
     if status:
@@ -322,11 +377,10 @@ async def list_proposals(
 
 @router.get("/proposals/stats", response_model=ProposalStatsResponse)
 async def proposal_stats(
-    http_request: Request,
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ProposalStatsResponse:
-    """Get aggregate statistics about research proposals."""
-    org_id = _tenant_org_id(http_request)
+    """Get aggregate statistics about this tenant's research proposals."""
     total_q = await session.execute(
         _scope_to_tenant(
             select(func.count(ResearchProposal.id)), ResearchProposal, org_id
@@ -369,13 +423,17 @@ async def proposal_stats(
 @router.get("/proposals/{proposal_id}", response_model=ResearchProposalResponse)
 async def get_proposal(
     proposal_id: UUID,
-    http_request: Request,
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalResponse:
-    """Get a single research proposal with full details."""
-    query = _scope_to_tenant(
-        select(ResearchProposal), ResearchProposal, _tenant_org_id(http_request)
-    ).where(ResearchProposal.id == proposal_id)
+    """Get a single research proposal with full details.
+
+    Another tenant's proposal answers 404 rather than 403, so the response does
+    not confirm the id exists.
+    """
+    query = _scope_to_tenant(select(ResearchProposal), ResearchProposal, org_id).where(
+        ResearchProposal.id == proposal_id
+    )
     result = await session.execute(query)
     proposal = result.scalar_one_or_none()
 
@@ -388,19 +446,21 @@ async def get_proposal(
 @router.post("/proposals", response_model=ResearchProposalResponse, status_code=201)
 async def create_proposal(
     request: ProposalCreateRequest,
-    http_request: Request,
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalResponse:
     """Create a research proposal manually.
 
     Proposals start in 'proposed' status and require human approval
     before experiments begin.
+
+    The row's tenant comes from its workspace, so the named workspace must belong
+    to the caller's organization (issue #5682, A02) — otherwise a caller could
+    plant rows inside another tenant.
     """
     import uuid
 
-    await _require_owned_workspace(
-        session, _tenant_org_id(http_request), request.workspace_id
-    )
+    await _require_owned_workspace(session, org_id, request.workspace_id)
 
     # Convert source_findings UUIDs to strings for JSONB storage
     source_finding_ids = (
@@ -439,7 +499,7 @@ async def create_proposal(
 @router.post("/proposals/generate", response_model=ProposalGenerateResponse)
 async def generate_proposals_endpoint(
     request: ProposalGenerateRequest,
-    http_request: Request,
+    org_id: UUID = Depends(get_current_org),
     session: AsyncSession = Depends(get_session),
 ) -> ProposalGenerateResponse:
     """Auto-generate research proposals from scanner findings.
@@ -447,10 +507,11 @@ async def generate_proposals_endpoint(
     The analysis agent reviews findings with relevance_score >= min_relevance,
     groups them into themes, and generates actionable proposals with cost
     estimates and experiment plans.
+
+    Generation reads findings and writes proposals inside one workspace, so that
+    workspace must belong to the caller's organization (issue #5682, A02).
     """
-    await _require_owned_workspace(
-        session, _tenant_org_id(http_request), request.workspace_id
-    )
+    await _require_owned_workspace(session, org_id, request.workspace_id)
 
     logger.info(
         "Generating proposals: min_relevance=%d, max_proposals=%d, workspace=%s",
@@ -482,6 +543,7 @@ async def approve_proposal(
     proposal_id: UUID,
     request: ProposalApproveRequest,
     http_request: Request,
+    user_context: dict = Depends(get_current_user_context),
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalResponse:
     """Approve a research proposal for execution.
@@ -489,15 +551,21 @@ async def approve_proposal(
     Only proposals in 'proposed' status can be approved.
     Approved proposals move to the experiment queue (US-G4).
 
-    Issue #5055 (U14): the recorded approver is the VERIFIED principal, not the
-    ``approved_by`` field in the request body. Previously this wrote the body
-    value straight to ``proposal.approved_by``, so the audit record said whatever
-    the caller typed — on a route that also had no authentication at all. Body
-    fields never carry authority; see ``_recorded_actor``.
+    The recorded approver is always server-derived, never the ``approved_by``
+    field in the request body (issues #5055 and #5682). This previously wrote the
+    body value straight to ``proposal.approved_by`` whenever strict enforcement
+    was off — which was the default — so the audit record said whatever the caller
+    typed, on a route that also required no credential at all. Body fields never
+    carry authority; see ``_recorded_actor`` for the three server-derived sources
+    it uses instead.
+
+    ``user_context`` rather than a bare org id because approval is the one action
+    here worth attributing to a user when the credential names one.
     """
-    query = _scope_to_tenant(
-        select(ResearchProposal), ResearchProposal, _tenant_org_id(http_request)
-    ).where(ResearchProposal.id == proposal_id)
+    org_id = user_context["org_id"]
+    query = _scope_to_tenant(select(ResearchProposal), ResearchProposal, org_id).where(
+        ResearchProposal.id == proposal_id
+    )
     result = await session.execute(query)
     proposal = result.scalar_one_or_none()
 
@@ -511,7 +579,7 @@ async def approve_proposal(
             f"Only proposals in 'proposed' status can be approved.",
         )
 
-    approver = _recorded_actor(http_request, request.approved_by)
+    approver = _recorded_actor(http_request, user_context)
 
     proposal.status = "approved"
     proposal.approved_by = approver
@@ -539,18 +607,18 @@ async def reject_proposal(
     proposal_id: UUID,
     request: ProposalRejectRequest,
     http_request: Request,
+    user_context: dict = Depends(get_current_user_context),
     session: AsyncSession = Depends(get_session),
 ) -> ResearchProposalResponse:
     """Reject a research proposal.
 
     Only proposals in 'proposed' or 'approved' status can be rejected.
 
-    Issue #5055 (U14): the logged rejector is the verified principal rather than
-    the body's ``rejected_by``, for the same reason as approval — a body field
-    is a claim, not an identity.
+    The logged rejector is server-derived rather than the body's ``rejected_by``,
+    for the same reason as approval — a body field is a claim, not an identity.
     """
     query = _scope_to_tenant(
-        select(ResearchProposal), ResearchProposal, _tenant_org_id(http_request)
+        select(ResearchProposal), ResearchProposal, user_context["org_id"]
     ).where(ResearchProposal.id == proposal_id)
     result = await session.execute(query)
     proposal = result.scalar_one_or_none()
@@ -575,7 +643,7 @@ async def reject_proposal(
         "Proposal rejected: %s (%s) by %s — %s",
         proposal.title,
         proposal.id,
-        _recorded_actor(http_request, request.rejected_by),
+        _recorded_actor(http_request, user_context),
         request.reason or "no reason",
     )
 

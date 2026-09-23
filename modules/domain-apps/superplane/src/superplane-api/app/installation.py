@@ -106,7 +106,10 @@ async def database_check(
     if verify_role_default:
         # SkyPilot uses a different driver. Verify the server-side role default,
         # rather than assuming asyncpg's per-connection override applies to it.
-        raw_engine = create_async_engine(require_database_url(), connect_args=connect_args(""))
+        raw_engine = create_async_engine(
+            require_database_url(),
+            connect_args=connect_args("", require_database_url()),
+        )
         try:
             async with raw_engine.connect() as raw:
                 actual = (

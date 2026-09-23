@@ -13,7 +13,7 @@ from superplane_contracts.emission import install_log_redaction, redact_spans, s
 
 from app.auth import build_domain_policy
 from app.composition import Composition, compose
-from app.config import require_database_url, settings
+from app.config import require_database_url, resolve_cors_origins, settings
 from app.database import async_session_factory
 from app.domain_guard import enforce_domain_authorization
 from app.management import enforce_management_surface, management_only
@@ -206,10 +206,12 @@ app = FastAPI(
 app.state.domain_policy = build_domain_policy()
 app.include_router(controller_management_router)
 
-# CORS middleware
+# Validate the browser origin allowlist at import, before serving requests.
+# Preserve the existing credentialed CORS contract for explicitly reviewed origins;
+# bearer-token verification remains the authentication boundary.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=resolve_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

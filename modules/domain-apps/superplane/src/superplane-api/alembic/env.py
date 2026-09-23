@@ -65,7 +65,9 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        connect_args=connect_args(settings.superplane_db_schema),
+        connect_args=connect_args(
+            settings.superplane_db_schema, require_database_url()
+        ),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

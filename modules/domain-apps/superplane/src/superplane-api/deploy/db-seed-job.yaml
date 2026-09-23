@@ -36,6 +36,28 @@ spec:
                   name: superplane-api-db
                   key: DATABASE_URL
                   optional: false
+            # Verified transport for the seed path (issue #5676, A22), supplied
+            # DIFFERENTLY from the service and the migration job, and the
+            # difference is the point rather than an inconsistency.
+            #
+            # This container runs `psql`, which is libpq, not asyncpg. libpq
+            # does not read SUPERPLANE_DATABASE_CA and cannot take a CA from an
+            # environment variable at all — it wants a FILE and a mode. So the
+            # bundle is mounted from the same `ca-pem` key the other two read
+            # (one source of truth, so a rotated bundle reaches all three), and
+            # pointed at with the two variables libpq does understand.
+            #
+            # `verify-full` is the mode that checks BOTH the certificate chain
+            # and the hostname. `require` would encrypt while verifying
+            # neither, which is the posture this story exists to remove.
+            - name: PGSSLMODE
+              value: verify-full
+            - name: PGSSLROOTCERT
+              value: /database-ca/ca.pem
+          volumeMounts:
+            - name: database-ca
+              mountPath: /database-ca
+              readOnly: true
           command:
             - sh
             - -c
@@ -91,3 +113,13 @@ spec:
             limits:
               cpu: 200m
               memory: 128Mi
+      volumes:
+        # Same `ca-pem` key the API and migration job read as an env var, mounted
+        # as a file here because libpq requires a path (issue #5676, A22).
+        - name: database-ca
+          secret:
+            secretName: superplane-api-db
+            items:
+              - key: ca-pem
+                path: ca.pem
+            optional: false
