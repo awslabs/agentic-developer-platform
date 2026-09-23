@@ -10,8 +10,31 @@ class EventResponse(BaseModel):
     """Single audit event representation."""
 
     id: uuid.UUID
-    org_id: uuid.UUID
-    user_id: str | None = None
+    # Optional since #5673 (A17): an attempt rejected before any identity was established
+    # has no tenant to attribute. Such rows are not reachable through the tenant-scoped
+    # `GET /events` listing, but the field is optional so the shape matches the model.
+    org_id: uuid.UUID | None = None
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Legacy actor column. On rows written before #5673 this holds an "
+            "ORGANIZATION id, not a person; read `principal` for who acted."
+        ),
+    )
+    principal: str | None = Field(
+        default=None,
+        description=(
+            "Who acted: the verified principal, or 'unresolved' when no identity was "
+            "established. Null on rows predating #5673."
+        ),
+    )
+    outcome: str | None = Field(
+        default=None,
+        description=(
+            "'allowed' or 'denied'. Null on rows predating #5673, which recorded "
+            "successes only -- null must not be read as 'allowed'."
+        ),
+    )
     action: str = Field(description="Action verb: created, updated, deleted, read")
     resource_type: str = Field(
         description="Resource type: workspace, credential, deployment, etc."

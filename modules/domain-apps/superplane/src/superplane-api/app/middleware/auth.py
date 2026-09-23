@@ -186,6 +186,30 @@ def _verified_org_id(request: Request) -> uuid.UUID | None:
         ) from exc
 
 
+def _publish_audit_identity(request: Request, token_data: TokenPayload) -> None:
+    """Publish the identity this decoder just VERIFIED, for the audit middleware.
+
+    Issue #5673 (A17). The audit middleware used to decode the `Authorization` header
+    itself, which is why it recorded nothing under enforcement: it re-derived identity
+    with a validator that cannot read the tokens enforced environments issue. It now reads
+    verified state only, so the legacy path has to hand its result over rather than leave
+    the middleware to repeat the work.
+
+    Published only AFTER `decode_token` returned, so a request reaching this line has a
+    signature-checked token. Nothing here comes from unverified header text.
+
+    `user_id` is the acting person and is optional in this token shape, so it may be
+    absent; the org is always present. When only the org is known the middleware records
+    the principal as unresolved rather than falling back to the org identifier -- naming
+    the tenant in the actor column is defect 3 in the middleware's own docstring, and
+    reintroducing it here would move the bug rather than fix it.
+    """
+    request.state.audit_org_id = token_data.org_id
+    request.state.audit_principal = (
+        str(token_data.user_id) if token_data.user_id is not None else None
+    )
+
+
 async def get_current_org(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
@@ -206,7 +230,9 @@ async def get_current_org(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return decode_token(credentials.credentials).org_id
+    token_data = decode_token(credentials.credentials)
+    _publish_audit_identity(request, token_data)
+    return token_data.org_id
 
 
 async def get_current_user_context(
@@ -237,6 +263,7 @@ async def get_current_user_context(
             headers={"WWW-Authenticate": "Bearer"},
         )
     token_data = decode_token(credentials.credentials)
+    _publish_audit_identity(request, token_data)
     return {
         "org_id": token_data.org_id,
         "user_id": token_data.user_id,
