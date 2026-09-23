@@ -112,6 +112,20 @@ jobs:
       group: adp-deployment
       labels: arc-runner-deployment
     steps:
+      - name: Guard engine delivery revisions
+        env:
+          ADP_CORRELATION: ${{ inputs.adp_correlation }}
+          ADP_SOURCE: ${{ inputs.adp_source_revision }}
+          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
+          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
+            [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
+            [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test "$ACTUAL_DEFINITION" = "$ADP_DEFINITION"
+          fi
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
@@ -129,20 +143,6 @@ jobs:
           role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
 
-      - name: Guard engine delivery revisions
-        env:
-          ADP_CORRELATION: ${{ inputs.adp_correlation }}
-          ADP_SOURCE: ${{ inputs.adp_source_revision }}
-          ADP_DEFINITION: ${{ inputs.adp_definition_revision }}
-          ACTUAL_DEFINITION: ${{ github.workflow_sha }}
-        run: |
-          set -euo pipefail
-          if [ -n "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION" ]; then
-            [[ "$ADP_CORRELATION" =~ ^[0-9a-f]{64}$ ]] || exit 1
-            [[ "$ADP_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
-            [[ "$ADP_DEFINITION" =~ ^[0-9a-f]{40}$ ]] || exit 1
-            test "$ACTUAL_DEFINITION" = "$ADP_DEFINITION"
-          fi
       - name: Load deployment config
         uses: ./.github/actions/load-deploy-config
         with:
