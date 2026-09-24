@@ -73,6 +73,8 @@ function nowTimestamp(): string {
  * nothing between a request and its reply.
  */
 class StdioHost implements HostBridge {
+  private readonly admittedTurns = new Map<string, string>();
+
   private readonly pendingModel = new Map<
     string,
     {
@@ -107,8 +109,8 @@ class StdioHost implements HostBridge {
     // host's durable write.
   }
 
-  async model(request: { messages: unknown[]; system: string; maxTokens: number }): Promise<ModelOutcome> {
-    const turnId = newId();
+  async model(request: { messages: unknown[]; system: string; maxTokens: number; turnId?: string }): Promise<ModelOutcome> {
+    const turnId = request.turnId ?? newId();
     return await new Promise<ModelOutcome>((resolve, reject) => {
       this.pendingModel.set(turnId, { resolve, reject });
       this.write({
@@ -168,6 +170,13 @@ class StdioHost implements HostBridge {
         return;
       }
       case 'turn': {
+        const digest = JSON.stringify({ turn_number: frame.turn_number, messages: frame.messages });
+        const prior = this.admittedTurns.get(frame.turn_id);
+        if (prior !== undefined) {
+          if (prior !== digest) throw new ProtocolViolation('replayed turn has different content');
+          return;
+        }
+        this.admittedTurns.set(frame.turn_id, digest);
         // Follow-up input. Each command must be queued exactly once, so there is
         // one queueing path per message rather than two: either it answers an
         // outstanding clarification — in which case the waiting investigation
@@ -179,6 +188,8 @@ class StdioHost implements HostBridge {
             kind: 'steering',
             text: message.text,
             command_id: message.command_id,
+            turn_id: frame.turn_id,
+            turn_number: frame.turn_number,
           };
 
           const replyTo = message.reply_to;
@@ -413,7 +424,11 @@ async function main(): Promise<number> {
         fail(new ProtocolViolation(`frame task_id does not match the started task`));
         return;
       }
-      host.accept(frame);
+      try {
+        host.accept(frame);
+      } catch (error) {
+        fail(error);
+      }
     });
 
     lines.on('close', () => {

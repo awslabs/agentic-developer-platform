@@ -459,3 +459,18 @@ describe('follow-up admission races at completion', () => {
     }, control), isControlCancellation);
   });
 });
+
+test('separately assigned logical turns are not collapsed into one model request', async () => {
+  const control = new TaskControlAdapter();
+  control.admit({kind: 'steering', text: 'First assigned turn', command_id: 'command-1', turn_id: 'turn-1', turn_number: 1});
+  control.admit({kind: 'steering', text: 'Second assigned turn', command_id: 'command-2', turn_id: 'turn-2', turn_number: 2});
+  const { host } = scriptedHost([{status: 'confirmed', text: GOOD_REPORT}, {status: 'confirmed', text: GOOD_REPORT}]);
+  const observed: Array<{turnId: string | undefined; messages: unknown[]}> = [];
+  await investigate(startWithNamedArtifact(), {...host, async model(request) {
+    observed.push({turnId: request.turnId, messages: structuredClone(request.messages)});
+    return host.model(request);
+  }}, control);
+  assert.deepEqual(observed.map(call => call.turnId), ['turn-1', 'turn-2']);
+  assert.doesNotMatch(JSON.stringify(observed[0]?.messages), /Second assigned turn/);
+  assert.deepEqual(control.consumedCommandIds(), ['command-1', 'command-2']);
+});

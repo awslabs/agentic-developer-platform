@@ -41,6 +41,9 @@ export interface ControlInput {
   text: string;
   /** Command id from the durable journal, when the input came from a command. */
   command_id?: string;
+  /** Gateway-assigned logical turn; retained through model handoff. */
+  turn_id?: string;
+  turn_number?: number;
 }
 
 /**
@@ -193,8 +196,9 @@ export class TaskControlAdapter {
    */
   takeUnconsumed(): ControlInput[] {
     const pending: ControlInput[] = [];
+    const assignedTurn = this.queue.find((entry) => !entry.consumed)?.input.turn_id;
     for (const entry of this.queue) {
-      if (!entry.consumed) {
+      if (!entry.consumed && entry.input.turn_id === assignedTurn) {
         entry.consumed = true;
         pending.push(entry.input);
       }

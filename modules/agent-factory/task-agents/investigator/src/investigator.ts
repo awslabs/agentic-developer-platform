@@ -57,7 +57,7 @@ export interface HostBridge {
    * admission, and a child able to name them could move spend and data residency
    * outside the platform's control.
    */
-  model(request: { messages: unknown[]; system: string; maxTokens: number }): Promise<ModelOutcome>;
+  model(request: { messages: unknown[]; system: string; maxTokens: number; turnId?: string }): Promise<ModelOutcome>;
   /** Ask the caller a question and wait for the answer, or for the wait to end. */
   askCaller(prompt: string): Promise<ControlInput | null>;
 }
@@ -266,7 +266,8 @@ export async function investigate(
     }
 
     turnsRequested += 1;
-    const result = await host.model({ messages, system: SYSTEM_PROMPT, maxTokens });
+    const result = await host.model({ messages, system: SYSTEM_PROMPT, maxTokens,
+      ...(pending[0]?.turn_id === undefined ? {} : { turnId: pending[0].turn_id }) });
 
     if (result.status === 'unknown') {
       // Not retried and not downgraded to a partial success. The outcome is

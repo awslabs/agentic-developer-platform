@@ -167,15 +167,18 @@ describe('embedded run over the real process protocol', () => {
         if (frame['type'] !== 'model.request') return;
         calls += 1;
         if (calls === 1) {
-          send({
+          const followUp = {
             protocol_version: 1, type: 'turn',
             request_id: '809517ec-8674-49fd-9583-aa5d98cb765f',
             task_id: frame['task_id'],
             turn_id: '9a734313-2f31-484b-9349-d52c41ad2497',
             turn_number: 2,
             messages: [{ command_id: 'f6071829-3a4b-4c5d-9f70-819203142536', text: 'Check the revised window.' }],
-          });
+          };
+          send(followUp);
+          send(followUp); // transport replay must not create a second logical turn
         } else {
+          assert.equal(frame['turn_id'], '9a734313-2f31-484b-9349-d52c41ad2497');
           assert.match(JSON.stringify(frame['messages']), /Check the revised window/);
         }
         confirmModel(frame, send, REPORT_JSON);
