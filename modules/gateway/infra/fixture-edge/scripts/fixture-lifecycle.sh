@@ -1822,6 +1822,71 @@ EOF
 # ===========================================================================
 # verify
 # ===========================================================================
+
+# Refuse a --human-probe-path the fixture ALB does not publish.
+#
+# WHY THIS IS A REFUSAL AND NOT A NOTE
+# ------------------------------------
+# The positive control exists to prove the human plane REACHES the gateway. If the
+# path is not published, the ALB answers from its listener default action and the
+# probe reports 404 -- which this script then has to call a failure, because from
+# the response alone it cannot tell "the edge is misrouting human traffic" from
+# "you asked for a path that does not exist". Both are red, and only one is a real
+# defect. Checking the path up front turns an ambiguous failure into an exact one.
+#
+# The permitted set is READ OUT OF THE TEMPLATE, not hardcoded here. A second
+# hardcoded list is a drift source: adding a rule to fixture-alb.yaml.tmpl without
+# updating this function would reject a path that genuinely works, and removing a
+# rule would let the probe sail through to the 404 this exists to pre-empt.
+assert_human_probe_path_is_published() {   # <probe-path>
+  local probe="$1"
+  local tmpl="$ROOT_DIR/fixture-alb.yaml.tmpl"
+  [ -f "$tmpl" ] || fail "cannot find $tmpl, so the published path set is unknown.
+     Refusing to probe a path that cannot be checked against what the fixture ALB
+     actually serves."
+  python3 - "$tmpl" "$probe" <<'PY' || fail "--human-probe-path is not served by the fixture ALB (see above)."
+import re, sys
+
+template_path, probe = sys.argv[1], sys.argv[2]
+text = open(template_path).read()
+
+# Match the rule entries only: "- path: X" followed by its pathType. Comments in
+# this template legitimately mention paths in prose (/me/budget, /auth/me), so a
+# bare search for the string would accept a path that is discussed but not served.
+rules = re.findall(r"^\s*-\s*path:\s*(\S+)\s*\n\s*pathType:\s*(\S+)\s*$", text, re.M)
+if not rules:
+    print(f"  [FAIL] no path rules found in {template_path}; cannot confirm what the "
+          f"fixture ALB publishes.", file=sys.stderr)
+    sys.exit(1)
+
+for path, kind in rules:
+    if kind == "Exact" and probe == path:
+        sys.exit(0)
+    # Prefix semantics are SEGMENT-wise: "/me" matches /me and /me/budget, but must
+    # not match /members. Matching on str.startswith would admit the latter, and the
+    # probe would then 404 for exactly the reason this check exists to rule out.
+    if kind == "Prefix" and (probe == path or probe.startswith(path.rstrip("/") + "/")):
+        sys.exit(0)
+
+served = ", ".join(f"{p} ({k})" for p, k in rules)
+print(f"  [FAIL] --human-probe-path {probe!r} is not published by the fixture ALB.",
+      file=sys.stderr)
+print(f"         Published: {served}", file=sys.stderr)
+print("         The probe would hit the listener's default action and return 404,",
+      file=sys.stderr)
+print("         which is indistinguishable from the edge misrouting human traffic.",
+      file=sys.stderr)
+print("         Use /health (expect 200) or /me/budget (expect 401 unsigned). Do not",
+      file=sys.stderr)
+print("         include the stage name or an /api prefix: the invoke URL's stage root",
+      file=sys.stderr)
+print("         is already stripped and no CloudFront sits in front of this ALB.",
+      file=sys.stderr)
+sys.exit(1)
+PY
+  ok "human probe path $probe is published by the fixture ALB"
+}
+
 cmd_verify() {
   require_nonce; require_account
   assert_live_account
@@ -1984,6 +2049,13 @@ except Exception:
   # resource policy, which is the defect area 2 fixed.
   if [ -n "$HUMAN_PROBE_PATH" ]; then
     local base="${endpoint%/internal/v1/agent}"
+    # The path must be one the fixture ALB PUBLISHES, checked before the request.
+    # Otherwise the probe 404s at the ALB's default action and the operator reads
+    # that as "the human plane is broken" -- when the truth is "you asked for a path
+    # this backend does not serve". `base` is already the stage root, so the path
+    # here is forwarded to the ALB verbatim: no stage prefix and no CloudFront-style
+    # `/api` prefix belong in it.
+    assert_human_probe_path_is_published "$HUMAN_PROBE_PATH"
     code="$(curl -s -o /dev/null -w '%{http_code}' "${base}${HUMAN_PROBE_PATH}" || echo 000)"
     case "$code" in
       200|401)
@@ -1998,17 +2070,24 @@ except Exception:
         printf '         authenticate. The Deny must stay scoped to /internal.\n' >&2
         failures=1 ;;
       404)
-        printf '  [FAIL] human route %s -> 404. The fixture ALB does not publish this path,\n' "$HUMAN_PROBE_PATH" >&2
-        printf '         so human session/control traffic hits the default action.\n' >&2
+        printf '  [FAIL] human route %s -> 404 even though the fixture ALB template\n' "$HUMAN_PROBE_PATH" >&2
+        printf '         publishes this prefix. Either the Ingress in front of this edge is not\n' >&2
+        printf '         the one this component renders (check the AdpFixtureRun tag), or the\n' >&2
+        printf '         fixture pod does not serve the route. Human session traffic is hitting\n' >&2
+        printf '         the listener default action.\n' >&2
         failures=1 ;;
       *)
         printf '  [FAIL] human route %s -> %s (expected 200 or 401)\n' "$HUMAN_PROBE_PATH" "$code" >&2
         failures=1 ;;
     esac
   else
-    printf '  [FAIL] human positive control NOT RUN: pass --human-probe-path (e.g.\n' >&2
-    printf '         /%s/api/health). Refusals alone cannot tell a correctly restricted\n' "$ENVIRONMENT" >&2
-    printf '         edge from one that refuses everything.\n' >&2
+    printf '  [FAIL] human positive control NOT RUN: pass --human-probe-path. Use a path\n' >&2
+    printf '         the fixture ALB publishes and the gateway routes -- /health (liveness,\n' >&2
+    printf '         expect 200) or /me/budget (#3968 session endpoint, expect 401 unsigned).\n' >&2
+    printf '         NOT /%s/... and NOT /api/...: the stage root is already stripped and\n' "$ENVIRONMENT" >&2
+    printf '         this ALB has no CloudFront /api prefix in front of it.\n' >&2
+    printf '         Refusals alone cannot tell a correctly restricted edge from one that\n' >&2
+    printf '         refuses everything.\n' >&2
     failures=1
   fi
 

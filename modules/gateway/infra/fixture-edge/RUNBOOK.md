@@ -121,6 +121,13 @@ verifies on the **live** resource that the scheme really is `internal` and the
 `AdpFixtureRun` tag really is this nonce — the tag the Terraform gate refuses to plan
 without. It prints `fixture_alb_arn` and `expected_vpc_id` for step 3.
 
+The Ingress publishes **both** planes the edge routes — `/internal` for the trusted
+plane plus `/me`, `/auth` and liveness for human sessions. An earlier revision served
+`/internal` alone, which left the edge's auth-`NONE` route forwarding to a listener
+default action: the human-plane positive control in step 6 could not pass, because the
+backend published nothing for it to reach. See
+[the human probe path](#the-human-probe-path-must-be-one-the-fixture-alb-publishes).
+
 No file under `platform/scripts/operator/wave2/` is modified. An Ingress is an
 ordinary uid-bearing Kubernetes object, so #3968's existing `k8s` ledger bucket and
 uid-gated delete path already cover its teardown; no new ledger type was needed.
@@ -447,10 +454,44 @@ the gateway (200/401/403 *from the application*), **not** refused by the edge.
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
-  "https://${API_ID}.execute-api.us-east-1.amazonaws.com/dev/api/health"
+  "https://${API_ID}.execute-api.us-east-1.amazonaws.com/dev/health"
 # EXPECT a normal application response, NOT an edge refusal. If this is refused by
 # API Gateway, the Deny has regressed to API-wide and human sign-in is broken.
 ```
+
+### The human probe path must be one the fixture ALB publishes
+
+`/dev/health`, **not** `/dev/api/health`. Two independent reasons, and an earlier
+revision of this runbook (and of the test suite) got both wrong, so the positive
+control it documented would have returned 404 against a real edge:
+
+* **No `/api` prefix.** That prefix belongs to the ordinary front door, where
+  CloudFront strips it before the ALB. There is no CloudFront in front of a fixture
+  edge, so `/api/...` reaches the ALB literally and matches no rule.
+* **The stage root is already accounted for.** `/dev` here is the API Gateway stage;
+  everything after it is forwarded to the ALB unchanged. `verify` takes the path
+  *after* the stage, so `--human-probe-path` is `/health`, never `/dev/health`.
+
+The paths the fixture ALB serves are enumerated in `fixture-alb.yaml.tmpl`, and each
+is traced to the router that actually mounts it:
+
+| Path | Match | Serves |
+|------|-------|--------|
+| `/internal` | Prefix | the trusted plane — reachable **only** through the `AWS_IAM` route |
+| `/me` | Prefix | `/me/budget`, #3968's session probe endpoint. Mounted on a **prefix-less** `APIRouter` in `src/budget/me_routes.py`, so `/me` is the prefix to publish |
+| `/auth` | Prefix | `src/auth/routes.py` (`APIRouter(prefix="/auth")`), including `/auth/me` |
+| `/health`, `/ready` | Exact | liveness, registered at the app root in `src/app.py` |
+
+`verify` refuses an unpublished `--human-probe-path` **before** sending anything,
+reading the permitted set out of the template rather than a second hardcoded list
+that could drift from it. That refusal is not pedantry: an unpublished path answers
+from the listener's default action, and the resulting 404 is indistinguishable from
+the edge misrouting human traffic — one is an operator typo, the other is the defect
+this control exists to detect.
+
+There is deliberately **no `/` rule**. A catch-all would forward every path the pod
+serves — `/internal` included — to a target group the auth-`NONE` route also reaches,
+i.e. an unsigned path to the internal API, destroying the isolation argument.
 
 Expected: **403 for 1–4, and a normal application response for 5.** Capture each
 status code plus its attributed layer as evidence. A `200` on 1–4, or an edge refusal

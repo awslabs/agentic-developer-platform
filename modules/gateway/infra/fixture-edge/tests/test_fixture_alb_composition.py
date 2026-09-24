@@ -253,14 +253,101 @@ def test_listens_only_on_the_port_the_vpc_link_permits(harness):
     assert json.loads(ann["alb.ingress.kubernetes.io/listen-ports"]) == [{"HTTP": 80}]
 
 
-def test_serves_only_the_internal_plane_to_the_fixture_service(harness):
-    r = harness.run()
-    assert r.returncode == 0, r.stderr
+def published_paths(harness):
+    """{path: pathType} for every rule the rendered Ingress publishes."""
     rules = rendered(harness)["spec"]["rules"]
     paths = [p for rule in rules for p in rule["http"]["paths"]]
-    assert [p["path"] for p in paths] == ["/internal"]
-    assert paths[0]["backend"]["service"]["name"] == SERVICE
-    assert paths[0]["backend"]["service"]["port"]["number"] == 80
+    return {p["path"]: p["pathType"] for p in paths}
+
+
+def test_serves_the_internal_plane_to_the_fixture_service(harness):
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    assert published_paths(harness).get("/internal") == "Prefix"
+    rules = rendered(harness)["spec"]["rules"]
+    internal = [
+        p
+        for rule in rules
+        for p in rule["http"]["paths"]
+        if p["path"] == "/internal"
+    ][0]
+    assert internal["backend"]["service"]["name"] == SERVICE
+    assert internal["backend"]["service"]["port"]["number"] == 80
+
+
+def test_publishes_the_human_session_paths_the_edge_actually_routes(harness):
+    """The edge has TWO routes; serving only /internal made one of them dead.
+
+    ../main.tf forwards `/{proxy+}` at auth NONE to this same ALB for human
+    sessions. When the ALB published only /internal, a human request that API
+    Gateway correctly admitted reached the listener's default action and came back
+    404 -- indistinguishable, from the operator's side, from "the human plane is
+    refusing me". So the human-plane control could not be demonstrated at all.
+
+    The paths are the ones the pod's routers really mount: /me/budget is served by
+    the PREFIX-LESS APIRouter in src/budget/me_routes.py (so the prefix to publish
+    is /me, and it is #3968's session probe endpoint), and src/auth/routes.py is
+    APIRouter(prefix="/auth").
+    """
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    paths = published_paths(harness)
+    for human in ("/me", "/auth"):
+        assert paths.get(human) == "Prefix", (
+            f"{human} is not published, so the auth-NONE human route forwards here "
+            f"and 404s: {sorted(paths)}"
+        )
+
+
+def test_publishes_liveness_as_an_exact_path_for_the_human_positive_control(harness):
+    """`verify` needs one unauthenticated path proving the human plane reaches the
+    pod: observing only refusals cannot distinguish a correctly-restricted edge
+    from one that refuses everything.
+
+    Exact, not Prefix: /health and /ready are single routes at the app root
+    (src/app.py:411-418), and a Prefix rule would also admit everything below them.
+    """
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    paths = published_paths(harness)
+    assert paths.get("/health") == "Exact", sorted(paths)
+    assert paths.get("/ready") == "Exact", sorted(paths)
+
+
+def test_never_publishes_a_catch_all_that_would_strip_sigv4_from_internal(harness):
+    """The isolation argument is that /internal is reachable ONLY via the AWS_IAM
+    route. A `/` Prefix rule here would forward every path the pod serves --
+    /internal included -- to a target group the auth-NONE route also reaches, i.e.
+    an unsigned path to the internal API. Enumerated prefixes, never a catch-all.
+    """
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    paths = published_paths(harness)
+    assert "/" not in paths, f"catch-all rule published: {sorted(paths)}"
+    for path, kind in paths.items():
+        assert path.startswith("/") and len(path) > 1, f"over-broad rule {path!r}"
+        assert kind in ("Prefix", "Exact"), f"{path} has pathType {kind!r}"
+
+
+def test_publishes_exactly_the_reviewed_path_set_and_nothing_else(harness):
+    """Pinned as a SET, so adding a surface to the template is a test change and not
+    a silent widening of what the fixture exposes. Every rule must also terminate at
+    the fixture's own Service -- a rule pointing elsewhere would make the edge
+    measure some other backend while the artifact says 'fixture'.
+    """
+    r = harness.run()
+    assert r.returncode == 0, r.stderr
+    assert published_paths(harness) == {
+        "/internal": "Prefix",
+        "/me": "Prefix",
+        "/auth": "Prefix",
+        "/health": "Exact",
+        "/ready": "Exact",
+    }
+    rules = rendered(harness)["spec"]["rules"]
+    for p in (p for rule in rules for p in rule["http"]["paths"]):
+        assert p["backend"]["service"]["name"] == SERVICE, p
+        assert p["backend"]["service"]["port"]["number"] == 80, p
 
 
 def test_no_placeholder_survives_into_the_manifest(harness):

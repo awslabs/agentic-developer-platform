@@ -110,11 +110,95 @@ spec:
   rules:
     - http:
         paths:
-          # Only the internal plane is served, mirroring the ordinary
-          # internal-plane Ingress. Anything else falls through to the listener's
-          # default 404, so this ALB deliberately exposes no other surface.
+          # ===================================================================
+          # THE TWO PLANES THE EDGE PUBLISHES, AND WHY BOTH MUST BE HERE
+          # ===================================================================
+          # An earlier revision served `/internal` ONLY. The fixture edge has two
+          # routes (../main.tf): `/internal/{proxy+}` at AWS_IAM, and `/{proxy+}`
+          # at auth NONE for human sessions. Both forward to THIS ALB over the VPC
+          # Link, so a human request that API Gateway correctly admitted then hit
+          # the ALB's default action and came back 404 -- and a 404 reads as "the
+          # human plane is broken" rather than "the backend publishes no such
+          # path". The auth-NONE route was therefore unusable, which is precisely
+          # the human-plane control #5836 has to demonstrate.
+          #
+          # These paths are TRACED from the pod's own routers, not guessed. The
+          # gateway mounts (modules/gateway/src/app.py + the unit routers):
+          #   * /health, /ready          at the app root (app.py:411-418)
+          #   * /me/...                  on a PREFIX-LESS router -- src/budget/
+          #                              me_routes.py declares APIRouter(tags=
+          #                              ["budget"]) and @router.get("/me/budget"),
+          #                              so the path is /me/budget with no prefix
+          #                              to match on. /me/bedrock-routing and
+          #                              /me/persona-models are separate routers.
+          #   * /auth/...                src/auth/routes.py APIRouter(prefix=
+          #                              "/auth"), including /auth/me
+          #
+          # `/me/budget` specifically is #3968's human-session probe endpoint
+          # (lib/edge_sessions_cli.py: ENDPOINT = "/me/budget"), so publishing the
+          # `/me` prefix is what makes their executable session check reach this
+          # fixture at all rather than measuring the ordinary deployment.
+          #
+          # The set is deliberately an ENUMERATION of prefixes, not `/`. A
+          # catch-all would forward every path the pod serves -- including
+          # /internal itself -- to a target group reachable without SigV4, so the
+          # auth-NONE plane would become an unsigned route to the internal API.
+          # The whole isolation argument rests on `/internal` being reachable ONLY
+          # through the AWS_IAM route, so `/` must never appear here.
+          #
+          # Note these are ALB-side paths. The edge forwards the request path
+          # unchanged (integration.request.path.proxy), and CloudFront's `/api`
+          # prefix stripping is not in this path at all -- there is no CloudFront
+          # in front of a fixture edge.
+          # ===================================================================
+
+          # --- the trusted internal plane (AWS_IAM at the edge) --------------
           - path: /internal
             pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+
+          # --- the human session plane (auth NONE at the edge; JWT at the pod)
+          # Admission here is NOT a trust grant: on these paths the edge BLANKS
+          # X-Caller-Identity and the provenance header, so a request asserts no
+          # identity, src/auth/dependencies.py:207 skips the provenance branch
+          # entirely, and the pod authenticates the JWT. A forged header cannot
+          # help -- a failed provenance check on an internal route is a 403, never
+          # a fallback.
+          - path: /me
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+
+          # --- liveness, for the human positive control ----------------------
+          # `verify` needs ONE unauthenticated path that proves the human plane
+          # reaches the pod, separately from whether a JWT was accepted: refusals
+          # alone cannot tell a correctly-restricted edge from one that refuses
+          # everything. Exact paths (pathType: Exact), because /health and /ready
+          # are single routes at the app root and a Prefix match would also admit
+          # anything below them.
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: __SERVICE__
+                port:
+                  number: __PORT__
+          - path: /ready
+            pathType: Exact
             backend:
               service:
                 name: __SERVICE__

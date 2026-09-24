@@ -2306,8 +2306,14 @@ def test_destroy_dry_run_checks_the_owned_set_before_reporting(harness):
 #
 # There was also NO fake curl in this suite, so none of verify's security checks
 # were executed by any test at all. That is why 63 green tests missed it.
+# `/health`, not the `/dev/api/health` this used to pass. Two independent reasons,
+# both of which would have made the positive control 404 against a real edge:
+# `base` already strips the stage root off the invoke URL, so a `/dev` prefix
+# double-stages it; and there is no CloudFront in front of a fixture ALB, so the
+# `/api` prefix belongs to the ordinary front door and not to this one. The path has
+# to be one ../fixture-alb.yaml.tmpl actually publishes.
 VERIFY_OK_ARGS = ["--wrong-role-profile", "wrongrole",
-                  "--human-probe-path", "/dev/api/health"]
+                  "--human-probe-path", "/health"]
 # A resolvable identity for the signer profile, whose role is NOT in the allowlist
 # the fake `terraform output allowed_caller_role_arns` publishes. Both halves are
 # required: without a resolved ARN the control cannot say WHO it signed as, and
@@ -2479,7 +2485,7 @@ def test_verify_fails_when_the_wrong_role_control_cannot_be_run(harness):
     so the Deny was never verified by anything.
     """
     r = harness.run("verify", VERIFY_OK_ENV,
-                    args=["--human-probe-path", "/dev/api/health"])
+                    args=["--human-probe-path", "/health"])
     assert r.returncode != 0
     assert "wrong-role control NOT RUN" in r.stderr
     assert "resource-policy Deny" in r.stderr
@@ -2512,7 +2518,7 @@ def test_skip_wrong_role_still_fails_because_the_deny_is_unverified(harness):
     reported full verification. A required control that was not run leaves acceptance
     UNESTABLISHED, so the flag is documentation of why -- never a waiver.
     """
-    r = harness.run("verify", args=["--human-probe-path", "/dev/api/health",
+    r = harness.run("verify", args=["--human-probe-path", "/health",
                                     "--skip-wrong-role"])
     assert r.returncode != 0, (
         "--skip-wrong-role still grants a green verification with the Deny unverified")
@@ -2555,13 +2561,88 @@ def test_verify_fails_when_the_resource_policy_403s_the_human_route(harness):
     assert "/internal" in r.stderr
 
 
-def test_verify_fails_when_the_human_route_is_not_published(harness):
+def test_verify_fails_when_the_human_route_404s_despite_being_published(harness):
     """404 has a different cause from 403 and a different fix, so it is diagnosed
-    separately: the fixture ALB does not publish the path at all."""
+    separately.
+
+    The diagnosis narrowed once the path itself is pre-checked against the template:
+    a 404 on a path the fixture ALB DOES publish can no longer mean "you asked for a
+    path that does not exist", so the message must point at the two causes that
+    remain -- the Ingress in front of the edge is not this run's, or the pod is not
+    serving the route.
+    """
     env = dict(VERIFY_OK_ENV); env["FAKE_HUMAN_CODE"] = "404"
     r = harness.run("verify", env, args=VERIFY_OK_ARGS)
     assert r.returncode != 0
-    assert "does not publish this path" in r.stderr
+    assert "publishes this prefix" in r.stderr
+    assert "AdpFixtureRun" in r.stderr
+
+
+# --- the probe path must be one the fixture ALB actually serves -------------
+# Root's area 3: "Human path control must align with the actual routed
+# authenticated session path." A path that is not published answers from the
+# listener's default action, so the control reports 404 -- which cannot be told
+# apart from the edge misrouting human traffic. Both are red; only one is a defect.
+
+def test_verify_refuses_a_human_probe_path_the_fixture_alb_does_not_publish(harness):
+    """`/dev/api/health` is the path this suite itself used to pass, and it is wrong
+    twice over: `base` already strips the stage root, and no CloudFront (hence no
+    `/api`) sits in front of a fixture ALB."""
+    r = harness.run("verify", VERIFY_OK_ENV,
+                    args=["--wrong-role-profile", "wrongrole",
+                          "--human-probe-path", "/dev/api/health"])
+    assert r.returncode != 0
+    assert "not published by the fixture ALB" in r.stderr
+    # The refusal must name what IS served, or the operator has to guess.
+    assert "/internal" in r.stderr and "/me" in r.stderr
+
+
+def test_verify_names_the_published_paths_without_probing_an_unpublished_one(harness):
+    """The check runs BEFORE the request, so no HTTP probe is attempted for a path
+    that could only have 404ed."""
+    r = harness.run("verify", VERIFY_OK_ENV,
+                    args=["--wrong-role-profile", "wrongrole",
+                          "--human-probe-path", "/members"])
+    assert r.returncode != 0
+    probes = [l for l in harness.log.read_text().splitlines() if l.startswith("curl ")]
+    assert not any("/members" in l for l in probes), (
+        "probed a path known to be unpublished instead of refusing up front")
+
+
+def test_verify_accepts_a_path_below_a_published_prefix(harness):
+    """Prefix rules mean /me/budget is served by the /me rule -- and /me/budget is
+    #3968's session endpoint, so rejecting it would refuse the very path the
+    integration probes."""
+    env = dict(VERIFY_OK_ENV); env["FAKE_HUMAN_CODE"] = "401"
+    r = harness.run("verify", env,
+                    args=["--wrong-role-profile", "wrongrole",
+                          "--human-probe-path", "/me/budget"])
+    assert r.returncode == 0, r.stderr
+    assert "app-layer auth decided" in r.stdout
+
+
+def test_verify_does_not_treat_a_prefix_as_a_bare_string_match(harness):
+    """`/members` starts with `/me` but is NOT matched by a `/me` Prefix rule:
+    Ingress prefix matching is segment-wise. A startswith() check would admit it and
+    the probe would 404 for exactly the reason this gate exists to eliminate."""
+    r = harness.run("verify", VERIFY_OK_ENV,
+                    args=["--wrong-role-profile", "wrongrole",
+                          "--human-probe-path", "/members"])
+    assert r.returncode != 0
+    assert "not published by the fixture ALB" in r.stderr
+
+
+def test_verify_does_not_accept_a_path_merely_mentioned_in_template_prose(harness):
+    """The template's comments legitimately discuss paths (/me/budget, /auth/me,
+    and the `/` it explains must never appear). A grep for the string would accept
+    `/` on the strength of the comment that forbids it, so the published set is
+    parsed from the rule entries only.
+    """
+    r = harness.run("verify", VERIFY_OK_ENV,
+                    args=["--wrong-role-profile", "wrongrole",
+                          "--human-probe-path", "/"])
+    assert r.returncode != 0
+    assert "not published by the fixture ALB" in r.stderr
 
 
 def test_verify_accepts_a_401_on_the_human_route(harness):
