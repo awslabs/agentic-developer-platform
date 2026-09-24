@@ -234,8 +234,12 @@ migration and not a different version bound:
 
 Reading the old launch-template record needs schema 0; reading the add-on
 identity needs 6.42.0+, which ships schema 1. **The requirements are disjoint.**
-Read from `terraform providers schema -json`, not from release notes, and
-asserted by `test_no_single_provider_version_satisfies_both_records`.
+Read from `terraform providers schema -json`, not from release notes. The table is
+recorded **observed research** across those versions. What a test can assert is
+narrower — only the provider a run actually initialises is inspectable — so
+`test_resolved_provider_cannot_satisfy_both_records` asserts that the *resolved*
+provider cannot decode both records, and the cross-version rows above stand as the
+recorded observation behind choosing a migration over a different bound.
 
 A local state write (`terraform state mv`, for instance) does **not** upgrade the
 schema — verified. The upgrade is persisted only by an apply whose scope includes
@@ -265,35 +269,86 @@ mode `700` and its files mode `600`; put the snapshot and the plans in that same
 directory. Do not use a predictable world-readable path such as
 `/tmp/migrate.tfplan` — on a shared runner any local user can read it.
 
+**A note on the shell.** Every check below must **stop the sequence** when it
+fails. Run each numbered step as the function given, in one shell, and stop at the
+first non-zero return — do not paste a bare `[ ... ] || return 1` at a top-level
+prompt, where `return` is not valid and the next command runs anyway. If you prefer
+a script, start it with `set -euo pipefail`.
+
 **0. Establish the task directory and confirm the account.** Everything keys off
-the account the active profile resolves, so confirm it before planning rather than
-after. A migration reviewed against one account and applied to another is not a
-reviewed migration.
+the account the active profile resolves, so confirm it before touching the backend
+rather than after. A migration reviewed against one account and applied to another
+is not a reviewed migration.
 
 ```bash
 export AWS_PROFILE=embark1          # the mapped profile for the target account
 export ADP_ACCOUNT=879318057152     # the intended target
+export ADP_ENV=dev
 export TASK_DIR="$HOME/.adp/migrate-5831"
-mkdir -p -m 700 "$TASK_DIR" && chmod 700 "$TASK_DIR"
+export STATE_BUCKET="adp-terraform-state-${ADP_ACCOUNT}"
+export STATE_KEY="${ADP_ENV}/platform/terraform.tfstate"
 
-# Refuse to continue if the active credentials are not the intended account.
-CALLER=$(aws sts get-caller-identity --query Account --output text)
-aws sts get-caller-identity --query Arn --output text
-[ "$CALLER" = "$ADP_ACCOUNT" ] || { echo "WRONG ACCOUNT: $CALLER"; return 1; }
+confirm_account() {
+  mkdir -p -m 700 "$TASK_DIR" && chmod 700 "$TASK_DIR" || return 1
+  caller=$(aws sts get-caller-identity --query Account --output text) || return 1
+  aws sts get-caller-identity --query Arn --output text || return 1
+  if [ "$caller" != "$ADP_ACCOUNT" ]; then
+    echo "WRONG ACCOUNT: resolved $caller, intended $ADP_ACCOUNT" >&2
+    return 1
+  fi
+  # The backend holds the state about to be migrated; confirm this account owns it.
+  aws s3api head-object --bucket "$STATE_BUCKET" --key "$STATE_KEY" \
+    --query 'LastModified' --output text || return 1
+  echo "account $caller, backend s3://$STATE_BUCKET/$STATE_KEY confirmed"
+}
+confirm_account || echo "STOP: do not continue"
 ```
 
-**1. Preserve, and retain the inputs.** Snapshot the state and produce the
-retained configuration before anything else, so every later claim of preservation
-has a baseline, and so the plans in steps 3 and 6 use the reviewed values.
+**1. Initialise the backend, and confirm it is the one just verified.** This comes
+**before** any state read. `terraform state pull` reads whatever backend the
+directory was last initialised against, which may be another account or
+environment entirely — so initialising afterwards would mean the snapshot and the
+plan came from different state. `init` here also resolves the reviewed provider:
+discard any plan file saved before this point, since a saved plan is bound to the
+provider that produced it (Section 3).
 
 ```bash
-python3 platform/scripts/upgrade-state.py prepare \
-  --directory "$TASK_DIR" --account "$ADP_ACCOUNT" --environment dev --region us-east-1
+resolve_backend() {
+  cd platform/infra || return 1
+  terraform init -reconfigure -input=false \
+    -backend-config="../../environments/${ADP_ENV}/backend.tfvars" \
+    -backend-config="bucket=${STATE_BUCKET}" \
+    -backend-config="key=${STATE_KEY}" || return 1
+  # Confirm the initialised backend is the bucket/key verified in step 0.
+  python3 - <<'EOF' || return 1
+import json, os, sys
+cfg = json.load(open(".terraform/terraform.tfstate"))["backend"]["config"]
+want = (os.environ["STATE_BUCKET"], os.environ["STATE_KEY"])
+got = (cfg.get("bucket"), cfg.get("key"))
+if got != want:
+    sys.exit(f"backend is {got}, expected {want}")
+print(f"backend confirmed: s3://{got[0]}/{got[1]}")
+EOF
+  terraform version   # confirm the AWS provider is >= 6.42.0
+}
+resolve_backend || echo "STOP: do not continue"
+```
 
-cd platform/infra
-terraform state pull > "$TASK_DIR/pre-migration.tfstate"
-chmod 600 "$TASK_DIR/pre-migration.tfstate"
-python3 -c "import json,os;s=json.load(open(os.environ['TASK_DIR']+'/pre-migration.tfstate'));print('serial',s['serial'],'managed',sum(1 for r in s['resources'] if r.get('mode')=='managed'))"
+**2. Preserve, and retain the inputs.** Now that the backend is the confirmed one,
+snapshot the state and produce the retained configuration, so every later claim of
+preservation has a baseline and the plans in steps 3 and 6 use the reviewed values.
+
+```bash
+preserve() {
+  python3 ../../platform/scripts/upgrade-state.py prepare \
+    --directory "$TASK_DIR" --account "$ADP_ACCOUNT" \
+    --environment "$ADP_ENV" --region us-east-1 || return 1
+
+  terraform state pull > "$TASK_DIR/pre-migration.tfstate" || return 1
+  chmod 600 "$TASK_DIR/pre-migration.tfstate" || return 1
+  python3 -c "import json,os;s=json.load(open(os.environ['TASK_DIR']+'/pre-migration.tfstate'));print('serial',s['serial'],'lineage',s.get('lineage'),'managed',sum(len(r.get('instances',[])) for r in s['resources'] if r.get('mode')=='managed'))"
+}
+preserve || echo "STOP: do not continue"
 ```
 
 `prepare` writes `platform.tfvars.json` into `$TASK_DIR`, carrying the retained
@@ -301,18 +356,9 @@ values — the EKS public-access CIDRs, the existing cluster-admin principal ARN
 and the ECR repository encryption settings. Those matter here specifically: EKS
 access-entry `principal_arn` is ForceNew and ECR encryption is immutable, so
 planning without them proposes destroying a human operator's cluster access or
-replacing repositories.
-
-**2. Resolve the reviewed provider.** `init` against the real backend so the
-constraint resolves to a 6.42.0+ provider. Discard any plan file saved before this
-point — a saved plan is bound to the provider that produced it (Section 3).
-
-```bash
-terraform init -reconfigure -input=false \
-  -backend-config="../../environments/dev/backend.tfvars" \
-  -backend-config="bucket=adp-terraform-state-${ADP_ACCOUNT}"
-terraform version   # confirm the AWS provider is >= 6.42.0
-```
+replacing repositories. `prepare`'s retained snapshot is also an acceptable
+explicit baseline for step 4's `--preserved-snapshot` where you prefer the values
+it reads over a raw state pull.
 
 **3. Generate the migration plan, read-only.** A full-scope `-refresh-only` plan,
 with the committed var file *and* the retained inputs. `-refresh-only` is the
@@ -321,38 +367,59 @@ reconciliation, so it normalises schema across the resources a targeted plan wou
 leave stale.
 
 ```bash
-terraform plan -refresh-only -input=false \
-  -var-file="../../environments/dev/platform.tfvars" \
-  -var-file="$TASK_DIR/platform.tfvars.json" \
-  -out="$TASK_DIR/migrate.tfplan"
-chmod 600 "$TASK_DIR/migrate.tfplan"
-
-terraform show -json "$TASK_DIR/migrate.tfplan" > "$TASK_DIR/migrate.json"
-echo "show exit: $?"     # step 4 needs this value; a failed export is not "no changes"
-chmod 600 "$TASK_DIR/migrate.json"
+plan_migration() {
+  terraform plan -refresh-only -input=false \
+    -var-file="../../environments/${ADP_ENV}/platform.tfvars" \
+    -var-file="$TASK_DIR/platform.tfvars.json" \
+    -out="$TASK_DIR/migrate.tfplan" || return 1
+  chmod 600 "$TASK_DIR/migrate.tfplan"
+}
+plan_migration || echo "STOP: do not continue"
 ```
+
+There is deliberately no `terraform show` here. Step 4 performs the export itself,
+so the JSON that gets reviewed is provably this plan's — see below.
 
 **4. Inspect before applying anything — with a check that refuses.** This is the
 review the whole exercise exists to protect, so it must be enforced rather than
-eyeballed:
+eyeballed. Run it from this same initialised directory, so it resolves the same
+provider that produced the plan:
 
 ```bash
-python3 ../../platform/scripts/refresh_only_migration_guard.py \
-  --plan-file "$TASK_DIR/migrate.tfplan" \
-  --plan-json "$TASK_DIR/migrate.json" \
-  --show-exit-code 0 \
-  --preserved-snapshot "$TASK_DIR/pre-migration.tfstate" \
-  --expect-resources 136
-echo "guard exit: $?"    # 0 = safe to apply THIS file; 1 = refused, do not apply
+inspect_migration() {
+  python3 ../../platform/scripts/refresh_only_migration_guard.py \
+    --plan-file "$TASK_DIR/migrate.tfplan" \
+    --preserved-snapshot "$TASK_DIR/pre-migration.tfstate" \
+    --expect-resources 136 || return 1
+}
+inspect_migration || echo "REFUSED: do not apply this plan"
 ```
 
-The guard **exits non-zero** on any of: a proposed create/update/delete, a drift
-entry proposing `delete`, a managed address present before and absent after, a
-changed `id`/`arn`/`name`, an address in the snapshot missing from the plan, a
-managed-resource count other than the one asserted, or a failed/truncated export.
-Pass `--expect-resources` with the count established for the state under review
-(136 at the time of writing); omit it if that count is not yet established rather
-than guessing a value.
+The guard takes **only the saved plan**, and runs `terraform show -json` on that
+exact file itself, checking the exit code internally. An earlier version took a
+caller-supplied JSON plus `--show-exit-code 0`, which meant an operator could hand
+it a stale or unrelated export and an asserted success — so the evidence was about
+whatever file was passed, not about the plan being approved. The export is held in
+memory; pass `--save-json <path>` only if you need a copy, and it is written mode
+600.
+
+It **exits non-zero** on any of: a failed export, a body that does not parse, a
+document that is not a plan export or that Terraform marks errored/incomplete, an
+optional field present with the wrong type, a proposed create/update/delete, a
+drift entry proposing `delete`, a state member with no managed resources or a
+duplicated address, a managed address present before and absent after, a changed
+`id`/`arn`/`name`, a snapshot whose addresses, identities or state `lineage`
+disagree with the plan's prior state, or a managed-resource count other than the
+one asserted. Pass `--expect-resources` with the count established for the state
+under review (136 at the time of writing); omit it rather than guessing.
+
+**An omitted field is not a failure.** Terraform **leaves `resource_changes` out
+entirely** when a plan proposes no changes — which is what a correct
+`-refresh-only` plan is. The guard treats that as zero entries. (It previously
+refused such an export as truncated, i.e. it refused the artifact it exists to
+approve; `test_real_refresh_only_export_shape_passes` now pins the correct
+behaviour against a fixture of that real shape.) What it refuses instead is a
+document that is malformed, truncated, errored, incomplete, or not a plan.
 
 **Why it reads the saved plan file and not just the JSON.** A `-refresh-only`
 plan's `planned_values` **can be empty**, precisely because it proposes no
@@ -380,16 +447,27 @@ terraform apply "$TASK_DIR/migrate.tfplan"
 
 **6. Now the targeted rollout plan.** Generate a fresh targeted plan with the same
 retained inputs and export it. With the schema normalised, the export succeeds and
-the scoped-plan guard can read it.
+the scoped-plan guard can read it. Use the same var files as step 3 — a scoped plan
+built from defaults is not the deployment that was reviewed.
 
 ```bash
-terraform plan -input=false \
-  -var-file="../../environments/dev/platform.tfvars" \
-  -var-file="$TASK_DIR/platform.tfvars.json" \
-  -target=module.eks.aws_eks_cluster.main \
-  -out="$TASK_DIR/scoped.tfplan"
-terraform show -json "$TASK_DIR/scoped.tfplan" > "$TASK_DIR/scoped.json"
+plan_scoped() {
+  terraform plan -input=false \
+    -var-file="../../environments/${ADP_ENV}/platform.tfvars" \
+    -var-file="$TASK_DIR/platform.tfvars.json" \
+    -target=module.eks.aws_eks_cluster.main \
+    -out="$TASK_DIR/scoped.tfplan" || return 1
+  chmod 600 "$TASK_DIR/scoped.tfplan" || return 1
+  terraform show -json "$TASK_DIR/scoped.tfplan" > "$TASK_DIR/scoped.json" || return 1
+  chmod 600 "$TASK_DIR/scoped.json"
+}
+plan_scoped || echo "STOP: the export failed — the schema is not normalised"
 ```
+
+Unlike step 4, the `terraform show` here is written out because the scoped-plan
+guard consumes the JSON. Keep the `|| return 1`: a failed export at this point means
+the migration did not achieve what it was for, and a truncated `scoped.json` must
+not be handed to the next check as though it were complete.
 
 Then enforce the narrow resource-action scope with
 `.github/scripts/verify_scoped_plan.py` before any apply.
@@ -404,16 +482,25 @@ shred -u "$TASK_DIR"/*.tfplan "$TASK_DIR"/*.tfstate "$TASK_DIR"/*.json 2>/dev/nu
 
 | Step | Who ran it | What was established |
 |---|---|---|
-| 3 — `-refresh-only` generation and export | **root**, against the real backend | The plan generates and its JSON exports; all 136 managed resources and IDs preserved; no drift deletions; no resource changes |
-| 4 — the guard's logic | worker, offline | Refuses resource loss, identity change, an ordinary full plan, a refreshed deletion, a failed/truncated export, a plan missing its state members, and a snapshot/count mismatch; passes the preserved no-change case |
+| 3 — `-refresh-only` generation and export | **root only**, against the real backend | The plan generates and its JSON exports; all 136 managed resources and IDs preserved; no drift deletions; no resource changes. **The worker never ran this step in any form** |
+| 4 — the guard's logic, offline | worker | Refuses resource loss, identity change, a snapshot identity/lineage mismatch, an ordinary full plan, a refreshed deletion, a failed or unparseable export, a document that is not a plan or is errored/incomplete, a malformed optional field, an empty or duplicated managed set, a plan missing its state members, and a count mismatch; passes both permitted export shapes |
+| 4 — the guard against plans Terraform really wrote | worker, with the real `terraform` binary | Refuses an unexportable targeted plan on the real non-zero `show` exit, and refuses an ordinary full plan after reading the real ZIP's state members. Both plans were **ordinary plans with `-refresh=false`** over the synthetic fixture — not `-refresh-only`, and not against any real backend |
 | 5 — the apply | **nobody** | Not executed. No state write has occurred |
 
-The worker did **not** execute step 3. A `-refresh-only` plan cannot be produced
-offline: it exists to query the provider, so without credentials it fails with
-`AuthFailure` rather than planning. What the worker ran were ordinary plans with
-`-refresh=false` against a synthetic fixture, plus the guard against synthetic
-saved-plan files. The real `-refresh-only` generation and export are root's
-observation; root has **not** applied it.
+**What the worker did not run.** The worker never executed step 3. A `-refresh-only`
+plan cannot be produced offline: it exists to query the provider, so without
+credentials it fails with `AuthFailure` rather than planning — verified, including
+with credential stubs and the metadata endpoint disabled. Every plan the worker
+generated was an **ordinary plan with `-refresh=false`** against the synthetic
+fixture in `.github/scripts/tests/fixtures/platform-mixed-state-5831/`.
+
+**What root established, and its boundary.** Root generated the real
+`-refresh-only` plan against the real backend and exported it read-only, observing
+all 136 managed resources with `id`/`arn`/`name` unchanged, no drift deletions and
+no resource changes. Root has **not applied it**. So the permitted case — a real
+refresh-only plan passing this guard — rests on root's observation plus root
+re-running the corrected guard against that plan; no worker test demonstrates it,
+and none can.
 
 ### 5c — Why not an ordinary full apply
 
@@ -511,9 +598,31 @@ they were, while the text around it claimed it refused an unsafe plan. A check t
 cannot fail is worse than no check — it reads as a gate, so it is trusted.
 
 Fixtures are synthetic saved-plan ZIPs built in the test, for the reason given in
-Section 5b: a real `-refresh-only` plan cannot be generated offline. So this suite
-establishes the guard's logic, not the safety of any particular real plan. It needs
-no `terraform` binary, makes no AWS call, and writes no state.
+Section 5b: a real `-refresh-only` plan cannot be generated offline. The Terraform
+invocation is **stubbed** — a fake binary that records its argv and emits a chosen
+document and exit code — which is what lets the malformed, errored and
+failed-export legs be driven at all, and lets one test assert the guard passed the
+exact `--plan-file` rather than some other path. So this suite establishes the
+guard's logic, not the safety of any particular real plan. It needs no `terraform`
+binary, makes no AWS call, and writes no state.
+
+Two assertions carry more weight than the rest:
+
+* `test_real_refresh_only_export_shape_passes` reads
+  `fixtures/platform-mixed-state-5831/real-refresh-only-export.json`, the sanitized
+  top-level key set of root's real successful export — `resource_changes` absent —
+  and requires a **pass**. This is the regression for the guard having refused that
+  real artifact. Do not add `resource_changes` to that fixture to satisfy a test.
+* `test_guard_links_export_to_the_exact_plan_file` asserts the guard exported the
+  plan it was given, which is what replaced the old caller-asserted
+  `--show-exit-code`.
+
+Because the Terraform call is stubbed here, the complementary legs live in
+`test_platform_mixed_state_export.py`, which has a real binary:
+`test_migration_guard_refuses_a_real_plan_whose_export_fails` and
+`test_migration_guard_reads_a_real_saved_plan_and_refuses_its_actions` run the guard
+against saved plans Terraform actually wrote. Those establish the guard works on
+real Terraform output; they still do not establish that any real plan is safe.
 
 ```bash
 cd .github/scripts && pytest tests/test_refresh_only_migration_guard.py -v

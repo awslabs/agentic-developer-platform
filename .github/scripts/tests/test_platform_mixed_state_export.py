@@ -29,8 +29,10 @@ state, not just the targeted subset. So targeting is what turns a stale record i
 export failure.
 
 That also means **no provider version can satisfy both records at once**, which is why
-the answer is a state migration rather than a different bound (verified in
-`test_no_single_provider_version_satisfies_both_records`):
+the answer is a state migration rather than a different bound. The table below is
+recorded observed research across provider versions; the resolved provider's half of
+it is what `test_resolved_provider_cannot_satisfy_both_records` asserts, since a test
+can only inspect the version actually initialised:
 
 | Provider        | `aws_launch_template` schema | `aws_eks_addon` identity schema |
 |-----------------|------------------------------|---------------------------------|
@@ -57,7 +59,10 @@ With Terraform present, against the committed fixture, all credential-free:
   what the refresh-only migration achieves;
 * a full-scope plan exports, because every resource is in scope and gets upgraded;
 * the full-scope plan proposes **deleting** the undeclared add-on — the reason the
-  migration must be a saved `-refresh-only` plan and never an ordinary full apply.
+  migration must be a saved `-refresh-only` plan and never an ordinary full apply;
+* the step-4 preservation guard, run with this real binary against plans Terraform
+  actually wrote, refuses both an unexportable plan and an ordinary full plan. That
+  linkage is what the guard's own suite cannot show: it stubs `terraform show`.
 
 ## Scope: this suite mutates nothing
 
@@ -75,6 +80,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -84,6 +91,10 @@ FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "platform-mixed-sta
 STATE_FIXTURE = FIXTURE_DIR / "mixed-age-state.json"
 CONFIG_FIXTURE = FIXTURE_DIR / "main.tf"
 RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "platform-aws-provider-floor.md"
+# The step-4 preservation guard. Its logic is covered offline in
+# test_refresh_only_migration_guard.py; the two legs near the end of this file drive
+# it with the real terraform binary against plans Terraform actually produced.
+MIGRATION_GUARD = REPO_ROOT / "platform" / "scripts" / "refresh_only_migration_guard.py"
 
 # The constraint the platform root carries. Kept as a literal so this suite reproduces
 # against the provider the real configuration resolves, not a floating "latest".
@@ -449,6 +460,125 @@ def test_full_scope_plan_would_destroy_the_undeclared_add_on(
         f"a full-scope plan must be shown to propose deleting {NEWER_RESOURCE}, the "
         f"resource state records but the source does not declare. Got {actions}. If this "
         "no longer holds, the runbook's central warning needs re-deriving."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The step-4 guard, driven by the REAL terraform binary against a REAL saved plan.
+#
+# `test_refresh_only_migration_guard.py` covers the guard's logic with synthetic
+# saved-plan ZIPs and a stubbed `terraform show`, which is what lets it run in the
+# fast lane. What it cannot establish is that the guard works on a plan Terraform
+# actually produced: that it invokes the right binary in the right directory, reads
+# a real ZIP's members, and reacts to a real export failure rather than a simulated
+# exit code. These two legs close that gap, because this suite has a binary.
+#
+# Both use ordinary `-refresh=false` plans. A real `-refresh-only` plan cannot be
+# generated offline -- it exists to query the provider -- so the *permitted* case
+# stays synthetic and stays root's to verify on the real backend. What is checkable
+# here is the linkage and the refusals.
+# ---------------------------------------------------------------------------
+
+
+def _run_migration_guard(
+    workdir: Path, plan_name: str, *extra: str
+) -> subprocess.CompletedProcess[str]:
+    """Run the step-4 guard from `workdir`, exactly as the runbook's step 4 does."""
+    return subprocess.run(
+        [
+            sys.executable,
+            str(MIGRATION_GUARD),
+            "--plan-file",
+            str(workdir / plan_name),
+            *extra,
+        ],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        timeout=TERRAFORM_TIMEOUT,
+        env=_offline_env(),
+        check=False,
+    )
+
+
+@terraform_required
+def test_migration_guard_refuses_a_real_plan_whose_export_fails(
+    initialised_workdir: Path,
+) -> None:
+    """The guard must refuse the #5831 failure itself, exporting the plan on its own.
+
+    This is the leg that links the guard to a real artifact. The plan file here is
+    one Terraform wrote, over un-migrated mixed-age state, and its export genuinely
+    fails -- the same failure root hit. The guard runs `terraform show -json` itself
+    and must refuse on that non-zero exit, with no caller asserting success.
+
+    The previous interface could not be checked this way at all: it took a
+    caller-supplied JSON plus `--show-exit-code`, so a passing result proved only
+    that the caller had typed 0.
+    """
+    _place_state(initialised_workdir, migrate_stale=False)
+    planned = _terraform(
+        initialised_workdir,
+        "plan",
+        "-refresh=false",
+        "-input=false",
+        f"-target={TARGETED_ADDRESS}",
+        "-out=guard-fail.tfplan",
+    )
+    assert planned.returncode == 0, f"the plan must succeed: {planned.stderr[-400:]}"
+
+    outcome = _run_migration_guard(initialised_workdir, "guard-fail.tfplan")
+
+    assert outcome.returncode == 1, (
+        "the guard must refuse a saved plan it cannot export. Passing here would mean "
+        "an unexportable plan -- the exact #5831 blocker -- reads as reviewed. "
+        f"stdout: {outcome.stdout[-400:]}"
+    )
+    assert "terraform show -json" in outcome.stdout and "exited" in outcome.stdout
+    assert "schema version" not in outcome.stdout, (
+        "the guard must not reproduce Terraform's message: it quotes state, and these "
+        "logs are readable."
+    )
+
+
+@terraform_required
+def test_migration_guard_reads_a_real_saved_plan_and_refuses_its_actions(
+    initialised_workdir: Path,
+) -> None:
+    """On a real exportable plan, the guard reads it and refuses the proposed actions.
+
+    Complements the leg above: here the export succeeds, so the guard gets past it
+    and must then read the real ZIP's `tfstate`/`tfstate-prev` members and judge the
+    plan's contents. The plan is an ordinary full one, which proposes deleting the
+    undeclared add-on, so the correct outcome is a refusal naming that resource --
+    the same judgement the runbook's Section 5c warns about in prose.
+
+    Together these two legs establish that the guard functions on Terraform's own
+    output. Neither establishes that any real plan is safe to apply: the permitted
+    case needs a genuine `-refresh-only` plan, which cannot be produced offline.
+    """
+    _place_state(initialised_workdir, migrate_stale=True)
+    planned = _terraform(
+        initialised_workdir, "plan", "-refresh=false", "-input=false", "-out=guard-ok.tfplan"
+    )
+    assert planned.returncode == 0, f"the plan must succeed: {planned.stderr[-400:]}"
+
+    with zipfile.ZipFile(initialised_workdir / "guard-ok.tfplan") as archive:
+        members = set(archive.namelist())
+    assert {"tfstate", "tfstate-prev"} <= members, (
+        "a real saved plan must carry both state members the guard reads; if Terraform "
+        f"ever stops writing them the guard's approach needs revisiting. Got {members}."
+    )
+
+    outcome = _run_migration_guard(initialised_workdir, "guard-ok.tfplan")
+
+    assert outcome.returncode == 1, (
+        "an ordinary full plan proposes destroying the undeclared add-on and must be "
+        f"refused. stdout: {outcome.stdout[-400:]}"
+    )
+    assert NEWER_RESOURCE in outcome.stdout, (
+        "the refusal must name the resource whose deletion is proposed, so an operator "
+        f"can see what they were about to lose. Got: {outcome.stdout[-400:]}"
     )
 
 
