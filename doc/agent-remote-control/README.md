@@ -4,7 +4,7 @@ ADP remote control lets an authorized human or agent pause, resume, steer, or gr
 
 This is the current design and integration entry point for [epic #3959](https://github.com/aws-e/adp/issues/3959), including work that is not yet delivered. **Read the implementation status before depending on a capability.** A merged implementation, a deployed revision, and a passed live evaluation are three different milestones.
 
-**Reviewed:** September 24, 2026. Merged source baseline: [`124ce31fbc`](https://github.com/aws-e/adp/tree/124ce31fbc871470829229ee54907048b0d4d75c). Graceful abort and its recovery merged in [PR #5858](https://github.com/aws-e/adp/pull/5858); deployment and live acceptance remain outstanding. The status below is a dated snapshot; linked issues and deployed evidence determine subsequent readiness.
+**Reviewed:** September 24, 2026. Merged source baseline: [`98120ac3a3`](https://github.com/aws-e/adp/tree/98120ac3a386e1c4cb8e921a0cbe2cc160b17cd6). Graceful abort and recovery merged in [PR #5858](https://github.com/aws-e/adp/pull/5858), and dashboard controls merged in [PR #5870](https://github.com/aws-e/adp/pull/5870). Their full deployment and live acceptance remain outstanding. The status below is a dated snapshot; linked issues and deployed evidence determine subsequent readiness.
 
 ## 1. Scope and current readiness
 
@@ -18,11 +18,13 @@ The target is hosted webhook/SQS/KEDA workers. Claude Agent SDK is the first pro
 | Human command authority | #5222 source exists; additional refusal tests merged in #5828; issue remains open | Use the signed human-session path, not direct worker calls. Live acceptance is outstanding. |
 | Aborted vocabulary and counters | S5 #3964 merged | The status exists; that alone does not implement graceful abort. |
 | Graceful abort | S4 #3963 source merged in PR #5858; live acceptance pending | Reuse signed abort receipts, protected finalization and retained-pod recovery. Source availability does not establish operational readiness. |
-| Steering | S6 #3965 abort source dependency satisfied; implementation pending | Contract is defined; full worker integration is not delivered. |
-| Dashboard controls | S7 #3966 pending runtime acceptance | API/state contract is reusable; the completed dashboard flow is not delivered. |
+| Steering | S6 #3965 implementation and maintainer review in progress | Contract is defined; reviewed source is not yet merged or live accepted. |
+| Dashboard controls | S7 #3966 source merged in PR #5870; live acceptance pending | Reuse the dashboard components and gateway contract. Passing mocked Chromium scenarios do not establish live worker behavior. |
 | Dashboard explanations | S8 #4989; evaluation #5827 assigned | Planned follow-up after dashboard acceptance. |
 | Timeout evidence producer | #5841 merged as `f304ac1f14939dc884b07180bd56d1ddce39bbe2` | Test tooling is delivered; W2-05 live acceptance is still outstanding. |
-| Protected evaluation fixture and edge | #5836 edge merged in PR #5838; #3968 fixture integration still under development/review | The staged deployment below is the intended integration; its scripts are not yet accepted as an executable end-to-end path. |
+| Protected evaluation fixture and edge | #5836 edge merged in PR #5838; #3968 fixture tooling remains in PR #5839 | Isolated bootstrap and source handoff have executed. The SDK experiment and complete cleanup gate remain unaccepted. |
+| Browser evidence producer | #5878 in development | The existing Playwright report is not the required measured `browser_control_run` artifact. |
+| Wave 3 evaluation tooling | #3969 in development | Live execution follows accepted Wave 2 and compatible abort/steering deployment. |
 | General protected-worker rollout | #5195 open | Ordinary workload enablement remains gated. |
 
 At the source baseline, both gateway and worker implemented-verb sets contain **pause, resume and abort**. Every request is still subject to authorization, independent feature flags, adapter support, and current availability. Ordinary control flags remain off in the active epic rollout. There is no claim that all four controls are operational.
@@ -182,7 +184,9 @@ Effective availability is the intersection of ADP-implemented verbs, adapter sup
 
 ## 7. Dashboard and explanations
 
-S7 will poll the shared state contract, refresh invocation detail, and correlate commands by ID and generation. It must distinguish pause requested from paused, delivery from comprehension, and unknown work from idle. It reuses the activity deep link and requires explicit user confirmation for abort. These UI deliverables remain pending runtime acceptance.
+The merged S7 implementation polls the shared state contract, refreshes invocation detail, and correlates commands by ID and generation. It distinguishes pause requested from paused, delivery from comprehension, and unknown work from idle. It reuses the activity deep link and requires explicit user confirmation for abort. Controls withdraw when polling fails or the invocation becomes terminal; lost command responses and generation changes preserve uncertainty instead of claiming a command was not applied.
+
+The reviewed build passed 121 control tests and three mocked Chromium scenarios. Live browser acceptance still requires real fixture sessions, compatible runtime deployment, and the measured `browser_control_run` producer in #5878. A Playwright success report alone is insufficient. S7 remains open until that acceptance passes.
 
 S8 separately adds authenticated streaming implementation explanations and transcript continuity after S7 acceptance. That stream is not the command transport, authority source, or proof a command executed. It adds eight AC-LS acceptance criteria, including actual human comprehension review. See the [S8 design amendment](https://github.com/aws-e/adp/blob/agent/issue-3885/aidlc/spaces/issue-3885/inception/live-progress-extension.md).
 
@@ -206,7 +210,7 @@ flowchart LR
 
 The edge depends on the gateway Service; the worker depends on the edge. A shared ownership ledger binds account, region, run, nonce and Kubernetes UIDs across stages. Before continuing, verify original resource instances, both gateway and worker policies, edge identity and network reachability. Receipts must match the producer's real output schema and exact API host/region/stage/path. Operator credentials must not enter the worker. Transfer expected identity to the bound worker, execute there, and return artifacts tied to that execution. A local path or an idle Job is not evidence of that handoff.
 
-The edge prerequisite #5836 is merged; the composed fixture lifecycle is still under development and review in #3968. Open findings include worker-policy observation, endpoint binding, protected composition and executable handoff/cleanup. The sequence above is the required integration, not an assertion that the current scripts can already complete it.
+The edge prerequisite #5836 is merged; the composed fixture lifecycle remains under review in #3968. The isolated fixture has executed protected task acquisition, authenticated bootstrap, exact-source bundle handoff and failure-artifact collection. The second attempt stopped at the installed-SDK version preflight, before the model experiment; the package-export resolution fix is undergoing pinned-image CI. Neither this partial execution nor cleanup of its authority records establishes the complete Wave 2 experiment and cleanup gate.
 
 Wave 2 requires all W2-01 through W2-10 checks and verified cleanup. W2-03/04/05 require real Claude tool-side-effect evidence. The merged timeout producer uses the same production heartbeat emitter and actual pause gate; launcher-scraped heartbeats cannot backfill missing experiment observations. Its bounded watchdog experiment records the injected completion-clock offset, proves suppression during pause and firing after release. Pod/container survival and exit observations still require authoritative launcher evidence.
 
