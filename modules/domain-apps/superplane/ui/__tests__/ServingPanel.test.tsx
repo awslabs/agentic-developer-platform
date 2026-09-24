@@ -62,9 +62,9 @@ const panel = (workspaceId = 'ws-1', mayManage = true) =>
   <ServingPanel workspaceId={workspaceId} scope={scope} store={store} mayManage={mayManage} />;
 
 async function prepare(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText('Deployment name'), 'new-model');
-  await user.type(screen.getByLabelText('Serving profile'), 'gpu-profile');
-  await user.type(screen.getByLabelText('Model name'), 'organization/model');
+  await user.type(screen.getByLabelText(/Deployment name/), 'new-model');
+  await user.type(screen.getByLabelText(/Serving profile/), 'gpu-profile');
+  await user.type(screen.getByLabelText(/Model name/), 'organization/model');
   await user.click(screen.getByRole('button', { name: 'Prepare serving review' }));
   await user.click(screen.getByRole('button', { name: 'Review serving plan' }));
   await screen.findByText('Maximum additional cost: 2 USD. Observed cost: unknown.');
