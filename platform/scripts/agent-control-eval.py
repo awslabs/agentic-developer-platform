@@ -80,6 +80,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import logging
 import os
 import re
@@ -6438,8 +6439,11 @@ class Driver:
                 f"was failing, got {backoff!r}"
             )
         if not all(
-            isinstance(value, (int, float)) for value in backoff
-        ) or any(later < earlier for earlier, later in zip(backoff, backoff[1:])):
+            type(value) in (int, float) and math.isfinite(value) and value > 0 for value in backoff
+        ) or any(
+            later < earlier or (later == earlier and earlier < 30000)
+            for earlier, later in zip(backoff, backoff[1:])
+        ):
             raise AssertionError(
                 f"the observed error intervals {backoff!r} do not increase. Retrying a failing control "
                 "endpoint at the same rate is what turns one backend problem into a load problem"

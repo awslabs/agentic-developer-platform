@@ -11523,14 +11523,18 @@ class TestW4_08_PollingLifecycle:
     def test_a_decreasing_retry_interval_fails(self, tmp_path):
         """Retrying a failing endpoint faster is the load-amplifying bug.
 
-        The contract is non-decreasing rather than strictly increasing, because a
-        bounded backoff legitimately plateaus at its cap — so equal intervals are
-        accepted and only a decrease is a failure.
+        A bounded backoff legitimately plateaus at its cap. Below that cap,
+        constant-rate retries and decreases must both fail.
         """
         decreasing = browser_control_run_payload(backoff_intervals_ms=[8000, 2000])
         result = run_w4(tmp_path, "W4-08", capture=decreasing)
         assert result.status == _mod.STATUS_FAILED
         assert "do not increase" in result.message
+
+    @pytest.mark.parametrize("intervals", [[2000, 2000], [True, True], [float("nan"), 8000]])
+    def test_flat_below_cap_or_invalid_backoff_fails(self, tmp_path, intervals):
+        capture = browser_control_run_payload(backoff_intervals_ms=intervals)
+        assert run_w4(tmp_path, "W4-08", capture=capture).status == _mod.STATUS_FAILED
 
     def test_a_backoff_plateaued_at_its_cap_is_accepted(self, tmp_path):
         capture = browser_control_run_payload(backoff_intervals_ms=[30000, 30000])

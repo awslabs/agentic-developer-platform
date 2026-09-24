@@ -1513,7 +1513,11 @@ Run the dedicated browser scenarios in **live** mode:
 cd modules/gateway/frontend
 npm install -D @playwright/test && npx playwright install chromium
 CONTROL_E2E_LIVE=1 \
+CONTROL_E2E_CAPTURE_DIR="$PRIVATE_CAPTURE_DIR" \
+CONTROL_E2E_BUNDLE_REVISION="$DEPLOYED_FRONTEND_REVISION" \
+CONTROL_E2E_ASSET_MANIFEST="$DEPLOYMENT_RECEIPT_JSON" \
 CONTROL_E2E_SESSION_FILE="$PRIVATE_FIXTURE_SESSION_JSON" \
+CONTROL_E2E_NONOWNER_SESSION_FILE="$PRIVATE_NONOWNER_SESSION_JSON" \
 CONTROL_E2E_DISABLED_URL="$FLAG_OFF_FIXTURE_URL" \
 GATEWAY_URL="$FIXTURE_GATEWAY_URL" \
 CONTROL_E2E_RUN_ID="$LIVE_RUN_ID" \
@@ -1521,22 +1525,59 @@ CONTROL_E2E_ABORT_RUN_ID="$ABORT_RUN_ID" \
   npx playwright test --config tests/e2e/agent-control.config.ts
 ```
 
-`CONTROL_E2E_SESSION_FILE` is a private JSON file containing a real fixture user's
-`access_token`, `id_token`, `expires_at_ms` and optional `refresh_token`. Keep it
-outside the repository and evidence published to GitHub. Live mode never injects
-the fabricated JWT used by the mocked browser tests. `CONTROL_E2E_DISABLED_URL`
-must serve the same reviewed frontend bundle against a fixture with controls
-disabled; live mode requires this check and does not skip it.
+This writes `$CONTROL_E2E_CAPTURE_DIR/browser_control_run.json` — the artifact
+the `artifacts` mapping points at. Where each input comes from:
+
+| Input | Where it comes from | Why the run refuses to proceed without it |
+|---|---|---|
+| `CONTROL_E2E_CAPTURE_DIR` | A private directory outside the repo | The capture holds redacted raw observations; a default inside the repo gets committed by accident |
+| `CONTROL_E2E_BUNDLE_REVISION` | The deployed frontend revision, from the preflight's `deployed_components` | Names the revision the capture *claims*; on its own it is a claim, which is why the manifest below exists |
+| `CONTROL_E2E_ASSET_MANIFEST` | The deployment receipt written by `gateway-deploy.yml`: served asset path → sha256 | Proves the asset the browser actually received *is* the claimed revision. Without it the producer falls back to hashing the local `dist/`, which is weaker and recorded as such |
+| `CONTROL_E2E_SESSION_FILE` | A private JSON file for the owning fixture user | Live mode uses a real session; it never injects a fabricated JWT |
+| `CONTROL_E2E_NONOWNER_SESSION_FILE` | A second fixture user who does **not** own the run | A non-owner refusal must be the gateway's answer. Mocked mode fulfils a 403 in the browser and records it as an injection, which is not the same evidence |
+| `CONTROL_E2E_DISABLED_URL` | The same reviewed bundle served against a flag-off fixture | Live mode requires the flag-off render and does not skip it |
+| `CONTROL_E2E_RUN_ID`, `CONTROL_E2E_ABORT_RUN_ID` | Two controllable fixture runs | Binds the observations to specific runs; an unbound capture could describe any run |
+
+Session files hold `access_token`, `id_token`, `expires_at_ms` and an optional
+`refresh_token`. Keep them outside the repository and outside evidence published
+to GitHub. The producer reads their token values into a leak watch and will
+refuse to write a capture containing any of them, so a session file supplied here
+cannot end up in the artifact, the log or the partial diagnostic.
+
+Every input is validated in global setup, so a missing or inconsistent one fails
+**before** the browser sends a control command rather than halfway through
+mutating a live run.
+
+### Mocked mode is a different claim, and the gate enforces it
 
 The scenario's default (mocked) mode is **not** valid evidence for these checks:
 it stubs the gateway, so it proves the bundle's wiring and wording and nothing
 about a worker. Only `CONTROL_E2E_LIVE=1` drives a real deployment.
 
-The runner currently writes a standard Playwright report; it does **not** yet
-produce the `browser_control_run` artifact below. A measured capture producer
-remains required for live acceptance. Do not rename the Playwright report or
-fill missing observations with configured constants: missing evidence must
-remain `not_run`.
+A mocked capture is still written, and is deliberately labelled as mocked, so
+run the gate before citing any capture as acceptance evidence:
+
+```sh
+node --experimental-strip-types tests/e2e/agent-control-gate.ts \
+  "$PRIVATE_CAPTURE_DIR/browser_control_run.json"
+```
+
+Exit 0 means admissible. Exit 1 names the reason it is not — mocked mode, a
+served bundle not matched against a deployment receipt, or an injected control
+response. The question "may this file be offered as live proof?" has to be
+answerable about a file on disk by a reviewer who did not run the browser, which
+is why it is a separate executable rather than a note in this runbook.
+
+### Incomplete runs
+
+The producer writes `browser_control_run.json` **only** for a complete measured
+run. If any scenario fails or any required observation is missing, it writes
+`browser_control_run.partial.json` under a different name, records
+`incomplete_reason`, and exits nonzero. Nothing is back-filled with a passing
+default: a missing polling window is *incomplete*, not `false`, because "we never
+looked" and "we looked and saw nothing" are different findings and only one of
+them is evidence. Point the `artifacts` mapping at the partial and the harness
+rejects it, which is the intended outcome — missing evidence stays `not_run`.
 
 Every key below must come from browser observations; a source file cannot
 establish it. `bundle_revision` is what ties the observations to a deployed asset —
@@ -1558,8 +1599,8 @@ W4-02 refuses one whose `gateway_url` differs from this config's.
 | `active_tool_reason` | The tool-activity text rendered. Must report an unknown count as unknown and never assert quiescence. |
 | `steer_request`, `steer_status_sequence` | The steer request sent and the statuses rendered; a `delivered` with no preceding `pending` fails. |
 | `poll_intervals_ms` | At least two **measured** intervals, each 1000–4000ms. A configured constant is not an observation. |
-| `polled_while_hidden`, `polled_after_close`, `polled_after_terminal` | Must each be an observed `false`. |
-| `backoff_intervals_ms` | At least two intervals observed while the endpoint was failing; must be non-decreasing. |
+| `polled_while_hidden`, `polled_after_close`, `polled_after_terminal` | Must each be an observed `false`, and each must be backed by an `observation_windows` entry labelled with that key name, recording the window's start/end and the requests seen in it. A `false` with no window is "we never looked" wearing the costume of a measurement, and the producer refuses to write one. |
+| `backoff_intervals_ms` | At least two intervals observed while the endpoint was failing. Intervals must widen below the 30-second cap; a plateau at the cap is valid. Nonfinite, nonpositive and boolean observations are rejected. |
 | `detail_refreshed_after_command` | Whether the invocation detail re-read after a command. |
 | `request_destinations`, `request_bodies_contain_pod_address`, `request_bodies_contain_token` | Every destination the browser addressed, and whether any body carried pod coordinates. |
 | `spoofed_identity_rejected` | Whether a spoofed identity was refused. |
@@ -1598,3 +1639,9 @@ For W2-08, `vocabulary_parity.suites` must include passing results for
 For W2-09, export nonempty backend schema key lists for `response` (the root),
 `today`, `daily`, `by_persona`, `active_runs`, `recent_failures`, `top_repos`, and
 `spend` into `stats_schema_keys.levels`. Empty evidence cannot establish parity.
+
+The browser producer guard regressions can be run without a browser from `modules/gateway/frontend`:
+
+```sh
+node --experimental-strip-types --test tests/e2e/agent-control-capture.test.ts
+```
