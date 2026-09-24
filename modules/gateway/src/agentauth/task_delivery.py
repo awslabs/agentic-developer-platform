@@ -113,14 +113,14 @@ class TaskDelivery:
                 raise TaskDeliveryError("invalid_task")
             digest = envelope_digest(envelope)
             if envelope.get("kind") == "adp.task":
-                from src.tasks.store import TaskStore, TaskStoreError
+                from src.tasks.store import TaskStore, TaskStoreError, WorkBindingError
 
                 try:
                     work = TaskStore(dynamodb_client=self.store.client, authority_table_name=self.store.table).resolve_work(
                         envelope.get("dispatch_id", ""), expected_kind="dispatch")
                     if work.get("envelope") != envelope:
                         raise TaskDeliveryError("invalid_task")
-                except TaskStoreError:
+                except (TaskStoreError, WorkBindingError):
                     raise TaskDeliveryError("invalid_task") from None
             else:
                 pending = self.store._read(f"INVOCATION#{envelope['message_id']}", "DISPATCH")

@@ -15,7 +15,7 @@ from src.agentauth.run_credential import CredentialError
 from src.agentauth.task_routes import task_delivery
 from src.agentauth.task_runtime import TaskRuntime
 from src.agentauth.workload import WORKLOAD_HEADER, WorkloadRefusedError
-from src.tasks.store import TaskStore, TaskStoreError
+from src.tasks.store import StaleAttemptError, StaleGenerationError, TaskStore, TaskStoreError, WorkBindingError
 
 UUID4 = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 TASK_ID = r"^tsk_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -68,7 +68,7 @@ async def _authenticate(request, *, require_attempt, stop_only=False):
         if await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, "")) != pod:
             raise WorkloadRefusedError("workload changed")
         return identity
-    except (BootstrapRefusedError, CredentialError, WorkloadRefusedError, TaskStoreError):
+    except (BootstrapRefusedError, CredentialError, WorkloadRefusedError, TaskStoreError, WorkBindingError):
         raise HTTPException(404, "not found") from None
 
 
@@ -90,7 +90,7 @@ async def bootstrap(body: BootstrapBody, request: Request, runtime=Depends(get_a
         if await run_in_threadpool(runtime.workloads.verify, request.headers.get(WORKLOAD_HEADER, "")) != pod:
             raise WorkloadRefusedError("workload changed")
         return result
-    except (BootstrapRefusedError, CredentialError, WorkloadRefusedError, TaskStoreError):
+    except (BootstrapRefusedError, CredentialError, WorkloadRefusedError, TaskStoreError, WorkBindingError):
         raise HTTPException(404, "not found") from None
 
 
@@ -99,7 +99,7 @@ async def attempt(body: AttemptBody, request: Request, runtime=Depends(get_agent
     identity = await _authenticate(request, require_attempt=False)
     try:
         await run_in_threadpool(task_runtime(runtime).register_attempt, identity=identity, body=body.model_dump())
-    except (BootstrapRefusedError, TaskStoreError):
+    except (BootstrapRefusedError, TaskStoreError, WorkBindingError, StaleAttemptError, StaleGenerationError):
         raise HTTPException(409, "task attempt refused") from None
     return {"schema_version": "1.0", "operation_status": "confirmed", "request_id": body.runtime_attempt_id}
 
@@ -140,5 +140,5 @@ async def turn(body: TurnBody, request: Request, runtime=Depends(get_agent_runti
     try:
         return await run_in_threadpool(TaskTurnStore(task_runtime(runtime).repository).commit,
             identity=identity, request_id=body.request_id, expected_transcript_version=body.expected_transcript_version)
-    except TaskStoreError:
+    except (TaskStoreError, WorkBindingError):
         raise HTTPException(409, "task turn refused") from None
