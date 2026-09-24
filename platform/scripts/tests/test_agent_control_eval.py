@@ -13202,6 +13202,22 @@ class TestWrongIdentityOrDestinationIsNotEvidence:
         assert "AC-S1" in run.results["W4-06"].message
         assert "10.0.4.17" in run.results["W4-06"].message
 
+    @pytest.mark.parametrize("destination", [
+        "https://gw.internal/unrelated?next=/activity/invocations/msg-live/agent/state",
+        "https://gw.internal/unrelated/activity/invocations/msg-live/agent/state",
+        "https://gw.internal/activity/other/msg-live/agent/state",
+    ])
+    def test_activity_text_outside_the_invocation_route_is_refused(self, tmp_path, destination):
+        run = collect_and_evaluate(
+            tmp_path,
+            capture=browser_control_run_payload(
+                bundle_revision=FRONTEND_REVISION,
+                request_destinations=[destination],
+            ),
+        )
+        assert run.results["W4-06"].status == _mod.STATUS_FAILED
+        assert "not activity routes" in run.results["W4-06"].message
+
     def test_a_capture_carrying_a_pod_address_fails_on_privacy(self, tmp_path):
         """Existing browser privacy requirements, preserved rather than relaxed.
 

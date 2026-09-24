@@ -91,6 +91,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("agent-control-eval")
@@ -7705,8 +7706,10 @@ class Driver:
                 "AC-S1 requires the controls to target gateway activity routes only — a control request "
                 "to anything else is a control path that does not go through the gateway's authorization"
             )
+        activity_prefix = urlsplit(gateway).path.rstrip("/") + "/activity/invocations/"
         non_activity = [
-            str(url) for url in destinations if "/activity/" not in str(url)
+            str(url) for url in destinations
+            if not urlsplit(str(url)).path.startswith(activity_prefix)
         ]
         if non_activity:
             raise AssertionError(
