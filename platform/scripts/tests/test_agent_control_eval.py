@@ -11372,10 +11372,32 @@ def run_w4(tmp_path: Path, check_id: str, *, capture=None, client=None, config=N
 
 
 class TestWaveFourManifestHonesty:
-    """The wave cannot report itself complete on the four checks S7 implements."""
+    """The wave cannot report itself complete without the artifacts it consolidates.
 
-    def test_the_unimplemented_checks_report_not_run_naming_their_owner(self, tmp_path):
-        """An owned not_run, never a silent pass and never an unowned failure."""
+    **What these not_runs mean now.** They used to come from `PENDING_CHECK_OWNERS`:
+    six of the ten checks had no predicate, and the manifest said so by naming the
+    story that owed one. All ten predicates now exist, so the mechanism is different
+    even though the outcome is the same — a not_run from here names a missing **input**
+    rather than a missing implementation.
+
+    That is a better failure, and it is worth being precise about which one a reader is
+    looking at. `run_driver` supplies no `wave4_*` artifacts at all, so each
+    consolidating check reports the artifact it could not read. An operator who sees
+    this has evidence to collect; an operator who saw the old message had a story to
+    wait for. Both are honest; only one is actionable by the person reading it.
+    """
+
+    def test_the_consolidating_checks_report_not_run_naming_the_artifact_they_need(
+        self, tmp_path
+    ):
+        """A named not_run, never a silent pass and never an unexplained failure.
+
+        A wave-4 run against an environment that recorded none of the consolidated
+        evidence must say which evidence is missing. `not_run` rather than `failed`
+        because an ABSENT artifact is an observation nobody made — the harness cannot
+        make it from outside the cluster — whereas a present-but-incomplete one is a
+        claim without its evidence and does fail.
+        """
         cfg = live_config(tmp_path)
         results = run_driver(
             tmp_path, config=cfg, client=gateway_stub(), specs=_mod.WAVE4_CHECKS
@@ -11385,11 +11407,14 @@ class TestWaveFourManifestHonesty:
             assert result.status == _mod.STATUS_NOT_RUN, (check_id, result.status)
             assert result.message and result.message.strip(), check_id
 
-    def test_a_full_wave_four_run_cannot_report_complete_in_this_revision(self, tmp_path):
-        """The honest bar: ten required, six unanswerable, so never `not_run == 0`.
+    def test_a_full_wave_four_run_cannot_report_complete_without_the_evidence(
+        self, tmp_path
+    ):
+        """The honest bar: ten required, so never `not_run == 0` on missing evidence.
 
-        This is the assertion that stops wave 4 being cited as passed on the
-        strength of the dashboard checks alone.
+        This is the assertion that stops wave 4 being cited as passed on the strength
+        of the dashboard checks alone — the four that need only the browser capture are
+        exactly the ones an incomplete collection would leave green.
         """
         cfg = live_config(tmp_path)
         results = run_driver(
@@ -11397,6 +11422,18 @@ class TestWaveFourManifestHonesty:
         )
         assert len(results) == 10
         assert any(r.status == _mod.STATUS_NOT_RUN for r in results.values())
+
+    def test_every_wave_four_check_has_a_predicate(self, tmp_path):
+        """No check is pending an implementation any more, so none may be unowned.
+
+        The counterpart to the docstring above: if a wave-4 ID ever loses its predicate,
+        `run_checks` reports it as a FAILURE rather than a not_run, because an unowned
+        not_run is how a check quietly stops being anyone's job. Asserting the mapping
+        directly is what keeps the not_runs above meaning "missing input".
+        """
+        for spec in _mod.WAVE4_CHECKS:
+            assert _mod.CHECK_PREDICATES.get(spec.check_id), spec.check_id
+            assert spec.check_id not in _mod.PENDING_CHECK_OWNERS, spec.check_id
 
 
 class TestW4_02_FeatureGating:
@@ -13531,3 +13568,72 @@ class TestConsolidatedSourceIdentity:
             documents={"W4-03": evidence_document("W4-03", wave=2)})
         assert run.results["W4-03"].status == _mod.STATUS_FAILED
         assert "wave" in run.results["W4-03"].message
+
+
+class TestTheRunbookDocumentsTheWaveFourArtifacts:
+    """The runbook is what an operator reads before collecting evidence.
+
+    A runbook that omits a required key sends someone to collect an artifact that
+    will fail on a key they were never told about, and they will read that failure as
+    a harness bug. So the documentation is checked against the harness rather than
+    reviewed by eye — the same reason the harness parses `stats_schemas.py` instead of
+    carrying a transcribed field list.
+    """
+
+    @staticmethod
+    def _runbook() -> str:
+        # `REPO_ROOT` rather than counting `.parent`s: this file has moved once
+        # already, and a hand-counted path resolves to a plausible directory that does
+        # not exist, which reads as a missing runbook rather than a wrong path.
+        return (REPO_ROOT / "docs" / "runbooks" / "agent-control-evaluation.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_every_wave_four_artifact_is_named(self):
+        """All six, so none is a surprise at collection time."""
+        runbook = self._runbook()
+        for name in _mod.REQUIRED_ARTIFACT_KEYS:
+            if name.startswith("wave4_"):
+                assert name in runbook, name
+
+    def test_every_required_key_of_every_wave_four_artifact_is_documented(self):
+        """A key an operator is not told about is a key they will not collect.
+
+        `fixture_identity` is exempt: it is the same three fields on every artifact in
+        every wave and is documented once, in the fixture-identity section, rather than
+        repeated six times here.
+        """
+        runbook = self._runbook()
+        undocumented = [
+            f"{name}.{key}"
+            for name, keys in _mod.REQUIRED_ARTIFACT_KEYS.items()
+            if name.startswith("wave4_")
+            for key in keys
+            if key != "fixture_identity" and key not in runbook
+        ]
+        assert undocumented == [], undocumented
+
+    def test_the_runbook_states_the_honest_reachable_outcome(self):
+        """It must not imply a complete wave-4 report is available in this revision.
+
+        The specific misreading to prevent: eight of ten passing looks like "nearly
+        done", and the two that are missing are the ones that check whether everything
+        else adds up.
+        """
+        runbook = self._runbook()
+        assert "not reachable in this revision" in runbook
+        assert "wave 3" in runbook.lower()
+
+    def test_the_runbook_separates_developer_proof_from_live_execution(self):
+        """The kickoff requires this distinction in the AC-to-evidence map.
+
+        Without it, a reader can come away believing the tests in this repository are
+        evidence about a deployment. They are evidence about the producers.
+        """
+        runbook = self._runbook()
+        assert "developer" in runbook.lower()
+        assert "live execution" in runbook.lower() or "required live" in runbook.lower()
+        # Every family of the 37 has to appear in the live-requirement table, or some
+        # criterion has no stated route to acceptance at all.
+        for family in ("AC-F3", "AC-P1", "AC-T1", "AC-A1", "AC-S1", "AC-F1"):
+            assert family in runbook, family
