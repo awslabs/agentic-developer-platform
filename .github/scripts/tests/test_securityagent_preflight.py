@@ -880,93 +880,39 @@ def test_pyyaml_is_installed_by_script_tests():
     )
 
 
-def _assert_preflight_workflow_scope(changed: set[str]):
-    """Protect the scan pipeline; restrict this unit when its artifacts change.
+def _assert_scan_is_dispatch_only():
+    """Check the security invariant on every checkout, without Git history.
 
-    The scan pipeline is protected by the PROPERTY this unit depends on -- it
-    stays dispatch-only -- rather than by forbidding any edit to the file. The
-    blanket form over-reached: it also blocked the workflow's chartered owner
-    (S19, #5618) from repairing the scanner defects the 2026-09-21 run exposed.
-    The dedup suite asserts the same dispatch-only property by content.
+    A diff-wide rule from the original preflight PR rejected later coordinated
+    IAM/workflow migrations, yet silently skipped on shallow CI checkouts.
+    The invariant is that these paid scans require an explicit dispatch.
     """
-    if ".github/workflows/security-scan.yml" in changed:
-        scan_path = REPO_ROOT / ".github/workflows/security-scan.yml"
-        with scan_path.open(encoding="utf-8") as fh:
-            workflow = yaml.safe_load(fh)
-        # PyYAML parses the `on:` key as the boolean True.
-        triggers = set(workflow[True])
-        assert triggers == {"workflow_dispatch"}, (
-            "security-scan.yml must stay dispatch-only; found triggers: "
-            f"{sorted(triggers)}"
-        )
-    unit_paths = {str(p.relative_to(REPO_ROOT)) for p in (SCRIPT_PATH, POLICY_PATH, TERRAFORM_PATH)}
-    if changed.isdisjoint(unit_paths):
-        return
-    workflows = {p for p in changed if p.startswith(".github/workflows/")}
-    allowed = {
-        ".github/workflows/security-agent-nightly.yml",
-        ".github/workflows/script-tests.yml",
-    }
-    assert workflows <= allowed, (
-        f"unexpected workflow changes alongside the preflight unit: {sorted(workflows - allowed)}"
+    scan_path = REPO_ROOT / ".github/workflows/security-scan.yml"
+    with scan_path.open(encoding="utf-8") as fh:
+        workflow = yaml.safe_load(fh)
+    # Support both unquoted (YAML 1.1 boolean) and quoted GitHub `on` keys.
+    triggers = set(workflow.get("on", workflow.get(True, {})))
+    assert triggers == {"workflow_dispatch"}, (
+        "security-scan.yml must stay dispatch-only; found triggers: "
+        f"{sorted(triggers)}"
     )
 
 
-def test_existing_security_scan_workflow_is_untouched():
-    """Keep security-scan unchanged without blocking unrelated workflow work."""
-    completed = subprocess.run(  # nosec B603 - fixed argv, no shell
-        ["git", "diff", "--name-only", "origin/main", "--"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        pytest.skip("origin/main not available for comparison")
-    _assert_preflight_workflow_scope(set(completed.stdout.splitlines()))
+def test_security_scan_workflow_remains_dispatch_only():
+    _assert_scan_is_dispatch_only()
 
 
-def test_unrelated_workflow_changes_do_not_change_preflight_scope():
-    _assert_preflight_workflow_scope({".github/workflows/aidlc-gate-nudge.yml"})
-
-
-@pytest.mark.parametrize("artifact", [SCRIPT_PATH, POLICY_PATH, TERRAFORM_PATH])
-def test_preflight_artifact_changes_still_reject_unrelated_workflows(artifact):
-    with pytest.raises(AssertionError, match="unexpected workflow changes"):
-        _assert_preflight_workflow_scope({
-            str(artifact.relative_to(REPO_ROOT)), ".github/workflows/aidlc-gate-nudge.yml",
-        })
-
-
-def test_preflight_scan_protection_applies_even_without_unit_changes(monkeypatch, tmp_path):
-    """Editing the scan workflow is allowed, but reintroducing a non-dispatch
-    trigger is not -- the property the guard now enforces.
-
-    The real workflow is dispatch-only, so the guard passes for it. To prove the
-    check still bites, point REPO_ROOT at a copy that carries a `pull_request`
-    trigger and confirm it is rejected.
-    """
-    # The live workflow is a legitimate edit: dispatch-only, so no failure.
-    _assert_preflight_workflow_scope({".github/workflows/security-scan.yml"})
-
+@pytest.mark.parametrize("trigger", ["push", "pull_request", "schedule", "workflow_run", "repository_dispatch"])
+def test_automatic_scan_triggers_fail_even_without_git_history(monkeypatch, tmp_path, trigger):
     bad = tmp_path / ".github/workflows"
     bad.mkdir(parents=True)
     (bad / "security-scan.yml").write_text(
-        "name: Security Scan\non:\n  workflow_dispatch:\n  pull_request:\n"
-        "    branches: [main]\njobs:\n  noop:\n    runs-on: ubuntu-latest\n"
-        "    steps:\n      - run: 'true'\n",
+        f"name: Security Scan\non:\n  workflow_dispatch: {{}}\n  {trigger}: {{}}\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        sys.modules[__name__], "REPO_ROOT", tmp_path, raising=True
-    )
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", tmp_path, raising=True)
     with pytest.raises(AssertionError, match="dispatch-only"):
-        _assert_preflight_workflow_scope({".github/workflows/security-scan.yml"})
-
-
-def test_preflight_can_update_its_own_workflow_binding():
-    _assert_preflight_workflow_scope({
-        str(SCRIPT_PATH.relative_to(REPO_ROOT)), ".github/workflows/security-agent-nightly.yml",
-    })
+        _assert_scan_is_dispatch_only()
 
 
 def test_no_secret_material_in_the_new_artifacts():
