@@ -35,3 +35,4 @@ from app.models.bootstrap import (  # noqa: F401
     WorkspaceBootstrapReservation,
     WorkspaceBootstrapAuthority,
 )
+from app.models.operation_budget import OperationBudgetReservation  # noqa: F401

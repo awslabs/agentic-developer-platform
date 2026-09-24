@@ -1259,33 +1259,89 @@ class TestBuildContextHygiene:
         `app/main.py:11`; nothing caught it because nothing compared what `app/`
         imports against what the build stages.
 
-        This is that comparison. It scans the shipped source for top-level
-        `superplane_*` imports and requires each one to be staged by the script AND
-        checked by the Dockerfile, so the next sibling package fails here rather
-        than in a container.
+        This is that comparison. It scans the shipped source for top-level imports
+        that resolve to source maintained in this repository, and requires each one
+        to be staged by the script AND checked by the Dockerfile, so the next
+        sibling package fails here rather than in a container.
         """
+        import importlib.util
         import re
+        import sys
         from pathlib import Path
 
         component = Path(__file__).resolve().parent.parent
         app_dir = component / "app"
 
-        # Top-level `superplane_*` packages imported anywhere under app/. Matched on
-        # import statements only, so a mention in prose does not count.
+        # WHY THIS SCANS BY ORIGIN AND NOT BY NAME (issue #5535, W6)
+        # ----------------------------------------------------------
+        # This scanner used to match `superplane_[a-z0-9_]+`, which made it blind to
+        # exactly the case it exists to catch. `harness_jobs` (#5527) is an
+        # in-repository package `app/` imports at module scope, absent from
+        # pyproject.toml, outside the pinned Docker context — the same bug in every
+        # respect except the package's name — and the prefix excluded it. The
+        # staging entry was missing for months and this test stayed green.
+        #
+        # The distinguishing property was never the name. It is that the package is
+        # maintained in THIS REPOSITORY and therefore is not installed by
+        # `pip install .` from pyproject.toml. So the scanner now collects every
+        # top-level import and keeps the ones that resolve to a path inside the
+        # repository; anything from site-packages is a declared dependency and the
+        # image gets it from pyproject.toml.
+        #
+        # Deliberately not "every import not in pyproject.toml": distribution names
+        # and import names differ (`pyjwt` imports `jwt`, `python-jose` imports
+        # `jose`), so that comparison needs a hand-maintained mapping and a wrong
+        # entry fails open. Resolution needs no mapping.
         imported: set[str] = set()
         pattern = re.compile(
-            r"^\s*(?:from|import)\s+(superplane_[a-z0-9_]+)", re.MULTILINE
+            r"^\s*(?:from|import)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.MULTILINE
         )
         for source in app_dir.rglob("*.py"):
             for match in pattern.finditer(source.read_text()):
                 imported.add(match.group(1).split(".")[0])
 
+        repo_root = component.parents[4]
+
+        def _is_in_repository(module: str) -> bool:
+            """True when this import resolves to source maintained in this repo."""
+            if module in sys.stdlib_module_names:
+                return False
+            try:
+                spec = importlib.util.find_spec(module)
+            except (ImportError, ValueError):
+                return False
+            if spec is None or not spec.origin:
+                return False
+            try:
+                # `resolve()` matters: an editable install can reach the package
+                # through a symlink, and an unresolved path would not compare
+                # against the repository root.
+                return Path(spec.origin).resolve().is_relative_to(repo_root)
+            except (OSError, ValueError):
+                return False
+
+        in_repository = {
+            module
+            for module in imported
+            if module not in ("app", "tests") and _is_in_repository(module)
+        }
+
         # Sanity check on the scanner itself: if this set is empty the assertions
         # below would pass vacuously, which is the failure mode of every
-        # scan-the-source test.
-        assert imported, "found no superplane_* imports under app/ — scanner is broken"
-        assert "superplane_contracts" in imported
-        assert "superplane_auth" in imported
+        # scan-the-source test. Named explicitly rather than only counted, because a
+        # scanner that found one package and missed two would satisfy a count.
+        assert in_repository, (
+            "found no in-repository imports under app/ — the scanner is broken, or "
+            "the sibling packages are installed from outside the repository"
+        )
+        assert "superplane_contracts" in in_repository
+        assert "superplane_auth" in in_repository
+        assert "harness_jobs" in in_repository, (
+            "app/ no longer imports harness_jobs, or it resolves from outside the "
+            "repository; #5535 composes the operation facade and inventory "
+            "authority from it, so its absence means those ports are uncomposed"
+        )
+        imported = in_repository
 
         staging_script = (component / "scripts" / "stage-domain-auth.sh").read_text()
         dockerfile = (component / "Dockerfile").read_text()

@@ -126,6 +126,19 @@ async def lifespan(app: FastAPI):
     # Before the installation gate: the gate probes installed adapters (see the
     # docstring above).
     composition = compose_vault_client()
+
+    # Connect what composition built but deliberately did not open (issue #5535).
+    # `compose()` is synchronous and must run where there is no event loop and no
+    # network — the packaged capability preflight runs it under `--network=none` —
+    # so the harness operation store's pool is opened here, inside the lifespan.
+    #
+    # Before the capability gate below, and on the management branch as well: the
+    # harness-backed ports are composed in both modes, and a pool left unopened
+    # would make every operation answer 503 while the readout reported the ports
+    # composed. `aopen()` never raises — an unreachable store is logged and the
+    # ports answer their unavailable outcome — so this cannot turn a database
+    # outage into a process that will not start.
+    await composition.aopen()
     if management_only():
         from pathlib import Path
 

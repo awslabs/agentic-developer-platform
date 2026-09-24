@@ -289,6 +289,16 @@ jobs:
           # with ModuleNotFoundError and pytest exits 4.
           pip install -e ../../contracts \
             -c ../../releases/transfer-constraints.txt
+          # The shared durable-operation package (#5527), which `app/composition.py` and
+          # the adapters under `app/adapters/` import to build three of the four
+          # production trust ports. Same situation as the two above: maintained in this
+          # repository, not published to any index, so not a declared dependency — the
+          # lane installs it from its path. It lives outside this module (at
+          # modules/harness/jobs), which is why the relative path is longer.
+          #
+          # It declares no dependencies of its own, deliberately, so this cannot
+          # conflict with the constraint file or the API's pinned versions.
+          pip install -e ../../../../harness/jobs
           # Pinned by directory, but NOT tolerant of an empty glob: these tests exist as of
           # the transfer, so "no tests found" means a PR deleted them and must fail.
           #

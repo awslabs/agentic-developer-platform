@@ -14,7 +14,7 @@ import logging
 
 import pytest
 from app.composition import (
-    BLOCKED_PORTS,
+    HARNESS_PORTS,
     PORT_ALLOCATION_INVENTORY,
     PORT_CREDENTIAL_EVIDENCE,
     PORT_OPERATION_FACADE,
@@ -26,25 +26,64 @@ from app.composition import (
 class _Configured:
     adp_gateway_internal_url = "https://gateway.internal"
     adp_gateway_internal_api_key = "internal-key"
+    # No `database_url`, so the three harness-backed ports report "no operation
+    # store configured" rather than composing. That is the point for most of this
+    # file: it isolates the vault port. `TestTheHarnessPortsAreComposed` supplies
+    # one explicitly.
+    database_url = ""
+    superplane_db_schema = ""
 
 
 class _Unconfigured:
     adp_gateway_internal_url = ""
     adp_gateway_internal_api_key = ""
+    database_url = ""
+    superplane_db_schema = ""
+
+
+class _WithOperationStore(_Configured):
+    """Configured for the harness ports as well as the vault one.
+
+    A real DSN shape, and deliberately one nothing listens on: composition must not
+    connect (`test_the_pool_is_not_connected_by_composing`), so a reachable database
+    is not needed to assert that the ports compose. Tests that need live SQL are in
+    the harness adapter suites and use the real PostgreSQL fixture.
+
+    The host is loopback and the port is explicit, and both matter. `app.schema_boundary`
+    fails closed on transport: with no CA configured, the only thing that may connect
+    unverified is a host it can establish is local, so an invented hostname like
+    ``composition-test`` raises `DatabaseTransportUnverifiable` *during* composition.
+    An earlier revision of this fixture used one, and every harness-port assertion
+    below failed on the transport guard rather than on the behaviour under test — the
+    port readout was even honest about it, which is how it was found. Port 1 is
+    privileged and unused, so a connection attempt would be refused immediately
+    rather than hanging, making a regression in "does not connect" fail fast.
+    """
+
+    database_url = "postgresql+asyncpg://composition-test@127.0.0.1:1/superplane"
 
 
 @pytest.fixture(autouse=True)
-def _no_preinstalled_reader(monkeypatch):
+def _no_preinstalled_adapters(monkeypatch):
     """Compose into an empty process, as a fresh container would.
 
     ``conftest`` imports ``app.main``, which must not install anything at import —
     but a previously-run test in the same session may have. Each test here starts
     from the uncomposed state so "left a pre-existing adapter alone" is a property
     this file can assert rather than inherit.
+
+    All four ports, not just the vault one: since #5535 the other three are really
+    composed, so a test that installed one would otherwise leak it into the next.
     """
     import app.services.credential_evidence as evidence
+    import app.services.provider_authority as authority
+    import app.services.provider_inventory as inventory
+    import app.services.provisioning as provisioning
 
     monkeypatch.setattr(evidence, "_reader", None)
+    monkeypatch.setattr(authority, "_validator", None)
+    monkeypatch.setattr(inventory, "_reader", None)
+    monkeypatch.setattr(provisioning, "_facade", None)
 
 
 class TestTheDefect:
@@ -161,24 +200,72 @@ class TestCredentialEvidence:
         assert get_credential_evidence_reader() is first
 
 
-class TestPortsThisImageCannotCompose:
-    """Blocked is reported, never faked."""
+class TestTheHarnessPortsAreComposed:
+    """The three `harness_jobs`-backed ports, which used to be hardcoded blocked.
 
-    @pytest.mark.parametrize(
-        "port",
-        [PORT_OPERATION_FACADE, PORT_PROVIDER_AUTHORITY, PORT_ALLOCATION_INVENTORY],
-    )
-    def test_it_installs_nothing_and_names_the_owning_dependency(self, port):
-        """An adapter that faked a verified answer would satisfy the gate and defeat it.
+    A previous revision listed them in a `BLOCKED_PORTS` table and reported them
+    absent *regardless of configuration*. Since the installer requires all four
+    capabilities true, that made the gate unsatisfiable by any deployment — so the
+    load-bearing assertion here is simply that a configured deployment composes
+    them, which is what the old arrangement could not do.
+    """
 
-        The detail must name the blocking work, not describe the symptom: a preflight
-        that fails with "not composed" leaves an operator with nothing to chase.
+    @pytest.mark.parametrize("port", list(HARNESS_PORTS))
+    def test_a_configured_operation_store_composes_the_port(self, port, monkeypatch):
+        """Configured means composed. The old table made this unreachable."""
+        result = compose(_WithOperationStore())
+
+        assert result.ports[port].installed is True, result.ports[port].detail
+        assert result.ports[port].preexisting is False
+        assert result.installed >= {port}
+
+    @pytest.mark.parametrize("port", list(HARNESS_PORTS))
+    def test_without_an_operation_store_it_names_the_setting(self, port):
+        """No stub either way, and a detail an operator can act on.
+
+        The requirement the old table failed is not "report something" — it did
+        that — but that the reason be *configuration* the operator controls rather
+        than a property of the image they cannot change.
         """
         result = compose(_Configured())
 
         assert result.ports[port].installed is False
-        assert result.ports[port].detail == BLOCKED_PORTS[port]
-        assert any(token in result.ports[port].detail for token in ("#5327", "#5529"))
+        assert "DATABASE_URL" in result.ports[port].detail
+
+    def test_the_adapters_are_the_production_ones(self, monkeypatch):
+        """Composed means the real adapter, not a placeholder that refuses.
+
+        A stub refusing every call would pass the capability probe — the probe's
+        pass condition *is* a refusal — so "the port is composed" has to be checked
+        against the type as well. This is the assertion that would have caught the
+        class of fix that satisfies the gate without integrating anything.
+        """
+        from app.adapters.harness_allocation_inventory import HarnessAllocationInventory
+        from app.adapters.harness_operation_facade import HarnessOperationFacade
+        from app.adapters.harness_provider_authority import HarnessProviderAuthority
+        from app.services.provider_authority import get_provider_authority_validator
+        from app.services.provider_inventory import get_allocation_inventory_reader
+        from app.services.provisioning import get_operation_facade
+
+        compose(_WithOperationStore())
+
+        assert isinstance(get_operation_facade(), HarnessOperationFacade)
+        assert isinstance(get_provider_authority_validator(), HarnessProviderAuthority)
+        assert isinstance(get_allocation_inventory_reader(), HarnessAllocationInventory)
+
+    def test_the_pool_is_not_connected_by_composing(self):
+        """`compose()` must stay usable with no event loop and no network.
+
+        The packaged preflight runs `python -m app.installation capabilities` under
+        `--network=none`. A composition that connected would fail there instead of
+        reporting a capability — and the capability it must report is established by
+        the adapters refusing an unauthorized probe, which they do without a
+        database.
+        """
+        result = compose(_WithOperationStore())
+
+        assert result._connections is not None
+        assert result._connections.opened is False
 
     def test_a_host_supplied_adapter_is_reported_as_composed(self, monkeypatch):
         """The blocker is that *this image* cannot build one, not that none may exist.
@@ -212,7 +299,18 @@ class TestPortsThisImageCannotCompose:
 
 
 class TestShutdown:
-    """Transports close; installed adapters stay installed."""
+    """Transports close, and the adapters this pass installed are released.
+
+    This class used to assert the opposite — ``test_closing_does_not_uninstall_the
+    _adapter`` — on the reasoning that a second startup "must not find a
+    half-composed port". The reasoning inverted in practice: shutdown closed the
+    vault client's connection pool and left the *closed* client installed, so the
+    second lifespan found a fully composed port over a dead transport, every
+    credential read failed, and the capability readout still said composed because
+    installation is what it observes. It was also unrecoverable —
+    ``install_credential_evidence_reader`` refuses a second install, so the second
+    lifespan could not replace the broken reader it correctly declined to displace.
+    """
 
     @pytest.mark.asyncio
     async def test_it_closes_transports_it_opened(self):
@@ -248,14 +346,102 @@ class TestShutdown:
         assert closed == ["fine"]
 
     @pytest.mark.asyncio
-    async def test_closing_does_not_uninstall_the_adapter(self):
-        """A second startup in the same process must not find a half-composed port."""
+    async def test_closing_releases_the_adapters_it_installed(self):
+        """The port is empty afterwards, so the next startup can compose into it."""
         from app.services.credential_evidence import get_credential_evidence_reader
 
         result = compose(_Configured())
+        assert get_credential_evidence_reader() is not None
+
         await result.aclose()
 
-        assert get_credential_evidence_reader() is not None
+        assert get_credential_evidence_reader() is None
+
+    @pytest.mark.asyncio
+    async def test_a_second_lifespan_gets_a_live_transport(self):
+        """The defect itself, as an assertion: no reused closed client.
+
+        Fails against the previous arrangement, where the second composition found
+        the first one's closed client still installed and reported the port composed
+        over a transport that could not answer.
+        """
+        from app.services.credential_evidence import get_credential_evidence_reader
+
+        first = compose(_Configured())
+        first_reader = get_credential_evidence_reader()
+        await first.aclose()
+
+        second = compose(_Configured())
+        second_reader = get_credential_evidence_reader()
+
+        assert second_reader is not None
+        assert second_reader is not first_reader
+        assert second.ports[PORT_CREDENTIAL_EVIDENCE].preexisting is False
+        await second.aclose()
+
+    @pytest.mark.asyncio
+    async def test_repeated_startup_and_shutdown_stays_clean(self):
+        """Three cycles, as an autoreload or an embedding host would drive it."""
+        from app.services.credential_evidence import get_credential_evidence_reader
+
+        seen = []
+        for _ in range(3):
+            result = compose(_WithOperationStore())
+            assert len(result.installed) == 4, result.unconfigured
+            seen.append(get_credential_evidence_reader())
+            await result.aclose()
+            assert get_credential_evidence_reader() is None
+
+        # Every cycle built its own, so none of them is a survivor of an earlier
+        # cycle's shutdown.
+        assert len(set(map(id, seen))) == 3
+
+    @pytest.mark.asyncio
+    async def test_it_does_not_release_an_adapter_it_did_not_install(self, monkeypatch):
+        """Shutdown releases only its own registrations.
+
+        A composition that cleared the ports unconditionally would uninstall a
+        test's substituted adapter, or a concurrently-live composition's — and
+        because `compose()` correctly declines to displace a pre-existing adapter,
+        the port would then be empty with nobody able to refill it.
+        """
+        import app.services.provisioning as provisioning
+
+        sentinel = object()
+        monkeypatch.setattr(provisioning, "_facade", sentinel)
+
+        result = compose(_WithOperationStore())
+        assert result.ports[PORT_OPERATION_FACADE].preexisting is True
+
+        await result.aclose()
+
+        assert provisioning.get_operation_facade() is sentinel
+
+    @pytest.mark.asyncio
+    async def test_it_leaves_a_port_another_object_has_taken_over(self, monkeypatch):
+        """Someone replaced the adapter after composition. Not ours to remove.
+
+        The uninstall helpers are identity-scoped, so this is a no-op rather than a
+        clear. Asserted because the unconditional version of this code would delete
+        a live adapter and log nothing about whose it was.
+        """
+        import app.services.provider_inventory as inventory
+
+        result = compose(_WithOperationStore())
+        assert result.ports[PORT_ALLOCATION_INVENTORY].installed is True
+
+        replacement = object()
+        inventory.set_allocation_inventory_reader(replacement)
+        await result.aclose()
+
+        assert inventory.get_allocation_inventory_reader() is replacement
+
+    @pytest.mark.asyncio
+    async def test_closing_twice_is_harmless(self):
+        """Shutdown paths run twice under some failure orderings."""
+        result = compose(_Configured())
+        await result.aclose()
+        await result.aclose()
 
 
 class TestReadout:

@@ -298,20 +298,80 @@ def test_the_gate_lives_in_the_harness_and_not_in_the_domain_app():
 
     "A Wave 6 story that puts the admission record or the outbox in
     `src/superplane-api/alembic/` has implemented shared jobs in the domain API." The
-    consumption table is an admission table, so this asserts it was not added there.
+    consumption table is an admission table, so this asserts it was not *created*
+    there.
+
+    ## Why this looks for DDL rather than for the table's name
+
+    The first version scanned every `.py` file for the substring
+    ``harness_approval_consumption``, and #5535 produced two false positives that are
+    worth recording, because both are cases the property should permit:
+
+    * **A comment.** `018_add_operation_budget_reservations.py` names the table to say
+      its own four-state vocabulary agrees with the harness's check constraint. A
+      reference that exists to keep the two sides of the seam from disagreeing is the
+      opposite of a bypass, and a detector that forbids it pushes the next author to
+      delete the explanation rather than the coupling.
+    * **A staged copy of this package.** `scripts/stage-domain-auth.sh` copies
+      `harness_jobs` into `src/superplane-api/vendor/` so `docker build` can reach it —
+      gitignored, refreshed per run, never committed. Those files ARE the harness, so
+      flagging them reported the harness for living in the harness.
+
+    Both were dismissable by inspection, which is the problem: a check that needs a
+    human to dismiss it every time stops being read. So the assertion is now about the
+    thing §3.4 actually forbids — the domain app declaring or writing the table — and
+    the prose-and-copies cases can no longer trip it.
+
+    `vendor/` is excluded by path rather than by content. It is build output; anything
+    found there says what the staging script copied, not what this repository
+    maintains, and it is the one directory under the component whose contents are not
+    reviewed as domain source.
     """
     repo = Path(__file__).resolve().parents[4]
-    alembic = repo / "modules" / "domain-apps" / "superplane" / "src" / "superplane-api"
-    if not alembic.is_dir():
+    component = (
+        repo / "modules" / "domain-apps" / "superplane" / "src" / "superplane-api"
+    )
+    if not component.is_dir():
         pytest.skip("the domain app is not present in this checkout")
-    offenders = [
-        str(path.relative_to(repo))
-        for path in alembic.rglob("*.py")
-        if "harness_approval_consumption" in path.read_text(errors="ignore")
-    ]
+
+    # Statements that would make the domain app an owner of the table rather than a
+    # reader of the harness's. `INSERT`/`UPDATE`/`DELETE` are included because writing
+    # a consumption row is asserting an admission decision, which is the bypass — not
+    # merely an ownership smell.
+    owning = (
+        "CREATE TABLE",
+        "DROP TABLE",
+        "ALTER TABLE",
+        "INSERT INTO",
+        "UPDATE",
+        "DELETE FROM",
+        # The SQLAlchemy and Alembic spellings, so a declarative model or a migration
+        # op is caught as well as raw SQL.
+        "__tablename__",
+        "create_table",
+        "drop_table",
+        "add_column",
+    )
+    offenders = []
+    for path in component.rglob("*.py"):
+        if "vendor" in path.relative_to(component).parts:
+            continue
+        text = path.read_text(errors="ignore")
+        if "harness_approval_consumption" not in text:
+            continue
+        # Same line, so a migration that creates an unrelated table in a file that
+        # merely mentions this one in a comment is not reported.
+        for number, line in enumerate(text.splitlines(), start=1):
+            if "harness_approval_consumption" not in line:
+                continue
+            statement = next((word for word in owning if word in line), None)
+            if statement is not None:
+                offenders.append(f"{path.relative_to(repo)}:{number} ({statement})")
     assert not offenders, (
-        f"the approval-consumption table is referenced from the domain app: "
-        f"{offenders}. Shared admission belongs to the harness"
+        f"the domain app declares or writes the approval-consumption table: "
+        f"{offenders}. Shared admission belongs to the harness — the domain app may "
+        f"read the harness's table through this package, and may name it in a comment, "
+        f"but may not own it."
     )
 
 

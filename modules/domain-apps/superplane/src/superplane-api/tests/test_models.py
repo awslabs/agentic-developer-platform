@@ -58,6 +58,12 @@ def test_all_tables_registered():
         # PostgreSQL journals used by the domain bootstrap SQL adapters.
         "workspace_bootstrap_reservations",
         "workspace_bootstrap_authority",
+        # The budget ledger's journal (issue #5535). Registered here — rather than
+        # existing only in migration 018 — so Alembic autogeneration compares against
+        # it and the declared schema cannot drift from the migration. Its rows are
+        # written by raw SQL over the harness connection, not through a session; see
+        # `app/models/operation_budget.py`.
+        "operation_budget_reservations",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert expected_tables == actual_tables, (

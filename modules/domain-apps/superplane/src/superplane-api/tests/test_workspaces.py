@@ -267,11 +267,17 @@ class TestWorkspaceModel:
 class _MockOperationFacade:
     """A stand-in for B's authorized-operation facade. **A mock, and recorded as one.**
 
-    Named and flagged explicitly (``is_mock``) for the reason U17a's contract gives:
-    B's facade does not exist in ADP (there is no ``modules/harness/jobs/``), so a
-    green run here closes no live criterion — it establishes that this API refuses
-    to provision without an authorized operation and that no dispatch or PAT
-    remains, which is exactly what this story's acceptance is.
+    Named and flagged explicitly (``is_mock``) for the reason U17a's contract gives,
+    and the reason survives the change in what exists. It used to be "B's facade does
+    not exist in ADP (there is no ``modules/harness/jobs/``)". Since #5535 it does
+    exist and is composed for any deployment that configures an operation store — but
+    it is not what these tests drive. A green run here still closes no live criterion:
+    it establishes that this API refuses to provision without an authorized operation
+    and that no dispatch or PAT remains, which is exactly what this story's acceptance
+    is.
+
+    The flag is what `TestTheFacadeIsAMock` reads to check that claim is still true of
+    the process, rather than assuming it from the package's absence.
     """
 
     is_mock = True
@@ -890,25 +896,48 @@ class TestTheFacadeIsAMock:
     def test_the_double_is_declared_a_mock(self):
         assert _MockOperationFacade.is_mock is True
 
-    def test_no_real_operation_facade_is_composed_into_this_app(self):
-        """Fails when B's facade becomes reachable here — the trigger to revisit.
+    def test_no_real_operation_facade_is_exercised_by_these_tests(self):
+        """The transition this test watched for has happened. Retargeted, third time.
 
-        Watches importability rather than the existence of `modules/harness/jobs/`.
-        The directory check fired when #5525 landed the shared store, and the answer
-        on inspection was that the package is built but composed nowhere: it is
-        imported by nothing under `src/`, so the facade above is still a mock and
-        every claim in this class still holds. A package existing is not a dependency;
-        being importable from this app is the first point at which it could be one.
+        Its history is the point. It began as "``modules/harness/jobs/`` does not
+        exist", which fired when #5525 landed the shared store; it was retargeted to
+        "``harness_jobs`` is not importable from this app", on the stated reasoning
+        that importability is the first point at which the package could become a
+        dependency. #5535 makes it one deliberately: the package is staged into the
+        image, `app/adapters/harness_operation_facade.py` adapts it, and
+        `app/composition.py` installs it for any deployment that configures an
+        operation store. So the old assertion is now asserting the absence of the
+        feature, and its message would send a reader to "revisit the mocked facade"
+        over a change that was the intended one.
 
-        Retargeted rather than removed, so the transition still has a tripwire — and
-        because an assertion that can never pass again teaches a reader to ignore it.
+        What the class still needs, and what this now asserts, is the claim the
+        docstring above actually makes: **nothing in this file is live evidence.**
+        That was previously true by the package's absence — a property of the
+        repository — and is now true by what these tests install, which is a property
+        they have to state. The failure it catches is real and is newly possible: a
+        composed production facade leaking into this offline suite would make these
+        tests exercise `harness_jobs` against whatever `DATABASE_URL` points at, and
+        a passing run would then be quoted as live acceptance of provisioning.
+
+        Deliberately NOT retargeted to "the production adapter is importable".
+        Asserting the feature exists from a mocked suite is how a green offline run
+        starts reading as deployment evidence, which is the exact confusion this
+        class exists to prevent. Packaging is asserted where it can be checked
+        honestly — `tests/test_auth.py` for the image's dependency, and
+        `tests/test_composition.py` for which adapter a configured deployment gets.
         """
-        import importlib.util
+        from app.adapters.harness_operation_facade import HarnessOperationFacade
 
-        assert importlib.util.find_spec("harness_jobs") is None, (
-            "`harness_jobs` is importable from this app: B's operation facade may be "
-            "real here. Revisit the mocked facade in this file and the live "
-            "criterion. Importability alone is not live evidence."
+        installed = prov.get_operation_facade()
+        assert not isinstance(installed, HarnessOperationFacade), (
+            "a production HarnessOperationFacade is installed while this offline "
+            "suite runs; every provisioning result in this file would be exercising "
+            "the real operation store. This run is not live evidence either way — "
+            "find what composed it and scope that to its own test."
+        )
+        assert installed is None or getattr(installed, "is_mock", False) is True, (
+            f"an undeclared facade {type(installed).__name__} is installed; only a "
+            "mock recorded as one may be used here."
         )
 
 

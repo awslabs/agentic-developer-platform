@@ -71,11 +71,37 @@ async def test_management_admin_can_read_but_cannot_trigger_workspace_execution(
     assert (await client.get("/readyz")).status_code == 200
 
 
+def image_head() -> str:
+    """The migration head this image actually ships.
+
+    Derived, not spelled. This test is about which background tasks management mode
+    starts, and it has to get past the lifespan's schema check to observe that — so
+    the revision here is a fixture value, not an assertion. A literal made every
+    migration break this test with "Management database schema does not match the
+    image", which says nothing about reconcilers; #5535's 018 is the second time
+    that happened. The check itself is asserted against a literal where it IS the
+    subject, in `tests/test_installation_postgres.py`.
+    """
+    from pathlib import Path
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    from app import main
+
+    root = Path(main.__file__).resolve().parents[1]
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    heads = ScriptDirectory.from_config(config).get_heads()
+    assert len(heads) == 1, f"the migration chain has {len(heads)} heads: {heads}"
+    return heads[0]
+
+
 async def test_management_startup_never_starts_legacy_reconcilers(monkeypatch):
     from app import installation, main
     monkeypatch.setenv("SUPERPLANE_MANAGEMENT_ONLY", "true")
     monkeypatch.setattr(app.state, "domain_policy", object())
-    monkeypatch.setattr(installation, "database_check", AsyncMock(return_value={"revision": "017_add_workspace_bootstrap_reservations"}))
+    monkeypatch.setattr(installation, "database_check", AsyncMock(return_value={"revision": image_head()}))
     workspace_start, vault_start = AsyncMock(), AsyncMock()
     monkeypatch.setattr(main.workspace_reconciler, "start", workspace_start)
     monkeypatch.setattr(main.vault_sync_reconciler, "start", vault_start)

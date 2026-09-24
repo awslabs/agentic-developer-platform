@@ -85,8 +85,16 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database):
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
     # The head `alembic upgrade head` actually reached, so it advances with the chain:
-    # w6-10 (#5533) adds 017 for `workspace_bootstrap_reservations`.
-    assert observed["revision"] == "017_add_workspace_bootstrap_reservations"
+    # w6-10 (#5533) added 017 for `workspace_bootstrap_reservations`; #5535 adds 018
+    # for `operation_budget_reservations`, the budget ledger's journal.
+    #
+    # Pinned to the literal rather than read from `ScriptDirectory.get_heads()`: the
+    # point of this assertion is that the chain reached ONE head and that the head is
+    # the one whose migration this test's schema expectations were written against.
+    # Deriving it would make the test agree with whatever the chain happens to be,
+    # including a chain that silently grew a second head — which is the failure this
+    # notices.
+    assert observed["revision"] == "018_add_operation_budget_reservations"
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))

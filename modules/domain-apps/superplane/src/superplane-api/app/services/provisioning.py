@@ -35,11 +35,24 @@ read, so there is no credential to leak; and no cloud-provider client, so the
 site can reach for. When the facade is absent this module raises
 ``ProvisioningUnavailable`` and the caller surfaces a refusal.
 
-That refusal is the correct behavior in this repository *today*: B's operation
-facade does not exist in ADP (there is no ``modules/harness/jobs/``, and U17a's
-``test_no_real_operation_facade_exists_to_integrate_against`` fails if one
-appears). Fail-closed with an honest error is the outcome; a fabricated
-``Provisioning`` status is the bug this story removes.
+That refusal remains the behavior whenever no facade is installed, and it is still
+the honest outcome: fail-closed with a named unavailability, never a fabricated
+``Provisioning`` status.
+
+What has changed is *whether* one is installed. An earlier version of this section
+said B's operation facade "does not exist in ADP (there is no
+``modules/harness/jobs/``)". That is no longer true, and the staleness was
+load-bearing in the same way the build-context claim below was: ``harness_jobs``
+exists, ships ``OperationFacadeService``, and is now staged into the image by
+``scripts/stage-domain-auth.sh``. ``app/adapters/harness_operation_facade.py``
+adapts it to the ``OperationFacade`` Protocol above and ``app/composition.py``
+installs it when the deployment configures a database for it.
+
+The absence properties in the paragraph above are unaffected, because they are
+properties of *this module*: it still holds no HTTP client, no token and no
+provider client, so there is still no path here that could bypass whatever facade
+is installed. What the adapter adds is a real implementation behind the port, not
+a second way to reach the provider.
 
 ## Why the contract's values are mirrored here rather than imported
 
@@ -270,6 +283,22 @@ def set_operation_facade(facade: OperationFacade | None) -> None:
 def get_operation_facade() -> OperationFacade | None:
     """The installed facade, or ``None`` when provisioning is unavailable."""
     return _facade
+
+
+def uninstall_operation_facade(facade: OperationFacade) -> bool:
+    """Remove `facade` if it is the installed one. Returns whether it was.
+
+    Identity-scoped so a composition's shutdown releases only its own facade. The
+    failure this prevents is specific and was real: a composition that closed its
+    transport and left the facade installed handed the *next* startup a facade
+    over a closed connection pool, which no probe could distinguish from a healthy
+    one until a request arrived. See `app/composition.py:Composition.aclose`.
+    """
+    global _facade
+    if _facade is not facade:
+        return False
+    _facade = None
+    return True
 
 
 def _require_facade() -> OperationFacade:

@@ -44,6 +44,15 @@ on:
       - 'modules/domain-apps/superplane/src/superplane-api/**'
       - 'modules/domain-apps/superplane/auth/**'
       - 'modules/domain-apps/superplane/contracts/**'
+      # Outside this module, unlike the two above: `harness_jobs` lives at
+      # `modules/harness/jobs/` and is staged into the build context by
+      # scripts/stage-domain-auth.sh (issue #5535, W6). It is listed for the same
+      # reason the comment above gives for watching the source as well as the lock
+      # — a fix to code the image *contains* must produce a new image. Omitting it
+      # is the quieter half of the same packaging gap: the image would keep
+      # shipping a stale copy of the package its four trust ports are built from,
+      # and nothing in the build would say so.
+      - 'modules/harness/jobs/**'
       - 'modules/domain-apps/superplane/releases/superplane.lock.yaml'
       - 'modules/domain-apps/superplane/releases/resolve_lock.py'
       - 'modules/domain-apps/superplane/releases/build-image.sh'

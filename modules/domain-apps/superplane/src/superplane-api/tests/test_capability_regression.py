@@ -373,11 +373,26 @@ class TestEveryRuntimeCallerReachesTheComposedAdapter:
         It is a *broader* authority being available exactly where the correct,
         narrower one could not be built — so the unconfigured case would end up more
         privileged than the configured one.
+
+        Absence is established here rather than inherited from the process. Before
+        #5535 no facade was ever composed, so "nothing installed" was this suite's
+        ambient state and the test read it for free. Now a configured test process
+        composes a real one, and any earlier test that composed would leak it into
+        this assertion — which would pass or fail on test ordering, not on the
+        property. Setting the global directly, as `tests/test_capability_probes.py`
+        does and for the same reason: the installer is deliberately one-shot and
+        refuses to overwrite a composed adapter.
         """
+        from app.services import provisioning
         from app.services.provisioning import ProvisioningUnavailable, _require_facade
 
-        with pytest.raises(ProvisioningUnavailable):
-            _require_facade()
+        saved = provisioning._facade
+        provisioning._facade = None
+        try:
+            with pytest.raises(ProvisioningUnavailable):
+                _require_facade()
+        finally:
+            provisioning._facade = saved
 
     def test_an_absent_evidence_reader_is_unavailable_and_not_a_denial(self):
         """503, never 403: a missing setting is not the caller's permissions.
