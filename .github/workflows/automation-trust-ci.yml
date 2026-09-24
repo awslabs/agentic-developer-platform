@@ -45,7 +45,7 @@ jobs:
           # boundary wiring ran a green job that asserted nothing about the file
           # changed. Its tests mock every provider and substitute the cluster/OIDC
           # attributes, so like the others they need no credentials or backend.
-          for module in modules/agent-factory/infra/modules/runner-runtime-policy modules/agent-factory/infra/modules/runner-iam modules/agent-factory/runner-infra/infrastructure platform/infra/modules/codebuild platform/automation-infra; do
+          for module in modules/agent-factory/infra/modules/agent-workflow-iam modules/agent-factory/infra/modules/agent-workflow-pool modules/agent-factory/infra/modules/runner-runtime-policy modules/agent-factory/infra/modules/runner-iam modules/agent-factory/runner-infra/infrastructure platform/infra/modules/codebuild platform/automation-infra; do
             terraform -chdir="$module" init -backend=false -input=false
             terraform -chdir="$module" test -no-color
           done

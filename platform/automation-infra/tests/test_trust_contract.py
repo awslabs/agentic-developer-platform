@@ -47,6 +47,7 @@ def test_all_action_jobs_run_on_arc():
                 continue
             assert job["runs-on"] in [
                 "arc-runner-org",
+                "arc-runner-agent",
                 "${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}",
                 {"group": "adp-deployment", "labels": "arc-runner-deployment"},
             ], f"{path.name}/{name}: GitHub Actions must run via ARC"

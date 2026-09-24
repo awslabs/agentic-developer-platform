@@ -35,9 +35,8 @@ concurrency:
 jobs:
   work:
     if: github.event_name == 'workflow_call' || github.event.label.name == 'agent-developer'
-    runs-on: ${{ vars.ARC_RUNNER_LABEL || 'arc-runner-org' }}
+    runs-on: arc-runner-agent
     permissions:
-      id-token: write
       contents: write
       issues: write
       pull-requests: write
@@ -59,6 +58,23 @@ jobs:
             curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
             unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
           fi
+
+      - name: Verify dedicated developer identity
+        env:
+          EXPECTED_AGENT_ROLE_ARN: ${{ vars.ADP_AGENT_WORKFLOW_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_AGENT_ROLE_ARN" =~ ^arn:aws:iam::([0-9]{12}):role/([A-Za-z0-9+=,.@_-]+-agent-workflow)$ ]] || {
+            echo "::error::Configure the verified dedicated agent-workflow role ARN"
+            exit 1
+          }
+          expected_account="${BASH_REMATCH[1]}"
+          expected_role="${BASH_REMATCH[2]}"
+          actual_arn=$(aws sts get-caller-identity --query Arn --output text)
+          case "$actual_arn" in
+            "arn:aws:sts::${expected_account}:assumed-role/${expected_role}/"*) ;;
+            *) echo "::error::Developer workflow is not using its dedicated identity"; exit 1 ;;
+          esac
 
       - name: Get App Credentials from AWS Secrets Manager
         id: aws-secrets
@@ -177,7 +193,7 @@ jobs:
 
       - name: Verify gateway model authority before the harness
         if: vars.ADP_ARC_MODEL_POLICY_ENABLED == 'true'
-        working-directory: ./adp-agent-src/modules/agent-factory/agent
+        working-directory: ./adp-agent/modules/agent-factory/agent
         run: npx ts-node src/arc-model-preflight.ts
 
       - name: Run @agent-developer
