@@ -51,8 +51,24 @@ const SIGNED_BODY = Buffer.from(
   'utf8',
 ).toString('base64');
 
+/**
+ * A gateway acceptance receipt — Issue #3963 review finding 1.
+ *
+ * Signed by nothing, and that is deliberate: this suite tests the sentinel's *shape*
+ * contract, and the receipt's signature is verified in the Python half against keys
+ * generated per run (`test_abort_authorization.py`). What matters here is that the
+ * field is required, typed and bounded, because the thing it replaced —
+ * `delivery: "accepted"` — was eight characters any process in the pod could write.
+ */
+const ABORT_RECEIPT = 'adpe1.eyJhY3Rpb24iOiJhYm9ydF9hY2NlcHRlZCJ9.cmVjZWlwdC1zaWduYXR1cmU';
+
 /** The minimum a writer must supply for the reader to accept the result. */
-const VALID_INPUT = { binding: BINDING, commandId: 'cmd-1', signedBodyBase64: SIGNED_BODY };
+const VALID_INPUT = {
+  binding: BINDING,
+  commandId: 'cmd-1',
+  signedBodyBase64: SIGNED_BODY,
+  abortReceipt: ABORT_RECEIPT,
+};
 
 let directory: string;
 let sentinelPath: string;
@@ -85,9 +101,10 @@ describe('a well-formed sentinel for this run', () => {
       // `body_digest` claim, so any re-encoding between write and read would break
       // the digest comparison the finalizer depends on.
       signed_body_base64: SIGNED_BODY,
-      // Recorded because the live authority recheck accepted this command, not
-      // merely because an envelope existed.
-      delivery: 'accepted',
+      // The gateway's signed acceptance receipt, carried verbatim. This — not any
+      // field this process writes about itself — is what proves the live authority
+      // recheck accepted the abort rather than merely that an envelope existed.
+      abort_receipt: ABORT_RECEIPT,
     });
     expect(Date.parse(read!.requested_at)).not.toBeNaN();
     // No `reason` key. The reason lives only inside the signed bytes; a field of
@@ -149,7 +166,7 @@ describe('the reader refuses anything it cannot prove belongs to this run', () =
       version: ABORT_SENTINEL_VERSION,
       command_id: 'cmd-1',
       requested_at: '2026-09-23T00:00:00Z',
-      delivery: 'accepted',
+      abort_receipt: ABORT_RECEIPT,
       signed_body_base64: SIGNED_BODY,
       ...override,
     }));
@@ -174,7 +191,7 @@ describe('the reader refuses anything it cannot prove belongs to this run', () =
       generation: BINDING.generation,
       command_id: 'cmd-1',
       requested_at: '2026-09-23T00:00:00Z',
-      delivery: 'accepted',
+      abort_receipt: ABORT_RECEIPT,
       signed_body_base64: SIGNED_BODY,
       ...override,
     }));
@@ -203,7 +220,7 @@ describe('the reader refuses anything it cannot prove belongs to this run', () =
       generation: BINDING.generation,
       command_id: 'cmd-1',
       requested_at: '2026-09-23T00:00:00Z',
-      delivery: 'accepted',
+      abort_receipt: ABORT_RECEIPT,
       signed_body_base64: SIGNED_BODY,
       future_field: 'ignored',
     }));
@@ -265,7 +282,19 @@ describe('the writer refuses a sentinel its own reader would reject', () => {
 
     const logged: string[] = [];
     const written = writeAbortSentinel(
-      { binding: BINDING, commandId: 'cmd-1', signedBodyBase64 },
+      {
+        binding: BINDING,
+        commandId: 'cmd-1',
+        signedBodyBase64,
+        // Both gateway tokens at their ceiling, alongside the near-maximal signed
+        // body. This is the worst legal document the writer can be asked to produce,
+        // and it is what the file ceiling has to admit: budgeting for one
+        // envelope-sized token while a genuine document carries two (the issuance
+        // envelope and the acceptance receipt, #3963 review finding 1) reproduces
+        // exactly the write-then-refuse defect this test was added for.
+        envelope: 'e'.repeat(MAX_SENTINEL_ENVELOPE_LENGTH),
+        abortReceipt: 'r'.repeat(MAX_SENTINEL_ENVELOPE_LENGTH),
+      },
       { sentinelPath, log: (_level, message) => logged.push(message) },
     );
 
@@ -407,7 +436,7 @@ describe('shared cross-language vectors', () => {
     max_signed_body_length: number;
     max_sentinel_bytes: number;
     max_safe_generation: number;
-    accepted_delivery: string;
+    abort_receipt: string;
     signed_body_base64: string;
     binding: { run_id: string; generation: number };
     vectors: Array<{
@@ -451,14 +480,24 @@ describe('shared cross-language vectors', () => {
     expect(vectors.max_signed_body_length).toBe(MAX_SIGNED_BODY_LENGTH);
     expect(vectors.max_sentinel_bytes).toBe(MAX_SENTINEL_BYTES);
     expect(vectors.max_safe_generation).toBe(Number.MAX_SAFE_INTEGER);
-    expect(vectors.accepted_delivery).toBe('accepted');
+    // Shape only. The fixture's receipt is unsigned, so what is pinned is that the
+    // contract's required acceptance field is a non-empty string inside the same
+    // ceiling as the envelope — the rule both readers enforce before any signature
+    // is considered.
+    expect(typeof vectors.abort_receipt).toBe('string');
+    expect(vectors.abort_receipt.length).toBeGreaterThan(0);
+    expect(vectors.abort_receipt.length).toBeLessThanOrEqual(vectors.max_envelope_length);
     // The file ceiling pinned as a *derivation* rather than as a literal: it has to
     // exceed the two fields the document must carry together. Restating the number
     // would have been satisfied by the broken value — a flat 8192, below the
     // 21852-character signed-body bound, which made the writer store documents this
     // reader then refused while telling the operator the abort was recorded.
+    // Two envelope-sized tokens, not one: a genuine document carries both the
+    // issuance envelope and the acceptance receipt (#3963 review finding 1), so a
+    // ceiling budgeting for one would reproduce the write-then-refuse defect above
+    // with the receipt as the field that overflows it.
     expect(vectors.max_sentinel_bytes)
-      .toBeGreaterThan(vectors.max_signed_body_length + vectors.max_envelope_length);
+      .toBeGreaterThan(vectors.max_signed_body_length + 2 * vectors.max_envelope_length);
   });
 
   it.each(vectors.vectors.map((vector) => [vector.name, vector] as const))(
@@ -534,7 +573,7 @@ describe('shared cross-language vectors', () => {
         generation: vectors.binding.generation,
         command_id: 'cmd-0001',
         requested_at: '2026-09-23T00:00:00Z',
-        delivery: vectors.accepted_delivery,
+        abort_receipt: vectors.abort_receipt,
         signed_body_base64: vectors.signed_body_base64,
         pad: '',
       };

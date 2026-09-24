@@ -67,6 +67,28 @@ CONTROL_ENVELOPE_AUDIENCE = "adp-agent-control-listener"
 # The only action an abort sentinel's envelope may authorize.
 _ABORT_ACTION = "abort"
 
+# The audience and action of an abort *receipt* — Issue #3963 review finding 1.
+#
+# Must match ABORT_RECEIPT_AUDIENCE / ABORT_RECEIPT_ACTION in
+# src/agentauth/envelope.py. Both are deliberately distinct from the control
+# envelope's, and the separation is the whole point of the artifact.
+#
+# A control envelope and a receipt answer different questions. The envelope says
+# "an operator was authorized to abort this run" — it is minted when the command is
+# *issued*, and stays valid for its full TTL whether or not the run ever took the
+# command, including when the live re-check later refused it. The receipt says "the
+# gateway accepted this abort against a live run, and recorded durable intent before
+# saying so". Only the second fact justifies deleting the queue message and
+# reporting a deliberate stop.
+#
+# If they shared an audience, an issuance envelope would satisfy the receipt check
+# by itself and the distinction would collapse — the finalizer would again be unable
+# to tell "someone asked" from "this run was actually stopped on purpose", which is
+# the gap the receipt exists to close. Audience separation is what makes possession
+# of a receipt evidence of acceptance rather than of a request.
+ABORT_RECEIPT_AUDIENCE = "adp-agent-abort-receipt"
+ABORT_RECEIPT_ACTION = "abort_accepted"
+
 # Mirrors MAX_SENTINEL_ENVELOPE_LENGTH in control-abort-sentinel.ts and the byte
 # ceiling both envelope verifiers apply.
 MAX_SENTINEL_ENVELOPE_BYTES = 8192
@@ -153,9 +175,17 @@ MAX_SIGNED_BODY_BYTES = 4 * ((16 * 1024 + 2) // 3) + 4
 # mislabelling this module exists to prevent.
 #
 # The 2048-byte tail is slack for the short fields and JSON punctuation (version,
-# run id, generation, UUID command id, ISO timestamp, delivery literal, keys). It
-# is not a budget for anything.
-MAX_SENTINEL_BYTES = MAX_SIGNED_BODY_BYTES + MAX_SENTINEL_ENVELOPE_BYTES + 2048
+# run id, generation, UUID command id, ISO timestamp, keys). It is not a budget for
+# anything.
+#
+# `2 *` the envelope bound, because as of review finding 1 a genuine document holds
+# TWO independent gateway tokens: the issuance `envelope` and the `abort_receipt`
+# that attests acceptance. Budgeting for one was the same defect described above,
+# reintroduced — a document carrying a large envelope and a large receipt would be
+# written successfully and then refused here on size, so the operator would be told
+# the abort was recorded while finalization fell back to calling it a crash. The
+# ceiling has to admit every document the writer can legitimately produce.
+MAX_SENTINEL_BYTES = MAX_SIGNED_BODY_BYTES + 2 * MAX_SENTINEL_ENVELOPE_BYTES + 2048
 
 # A generation as both halves define it. `re.fullmatch` with an explicit ASCII
 # class rather than `\d`, which in Python matches Unicode decimal digits too.
@@ -171,20 +201,30 @@ _ASCII_DIGITS = re.compile(r"[0-9]+")
 # sentinel match a live run.
 MAX_SAFE_GENERATION = 2**53 - 1
 
-# The delivery outcome the sentinel must carry — Issue #3963.
+# NOTE: there was an `ACCEPTED_DELIVERY = "accepted"` constant here, and its removal
+# is the substance of Issue #3963 review finding 1.
 #
-# A signed envelope proves the gateway *issued* an authorization. It does not
-# prove that authorization survived the live recheck performed immediately before
-# the executor ran: `deliverAuthorized` re-asks the gateway and settles the command
-# `rejected` when the grant has been revoked, the epoch moved or the human's
-# membership lapsed. A rejected command still leaves a perfectly valid envelope
-# behind, and honouring that envelope would let a refused abort finalize the run —
-# an authorization that was explicitly denied at the moment of use.
+# The problem it addressed is real and still holds: a signed envelope proves the
+# gateway *issued* an authorization, not that the authorization survived the live
+# recheck performed immediately before the executor ran. `deliverAuthorized` re-asks
+# the gateway and settles the command `rejected` when the grant has been revoked, the
+# epoch moved or the human's membership lapsed — and a rejected command leaves a
+# perfectly valid envelope behind. Honouring that envelope alone would let an
+# explicitly denied abort finalize the run.
 #
-# So the writer records which of those two things happened, and this reader
-# requires the accepted value. "Issued" and "allowed to take effect" are different
-# facts and the finalizer depends on the second one.
-ACCEPTED_DELIVERY = "accepted"
+# The attempted fix was to have the writer record which of the two happened, and for
+# this reader to require the string "accepted". That is not a check. The sentinel is a
+# file at a fixed path, the agent process runs with a `Bash` tool, and so any code in
+# the pod can write those eight characters beside a genuine-but-merely-issued envelope.
+# Requiring the literal constrained only the honest writer, while the finalizer went on
+# deleting queue messages and reporting deliberate stops on the strength of a claim the
+# run made about itself.
+#
+# What replaces it is `abort_receipt`: a separate Ed25519 token the gateway mints
+# during revalidation, only after the live re-check passed *and* durable abort intent
+# was persisted, under its own audience and action. The pod cannot produce one. The
+# `delivery` field is no longer read at all — see `read_abort_sentinel` — because a
+# self-asserted field that looks like evidence is worse than no field.
 
 
 def read_abort_sentinel(
@@ -308,14 +348,23 @@ def validate_abort_sentinel(
     if not isinstance(requested_at, str) or not requested_at:
         return None
 
-    # The live delivery outcome — Issue #3963. A sentinel that does not record an
-    # accepted delivery is refused outright rather than surfaced as an
-    # unauthorized-but-parsed document, because there is no legitimate writer that
-    # produces one: the abort executor only runs after `deliverAuthorized` has
-    # returned true. Its absence means either an old writer or a fabrication, and
-    # neither may finalize a run as aborted.
-    if document.get("delivery") != ACCEPTED_DELIVERY:
-        logger.warning("Ignoring abort sentinel: it does not record an accepted live delivery")
+    # The gateway's acceptance receipt — Issue #3963 review finding 1.
+    #
+    # Required here for *shape* only; its signature is verified in
+    # `verify_abort_authorization` alongside the envelope's, because verification
+    # needs the public keys and this function is pure document validation.
+    #
+    # Note what is deliberately NOT read: the document's own `delivery` field. A
+    # previous revision required it to equal "accepted", which excluded only honest
+    # writers — the field is written by the pod whose abort it attests. The receipt
+    # replaces it because the pod cannot mint one.
+    receipt = document.get("abort_receipt")
+    if (
+        not isinstance(receipt, str)
+        or not receipt
+        or len(receipt.encode("utf-8")) > MAX_SENTINEL_ENVELOPE_BYTES
+    ):
+        logger.warning("Ignoring abort sentinel: it carries no gateway acceptance receipt")
         return None
 
     # The exact bytes the operator's request was signed over. Required, because it
@@ -366,7 +415,7 @@ def validate_abort_sentinel(
         "generation": candidate_generation,
         "command_id": command_id,
         "requested_at": requested_at,
-        "delivery": ACCEPTED_DELIVERY,
+        "abort_receipt": receipt,
         "signed_body_base64": signed_body,
         # Deliberately NOT carried through from the document's own `reason` field.
         #
@@ -383,6 +432,101 @@ def validate_abort_sentinel(
         # caller who needs one, which is exactly how the gap arose.
         "envelope": envelope,
     }
+
+
+def _verify_signed_token(
+    token: object,
+    *,
+    audience: str,
+    action: str,
+    run_id: str,
+    generation: int,
+    command_id: object,
+    keys: dict[str, Ed25519PublicKey],
+) -> dict | None:
+    """Verify one gateway-signed token and return its payload, or ``None``.
+
+    Shared by the two tokens an abort sentinel carries — the command *envelope* and
+    the acceptance *receipt* — because every structural check is identical between
+    them and the only differences are the ``audience`` and ``action`` claims.
+    Factored out rather than duplicated so the two cannot drift: a check tightened
+    for one and forgotten for the other would leave the weaker token able to
+    authorize the stronger claim.
+
+    Verifies, in this order: token shape, required claims present, claim JSON types,
+    algorithm, issuer, audience, then the Ed25519 signature — and only afterwards
+    the action and the run/generation/command bindings. Signature first matters
+    because until it checks out every claim is attacker-controlled text.
+
+    ``audience`` is the separation that keeps these two tokens from substituting for
+    each other. Both are real signatures by the same key over statements about the
+    same abort, so without it an "operator asked to abort" envelope would satisfy a
+    check meant to establish "the gateway accepted this abort".
+
+    Bindings are compared against facts the caller knows independently: ``run_id`` is
+    the message id this pod dequeued and ``generation`` is what its own
+    ``register_control_endpoint`` returned. Comparing a token claim against a value
+    read out of the same token would be a tautology.
+
+    Returns the verified payload so the caller can use claims (``body_digest``, the
+    timestamps) that only make sense once the signature holds.
+    """
+    if not isinstance(token, str) or not token:
+        return None
+    if len(token.encode("utf-8")) > MAX_SENTINEL_ENVELOPE_BYTES:
+        return None
+
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != ENVELOPE_VERSION:
+        return None
+    body = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+    signature = base64.urlsafe_b64decode(parts[2] + "=" * (-len(parts[2]) % 4))
+    payload = json.loads(body.decode("utf-8"))
+
+    if not isinstance(payload, dict) or payload.get("v") != ENVELOPE_VERSION:
+        return None
+    if any(payload.get(claim) in (None, "") for claim in _REQUIRED_CLAIMS):
+        return None
+    # Types are required, not coerced. `str(value)` on hostile JSON is a silent
+    # accept, and the two runtimes disagree about what it produces — `["k1"]`
+    # becomes "k1" in JS and "['k1']" here.
+    if any(not isinstance(payload[claim], str) for claim in _STRING_CLAIMS):
+        return None
+    if type(payload["target_generation"]) is not int:
+        return None
+
+    # `alg` is compared against a single permitted value and never dispatched on,
+    # so `alg: "none"` is simply not in the list.
+    if payload["alg"] != "ed25519":
+        return None
+    if payload["iss"] != ENVELOPE_ISSUER:
+        return None
+    if payload["aud"] != audience:
+        # A signature over a different statement is still a real signature.
+        # Audience separation is what stops one being replayed as the other.
+        return None
+
+    key = keys.get(payload["kid"])
+    if key is None:
+        return None
+    # Verified before any claim is acted on.
+    key.verify(signature, ENVELOPE_VERSION.encode("ascii") + b"." + body)
+
+    if payload["action"] != action:
+        logger.warning("Abort sentinel token is for a different action")
+        return None
+    if payload["target_run_id"] != run_id:
+        logger.warning("Abort sentinel token names a different run")
+        return None
+    if payload["target_generation"] != generation:
+        logger.warning("Abort sentinel token is bound to a superseded control generation")
+        return None
+    if payload["command_id"] != command_id:
+        # Binds the token to the command the sentinel reports, so it cannot be
+        # paired with a different command's record.
+        logger.warning("Abort sentinel token does not match the recorded command")
+        return None
+    return payload
 
 
 def verify_abort_authorization(
@@ -402,30 +546,40 @@ def verify_abort_authorization(
     live run's queue message and report a crash as a deliberate stop, on the
     strength of a document the run wrote about itself.
 
-    The envelope is what makes the claim checkable. It is an Ed25519 token the
-    *gateway* minted for this exact command, and the signing key exists only in
-    the gateway: this image holds public verification keys and has no signing path
-    at all (see ``run_identity._verification_keys``). So a valid envelope is the
-    one artifact in the pod that could not have been produced from inside it.
+    Two Ed25519 tokens make the claim checkable, and **both** are required, because
+    they answer different questions and neither answer alone is sufficient.
 
-    The bindings below are checked against facts this process knows
-    independently — ``run_id`` is the message id it dequeued and ``generation`` is
-    the value its own ``register_control_endpoint`` call returned. Comparing an
-    envelope claim against a value taken from the envelope would be a tautology.
+    The **envelope** answers "was an operator authorized to abort this run?" It is
+    minted when the command is issued and binds the run, generation, command and a
+    digest of the operator's request bytes — which is what lets the reason text be
+    read from inside a signature instead of from beside one.
+
+    The **receipt** answers "did the gateway actually accept this abort against a
+    live run?" That is a different fact, and it is the one that justifies deleting a
+    queue message. An envelope stays valid for its whole TTL whether or not the run
+    ever took the command, including when the live re-check refused it — so an
+    envelope alone cannot distinguish an abort that happened from one that was merely
+    requested, or even explicitly denied. The gateway mints the receipt only after
+    that re-check passed *and* durable abort intent was persisted, under a distinct
+    audience and action so the envelope cannot stand in for it.
+
+    Why signatures at all: the signing key exists only in the gateway. This image
+    holds public verification keys and has no signing path (see
+    ``run_identity._verification_keys``), so these two tokens are the only artifacts
+    here that could not have been produced from inside the pod. Every other field is
+    self-asserted, which is why the previous ``delivery: "accepted"`` string proved
+    nothing (#3963 review finding 1).
+
+    Bindings are checked against facts this process knows independently — ``run_id``
+    is the message id it dequeued and ``generation`` is the value its own
+    ``register_control_endpoint`` call returned. Comparing a token claim against a
+    value taken from the same token would be a tautology.
 
     Returns ``False``, never raises: a verification failure means the abort is not
     *proven*, which the caller must treat as "finalize by exit code" — the
     pre-feature behaviour. Raising here would risk the SQS acknowledgement.
     """
     try:
-        token = sentinel.get("envelope")
-        if not isinstance(token, str) or not token:
-            # No proof offered. Not an error and not an authorization.
-            logger.warning("Abort sentinel carries no gateway authorization; not honouring it")
-            return False
-        if len(token.encode("utf-8")) > MAX_SENTINEL_ENVELOPE_BYTES:
-            return False
-
         keys = public_keys if public_keys is not None else load_model_policy_verification_keys()
         if not keys:
             # Fail closed, the same direction the listener takes when it has no
@@ -433,59 +587,47 @@ def verify_abort_authorization(
             logger.warning("No control envelope verification keys; cannot prove the abort")
             return False
 
-        parts = token.split(".")
-        if len(parts) != 3 or parts[0] != ENVELOPE_VERSION:
-            return False
-        body = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
-        signature = base64.urlsafe_b64decode(parts[2] + "=" * (-len(parts[2]) % 4))
-        payload = json.loads(body.decode("utf-8"))
-
-        if not isinstance(payload, dict) or payload.get("v") != ENVELOPE_VERSION:
-            return False
-        if any(payload.get(claim) in (None, "") for claim in _REQUIRED_CLAIMS):
-            return False
-        # Types are required, not coerced. `str(value)` on hostile JSON is a
-        # silent accept, and the two runtimes disagree about what it produces —
-        # `["k1"]` becomes "k1" in JS and "['k1']" here.
-        if any(not isinstance(payload[claim], str) for claim in _STRING_CLAIMS):
-            return False
-        if type(payload["target_generation"]) is not int:
+        command_id = sentinel.get("command_id")
+        payload = _verify_signed_token(
+            sentinel.get("envelope"),
+            audience=CONTROL_ENVELOPE_AUDIENCE,
+            action=_ABORT_ACTION,
+            run_id=run_id,
+            generation=generation,
+            command_id=command_id,
+            keys=keys,
+        )
+        if payload is None:
+            logger.warning("Abort sentinel carries no valid gateway authorization; not honouring it")
             return False
 
-        # `alg` is compared against a single permitted value and never dispatched
-        # on, so `alg: "none"` is simply not in the list.
-        if payload["alg"] != "ed25519":
-            return False
-        if payload["iss"] != ENVELOPE_ISSUER:
-            return False
-        if payload["aud"] != CONTROL_ENVELOPE_AUDIENCE:
-            # A signature over a model-policy decision is a real signature over a
-            # different statement. Audience separation is what stops one being
-            # replayed as the other.
-            return False
-
-        key = keys.get(payload["kid"])
-        if key is None:
-            return False
-        # Verified before any claim is acted on: until the signature checks out,
-        # every field above is attacker-controlled text.
-        key.verify(signature, ENVELOPE_VERSION.encode("ascii") + b"." + body)
-
-        if payload["action"] != _ABORT_ACTION:
-            # An envelope for `pause` is a genuine authorization for something
-            # else. Without this check a pause could be replayed as an abort.
-            logger.warning("Abort sentinel authorization is for a different action")
-            return False
-        if payload["target_run_id"] != run_id:
-            logger.warning("Abort authorization names a different run")
-            return False
-        if payload["target_generation"] != generation:
-            logger.warning("Abort authorization is bound to a superseded control generation")
-            return False
-        if payload["command_id"] != sentinel.get("command_id"):
-            # Binds the proof to the command the sentinel reports, so an envelope
-            # cannot be paired with a different command's record.
-            logger.warning("Abort authorization does not match the recorded command")
+        # The gateway's acceptance receipt — Issue #3963 review finding 1.
+        #
+        # Verified with the same rigor and the same independently-known bindings as the
+        # envelope, differing only in audience and action. This is the check that
+        # distinguishes an abort the gateway *accepted* from one an operator merely
+        # requested: the receipt is minted only after the live re-check passed and
+        # durable intent was recorded, so a fabricated field, a replayed issuance
+        # envelope, or a command refused at delivery all fail here.
+        #
+        # Required, not optional. There is no fallback, because every weaker signal
+        # available at this point is something the pod could have written about itself.
+        if (
+            _verify_signed_token(
+                sentinel.get("abort_receipt"),
+                audience=ABORT_RECEIPT_AUDIENCE,
+                action=ABORT_RECEIPT_ACTION,
+                run_id=run_id,
+                generation=generation,
+                command_id=command_id,
+                keys=keys,
+            )
+            is None
+        ):
+            logger.warning(
+                "Abort sentinel has no valid gateway acceptance receipt; it proves only "
+                "that an abort was requested, not that this run accepted one"
+            )
             return False
 
         # The request body binding — Issue #3963.

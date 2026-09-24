@@ -27,6 +27,7 @@ function writeAbortSentinelForRun(input: {
   commandId: string;
   envelope?: string | null;
   signedBodyBase64?: string | null;
+  abortReceipt?: string | null;
 }): boolean {
   const binding = abortSentinelBindingFromEnv();
   if (!binding) return false;
@@ -35,6 +36,7 @@ function writeAbortSentinelForRun(input: {
     commandId: input.commandId,
     envelope: input.envelope,
     signedBodyBase64: input.signedBodyBase64,
+    abortReceipt: input.abortReceipt,
   });
 }
 
@@ -165,7 +167,7 @@ export async function applyControlCommand(args: {
   action: ControlAction;
   commandId: string;
   adapter: Pick<ClaudeControlAdapter, 'requestPause' | 'resumeFromPause' | 'cancel'>;
-  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup' | 'annotateDelivered' | 'authorizationProof' | 'signedRequestBody'>;
+  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup' | 'annotateDelivered' | 'authorizationProof' | 'signedRequestBody' | 'abortAcceptanceReceipt'>;
   log?: (level: string, message: string, context?: Record<string, unknown>) => void;
   /**
    * Records the abort so the finalizing Python half can report it — Issue #3963.
@@ -178,6 +180,7 @@ export async function applyControlCommand(args: {
     commandId: string;
     envelope?: string | null;
     signedBodyBase64?: string | null;
+    abortReceipt?: string | null;
   }) => boolean;
   /**
    * Operator-supplied reason, already bounded by the listener.
@@ -254,10 +257,17 @@ export async function applyControlCommand(args: {
     // `args.reason` is deliberately NOT passed. The finalizer reads the operator's
     // words out of the signed bytes, so handing it a second, unsigned copy of the
     // same text would recreate the field that made the substitution possible.
+    // The gateway's signed receipt for this acceptance, read while the command is
+    // still `delivered`. This — not the envelope, and not any field this process
+    // writes — is what proves to the finalizer that the abort was accepted by a live
+    // run rather than merely requested at some point (#3963 review finding 1). The
+    // envelope is still carried because it is what binds the operator's reason text
+    // to a signature; the receipt is what makes the acceptance checkable.
     const recorded = (args.recordAbort ?? writeAbortSentinelForRun)({
       commandId,
       envelope: store.authorizationProof(commandId),
       signedBodyBase64: store.signedRequestBody(commandId),
+      abortReceipt: store.abortAcceptanceReceipt(commandId),
     });
 
     // The phase the dashboard shows while the run winds down. Set before the

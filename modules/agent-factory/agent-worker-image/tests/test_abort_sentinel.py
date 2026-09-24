@@ -34,7 +34,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.abort_sentinel import (
     ABORT_SENTINEL_PATH,
     ABORT_SENTINEL_VERSION,
-    ACCEPTED_DELIVERY,
     MAX_SAFE_GENERATION,
     MAX_SENTINEL_BYTES,
     MAX_SENTINEL_ENVELOPE_BYTES,
@@ -63,6 +62,15 @@ SIGNED_BODY = base64.b64encode(
     json.dumps({"command_id": "cmd-1", "reason": "wrong branch"}).encode("utf-8")
 ).decode("ascii")
 
+# The gateway's acceptance receipt — Issue #3963 review finding 1.
+#
+# Signed by nothing, deliberately. This module pins the sentinel's SHAPE contract:
+# that the acceptance field is required, string-typed and bounded. Whether a receipt
+# actually verifies against a gateway key is a different question, answered in
+# ``test_abort_authorization.py`` with keys generated per run. The three-part form is
+# used only so the value is a plausible token rather than arbitrary text.
+ABORT_RECEIPT = "adpe1.eyJhY3Rpb24iOiJhYm9ydF9hY2NlcHRlZCJ9.cmVjZWlwdC1zaWduYXR1cmU"
+
 
 def _document(**overrides) -> dict:
     """A valid sentinel for this run, with targeted fields replaced."""
@@ -72,10 +80,12 @@ def _document(**overrides) -> dict:
         "generation": GENERATION,
         "command_id": "cmd-1",
         "requested_at": "2026-09-23T00:00:00Z",
-        # Both required. ``delivery`` records that the live authority recheck
-        # accepted this command, not merely that an envelope was once issued;
-        # ``signed_body_base64`` is the preimage the reason is derived from.
-        "delivery": ACCEPTED_DELIVERY,
+        # Both required. ``abort_receipt`` is the gateway's signed attestation that it
+        # ACCEPTED this abort against the live run — not merely that an envelope was
+        # once issued; ``signed_body_base64`` is the preimage the reason is derived
+        # from. Neither is judged here: this module tests the shape contract, and the
+        # receipt's signature is checked in tests/test_abort_authorization.py.
+        "abort_receipt": ABORT_RECEIPT,
         "signed_body_base64": SIGNED_BODY,
     }
     document.update(overrides)
@@ -115,7 +125,7 @@ class TestAcceptsAGenuineAbort:
         # ``body_digest``, so re-encoding them anywhere between the writer and the
         # digest comparison would break the check they exist to pass.
         assert sentinel["signed_body_base64"] == SIGNED_BODY
-        assert sentinel["delivery"] == ACCEPTED_DELIVERY
+        assert sentinel["abort_receipt"] == ABORT_RECEIPT
         # No ``reason`` key, by design. The reason is derived from the signed bytes
         # by ``_resolve_abort_outcome``; a plain field of this name is what let
         # fabricated text be attributed to a human, so its absence is the contract.
@@ -138,20 +148,22 @@ class TestAcceptsAGenuineAbort:
     @pytest.mark.parametrize(
         "overrides",
         [
-            {"delivery": _ABSENT},
-            {"delivery": "rejected"},
-            {"delivery": "Accepted"},
-            {"delivery": True},
+            {"abort_receipt": _ABSENT},
+            {"abort_receipt": ""},
+            {"abort_receipt": {"token": "x"}},
+            {"abort_receipt": True},
+            {"abort_receipt": "z" * (MAX_SENTINEL_ENVELOPE_BYTES + 1)},
             {"signed_body_base64": _ABSENT},
             {"signed_body_base64": ""},
             {"signed_body_base64": 7},
             {"signed_body_base64": "A" * (MAX_SIGNED_BODY_BYTES + 1)},
         ],
         ids=[
-            "delivery_missing",
-            "delivery_rejected",
-            "delivery_wrong_case",
-            "delivery_boolean",
+            "receipt_missing",
+            "receipt_blank",
+            "receipt_wrong_type",
+            "receipt_boolean",
+            "receipt_oversized",
             "signed_body_missing",
             "signed_body_blank",
             "signed_body_wrong_type",
@@ -162,12 +174,22 @@ class TestAcceptsAGenuineAbort:
         self, sentinel_path, overrides
     ):
         # Two distinct facts, both required. A valid envelope proves the gateway
-        # *issued* an authorization; ``delivery`` proves it survived the live
-        # recheck performed immediately before the executor ran. A command the
-        # gateway refused at that point leaves its envelope behind, so a reader
-        # that honoured the envelope alone would finalize an abort the platform had
-        # just explicitly denied. And without the signed body the reason cannot be
-        # bound to the signature at all.
+        # *issued* an authorization; ``abort_receipt`` is the gateway's own signed
+        # statement that it accepted the abort against this live run after recording
+        # durable intent. A command the gateway refused at the live recheck leaves its
+        # envelope behind, so a reader honouring the envelope alone would finalize an
+        # abort the platform had just explicitly denied. And without the signed body
+        # the reason cannot be bound to the signature at all.
+        #
+        # The field this replaced was ``delivery: "accepted"`` — Issue #3963 review
+        # finding 1. Requiring a literal the pod itself writes is not a check: the
+        # agent has a ``Bash`` tool, so any code in the pod could put those eight
+        # characters beside a genuine-but-merely-issued envelope, and the finalizer
+        # would delete a live run's queue message on the run's own word. Hence the
+        # shape rules pinned here refuse an ABSENT, blank, mistyped or oversized
+        # receipt outright rather than normalizing it to ``None`` the way an unusable
+        # ``envelope`` is normalized: the envelope is optional to the parse, and the
+        # acceptance proof is the parse's whole purpose.
         _write(sentinel_path, _document(**overrides))
 
         assert read_abort_sentinel(RUN_ID, GENERATION, path=sentinel_path) is None
@@ -388,16 +410,26 @@ class TestSharedVectors:
         assert _VECTORS["max_signed_body_length"] == MAX_SIGNED_BODY_BYTES
         assert _VECTORS["max_sentinel_bytes"] == MAX_SENTINEL_BYTES
         assert _VECTORS["max_safe_generation"] == MAX_SAFE_GENERATION
-        assert _VECTORS["accepted_delivery"] == ACCEPTED_DELIVERY
+        # Shape only, because the fixture's receipt is unsigned: what is pinned is
+        # that the contract's required acceptance field is a non-empty string within
+        # the same ceiling as the envelope. Its signature is covered by
+        # tests/test_abort_authorization.py against per-run keys.
+        assert isinstance(_VECTORS["abort_receipt"], str)
+        assert 0 < len(_VECTORS["abort_receipt"].encode("utf-8")) <= MAX_SENTINEL_ENVELOPE_BYTES
         # The file ceiling pinned as a derivation, not a literal: it must exceed the
-        # two fields the document has to carry together. Restating the number would
-        # have been satisfied by the broken value — a flat 8192, below the
-        # 21852-byte signed-body bound — under which the TypeScript writer stored
-        # documents this reader then refused, reporting an abort to the operator as
-        # recorded and then finalizing the run as a crash.
+        # fields the document has to carry together. Restating the number would have
+        # been satisfied by the broken value — a flat 8192, below the 21852-byte
+        # signed-body bound — under which the TypeScript writer stored documents this
+        # reader then refused, reporting an abort to the operator as recorded and then
+        # finalizing the run as a crash.
+        #
+        # TWO envelope bounds, because a genuine document now carries both the
+        # issuance envelope and the acceptance receipt (review finding 1). Budgeting
+        # for one would reproduce exactly that defect with the receipt as the field
+        # that overflows the ceiling.
         assert (
             _VECTORS["max_sentinel_bytes"]
-            > _VECTORS["max_signed_body_length"] + _VECTORS["max_envelope_length"]
+            > _VECTORS["max_signed_body_length"] + 2 * _VECTORS["max_envelope_length"]
         )
 
     @pytest.mark.parametrize("vector", _VECTORS["vectors"], ids=_vector_ids(_VECTORS["vectors"]))
@@ -501,7 +533,7 @@ class TestSharedVectors:
             "generation": binding["generation"],
             "command_id": "cmd-0001",
             "requested_at": "2026-09-23T00:00:00Z",
-            "delivery": _VECTORS["accepted_delivery"],
+            "abort_receipt": _VECTORS["abort_receipt"],
             "signed_body_base64": _VECTORS["signed_body_base64"],
             "pad": "",
         }

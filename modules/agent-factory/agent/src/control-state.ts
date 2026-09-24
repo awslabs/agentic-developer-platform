@@ -34,7 +34,11 @@
 
 /** The four verbs the channel routes. Verb-agnostic by construction (ADR-9). */
 import { performance } from 'node:perf_hooks';
-import { MAX_REVALIDATION_MS, type QueuedAuthorization } from './control-authorization';
+import {
+  MAX_REVALIDATION_MS,
+  type QueuedAuthorization,
+  type RevalidationOutcome,
+} from './control-authorization';
 
 export type ControlAction = 'pause' | 'resume' | 'steer' | 'abort';
 
@@ -117,6 +121,20 @@ interface JournalEntry {
   /** Epoch ms when the entry reached a terminal status; null while pending/delivered. */
   settledAt: number | null;
   authorization?: Readonly<QueuedAuthorization>;
+  /**
+   * The gateway's signed receipt for an accepted abort — Issue #3963.
+   *
+   * Set by {@link ControlStateStore.deliverAuthorized} from the live re-check's
+   * response, and only when that check allowed the command. Held here rather than
+   * on `record` for the same reason as `authorization`: `record` is projected to
+   * the dashboard, and this is a bearer proof for this run's own finalizer.
+   *
+   * Distinct from `authorization.envelope`. The envelope is the operator's *request*
+   * and is valid for its whole TTL whether or not the run ever took the command; the
+   * receipt is the gateway's statement that it *accepted* this abort and recorded
+   * durable intent first. Only the second one justifies deleting the queue message.
+   */
+  abortReceipt?: string;
   checking?: boolean;
   executing?: boolean;
 }
@@ -133,7 +151,19 @@ export interface ControlStateOptions {
   terminalRetentionMs?: number;
   /** Injected clock. Expiry must be testable without sleeping or touching a real run. */
   now?: () => number;
-  revalidate?: (proof: Readonly<QueuedAuthorization>, generation: number) => Promise<boolean>;
+  /**
+   * Live authority re-check immediately before a queued handoff.
+   *
+   * Returns {@link RevalidationOutcome} rather than a bare boolean so that an
+   * `abort` decision can carry the gateway's signed acceptance receipt back with it
+   * (#3963 review finding 1). The boolean form is still accepted — most tests inject
+   * one, and it is the whole answer for every verb whose decision no later process
+   * has to re-present.
+   */
+  revalidate?: (
+    proof: Readonly<QueuedAuthorization>,
+    generation: number,
+  ) => Promise<RevalidationOutcome>;
 }
 
 /**
@@ -331,6 +361,33 @@ export class ControlStateStore {
     return entry.authorization.body_base64 || null;
   }
 
+  /**
+   * The gateway's signed receipt proving this abort was accepted — Issue #3963.
+   *
+   * This is the artifact that answers the question the envelope cannot. An envelope
+   * proves an operator *asked* to abort this run, and it stays valid for its entire
+   * TTL regardless of whether the run ever accepted the command — a command the live
+   * re-check *refused* leaves an equally valid envelope behind. The receipt is minted
+   * by the gateway only after that re-check passed and durable abort intent was
+   * recorded, under its own audience and action so an issuance envelope cannot stand
+   * in for one.
+   *
+   * Review finding 1 was that the finalizer had been distinguishing those two cases
+   * with a plain `delivery: "accepted"` string written by this pod. Anything in the
+   * pod can write that string — the agent's tool surface includes `Bash` — so it
+   * proved nothing. The receipt cannot be produced here at all: no worker holds the
+   * signing key and this image has no signing path.
+   *
+   * Same `delivered`-only restriction as {@link authorizationProof}: a settled
+   * command's proof has been used, and returning it afterwards would let a later
+   * caller present a stale acceptance.
+   */
+  abortAcceptanceReceipt(commandId: string): string | null {
+    const entry = this.journal.get(commandId);
+    if (!entry || !entry.abortReceipt || entry.record.status !== 'delivered') return null;
+    return entry.abortReceipt;
+  }
+
   /** The only delivery path for proof-bearing commands. Approval is never cached. */
   async deliverAuthorized(commandId: string, handoff: () => void): Promise<boolean> {
     const entry = this.journal.get(commandId);
@@ -338,13 +395,33 @@ export class ControlStateStore {
     entry.checking = true;
     const started = performance.now();
     let allowed = false;
-    try { allowed = await this.revalidate?.(entry.authorization, this.generation) === true; } catch { /* fail closed */ }
+    let receipt: string | null = null;
+    try {
+      const outcome = await this.revalidate?.(entry.authorization, this.generation);
+      // Both shapes are accepted. A bare boolean is the answer for every verb whose
+      // decision nothing needs to re-present later; the object form additionally
+      // carries the gateway's signed abort receipt (#3963). Narrowed on the object
+      // shape rather than on `typeof === 'boolean'` so a future field cannot be read
+      // off a boolean as `undefined` and silently mean "absent".
+      if (typeof outcome === 'object' && outcome !== null) {
+        allowed = outcome.allowed === true;
+        if (allowed && typeof outcome.abortReceipt === 'string' && outcome.abortReceipt.length > 0) {
+          receipt = outcome.abortReceipt;
+        }
+      } else {
+        allowed = outcome === true;
+      }
+    } catch { /* fail closed */ }
     entry.checking = false;
     if (entry.record.status !== 'pending') return false;
     if (!allowed || performance.now() - started >= MAX_REVALIDATION_MS) {
       this.settle(commandId, 'rejected', 'authorization unavailable or revoked before delivery');
       return false;
     }
+    // Recorded before the handoff, because the executor reads it *during* the
+    // handoff — the abort path writes its sentinel synchronously inside `run()`.
+    // Assigning after would leave the receipt absent at the only moment it is read.
+    if (receipt !== null) entry.abortReceipt = receipt;
     // No await between the bounded check and SDK handoff. Journal first, so a
     // second caller cannot hand it off again even if the callback throws.
     entry.record.status = 'delivered';

@@ -55,7 +55,8 @@ import entrypoint  # noqa: E402
 from lib import abort_sentinel  # noqa: E402
 from lib import invocation_status  # noqa: E402
 from lib.abort_sentinel import (  # noqa: E402
-    ACCEPTED_DELIVERY,
+    ABORT_RECEIPT_ACTION,
+    ABORT_RECEIPT_AUDIENCE,
     CONTROL_ENVELOPE_AUDIENCE,
     ENVELOPE_ISSUER,
     ENVELOPE_VERSION,
@@ -149,6 +150,13 @@ def _pem(signer: Ed25519PrivateKey) -> str:
     )
 
 
+# One signer for the module rather than one per test. Key generation is not what any
+# test here exercises, and a module-level signer is what lets the helpers below mint a
+# genuine acceptance receipt by default — without it every call site would have to
+# thread the fixture through purely to produce a token none of them is testing.
+_GATEWAY_KEY = Ed25519PrivateKey.generate()
+
+
 @pytest.fixture()
 def gateway_key(monkeypatch) -> Ed25519PrivateKey:
     """The gateway's signer, with only its public half projected into the pod.
@@ -157,9 +165,26 @@ def gateway_key(monkeypatch) -> Ed25519PrivateKey:
     at all, so a valid envelope is the one artifact in the pod that could not have
     been manufactured inside it.
     """
-    signer = Ed25519PrivateKey.generate()
-    monkeypatch.setenv("ADP_CONTROL_ENVELOPE_KEYS", json.dumps({KID: _pem(signer)}))
-    return signer
+    monkeypatch.setenv("ADP_CONTROL_ENVELOPE_KEYS", json.dumps({KID: _pem(_GATEWAY_KEY)}))
+    return _GATEWAY_KEY
+
+
+def _mint_receipt(signer: Ed25519PrivateKey, **overrides) -> str:
+    """Sign an ACCEPTANCE receipt — Issue #3963 review finding 1.
+
+    A distinct audience and action from the issuance envelope, deliberately. The two
+    tokens answer different questions: the envelope says an operator was authorized to
+    request this abort, the receipt says the gateway accepted it against the live run
+    after durable abort intent was persisted. Sharing an audience would let an
+    issuance envelope be replayed as its own acceptance proof, which is precisely the
+    hole the removed ``delivery: "accepted"`` literal left open.
+    """
+    claims = {
+        "aud": ABORT_RECEIPT_AUDIENCE,
+        "action": ABORT_RECEIPT_ACTION,
+        **overrides,
+    }
+    return _mint(signer, **claims)
 
 
 class TestResolvingTheAbortOutcome:
@@ -187,12 +212,13 @@ class TestResolvingTheAbortOutcome:
             "generation": GENERATION,
             "command_id": COMMAND_ID,
             "requested_at": _iso(SIGNED_AT),
-            # `delivery` records that the live authority recheck accepted this
-            # command, not merely that an envelope was issued; `signed_body_base64`
-            # is the preimage of the signed digest. The reason is NOT a field here —
-            # it is derived from those bytes — because an unsigned `reason` beside the
-            # envelope is what allowed fabricated text to be attributed to a human.
-            "delivery": ACCEPTED_DELIVERY,
+            # `abort_receipt` is the gateway's signed attestation that it ACCEPTED
+            # this abort against the live run, not merely that an envelope was once
+            # issued; `signed_body_base64` is the preimage of the signed digest. The
+            # reason is NOT a field here — it is derived from those bytes — because an
+            # unsigned `reason` beside the envelope is what allowed fabricated text to
+            # be attributed to a human.
+            "abort_receipt": _mint_receipt(_GATEWAY_KEY),
             "signed_body_base64": _signed_body_base64(),
         }
         payload.update(document)
@@ -246,7 +272,7 @@ class TestResolvingTheAbortOutcome:
 
         assert outcome is None
 
-    def test_a_sentinel_whose_delivery_was_refused_does_not_resolve(
+    def test_a_sentinel_the_gateway_never_accepted_does_not_resolve(
         self, monkeypatch, tmp_path, gateway_key
     ):
         # A signed envelope proves the gateway *issued* an authorization; it does not
@@ -255,8 +281,46 @@ class TestResolvingTheAbortOutcome:
         # grant was revoked, the epoch moved or the operator's membership lapsed —
         # and leaves the perfectly valid envelope behind. Honouring it would finalize
         # an abort the platform had explicitly just denied.
+        #
+        # This used to be expressed as `delivery="rejected"`, i.e. by asking the pod
+        # to admit the refusal. Review finding 1: a pod that wants to fake an abort
+        # simply does not write that. So the absence tested here is the absence of the
+        # gateway's own acceptance token, which no code in the pod can produce.
         assert (
-            self._resolve(monkeypatch, tmp_path, envelope=_mint(gateway_key), delivery="rejected")
+            self._resolve(
+                monkeypatch, tmp_path, envelope=_mint(gateway_key), abort_receipt=None
+            )
+            is None
+        )
+
+    def test_an_issuance_envelope_replayed_as_its_own_receipt_does_not_resolve(
+        self, monkeypatch, tmp_path, gateway_key
+    ):
+        # The envelope is gateway-signed and genuine, so signature verification alone
+        # would pass it in both slots. It is refused because the receipt slot requires
+        # the receipt audience and action: issuance and acceptance are separate facts,
+        # and one token must not be able to certify both.
+        envelope = _mint(gateway_key)
+        assert (
+            self._resolve(
+                monkeypatch, tmp_path, envelope=envelope, abort_receipt=envelope
+            )
+            is None
+        )
+
+    def test_a_receipt_the_pod_signed_itself_does_not_resolve(
+        self, monkeypatch, tmp_path, gateway_key
+    ):
+        # The threat model for the whole sentinel: the agent holds a `Bash` tool, so it
+        # can write this file and could generate its own keypair. What it cannot do is
+        # produce a signature the gateway's published public key verifies.
+        assert (
+            self._resolve(
+                monkeypatch,
+                tmp_path,
+                envelope=_mint(gateway_key),
+                abort_receipt=_mint_receipt(Ed25519PrivateKey.generate()),
+            )
             is None
         )
 
@@ -675,7 +739,7 @@ class TestTheAbortReachesTheEndOfTheRun:
             "generation": GENERATION,
             "command_id": COMMAND_ID,
             "requested_at": _iso(SIGNED_AT),
-            "delivery": ACCEPTED_DELIVERY,
+            "abort_receipt": _mint_receipt(_GATEWAY_KEY),
             # The bytes the gateway signed. The reason the closing comment shows is
             # derived from these, not from a `reason` field on the document — that
             # field is gone, because an unsigned copy of the operator's words beside

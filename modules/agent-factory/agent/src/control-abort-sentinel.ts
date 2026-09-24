@@ -125,11 +125,18 @@ export const MAX_SIGNED_BODY_LENGTH = 4 * Math.ceil((16 * 1024) / 3) + 4;
  * make impossible.
  *
  * The 2 KiB tail covers the remaining short fields and JSON punctuation: the
- * version, the run id, the generation, a UUID command id, an ISO timestamp, the
- * delivery literal and the keys. It is slack, not a budget — nothing is sized to
- * consume it.
+ * version, the run id, the generation, a UUID command id, an ISO timestamp and the
+ * keys. It is slack, not a budget — nothing is sized to consume it.
+ *
+ * The envelope bound is counted **twice** because a genuine document now carries two
+ * independent gateway tokens: the issuance {@link AbortSentinel.envelope} and the
+ * {@link AbortSentinel.abort_receipt} attesting acceptance (#3963 review finding 1).
+ * Counting it once would reintroduce the very defect described above — a document
+ * with a large envelope and a large receipt is one this writer produces and returns
+ * `true` for, and the reader would then refuse it on size and classify a deliberate
+ * stop as a crash.
  */
-export const MAX_SENTINEL_BYTES = MAX_SIGNED_BODY_LENGTH + MAX_SENTINEL_ENVELOPE_LENGTH + 2048;
+export const MAX_SENTINEL_BYTES = MAX_SIGNED_BODY_LENGTH + 2 * MAX_SENTINEL_ENVELOPE_LENGTH + 2048;
 
 /** The persisted payload. Carries no credential and no native session handle. */
 export interface AbortSentinel {
@@ -170,22 +177,40 @@ export interface AbortSentinel {
    */
   signed_body_base64: string;
   /**
-   * Whether the live authority recheck *accepted* this command — Issue #3963.
+   * The gateway's signed receipt proving this abort was *accepted* — Issue #3963.
    *
-   * A signed envelope proves the gateway issued an authorization. It does not
-   * prove the authorization still held at the moment of use: `deliverAuthorized`
-   * re-asks the gateway immediately before the executor runs and settles the
-   * command `rejected` when the grant was revoked, the revocation epoch moved, or
-   * the operator's membership lapsed. A command refused there leaves its valid
-   * envelope behind, and a finalizer that read only the envelope would honour an
-   * abort the platform had explicitly just denied.
+   * This field replaced a plain string `delivery: 'accepted'`, and the reason is
+   * worth keeping because the original was a reasonable-looking mistake.
    *
-   * Only `'accepted'` is written, and only from the executor — which by
-   * construction runs only after that recheck returned true. The reader requires
-   * this exact value, so an older writer's document or a fabricated one is refused
-   * rather than being treated as authorized.
+   * The problem it was meant to solve is real: a signed envelope proves the gateway
+   * *issued* an authorization, not that the authorization still held at the moment of
+   * use. `deliverAuthorized` re-asks the gateway immediately before the executor runs
+   * and settles the command `rejected` when the grant was revoked, the epoch moved or
+   * the operator's membership lapsed — and a command refused there leaves its
+   * perfectly valid envelope behind. A finalizer reading only the envelope would
+   * honour an abort the platform had just explicitly denied.
+   *
+   * The original fix was to have the writer record which of those happened. That does
+   * not work, and review finding 1 says why: the writer being honest constrains
+   * nothing, because the constraint has to hold against a *different* writer. This
+   * file lives at a fixed path in a filesystem the agent's own `Bash` tool can write.
+   * Anything in the pod could write `"accepted"` beside a genuine — but merely
+   * issued, or even explicitly refused — envelope, and the finalizer would delete the
+   * queue message and report a deliberate stop on the strength of it.
+   *
+   * So the acceptance is now attested by the only party that actually knows: the
+   * gateway mints this receipt during revalidation, after the live re-check passed
+   * *and* durable abort intent was recorded, under its own audience
+   * (`adp-agent-abort-receipt`) and action (`abort_accepted`) so that an issuance
+   * envelope cannot be replayed as one. It is bound to this run, generation, command
+   * and request-body digest. No worker holds the signing key and this image has no
+   * signing path, so unlike a string, this cannot be produced from inside the pod.
+   *
+   * Absent when the gateway supplied none. The reader refuses such a sentinel rather
+   * than falling back to any weaker signal — there is no weaker signal that means
+   * anything.
    */
-  delivery: 'accepted';
+  abort_receipt?: string | null;
   /**
    * The gateway's signed authorization for this abort — Issue #3963.
    *
@@ -248,6 +273,12 @@ export function writeAbortSentinel(
      * bind the reason to the signature, so a sentinel is not written at all.
      */
     signedBodyBase64?: string | null;
+    /**
+     * The gateway's signed acceptance receipt; see {@link AbortSentinel.abort_receipt}.
+     * Without it the finalizer cannot distinguish an accepted abort from a requested
+     * one, so a sentinel is not written at all.
+     */
+    abortReceipt?: string | null;
   },
   options: { sentinelPath?: string; log?: (level: string, message: string) => void } = {},
 ): boolean {
@@ -262,11 +293,14 @@ export function writeAbortSentinel(
     requested_at: input.requestedAt ?? new Date().toISOString(),
     // Verbatim; see the field docs. Bounded only in length.
     signed_body_base64: typeof input.signedBodyBase64 === 'string' ? input.signedBodyBase64 : '',
-    // Written unconditionally because this function is reached only from the abort
-    // executor, which runs only after `deliverAuthorized` re-checked the grant
-    // against the live gateway. There is no code path that records an abort whose
-    // delivery was refused: that path settles `rejected` and never reaches here.
-    delivery: 'accepted',
+    // The gateway's attestation that this abort was accepted, copied verbatim for
+    // the same reason as the envelope: it is a signature over exact bytes. Length-
+    // bounded only — an over-long value cannot be a real receipt and must not reach
+    // disk, and nothing here judges its contents, which is the finalizer's job.
+    abort_receipt: typeof input.abortReceipt === 'string' && input.abortReceipt.length > 0
+      && input.abortReceipt.length <= MAX_SENTINEL_ENVELOPE_LENGTH
+      ? input.abortReceipt
+      : null,
     // Copied verbatim — this is a signature over exact bytes, so any
     // normalization here would invalidate it. Bounded only in length, since an
     // over-long value cannot be a real envelope and must not be written to disk.
@@ -295,6 +329,22 @@ export function writeAbortSentinel(
   // reject would produce the same outcome while looking like it had succeeded.
   if (!payload.signed_body_base64) {
     log('ERROR', 'abort sentinel not written: the signed request body was not available');
+    return false;
+  }
+
+  // No receipt, no sentinel — Issue #3963 review finding 1.
+  //
+  // The receipt is the only evidence of *accepted* delivery that survives leaving
+  // this process, so a sentinel without one cannot be honoured by the finalizer and
+  // is refused there. Refusing to write it here too, for the same reason as the
+  // signed body above: the abort still stops the run unconditionally, and a document
+  // guaranteed to be rejected downstream would report `applied` to the operator while
+  // the finalizer silently classified the run as a crash.
+  //
+  // In practice this is absent only when the gateway declined to attest the
+  // acceptance — which is precisely the case that must not finalize as an abort.
+  if (!payload.abort_receipt) {
+    log('ERROR', 'abort sentinel not written: the gateway supplied no acceptance receipt');
     return false;
   }
 
@@ -426,11 +476,20 @@ export function validateAbortSentinel(
   if (runId !== binding.runId) return null;
   if (generation !== binding.generation) return null;
 
-  // The live delivery outcome and the signed bytes. Both are required, on the same
-  // rule the Python reader applies: a document lacking either cannot establish that
-  // the abort was accepted at the moment of use, nor that its reason is the
-  // operator's. There is no legitimate writer that omits them.
-  if (candidate.delivery !== 'accepted') return null;
+  // The acceptance receipt and the signed bytes. Both are required, on the same rule
+  // the Python reader applies: a document lacking either cannot establish that the
+  // abort was accepted at the moment of use, nor that its reason is the operator's.
+  // There is no legitimate writer that omits them.
+  //
+  // This replaced `candidate.delivery !== 'accepted'`. Checking a literal here was
+  // theatre: the string is written by this pod, so requiring it excluded only honest
+  // writers (#3963 review finding 1). The receipt is checked for *shape* here and
+  // verified cryptographically by the Python finalizer, which is the half that acts on
+  // it — but its presence is required on both sides so the two readers accept exactly
+  // the same set of documents.
+  const receipt = candidate.abort_receipt;
+  if (typeof receipt !== 'string' || !receipt
+    || receipt.length > MAX_SENTINEL_ENVELOPE_LENGTH) return null;
   const signedBody = candidate.signed_body_base64;
   if (typeof signedBody !== 'string' || !signedBody
     || signedBody.length > MAX_SIGNED_BODY_LENGTH) return null;
@@ -447,7 +506,7 @@ export function validateAbortSentinel(
     // signed bytes, and re-exposing an unsigned field of the same name here would
     // put the forgeable value back within reach of the next caller who needs one.
     signed_body_base64: signedBody,
-    delivery: 'accepted',
+    abort_receipt: receipt,
     // Surfaced, never judged here. This side cannot verify a signature it has no
     // business verifying: the envelope is checked by whoever *acts* on the
     // sentinel, which is the Python finalizer. A malformed or absent value

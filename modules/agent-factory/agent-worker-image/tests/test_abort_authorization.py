@@ -41,7 +41,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.abort_sentinel import (  # noqa: E402
-    ACCEPTED_DELIVERY,
+    ABORT_RECEIPT_ACTION,
+    ABORT_RECEIPT_AUDIENCE,
     CONTROL_ENVELOPE_AUDIENCE,
     ENVELOPE_ISSUER,
     ENVELOPE_VERSION,
@@ -75,10 +76,19 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
+#: The gateway's signer. Nothing in the worker image has its private half.
+#:
+#: Module-level rather than generated per test so that ``_sentinel`` can mint a
+#: genuine default abort receipt (#3963 finding 1) without every one of its ~35 call
+#: sites having to thread the key through. Key generation is not what any test here
+#: is exercising, and a fresh key per test bought nothing: each test asserts an
+#: outcome for the keys it explicitly passes.
+_GATEWAY_KEY = Ed25519PrivateKey.generate()
+
+
 @pytest.fixture()
 def gateway_key() -> Ed25519PrivateKey:
-    """The gateway's signer. Nothing in the worker image has its private half."""
-    return Ed25519PrivateKey.generate()
+    return _GATEWAY_KEY
 
 
 @pytest.fixture()
@@ -148,20 +158,64 @@ def _mint(signer: Ed25519PrivateKey, **overrides) -> str:
 _ABSENT = object()
 
 
+def _mint_receipt(signer: Ed25519PrivateKey, **overrides) -> str:
+    """Sign an abort *receipt* the way ``revalidation._accept_abort`` does — #3963.
+
+    Same signer and same claim structure as an envelope, differing in ``aud`` and
+    ``action``. That difference is the entire security property: the gateway mints a
+    receipt only after the live re-check accepted the command *and* durable abort
+    intent was persisted, so possessing one is evidence the abort was accepted rather
+    than merely requested.
+
+    ``principal`` follows the real minting path's ``<invocation>#<attempt>`` form.
+    Nothing verifies it today, so it is here to keep the fixture honest rather than
+    to satisfy a check.
+
+    Overrides are merged into the defaults rather than passed alongside them as
+    keywords, so a test may override ``aud`` or ``action`` themselves — which the
+    audience/action-separation tests do. Passing them through as ``**overrides``
+    beside explicit keywords raised ``TypeError: multiple values for 'aud'``, making
+    those tests fail on a helper bug instead of asserting the refusal.
+    """
+    claims = {
+        "aud": ABORT_RECEIPT_AUDIENCE,
+        "action": ABORT_RECEIPT_ACTION,
+        "principal": f"{RUN_ID}#1",
+        **overrides,
+    }
+    return _mint(signer, **claims)
+
+
 def _sentinel(
     envelope: object,
     *,
     command_id: str = COMMAND_ID,
     body: object = OPERATOR_BODY,
+    receipt: object = None,
+    signer: Ed25519PrivateKey | None = None,
 ) -> dict:
-    """A sentinel carrying the envelope AND the bytes it was signed over.
+    """A sentinel carrying the envelope, the signed bytes, and the receipt.
 
     ``body`` defaults to the operator's genuine request, so the digest binding holds
     and each test below fails only for the reason it names. Pass a different value
     to attack that binding — which is what
     ``TestTheReasonIsBoundToTheSignature`` does.
+
+    ``receipt`` defaults to a genuine one minted by ``signer`` (#3963 finding 1), so
+    tests that are about some *other* property still describe a complete, acceptable
+    sentinel. Pass ``_ABSENT`` to omit it or a value to attack it — which is what
+    ``TestAcceptanceMustBeAttestedByTheGateway`` does.
     """
-    document = {"command_id": command_id, "envelope": envelope, "delivery": ACCEPTED_DELIVERY}
+    document = {"command_id": command_id, "envelope": envelope}
+    if receipt is None:
+        # A genuine receipt from the real signer, bound to this command. Its
+        # `body_digest` tracks the *envelope's* operator body rather than the
+        # `body` argument, because the tests that vary `body` are attacking the
+        # envelope's reason binding and must not be given a second, unrelated
+        # failure reason from the receipt.
+        receipt = _mint_receipt(signer or _GATEWAY_KEY, command_id=command_id)
+    if receipt is not _ABSENT:
+        document["abort_receipt"] = receipt
     if body is not _ABSENT:
         raw = body if isinstance(body, bytes) else str(body).encode("utf-8")
         document["signed_body_base64"] = base64.b64encode(raw).decode("ascii")
@@ -431,7 +485,7 @@ class TestValidationAndAuthorizationStaySeparate:
             "generation": GENERATION,
             "command_id": COMMAND_ID,
             "requested_at": "2026-09-24T12:00:00Z",
-            "delivery": ACCEPTED_DELIVERY,
+            "abort_receipt": _mint_receipt(_GATEWAY_KEY),
             "signed_body_base64": base64.b64encode(OPERATOR_BODY).decode("ascii"),
         }
         document.update(overrides)
@@ -596,6 +650,149 @@ class TestTheReasonIsBoundToTheSignature:
         # The positive side, so the negatives above cannot be satisfied by a function
         # that simply always refuses. What an operator sees in the closing comment is
         # what they typed, and it arrives having been covered by the signature.
+        sentinel = _sentinel(_mint(gateway_key))
+
+        assert _verify(sentinel, public_keys) is True
+        assert authorized_abort_reason(sentinel) == "wrong branch, stop before it pushes"
+
+
+class TestAcceptanceMustBeAttestedByTheGateway:
+    """Issuance is not execution — Issue #3963 review finding 1.
+
+    This is the class that exists because a previous revision got this wrong twice,
+    and the distinction it defends is subtle enough to be worth stating plainly.
+
+    An abort involves two separate facts:
+
+    1. *An operator was authorized to abort this run.* The command **envelope** proves
+       this. It is minted when the command is issued.
+    2. *The gateway accepted that abort against a live run, having first recorded
+       durable intent.* The **receipt** proves this, and only this fact justifies
+       deleting the queue message and reporting a deliberate stop.
+
+    Fact 1 does not imply fact 2. An envelope stays valid for its entire TTL whether
+    or not the run ever took the command — including when the live re-check at
+    delivery *refused* it, because the grant was revoked, the epoch moved or the
+    operator's membership lapsed. A refused command leaves a perfectly valid envelope
+    behind.
+
+    The first attempt to close this gap had the writer record ``delivery: "accepted"``
+    and had the reader require that string. That constrains nothing. The sentinel is a
+    file at a fixed path, the agent runs with ``Bash``, and so any code in the pod can
+    write eight characters beside a genuine envelope. Root's review named it exactly:
+    restricting the honest writer does not constrain another process writing the file.
+
+    So acceptance is now attested by the only party that can know it, with a signature
+    the pod cannot produce. The tests below are the ones that would have caught the
+    original defect: a real, structurally perfect issuance envelope, paired with every
+    way a receipt can be missing or faked.
+    """
+
+    def test_a_genuine_envelope_without_a_receipt_proves_only_that_someone_asked(
+        self, gateway_key, public_keys
+    ):
+        # THE finding-1 regression. Every binding on the envelope is correct — it is
+        # minted by the gateway's own key, for this run, this generation, this command,
+        # over the operator's real request body. It is a genuine authorization.
+        #
+        # It is still not evidence that this run accepted an abort, and a sentinel
+        # carrying it alone must not finalize the run as aborted.
+        envelope = _mint(gateway_key)
+
+        assert _verify(_sentinel(envelope, receipt=_ABSENT), public_keys) is False
+
+    def test_a_fabricated_delivery_literal_beside_a_genuine_envelope_is_refused(
+        self, gateway_key, public_keys
+    ):
+        # The precise attack root described: valid issuance bytes plus a fabricated
+        # delivery field and no actual live handoff. The pod can write the literal; it
+        # cannot mint the receipt. Asserted explicitly so that reintroducing a
+        # `delivery`-based shortcut fails here rather than silently re-opening the gap.
+        document = _sentinel(_mint(gateway_key), receipt=_ABSENT)
+        document["delivery"] = "accepted"
+
+        assert _verify(document, public_keys) is False
+
+    def test_a_receipt_the_pod_signed_itself_is_refused(self, gateway_key, public_keys):
+        # The pod holds no signing key, but assume the worst: an attacker with their own
+        # key mints a structurally perfect receipt. The signature must fail against the
+        # gateway's published public key.
+        attacker = Ed25519PrivateKey.generate()
+
+        assert _verify(
+            _sentinel(_mint(gateway_key), receipt=_mint_receipt(attacker)), public_keys
+        ) is False
+
+    def test_the_issuance_envelope_cannot_be_replayed_as_its_own_receipt(
+        self, gateway_key, public_keys
+    ):
+        # Why the receipt carries a distinct audience AND action. Without that
+        # separation the envelope — a real signature by the real key over a statement
+        # about this very abort — would satisfy the receipt check by itself, and
+        # "an operator asked" would again be indistinguishable from "the run accepted".
+        envelope = _mint(gateway_key)
+
+        assert _verify(_sentinel(envelope, receipt=envelope), public_keys) is False
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"aud": CONTROL_ENVELOPE_AUDIENCE},
+            {"action": "abort"},
+            {"action": "pause"},
+        ],
+        ids=["listener_audience", "abort_action", "pause_action"],
+    )
+    def test_a_receipt_must_carry_the_receipt_audience_and_action(
+        self, gateway_key, public_keys, overrides
+    ):
+        # Each half of the separation, checked independently, so a future edit that
+        # drops one of the two checks fails here. A token signed by the gateway with
+        # the listener's audience is a real signature over a *different* statement.
+        assert _verify(
+            _sentinel(_mint(gateway_key), receipt=_mint_receipt(gateway_key, **overrides)),
+            public_keys,
+        ) is False
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"target_run_id": "run-someone-else"},
+            {"target_generation": GENERATION + 1},
+            {"command_id": "cmd-abort-2"},
+        ],
+        ids=["other_run", "superseded_generation", "other_command"],
+    )
+    def test_a_receipt_for_a_different_run_generation_or_command_is_refused(
+        self, gateway_key, public_keys, overrides
+    ):
+        # A genuine receipt is still evidence about one specific acceptance. Without
+        # these bindings, a real receipt from any other abort — an earlier attempt of
+        # this run, or another run entirely — could be presented here. The bindings are
+        # compared against values this process knows independently of the token.
+        assert _verify(
+            _sentinel(_mint(gateway_key), receipt=_mint_receipt(gateway_key, **overrides)),
+            public_keys,
+        ) is False
+
+    @pytest.mark.parametrize(
+        "receipt",
+        [42, {"a": 1}, [], "", "not.a.token", "x" * (MAX_SENTINEL_ENVELOPE_BYTES + 1)],
+        ids=["number", "dict", "list", "empty", "malformed", "oversized"],
+    )
+    def test_an_unusable_receipt_is_refused_rather_than_raising(
+        self, gateway_key, public_keys, receipt
+    ):
+        # Runs on the teardown path, so a hostile value must produce a refusal rather
+        # than an exception — an unhandled throw here would risk the SQS
+        # acknowledgement, which is the one thing an abort must get right.
+        assert _verify(_sentinel(_mint(gateway_key), receipt=receipt), public_keys) is False
+
+    def test_both_tokens_together_are_what_prove_an_abort(self, gateway_key, public_keys):
+        # The positive case, so none of the negatives above can be satisfied by a
+        # function that always refuses. Envelope plus receipt — the operator's
+        # authorization and the gateway's acceptance — and the reason still comes out of
+        # the signed bytes.
         sentinel = _sentinel(_mint(gateway_key))
 
         assert _verify(sentinel, public_keys) is True
