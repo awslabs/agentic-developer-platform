@@ -174,6 +174,8 @@ class RecordingGateway:
                     gateway._release.wait(timeout=120)
                     return
                 status, body = gateway.replies.get((method, self.path), (404, {"error": "not_found"}))
+                if callable(body):
+                    body = body(json.loads(raw) if raw else None)
                 payload = b"" if body is None else json.dumps(body).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -2413,3 +2415,196 @@ class TestOnboardingApprovalJourney:
         )
         assert result.returncode == 3
         assert not [r for r in onboarding.gateway.received if r["method"] == "POST"]
+
+
+class TestSavedLifecycleJourney:
+    DRIVER = TestTheCreatePathOnceTheEndpointsAreServed.DRIVER
+    run = TestTheCreatePathOnceTheEndpointsAreServed.run
+    SERVED = "listLifecycleProposals,previewLifecycleProposal,continueLifecycleProposal,requestApproval,getApproval,recoverOperation"
+    BASE = "/superplane/v1/workspaces/ws-lifecycle/lifecycle-proposals/artifact-plan"
+    REVISION = "a" * 64
+
+    def proposal(self, body):
+        request_id = body["operation_id"]
+        return {
+            "status": "awaiting_plan_approval",
+            "artifact_id": "artifact-plan",
+            "workspace_id": "ws-lifecycle",
+            "source_operation_id": "completed-prepare",
+            "request_revision": "b" * 64,
+            "phase": "apply-infrastructure",
+            "account_id": "123456789012",
+            "target": {"region": "us-east-1"},
+            "plan_file_sha256": "c" * 64,
+            "plan_json_sha256": "d" * 64,
+            "inventory": [{"address": "aws_eks_cluster.main", "actions": ["create"]}],
+            "estimate": {"max_cost_micros": 1000000},
+            "request_id": request_id,
+            "revision": self.REVISION,
+            "approval_request": {
+                "workspace_id": "ws-lifecycle",
+                "action": "provision",
+                "idempotency_key": request_id,
+                "parameters": {"lifecycle_artifact_id": "artifact-plan", "plan_file_sha256": "c" * 64, "max_cost_micros": "1000000"},
+            },
+        }
+
+    def approval(self, **overrides):
+        return dict(
+            {
+                "approval_id": "approval-phase",
+                "workspace_id": "ws-lifecycle",
+                "plan_digest": self.REVISION,
+                "result": "allowed-once",
+                "revoked": False,
+                "expires_at": "2999-01-01T00:00:00Z",
+                "can_decide": False,
+            },
+            **overrides,
+        )
+
+    def args(self, verb, *extra):
+        result = ["lifecycle", verb, "--workspace", "ws-lifecycle", "--artifact-id", "artifact-plan", "--json"]
+        if verb in ("request-approval", "continue"):
+            result += ["--plan-revision", self.REVISION, "--yes"]
+        return result + list(extra)
+
+    def prepare(self, onboarding):
+        onboarding.gateway.reply("POST", self.BASE + "/preview", 200, self.proposal)
+        planned = self.run(onboarding, self.SERVED, self.args("plan"))
+        assert planned.returncode == 0, planned.stdout + planned.stderr
+        request_id = document(planned)["detail"]["request_id"]
+        onboarding.gateway.reply("POST", "/superplane/v1/operation-approvals", 200, self.approval(result="pending"))
+        approved = self.run(onboarding, self.SERVED, self.args("request-approval"))
+        assert approved.returncode == 0, approved.stdout + approved.stderr
+        onboarding.gateway.reply("GET", "/superplane/v1/operation-approvals/approval-phase", 200, self.approval())
+        return request_id
+
+    def test_exact_plan_approval_continuation_and_recovery_keep_one_identity(self, onboarding):
+        request_id = self.prepare(onboarding)
+        approvals = [r for r in onboarding.gateway.received if r["path"].endswith("/operation-approvals")]
+        assert approvals[0]["body"] == self.proposal({"operation_id": request_id})["approval_request"]
+        operation = {"request_id": request_id, "workspace_id": "ws-lifecycle", "provisioning_operation_id": "server-phase-2", "state": "succeeded"}
+        onboarding.gateway.reply("POST", self.BASE + "/continue", 200, operation)
+        submitted = self.run(onboarding, self.SERVED, self.args("continue"))
+        assert submitted.returncode == 0, submitted.stdout + submitted.stderr
+        assert document(submitted)["detail"]["receipt"]["operation_id"] == "server-phase-2"
+        assert "readiness is checked separately" in document(submitted)["detail"]["readiness"]
+        posts = [r for r in onboarding.gateway.received if r["path"].endswith("/continue")]
+        assert posts[0]["body"] == {"operation_id": request_id, "approval_id": "approval-phase"}
+        # Once the API advances, a resumed command must not require its old proposal.
+        onboarding.gateway.reply("POST", self.BASE + "/preview", 409, {"error": "source_advanced"})
+        onboarding.gateway.reply("GET", "/superplane/v1/operations/by-idempotency/" + request_id, 200, operation)
+        count = len(onboarding.gateway.received)
+        recovered = self.run(onboarding, self.SERVED, self.args("continue"))
+        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        assert not [r for r in onboarding.gateway.received[count:] if r["method"] == "POST"]
+        assert document(recovered)["detail"]["receipt"]["idempotency_key"] == request_id
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"result": "pending"},
+            {"result": "rejected"},
+            {"expires_at": "2001-01-01T00:00:00Z"},
+            {"revoked": True},
+            {"plan_digest": "e" * 64},
+            {"workspace_id": "foreign"},
+        ],
+    )
+    def test_noncurrent_or_different_approval_cannot_continue(self, onboarding, overrides):
+        self.prepare(onboarding)
+        onboarding.gateway.reply("GET", "/superplane/v1/operation-approvals/approval-phase", 200, self.approval(**overrides))
+        result = self.run(onboarding, self.SERVED, self.args("continue"))
+        assert result.returncode == 4
+        assert not [r for r in onboarding.gateway.received if r["path"].endswith("/continue")]
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("workspace_id", "foreign"),
+            ("artifact_id", "different"),
+            ("request_id", "different"),
+            ("plan_file_sha256", "missing"),
+        ],
+    )
+    def test_preview_refuses_identity_mismatch_or_missing_apply_hash(self, onboarding, field, value):
+        onboarding.gateway.reply("POST", self.BASE + "/preview", 200, lambda body: dict(self.proposal(body), **{field: value}))
+        result = self.run(onboarding, self.SERVED, self.args("plan"))
+        assert result.returncode == 4
+        assert not [r for r in onboarding.gateway.received if r["path"].endswith(("/continue", "/operation-approvals"))]
+
+    def test_changed_hash_at_final_preview_prevents_continuation(self, onboarding):
+        self.prepare(onboarding)
+        count = 0
+
+        def changed(body):
+            nonlocal count
+            count += 1
+            return dict(self.proposal(body), plan_file_sha256=("c" if count == 1 else "e") * 64)
+
+        onboarding.gateway.reply("POST", self.BASE + "/preview", 200, changed)
+        result = self.run(onboarding, self.SERVED, self.args("continue"))
+        assert result.returncode == 4
+        assert count == 2
+        assert not [r for r in onboarding.gateway.received if r["path"].endswith("/continue")]
+
+    def test_lost_continuation_reply_keeps_identity_and_recovers_without_new_submission(self, onboarding):
+        request_id = self.prepare(onboarding)
+        onboarding.gateway.reply("POST", self.BASE + "/continue", 503, {"error": "response_lost"})
+        result = self.run(onboarding, self.SERVED, self.args("continue"))
+        assert result.returncode == 4
+        receipt = next(iter(state_file(onboarding.home)["receipts"].values()))
+        assert receipt["state"] == "unknown"
+        assert receipt["submission_stage"] == "submitted"
+        assert receipt["idempotency_key"] == request_id
+        operation = {"request_id": request_id, "workspace_id": "ws-lifecycle", "provisioning_operation_id": "accepted-phase", "state": "running"}
+        onboarding.gateway.reply("GET", "/superplane/v1/operations/by-idempotency/" + request_id, 200, operation)
+        result = self.run(onboarding, self.SERVED, self.args("continue"))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert len([r for r in onboarding.gateway.received if r["path"].endswith("/continue")]) == 1
+        assert document(result)["detail"]["receipt"]["operation_id"] == "accepted-phase"
+
+    @pytest.mark.parametrize("verb", ["request-approval", "continue"])
+    def test_dry_run_never_writes_receipts_or_sends_request(self, onboarding, verb):
+        result = self.run(onboarding, self.SERVED, self.args(verb, "--dry-run"))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert state_file(onboarding.home) == {}
+        assert not [r for r in onboarding.gateway.received if r["path"].startswith("/api/superplane/")]
+
+    def test_unserved_lifecycle_fails_before_any_request(self, onboarding):
+        result = onboarding(self.args("plan"))
+        assert result.returncode == 4
+        assert state_file(onboarding.home) == {}
+        assert not [r for r in onboarding.gateway.received if r["path"].startswith("/api/superplane/")]
+
+    @pytest.mark.parametrize("field,code", [("debug_output", 0), ("secret_value", 1)])
+    def test_lifecycle_extra_response_fields_never_expose_secret_values(self, onboarding, field, code):
+        onboarding.gateway.reply("POST", self.BASE + "/preview", 200, lambda body: dict(self.proposal(body), **{field: SECRET}))
+        result = self.run(onboarding, self.SERVED, self.args("plan"))
+        assert result.returncode == code, result.stdout + result.stderr
+        assert SECRET not in result.stdout + result.stderr + json.dumps(state_file(onboarding.home))
+        if code == 0:
+            assert field not in document(result)["detail"]["plan"]
+
+    def test_approval_and_operation_extra_fields_never_escape_to_stdout(self, onboarding):
+        request_id = self.prepare(onboarding)
+        onboarding.gateway.reply("POST", "/superplane/v1/operation-approvals", 200, self.approval(debug_output=SECRET))
+        approval = self.run(onboarding, self.SERVED, self.args("request-approval"))
+        assert approval.returncode == 0, approval.stdout + approval.stderr
+        assert SECRET not in approval.stdout + approval.stderr
+        onboarding.gateway.reply(
+            "POST",
+            self.BASE + "/continue",
+            200,
+            {
+                "request_id": request_id,
+                "workspace_id": "ws-lifecycle",
+                "provisioning_operation_id": "server-phase-2",
+                "state": "running",
+                "debug_output": SECRET,
+            },
+        )
+        submitted = self.run(onboarding, self.SERVED, self.args("continue"))
+        assert submitted.returncode == 0, submitted.stdout + submitted.stderr
+        assert SECRET not in submitted.stdout + submitted.stderr + json.dumps(state_file(onboarding.home))

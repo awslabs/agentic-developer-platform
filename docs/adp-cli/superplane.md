@@ -236,3 +236,34 @@ refused without deleting anything, rather than guessed at as a vault id.
 Organization and user administration belongs to ADP settings.
 `adp superplane org` and `adp superplane user` print those destinations; they do
 not create organizations or users.
+
+## Saved workspace lifecycle plans
+
+The onboarding CLI can review a saved phase and request its exact server-provided
+approval. These commands remain unavailable until their compatible API routes
+are enabled in the release; an unavailable command exits 4 without submission.
+
+```bash
+adp superplane onboarding lifecycle list --workspace WORKSPACE_ID
+adp superplane onboarding lifecycle plan --workspace WORKSPACE_ID --artifact-id ARTIFACT_ID
+adp superplane onboarding lifecycle request-approval --workspace WORKSPACE_ID \
+  --artifact-id ARTIFACT_ID --plan-revision REVIEWED_REVISION --yes
+adp superplane onboarding approval show --approval-id APPROVAL_ID
+# A selected approver uses their own ADP session to decide the request.
+adp superplane onboarding approval decide --approval-id APPROVAL_ID --result allowed-once --yes
+adp superplane onboarding lifecycle continue --workspace WORKSPACE_ID \
+  --artifact-id ARTIFACT_ID --plan-revision REVIEWED_REVISION --yes
+```
+
+Review the account, region, resource changes, estimate and saved plan hashes
+before requesting approval. The CLI preserves one request identity across plan
+review, approval and continuation. It checks the current approval and rereads
+the plan immediately before submission; changed hashes or an expired, revoked,
+rejected or unrelated approval prevent continuation. `--dry-run` on
+`request-approval` and `continue` writes no receipt and sends no domain request.
+
+If a continuation response is lost, retain its request reference and use
+`adp superplane onboarding operation recover --key REQUEST_ID`. Repeating
+`lifecycle continue` recovers the submitted receipt, including after the API has
+advanced past its source proposal. A completed phase does not establish workspace
+readiness; check `adp superplane onboarding readiness --workspace WORKSPACE_ID`.

@@ -115,15 +115,21 @@ ENDPOINTS = {
     },
     "listCredentials": {"method": "GET", "path": "/vault/credentials", "served": True},
     "listLifecycleProposals": {
-        "method": "GET", "path": "/workspaces/{workspace_id}/lifecycle-proposals", "served": False,
+        "method": "GET",
+        "path": "/workspaces/{workspace_id}/lifecycle-proposals",
+        "served": False,
         "capability": "listing the next workspace lifecycle plan",
     },
     "previewLifecycleProposal": {
-        "method": "POST", "path": "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview", "served": False,
+        "method": "POST",
+        "path": "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview",
+        "served": False,
         "capability": "reviewing the next recorded workspace plan",
     },
     "continueLifecycleProposal": {
-        "method": "POST", "path": "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue", "served": False,
+        "method": "POST",
+        "path": "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue",
+        "served": False,
         "capability": "continuing an approved workspace lifecycle plan",
     },
     "requestApproval": {
@@ -470,11 +476,7 @@ def write_receipt(scope, intent, receipt):
     receipts = dict(state.get("receipts") or {})
     key = receipt_key(scope, intent)
     previous = receipts.get(key)
-    if (
-        isinstance(previous, dict)
-        and previous.get("idempotency_key") != receipt.get("idempotency_key")
-        and previous.get("state") in TERMINAL_STATES
-    ):
+    if isinstance(previous, dict) and previous.get("idempotency_key") != receipt.get("idempotency_key") and previous.get("state") in TERMINAL_STATES:
         # A new completed-name intent must not erase the previous operation's
         # recovery receipt. The active slot still prevents concurrent changes.
         receipts[receipt_key(scope, "history:" + previous["idempotency_key"])] = previous
@@ -706,17 +708,21 @@ def capabilities_command(args, api):
     except CliError as exc:
         if exc.status_code in (401, 403):
             raise
-        return common.envelope("unavailable", command, {
-            "reason": "not-deployed" if exc.status_code == 404 else "unreachable",
-            "endpoint": "capabilities",
-            "capability": ENDPOINTS["capabilities"]["capability"],
-            "detail": "The capability report could not be read from this deployment.",
-            "unknown": [
-                "which lifecycle modes this deployment serves",
-                "which providers a connection may be registered against",
-                f"whether a create may carry an operation identity ({CREATE_IDEMPOTENCY_FEATURE})",
-            ],
-        })
+        return common.envelope(
+            "unavailable",
+            command,
+            {
+                "reason": "not-deployed" if exc.status_code == 404 else "unreachable",
+                "endpoint": "capabilities",
+                "capability": ENDPOINTS["capabilities"]["capability"],
+                "detail": "The capability report could not be read from this deployment.",
+                "unknown": [
+                    "which lifecycle modes this deployment serves",
+                    "which providers a connection may be registered against",
+                    f"whether a create may carry an operation identity ({CREATE_IDEMPOTENCY_FEATURE})",
+                ],
+            },
+        )
     if report is None:
         raise CliError(
             "The capability report could not be read. Treating it as advertising nothing; no create was attempted.",
@@ -1245,6 +1251,236 @@ def plan_command(args, api):
     return common.envelope("ok", command, {"plan": plan, "request_id": receipt["idempotency_key"]})
 
 
+def lifecycle_proposal(raw, workspace_id, artifact_id=None, request_id=None):
+    """Validate the saved plan and bind its exact approval body to this request."""
+    required = ("artifact_id", "workspace_id", "source_operation_id", "request_revision", "phase", "account_id")
+    if (
+        not isinstance(raw, dict)
+        or raw.get("status") != "awaiting_plan_approval"
+        or any(not isinstance(raw.get(key), str) or not raw[key] for key in required)
+        or raw["workspace_id"] != workspace_id
+        or (artifact_id is not None and raw["artifact_id"] != artifact_id)
+    ):
+        raise CliError("The lifecycle plan does not match the requested workspace or artifact.", "invalid_response", 4)
+    if raw["phase"] == "apply-infrastructure" and any(
+        not isinstance(raw.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", raw[key]) for key in ("plan_file_sha256", "plan_json_sha256")
+    ):
+        raise CliError("The saved infrastructure plan is missing its exact hashes.", "invalid_response", 4)
+    if request_id is not None:
+        approval = raw.get("approval_request")
+        if (
+            raw.get("request_id") != request_id
+            or not isinstance(raw.get("revision"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", raw["revision"])
+            or not isinstance(approval, dict)
+            or approval.get("workspace_id") != workspace_id
+            or approval.get("idempotency_key") != request_id
+            or approval.get("action") != "provision"
+            or not isinstance(approval.get("parameters"), dict)
+            or any(not isinstance(value, str) for value in approval["parameters"].values())
+        ):
+            raise CliError("The lifecycle preview does not bind this request to an exact approval.", "invalid_response", 4)
+    assert_no_secret_material(raw, "the lifecycle plan")
+    visible = {key: raw.get(key) for key in (*required, "status", "target", "plan_file_sha256", "plan_json_sha256", "inventory", "estimate")}
+    if request_id is not None:
+        visible.update(request_id=request_id, revision=raw["revision"])
+        visible["approval_request"] = {key: raw["approval_request"][key] for key in ("workspace_id", "action", "idempotency_key", "parameters")}
+    return visible
+
+
+def lifecycle_approval(raw):
+    assert_no_secret_material(raw, "approval")
+    return {
+        key: raw.get(key)
+        for key in (
+            "approval_id",
+            "workspace_id",
+            "plan_digest",
+            "envelope",
+            "result",
+            "expires_at",
+            "revoked",
+            "can_decide",
+        )
+    }
+
+
+def lifecycle_review(plan):
+    return fingerprint(
+        {
+            key: plan.get(key)
+            for key in (
+                "artifact_id",
+                "workspace_id",
+                "source_operation_id",
+                "request_revision",
+                "phase",
+                "account_id",
+                "target",
+                "plan_file_sha256",
+                "plan_json_sha256",
+                "inventory",
+                "estimate",
+                "revision",
+                "approval_request",
+            )
+        }
+    )
+
+
+def lifecycle_observation(command, intent, receipt, observed, workspace_id):
+    if (
+        not isinstance(observed, dict)
+        or observed.get("request_id") != receipt["idempotency_key"]
+        or observed.get("workspace_id") != workspace_id
+        or not isinstance(observed.get("provisioning_operation_id"), str)
+        or not observed["provisioning_operation_id"]
+    ):
+        raise CliError("The continuation response has no matching operation identity. Keep the existing receipt.", "invalid_response", 4)
+    assert_no_secret_material(observed, "the lifecycle operation")
+    observed = {
+        key: observed.get(key) for key in ("request_id", "workspace_id", "provisioning_operation_id", "state", "phase", "observed_at", "retryable")
+    }
+    state = observed.get("state")
+    if state not in ("accepted", "running", "succeeded", "failed"):
+        state = "unknown"
+    saved = record_observation(intent, receipt, state, observed["provisioning_operation_id"], workspace_id)
+    return common.envelope(
+        "ok",
+        command,
+        {
+            "operation": observed,
+            "receipt": _public_receipt(saved),
+            "readiness": "Workspace readiness is checked separately from phase completion.",
+        },
+    )
+
+
+def lifecycle_command(args, api):
+    command = f"superplane onboarding lifecycle {args.subcommand}"
+    endpoint = {
+        "list": "listLifecycleProposals",
+        "plan": "previewLifecycleProposal",
+        "request-approval": "requestApproval",
+        "continue": "continueLifecycleProposal",
+    }[args.subcommand]
+    blocked = require_served(endpoint, command)
+    if blocked:
+        return blocked
+    if args.subcommand == "list":
+        result = request(api, endpoint, {"workspace_id": args.workspace})
+        if not isinstance(result, dict) or result.get("workspace_id") != args.workspace or not isinstance(result.get("proposals"), list):
+            raise CliError("The lifecycle listing does not match this workspace.", "invalid_response", 4)
+        plans = [lifecycle_proposal(item, args.workspace) for item in result["proposals"]]
+        return common.envelope("ok", command, {"proposals": plans})
+    if getattr(args, "dry_run", False):
+        return common.envelope(
+            "ok", command, {"dry_run": True, "performed": "nothing", "workspace_id": args.workspace, "artifact_id": args.artifact_id}
+        )
+    scope = receipt_scope(args.org, api)
+    inputs = {"workspace_id": args.workspace, "artifact_id": args.artifact_id}
+    intent = "lifecycle:" + json.dumps([args.workspace, args.artifact_id], separators=(",", ":"))
+    kind, receipt = claim_identity(intent, scope, inputs, draft=True)
+    if kind == "conflict":
+        raise CliError("Another lifecycle request is unresolved. Keep its receipt.", "operation_conflict", 4)
+    # A successful continuation advances the source proposal. Recover directly
+    # from the durable request identity even when that proposal has disappeared.
+    if receipt.get("submission_stage") == "submitted":
+        blocked = require_served("recoverOperation", command)
+        if blocked:
+            return blocked
+        observed = request(api, "recoverOperation", {"idempotency_key": receipt["idempotency_key"]})
+        return lifecycle_observation(command, intent, receipt, observed, args.workspace)
+    blocked = require_served("previewLifecycleProposal", command)
+    if blocked:
+        return blocked
+    plan = lifecycle_proposal(
+        request(api, "previewLifecycleProposal", inputs, {"operation_id": receipt["idempotency_key"]}),
+        args.workspace,
+        args.artifact_id,
+        receipt["idempotency_key"],
+    )
+    review = lifecycle_review(plan)
+    with common.state_lock(STATE, CLAIM_BUSY):
+        current = read_receipts().get(receipt_key(scope, intent))
+        if (
+            not isinstance(current, dict)
+            or current.get("idempotency_key") != receipt["idempotency_key"]
+            or current.get("submission_stage") == "submitted"
+        ):
+            raise CliError("The lifecycle request changed during review. Recover its receipt.", "operation_conflict", 4)
+        if args.subcommand == "plan" and current.get("submission_stage") == "draft":
+            current["lifecycle_review"] = review
+            current["workspace_id"] = args.workspace
+            write_receipt(scope, intent, current)
+        if current.get("lifecycle_review") != review or (args.subcommand != "plan" and plan["revision"] != args.plan_revision):
+            raise CliError("The lifecycle plan changed or was not reviewed. Run lifecycle plan before requesting approval.", "plan_changed", 4)
+        receipt = current
+    if args.subcommand == "plan":
+        return common.envelope("ok", command, {"plan": plan, "request_id": receipt["idempotency_key"]})
+    if args.subcommand == "request-approval":
+        progress(json.dumps(plan, sort_keys=True))
+        if not confirm(args, f"Request approval for the displayed phase in workspace {args.workspace}."):
+            return common.envelope("ok", command, {"performed": "nothing", "plan": plan})
+        receipt = set_receipt_stage(scope, intent, receipt, "approval")
+        approval = request(api, "requestApproval", {}, plan["approval_request"])
+        if (
+            not isinstance(approval, dict)
+            or not isinstance(approval.get("approval_id"), str)
+            or not approval["approval_id"]
+            or approval.get("workspace_id") != args.workspace
+            or approval.get("plan_digest") != plan["revision"]
+        ):
+            raise CliError("The approval reply was incomplete. Keep the same request identity.", "invalid_response", 4)
+        approval = lifecycle_approval(approval)
+        set_receipt_stage(scope, intent, receipt, "approval", approval["approval_id"])
+        return common.envelope("ok", command, {"approval": approval})
+    approval_id = args.approval_id or receipt.get("approval_id")
+    if not approval_id:
+        raise CliError("Request approval for this lifecycle plan before continuing.", "approval_required", 4)
+    blocked = require_served("getApproval", command)
+    if blocked:
+        return blocked
+    approval = request(api, "getApproval", {"approval_id": approval_id})
+    try:
+        expires = datetime.fromisoformat(approval.get("expires_at", "").replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        expires = 0
+    if (
+        not isinstance(approval, dict)
+        or approval.get("approval_id") != approval_id
+        or approval.get("workspace_id") != args.workspace
+        or approval.get("plan_digest") != plan["revision"]
+        or approval.get("result") != "allowed-once"
+        or approval.get("revoked") is not False
+        or expires <= time.time()
+    ):
+        raise CliError("This exact lifecycle plan does not have a current approval. Keep its receipt.", "approval_required", 4)
+    progress(json.dumps(plan, sort_keys=True))
+    if not confirm(args, f"Continue the displayed approved phase in workspace {args.workspace}."):
+        return common.envelope("ok", command, {"performed": "nothing", "plan": plan})
+    checked = lifecycle_proposal(
+        request(api, "previewLifecycleProposal", inputs, {"operation_id": receipt["idempotency_key"]}),
+        args.workspace,
+        args.artifact_id,
+        receipt["idempotency_key"],
+    )
+    if lifecycle_review(checked) != review:
+        raise CliError("The lifecycle plan changed during approval review. Nothing was submitted.", "plan_changed", 4)
+    receipt = set_receipt_stage(scope, intent, receipt, "submitted", approval_id)
+    try:
+        observed = request(api, "continueLifecycleProposal", inputs, {"operation_id": receipt["idempotency_key"], "approval_id": approval_id})
+        return lifecycle_observation(command, intent, receipt, observed, args.workspace)
+    except CliError as exc:
+        record_observation(intent, receipt, "unknown")
+        raise CliError(
+            f"The continuation outcome is unknown ({exc}). Recover with "
+            f"'adp superplane onboarding operation recover --key {receipt['idempotency_key']}'.",
+            "operation_unknown",
+            4,
+        ) from None
+
+
 def approval_command(args, api):
     command = f"superplane onboarding approval {args.subcommand}"
     endpoint = {"request": "requestApproval", "show": "getApproval", "decide": "decideApproval"}[args.subcommand]
@@ -1761,6 +1997,18 @@ def parser():
         ),
     )
 
+    lifecycle = commands.add_parser("lifecycle", help="Review and continue immutable saved workspace phases")
+    lifecycle_commands = lifecycle.add_subparsers(dest="subcommand", required=True)
+    for verb in ("list", "plan", "request-approval", "continue"):
+        command = leaf(lifecycle_commands, verb, (shared,) if verb in ("list", "plan") else (shared, mutating))
+        command.add_argument("--workspace", required=True)
+        if verb != "list":
+            command.add_argument("--artifact-id", required=True, help="Immutable saved lifecycle plan reference")
+        if verb in ("request-approval", "continue"):
+            command.add_argument("--plan-revision", required=True)
+        if verb == "continue":
+            command.add_argument("--approval-id", help="Approval for the exact reviewed phase; defaults to the retained receipt")
+
     approvals = commands.add_parser("approval", help="Request, read and decide operation approvals")
     approval_commands = approvals.add_subparsers(dest="subcommand", required=True)
     approve_request = onboarding_arguments(leaf(approval_commands, "request", (shared, mutating)))
@@ -1794,6 +2042,7 @@ HANDLERS = {
     "adopt": adopt_command,
     "operation": operation_command,
     "approval": approval_command,
+    "lifecycle": lifecycle_command,
 }
 
 
