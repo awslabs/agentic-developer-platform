@@ -263,6 +263,7 @@ class TestStructuralEnforcement:
                 "https://does-not-resolve.invalid/", Mock(), client_factory=factory
             )
         assert raised.value.reason_code == REASON_RESOLUTION_FAILED
+        assert raised.value.browser_start_unattempted
         factory.assert_not_called()
 
     @patch("socket.getaddrinfo", return_value=_dns("93.184.216.34"))
@@ -603,7 +604,9 @@ class TestNavigationAndSubresources:
         assert guard.refusals[0]["reason_code"] == REASON_BLOCKED_ADDRESS
 
     @patch("socket.getaddrinfo")
-    def test_rotating_public_answers_only_use_still_advertised_original_ips(self, mock_dns) -> None:
+    def test_rotating_public_answers_only_use_still_advertised_original_ips(
+        self, mock_dns
+    ) -> None:
         mock_dns.return_value = _dns("93.184.216.34", "1.1.1.1")
         vetted = check_url("https://rotating.example.com/")
         transport = FakeTransport()
@@ -618,7 +621,9 @@ class TestNavigationAndSubresources:
         assert vetted.resolved_ips == ["93.184.216.34", "1.1.1.1"]
 
     @patch("socket.getaddrinfo")
-    def test_retained_original_ip_does_not_allow_a_mixed_private_answer(self, mock_dns) -> None:
+    def test_retained_original_ip_does_not_allow_a_mixed_private_answer(
+        self, mock_dns
+    ) -> None:
         mock_dns.return_value = _dns("93.184.216.34")
         vetted = check_url("https://rotating.example.com/")
         transport = FakeTransport()

@@ -166,6 +166,15 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
             name  = "AWS_DEFAULT_REGION"
             value = var.aws_region
           }
+          dynamic "env" {
+            for_each = var.session_owner_routing ? [1] : []
+            content {
+              name = "URL_ANALYSIS_SESSION_OWNER"
+              value_from {
+                field_ref { field_path = "status.podIP" }
+              }
+            }
+          }
           resources {
             requests = { cpu = "250m", memory = "512Mi" }
             limits   = { cpu = "1", memory = "1Gi" }
@@ -186,7 +195,7 @@ resource "kubernetes_deployment" "url_analysis_browser_broker" {
           }
           readiness_probe {
             http_get {
-              path = "/healthz"
+              path = var.session_owner_routing ? "/readyz" : "/healthz"
               port = 8765
             }
             initial_delay_seconds = 5
@@ -214,7 +223,7 @@ resource "kubernetes_service" "url_analysis_browser_broker" {
   spec {
     # A worker's investigation steps must reach the replica owning its short-lived
     # browser lease. Replica loss fails closed; contexts are never silently replayed.
-    session_affinity = "ClientIP"
+    session_affinity = var.session_owner_routing ? "None" : "ClientIP"
     selector         = { "app.kubernetes.io/name" = "url-analysis-browser-broker" }
     port {
       name        = "http"

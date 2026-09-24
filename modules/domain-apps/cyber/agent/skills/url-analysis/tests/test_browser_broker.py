@@ -212,12 +212,14 @@ def test_broker_logs_browser_failure_without_url_secrets(caplog) -> None:
     assert "fragment" not in caplog.text
 
 
-def test_client_maps_policy_refusal_without_fallback() -> None:
+@pytest.mark.parametrize("unattempted", [True, False, None, "true"])
+def test_client_maps_policy_refusal_without_fallback(unattempted) -> None:
     body = json.dumps(
         {
             "error": "destination_refused",
             "reason": "blocked",
             "reason_code": REASON_BLOCKED_ADDRESS,
+            "browser_start_unattempted": unattempted,
         }
     ).encode()
     error = HTTPError(
@@ -231,6 +233,7 @@ def test_client_maps_policy_refusal_without_fallback() -> None:
 
     request.assert_called_once()
     assert raised.value.reason_code == REASON_BLOCKED_ADDRESS
+    assert raised.value.browser_start_unattempted is (unattempted is True)
 
 
 def test_client_does_not_treat_broker_failure_as_allow() -> None:

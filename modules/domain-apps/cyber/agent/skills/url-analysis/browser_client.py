@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from case_contract import MAX_RESPONSE_BYTES
 from browser_guard import DestinationRefused
+from case_contract import MAX_RESPONSE_BYTES
 from denylist import DenylistResult
 
 DEFAULT_BROKER_URL = (
@@ -21,6 +22,19 @@ MAX_ERROR_BYTES = 64 * 1024
 
 class BrowserBrokerError(RuntimeError):
     """Raised when the trusted browser broker cannot complete an analysis."""
+
+    def __init__(
+        self,
+        message,
+        *,
+        code="broker_unavailable",
+        retry_after=None,
+        cleanup=None,
+        browser_start_unattempted=False,
+    ):
+        super().__init__(message)
+        self.code, self.retry_after, self.cleanup = code, retry_after, cleanup
+        self.browser_start_unattempted = browser_start_unattempted
 
 
 def _decode_json(payload: bytes) -> dict[str, Any]:
@@ -85,7 +99,21 @@ def investigation_request(operation, payload, *, broker_url=None):
     """One reasoning-selected operation; never replay a timed-out browser action."""
     if operation not in {"start", "step", "close"}:
         raise ValueError("Unsupported investigation operation")
-    return _request("investigation/" + operation, payload, broker_url, 75)
+    token = payload.get("session_token", "")
+    if operation != "start" and "~" in token:
+        owner, capability = token.split("~", 1)
+        address = ipaddress.IPv4Address(owner)
+        if (
+            not address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_unspecified
+        ):
+            raise ValueError("Invalid broker session owner")
+        # Only the fixed broker port; worker NetworkPolicy restricts it to broker pods.
+        broker_url = f"http://{address}:8765"
+        payload = {**payload, "session_token": capability}
+    return _request("investigation/" + operation, payload, broker_url, 80)
 
 
 def _request(operation, payload, broker_url, request_timeout_seconds):
@@ -116,9 +144,19 @@ def _request(operation, payload, broker_url, request_timeout_seconds):
                 reason=str(payload.get("reason", "destination refused")),
                 reason_code=str(payload.get("reason_code", "blocked_address")),
             )
-            raise DestinationRefused(url, decision) from error
+            refusal = DestinationRefused(url, decision)
+            refusal.browser_start_unattempted = (
+                payload.get("browser_start_unattempted") is True
+            )
+            raise refusal from error
         message = str(payload.get("message") or "browser broker request failed")
-        raise BrowserBrokerError(message) from error
+        raise BrowserBrokerError(
+            message,
+            code=payload.get("error", "broker_unavailable"),
+            retry_after=payload.get("retry_after_seconds"),
+            cleanup=payload.get("cleanup"),
+            browser_start_unattempted=payload.get("browser_start_unattempted") is True,
+        ) from error
     except (URLError, TimeoutError) as error:
         raise BrowserBrokerError("browser broker is unavailable") from error
 
