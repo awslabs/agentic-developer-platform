@@ -20,8 +20,10 @@ import { join } from 'path';
 import {
   ABORT_SENTINEL_PATH,
   ABORT_SENTINEL_VERSION,
+  MAX_SENTINEL_BYTES,
   MAX_SENTINEL_ENVELOPE_LENGTH,
   MAX_SENTINEL_REASON_LENGTH,
+  MAX_SIGNED_BODY_LENGTH,
   abortSentinelBindingFromEnv,
   boundSentinelReason,
   clearAbortSentinel,
@@ -33,6 +35,24 @@ import {
 } from './control-abort-sentinel';
 
 const BINDING: AbortSentinelBinding = { runId: 'run-abc', generation: 4 };
+
+/**
+ * A signed request body, base64 — the field the reason is derived from.
+ *
+ * Every valid sentinel carries one: the reader refuses a document without it,
+ * because a sentinel whose reason cannot be bound to the gateway's signature is a
+ * sentinel whose reason is self-asserted. The bytes here are ordinary JSON and
+ * carry no credential; nothing in this file signs anything, so no test here
+ * asserts that a body is *authorized* — that is `test_abort_authorization.py`,
+ * which generates keys per run.
+ */
+const SIGNED_BODY = Buffer.from(
+  JSON.stringify({ command_id: 'cmd-0001', reason: 'wrong branch' }),
+  'utf8',
+).toString('base64');
+
+/** The minimum a writer must supply for the reader to accept the result. */
+const VALID_INPUT = { binding: BINDING, commandId: 'cmd-1', signedBodyBase64: SIGNED_BODY };
 
 let directory: string;
 let sentinelPath: string;
@@ -51,10 +71,7 @@ const putRaw = (contents: string) => writeFileSync(sentinelPath, contents, 'utf8
 
 describe('a well-formed sentinel for this run', () => {
   it('round-trips through the writer and the reader', () => {
-    const written = writeAbortSentinel(
-      { binding: BINDING, commandId: 'cmd-1', reason: 'wrong branch' },
-      { sentinelPath },
-    );
+    const written = writeAbortSentinel(VALID_INPUT, { sentinelPath });
     expect(written).toBe(true);
 
     const read = readAbortSentinel(BINDING, { sentinelPath });
@@ -64,13 +81,23 @@ describe('a well-formed sentinel for this run', () => {
       run_id: 'run-abc',
       generation: 4,
       command_id: 'cmd-1',
-      reason: 'wrong branch',
+      // The signed bytes survive verbatim. They are the preimage of the envelope's
+      // `body_digest` claim, so any re-encoding between write and read would break
+      // the digest comparison the finalizer depends on.
+      signed_body_base64: SIGNED_BODY,
+      // Recorded because the live authority recheck accepted this command, not
+      // merely because an envelope existed.
+      delivery: 'accepted',
     });
     expect(Date.parse(read!.requested_at)).not.toBeNaN();
+    // No `reason` key. The reason lives only inside the signed bytes; a field of
+    // that name on the document is what let fabricated text be attributed to a
+    // human, so its absence is part of the contract rather than an omission.
+    expect(read).not.toHaveProperty('reason');
   });
 
   it('lands atomically under the final name, leaving no temp file behind', () => {
-    writeAbortSentinel({ binding: BINDING, commandId: 'cmd-1' }, { sentinelPath });
+    writeAbortSentinel(VALID_INPUT, { sentinelPath });
 
     // A leftover `.tmp` would mean the rename did not happen or cleanup failed;
     // either way a reader could later see a partial document.
@@ -80,21 +107,15 @@ describe('a well-formed sentinel for this run', () => {
   });
 
   it('writes owner-only permissions', () => {
-    writeAbortSentinel({ binding: BINDING, commandId: 'cmd-1' }, { sentinelPath });
-    // The reason text is operator-supplied and the file names the run; no other
-    // pod user has any business reading it.
+    writeAbortSentinel(VALID_INPUT, { sentinelPath });
+    // The signed body is operator-supplied text and the file names the run; no
+    // other pod user has any business reading it.
     expect(statSync(sentinelPath).mode & 0o077).toBe(0);
   });
 
-  it('records a null reason when none was supplied, not an empty string', () => {
-    writeAbortSentinel({ binding: BINDING, commandId: 'cmd-1' }, { sentinelPath });
-    // A downstream `if (reason)` and a downstream `if (reason !== null)` must agree.
-    expect(readAbortSentinel(BINDING, { sentinelPath })!.reason).toBeNull();
-  });
-
   it('overwrites an earlier sentinel so a re-issued abort does not stack files', () => {
-    writeAbortSentinel({ binding: BINDING, commandId: 'cmd-1' }, { sentinelPath });
-    writeAbortSentinel({ binding: BINDING, commandId: 'cmd-2' }, { sentinelPath });
+    writeAbortSentinel(VALID_INPUT, { sentinelPath });
+    writeAbortSentinel({ ...VALID_INPUT, commandId: 'cmd-2' }, { sentinelPath });
     // Last writer wins, and the reader sees exactly one abort — the idempotency
     // story (AC-A7) depends on there being one terminal signal, not a pile.
     expect(readAbortSentinel(BINDING, { sentinelPath })!.command_id).toBe('cmd-2');
@@ -128,7 +149,8 @@ describe('the reader refuses anything it cannot prove belongs to this run', () =
       version: ABORT_SENTINEL_VERSION,
       command_id: 'cmd-1',
       requested_at: '2026-09-23T00:00:00Z',
-      reason: null,
+      delivery: 'accepted',
+      signed_body_base64: SIGNED_BODY,
       ...override,
     }));
     // Generation is equality, not "at least": an abort aimed at an attempt that
@@ -152,6 +174,8 @@ describe('the reader refuses anything it cannot prove belongs to this run', () =
       generation: BINDING.generation,
       command_id: 'cmd-1',
       requested_at: '2026-09-23T00:00:00Z',
+      delivery: 'accepted',
+      signed_body_base64: SIGNED_BODY,
       ...override,
     }));
     expect(readAbortSentinel(BINDING, { sentinelPath })).toBeNull();
@@ -179,7 +203,8 @@ describe('the reader refuses anything it cannot prove belongs to this run', () =
       generation: BINDING.generation,
       command_id: 'cmd-1',
       requested_at: '2026-09-23T00:00:00Z',
-      reason: null,
+      delivery: 'accepted',
+      signed_body_base64: SIGNED_BODY,
       future_field: 'ignored',
     }));
     expect(readAbortSentinel(BINDING, { sentinelPath })!.command_id).toBe('cmd-1');
@@ -196,7 +221,7 @@ describe('the writer refuses to write an unbindable sentinel', () => {
   ])('returns false and writes nothing for %s', (_label, binding) => {
     const logged: string[] = [];
     const written = writeAbortSentinel(
-      { binding: binding as AbortSentinelBinding, commandId: 'cmd-1' },
+      { binding: binding as AbortSentinelBinding, commandId: 'cmd-1', signedBodyBase64: SIGNED_BODY },
       { sentinelPath, log: (_level, message) => logged.push(message) },
     );
     // A sentinel no reader can validate is worse than none: it would sit in
@@ -210,14 +235,99 @@ describe('the writer refuses to write an unbindable sentinel', () => {
     // The caller must be able to distinguish "recorded" from "not recorded" in
     // order to avoid claiming an abort outcome that was never persisted.
     const written = writeAbortSentinel(
-      { binding: BINDING, commandId: 'cmd-1' },
+      VALID_INPUT,
       { sentinelPath: join(directory, 'missing-dir', 'sentinel.json') },
     );
     expect(written).toBe(false);
   });
 });
 
-describe('reason bounding', () => {
+describe('the writer refuses a sentinel its own reader would reject', () => {
+  /**
+   * The writer's boolean IS the operator-facing claim.
+   *
+   * `applyControlCommand` settles the abort command `applied` — "recorded for
+   * finalization" — on `true`, and `unknown` on `false`. So a document that lands
+   * on disk and then fails validation is worse than no document at all: the
+   * operator is told the abort was recorded, while the finalizer finds nothing it
+   * can honour and classifies the run by exit code. A deliberate stop reported as
+   * a crash is the one outcome this story exists to remove.
+   */
+  it('refuses a document that would exceed the byte ceiling, rather than storing an unreadable one', () => {
+    // A body the LISTENER accepts: two known fields with JSON whitespace between
+    // them, under its 16 KiB `MAX_BODY_BYTES` cap. `validatePayload` checks the key
+    // set and the reason length, so this is a legal abort request — which is what
+    // made this reachable rather than theoretical. With the ceiling at a flat 8192
+    // the writer returned `true` here and the reader then returned `null`.
+    const body = `{"command_id":"11111111-2222-3333-4444-555555555555",${' '.repeat(15000)}"reason":"wrong branch"}`;
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(16 * 1024);
+    const signedBodyBase64 = Buffer.from(body, 'utf8').toString('base64');
+
+    const logged: string[] = [];
+    const written = writeAbortSentinel(
+      { binding: BINDING, commandId: 'cmd-1', signedBodyBase64 },
+      { sentinelPath, log: (_level, message) => logged.push(message) },
+    );
+
+    // Accepted, because the derived ceiling now covers what a legal request
+    // produces. The assertion that matters is the agreement below, not the verdict.
+    expect(written).toBe(true);
+    expect(readAbortSentinel(BINDING, { sentinelPath })).not.toBeNull();
+    expect(logged).toEqual([]);
+  });
+
+  it('never returns true for a document the reader will refuse', () => {
+    // The property, stated directly and independently of any particular limit:
+    // writer and reader agree. Driven with signed bodies straddling the field bound
+    // so the pair is exercised on both sides of it, and with the envelope at its own
+    // ceiling so the two large fields are near-maximal together — the combination
+    // that overflowed a flat file ceiling.
+    for (const bodyLength of [4, 100, MAX_SIGNED_BODY_LENGTH - 4, MAX_SIGNED_BODY_LENGTH, MAX_SIGNED_BODY_LENGTH + 4]) {
+      for (const envelopeLength of [0, 13, MAX_SENTINEL_ENVELOPE_LENGTH]) {
+        clearAbortSentinel({ sentinelPath });
+        const written = writeAbortSentinel(
+          {
+            binding: BINDING,
+            commandId: 'cmd-1',
+            signedBodyBase64: 'A'.repeat(bodyLength),
+            envelope: 'e'.repeat(envelopeLength),
+          },
+          { sentinelPath },
+        );
+        const read = readAbortSentinel(BINDING, { sentinelPath });
+        // `true` must mean readable. (`false` with a readable leftover would be a
+        // separate bug; the writer refuses before opening the temp file, so a
+        // refusal leaves whatever was there before — here, nothing.)
+        expect({ bodyLength, envelopeLength, written, readable: read !== null })
+          .toEqual({ bodyLength, envelopeLength, written, readable: written });
+      }
+    }
+  });
+
+  it('refuses to write when no signed body is available', () => {
+    const logged: string[] = [];
+    const written = writeAbortSentinel(
+      { binding: BINDING, commandId: 'cmd-1' },
+      { sentinelPath, log: (_level, message) => logged.push(message) },
+    );
+    // Without the signed bytes the finalizer cannot bind the reason to the
+    // gateway's signature, so the reader refuses the document. Refusing to write it
+    // reports the same outcome honestly instead of looking like success.
+    expect(written).toBe(false);
+    expect(readAbortSentinel(BINDING, { sentinelPath })).toBeNull();
+    expect(logged.join(' ')).toContain('signed request body was not available');
+  });
+});
+
+describe('the reason-bounding rule', () => {
+  /**
+   * Nothing on this runtime's abort path calls `boundSentinelReason` any more —
+   * the reason is derived from the signed body by the Python finalizer, which
+   * applies its own `bound_sentinel_reason`. The rule is still pinned here because
+   * both runtimes are required to implement it identically, and the shared
+   * `reason_vectors` table below is evaluated against this function on this side
+   * and against Python's on that one. A rule pinned on one side is not pinned.
+   */
   it('truncates an over-long reason to the cap', () => {
     const written = boundSentinelReason('x'.repeat(MAX_SENTINEL_REASON_LENGTH + 50));
     // The reason reaches a GitHub comment, so it is capped at the boundary
@@ -227,7 +337,8 @@ describe('reason bounding', () => {
 
   it('collapses newlines and surrounding whitespace', () => {
     // Prevents an operator-supplied reason from breaking the layout of the
-    // terminal comment it is interpolated into.
+    // terminal comment it is interpolated into. Signed text is still hostile text:
+    // a signature proves who wrote it, not that it is safe to print.
     expect(boundSentinelReason('  wrong\n\nbranch  ')).toBe('wrong branch');
   });
 
@@ -238,32 +349,10 @@ describe('reason bounding', () => {
     },
   );
 
-  it('bounds a reason that arrives over-long inside a stored sentinel', () => {
-    // Validation re-bounds on read: a sentinel written by some other path does
-    // not get to smuggle an unbounded reason into a comment.
-    const long = 'y'.repeat(MAX_SENTINEL_REASON_LENGTH + 100);
-    const validated = validateAbortSentinel({
-      version: ABORT_SENTINEL_VERSION,
-      run_id: BINDING.runId,
-      generation: BINDING.generation,
-      command_id: 'cmd-1',
-      requested_at: '2026-09-23T00:00:00Z',
-      reason: long,
-    }, BINDING);
-    expect(validated!.reason!.length).toBe(MAX_SENTINEL_REASON_LENGTH);
-  });
-
   it('maps a non-string reason to null instead of coercing it', () => {
-    const validated = validateAbortSentinel({
-      version: ABORT_SENTINEL_VERSION,
-      run_id: BINDING.runId,
-      generation: BINDING.generation,
-      command_id: 'cmd-1',
-      requested_at: '2026-09-23T00:00:00Z',
-      reason: { injected: true },
-    }, BINDING);
-    // `String({})` would put "[object Object]" in an operator-facing comment.
-    expect(validated!.reason).toBeNull();
+    // `String({})` would put "[object Object]" in front of an operator, and the
+    // two runtimes disagree about what coercion produces.
+    expect(boundSentinelReason({ injected: true } as unknown as string)).toBeNull();
   });
 });
 
@@ -315,12 +404,16 @@ describe('shared cross-language vectors', () => {
     path: string;
     max_reason_length: number;
     max_envelope_length: number;
+    max_signed_body_length: number;
+    max_sentinel_bytes: number;
+    max_safe_generation: number;
+    accepted_delivery: string;
+    signed_body_base64: string;
     binding: { run_id: string; generation: number };
     vectors: Array<{
       name: string;
       accept: boolean;
       document: unknown;
-      expect_reason?: string | null;
       expect_envelope?: string | null;
       note: string;
     }>;
@@ -329,6 +422,19 @@ describe('shared cross-language vectors', () => {
       raw: string;
       expect: number | null;
       note?: string;
+    }>;
+    reason_vectors: Array<{
+      name: string;
+      body: unknown;
+      expect: string | null;
+      note?: string;
+    }>;
+    byte_boundary_vectors: Array<{
+      name: string;
+      pad_char: string;
+      target_bytes: number;
+      accept: boolean;
+      note: string;
     }>;
   };
 
@@ -342,6 +448,17 @@ describe('shared cross-language vectors', () => {
     expect(vectors.path).toBe(ABORT_SENTINEL_PATH);
     expect(vectors.max_reason_length).toBe(MAX_SENTINEL_REASON_LENGTH);
     expect(vectors.max_envelope_length).toBe(MAX_SENTINEL_ENVELOPE_LENGTH);
+    expect(vectors.max_signed_body_length).toBe(MAX_SIGNED_BODY_LENGTH);
+    expect(vectors.max_sentinel_bytes).toBe(MAX_SENTINEL_BYTES);
+    expect(vectors.max_safe_generation).toBe(Number.MAX_SAFE_INTEGER);
+    expect(vectors.accepted_delivery).toBe('accepted');
+    // The file ceiling pinned as a *derivation* rather than as a literal: it has to
+    // exceed the two fields the document must carry together. Restating the number
+    // would have been satisfied by the broken value — a flat 8192, below the
+    // 21852-character signed-body bound, which made the writer store documents this
+    // reader then refused while telling the operator the abort was recorded.
+    expect(vectors.max_sentinel_bytes)
+      .toBeGreaterThan(vectors.max_signed_body_length + vectors.max_envelope_length);
   });
 
   it.each(vectors.vectors.map((vector) => [vector.name, vector] as const))(
@@ -353,7 +470,11 @@ describe('shared cross-language vectors', () => {
         expect(validated).not.toBeNull();
         expect(validated!.run_id).toBe(fixtureBinding.runId);
         expect(validated!.generation).toBe(fixtureBinding.generation);
-        expect(validated!.reason).toBe(vector.expect_reason ?? null);
+        // No `reason` on the validated payload, on either side: it is derived from
+        // the signed bytes by the finalizer, and `reason_vectors` below pins that
+        // derivation. A document field of this name is what allowed fabricated text
+        // to be attributed to a human.
+        expect(validated).not.toHaveProperty('reason');
         // The normalization both readers have to agree on. Neither judges the
         // signature here, so what is pinned is which values survive as a token
         // and which collapse to exactly `null` — the value the Python finalizer
@@ -386,11 +507,63 @@ describe('shared cross-language vectors', () => {
 
     expect(readAbortSentinel(fixtureBinding, { sentinelPath })).toBeNull();
   });
+
+  it.each(vectors.reason_vectors.map((vector) => [vector.name, vector] as const))(
+    'bounds the reason %s identically to Python',
+    (_name, vector) => {
+      // The reason itself is derived on the Python side only — this runtime writes
+      // the signed bytes and never parses them. What has to agree is the *bounding*
+      // applied to whatever comes out, so the same table drives Python's
+      // `authorized_abort_reason` end-to-end and this runtime's bounding rule on the
+      // value that function extracts. Divergence here would mean the two halves
+      // disagreeing about what an operator's words are.
+      const body = vector.body as { reason?: unknown };
+      expect(boundSentinelReason(body.reason as string | null | undefined)).toBe(vector.expect);
+    },
+  );
+
+  it.each(vectors.byte_boundary_vectors.map((vector) => [vector.name, vector] as const))(
+    'applies the file ceiling in bytes for %s',
+    (_name, vector) => {
+      // Padding goes in an unknown extra field, which forward tolerance requires
+      // both readers to ignore — so the only thing under test is the size rule.
+      // The document is grown to land on exactly `target_bytes` of UTF-8.
+      const base = {
+        version: vectors.version,
+        run_id: vectors.binding.run_id,
+        generation: vectors.binding.generation,
+        command_id: 'cmd-0001',
+        requested_at: '2026-09-23T00:00:00Z',
+        delivery: vectors.accepted_delivery,
+        signed_body_base64: vectors.signed_body_base64,
+        pad: '',
+      };
+      const padByteLength = Buffer.byteLength(vector.pad_char, 'utf8');
+      const overhead = Buffer.byteLength(JSON.stringify(base), 'utf8');
+      // Exact only when the target is reachable with a whole number of pad
+      // characters, which is why the multibyte vectors target even byte counts.
+      expect((vector.target_bytes - overhead) % padByteLength).toBe(0);
+      const document = {
+        ...base,
+        pad: vector.pad_char.repeat((vector.target_bytes - overhead) / padByteLength),
+      };
+      const serialized = JSON.stringify(document);
+      expect(Buffer.byteLength(serialized, 'utf8')).toBe(vector.target_bytes);
+
+      putRaw(serialized);
+      const read = readAbortSentinel(fixtureBinding, { sentinelPath });
+
+      // `multibyte_at_ceiling` is the one that matters: ~16000 characters is under
+      // any character-bounded read of 32092, so a text-mode read would accept the
+      // one-past-ceiling case too. Both runtimes bound bytes before decoding.
+      expect(read !== null).toBe(vector.accept);
+    },
+  );
 });
 
 describe('clearAbortSentinel', () => {
   it('removes an existing sentinel', () => {
-    writeAbortSentinel({ binding: BINDING, commandId: 'cmd-1' }, { sentinelPath });
+    writeAbortSentinel(VALID_INPUT, { sentinelPath });
     clearAbortSentinel({ sentinelPath });
     expect(readAbortSentinel(BINDING, { sentinelPath })).toBeNull();
   });

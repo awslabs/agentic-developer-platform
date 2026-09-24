@@ -38,7 +38,11 @@ from lib.amendment_input import (
     AuthoringInputError,
     materialize_authoring_input,
 )
-from lib.abort_sentinel import read_abort_sentinel, verify_abort_authorization
+from lib.abort_sentinel import (
+    authorized_abort_reason,
+    read_abort_sentinel,
+    verify_abort_authorization,
+)
 from lib.bootstrap_logger import BootstrapLogger
 from lib.check_run import create_check_run, update_check_run
 from lib.correlation_marker import prepend_correlation_marker
@@ -3678,6 +3682,22 @@ def _resolve_abort_outcome(message_id: str, was_registered: bool) -> dict | None
                 message_id,
             )
             return None
+        # The operator's words, and the only place they enter this process.
+        #
+        # Derived here, after verification, rather than read from the document:
+        # `validate_abort_sentinel` deliberately does not carry the file's own
+        # `reason` field through, because that field sits beside the envelope in a
+        # file the agent's `Bash` tool can write and is covered by no signature. A
+        # real-signature reproduction substituted text there under an otherwise
+        # valid envelope and had it attributed to the human who authorized the
+        # abort. `authorized_abort_reason` instead parses the reason out of the
+        # exact request bytes whose sha256 the envelope signed — bytes
+        # `verify_abort_authorization` has just confirmed against `body_digest`.
+        #
+        # `None` when the operator gave no reason, and then nothing downstream may
+        # invent one: every consumer (`_handle_abort`'s comment, the check-run
+        # summary) must say nothing about a reason rather than fall back.
+        sentinel["reason"] = authorized_abort_reason(sentinel)
         logger.info(
             "Authorized abort recorded for command %s; finalizing as aborted",
             sentinel.get("command_id"),

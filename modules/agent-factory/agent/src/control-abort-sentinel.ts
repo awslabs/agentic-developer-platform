@@ -91,6 +91,46 @@ export const MAX_SENTINEL_REASON_LENGTH = 200;
  */
 export const MAX_SENTINEL_ENVELOPE_LENGTH = 8192;
 
+/**
+ * Bound on the recorded signed request body, base64 — mirrors
+ * `MAX_SIGNED_BODY_BYTES` in `lib/abort_sentinel.py`.
+ *
+ * The listener caps a control request body at `MAX_BODY_BYTES` (16 KiB) and base64
+ * inflates by 4/3, so a legitimate value is always under this. The bytes are only
+ * ever hashed and JSON-parsed, never executed, but they are attacker-influenced
+ * input read during teardown and are bounded like every other field here.
+ */
+export const MAX_SIGNED_BODY_LENGTH = 4 * Math.ceil((16 * 1024) / 3) + 4;
+
+/**
+ * Byte ceiling on the whole sentinel file — mirrors `MAX_SENTINEL_BYTES` in
+ * `lib/abort_sentinel.py`.
+ *
+ * Declared here so the limit has one definition per language rather than living
+ * only in the reader that enforces it. **Bytes, not characters**: the Python half
+ * enforces it on a binary read, because a text-mode character count admits up to
+ * four times the intended size in multibyte UTF-8. Anything measuring this limit
+ * must use `Buffer.byteLength`, not `String.length`.
+ *
+ * Derived from the two unbounded-by-nature fields rather than written as a round
+ * number, because a round number was wrong. This was a flat 8 KiB while the
+ * document had to hold a base64 signed body of up to {@link
+ * MAX_SIGNED_BODY_LENGTH} (21852) plus an envelope of up to {@link
+ * MAX_SENTINEL_ENVELOPE_LENGTH} — so an abort request the listener fully accepts
+ * (`MAX_BODY_BYTES` is 16 KiB, and JSON whitespace alone gets a two-field body
+ * there) produced a document the writer stored and the reader then refused on
+ * size. The operator was told the abort was recorded, because the writer returned
+ * `true`, and the finalizer classified the run by exit code — reporting a
+ * deliberate stop as a crash, which is the single outcome this story exists to
+ * make impossible.
+ *
+ * The 2 KiB tail covers the remaining short fields and JSON punctuation: the
+ * version, the run id, the generation, a UUID command id, an ISO timestamp, the
+ * delivery literal and the keys. It is slack, not a budget — nothing is sized to
+ * consume it.
+ */
+export const MAX_SENTINEL_BYTES = MAX_SIGNED_BODY_LENGTH + MAX_SENTINEL_ENVELOPE_LENGTH + 2048;
+
 /** The persisted payload. Carries no credential and no native session handle. */
 export interface AbortSentinel {
   version: number;
@@ -102,8 +142,50 @@ export interface AbortSentinel {
   command_id: string;
   /** When the abort was requested, ISO-8601. */
   requested_at: string;
-  /** Bounded operator-facing reason, or null when none was supplied. */
-  reason: string | null;
+  /**
+   * The exact request body bytes the gateway signed, base64 — Issue #3963.
+   *
+   * **This is where the operator's reason lives, and the only place it lives.**
+   * An earlier revision of this payload also carried a plain `reason` field. That
+   * field was covered by no signature — it sat beside the envelope in a file the
+   * agent's own `Bash` tool can write — and a real-signature reproduction minted a
+   * valid envelope for one reason, wrote different text into that field, and had
+   * the substitution attributed to the human who authorized the abort. It is gone
+   * rather than merely unused: a field named `reason` in this document would be
+   * read as the reason by the next person who needs one, which is exactly how the
+   * gap arose.
+   *
+   * The envelope commits to `sha256` of the operator's HTTP request body, but the
+   * supervising process never saw that body, so it held a digest with nothing to
+   * compare against. This field supplies the preimage: the finalizer hashes these
+   * bytes, requires the result to equal the signed `body_digest`, and only then
+   * reads the `reason` out of them. That turns the reason from an unsigned
+   * assertion into part of what the gateway's signature covers.
+   *
+   * These are bytes off the socket, recorded verbatim. They are never re-encoded
+   * or re-serialized: a digest is over exact bytes, and `JSON.parse` followed by
+   * `JSON.stringify` is not a byte-preserving round trip (key order, whitespace
+   * and number formatting all move), so a re-serialized body would fail the very
+   * check it exists to pass.
+   */
+  signed_body_base64: string;
+  /**
+   * Whether the live authority recheck *accepted* this command — Issue #3963.
+   *
+   * A signed envelope proves the gateway issued an authorization. It does not
+   * prove the authorization still held at the moment of use: `deliverAuthorized`
+   * re-asks the gateway immediately before the executor runs and settles the
+   * command `rejected` when the grant was revoked, the revocation epoch moved, or
+   * the operator's membership lapsed. A command refused there leaves its valid
+   * envelope behind, and a finalizer that read only the envelope would honour an
+   * abort the platform had explicitly just denied.
+   *
+   * Only `'accepted'` is written, and only from the executor — which by
+   * construction runs only after that recheck returned true. The reader requires
+   * this exact value, so an older writer's document or a fabricated one is refused
+   * rather than being treated as authorized.
+   */
+  delivery: 'accepted';
   /**
    * The gateway's signed authorization for this abort — Issue #3963.
    *
@@ -157,10 +239,15 @@ export function writeAbortSentinel(
   input: {
     binding: AbortSentinelBinding;
     commandId: string;
-    reason?: string | null;
     requestedAt?: string;
     /** The gateway envelope that authorized this abort; see {@link AbortSentinel.envelope}. */
     envelope?: string | null;
+    /**
+     * The exact signed request body, base64; see
+     * {@link AbortSentinel.signed_body_base64}. Without it the finalizer cannot
+     * bind the reason to the signature, so a sentinel is not written at all.
+     */
+    signedBodyBase64?: string | null;
   },
   options: { sentinelPath?: string; log?: (level: string, message: string) => void } = {},
 ): boolean {
@@ -173,7 +260,13 @@ export function writeAbortSentinel(
     generation: input.binding.generation,
     command_id: input.commandId,
     requested_at: input.requestedAt ?? new Date().toISOString(),
-    reason: boundSentinelReason(input.reason),
+    // Verbatim; see the field docs. Bounded only in length.
+    signed_body_base64: typeof input.signedBodyBase64 === 'string' ? input.signedBodyBase64 : '',
+    // Written unconditionally because this function is reached only from the abort
+    // executor, which runs only after `deliverAuthorized` re-checked the grant
+    // against the live gateway. There is no code path that records an abort whose
+    // delivery was refused: that path settles `rejected` and never reaches here.
+    delivery: 'accepted',
     // Copied verbatim — this is a signature over exact bytes, so any
     // normalization here would invalidate it. Bounded only in length, since an
     // over-long value cannot be a real envelope and must not be written to disk.
@@ -188,8 +281,52 @@ export function writeAbortSentinel(
   // reporting itself aborted, and a blank binding can never satisfy it. Refusing
   // to write is the honest outcome — the abort still stops the run, it just does
   // not get to claim the aborted outcome.
-  if (!payload.run_id || !Number.isInteger(payload.generation) || payload.generation < 1) {
+  if (!payload.run_id || !Number.isInteger(payload.generation) || payload.generation < 1
+    || !Number.isSafeInteger(payload.generation)) {
     log('ERROR', 'abort sentinel not written: run identity or generation is missing');
+    return false;
+  }
+
+  // A sentinel with no signed body cannot have its reason bound to the gateway's
+  // signature, and the reader refuses it. Refusing to write is the honest
+  // equivalent: the abort still stops the run — `adapter.cancel()` is
+  // unconditional and runs regardless — it simply will not be *reported* as an
+  // abort, and the journal says so. Writing a document the reader is guaranteed to
+  // reject would produce the same outcome while looking like it had succeeded.
+  if (!payload.signed_body_base64) {
+    log('ERROR', 'abort sentinel not written: the signed request body was not available');
+    return false;
+  }
+
+  // Serialize once, then refuse anything this document's own reader would refuse.
+  //
+  // The writer's return value is what the journal reports to the operator: `true`
+  // settles the abort command `applied` — "recorded for finalization" — and
+  // `false` settles it `unknown`. So a document that lands on disk but fails
+  // validation is the worst of the three outcomes: the operator is told the abort
+  // was recorded while the finalizer, finding nothing it can honour, classifies the
+  // run by exit code and reports a deliberate stop as a crash.
+  //
+  // That was reachable, not hypothetical. The byte ceiling was a flat 8 KiB while
+  // the signed body alone may be 21852 base64 characters, so an abort request the
+  // listener fully accepts produced a stored-and-then-rejected document. The
+  // ceiling is now derived from the fields, which fixes that instance; this check
+  // closes the class. Validating the real serialized bytes — the same `JSON.stringify`
+  // output that is about to be written, measured with `Buffer.byteLength` — means
+  // any future field, or any future divergence between the two limits, surfaces
+  // here as an honest `false` rather than as a mislabelled run.
+  const serialized = JSON.stringify(payload);
+  const serializedBytes = Buffer.byteLength(serialized, 'utf8');
+  if (serializedBytes > MAX_SENTINEL_BYTES) {
+    log('ERROR', `abort sentinel not written: ${serializedBytes} bytes exceeds the ${MAX_SENTINEL_BYTES}-byte ceiling`);
+    return false;
+  }
+  if (!validateAbortSentinel(payload, input.binding)) {
+    // Belt-and-braces against the writer and reader drifting apart on any rule,
+    // not just size. Cheap (one in-memory validation per abort, and there is at
+    // most one abort per run) and it converts a silent disagreement into a logged
+    // refusal at the moment the record is made.
+    log('ERROR', 'abort sentinel not written: the payload would not pass validation');
     return false;
   }
 
@@ -199,7 +336,9 @@ export function writeAbortSentinel(
     // colliding write is an error instead of two writers interleaving.
     const handle = openSync(tempPath, 'wx', 0o600);
     try {
-      writeSync(handle, JSON.stringify(payload));
+      // The exact bytes that were measured and validated above, not a second
+      // `JSON.stringify` of the same object — so what lands on disk is what passed.
+      writeSync(handle, serialized);
       fsyncSync(handle);
     } finally {
       closeSync(handle);
@@ -236,7 +375,15 @@ export function readAbortSentinel(
   const sentinelPath = options.sentinelPath ?? ABORT_SENTINEL_PATH;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(sentinelPath, 'utf8'));
+    // Read as bytes and bound on bytes before decoding, the same contract the
+    // Python reader enforces. `readFileSync(path, 'utf8')` would decode the whole
+    // file first, so an oversized document would already be in memory as a string
+    // by the time any limit could be applied — and a limit applied to that string
+    // would count characters, which is a different and looser bound than the
+    // declared byte ceiling.
+    const bytes = readFileSync(sentinelPath);
+    if (bytes.byteLength > MAX_SENTINEL_BYTES) return null;
+    parsed = JSON.parse(bytes.toString('utf8'));
   } catch {
     // Absent is the overwhelmingly common case (no abort was requested) and is
     // not worth distinguishing from corrupt here: both mean "no abort".
@@ -264,7 +411,12 @@ export function validateAbortSentinel(
   const requestedAt = candidate.requested_at;
 
   if (typeof runId !== 'string' || !runId) return null;
-  if (typeof generation !== 'number' || !Number.isInteger(generation)) return null;
+  // `Number.isSafeInteger`, not `isInteger`: above 2^53 a double no longer
+  // represents consecutive integers, so two different generations can compare
+  // equal. Python's arbitrary-precision `int` has no such ceiling, which made this
+  // a cross-language divergence in the direction that matters — the Python half is
+  // the one that deletes the queue message. Both halves now refuse the same values.
+  if (typeof generation !== 'number' || !Number.isSafeInteger(generation)) return null;
   if (typeof commandId !== 'string' || !commandId) return null;
   if (typeof requestedAt !== 'string' || !requestedAt) return null;
 
@@ -274,7 +426,15 @@ export function validateAbortSentinel(
   if (runId !== binding.runId) return null;
   if (generation !== binding.generation) return null;
 
-  const reason = candidate.reason;
+  // The live delivery outcome and the signed bytes. Both are required, on the same
+  // rule the Python reader applies: a document lacking either cannot establish that
+  // the abort was accepted at the moment of use, nor that its reason is the
+  // operator's. There is no legitimate writer that omits them.
+  if (candidate.delivery !== 'accepted') return null;
+  const signedBody = candidate.signed_body_base64;
+  if (typeof signedBody !== 'string' || !signedBody
+    || signedBody.length > MAX_SIGNED_BODY_LENGTH) return null;
+
   const envelope = candidate.envelope;
   return {
     version: ABORT_SENTINEL_VERSION,
@@ -282,7 +442,12 @@ export function validateAbortSentinel(
     generation,
     command_id: commandId,
     requested_at: requestedAt,
-    reason: typeof reason === 'string' ? boundSentinelReason(reason) : null,
+    // A `reason` key on the document is neither read nor carried forward. See
+    // {@link AbortSentinel.signed_body_base64}: the reason is derived from the
+    // signed bytes, and re-exposing an unsigned field of the same name here would
+    // put the forgeable value back within reach of the next caller who needs one.
+    signed_body_base64: signedBody,
+    delivery: 'accepted',
     // Surfaced, never judged here. This side cannot verify a signature it has no
     // business verifying: the envelope is checked by whoever *acts* on the
     // sentinel, which is the Python finalizer. A malformed or absent value
@@ -300,7 +465,22 @@ export function validateAbortSentinel(
   };
 }
 
-/** Collapse whitespace and truncate. `null`/empty become `null`, not `""`. */
+/**
+ * Collapse whitespace and truncate. `null`/empty become `null`, not `""`.
+ *
+ * Nothing on this runtime's run path calls it any more: the reason is derived
+ * from the signed body by the finalizing Python half, which applies its own
+ * `bound_sentinel_reason`. It is kept, and kept exported, because it is the
+ * TypeScript half of a rule both runtimes are required to implement identically —
+ * the shared `reason_vectors` table is evaluated against *this* function here and
+ * against Python's there. Deleting it would leave that rule pinned on one side
+ * only, and the bounding rule is what stops signed-but-hostile operator text from
+ * forging the layout of the comment it is interpolated into. A signature proves
+ * who wrote the text, not that the text is safe to print.
+ *
+ * If a future control verb needs to bound operator text on this side — a pause
+ * annotation, say — this is the function to use, not a second local copy.
+ */
 export function boundSentinelReason(reason: string | null | undefined): string | null {
   if (typeof reason !== 'string') return null;
   const collapsed = reason.replace(/\s+/g, ' ').trim();

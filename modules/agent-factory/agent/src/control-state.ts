@@ -303,6 +303,34 @@ export class ControlStateStore {
     return entry.authorization.envelope;
   }
 
+  /**
+   * The exact request bytes the envelope was signed over, base64 — #3963.
+   *
+   * The companion to {@link authorizationProof}, and needed for the same reason by
+   * the same single caller. The envelope commits to `sha256` of the operator's
+   * request body, but the finalizing process never saw that body, so it held a
+   * signed digest with no preimage to check it against. That left the *reason text*
+   * — the one operator-authored string the platform quotes back as the human's
+   * words — covered by no signature and readable from a file any code in this pod
+   * can write.
+   *
+   * Returning the bytes lets the finalizer verify them against the signed digest
+   * and take the reason from inside the signature instead of from beside it.
+   *
+   * Same `delivered`-only restriction as {@link authorizationProof}: these bytes
+   * are half of a bearer proof, and handing them back after settlement would let a
+   * later caller reconstruct an authorization that has already been used.
+   *
+   * Deliberately *not* part of `CommandRecord` — that record is projected to the
+   * dashboard, and this is private journal material (see `QueuedAuthorization`,
+   * "never exposed in status responses").
+   */
+  signedRequestBody(commandId: string): string | null {
+    const entry = this.journal.get(commandId);
+    if (!entry || !entry.authorization || entry.record.status !== 'delivered') return null;
+    return entry.authorization.body_base64 || null;
+  }
+
   /** The only delivery path for proof-bearing commands. Approval is never cached. */
   async deliverAuthorized(commandId: string, handoff: () => void): Promise<boolean> {
     const entry = this.journal.get(commandId);

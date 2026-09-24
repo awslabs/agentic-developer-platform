@@ -29,6 +29,7 @@ that, these tests stop verifying and say so.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -40,11 +41,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.abort_sentinel import (  # noqa: E402
+    ACCEPTED_DELIVERY,
     CONTROL_ENVELOPE_AUDIENCE,
     ENVELOPE_ISSUER,
     ENVELOPE_VERSION,
     MAX_ENVELOPE_TTL_SECONDS,
     MAX_SENTINEL_ENVELOPE_BYTES,
+    authorized_abort_reason,
     validate_abort_sentinel,
     verify_abort_authorization,
 )
@@ -83,6 +86,25 @@ def public_keys(gateway_key) -> dict:
     return {"gw-key-1": gateway_key.public_key()}
 
 
+#: The operator's actual HTTP request body, verbatim, as the listener received it.
+#:
+#: Byte-exact matters twice over. The gateway's ``body_digest`` claim is sha256 of
+#: these bytes, and the sentinel records them so the finalizer can supply the
+#: preimage — so no test here may re-serialize the body between signing and
+#: verifying. ``json.dumps`` followed by ``json.loads`` followed by ``json.dumps``
+#: is not byte-preserving (key order, whitespace and number formatting all move),
+#: which would fail the digest check for a reason unrelated to what was under test.
+OPERATOR_BODY = json.dumps(
+    {"command_id": COMMAND_ID, "reason": "wrong branch, stop before it pushes"},
+    separators=(",", ":"),
+).encode("utf-8")
+
+
+def _digest(body: bytes) -> str:
+    """The ``body_digest`` claim the gateway signs: sha256 hex of the raw bytes."""
+    return hashlib.sha256(body).hexdigest()
+
+
 def _mint(signer: Ed25519PrivateKey, **overrides) -> str:
     """Sign an envelope exactly the way ``src/agentauth/envelope.py`` does.
 
@@ -103,7 +125,11 @@ def _mint(signer: Ed25519PrivateKey, **overrides) -> str:
         "target_generation": GENERATION,
         "action": "abort",
         "command_id": COMMAND_ID,
-        "body_digest": "a" * 64,
+        # A real digest of the real body, not a placeholder. It was ``"a" * 64``
+        # while the verifier ignored the claim; once the claim is checked, a
+        # placeholder would make every test in this file fail for the same
+        # uninteresting reason and would leave the binding itself untested.
+        "body_digest": _digest(OPERATOR_BODY),
         "authority_kind": "human_session",
         "iat": _iso(SIGNED_AT),
         "nbf": _iso(SIGNED_AT),
@@ -122,8 +148,24 @@ def _mint(signer: Ed25519PrivateKey, **overrides) -> str:
 _ABSENT = object()
 
 
-def _sentinel(envelope: object, *, command_id: str = COMMAND_ID) -> dict:
-    return {"command_id": command_id, "envelope": envelope}
+def _sentinel(
+    envelope: object,
+    *,
+    command_id: str = COMMAND_ID,
+    body: object = OPERATOR_BODY,
+) -> dict:
+    """A sentinel carrying the envelope AND the bytes it was signed over.
+
+    ``body`` defaults to the operator's genuine request, so the digest binding holds
+    and each test below fails only for the reason it names. Pass a different value
+    to attack that binding — which is what
+    ``TestTheReasonIsBoundToTheSignature`` does.
+    """
+    document = {"command_id": command_id, "envelope": envelope, "delivery": ACCEPTED_DELIVERY}
+    if body is not _ABSENT:
+        raw = body if isinstance(body, bytes) else str(body).encode("utf-8")
+        document["signed_body_base64"] = base64.b64encode(raw).decode("ascii")
+    return document
 
 
 def _verify(sentinel: dict, public_keys: dict, **kwargs) -> bool:
@@ -380,41 +422,43 @@ class TestValidationAndAuthorizationStaySeparate:
     refusal worth an operator-visible warning, the other is a lost signal.
     """
 
+    @staticmethod
+    def _document(**overrides) -> dict:
+        """A stored sentinel as the writer produces it, for the real validator."""
+        document = {
+            "version": 1,
+            "run_id": RUN_ID,
+            "generation": GENERATION,
+            "command_id": COMMAND_ID,
+            "requested_at": "2026-09-24T12:00:00Z",
+            "delivery": ACCEPTED_DELIVERY,
+            "signed_body_base64": base64.b64encode(OPERATOR_BODY).decode("ascii"),
+        }
+        document.update(overrides)
+        return document
+
     def test_a_validated_sentinel_carries_the_envelope_through_for_verification(
         self, gateway_key, public_keys
     ):
         token = _mint(gateway_key)
-        document = {
-            "version": 1,
-            "run_id": RUN_ID,
-            "generation": GENERATION,
-            "command_id": COMMAND_ID,
-            "requested_at": "2026-09-24T12:00:00Z",
-            "reason": "wrong branch",
-            "envelope": token,
-        }
 
-        validated = validate_abort_sentinel(document, RUN_ID, GENERATION)
+        validated = validate_abort_sentinel(self._document(envelope=token), RUN_ID, GENERATION)
 
         assert validated is not None
         assert validated["envelope"] == token
         # And the round trip actually verifies, which is what proves the two
-        # halves compose rather than merely both existing.
+        # halves compose rather than merely both existing. Note it is the
+        # *validated* dict being verified, not the input: validation must preserve
+        # the signed bytes byte-for-byte or the digest check downstream fails.
         assert _verify(validated, public_keys) is True
+        # The composition that matters to an operator: the reason printed in the
+        # closing comment comes out of the bytes the signature covers.
+        assert authorized_abort_reason(validated) == "wrong branch, stop before it pushes"
 
     def test_validation_succeeds_on_a_sentinel_whose_authorization_will_fail(self):
         # The important asymmetry: a well-formed document with no proof is still a
         # well-formed document. It parses, and it is refused authorization.
-        document = {
-            "version": 1,
-            "run_id": RUN_ID,
-            "generation": GENERATION,
-            "command_id": COMMAND_ID,
-            "requested_at": "2026-09-24T12:00:00Z",
-            "reason": None,
-        }
-
-        validated = validate_abort_sentinel(document, RUN_ID, GENERATION)
+        validated = validate_abort_sentinel(self._document(), RUN_ID, GENERATION)
 
         assert validated is not None
         assert validated["envelope"] is None
@@ -427,13 +471,132 @@ class TestValidationAndAuthorizationStaySeparate:
     )
     def test_an_unusable_envelope_normalizes_to_none_rather_than_a_new_shape(self, envelope):
         # So "no proof" is one unambiguous state the consumer tests once.
-        document = {
-            "version": 1,
-            "run_id": RUN_ID,
-            "generation": GENERATION,
-            "command_id": COMMAND_ID,
-            "requested_at": "2026-09-24T12:00:00Z",
-            "envelope": envelope,
-        }
+        document = self._document(envelope=envelope)
 
         assert validate_abort_sentinel(document, RUN_ID, GENERATION)["envelope"] is None
+
+
+class TestTheReasonIsBoundToTheSignature:
+    """The regression this class exists for — Issue #3963, review finding 2.
+
+    An earlier revision verified the envelope and then read the reason from a plain
+    ``reason`` field of the same document. Both halves of that were defensible in
+    isolation: the envelope genuinely proved an operator had authorized an abort of
+    this run, and the reason was "just a label". Together they were a hole. The agent
+    process runs with ``Bash``, so it can write the sentinel file; it cannot mint an
+    envelope, but it never needed to — it could pair a *genuine* envelope with text of
+    its own choosing, and the closing comment would attribute that text to the human
+    named in the signature.
+
+    A real-signature reproduction is what established this, not review by reading:
+    with a live key, an abort authorized for one reason was published under another.
+    The fix binds the two. The envelope's ``body_digest`` claim was always a sha256
+    over the operator's exact request body; what was missing was the preimage, and the
+    writer already had it. The sentinel now carries those bytes, the verifier requires
+    them to hash to the signed claim, and the reason is parsed out of them rather than
+    read from beside them.
+
+    Every test below mints with a real key and requires ``False`` (or a refusal to
+    derive) — a passing test here means substitution was rejected.
+    """
+
+    def test_a_substituted_reason_under_a_genuine_envelope_is_refused(
+        self, gateway_key, public_keys
+    ):
+        # THE reproduction. The envelope is real, minted by the gateway's own key for
+        # a genuine abort of this run and generation; every binding in it is correct
+        # and it verifies on its own. Only the recorded body differs: the operator
+        # asked to stop for one reason and the worker substituted another.
+        #
+        # Before the digest check this returned True and the fabricated sentence was
+        # published as the operator's.
+        fabricated = json.dumps(
+            {"command_id": COMMAND_ID, "reason": "approved by the on-call engineer"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        envelope = _mint(gateway_key)
+
+        # The envelope alone is beyond reproach.
+        assert _verify(_sentinel(envelope), public_keys) is True
+        # The same envelope with substituted words is not.
+        assert _verify(_sentinel(envelope, body=fabricated), public_keys) is False
+
+    def test_even_a_one_byte_change_to_the_recorded_body_is_refused(self, gateway_key, public_keys):
+        # sha256 is all-or-nothing, and the test says so explicitly: there is no
+        # "close enough" body, so no partial-match or prefix comparison can creep in
+        # here later and be mistaken for a check.
+        tampered = OPERATOR_BODY.replace(b"wrong branch", b"wrong branci")
+        assert tampered != OPERATOR_BODY
+        assert len(tampered) == len(OPERATOR_BODY)
+        # Still valid JSON, and still a plausible reason. That matters: an earlier
+        # version of this test mangled the trailing bytes, so it was the JSON parser
+        # that refused it and the test passed while the digest comparison could have
+        # been absent entirely. Mutation-checked — deleting the digest check must make
+        # this fail.
+        assert json.loads(tampered)["reason"] == "wrong branci, stop before it pushes"
+
+        assert _verify(_sentinel(_mint(gateway_key), body=tampered), public_keys) is False
+
+    def test_adding_a_field_to_the_recorded_body_is_refused(self, gateway_key, public_keys):
+        # Re-serializing the body is itself a change. The digest is over exact bytes,
+        # so a writer that parsed and re-emitted the JSON — even preserving every
+        # value — would break this check. That is deliberate: it is what forces the
+        # writer to record the bytes off the socket verbatim rather than a
+        # reconstruction of them.
+        embellished = json.dumps(
+            {
+                "command_id": COMMAND_ID,
+                "reason": "wrong branch, stop before it pushes",
+                "actor": "someone-else",
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        assert _verify(_sentinel(_mint(gateway_key), body=embellished), public_keys) is False
+
+    def test_reordering_the_recorded_body_is_refused(self, gateway_key, public_keys):
+        # Semantically identical JSON, different bytes. Same reasoning as above, and
+        # the case most likely to be "fixed" by someone comparing parsed objects
+        # instead of bytes — which would reopen the hole, since an attacker controls
+        # key order too.
+        reordered = json.dumps(
+            {"reason": "wrong branch, stop before it pushes", "command_id": COMMAND_ID},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        assert json.loads(reordered) == json.loads(OPERATOR_BODY)
+        assert reordered != OPERATOR_BODY
+
+        assert _verify(_sentinel(_mint(gateway_key), body=reordered), public_keys) is False
+
+    @pytest.mark.parametrize(
+        "body",
+        [_ABSENT, b"", b"not json at all", b"[]", b'"a string"', b"null"],
+        ids=["absent", "empty", "not_json", "array", "string", "json_null"],
+    )
+    def test_a_missing_or_unusable_recorded_body_is_refused(self, gateway_key, public_keys, body):
+        # No preimage means no binding, and no binding means the reason is back to
+        # being self-asserted. Refusing is the honest outcome: the abort still stopped
+        # the run, it just does not get to publish a reason in the operator's name.
+        assert _verify(_sentinel(_mint(gateway_key), body=body), public_keys) is False
+
+    def test_a_body_naming_another_command_is_refused(self, gateway_key, public_keys):
+        # The body carries its own `command_id`, and the envelope carries one too.
+        # Without requiring them to agree, a genuine signed body from an earlier
+        # command could be replayed as the preimage for a later one — the digest
+        # would match the body it came from while authorizing a different abort.
+        other_body = json.dumps(
+            {"command_id": "cmd-abort-2", "reason": "wrong branch, stop before it pushes"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        envelope = _mint(gateway_key, body_digest=_digest(other_body))
+
+        assert _verify(_sentinel(envelope, body=other_body), public_keys) is False
+
+    def test_the_derived_reason_is_the_operators_own_words(self, gateway_key, public_keys):
+        # The positive side, so the negatives above cannot be satisfied by a function
+        # that simply always refuses. What an operator sees in the closing comment is
+        # what they typed, and it arrives having been covered by the signature.
+        sentinel = _sentinel(_mint(gateway_key))
+
+        assert _verify(sentinel, public_keys) is True
+        assert authorized_abort_reason(sentinel) == "wrong branch, stop before it pushes"

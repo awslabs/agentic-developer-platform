@@ -25,16 +25,16 @@ import type { ClaudeControlAdapter } from './harnesses/claude-control';
  */
 function writeAbortSentinelForRun(input: {
   commandId: string;
-  reason?: string | null;
   envelope?: string | null;
+  signedBodyBase64?: string | null;
 }): boolean {
   const binding = abortSentinelBindingFromEnv();
   if (!binding) return false;
   return writeAbortSentinel({
     binding,
     commandId: input.commandId,
-    reason: input.reason,
     envelope: input.envelope,
+    signedBodyBase64: input.signedBodyBase64,
   });
 }
 
@@ -165,7 +165,7 @@ export async function applyControlCommand(args: {
   action: ControlAction;
   commandId: string;
   adapter: Pick<ClaudeControlAdapter, 'requestPause' | 'resumeFromPause' | 'cancel'>;
-  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup' | 'annotateDelivered' | 'authorizationProof'>;
+  store: Pick<ControlStateStore, 'settle' | 'setPhase' | 'snapshot' | 'lookup' | 'annotateDelivered' | 'authorizationProof' | 'signedRequestBody'>;
   log?: (level: string, message: string, context?: Record<string, unknown>) => void;
   /**
    * Records the abort so the finalizing Python half can report it — Issue #3963.
@@ -176,10 +176,18 @@ export async function applyControlCommand(args: {
    */
   recordAbort?: (input: {
     commandId: string;
-    reason?: string | null;
     envelope?: string | null;
+    signedBodyBase64?: string | null;
   }) => boolean;
-  /** Operator-supplied reason, already bounded by the listener. */
+  /**
+   * Operator-supplied reason, already bounded by the listener.
+   *
+   * Used for pause annotations and logging. Deliberately **not** forwarded into
+   * the abort record: an abort's reason reaches the operator-facing comment, and
+   * that text must come from the bytes the gateway signed rather than from a
+   * parameter this process could have chosen. See
+   * `AbortSentinel.signed_body_base64`.
+   */
   reason?: string | null;
 }): Promise<void> {
   const { action, commandId, adapter, store } = args;
@@ -236,10 +244,20 @@ export async function applyControlCommand(args: {
     // — the signing key exists only in the gateway. Without this the record would
     // be a self-assertion, and honouring it would mean deleting a live run's
     // queue message on the strength of a claim the run made about itself.
+    // The envelope AND the bytes it was signed over, both read while the command is
+    // still `delivered`. The envelope proves the gateway authorized an abort of
+    // this run; the bytes are what let the finalizer prove the *reason* it prints
+    // is the operator's. Without the bytes the finalizer holds a signed digest with
+    // no preimage, which is how a fabricated reason came to be attributed to a
+    // human under an otherwise-valid envelope.
+    //
+    // `args.reason` is deliberately NOT passed. The finalizer reads the operator's
+    // words out of the signed bytes, so handing it a second, unsigned copy of the
+    // same text would recreate the field that made the substitution possible.
     const recorded = (args.recordAbort ?? writeAbortSentinelForRun)({
       commandId,
-      reason: args.reason ?? null,
       envelope: store.authorizationProof(commandId),
+      signedBodyBase64: store.signedRequestBody(commandId),
     });
 
     // The phase the dashboard shows while the run winds down. Set before the

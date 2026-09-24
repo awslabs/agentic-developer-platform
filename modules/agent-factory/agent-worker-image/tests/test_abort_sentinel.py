@@ -21,6 +21,7 @@ of the bridge is not enforced.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -33,10 +34,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.abort_sentinel import (
     ABORT_SENTINEL_PATH,
     ABORT_SENTINEL_VERSION,
+    ACCEPTED_DELIVERY,
+    MAX_SAFE_GENERATION,
     MAX_SENTINEL_BYTES,
     MAX_SENTINEL_ENVELOPE_BYTES,
     MAX_SENTINEL_REASON_LENGTH,
+    MAX_SIGNED_BODY_BYTES,
     _coerce_generation,
+    authorized_abort_reason,
     bound_sentinel_reason,
     read_abort_sentinel,
     validate_abort_sentinel,
@@ -44,6 +49,19 @@ from lib.abort_sentinel import (
 
 RUN_ID = "run-abc"
 GENERATION = 4
+
+# The exact request body the gateway signed, base64 — the field the operator's
+# reason is derived from. Every valid sentinel carries one: a document without it
+# cannot have its reason bound to the signature, so the reader refuses it.
+#
+# Ordinary JSON, no credential. Nothing in this module signs or verifies anything,
+# so no test here shows a reason is *authorized*; that is
+# ``test_abort_authorization.py``, which generates keys per run. What this file
+# pins is which documents parse and what text is derived from bytes already
+# accepted.
+SIGNED_BODY = base64.b64encode(
+    json.dumps({"command_id": "cmd-1", "reason": "wrong branch"}).encode("utf-8")
+).decode("ascii")
 
 
 def _document(**overrides) -> dict:
@@ -54,7 +72,11 @@ def _document(**overrides) -> dict:
         "generation": GENERATION,
         "command_id": "cmd-1",
         "requested_at": "2026-09-23T00:00:00Z",
-        "reason": None,
+        # Both required. ``delivery`` records that the live authority recheck
+        # accepted this command, not merely that an envelope was once issued;
+        # ``signed_body_base64`` is the preimage the reason is derived from.
+        "delivery": ACCEPTED_DELIVERY,
+        "signed_body_base64": SIGNED_BODY,
     }
     document.update(overrides)
     return {key: value for key, value in document.items() if value is not _ABSENT}
@@ -81,7 +103,7 @@ class TestAcceptsAGenuineAbort:
     """The one case that is allowed to say "this run was aborted"."""
 
     def test_reads_a_sentinel_bound_to_this_run_and_generation(self, sentinel_path):
-        _write(sentinel_path, _document(reason="wrong branch"))
+        _write(sentinel_path, _document())
 
         sentinel = read_abort_sentinel(RUN_ID, GENERATION, path=sentinel_path)
 
@@ -89,7 +111,15 @@ class TestAcceptsAGenuineAbort:
         assert sentinel["run_id"] == RUN_ID
         assert sentinel["generation"] == GENERATION
         assert sentinel["command_id"] == "cmd-1"
-        assert sentinel["reason"] == "wrong branch"
+        # Verbatim: these bytes are the preimage of the envelope's signed
+        # ``body_digest``, so re-encoding them anywhere between the writer and the
+        # digest comparison would break the check they exist to pass.
+        assert sentinel["signed_body_base64"] == SIGNED_BODY
+        assert sentinel["delivery"] == ACCEPTED_DELIVERY
+        # No ``reason`` key, by design. The reason is derived from the signed bytes
+        # by ``_resolve_abort_outcome``; a plain field of this name is what let
+        # fabricated text be attributed to a human, so its absence is the contract.
+        assert "reason" not in sentinel
 
     def test_accepts_the_generation_as_the_string_the_child_env_carries(self, sentinel_path):
         # ADP_CONTROL_GENERATION reaches the child process as a string, while
@@ -105,10 +135,42 @@ class TestAcceptsAGenuineAbort:
 
         assert read_abort_sentinel(RUN_ID, GENERATION, path=sentinel_path) is not None
 
-    def test_reports_no_reason_as_none_rather_than_empty_string(self, sentinel_path):
-        _write(sentinel_path, _document())
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"delivery": _ABSENT},
+            {"delivery": "rejected"},
+            {"delivery": "Accepted"},
+            {"delivery": True},
+            {"signed_body_base64": _ABSENT},
+            {"signed_body_base64": ""},
+            {"signed_body_base64": 7},
+            {"signed_body_base64": "A" * (MAX_SIGNED_BODY_BYTES + 1)},
+        ],
+        ids=[
+            "delivery_missing",
+            "delivery_rejected",
+            "delivery_wrong_case",
+            "delivery_boolean",
+            "signed_body_missing",
+            "signed_body_blank",
+            "signed_body_wrong_type",
+            "signed_body_oversized",
+        ],
+    )
+    def test_a_document_that_cannot_prove_accepted_delivery_is_not_an_abort(
+        self, sentinel_path, overrides
+    ):
+        # Two distinct facts, both required. A valid envelope proves the gateway
+        # *issued* an authorization; ``delivery`` proves it survived the live
+        # recheck performed immediately before the executor ran. A command the
+        # gateway refused at that point leaves its envelope behind, so a reader
+        # that honoured the envelope alone would finalize an abort the platform had
+        # just explicitly denied. And without the signed body the reason cannot be
+        # bound to the signature at all.
+        _write(sentinel_path, _document(**overrides))
 
-        assert read_abort_sentinel(RUN_ID, GENERATION, path=sentinel_path)["reason"] is None
+        assert read_abort_sentinel(RUN_ID, GENERATION, path=sentinel_path) is None
 
 
 class TestRefusesWhatItCannotValidate:
@@ -140,7 +202,7 @@ class TestRefusesWhatItCannotValidate:
         # Guards against loading an arbitrary large /tmp file into memory during
         # teardown just because it occupies the sentinel's name.
         padded = _document()
-        padded["reason"] = "x" * (MAX_SENTINEL_BYTES + 100)
+        padded["pad"] = "x" * (MAX_SENTINEL_BYTES + 100)
         _write(sentinel_path, padded)
 
         assert os.path.getsize(sentinel_path) > MAX_SENTINEL_BYTES
@@ -251,12 +313,44 @@ class TestReasonBounding:
         # str({...}) would put "{'injected': True}" in front of an operator.
         assert bound_sentinel_reason(reason) is None
 
-    def test_re_bounds_an_over_long_reason_found_inside_a_stored_sentinel(self):
+    def test_a_reason_field_on_the_document_is_ignored_entirely(self):
+        # The regression that motivated removing the field. An unsigned ``reason``
+        # sitting beside the envelope was read as the operator's words, so a valid
+        # envelope minted for one reason could carry another to the closing comment.
+        # It is now neither read nor surfaced: a caller that wants the reason has to
+        # go through ``authorized_abort_reason``, which proves the digest first.
         validated = validate_abort_sentinel(
-            _document(reason="y" * (MAX_SENTINEL_REASON_LENGTH + 100)), RUN_ID, GENERATION
+            _document(reason="fabricated by the worker"), RUN_ID, GENERATION
         )
 
-        assert len(validated["reason"]) == MAX_SENTINEL_REASON_LENGTH
+        assert validated is not None
+        assert "reason" not in validated
+
+    def test_derives_an_over_long_signed_reason_back_down_to_the_cap(self):
+        # The bound applies to signed text too. A signature proves the operator sent
+        # the words; it says nothing about their length being sensible for a GitHub
+        # comment, and the listener's own cap (1000) is looser than this one.
+        body = base64.b64encode(
+            json.dumps({"reason": "y" * (MAX_SENTINEL_REASON_LENGTH + 100)}).encode("utf-8")
+        ).decode("ascii")
+
+        derived = authorized_abort_reason({"signed_body_base64": body})
+
+        assert len(derived) == MAX_SENTINEL_REASON_LENGTH
+
+    @pytest.mark.parametrize(
+        "recorded",
+        [_ABSENT, None, "", 7, "not base64 at all!!", "eyJ1bnRlcm1pbmF0ZWQ"],
+        ids=["absent", "none", "blank", "wrong_type", "not_base64", "not_json"],
+    )
+    def test_an_unusable_signed_body_derives_no_reason_rather_than_raising(self, recorded):
+        # Runs on the teardown path, so it must never raise: an exception here could
+        # cost the SQS acknowledgement and strand the message. ``None`` means "no
+        # verified reason", and the caller must then say nothing about a reason
+        # rather than fall back to any other field.
+        sentinel = {} if recorded is _ABSENT else {"signed_body_base64": recorded}
+
+        assert authorized_abort_reason(sentinel) is None
 
 
 _VECTORS_PATH = (
@@ -291,6 +385,20 @@ class TestSharedVectors:
         assert _VECTORS["path"] == ABORT_SENTINEL_PATH
         assert _VECTORS["max_reason_length"] == MAX_SENTINEL_REASON_LENGTH
         assert _VECTORS["max_envelope_length"] == MAX_SENTINEL_ENVELOPE_BYTES
+        assert _VECTORS["max_signed_body_length"] == MAX_SIGNED_BODY_BYTES
+        assert _VECTORS["max_sentinel_bytes"] == MAX_SENTINEL_BYTES
+        assert _VECTORS["max_safe_generation"] == MAX_SAFE_GENERATION
+        assert _VECTORS["accepted_delivery"] == ACCEPTED_DELIVERY
+        # The file ceiling pinned as a derivation, not a literal: it must exceed the
+        # two fields the document has to carry together. Restating the number would
+        # have been satisfied by the broken value — a flat 8192, below the
+        # 21852-byte signed-body bound — under which the TypeScript writer stored
+        # documents this reader then refused, reporting an abort to the operator as
+        # recorded and then finalizing the run as a crash.
+        assert (
+            _VECTORS["max_sentinel_bytes"]
+            > _VECTORS["max_signed_body_length"] + _VECTORS["max_envelope_length"]
+        )
 
     @pytest.mark.parametrize("vector", _VECTORS["vectors"], ids=_vector_ids(_VECTORS["vectors"]))
     def test_document_vector(self, vector):
@@ -304,7 +412,11 @@ class TestSharedVectors:
             assert validated is not None, vector["note"]
             assert validated["run_id"] == binding["run_id"]
             assert validated["generation"] == binding["generation"]
-            assert validated["reason"] == vector["expect_reason"]
+            # No ``reason`` on the validated payload, on either side: it is derived
+            # from the signed bytes, and ``reason_vectors`` below pins that
+            # derivation. A document field of this name is what allowed fabricated
+            # text to be attributed to a human.
+            assert "reason" not in validated
             # The normalization both readers have to agree on. Neither judges the
             # signature here, so what is pinned is which values survive as a
             # token and which collapse to exactly ``None`` — the value
@@ -347,3 +459,77 @@ class TestSharedVectors:
             read_abort_sentinel(binding["run_id"], binding["generation"], path=sentinel_path)
             is None
         ), vector["note"]
+
+    @pytest.mark.parametrize(
+        "vector",
+        _VECTORS["reason_vectors"],
+        ids=_vector_ids(_VECTORS["reason_vectors"]),
+    )
+    def test_reason_vector(self, vector):
+        """The operator's words, derived from the bytes the gateway signed.
+
+        This is the end-to-end derivation on the half that prints the reason, driven
+        by the same table TypeScript evaluates against its bounding rule. The
+        divergence that matters would be the two halves disagreeing about what an
+        operator's words *are*.
+        """
+        recorded = base64.b64encode(json.dumps(vector["body"]).encode("utf-8")).decode("ascii")
+
+        derived = authorized_abort_reason({"signed_body_base64": recorded})
+
+        assert derived == vector["expect"], vector.get("note", "")
+
+    @pytest.mark.parametrize(
+        "vector",
+        _VECTORS["byte_boundary_vectors"],
+        ids=_vector_ids(_VECTORS["byte_boundary_vectors"]),
+    )
+    def test_byte_boundary_vector(self, sentinel_path, vector):
+        """The file ceiling is a bound on UTF-8 bytes, not on characters.
+
+        ``multibyte_one_past_ceiling`` is the defect these vectors exist for: this
+        reader used a text-mode ``read(n)``, which bounds *characters*, so a document
+        of ~16000 two-byte characters sat well under a 32092-character read and was
+        parsed and honoured even though it exceeded the declared byte limit — up to
+        4x over for 4-byte characters. The read is binary and bounded before decoding
+        now, and TypeScript measures ``Buffer.byteLength``.
+        """
+        binding = _VECTORS["binding"]
+        base = {
+            "version": _VECTORS["version"],
+            "run_id": binding["run_id"],
+            "generation": binding["generation"],
+            "command_id": "cmd-0001",
+            "requested_at": "2026-09-23T00:00:00Z",
+            "delivery": _VECTORS["accepted_delivery"],
+            "signed_body_base64": _VECTORS["signed_body_base64"],
+            "pad": "",
+        }
+
+        # Padding goes in an unknown extra field, which forward tolerance requires
+        # both readers to ignore — so size is the only rule under test.
+        #
+        # ``ensure_ascii=False`` and the compact separators are both needed to build
+        # the same bytes ``JSON.stringify`` produces, and the first one is the whole
+        # point of the multibyte vectors: Python escapes a non-ASCII character to a
+        # 6-byte ``\u00e9`` by default, where JavaScript emits the 2 raw UTF-8 bytes.
+        # Left at the default, this test would have padded with ASCII escapes and
+        # measured nothing about multibyte handling while appearing to.
+        def serialize(document: dict) -> bytes:
+            return json.dumps(document, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+        pad_width = len(vector["pad_char"].encode("utf-8"))
+        overhead = len(serialize(base))
+        assert (vector["target_bytes"] - overhead) % pad_width == 0
+        document = dict(
+            base, pad=vector["pad_char"] * ((vector["target_bytes"] - overhead) // pad_width)
+        )
+        serialized = serialize(document)
+        assert len(serialized) == vector["target_bytes"]
+
+        with open(sentinel_path, "wb") as handle:
+            handle.write(serialized)
+
+        read = read_abort_sentinel(binding["run_id"], binding["generation"], path=sentinel_path)
+
+        assert (read is not None) == vector["accept"], vector["note"]

@@ -36,6 +36,7 @@ only because the redelivery is then refused, which
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -51,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import entrypoint  # noqa: E402
 from lib import abort_sentinel  # noqa: E402
 from lib.abort_sentinel import (  # noqa: E402
+    ACCEPTED_DELIVERY,
     CONTROL_ENVELOPE_AUDIENCE,
     ENVELOPE_ISSUER,
     ENVELOPE_VERSION,
@@ -84,6 +86,22 @@ def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
+#: The operator's real HTTP request body, as the listener received it.
+#:
+#: Byte-exact, and never re-serialized anywhere in this file: the gateway's
+#: ``body_digest`` claim is sha256 over exactly these bytes, and the sentinel records
+#: them so the finalizer can supply the preimage. The reason the closing comment
+#: prints is parsed out of them, which is what makes it the operator's words rather
+#: than a sibling field the agent's own shell could have written.
+OPERATOR_BODY = json.dumps(
+    {"command_id": COMMAND_ID, "reason": "wrong branch"}, separators=(",", ":")
+).encode("utf-8")
+
+
+def _signed_body_base64(body: bytes = OPERATOR_BODY) -> str:
+    return base64.b64encode(body).decode("ascii")
+
+
 def _mint(signer: Ed25519PrivateKey, **overrides) -> str:
     """Sign a control envelope exactly as ``src/agentauth/envelope.py`` does.
 
@@ -103,7 +121,10 @@ def _mint(signer: Ed25519PrivateKey, **overrides) -> str:
         "target_generation": GENERATION,
         "action": "abort",
         "command_id": COMMAND_ID,
-        "body_digest": "a" * 64,
+        # A genuine digest over OPERATOR_BODY. It was a placeholder while the
+        # verifier ignored the claim; the claim is now required to match the recorded
+        # bytes, which is what binds the printed reason to the signature.
+        "body_digest": hashlib.sha256(OPERATOR_BODY).hexdigest(),
         "iat": _iso(SIGNED_AT),
         "nbf": _iso(SIGNED_AT),
         "exp": _iso(SIGNED_AT + timedelta(seconds=MAX_ENVELOPE_TTL_SECONDS)),
@@ -163,7 +184,13 @@ class TestResolvingTheAbortOutcome:
             "generation": GENERATION,
             "command_id": COMMAND_ID,
             "requested_at": _iso(SIGNED_AT),
-            "reason": "wrong branch",
+            # `delivery` records that the live authority recheck accepted this
+            # command, not merely that an envelope was issued; `signed_body_base64`
+            # is the preimage of the signed digest. The reason is NOT a field here —
+            # it is derived from those bytes — because an unsigned `reason` beside the
+            # envelope is what allowed fabricated text to be attributed to a human.
+            "delivery": ACCEPTED_DELIVERY,
+            "signed_body_base64": _signed_body_base64(),
         }
         payload.update(document)
         sentinel_path = tmp_path / "abort.json"
@@ -184,7 +211,53 @@ class TestResolvingTheAbortOutcome:
 
         assert outcome is not None
         assert outcome["command_id"] == COMMAND_ID
+        # Derived from the signed bytes by the resolver, which is the only place the
+        # operator's words enter this process. Downstream consumers — the closing
+        # comment and the check-run summary — read this key.
         assert outcome["reason"] == "wrong branch"
+
+    def test_a_worker_cannot_substitute_the_reason_under_a_genuine_envelope(
+        self, monkeypatch, tmp_path, gateway_key
+    ):
+        # The review finding, at the boundary where it did damage. The envelope is
+        # real and authorizes an abort of this run; only the recorded body differs
+        # from what the operator submitted. Previously the resolver verified the
+        # envelope and then read the reason from a plain field, so this published the
+        # worker's sentence over the human's name.
+        #
+        # Refusing the whole abort — rather than resolving it with no reason — is the
+        # deliberate choice: a document whose recorded body does not match the signed
+        # digest is not a document this process understands, and the run still stops
+        # either way because cancellation is unconditional in the agent half.
+        fabricated = json.dumps(
+            {"command_id": COMMAND_ID, "reason": "cleared by the release manager"},
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        outcome = self._resolve(
+            monkeypatch,
+            tmp_path,
+            envelope=_mint(gateway_key),
+            signed_body_base64=_signed_body_base64(fabricated),
+        )
+
+        assert outcome is None
+
+    def test_a_sentinel_whose_delivery_was_refused_does_not_resolve(
+        self, monkeypatch, tmp_path, gateway_key
+    ):
+        # A signed envelope proves the gateway *issued* an authorization; it does not
+        # prove the authorization survived the live recheck immediately before the
+        # executor ran. `deliverAuthorized` settles the command `rejected` when the
+        # grant was revoked, the epoch moved or the operator's membership lapsed —
+        # and leaves the perfectly valid envelope behind. Honouring it would finalize
+        # an abort the platform had explicitly just denied.
+        assert (
+            self._resolve(
+                monkeypatch, tmp_path, envelope=_mint(gateway_key), delivery="rejected"
+            )
+            is None
+        )
 
     def test_an_unsigned_sentinel_cannot_finalize_a_run_as_aborted(
         self, monkeypatch, tmp_path, gateway_key
@@ -593,7 +666,13 @@ class TestTheAbortReachesTheEndOfTheRun:
             "generation": GENERATION,
             "command_id": COMMAND_ID,
             "requested_at": _iso(SIGNED_AT),
-            "reason": "wrong approach",
+            "delivery": ACCEPTED_DELIVERY,
+            # The bytes the gateway signed. The reason the closing comment shows is
+            # derived from these, not from a `reason` field on the document — that
+            # field is gone, because an unsigned copy of the operator's words beside
+            # the envelope is what let a worker substitute its own text and have it
+            # attributed to the human who authorized the abort.
+            "signed_body_base64": _signed_body_base64(),
         }
 
         def write_sentinel():
