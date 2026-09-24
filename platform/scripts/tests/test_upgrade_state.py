@@ -74,21 +74,36 @@ class PreservationTests(unittest.TestCase):
     def test_subnet_added_during_the_update_run_is_not_dropped_by_the_export(self):
         # The exported tfvars is applied as a -var-file after the repository
         # overlays, so it overrides TF_VAR_ and must carry the operator's request.
+        # The request declares the live addition too, which is what an operator
+        # extending capacity supplies; omitting it is the refusal case below.
         result = self.capacity(["subnet-0own1", "subnet-0extra1"],
                                zones={"subnet-0extra1": "us-east-1a"},
-                               requested={"us-east-1b": "subnet-0extra9"})
+                               requested={"us-east-1a": "subnet-0extra1",
+                                          "us-east-1b": "subnet-0extra9"})
         self.assertEqual(result, {"us-east-1a": "subnet-0extra1", "us-east-1b": "subnet-0extra9"})
+
+    def test_an_export_that_omits_a_live_addition_refuses(self):
+        # Fail closed: applying it would remove the subnet from the live cluster and
+        # re-break pod scheduling. A stale export is likelier than a deliberate
+        # decision to shrink capacity during a routine update.
+        with self.assertRaisesRegex(state.capacity_subnets.Refused, "subnet-0extra1"):
+            self.capacity(["subnet-0own1", "subnet-0extra1"],
+                          zones={"subnet-0extra1": "us-east-1a"},
+                          requested={"us-east-1b": "subnet-0extra9"})
 
     def test_unresolvable_or_conflicting_additional_subnets_refuse(self):
         # Silently dropping either case would shrink the live subnet set.
-        with self.assertRaisesRegex(ValueError, "availability zone"):
+        with self.assertRaisesRegex(state.capacity_subnets.Refused, "availability zone"):
             self.capacity(["subnet-0extra1", "subnet-0vanished"], zones={"subnet-0extra1": "us-east-1a"})
-        with self.assertRaisesRegex(ValueError, "availability zone"):
+        with self.assertRaisesRegex(state.capacity_subnets.Refused, "availability zone"):
             self.capacity(["subnet-0extra1", "subnet-0extra2"],
                           zones={"subnet-0extra1": "us-east-1a", "subnet-0extra2": "us-east-1a"})
-        with self.assertRaisesRegex(ValueError, "availability zone"):
-            self.capacity(["subnet-0extra1"], zones={"subnet-0extra1": "us-east-1a"},
-                          requested={"us-east-1b": "subnet-0extra1"})
+        # The same subnet claimed under two zones: a subnet lives in exactly one.
+        with self.assertRaisesRegex(state.capacity_subnets.Refused, "more than one"):
+            self.capacity(["subnet-0extra1", "subnet-0extra2"],
+                          zones={"subnet-0extra1": "us-east-1a", "subnet-0extra2": "us-east-1b"},
+                          requested={"us-east-1a": "subnet-0extra1", "us-east-1b": "subnet-0extra2",
+                                     "us-east-1c": "subnet-0extra1"})
 
     def test_retains_each_existing_repository_encryption(self):
         old = {"resources": [

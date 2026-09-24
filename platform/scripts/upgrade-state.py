@@ -16,6 +16,12 @@ import sys
 import time
 import urllib.request
 
+# Shared capacity-subnet rules (#5830), also used by the CI apply path so a routine
+# apply and an --update run cannot disagree about which subnets the cluster keeps.
+# This module is loaded by path in tests, so sys.path may not contain its directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import capacity_subnets  # noqa: E402
+
 
 def aws(*args):
     proc = subprocess.run(["aws", *args, "--output", "json"], text=True, capture_output=True)
@@ -66,35 +72,27 @@ def retain_capacity_subnets(state, cluster, requested=None):
     the repository's empty default, shrink the subnet set back, and re-break pod
     scheduling on every node launched afterwards.
 
-    Terraform-owned subnets are excluded: they reach the cluster through
-    private_subnet_ids already, and pinning their ids here would double-list them
-    and freeze ids Terraform may legitimately replace. So an addition is exactly a
-    live cluster subnet that platform Terraform does not manage.
+    The rules (what counts as an addition, and never narrowing the live set as a
+    side effect of absent configuration) live in capacity_subnets, shared with the
+    CI apply path so both behave identically -- the failure being prevented is the
+    same one. In particular the baseline is the networking module's PRIVATE subnets,
+    not every Terraform-managed subnet: Terraform also manages public subnets, so
+    the broader rule would let a managed-but-not-baseline subnet be neither retained
+    nor recognised and disappear from the cluster's set unannounced.
 
     `requested` is merged in for the same reason the access CIDRs are: the exported
     tfvars file is applied as a -var-file AFTER the repository overlays, so it
     overrides TF_VAR_ -- an operator adding a subnet during an update run would
-    otherwise have their export silently dropped.
+    otherwise have their export silently dropped. An operator export that OMITS a
+    live addition is refused rather than applied as a removal.
     """
-    owned = {attrs["id"] for _, attrs in resources(state, "aws_subnet")}
-    extra = sorted({s for s in cluster["resourcesVpcConfig"].get("subnetIds", []) if s not in owned})
+    additions = capacity_subnets.live_additions(state, cluster["resourcesVpcConfig"].get("subnetIds", []))
     zones = {}
-    if extra:
-        for subnet in aws("ec2", "describe-subnets", "--subnet-ids", *extra)["Subnets"]:
-            zones[subnet["SubnetId"]] = subnet["AvailabilityZone"]
-        if [s for s in extra if s not in zones]:
-            # Dropping it would silently shrink the subnet set, so refuse instead.
-            raise ValueError("Cannot recover the availability zone of an existing additional cluster subnet")
-    for zone, subnet in (requested or {}).items():
-        if zones.get(subnet, zone) != zone:
-            raise ValueError("Requested additional subnet is not in the availability zone it is keyed by")
-        zones[subnet] = zone
-    result = {}
-    for subnet, zone in sorted(zones.items()):
-        if result.setdefault(zone, subnet) != subnet:
-            raise ValueError("Two additional cluster subnets share an availability zone "
-                             f"({zone}); this cannot be retained as a zone-keyed map")
-    return result
+    if additions:
+        described = aws("ec2", "describe-subnets", "--subnet-ids", *sorted(additions))["Subnets"]
+        found = {s["SubnetId"]: s.get("AvailabilityZone") for s in described}
+        zones = {s: found.get(s) for s in sorted(additions)}
+    return capacity_subnets.effective_additions(requested, capacity_subnets.as_zone_map(zones))
 
 
 def repository_encryption(state):

@@ -237,32 +237,51 @@ jobs:
           echo "Extra cluster-admin principals: ${TFVAR}"
 
       # Additional EXISTING private capacity subnets for the cluster's own subnet
-      # set (#5830). Same portability reason as the ARNs above: subnet ids are
-      # account-specific, so environments/dev/platform.tfvars deliberately leaves
+      # set (#5830). Subnet ids are account-specific, so
+      # environments/dev/platform.tfvars deliberately leaves
       # additional_private_subnet_ids_by_az unassigned — a -var-file assignment,
-      # even `= {}`, would override this TF_VAR_. Without the passthrough, a CI
-      # apply would plan the empty default and shrink the subnet set back, which
-      # re-breaks pod IP assignment for every node launched afterwards.
+      # even `= {}`, would override this TF_VAR_.
       #
-      # Unset/blank variable = no-op: the declared default ({}) applies, and the
-      # cluster's subnet set stays exactly as it is. Expects a JSON object keyed by
-      # availability zone; the module refuses at plan time any subnet outside the
-      # VPC, not in the zone it is keyed by, public, or not NAT-routed.
-      - name: Set additional private capacity subnets
+      # An UNSET OR BLANK REPOSITORY VARIABLE IS NOT A NO-OP once capacity has been
+      # added. Empty resolves to the declared default ({}), so on an expanded
+      # cluster an ordinary apply would plan the additions away and re-break pod IP
+      # assignment for every node launched afterwards — with nobody having asked for
+      # a change. Passing the variable through does NOT prevent that; the effective
+      # value has to be decided against the LIVE cluster, which is what this step
+      # does:
+      #   unset/blank          -> retain whatever the live cluster already has
+      #   omits a live addition -> REFUSE (a stale variable is likelier than a
+      #                            deliberate decision to shrink capacity)
+      #   names more            -> allowed; that is an operator adding capacity
+      # Narrowing happens only through a deliberate authorised removal.
+      #
+      # The resolved value is exported once and used by BOTH the plan and the apply
+      # below, so the reviewed plan is provably the applied plan (the #5004 class of
+      # asymmetry). Read-only: describe-cluster / describe-subnets / state read.
+      # Rules and tests: platform/scripts/capacity_subnets.py.
+      #
+      # Runs for the scoped paths too, deliberately and for the same reason the
+      # public-CIDR preservation above does: a scoped target's dependency graph can
+      # reach the cluster, so planning the empty default here would narrow the
+      # subnet set as a side effect of an unrelated scoped apply.
+      - name: Resolve additional private capacity subnets
         env:
           ADDITIONAL_PRIVATE_SUBNETS_BY_AZ: ${{ vars.ADDITIONAL_PRIVATE_SUBNETS_BY_AZ }}
+          ALLOW_CAPACITY_SUBNET_REMOVAL: ${{ vars.ALLOW_CAPACITY_SUBNET_REMOVAL }}
         run: |
           set -euo pipefail
-          RAW=$(printf '%s' "${ADDITIONAL_PRIVATE_SUBNETS_BY_AZ:-}" | tr -d '[:space:]')
-          if [ -z "$RAW" ]; then
-            echo "ADDITIONAL_PRIVATE_SUBNETS_BY_AZ not set — using the declared default ({})."
-            exit 0
+          ARGS=()
+          if [ "${ALLOW_CAPACITY_SUBNET_REMOVAL:-}" = "yes" ]; then
+            echo "::warning::ALLOW_CAPACITY_SUBNET_REMOVAL=yes — a configured omission may narrow the cluster's subnet set."
+            ARGS+=(--allow-removal)
           fi
-          # Validated here rather than relying on Terraform alone, so a typo fails
-          # this step instead of surfacing as a confusing map(string) type error.
-          TFVAR=$(printf '%s' "$RAW" | python3 -c 'import json,re,sys; v=json.load(sys.stdin); assert isinstance(v,dict) and v, "expected a non-empty JSON object keyed by availability zone"; assert all(re.fullmatch(r"[a-z0-9-]+",z) and re.fullmatch(r"subnet-[0-9a-f]{8,17}",str(s)) for z,s in v.items()), "expected entries of the form \"us-east-1a\": \"subnet-0123456789abcdef0\""; assert len(set(v.values()))==len(v), "the same subnet is named under two availability zones"; print(json.dumps(v))')
+          TFVAR=$(python3 platform/scripts/resolve-capacity-subnets.py \
+            --environment "${ENVIRONMENT}" \
+            --bucket "${STATE_BUCKET}" \
+            --configured "${ADDITIONAL_PRIVATE_SUBNETS_BY_AZ:-}" \
+            "${ARGS[@]}")
           echo "TF_VAR_additional_private_subnet_ids_by_az=${TFVAR}" >> "$GITHUB_ENV"
-          echo "Additional private capacity subnets: ${TFVAR}"
+          echo "Effective additional private capacity subnets: ${TFVAR}"
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
