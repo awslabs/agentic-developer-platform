@@ -16,8 +16,9 @@ beforeEach(() => { window.sessionStorage.setItem('cognito_access_token', 'test-t
 it('shows retained output after cleanup as text and reauthorizes downloads', async () => {
   let requests = 0;
   server.use(http.get(api, () => { requests++; return HttpResponse.json(response); }));
-  const create = vi.fn((_blob: Blob) => 'blob:fixture');
-  vi.stubGlobal('URL', class extends URL { static createObjectURL = create; static revokeObjectURL = vi.fn(); });
+  const create = vi.fn((_blob: Blob | MediaSource) => 'blob:fixture');
+  const revoke = vi.fn();
+  vi.stubGlobal('URL', class extends URL { static createObjectURL = create; static revokeObjectURL = revoke; });
   const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
   const view = render(<BatchResult workspaceId="ws-1" row={row} />);
   await userEvent.click(screen.getByRole('button', { name: /View result/ }));
@@ -29,6 +30,7 @@ it('shows retained output after cleanup as text and reauthorizes downloads', asy
   expect(requests).toBe(2);
   expect(create.mock.calls[0][0]).toBeInstanceOf(Blob);
   expect(click).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:fixture'), { timeout: 2000 });
   click.mockRestore(); vi.unstubAllGlobals();
 });
 
