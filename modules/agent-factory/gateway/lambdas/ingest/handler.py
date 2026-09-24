@@ -1119,10 +1119,26 @@ def _handle_unified_message(message: UnifiedMessage) -> dict:
     except SessionOwnershipError:
         # Nothing has been written, no history is returned, and the owner's live
         # connection is untouched. Indistinguishable from "no such session".
-        return {
-            "statusCode": 404,
-            "body": json.dumps({"error": "session not found", "session_id": session_id}),
+        payload = {
+            "error": "session not found", "session_id": session_id,
+            # #5615: TELL the client, because a WebSocket integration discards
+            # this return value and the browser would otherwise hang forever on
+            # a message that will never be processed. The legitimate reason an
+            # owner sees this is a conversation that outlived the sessions
+            # table's 24h TTL: their id is genuinely gone, and they must start a
+            # new one rather than retry the same id forever.
+            #
+            # `type` names the RECOVERY, not the reason — it is identical for a
+            # reaped id and for someone else's, so this stays the same
+            # non-answer as before and is not an existence oracle.
+            "type": "session_invalid",
+            "content": "That conversation is no longer available. Starting a new one.",
         }
+        if connection_id:
+            # No request_id: a chat turn is not a request/response pair, so this
+            # is an unsolicited frame like the dispatch-failure one below.
+            _send_ws_response(connection_id, "", payload)
+        return {"statusCode": 404, "body": json.dumps(payload)}
     except SessionStoreError:
         return {
             "statusCode": 503,
