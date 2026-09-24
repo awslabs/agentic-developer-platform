@@ -509,7 +509,7 @@ def same_scope(left, right):
     return left.get("deployment_id") == right.get("deployment_id") and left.get("org_id") == right.get("org_id")
 
 
-TERMINAL_STATES = ("succeeded", "failed")
+TERMINAL_STATES = ("succeeded", "failed", "cancelled")
 
 # The busy message for the receipt lock. Names what is being protected, because
 # "a lock is held" tells the operator nothing about whether it is safe to wait.
