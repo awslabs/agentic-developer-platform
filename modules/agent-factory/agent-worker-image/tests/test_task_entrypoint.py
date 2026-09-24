@@ -82,3 +82,19 @@ def test_task_envelope_from_unauthenticated_direct_queue_is_refused(monkeypatch)
         assert entrypoint._main() == entrypoint.AGENT_EXIT_RETRYABLE
     legacy_parse.assert_not_called()
     task_flow.assert_not_called()
+
+
+def test_task_api_queue_mode_preserves_legacy_authority(monkeypatch):
+    monkeypatch.setenv("ADP_TASK_API_WORKER_ENABLED", "true")
+    with (
+        patch.object(entrypoint, "authority_enabled", return_value=False),
+        patch("lib.task_gateway_client.own_task", return_value="legacy-body") as acquire,
+        patch("lib.task_gateway_client.acknowledge_task") as ack,
+        patch.object(entrypoint.boto3, "client") as aws,
+    ):
+        assert entrypoint._receive_one_message("", "us-east-1") == ("legacy-body", "run-bound-task")
+        entrypoint._delete_message("", "us-east-1", "run-bound-task")
+        assert entrypoint.authority_enabled() is False
+    acquire.assert_called_once()
+    ack.assert_called_once()
+    aws.assert_not_called()

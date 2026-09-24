@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -472,6 +474,90 @@ class TaskHost:
         except (TaskRunClientError, RunIdentityError, OSError, ValueError):
             logger.warning("Task stop-only settlement unavailable")
 
+    def _input_artifacts(self, assignment, bootstrap: dict) -> list[tuple[dict, bytes]]:
+        artifacts = []
+        for reference in bootstrap["input"].get("artifacts", []):
+            run = {
+                "task_id": assignment.task_id,
+                "invocation_id": assignment.invocation_id,
+                "generation": assignment.generation,
+            }
+            response = self.client.artifact(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "operation": "read",
+                    "run": run,
+                    "artifact_id": reference["artifact_id"],
+                }
+            )
+            expected = {
+                "schema_version",
+                "operation",
+                "run",
+                "artifact_id",
+                "content_type",
+                "content_sha256",
+                "byte_length",
+                "content_base64",
+            }
+            if not isinstance(response, dict) or set(response) != expected:
+                raise TaskProtocolError("artifact read response does not match contract")
+            if (
+                response["schema_version"] != SCHEMA_VERSION
+                or response["operation"] != "read"
+                or response["run"] != run
+                or any(
+                    response[key] != reference[key]
+                    for key in ("artifact_id", "content_type", "content_sha256")
+                )
+                or type(response["byte_length"]) is not int
+                or not 0 < response["byte_length"] <= 262144
+                or not isinstance(response["content_base64"], str)
+                or len(response["content_base64"]) > 349528
+            ):
+                raise TaskProtocolError("artifact read identity or length mismatch")
+            try:
+                content = base64.b64decode(response["content_base64"], validate=True)
+                content.decode("utf-8")
+            except (ValueError, binascii.Error, UnicodeDecodeError):
+                raise TaskProtocolError("artifact content encoding invalid") from None
+            if (
+                len(content) != response["byte_length"]
+                or hashlib.sha256(content).hexdigest() != response["content_sha256"]
+            ):
+                raise TaskProtocolError("artifact read integrity mismatch")
+            artifacts.append(
+                (
+                    {
+                        key: response[key]
+                        for key in ("artifact_id", "content_type", "content_sha256", "byte_length")
+                    },
+                    content,
+                )
+            )
+        return artifacts
+
+    def _send_artifacts(self, process, assignment, artifacts) -> None:
+        for reference, content in artifacts:
+            for offset in range(0, len(content), 32768):
+                chunk = content[offset : offset + 32768]
+                _write_frame(
+                    process,
+                    {
+                        "protocol_version": PROTOCOL_VERSION,
+                        "type": "artifact.chunk",
+                        "request_id": _request_id(),
+                        "task_id": assignment.task_id,
+                        "artifact_id": reference["artifact_id"],
+                        "content_type": reference["content_type"],
+                        "content_sha256": reference["content_sha256"],
+                        "sequence": offset // 32768 + 1,
+                        "total_bytes": len(content),
+                        "data_base64": base64.b64encode(chunk).decode(),
+                        "last": offset + len(chunk) == len(content),
+                    },
+                )
+
     def run(self, assignment, envelope: dict, *, heartbeat, acknowledge) -> int:
         workspace: Path | None = None
         process: subprocess.Popen | None = None
@@ -513,11 +599,7 @@ class TaskHost:
             )
             if attempt_response.get("operation_status") not in {"confirmed", "pending"}:
                 raise TaskRunClientError("task attempt was not registered")
-            if bootstrap["input"].get("artifacts"):
-                raise TaskHostError(
-                    "task input artifact bytes are absent from the frozen bootstrap contract",
-                    code="protocol_violation",
-                )
+            artifacts = self._input_artifacts(assignment, bootstrap)
             command = self.command_resolver(bootstrap["persona"])
             self.work_root.mkdir(parents=True, exist_ok=True)
             workspace = Path(
@@ -542,6 +624,7 @@ class TaskHost:
             )
             stderr_thread.start()
             task_input = bootstrap["input"]
+            self._send_artifacts(process, assignment, artifacts)
             _write_frame(
                 process,
                 {
@@ -555,7 +638,7 @@ class TaskHost:
                     "instructions": task_input["instructions"],
                     "inputs": task_input.get("inputs", {}),
                     "acceptance_criteria": task_input.get("acceptance_criteria", []),
-                    "artifacts": [],
+                    "artifacts": [reference for reference, _ in artifacts],
                     "limits": {
                         "max_turns": bootstrap["limits"]["max_turns"],
                         "max_output_tokens_per_turn": bootstrap["limits"][

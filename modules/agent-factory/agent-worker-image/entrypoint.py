@@ -564,6 +564,11 @@ def run_cmd(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     )  # nosemgrep: dangerous-subprocess-use-audit
 
 
+def task_queue_enabled() -> bool:
+    """Use pod-bound queue delivery without changing legacy runtime authority."""
+    return authority_enabled() or os.environ.get("ADP_TASK_API_WORKER_ENABLED", "").lower() in {"true", "1", "yes"}
+
+
 def _receive_one_message(queue_url: str, region: str):
     """Block for up to 20s waiting for one SQS message.
 
@@ -572,7 +577,7 @@ def _receive_one_message(queue_url: str, region: str):
     receive semantics; for single-message-at-a-time processing the defaults
     are fine.
     """
-    if authority_enabled():
+    if task_queue_enabled():
         from lib.task_gateway_client import own_task
 
         body = own_task()
@@ -594,7 +599,7 @@ def _receive_one_message(queue_url: str, region: str):
 
 def _delete_message(queue_url: str, region: str, receipt_handle: str) -> None:
     """Ack-by-delete so the message doesn't come back after visibility timeout."""
-    if authority_enabled():
+    if task_queue_enabled():
         from lib.task_gateway_client import acknowledge_task
 
         acknowledge_task()
@@ -675,7 +680,7 @@ class VisibilityHeartbeat:
         """Heartbeat loop: sleep for interval, then extend visibility."""
         # Create a per-thread SQS client (boto3 clients are not thread-safe).
         try:
-            if authority_enabled():
+            if task_queue_enabled():
                 from lib.task_gateway_client import heartbeat_task
 
                 extend = heartbeat_task
@@ -1436,7 +1441,7 @@ def _reuse_work_branch(branch: str, *, allow_cleanup: bool, persona: str, issue:
 
 
 def main() -> int:
-    if authority_enabled():
+    if task_queue_enabled():
         # Lease starts at task assignment, before clone/bootstrap/model startup.
         # Always stop it on early refusal as well as normal harness termination.
         heartbeat = VisibilityHeartbeat(
@@ -1506,7 +1511,7 @@ def _main(*, task_heartbeat: VisibilityHeartbeat | None = None) -> int:
     if is_task_envelope(_pre):
         bootstrap_log.step_start(1, "parse_task_envelope", message_id=_msg_id_pre)
         try:
-            if not authority_enabled() or task_heartbeat is None:
+            if not task_queue_enabled() or task_heartbeat is None:
                 raise TaskDispatchError("task assignment requires authenticated acquisition")
             assignment = parse_task_envelope(_pre)
         except TaskDispatchError as exc:

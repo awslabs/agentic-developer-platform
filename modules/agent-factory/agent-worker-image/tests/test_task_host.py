@@ -803,3 +803,47 @@ def test_host_rejects_turn_text_not_in_committed_membership(assignment_and_boots
     client.turn = turn
     with pytest.raises(TaskProtocolError, match="membership"):
         TaskHost(client=client)._turn(assignment, {}, str(__import__("uuid").uuid4()))
+
+
+def test_verified_artifact_chunks_roundtrip_at_per_artifact_limit(assignment_and_bootstrap):
+    from lib.task_protocol import TaskProtocolError
+    import base64
+    import hashlib
+    import io
+    from types import SimpleNamespace
+
+    assignment, _, bootstrap = assignment_and_bootstrap
+    content = ("é" * 131072).encode()
+    reference = {
+        "artifact_id": "art_11111111-1111-4111-8111-111111111111",
+        "version": 1,
+        "content_type": "text/plain",
+        "content_sha256": hashlib.sha256(content).hexdigest(),
+    }
+    bootstrap["input"]["artifacts"] = [reference]
+    client = FakeClient(bootstrap, [])
+
+    def read(body):
+        return {
+            **body,
+            "content_type": reference["content_type"],
+            "content_sha256": reference["content_sha256"],
+            "byte_length": len(content),
+            "content_base64": base64.b64encode(content).decode(),
+        }
+
+    client.artifact = read
+    host = TaskHost(client=client)
+    artifacts = host._input_artifacts(assignment, bootstrap)
+    process = SimpleNamespace(stdin=io.StringIO())
+    host._send_artifacts(process, assignment, artifacts)
+    lines = process.stdin.getvalue().splitlines(keepends=True)
+    frames = [json.loads(line) for line in lines]
+    assert len(frames) == 8
+    assert all(len(line.encode()) <= 65536 for line in lines)
+    assert [frame["sequence"] for frame in frames] == list(range(1, 9))
+    assert [frame["last"] for frame in frames] == [False] * 7 + [True]
+    assert b"".join(base64.b64decode(frame["data_base64"]) for frame in frames) == content
+    client.artifact = lambda body: {**read(body), "content_sha256": "0" * 64}
+    with pytest.raises(TaskProtocolError, match="mismatch"):
+        host._input_artifacts(assignment, bootstrap)
