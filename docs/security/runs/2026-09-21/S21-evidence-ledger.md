@@ -37,6 +37,7 @@ overwritten, so the error cannot be reintroduced from an older copy:
 | S03 PR #5724 | "Doc-only PR" | **13 files including a +400-line build recipe and +433 lines of tests**; it correctly touched no lock/manifest/infra file |
 | S03 runtime | "Live startup/persistence unverified" | **Verified** locally — startup, auth, controller-client and restart persistence (§3.2); not a cluster deploy |
 | S03 integration | implied a single propagating lock edit | **Five coupled prerequisites**, publication first; a digest-only swap would record false provenance (§3) |
+| S01 vs S03 images | treated as the same "not in the lock" gap | **Different publication states** — S01's is ECR-resident, S03's is a local layout needing publication first (§3) |
 | Bandit tooling | "pinned bandit and `.banditrc` absent" | **Both present**; the real defect is `--ini` against a YAML config, which silently drops `skips` (§5.1) |
 | cfn-nag | "not PR-triggered" → missing coverage | The scan is **dispatch-only by design** and cfn-nag runs in it; the real defect is **parse aborts reporting success** (§5.1) |
 | Checkov allowlist | "inert because of `--directory .`" | **Not supported** — `--directory .` does not disable `skip-check` or the baseline (§5.1) |
@@ -202,11 +203,25 @@ currently unreconciled:
    manifest bytes and referenced blobs are preserved. **Not verified:** whether any out-of-band
    publication has occurred since 2026-09-22 — no repository artifact records one and no
    registry was queried here.
-2. **S01's built controller image is not in the lock.** S01 (#5600, CLOSED) recorded
-   `adp-superplane-controller@sha256:d87cf6355d…ce38ed` with a build run, a SUCCEEDED
-   validation build and four runtime checks passing, and states the digest "is available to
-   S21 without requiring a lock-file edit". `superplane-controller` remains in
-   `pending_images` with "no build has run yet" — which is now stale as a description.
+2. **S01's built controller image is not in the lock — but it *is* already in a registry.** S01
+   (#5600, CLOSED) recorded, in `S01-image-evidence.json`:
+
+   ```
+   879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-superplane-controller@
+     sha256:d87cf6355d66432337aafbd3194f51b93b53744c0c1bae0f015bc0e156ce38ed
+   ```
+
+   with build run 35663521595, source build `adp-dev-superplane-controller:9728edb4-…`, a
+   SUCCEEDED validation build `…:98144599-…`, `registry_ready: true`, and four runtime checks
+   passing. It states the digest "is available to S21 without requiring a lock-file edit".
+   `pending_images.superplane-controller` still reads "no build has run yet" — **stale as a
+   description**.
+
+   **This differs from S03 and the distinction drives the integration order.** S01's image is
+   already ECR-resident with a full registry reference, so step 3 below needs only the digest
+   promotion and a digest re-confirmation for it. S03's derived image is a **local OCI layout with
+   a placeholder repository**, so it must be published *before* anything is pinned. Treating the
+   two identically is what would produce a wrong or unresolvable pin.
 
 **Consequence:** the S01/S02/S03 remediation is real and evidenced at the image level, but
 the **shared release still resolves to unfixed pins**. This is exactly the "code delivered,
@@ -407,7 +422,8 @@ authorisation to run it.
    their merits — native rating versus CVSS — noting 3 have no fix version available.
 3. **Publish before pinning, then integrate in one reviewed commit.** For S03, the derived image
    must be **published first** and its registry digest confirmed to equal
-   `sha256:f8d893cf…de55ec`; only then set `images.skypilot-api` **together with**
+   `sha256:f8d893cf…de55ec` (it is currently a local OCI layout under a placeholder repository);
+   only then set `images.skypilot-api` **together with**
    `image_sources.skypilot-api.registry`/`.repository`, refresh the provenance comments in
    `k8s/40-skypilot-api.yaml`, swap in the derived `skypilot_image_facts` fixture and update the
    literal guard in `lock_pin.tftest.hcl` (the five coupled steps in §3). Changing only the digest
@@ -415,7 +431,15 @@ authorisation to run it.
    `sha256:d87cf635…ce38ed` needs the same publication check before `superplane-controller` leaves
    `pending_images`. Re-assert the shape tests (`tests/test_lock.py`, `tests/lock_pin.tftest.hcl`,
    `tests/test_skypilot_startup_contract.py`). **No placeholder digest** for the images with no
-   build. S02's `adp-superplane-api@sha256:f1897a67…4a9b259` is already registry-verified (§3.1).
+   build.
+
+   The three images divide by publication state, which sets the order of work:
+
+   | Image | Digest | Registry state | Step needed |
+   |---|---|---|---|
+   | `adp-superplane-api` (S02) | `sha256:f1897a67…4a9b259` | **In ECR, Syft/Grype-verified** | Confirm digest; pin if in scope |
+   | `adp-superplane-controller` (S01) | `sha256:d87cf635…ce38ed` | **In ECR**, `registry_ready: true` | Re-confirm digest; promote out of `pending_images` |
+   | `skypilot-api` derived (S03) | `sha256:f8d893cf…de55ec` | **Local OCI layout only** | **Publish first**, then the five coupled edits |
 4. **Reconcile the shared scanner disposition**: refresh `.grype.yaml`'s lapsed review — starting
    with the **20 package-unscoped entries**, which suppress globally — and decide the 4 S21-owned
    `CKV_AWS_51` records on their merits. Per-location evidence only — no whole-rule suppression, no
