@@ -148,10 +148,10 @@ runs:
           CMD+=("${VARS_ARRAY[@]}")
         fi
 
-        if [ -n "$SERVICE_ROLE_ARN" ]; then
+        if [ -n "${SERVICE_ROLE_ARN:-}" ]; then
           CMD+=(--service-role-override "$SERVICE_ROLE_ARN")
         fi
-        if [ -n "$BUILDSPEC" ]; then
+        if [ -n "${BUILDSPEC:-}" ]; then
           CMD+=(--buildspec-override "$BUILDSPEC")
         fi
 
