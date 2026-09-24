@@ -18,11 +18,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import {
+  ABORT_SENTINEL_PATH,
   ABORT_SENTINEL_VERSION,
   MAX_SENTINEL_REASON_LENGTH,
   abortSentinelBindingFromEnv,
   boundSentinelReason,
   clearAbortSentinel,
+  parseStrictGeneration,
   readAbortSentinel,
   validateAbortSentinel,
   writeAbortSentinel,
@@ -290,6 +292,88 @@ describe('binding resolution from the environment', () => {
       ADP_CONTROL_RUN_ID: ' run-abc ',
       ADP_CONTROL_GENERATION: '4',
     })).toEqual({ runId: 'run-abc', generation: 4 });
+  });
+});
+
+describe('shared cross-language vectors', () => {
+  /**
+   * The same fixture `tests/test_abort_sentinel.py` evaluates, run through this
+   * runtime's real validator.
+   *
+   * The previous cross-language check compared *source text* for the shared
+   * constants. It could not have caught the divergence it was there to catch: the
+   * constants matched exactly while Python honoured `version: true` (because
+   * `True == 1` there) and this side rejected it. Matching declarations do not
+   * prove matching behaviour, so the contract is pinned by running both
+   * validators over one set of documents.
+   */
+  const vectors = JSON.parse(
+    readFileSync(join(__dirname, '__fixtures__', 'abort-sentinel-vectors.json'), 'utf8'),
+  ) as {
+    version: number;
+    path: string;
+    max_reason_length: number;
+    binding: { run_id: string; generation: number };
+    vectors: Array<{
+      name: string;
+      accept: boolean;
+      document: unknown;
+      expect_reason?: string | null;
+      note: string;
+    }>;
+    generation_binding_vectors: Array<{
+      name: string;
+      raw: string;
+      expect: number | null;
+      note?: string;
+    }>;
+  };
+
+  const fixtureBinding: AbortSentinelBinding = {
+    runId: vectors.binding.run_id,
+    generation: vectors.binding.generation,
+  };
+
+  it('pins the shared constants against this reader', () => {
+    expect(vectors.version).toBe(ABORT_SENTINEL_VERSION);
+    expect(vectors.path).toBe(ABORT_SENTINEL_PATH);
+    expect(vectors.max_reason_length).toBe(MAX_SENTINEL_REASON_LENGTH);
+  });
+
+  it.each(vectors.vectors.map((vector) => [vector.name, vector] as const))(
+    'agrees with the Python reader on %s',
+    (_name, vector) => {
+      const validated = validateAbortSentinel(vector.document, fixtureBinding);
+
+      if (vector.accept) {
+        expect(validated).not.toBeNull();
+        expect(validated!.run_id).toBe(fixtureBinding.runId);
+        expect(validated!.generation).toBe(fixtureBinding.generation);
+        expect(validated!.reason).toBe(vector.expect_reason ?? null);
+      } else {
+        // The note explains which real failure this vector stands for.
+        expect(validated).toBeNull();
+      }
+    },
+  );
+
+  it.each(vectors.generation_binding_vectors.map((vector) => [vector.name, vector] as const))(
+    'parses the env generation %s identically to Python',
+    (_name, vector) => {
+      expect(parseStrictGeneration(vector.raw)).toBe(vector.expect);
+    },
+  );
+
+  it.each(
+    vectors.vectors
+      .filter((vector) => !vector.accept && vector.document !== null && typeof vector.document === 'object' && !Array.isArray(vector.document))
+      .map((vector) => [vector.name, vector] as const),
+  )('rejects %s through the file reader too, not just the validator', (_name, vector) => {
+    // The validator holds the shared rules, but the run path calls the file
+    // reader. A rule enforced only in the validator protects nothing real.
+    putRaw(JSON.stringify(vector.document));
+
+    expect(readAbortSentinel(fixtureBinding, { sentinelPath })).toBeNull();
   });
 });
 

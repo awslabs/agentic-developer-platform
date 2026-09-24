@@ -31,9 +31,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.abort_sentinel import (
+    ABORT_SENTINEL_PATH,
     ABORT_SENTINEL_VERSION,
     MAX_SENTINEL_BYTES,
     MAX_SENTINEL_REASON_LENGTH,
+    _coerce_generation,
     bound_sentinel_reason,
     read_abort_sentinel,
     validate_abort_sentinel,
@@ -256,14 +258,83 @@ class TestReasonBounding:
         assert len(validated["reason"]) == MAX_SENTINEL_REASON_LENGTH
 
 
-class TestCrossLanguageContract:
-    """The two readers are one contract; drift between them is the failure mode."""
+_VECTORS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "agent"
+    / "src"
+    / "__fixtures__"
+    / "abort-sentinel-vectors.json"
+)
+_VECTORS = json.loads(_VECTORS_PATH.read_text(encoding="utf-8"))
 
-    def test_python_and_typescript_agree_on_version_path_and_reason_cap(self):
-        source = (
-            Path(__file__).resolve().parents[2] / "agent" / "src" / "control-abort-sentinel.ts"
-        ).read_text(encoding="utf-8")
 
-        assert f"ABORT_SENTINEL_VERSION = {ABORT_SENTINEL_VERSION}" in source
-        assert "ABORT_SENTINEL_PATH = '/tmp/adp-abort-sentinel.json'" in source
-        assert f"MAX_SENTINEL_REASON_LENGTH = {MAX_SENTINEL_REASON_LENGTH}" in source
+def _vector_ids(vectors):
+    return [vector["name"] for vector in vectors]
+
+
+class TestSharedVectors:
+    """Both runtimes evaluate these same documents with their real validators.
+
+    The previous cross-language test compared *source text* for the shared
+    constants. That could not have caught the divergence it existed to catch: the
+    constants matched exactly while Python honoured ``version: true`` (because
+    ``True == 1``) and TypeScript rejected it. Matching declarations do not prove
+    matching behaviour, so the contract is pinned by running both validators over
+    one fixture instead. ``control-abort-sentinel.test.ts`` reads the same file.
+    """
+
+    def test_the_fixture_matches_this_reader_s_constants(self):
+        # The fixture carries the shared constants so drift in either direction
+        # is a failing test rather than a silently different contract.
+        assert _VECTORS["version"] == ABORT_SENTINEL_VERSION
+        assert _VECTORS["path"] == ABORT_SENTINEL_PATH
+        assert _VECTORS["max_reason_length"] == MAX_SENTINEL_REASON_LENGTH
+
+    @pytest.mark.parametrize("vector", _VECTORS["vectors"], ids=_vector_ids(_VECTORS["vectors"]))
+    def test_document_vector(self, vector):
+        binding = _VECTORS["binding"]
+
+        validated = validate_abort_sentinel(
+            vector["document"], binding["run_id"], binding["generation"]
+        )
+
+        if vector["accept"]:
+            assert validated is not None, vector["note"]
+            assert validated["run_id"] == binding["run_id"]
+            assert validated["generation"] == binding["generation"]
+            assert validated["reason"] == vector["expect_reason"]
+        else:
+            assert validated is None, vector["note"]
+
+    @pytest.mark.parametrize(
+        "vector",
+        _VECTORS["generation_binding_vectors"],
+        ids=_vector_ids(_VECTORS["generation_binding_vectors"]),
+    )
+    def test_generation_binding_vector(self, vector):
+        # The env-supplied generation is parsed on both sides: Python coerces the
+        # decimal-string form here, TypeScript in `parseStrictGeneration`. Both
+        # must accept and reject exactly the same strings, because the generation
+        # is what stops a stale sentinel finalizing a live run.
+        assert _coerce_generation(vector["raw"]) == vector["expect"], vector.get("note", "")
+
+    @pytest.mark.parametrize(
+        "vector",
+        [v for v in _VECTORS["vectors"] if not v["accept"] and isinstance(v["document"], dict)],
+        ids=_vector_ids(
+            [v for v in _VECTORS["vectors"] if not v["accept"] and isinstance(v["document"], dict)]
+        ),
+    )
+    def test_rejected_vectors_are_also_rejected_through_the_file_reader(
+        self, sentinel_path, vector
+    ):
+        # The validator is the shared rule table, but the file reader is what the
+        # finalizer actually calls. A rule enforced only in the validator would
+        # not protect the real path.
+        binding = _VECTORS["binding"]
+        _write(sentinel_path, vector["document"])
+
+        assert (
+            read_abort_sentinel(binding["run_id"], binding["generation"], path=sentinel_path)
+            is None
+        ), vector["note"]

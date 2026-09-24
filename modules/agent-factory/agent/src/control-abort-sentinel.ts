@@ -270,9 +270,27 @@ export function abortSentinelBindingFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): AbortSentinelBinding | null {
   const runId = (env.ADP_CONTROL_RUN_ID || '').trim();
-  const generation = Number.parseInt(env.ADP_CONTROL_GENERATION || '', 10);
-  if (!runId || !Number.isInteger(generation) || generation < 1) return null;
+  const generation = parseStrictGeneration(env.ADP_CONTROL_GENERATION);
+  if (!runId || generation === null) return null;
   return { runId, generation };
+}
+
+/**
+ * Parse a generation from its environment string, rejecting trailing garbage.
+ *
+ * `Number.parseInt` stops at the first non-digit and returns what it got, so
+ * `'1junk'` yields `1` — it would bind this run to generation 1 on input that
+ * means nothing of the kind, while the Python side's `int()` raises on the same
+ * bytes. The binding is the sentinel's entire staleness defence, so the two
+ * halves have to agree about what a generation *is*: a bare run of decimal
+ * digits, nothing else.
+ */
+export function parseStrictGeneration(raw: string | undefined | null): number | null {
+  const text = (raw ?? '').trim();
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value < 1) return null;
+  return value;
 }
 
 /**

@@ -1,0 +1,355 @@
+{
+  "note": "Shared validation vectors for the #3963 (S4) abort sentinel. Evaluated against the real validators by modules/agent-factory/agent/src/control-abort-sentinel.test.ts (validateAbortSentinel) and modules/agent-factory/agent-worker-image/tests/test_abort_sentinel.py (validate_abort_sentinel). Both runtimes must agree on every vector. This replaces source-text constant matching, which could not have caught the boolean-version divergence: Python honoured `version: true` because True == 1 while TypeScript rejected it, and the constants matched the whole time. Contains no credential.",
+  "version": 1,
+  "path": "/tmp/adp-abort-sentinel.json",
+  "max_reason_length": 200,
+  "binding": {
+    "run_id": "run-developer-7",
+    "generation": 3
+  },
+  "vectors": [
+    {
+      "name": "valid",
+      "accept": true,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0001",
+        "requested_at": "2026-09-24T00:00:00Z",
+        "reason": "wrong branch"
+      },
+      "expect_reason": "wrong branch",
+      "note": "the ordinary accepted case: version-exact and bound to this run and generation"
+    },
+    {
+      "name": "valid_without_a_reason",
+      "accept": true,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0002",
+        "requested_at": "2026-09-24T00:00:00Z",
+        "reason": null
+      },
+      "expect_reason": null,
+      "note": "an operator need not supply a reason; null must not become the string \"null\""
+    },
+    {
+      "name": "reason_whitespace_collapsed",
+      "accept": true,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0003",
+        "requested_at": "2026-09-24T00:00:00Z",
+        "reason": "  wrong\n\nbranch  "
+      },
+      "expect_reason": "wrong branch",
+      "note": "the reason reaches a GitHub comment, so newlines cannot break its layout"
+    },
+    {
+      "name": "reason_non_string_becomes_null",
+      "accept": true,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0004",
+        "requested_at": "2026-09-24T00:00:00Z",
+        "reason": { "injected": true }
+      },
+      "expect_reason": null,
+      "note": "str()/String() of an object would put \"{'injected': True}\" in front of an operator"
+    },
+    {
+      "name": "version_boolean_true",
+      "accept": false,
+      "document": {
+        "version": true,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0005",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "the divergence root found: isinstance(True, int) is True in Python, so this validated there and was rejected by TypeScript's strict !==. The schema version must be an actual integer."
+    },
+    {
+      "name": "generation_boolean_true",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": true,
+        "command_id": "cmd-0006",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "same bool/int hazard on the generation: JSON true must not read as generation 1"
+    },
+    {
+      "name": "version_newer",
+      "accept": false,
+      "document": {
+        "version": 2,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0007",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "exact match, not a minimum: a newer payload may narrow the abort's scope in a field this reader does not know to look at"
+    },
+    {
+      "name": "version_older",
+      "accept": false,
+      "document": {
+        "version": 0,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0008",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "both halves ship in one image, so a version mismatch means something is genuinely wrong"
+    },
+    {
+      "name": "version_string",
+      "accept": false,
+      "document": {
+        "version": "1",
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0009",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "a stringly-typed version is not this schema"
+    },
+    {
+      "name": "different_run",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-someone-else-9",
+        "generation": 3,
+        "command_id": "cmd-0010",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "the failure this binding exists to prevent: honouring it would delete an unrelated live run's queue message"
+    },
+    {
+      "name": "superseded_generation",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 2,
+        "command_id": "cmd-0011",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "generation is equality, not \"at least\": an abort aimed at an attempt that already ended must not finalize its replacement"
+    },
+    {
+      "name": "future_generation",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 4,
+        "command_id": "cmd-0012",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "a generation this run never reached is not this run's abort"
+    },
+    {
+      "name": "generation_string",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": "3",
+        "command_id": "cmd-0013",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "inside the document the generation is a number; the decimal-string form is only accepted for the env-supplied binding"
+    },
+    {
+      "name": "generation_fractional",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3.5,
+        "command_id": "cmd-0014",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "a generation counts registrations; a fraction is not one"
+    },
+    {
+      "name": "run_id_missing",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "generation": 3,
+        "command_id": "cmd-0015",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "an unbindable document cannot be validated, so it is not an abort"
+    },
+    {
+      "name": "run_id_blank",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "",
+        "generation": 3,
+        "command_id": "cmd-0016",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "blank is not a run identity"
+    },
+    {
+      "name": "run_id_wrong_type",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": 7,
+        "generation": 3,
+        "command_id": "cmd-0017",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "a numeric run id would compare unequal anyway, but the type check is the documented rule"
+    },
+    {
+      "name": "command_id_missing",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "the command id is the evidence correlator; without it the abort cannot be traced to an accepted command"
+    },
+    {
+      "name": "command_id_blank",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "",
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "blank is not a command id"
+    },
+    {
+      "name": "command_id_wrong_type",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": 7,
+        "requested_at": "2026-09-24T00:00:00Z"
+      },
+      "note": "required fields are type-checked rather than coerced"
+    },
+    {
+      "name": "requested_at_missing",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0018"
+      },
+      "note": "the request time is part of the evidence record"
+    },
+    {
+      "name": "requested_at_blank",
+      "accept": false,
+      "document": {
+        "version": 1,
+        "run_id": "run-developer-7",
+        "generation": 3,
+        "command_id": "cmd-0019",
+        "requested_at": ""
+      },
+      "note": "blank is not a timestamp"
+    },
+    {
+      "name": "empty_object",
+      "accept": false,
+      "document": {},
+      "note": "no fields at all"
+    },
+    {
+      "name": "not_an_object_list",
+      "accept": false,
+      "document": [],
+      "note": "JSON parsers happily return a list; field access on it would raise in the one place that must not raise"
+    },
+    {
+      "name": "not_an_object_string",
+      "accept": false,
+      "document": "aborted",
+      "note": "a bare string is not a sentinel, however suggestive its content"
+    },
+    {
+      "name": "not_an_object_number",
+      "accept": false,
+      "document": 1,
+      "note": "a bare number is not a sentinel"
+    },
+    {
+      "name": "not_an_object_null",
+      "accept": false,
+      "document": null,
+      "note": "JSON null parses successfully and must still mean no abort"
+    },
+    {
+      "name": "not_an_object_true",
+      "accept": false,
+      "document": true,
+      "note": "JSON true parses successfully and must still mean no abort"
+    }
+  ],
+  "generation_binding_vectors": [
+    { "name": "plain_digits", "raw": "3", "expect": 3 },
+    { "name": "surrounding_whitespace", "raw": " 3 ", "expect": 3 },
+    {
+      "name": "trailing_garbage",
+      "raw": "3junk",
+      "expect": null,
+      "note": "root's second finding: Number.parseInt('1junk', 10) returns 1, binding the run to a generation the input never expressed, while Python's int() raises on the same bytes"
+    },
+    { "name": "leading_garbage", "raw": "junk3", "expect": null },
+    {
+      "name": "pep515_underscores",
+      "raw": "1_0",
+      "expect": null,
+      "note": "Python's int('1_0') is 10 and JavaScript's Number('1_0') is NaN — divergence in the other direction, so both sides reject it explicitly"
+    },
+    {
+      "name": "explicit_plus",
+      "raw": "+3",
+      "expect": null,
+      "note": "int('+3') is 3 in Python; the shared rule is bare ASCII digits only"
+    },
+    {
+      "name": "non_ascii_digits",
+      "raw": "٣",
+      "expect": null,
+      "note": "int('٣') is 3 in Python and Python's \\d matches it; the shared rule is ASCII digits only"
+    },
+    { "name": "blank", "raw": "", "expect": null },
+    { "name": "whitespace_only", "raw": "   ", "expect": null },
+    { "name": "zero", "raw": "0", "expect": null, "note": "generations start at 1" },
+    { "name": "negative", "raw": "-1", "expect": null },
+    { "name": "fractional", "raw": "3.5", "expect": null },
+    { "name": "hex", "raw": "0x3", "expect": null },
+    { "name": "exponent", "raw": "1e3", "expect": null },
+    { "name": "infinity", "raw": "Infinity", "expect": null },
+    { "name": "not_a_number", "raw": "NaN", "expect": null }
+  ]
+}

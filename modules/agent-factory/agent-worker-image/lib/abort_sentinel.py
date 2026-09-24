@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,10 @@ MAX_SENTINEL_REASON_LENGTH = 200
 # writer produced, and reading it would mean loading an arbitrary file from /tmp
 # into memory during teardown. Mirrors the size guard in control-credentials.ts.
 MAX_SENTINEL_BYTES = 8192
+
+# A generation as both halves define it. `re.fullmatch` with an explicit ASCII
+# class rather than `\d`, which in Python matches Unicode decimal digits too.
+_ASCII_DIGITS = re.compile(r"[0-9]+")
 
 
 def read_abort_sentinel(
@@ -94,20 +98,23 @@ def read_abort_sentinel(
         if expected_generation is None:
             return None
 
-        try:
-            size = os.path.getsize(path)
-        except OSError:
-            return None
-        if size > MAX_SENTINEL_BYTES:
+        # Bound the bytes actually read, not a previously-stat'd size. `getsize`
+        # followed by an unbounded `json.load` is racy in the one direction that
+        # matters: the file can grow between the two calls, so the ceiling would
+        # be enforced against a size the reader never saw. Reading one byte past
+        # the ceiling and rejecting on overflow enforces it against the real
+        # bytes, and never loads an arbitrarily large /tmp file into memory
+        # during teardown.
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = handle.read(MAX_SENTINEL_BYTES + 1)
+        if len(raw) > MAX_SENTINEL_BYTES:
             logger.warning(
-                "Ignoring abort sentinel: %d bytes exceeds the %d-byte ceiling",
-                size,
+                "Ignoring abort sentinel: exceeds the %d-byte ceiling",
                 MAX_SENTINEL_BYTES,
             )
             return None
 
-        with open(path, "r", encoding="utf-8") as handle:
-            document = json.load(handle)
+        document = json.loads(raw)
 
         return validate_abort_sentinel(document, run_id, expected_generation)
     except Exception:  # noqa: BLE001 - the fail-soft contract, not defensive padding
@@ -136,7 +143,15 @@ def validate_abort_sentinel(
         # have the fields below and all would raise on attribute access.
         return None
 
-    if document.get("version") != ABORT_SENTINEL_VERSION:
+    # `isinstance(True, int)` is True in Python, so a JSON `true` would compare
+    # equal to schema version 1 and validate. TypeScript's strict `!==` rejects
+    # it, so accepting it here was a real cross-language divergence: a document
+    # this reader honoured and the writer's own validator refused. The version
+    # must be an actual integer, not a bool that happens to equal one.
+    version = document.get("version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        return None
+    if version != ABORT_SENTINEL_VERSION:
         return None
 
     candidate_run = document.get("run_id")
@@ -213,9 +228,14 @@ def _coerce_generation(generation: int | str | None) -> int | None:
     if isinstance(generation, int):
         return generation if generation >= 1 else None
     if isinstance(generation, str):
-        try:
-            value = int(generation.strip())
-        except ValueError:
+        # Not `int()`: it accepts PEP-515 underscores (``"1_0"`` -> 10), a
+        # leading ``+``, and non-ASCII decimal digits (``"٣"`` -> 3), none of
+        # which the TypeScript side's digit test accepts. The generation is the
+        # sentinel's staleness defence, so both halves must agree on exactly
+        # what a generation is: a bare run of ASCII digits.
+        text = generation.strip()
+        if not _ASCII_DIGITS.fullmatch(text):
             return None
+        value = int(text)
         return value if value >= 1 else None
     return None
