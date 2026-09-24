@@ -3,6 +3,7 @@
 import importlib.util
 import sys
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,11 @@ def database(pg_url):
         yield connection
 
 
-def fresh(row, verified="2026-09-13T06:00:00+00:00"):
+def fresh(row, verified=None):
+    # A later migration may seed verification newer than a fixed fixture date.
+    # Each refreshed row must be newer than its active counterpart.
+    if verified is None:
+        verified = (datetime.fromisoformat(row.verified_at.replace("Z", "+00:00")) + timedelta(seconds=1)).isoformat()
     return replace(row, source="bulk_catalog" if ".gpt-oss-" in row.model_id else "model_card", snapshot_version=None, verified_at=verified)
 
 
