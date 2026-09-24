@@ -627,19 +627,139 @@ WAVE2_CHECKS: tuple[CheckSpec, ...] = (
     ),
 )
 
+# Wave 4 (#3970): the dashboard's own evidence, plus the consolidation of all 37
+# acceptance criteria. Transcribed from the wave-4 evaluation body under revision
+# revival-2026-09-12, one spec per `check` row in its table.
+#
+# Two properties of this manifest are deliberate and worth stating, because both
+# make the wave HARDER to pass rather than easier:
+#
+#  1. It registers all ten checks now, including the six whose evidence this story
+#     cannot produce. A wave that only listed what S7 can prove would publish a
+#     complete-looking report while the epic's real consolidation checks were
+#     absent, which is precisely the "passes its own gate" failure the wave
+#     machinery exists to prevent. The unimplemented ones are owned in
+#     PENDING_CHECK_OWNERS, so they report not_run naming their owner.
+#  2. The browser checks read a captured Playwright run rather than asserting
+#     against the frontend source. A DOM claim that is verified by reading the
+#     component would pass on a bundle that was never deployed.
+WAVE4_CHECKS: tuple[CheckSpec, ...] = (
+    CheckSpec(
+        "W4-01",
+        ("Gate/regression",),
+        "preflight links accepted waves 1-3, S7 merged head, the actual frontend "
+        "asset revision and gateway/worker digests, and current green "
+        "vitest/typecheck/build plus control CI; the isolated fixture browser "
+        "identity is the owner and ordinary users remain gated pending acceptance",
+    ),
+    CheckSpec(
+        "W4-02",
+        ("AC-F3",),
+        "Playwright visits /activity?id=<invocation_id>; flag off, still loading and "
+        "backend error each yield zero control panel nodes and zero command "
+        "requests; the positive fixture flag exposes only advertised capabilities to "
+        "the authorized owner, and terminal/unavailable/nonowner cannot submit",
+    ),
+    CheckSpec(
+        "W4-03",
+        ("AC-T1", "AC-T2", "AC-T3", "AC-T4", "AC-T5", "AC-T6", "AC-T7", "AC-T8", "AC-S8"),
+        "the browser submits a mid-run steer with a valid request schema/path "
+        "answered 202, and the DOM shows pending tied to command_id then a matching "
+        "delivery marker/state; the fixture pivot and merged test-PR assertion from "
+        "W3-10 execute, and FIFO/retry/cap/SDK proof is retained at current "
+        "compatible revisions and rerun on touched surfaces",
+    ),
+    CheckSpec(
+        "W4-04",
+        ("AC-P1", "AC-P2", "AC-P3", "AC-P4", "AC-P5", "AC-P6"),
+        "the browser observes running→pause_requested→paused→running from fresh "
+        "server state; a long/untracked tool reason stays truthful and the copy says "
+        "spend may continue; the timeout and all wave 2 barrier assertions are "
+        "exercised, with no frozen detailItem and no fabricated paused state",
+    ),
+    CheckSpec(
+        "W4-05",
+        (
+            "AC-A1", "AC-A2", "AC-A3", "AC-A4", "AC-A5", "AC-A6",
+            "AC-A7", "AC-A8", "AC-A9", "AC-A10", "AC-A11", "AC-A12",
+        ),
+        "an abort cancel leaves the run untouched while a confirmed abort "
+        "transitions pending→terminal showing one finalized comment and the aborted "
+        "renderers; repeat paused/double-abort and per-run ack/exit/replay checks "
+        "hold; the actual row has completed_at and every wave 2 stats/writer "
+        "assertion still passes",
+    ),
+    CheckSpec(
+        "W4-06",
+        ("AC-S1", "AC-S2", "AC-S3", "AC-S4", "AC-S5", "AC-S6", "AC-S7"),
+        "the deployed security matrix repeats, and Playwright captures ALL browser "
+        "request destinations and JSON bodies: controls target gateway activity "
+        "routes only, carry no pod address or token, and a spoofed identity is "
+        "rejected; a real non-gateway probe is still blocked and the bundle scan is "
+        "supplemental only",
+    ),
+    CheckSpec(
+        "W4-07",
+        ("Gate/regression",),
+        "live GET state and POST command JSON match frontend agentControl.ts and "
+        "backend control_schemas.py field for field at each level — state "
+        "run_id/generation/available/reason/capabilities/state/active_tool_count/"
+        "updated_at/commands, response run_id/action/state/command_id/"
+        "command_status, entries command_id/action/status/accepted_at/delivered_at/"
+        "reason — with backend-derived fixture keys subsets of the live keys",
+    ),
+    CheckSpec(
+        "W4-08",
+        ("Gate/regression",),
+        "Playwright clock/network assertions: polling every 2 seconds only while the "
+        "modal is open and visible, backing off on errors, stopping on "
+        "close/terminal/unavailable and refreshing detail after commands; a "
+        "generation change, an expired ack and cancelled/rejected/unknown delivery "
+        "render distinctly, and the DOM cannot label an enqueue as delivered",
+    ),
+    CheckSpec(
+        "W4-09",
+        ("AC-F1", "AC-F2"),
+        "the deterministic flag-off and flag-on/no-command runtime comparison reruns "
+        "with the final code and no ordinary flag enablement as a testing shortcut; "
+        "the live stats schema/provenance matches the complete current "
+        "RunStatsResponse with no invented mock fields",
+    ),
+    CheckSpec(
+        "W4-10",
+        ("Gate/regression",),
+        "the evidence index contains exactly all 37 acceptance IDs, each with an "
+        "owner and passing compatible source/deployment evidence, rerunning any "
+        "stale or touched criterion; there is no missing/skipped/not-run result and "
+        "exact fixture cleanup is confirmed; all four evaluations may close only "
+        "with this evidence",
+    ),
+)
+
 # S1 delivered wave 1; the wave owners extend the rest (§7: "S2/S5 extend wave 2;
 # S4/S6 extend wave 3; S7 extends wave 4"). Asking for a wave with no manifest at
 # all is an honest nonzero, not an empty pass.
-WAVE_CHECKS: dict[int, tuple[CheckSpec, ...]] = {1: WAVE1_CHECKS, 2: WAVE2_CHECKS}
+WAVE_CHECKS: dict[int, tuple[CheckSpec, ...]] = {
+    1: WAVE1_CHECKS,
+    2: WAVE2_CHECKS,
+    4: WAVE4_CHECKS,
+}
 SUPPORTED_WAVES: tuple[int, ...] = tuple(sorted(WAVE_CHECKS))
 
-# The evaluation issue that reads each wave's report, and the design revision that
-# wave's checks were transcribed from. #3967 accepted wave 1 with 10/10 and is
-# closed; #3968 owns wave 2's live acceptance.
-WAVE_EVALUATIONS: dict[int, str] = {1: "3967", 2: "3968"}
+# Wave 3 is deliberately ABSENT rather than registered empty. It is owned by S4
+# #3963 and S6 #3965, and `--wave 3` must stay an honest nonzero "this revision
+# carries no manifest for that wave" instead of a zero-check pass. Note the
+# consequence for wave 4: several of its checks consolidate wave 3's criteria, so
+# wave 4 cannot be complete before wave 3 exists and is accepted — which W4-01 and
+# W4-10 are the checks that refuse.
+WAVE_EVALUATIONS: dict[int, str] = {1: "3967", 2: "3968", 4: "3970"}
 WAVE_REVISIONS: dict[int, str] = {
     1: "revival-2026-09-12",
     2: "harness-neutral-2026-09-15",
+    # The wave-4 body self-identifies as revival-2026-09-12; harness-neutral is
+    # only a compatibility amendment on it and explicitly "does not authorize this
+    # later wave", so recording it here would overstate what has been approved.
+    4: "revival-2026-09-12",
 }
 
 # Which story owns each check whose predicate is not implemented yet, so a
@@ -647,16 +767,35 @@ WAVE_REVISIONS: dict[int, str] = {
 # no predicate is deliberate — see WAVE2_CHECKS above — but it must never be
 # indistinguishable from a check the harness forgot.
 #
-# EMPTY as of #5825: waves 1 and 2 are both fully implemented. Deliberately kept
-# rather than deleted, because the mechanism is still load-bearing — waves 3 and 4
-# register their manifests before their predicates land, and `run_checks` FAILS an
-# unowned unimplemented check. An empty mapping is the correct state for a
-# fully-implemented set of waves, not a dead constant.
+# Waves 1 and 2 are fully implemented and contribute nothing here. Wave 4 (#3966)
+# implements the four checks whose subject is the dashboard it builds — the three
+# browser checks plus the schema-parity gate — and registers the other six as owed,
+# because they consolidate criteria this story does not own and cannot evidence:
+#
+#  - W4-01 / W4-10 are the wave's own preflight and 37-criterion consolidation. Both
+#    require waves 1-3 ACCEPTED, which is an operations act on a deployed
+#    environment, not something a frontend story can assert. Implementing them here
+#    would mean writing a predicate that reads the operator's own claim of
+#    acceptance back to them.
+#  - W4-03's steer half is S7's, but the row also demands W3-10's fixture pivot and
+#    merged-PR assertion and the FIFO/retry/cap/SDK proof, which are S6 #3965's.
+#    A partial predicate that passed on the steer half alone would report a green
+#    W4-03 while the retry proof was never made.
+#  - W4-05 (all twelve AC-A criteria), W4-06 (deployed security matrix) and W4-09
+#    (flag-off runtime comparison and live stats provenance) belong to S4 #3963,
+#    S1 #3960 and S5 #3964 respectively.
 #
 # Note what this does NOT mean: a wave whose every check has a predicate can still
 # report not_run, for a missing artifact or an unset identity variable. "Nobody
 # owes an implementation" and "the evidence is complete" are different claims.
-PENDING_CHECK_OWNERS: dict[str, str] = {}
+PENDING_CHECK_OWNERS: dict[str, str] = {
+    "W4-01": "operations (accepted waves 1-3 and the deployed-revision preflight)",
+    "W4-03": "S6 #3965 (live steering delivery, FIFO/retry/cap and the W3-10 pivot)",
+    "W4-05": "S4 #3963 with S5 #3964 (graceful abort and the aborted accounting)",
+    "W4-06": "S1 #3960 (the deployed security matrix this check repeats)",
+    "W4-09": "S5 #3964 (flag-off runtime comparison and live stats provenance)",
+    "W4-10": "operations (the 37-criterion evidence index across all four waves)",
+}
 
 # Retained for the manifest guard and for callers that only need wave 1's ID set.
 # Deliberately still wave 1: it is the DEFAULT for `assert_check_manifest`, and a
@@ -887,6 +1026,55 @@ REQUIRED_ARTIFACT_KEYS: dict[str, tuple[str, ...]] = {
         "session_and_no_option_behavior_preserved",
         "cancel_prevents_new_query",
         "forced_retry_exercised",
+    ),
+    # Wave 4 / S7 (#3966). A captured Playwright run against the DEPLOYED SPA.
+    #
+    # Why an artifact rather than the harness driving the browser itself: this
+    # harness is a Python HTTP prober with no browser dependency, and giving it one
+    # would make every wave-1 run require a Chromium download. The operator runs
+    # `tests/e2e/agent-control.config.ts` and records what the browser observed.
+    #
+    # What makes that trustworthy rather than a restated claim: the keys below are
+    # OBSERVATIONS a browser can make and a source file cannot — the destinations
+    # actually requested, the poll intervals actually measured, the DOM text
+    # actually rendered. `bundle_revision` ties them to a deployed asset, and the
+    # gate checks compare it against the preflight's frontend revision, so a
+    # capture from a developer's laptop cannot answer for production.
+    "browser_control_run": (
+        # Provenance: which bundle, which run, when. Without these the capture is
+        # an anonymous JSON blob that could describe any environment.
+        "bundle_revision",
+        "gateway_url",
+        "captured_at",
+        "spec_digest",
+        # AC-F3: the three fail-closed renders, each with the node and request
+        # counts the wave-4 table demands be zero.
+        "flag_off",
+        "flag_loading",
+        "flag_error",
+        # Capability gating: only advertised verbs, and who cannot submit.
+        "advertised_capabilities",
+        "rendered_controls",
+        "nonowner_submit_blocked",
+        "terminal_submit_blocked",
+        # AC-P4 and AC-T1: the observed phase sequence and the steer journal.
+        "phase_sequence",
+        "pause_copy_mentions_spend",
+        "active_tool_reason",
+        "steer_request",
+        "steer_status_sequence",
+        # W4-08: measured polling behaviour, not a configured constant.
+        "poll_intervals_ms",
+        "polled_while_hidden",
+        "polled_after_close",
+        "polled_after_terminal",
+        "backoff_intervals_ms",
+        "detail_refreshed_after_command",
+        # W4-06: every destination and body the browser actually sent.
+        "request_destinations",
+        "request_bodies_contain_pod_address",
+        "request_bodies_contain_token",
+        "spoofed_identity_rejected",
     ),
 }
 
@@ -1165,6 +1353,13 @@ class RowDeletion:
     deleted: bool
     confirmed_absent: bool
     error: str | None = None
+    # Whether the row was actually there to delete, from DeleteItem's ALL_OLD.
+    # `None` means the delete did not report (an error path). DynamoDB's DeleteItem
+    # is idempotent and succeeds identically on a key that never existed, so
+    # without this every field above reads the same for "removed the fixture row"
+    # and "deleted nothing at all" — which would let a config naming the wrong
+    # table, environment or key format report a clean, fully-verified teardown.
+    existed: bool | None = None
 
     def to_evidence(self) -> dict:
         return {
@@ -1173,6 +1368,7 @@ class RowDeletion:
             "both_keys_present": self.both_keys_present,
             "deleted": self.deleted,
             "confirmed_absent": self.confirmed_absent,
+            "existed": self.existed,
             "error": self.error,
         }
 
@@ -5194,6 +5390,362 @@ class Driver:
                 f"{sorted(set(emitted_ids) - expected)}"
             )
 
+    # ---- wave 4 (#3966): the dashboard's own evidence -------------------
+    #
+    # These four read the captured browser run. Every assertion below is about
+    # something the BROWSER did — a destination it requested, an interval it
+    # waited, a string it rendered — because the claims in question are claims
+    # about a deployed bundle, and no amount of reading the component source can
+    # establish what the deployed bundle did.
+
+    def _browser_run(self) -> dict:
+        """The captured Playwright run, with its provenance established first.
+
+        Provenance before content, deliberately: a capture that does not name the
+        bundle it drove cannot answer for the deployment, and checking its
+        observations first would mean reporting detailed DOM findings about an
+        unknown artifact.
+        """
+        capture = self._artifact("browser_control_run")
+        revision = str(capture.get("bundle_revision") or "").strip()
+        if not revision:
+            raise PrerequisiteMissingError(
+                "the browser capture records no `bundle_revision`, so its observations cannot be tied to "
+                "a deployed frontend asset. An untraceable capture is indistinguishable from one taken "
+                "against a developer's local dev server"
+            )
+        gateway = str(capture.get("gateway_url") or "").strip()
+        if not gateway:
+            raise PrerequisiteMissingError(
+                "the browser capture records no `gateway_url`; which deployment the browser drove is part "
+                "of the observation, not context for it"
+            )
+        configured = str(self.config.get("gateway_url") or "").strip()
+        if configured and gateway.rstrip("/") != configured.rstrip("/"):
+            raise AssertionError(
+                f"the browser capture drove {gateway!r} but this evaluation's fixture is {configured!r}. "
+                "Observations from another deployment cannot answer for this one"
+            )
+        if not _parse_timestamp(capture.get("captured_at")):
+            raise AssertionError(
+                f"the browser capture's `captured_at` is {capture.get('captured_at')!r}, which is not an "
+                "ISO-8601 instant. Without an orderable time the capture cannot be shown to postdate the "
+                "revision it claims to describe"
+            )
+        if not str(capture.get("spec_digest") or "").strip():
+            raise AssertionError(
+                "the browser capture records no `spec_digest`, so which scenario produced it is unknown. "
+                "A weakened spec and the real one would leave identical evidence"
+            )
+        return capture
+
+    @staticmethod
+    def _zero_render(capture: dict, key: str, label: str) -> None:
+        """Assert one fail-closed render produced no controls and sent no commands.
+
+        Both halves matter and neither implies the other: zero nodes with a command
+        request means an invisible control still acted, and zero requests with
+        rendered nodes means the operator was offered a button that silently did
+        nothing. AC-F3 requires both.
+        """
+        observation = capture.get(key)
+        if not isinstance(observation, dict):
+            raise AssertionError(
+                f"`{key}` must be an object recording what the {label} render produced, got "
+                f"{observation!r}"
+            )
+        nodes = observation.get("control_nodes")
+        requests = observation.get("command_requests")
+        for name, value in (("control_nodes", nodes), ("command_requests", requests)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise AssertionError(
+                    f"`{key}.{name}` is {value!r}, expected a counted integer. A boolean or a missing "
+                    "count cannot distinguish 'none' from 'not measured'"
+                )
+        if nodes != 0:
+            raise AssertionError(
+                f"with the feature {label}, the browser found {nodes} control node(s) at "
+                f"/activity?id=<invocation_id>. AC-F3 requires the controls not to render while loading "
+                "or on error either, because a control offered before the flag is known is a control "
+                "offered when it might be off"
+            )
+        if requests != 0:
+            raise AssertionError(
+                f"with the feature {label}, the browser issued {requests} command request(s). A gated "
+                "feature that still reaches the command endpoint is not gated"
+            )
+
+    def check_w4_02(self) -> None:
+        """AC-F3: the controls stay absent unless the flag is explicitly on.
+
+        The three negative renders are the whole point. "Flag off" is the easy case;
+        the two that catch real fail-open bugs are "still loading" and "backend
+        error", where an implementation that treats an absent answer as permission
+        renders controls that may not be permitted.
+        """
+        capture = self._browser_run()
+
+        for key, label in (
+            ("flag_off", "off"),
+            ("flag_loading", "still loading"),
+            ("flag_error", "erroring"),
+        ):
+            self._zero_render(capture, key, label)
+
+        # The positive case: exactly the advertised verbs, no more.
+        advertised = capture.get("advertised_capabilities")
+        rendered = capture.get("rendered_controls")
+        if not isinstance(advertised, dict):
+            raise AssertionError(
+                f"`advertised_capabilities` must be the capability object the gateway served, got "
+                f"{advertised!r}"
+            )
+        if not isinstance(rendered, list):
+            raise AssertionError(
+                f"`rendered_controls` must be the list of verbs the browser actually found, got "
+                f"{rendered!r}"
+            )
+        offered = {str(verb) for verb in rendered}
+        allowed = {str(verb) for verb, value in advertised.items() if value is True}
+        extra = offered - allowed
+        if extra:
+            raise AssertionError(
+                f"the dashboard offered {sorted(extra)}, which this run does not advertise as available "
+                f"(advertised: {sorted(allowed)}). Offering an unadvertised verb produces a 501 in the "
+                "operator's face and implies a capability the deployment does not have"
+            )
+        if not offered:
+            raise PrerequisiteMissingError(
+                "the capture shows no controls rendered in the positive case, so capability gating was "
+                "never exercised in the direction that can fail open. A fixture whose run advertises no "
+                "verbs cannot evidence AC-F3's positive half"
+            )
+
+        for key, who in (
+            ("nonowner_submit_blocked", "a non-owner"),
+            ("terminal_submit_blocked", "a terminal or unavailable run"),
+        ):
+            if capture.get(key) is not True:
+                raise AssertionError(
+                    f"`{key}` is {capture.get(key)!r}: the capture does not establish that {who} cannot "
+                    "submit a command. Rendering is not authorization, so this has to be observed at the "
+                    "request level rather than inferred from a hidden button"
+                )
+
+    def check_w4_04(self) -> None:
+        """AC-P4: pause honestly described, from fresh server state.
+
+        The two failures this exists to catch are a UI that claims `paused` when the
+        server said `pause_requested`, and one that reports quiescence it never
+        observed. Both are cases of the dashboard being more confident than its
+        source, which is why the phase sequence has to come from polled server
+        state rather than from a snapshot the page already held.
+        """
+        capture = self._browser_run()
+
+        sequence = capture.get("phase_sequence")
+        if not isinstance(sequence, list) or not sequence:
+            raise AssertionError(
+                f"`phase_sequence` must be the nonempty list of phases the browser rendered in order, "
+                f"got {sequence!r}"
+            )
+        phases = [str(entry) for entry in sequence]
+        required = ("running", "pause_requested", "paused", "running")
+        position = 0
+        for wanted in required:
+            try:
+                position = phases.index(wanted, position) + 1
+            except ValueError:
+                raise AssertionError(
+                    f"the browser never rendered {wanted!r} in order; observed {phases}. The full "
+                    f"{list(required)} transition is what distinguishes a pause that was requested and "
+                    "took effect from one the UI merely asserted"
+                ) from None
+
+        # The specific lie AC-P4 forbids: `paused` shown before the server said so.
+        if phases.index("paused") < phases.index("pause_requested"):
+            raise AssertionError(
+                f"the dashboard rendered `paused` before `pause_requested` ({phases}). Reaching paused "
+                "without passing through requested means the UI decided the run was paused rather than "
+                "reporting that it was"
+            )
+
+        if capture.get("pause_copy_mentions_spend") is not True:
+            raise AssertionError(
+                "the pause copy the browser rendered does not mention that spend may continue. AC-P4 "
+                "requires it: an operator who reads 'paused' as 'billing stopped' will leave a run "
+                "parked for hours believing it costs nothing"
+            )
+
+        reason = capture.get("active_tool_reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise AssertionError(
+                f"`active_tool_reason` is {reason!r}; the capture must record the tool-activity text the "
+                "browser rendered, because whether an unobserved count reads as 'unknown' or as 'none' "
+                "is the check"
+            )
+        lowered = reason.lower()
+        if "unknown" not in lowered and "none reported" not in lowered:
+            raise AssertionError(
+                f"the rendered tool-activity text {reason!r} neither reports an unknown count as unknown "
+                "nor qualifies a zero as merely reported. An unproven zero reads as 'no tools running', "
+                "which is the false quiescence claim AC-P4 forbids"
+            )
+        if "no tools running" in lowered or "nothing is running" in lowered:
+            raise AssertionError(
+                f"the rendered tool-activity text {reason!r} asserts quiescence outright. The worker "
+                "reports a count it may not have, so the UI can report what it was told and nothing more"
+            )
+
+    def check_w4_07(self) -> None:
+        """Gate: the live JSON, the frontend types and the backend schema agree.
+
+        Field by field at each level, in the direction that matters: every field the
+        BACKEND declares must be present in the LIVE response. The reverse is not a
+        failure — a gateway may add a field before the SPA reads it — but a declared
+        field the live response omits is an `undefined` in the dashboard, which
+        renders as a blank rather than an error.
+        """
+        owner = self._token("owner")
+        run_id = self._require("live_run_id")
+        observation = self.probe.request(
+            "GET", f"/activity/invocations/{run_id}/agent/state", role="owner", token=owner
+        )
+        if observation.status != 200:
+            raise AssertionError(
+                f"GET agent/state returned {observation.status}, expected 200; the live contract cannot "
+                "be compared against a response that was not served"
+            )
+        body = self._body_of(observation)
+
+        # Transcribed from modules/gateway/src/activity/control_schemas.py, which is
+        # the authority the frontend service was derived from.
+        state_fields = (
+            "run_id",
+            "generation",
+            "available",
+            "reason",
+            "capabilities",
+            "state",
+            "active_tool_count",
+            "updated_at",
+            "commands",
+        )
+        missing = [name for name in state_fields if name not in body]
+        if missing:
+            raise AssertionError(
+                f"the live control-state response is missing {missing}, which control_schemas.py "
+                f"declares and the frontend destructures"
+            )
+
+        capabilities = body.get("capabilities")
+        if not isinstance(capabilities, dict):
+            raise AssertionError(f"`capabilities` must be an object, got {capabilities!r}")
+        verb_missing = [verb for verb in CONTROL_VERBS if verb not in capabilities]
+        if verb_missing:
+            raise AssertionError(
+                f"`capabilities` omits {verb_missing}. An absent verb key is indistinguishable from "
+                "`false` to a client that reads it, so the UI cannot tell 'not supported' from "
+                "'not answered'"
+            )
+
+        # The pod's own coordinates must not appear at any level of the public body.
+        # This is the response the browser receives, so a leak here is a leak to the
+        # browser regardless of what the UI chooses to render.
+        for banned in ("pod_ip", "pod_address", "pod_port", "control_token", "token", "address"):
+            if banned in body:
+                raise AssertionError(
+                    f"the public control-state response carries {banned!r}. control_schemas.py has no "
+                    "field for a pod address, port or token precisely so this cannot happen; a browser "
+                    "that receives one has it in devtools, in logs and in any error report"
+                )
+
+        entries = body.get("commands")
+        if not isinstance(entries, list):
+            raise AssertionError(f"`commands` must be a list, got {entries!r}")
+        entry_fields = ("command_id", "action", "status", "accepted_at", "delivered_at", "reason")
+        for index, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                raise AssertionError(f"`commands[{index}]` must be an object, got {entry!r}")
+            absent = [name for name in entry_fields if name not in entry]
+            if absent:
+                raise AssertionError(
+                    f"`commands[{index}]` is missing {absent}; the acknowledgement contract is what the "
+                    "dashboard keys its per-command status on"
+                )
+
+    def check_w4_08(self) -> None:
+        """Gate: the polling lifecycle and the delivery vocabulary, as observed.
+
+        Measured intervals rather than a configured constant. `CONTROL_POLL_MS` in
+        the source says what the code intends; only a timed browser run says what
+        the deployed bundle does, and the failure modes here — a poll that never
+        stops, a retry that never backs off — are invisible to a source read and
+        expensive in production.
+        """
+        capture = self._browser_run()
+        intervals = capture.get("poll_intervals_ms")
+        if not isinstance(intervals, list) or len(intervals) < 2:
+            raise AssertionError(
+                f"`poll_intervals_ms` must record at least two measured intervals, got {intervals!r}. "
+                "One timestamp is not an interval, and a configured constant is not an observation"
+            )
+        for value in intervals:
+            if not isinstance(value, (int, float)):
+                raise AssertionError(f"`poll_intervals_ms` contains {value!r}, expected numbers")
+            # Generous tolerance: this is a real browser on a real network, and the
+            # claim under test is "about every 2 seconds", not a precise clock.
+            if not 1000 <= value <= 4000:
+                raise AssertionError(
+                    f"a measured poll interval of {value!r}ms is outside the 2-second contract "
+                    "(1000-4000ms tolerated). Polling faster multiplies load by every open modal; "
+                    "polling slower makes the operator act on stale state"
+                )
+
+        for key, what in (
+            ("polled_while_hidden", "while the document was hidden"),
+            ("polled_after_close", "after the modal closed"),
+            ("polled_after_terminal", "after the run reached a terminal state"),
+        ):
+            value = capture.get(key)
+            if value is not False:
+                raise AssertionError(
+                    f"`{key}` is {value!r}: the capture does not establish that polling stopped {what}. "
+                    "It must be an observed `false`, because a poll that continues there bills a "
+                    "background tab forever for state nobody is reading"
+                )
+
+        backoff = capture.get("backoff_intervals_ms")
+        if not isinstance(backoff, list) or len(backoff) < 2:
+            raise AssertionError(
+                f"`backoff_intervals_ms` must record at least two intervals observed while the endpoint "
+                f"was failing, got {backoff!r}"
+            )
+        if not all(
+            isinstance(value, (int, float)) for value in backoff
+        ) or any(later < earlier for earlier, later in zip(backoff, backoff[1:])):
+            raise AssertionError(
+                f"the observed error intervals {backoff!r} do not increase. Retrying a failing control "
+                "endpoint at the same rate is what turns one backend problem into a load problem"
+            )
+
+        if capture.get("detail_refreshed_after_command") is not True:
+            raise AssertionError(
+                "the capture does not establish that the invocation detail refreshed after a command. "
+                "Without it the modal keeps showing its pre-command snapshot, so the panel and the "
+                "record beside it contradict each other"
+            )
+
+        steer_statuses = capture.get("steer_status_sequence")
+        if isinstance(steer_statuses, list) and steer_statuses:
+            rendered = " ".join(str(entry).lower() for entry in steer_statuses)
+            if "delivered" in rendered and "pending" not in rendered:
+                raise AssertionError(
+                    f"the DOM showed a delivered steer with no preceding pending state ({steer_statuses}). "
+                    "Labelling an enqueue as delivered tells the operator the agent has the instruction "
+                    "when only the queue does"
+                )
+
 
 # Predicate lookup. Explicit rather than derived from ``dir()`` so a renamed
 # method is an immediate KeyError instead of a silently shorter report.
@@ -5229,7 +5781,22 @@ WAVE2_PREDICATES: dict[str, str] = {
     "W2-10": "check_w2_10",
 }
 
-CHECK_PREDICATES: dict[str, str] = {**WAVE1_PREDICATES, **WAVE2_PREDICATES}
+# S7 (#3966) implements the four wave-4 checks whose subject is the dashboard it
+# builds. The other six consolidate other stories' criteria and are registered in
+# PENDING_CHECK_OWNERS instead — see the comment there for why a partial predicate
+# would be worse than an honest not_run.
+WAVE4_PREDICATES: dict[str, str] = {
+    "W4-02": "check_w4_02",
+    "W4-04": "check_w4_04",
+    "W4-07": "check_w4_07",
+    "W4-08": "check_w4_08",
+}
+
+CHECK_PREDICATES: dict[str, str] = {
+    **WAVE1_PREDICATES,
+    **WAVE2_PREDICATES,
+    **WAVE4_PREDICATES,
+}
 
 # Checks whose subject is the teardown itself, so they can only be answered after
 # `run_cleanup` has run. Keeping this as an explicit set rather than a naming
@@ -5907,7 +6474,12 @@ def run_cleanup(config: dict, dynamodb_client) -> CleanupOutcome:  # noqa: ANN00
             continue
         key = {"event_id": {"S": str(event_id)}, "arrived_at": {"S": str(arrived_at)}}
         try:
-            dynamodb_client.delete_item(TableName=table, Key=key)
+            # ALL_OLD so the record can distinguish a removed row from a no-op on a
+            # key that was never there; see RowDeletion.existed.
+            removed = dynamodb_client.delete_item(
+                TableName=table, Key=key, ReturnValues="ALL_OLD"
+            )
+            existed = bool(removed.get("Attributes"))
             remaining = dynamodb_client.get_item(
                 TableName=table, Key=key, ConsistentRead=True
             ).get("Item")
@@ -5935,11 +6507,23 @@ def run_cleanup(config: dict, dynamodb_client) -> CleanupOutcome:  # noqa: ANN00
                     both_keys_present=True,
                     deleted=True,
                     confirmed_absent=False,
+                    existed=existed,
                     error="still present after delete (consistent read)",
                 )
             )
         else:
-            notes.append(f"removed {event_id}/{arrived_at}; consistent read confirms absence")
+            if existed:
+                notes.append(
+                    f"removed {event_id}/{arrived_at}; consistent read confirms absence"
+                )
+            else:
+                # Not an error: the row may have expired by TTL, or a previous run
+                # may have removed it. But it is NOT evidence that this harness tore
+                # a fixture down, so it is reported in the words of what was seen.
+                notes.append(
+                    f"{event_id}/{arrived_at} was already absent; delete removed nothing "
+                    "(check the table and key format if this was unexpected)"
+                )
             deletions.append(
                 RowDeletion(
                     event_id=str(event_id),
@@ -5947,6 +6531,7 @@ def run_cleanup(config: dict, dynamodb_client) -> CleanupOutcome:  # noqa: ANN00
                     both_keys_present=True,
                     deleted=True,
                     confirmed_absent=True,
+                    existed=existed,
                 )
             )
     return CleanupOutcome(ok=ok, notes=notes, deletions=deletions, declared_items=len(items))
@@ -5958,7 +6543,7 @@ def summarize_fixture_cleanup(
     results: list[CheckResult],
     *,
     resource_teardown_expected: bool,
-    verification_id: str = "W2-10",
+    verification_ids: tuple[str, ...] = tuple(sorted(POST_CLEANUP_CHECK_IDS)),
 ) -> FixtureCleanup:
     """Reduce the run's cleanup records into the one boolean the report publishes.
 
@@ -6020,21 +6605,29 @@ def summarize_fixture_cleanup(
     else:
         resources_ok = True
 
-    verification = next(
-        (result for result in results if result.check_id == verification_id), None
-    )
-    if verification is None:
-        # Wave 1: no post-cleanup verification exists to consult, so there is no
-        # unestablished absence to withhold on.
-        absence_verified = True
-    elif verification.status == STATUS_PASSED:
+    # Every post-cleanup verification this revision declares, not one hardcoded ID.
+    #
+    # The ID used to be the literal "W2-10". That was correct for two waves and a
+    # latent false green for any third: `resource_teardown_expected` is derived from
+    # whether the wave HAS post-cleanup checks, so a wave whose verification check is
+    # called something else would set it to True, find no "W2-10" among the results,
+    # take the `None` branch meaning "this wave declares none" — and publish
+    # absence_verified=True with nothing having verified absence. The two facts have
+    # to come from the same source to stay consistent, so they now both derive from
+    # POST_CLEANUP_CHECK_IDS.
+    present = [result for result in results if result.check_id in verification_ids]
+    if not present:
+        # No post-cleanup verification ran to be consulted (wave 1 declares none), so
+        # there is no unestablished absence to withhold on.
         absence_verified = True
     else:
-        absence_verified = False
-        notes.append(
-            f"{verification_id} did not verify the fixture's absence "
-            f"(status={verification.status})"
-        )
+        unproven = [result for result in present if result.status != STATUS_PASSED]
+        absence_verified = not unproven
+        for result in unproven:
+            notes.append(
+                f"{result.check_id} did not verify the fixture's absence "
+                f"(status={result.status})"
+            )
 
     return FixtureCleanup(
         ok=rows_ok and resources_ok and absence_verified,

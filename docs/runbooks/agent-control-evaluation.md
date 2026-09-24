@@ -108,6 +108,15 @@ Values below are illustrative except `account_id`, which is the real Wave 1
 target. Copy it outside the repo, then replace the run IDs, timestamps,
 generation and digests with your fixture's actual ones.
 
+> **This example is not runnable as-is.** `account_id` and `invocation_table`
+> name the live dev account and the real webhook-events table, and every
+> `cleanup_items` entry is issued as an unconditional DynamoDB `DeleteItem`
+> against that table in a `finally` block — including when the run ends in
+> NOT RUN. The placeholder `msg-0000…` keys match nothing today, so running it
+> unedited deletes nothing; substituting **real** `event_id`/`arrived_at` values
+> you do not own makes it delete production rows, and the table has no
+> point-in-time recovery. Only ever list rows your own fixture created.
+
 <!-- EXAMPLE-CONFIG-BEGIN -->
 ```json
 {
@@ -164,7 +173,8 @@ generation and digests with your fixture's actual ones.
     "pause_expiry": "artifacts/pause_expiry.json",
     "wave2_preflight": "artifacts/wave2_preflight.json",
     "security_capture": "artifacts/security_capture.json",
-    "teardown_verification": "artifacts/teardown_verification.json"
+    "teardown_verification": "artifacts/teardown_verification.json",
+    "browser_control_run": "artifacts/browser_control_run.json"
   },
 
   "resource_teardown": [
@@ -1225,7 +1235,100 @@ because a map whose keys you choose can only confirm the resources you chose to
 mention, and the whole point of the ledger is that omitting a leaked resource
 must not pass.
 
-Waves 3 and 4 remain unregistered and are still refused outright.
+### Wave 4 (evaluation #3970)
+
+Wave 4's manifest is registered in full — all ten IDs from #3970's acceptance
+table — and S7 (#3966) implements the four whose subject is the dashboard it
+builds. The other six consolidate criteria other stories own, and report
+`not_run` naming that owner.
+
+| ID | Acceptance IDs | Subject | Owner |
+|---|---|---|---|
+| W4-01 | Gate/regression | Wave-4 preflight: accepted waves 1–3, merged head, deployed frontend/gateway/worker revisions, green CI | operations |
+| W4-02 | AC-F3 | Controls absent with the flag off, while loading and on backend error; only advertised capabilities offered | **S7 #3966** |
+| W4-03 | AC-T1, AC-T2–T8, AC-S8 | Browser mid-run steer plus the W3-10 pivot and FIFO/retry/cap/SDK proof | S6 #3965 |
+| W4-04 | AC-P1–P6 | Browser observes running→pause_requested→paused→running; truthful tool reason; spend-continues copy | **S7 #3966** |
+| W4-05 | AC-A1–A12 | Abort cancel/confirm, terminal transition, aborted renderers and accounting | S4 #3963 with S5 #3964 |
+| W4-06 | AC-S1–S7 | Deployed security matrix; every browser destination and body captured | S1 #3960 |
+| W4-07 | Gate/regression | Live JSON matches `agentControl.ts` and `control_schemas.py` at each level | **S7 #3966** |
+| W4-08 | Gate/regression | Measured polling lifecycle, backoff, stop conditions, distinct delivery states | **S7 #3966** |
+| W4-09 | AC-F1, AC-F2 | Flag-off/flag-on runtime comparison with final code; live stats provenance | S5 #3964 |
+| W4-10 | Gate/regression | Evidence index covering exactly all 37 acceptance IDs | operations |
+
+As with wave 2, the full manifest keeps `required` at 10, so the four implemented
+checks cannot satisfy `passed == required` and `not_run == 0` on their own. **A
+complete wave-4 report is not reachable in this revision**, and that is the
+correct state rather than a gap to work around: W4-03 needs steering to be
+routable (S6 #3965 — the gateway's `SUPPORTED_ACTIONS` excludes `steer` today),
+and W4-01 and W4-10 need waves 1–3 accepted, which is an operations act on a
+deployed environment.
+
+#### `browser_control_run` (W4-02, W4-04, W4-07, W4-08, wave 4)
+
+The four implemented checks read a captured Playwright run rather than driving a
+browser themselves — this harness is a Python HTTP prober, and giving it a browser
+dependency would make every wave-1 run download Chromium.
+
+Run the dedicated browser scenarios in **live** mode:
+
+```sh
+cd modules/gateway/frontend
+npm install -D @playwright/test && npx playwright install chromium
+CONTROL_E2E_LIVE=1 \
+CONTROL_E2E_SESSION_FILE="$PRIVATE_FIXTURE_SESSION_JSON" \
+CONTROL_E2E_DISABLED_URL="$FLAG_OFF_FIXTURE_URL" \
+GATEWAY_URL="$FIXTURE_GATEWAY_URL" \
+CONTROL_E2E_RUN_ID="$LIVE_RUN_ID" \
+CONTROL_E2E_ABORT_RUN_ID="$ABORT_RUN_ID" \
+  npx playwright test --config tests/e2e/agent-control.config.ts
+```
+
+`CONTROL_E2E_SESSION_FILE` is a private JSON file containing a real fixture user's
+`access_token`, `id_token`, `expires_at_ms` and optional `refresh_token`. Keep it
+outside the repository and evidence published to GitHub. Live mode never injects
+the fabricated JWT used by the mocked browser tests. `CONTROL_E2E_DISABLED_URL`
+must serve the same reviewed frontend bundle against a fixture with controls
+disabled; live mode requires this check and does not skip it.
+
+The scenario's default (mocked) mode is **not** valid evidence for these checks:
+it stubs the gateway, so it proves the bundle's wiring and wording and nothing
+about a worker. Only `CONTROL_E2E_LIVE=1` drives a real deployment.
+
+The runner currently writes a standard Playwright report; it does **not** yet
+produce the `browser_control_run` artifact below. A measured capture producer
+remains required for live acceptance. Do not rename the Playwright report or
+fill missing observations with configured constants: missing evidence must
+remain `not_run`.
+
+Every key below must come from browser observations; a source file cannot
+establish it. `bundle_revision` is what ties the observations to a deployed asset —
+a capture from a developer's dev server cannot answer for the deployment, and
+W4-02 refuses one whose `gateway_url` differs from this config's.
+
+| Key | Meaning |
+|---|---|
+| `bundle_revision` | Revision of the deployed frontend asset the browser loaded. |
+| `gateway_url` | Deployment driven; must match the config's `gateway_url`. |
+| `captured_at` | ISO-8601 instant, so the capture can be ordered against the revision. |
+| `spec_digest` | Digest of the spec file that produced it, so a weakened spec is distinguishable. |
+| `flag_off`, `flag_loading`, `flag_error` | Each an object with `control_nodes` and `command_requests` **counts**. Both must be 0. A boolean is rejected: it cannot distinguish "none" from "not measured". |
+| `advertised_capabilities` | The capability object the gateway served. |
+| `rendered_controls` | List of verbs the browser actually found. Must be a subset of the advertised ones. |
+| `nonowner_submit_blocked`, `terminal_submit_blocked` | Observed at the request level, not inferred from a hidden button. |
+| `phase_sequence` | Ordered phases rendered. Must contain running → pause_requested → paused → running. |
+| `pause_copy_mentions_spend` | Whether the rendered pause copy says spend may continue. |
+| `active_tool_reason` | The tool-activity text rendered. Must report an unknown count as unknown and never assert quiescence. |
+| `steer_request`, `steer_status_sequence` | The steer request sent and the statuses rendered; a `delivered` with no preceding `pending` fails. |
+| `poll_intervals_ms` | At least two **measured** intervals, each 1000–4000ms. A configured constant is not an observation. |
+| `polled_while_hidden`, `polled_after_close`, `polled_after_terminal` | Must each be an observed `false`. |
+| `backoff_intervals_ms` | At least two intervals observed while the endpoint was failing; must be non-decreasing. |
+| `detail_refreshed_after_command` | Whether the invocation detail re-read after a command. |
+| `request_destinations`, `request_bodies_contain_pod_address`, `request_bodies_contain_token` | Every destination the browser addressed, and whether any body carried pod coordinates. |
+| `spoofed_identity_rejected` | Whether a spoofed identity was refused. |
+
+Wave 3 remains unregistered and `--wave 3` is still refused outright. That is not
+an oversight in wave 4: several wave-4 checks consolidate wave 3's criteria, so
+wave 4 cannot be complete before wave 3 exists and is accepted.
 
 ## Troubleshooting
 

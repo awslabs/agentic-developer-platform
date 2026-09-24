@@ -22,6 +22,10 @@ import { describeLiveness } from '@/utils/liveness';
 // surface's longer `webhook_received` label, which the narrow table cannot fit.
 import { describeStatus } from '@/utils/status';
 import { LivenessBadge } from '@/components/activity/LivenessBadge';
+// Issue #3966: live run controls. Renders nothing unless the feature flag is on
+// AND the polled control state says this run is genuinely controllable, so this
+// import does not change the modal for any existing deployment.
+import { ControlPanel } from '@/components/ControlPanel';
 import type { InvocationItem } from '@/types/activity';
 
 // ---------------------------------------------------------------------------
@@ -99,9 +103,23 @@ export interface InvocationDetailProps {
   onClose: () => void;
   /** Use admin transcript endpoint. */
   isAdmin?: boolean;
+  /**
+   * Issue #3966: re-fetch this invocation after a live control command.
+   *
+   * `item` is a snapshot owned by the page, so the panel cannot refresh it
+   * itself; without this the status row would keep showing the pre-command
+   * snapshot while the control panel showed the new phase.
+   */
+  onRefreshItem?: () => void;
 }
 
-export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: InvocationDetailProps) {
+export function InvocationDetail({
+  item,
+  isOpen,
+  onClose,
+  isAdmin = false,
+  onRefreshItem,
+}: InvocationDetailProps) {
   const [showTranscript, setShowTranscript] = useState(false);
 
   if (!item) return null;
@@ -469,6 +487,25 @@ export function InvocationDetail({ item, isOpen, onClose, isAdmin = false }: Inv
               </>
             )}
           </dl>
+
+          {/*
+            Issue #3966: live controls.
+
+            Placed after the detail list rather than inside it: these are actions,
+            not facts, and interleaving buttons into a definition list would put
+            interactive controls inside `<dd>` elements.
+
+            `isTerminalRun` is passed only to avoid polling a run that has
+            demonstrably ended. It is not the gate — the panel decides what to
+            offer from the polled control state, because a non-terminal status
+            does not imply the run is reachable or controllable.
+          */}
+          <ControlPanel
+            invocationId={item.invocation_id}
+            isOpen={isOpen}
+            isTerminalRun={isTerminal}
+            onCommandApplied={onRefreshItem}
+          />
 
           {/* Status timeline note */}
           <p className="mt-4 text-xs text-gray-400 dark:text-gray-500 italic">
