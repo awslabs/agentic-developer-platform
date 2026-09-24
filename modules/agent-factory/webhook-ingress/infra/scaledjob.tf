@@ -359,11 +359,11 @@ ${local.agent_authority_mount_block}
                 resources:
                   requests:
                     cpu: "1"
-                    memory: 4Gi
+                    memory: ${var.agent_worker_memory_request}
                     ephemeral-storage: 50Gi
                   limits:
                     cpu: "4"
-                    memory: 8Gi
+                    memory: ${var.agent_worker_memory_limit}
                     ephemeral-storage: 50Gi
                 securityContext:
                   allowPrivilegeEscalation: false
