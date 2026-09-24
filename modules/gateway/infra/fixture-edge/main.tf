@@ -165,6 +165,84 @@ data "aws_vpc_security_group_rule" "reachability" {
   security_group_rule_id = each.value
 }
 
+# ---------------------------------------------------------------------------
+# WHAT THE FIXTURE POD SEES AS THE SOURCE OF ALB TRAFFIC
+# ---------------------------------------------------------------------------
+# This exists for #3968's fixture NetworkPolicy, and it is an OBSERVATION, not a
+# policy change. Nothing here creates, edits or reads a NetworkPolicy.
+#
+# THE COMPOSITION PROBLEM
+# -----------------------
+# #3968's render_fixture.render_policies builds a fixture gateway policy whose only
+# ingress rule is:
+#
+#   from: [ {namespaceSelector: adp-gateway}, {namespaceSelector: adp-agents} ]
+#   ports: [ {TCP, 8080} ]
+#
+# A namespaceSelector matches POD sources by their namespace. Traffic arriving from
+# an Application Load Balancer is not a namespace-selected pod source: with
+# target-type `ip` the ALB connects from its OWN elastic network interfaces, which
+# belong to the load balancer and to no pod. So the policy admits exactly the
+# sources a pure in-cluster harness uses and denies the edge this component builds.
+#
+# That combination fails in the worst available way. The Terraform plan applies, the
+# ALB reports its targets healthy (the ALB's health check probes the pod on the
+# container port and is NOT the flow the policy blocks — health checks and request
+# traffic take the same path here, so a reader cannot even use "targets healthy" as
+# evidence), and the worker's bootstrap handshake never completes. The run reads as
+# "the protected worker failed its bootstrap", which is the conclusion Wave 2 exists
+# to establish or refute, arrived at from a networking artefact.
+#
+# WHY THE ANSWER IS AN OBSERVATION AND NOT A SELECTOR
+# ---------------------------------------------------
+# The tempting fixes are all wrong for this issue:
+#
+#   * Relaxing the ordinary gateway's policy is forbidden (#5836 preserves ordinary
+#     flags, routes and selectors) and would widen production's blast radius for a
+#     fixture.
+#   * `ipBlock: 0.0.0.0/0` on the fixture policy would admit the whole VPC and
+#     every other ALB in it, which is a wider allowance than the ordinary plane has.
+#   * Adding a namespaceSelector cannot work at all: the source is not a pod.
+#
+# What the fixture policy needs is the NARROWEST TRUE STATEMENT of the source: the
+# /32 addresses of THIS fixture ALB's network interfaces. That is a fact about a
+# live AWS resource, which is why it is read here and published as an output rather
+# than guessed in #3968's renderer, and why this component owns it: this component
+# is what creates the path.
+#
+# HOW THE ADDRESSES ARE DERIVED — AND WHY THIS IS AUTHORITATIVE
+# -------------------------------------------------------------
+# `aws_lb` publishes no interface list, and the ALB's subnets are not the answer
+# (a subnet CIDR would admit every address in it, including the ordinary gateway's
+# ALB — verified: both ordinary gateway ALBs and this fixture's would sit in
+# subnet-03ae2ea2ebdf611bb). The interfaces are found by their description, which
+# the ELB service sets to the literal string "ELB <arn_suffix>". Verified read-only
+# on 2026-09-24 against the live ordinary ALB: filtering on
+# `ELB app/k8s-adpgatew-bedrockg-d2e32d8c72/30c651bf3c5e4135` returned exactly its
+# two interfaces (10.0.11.37, 10.0.12.11) and nothing else. `arn_suffix` is an
+# attribute of the discovered load balancer, so the filter cannot be pointed at
+# another ALB by a typo in a variable.
+#
+# A caveat is recorded rather than hidden: these addresses belong to the ALB's
+# CURRENT interfaces. An ALB can gain an interface (a subnet added, an AZ scaled)
+# and the set would then be stale. That is safe in the direction that matters — a
+# stale entry is a denial, not an admission — but it means the output must be
+# re-read if the fixture ALB is recreated, which the RUNBOOK says.
+data "aws_network_interfaces" "fixture_alb" {
+  count = local.enabled ? 1 : 0
+
+  filter {
+    name   = "description"
+    values = ["ELB ${data.aws_lb.fixture[0].arn_suffix}"]
+  }
+}
+
+data "aws_network_interface" "fixture_alb" {
+  for_each = local.enabled ? toset(data.aws_network_interfaces.fixture_alb[0].ids) : toset([])
+
+  id = each.value
+}
+
 locals {
   enabled = var.fixture_edge_enabled
 
@@ -239,6 +317,19 @@ locals {
     length(local.vpc_link_egress_rules_to_fixture_alb) > 0 &&
     length(local.fixture_alb_ingress_rules_from_vpc_link) > 0
   )
+
+  # --- the ALB traffic source, for #3968's fixture NetworkPolicy -------------
+  # The narrowest true statement of where the fixture pod sees ALB traffic come
+  # from: the /32 addresses of this ALB's own interfaces. See the data sources above
+  # for why a subnet CIDR or a namespaceSelector cannot serve.
+  #
+  # Sorted so the output is stable across plans — an unstable list would produce a
+  # spurious diff in #3968's rendered policy and invite someone to stop regenerating
+  # it.
+  fixture_alb_source_ips = sort([
+    for eni in data.aws_network_interface.fixture_alb : eni.private_ip
+  ])
+  fixture_alb_source_cidrs = [for ip in local.fixture_alb_source_ips : "${ip}/32"]
 
   ownership_tags = {
     AdpFixtureRun     = var.run_nonce
@@ -452,6 +543,51 @@ resource "terraform_data" "run_binding_gate" {
             --filters Name=group-id,Values=<alb-sg-id> \
             --query 'SecurityGroupRules[?IsEgress==`false`]'
       EOT
+    }
+
+    # --- the ALB traffic source must be OBSERVED, not absent -----------------
+    # #3968's fixture NetworkPolicy needs this to admit the edge (see the
+    # aws_network_interfaces read above). The reason it is a REFUSAL and not a
+    # best-effort output is the asymmetry of the failure: an EMPTY list renders a
+    # policy with an ipBlock rule that matches nothing, which denies the edge just
+    # as thoroughly as having no rule — and does it while looking configured. A
+    # reviewer comparing the rendered policy against this output would see two
+    # empty things agreeing.
+    precondition {
+      condition     = length(local.fixture_alb_source_ips) > 0
+      error_message = <<-EOT
+        Refusing: no network interface was found for the fixture ALB, so the traffic
+        source #3968's fixture NetworkPolicy must admit cannot be established.
+
+        The interfaces are found by the description the ELB service assigns them,
+        "ELB ${data.aws_lb.fixture[0].arn_suffix}". An empty result usually means the
+        ALB is still provisioning — create-fixture-alb.sh waits for it, so run that
+        to completion first.
+
+        This is refused rather than published empty because an empty source list
+        renders a NetworkPolicy ipBlock that matches nothing. The fixture pod would
+        deny the edge exactly as if the rule were missing, while the policy read as
+        configured, and the run would report the protected worker's bootstrap as
+        failed.
+
+        Inspect read-only:
+          aws ec2 describe-network-interfaces \
+            --filters Name=description,Values='ELB ${data.aws_lb.fixture[0].arn_suffix}' \
+            --query 'NetworkInterfaces[].PrivateIpAddress'
+      EOT
+    }
+
+    # Every observed interface must belong to the fixture ALB's own VPC. This is a
+    # cheap guard against the description filter matching something unexpected:
+    # descriptions are service-assigned but not a documented identity contract, and
+    # publishing a foreign address as "the source to admit" would have the fixture
+    # pod admit traffic from an address this edge does not own.
+    precondition {
+      condition = alltrue([
+        for eni in data.aws_network_interface.fixture_alb :
+        eni.vpc_id == var.expected_vpc_id
+      ])
+      error_message = "Refusing: an interface matched for the fixture ALB is not in expected_vpc_id. Publishing it as the NetworkPolicy source would admit traffic from an address this edge does not own."
     }
 
     # --- run ownership -----------------------------------------------------

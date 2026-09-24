@@ -165,6 +165,29 @@ mock_provider "aws" {
     }
   }
 
+  # The fixture ALB's own network interfaces. These are what the fixture pod sees
+  # as the source of ALB traffic, and therefore what #3968's fixture NetworkPolicy
+  # has to admit (blocker 6).
+  #
+  # Two interfaces, because a real ALB has one per subnet. A single-interface mock
+  # would let a bug that publishes only the first address pass.
+  mock_data "aws_network_interfaces" {
+    defaults = {
+      ids = ["eni-fixture-b", "eni-fixture-a"]
+    }
+  }
+
+  # Deliberately in the WRONG order relative to the sorted output below
+  # (eni-fixture-b holds the higher address). for_each iterates a set, whose order
+  # is not the author's, so the sort in the output is what makes the value stable —
+  # and an unstable value would produce a spurious diff in #3968's rendered policy
+  # every plan, which is how someone stops regenerating it.
+  mock_data "aws_network_interface" {
+    defaults = {
+      vpc_id = "vpc-0d6115bead9301d25"
+    }
+  }
+
   override_during = plan
 }
 
@@ -211,6 +234,27 @@ override_data {
     ip_protocol                  = "tcp"
     from_port                    = 80
     to_port                      = 80
+  }
+}
+
+# The ALB's two interfaces, one per subnet, with real-shaped private addresses from
+# the dev private subnets (10.0.10.0/24 and 10.0.11.0/24 — read read-only). Set
+# per-instance because mock_data applies to every instance alike.
+override_data {
+  target = data.aws_network_interface.fixture_alb["eni-fixture-a"]
+  values = {
+    private_ip = "10.0.10.41"
+    subnet_id  = "subnet-0860c744097c41a03"
+    vpc_id     = "vpc-0d6115bead9301d25"
+  }
+}
+
+override_data {
+  target = data.aws_network_interface.fixture_alb["eni-fixture-b"]
+  values = {
+    private_ip = "10.0.11.52"
+    subnet_id  = "subnet-03ae2ea2ebdf611bb"
+    vpc_id     = "vpc-0d6115bead9301d25"
   }
 }
 
@@ -1327,6 +1371,205 @@ run "refuses_when_no_security_group_rules_are_readable_at_all" {
     target = data.aws_vpc_security_group_rules.reachability[0]
     values = {
       ids = []
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# ---------------------------------------------------------------------------
+# THE NETWORKPOLICY SEAM WITH #3968 (blocker 6)
+# ---------------------------------------------------------------------------
+# Root: #3968's fixture gateway policy admits ingress on 8080 only from pods in
+# adp-gateway / adp-agents via namespaceSelector; ALB connections are NOT
+# namespace-selected pod sources. A narrow ALB source observation had to be agreed
+# with #3968, with no global relaxation of the ordinary policy.
+#
+# The agreed artifact is output.fixture_alb_network_policy_source. What makes it
+# worth testing is that every plausible WRONG version of it is silently harmless-
+# looking:
+#
+#   * a subnet CIDR admits the ORDINARY gateway's ALB (they share a subnet), which
+#     would let production's edge into the fixture while reading as "narrow"
+#   * 0.0.0.0/0 admits the whole VPC
+#   * an empty list renders an ipBlock that matches nothing — a denial that reads as
+#     a configured policy, and reports as "the protected worker failed"
+#   * the listener port (80) instead of the container port (8080) renders a rule
+#     that blocks the flow under test
+#
+# None of those fails to apply. Each is asserted against below.
+run "publishes_the_narrow_alb_traffic_source_3968s_policy_must_admit" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  assert {
+    # Every interface, not just the first. The mock supplies two because a real ALB
+    # has one per subnet, and a fixture policy missing one address fails
+    # intermittently — whichever AZ the connection lands in.
+    condition     = length(output.fixture_alb_network_policy_source.source_cidrs) == 2
+    error_message = "Every one of the ALB's interfaces must be published. A policy missing one address denies whichever AZ that interface serves, which presents as an intermittent bootstrap failure."
+  }
+
+  assert {
+    # /32 AND NOTHING WIDER. This is the assertion that encodes root's "no global
+    # relaxation": a /24 here would admit the ordinary gateway's ALB, which sits in
+    # the same subnet (verified read-only in dev).
+    condition = alltrue([
+      for c in output.fixture_alb_network_policy_source.source_cidrs :
+      endswith(c, "/32")
+    ])
+    error_message = "Sources must be /32 host addresses. A subnet CIDR would admit the ORDINARY gateway's ALB — it shares subnet-03ae2ea2ebdf611bb with the fixture's — so a wider mask silently grants production's edge access to the fixture."
+  }
+
+  assert {
+    # The addresses must be the ones READ from the ALB's interfaces — not a
+    # variable, and not derived from a subnet. Asserted both ways round so the
+    # published set can neither omit an interface nor invent an address.
+    condition = (
+      alltrue([
+        for eni in data.aws_network_interface.fixture_alb :
+        contains(output.fixture_alb_network_policy_source.source_cidrs, "${eni.private_ip}/32")
+      ]) &&
+      alltrue([
+        for c in output.fixture_alb_network_policy_source.source_cidrs :
+        contains([for eni in data.aws_network_interface.fixture_alb : "${eni.private_ip}/32"], c)
+      ])
+    )
+    error_message = "The published CIDRs must be exactly the addresses read from the fixture ALB's own network interfaces — no interface omitted, no address invented."
+  }
+
+  assert {
+    # STABLE ORDER. for_each iterates a set, so without the sort the list order is
+    # not the author's. An unstable output produces a spurious diff in #3968's
+    # rendered policy on every plan, and a diff that always appears is a diff
+    # nobody reads — which is how a real change to the source set gets missed.
+    # Compared as a joined string: the output is a list(string) while the for
+    # expression yields a tuple, and `==` across those reports a TYPE mismatch
+    # rather than an ordering difference — so the assertion would fail for a reason
+    # unrelated to order.
+    condition = join(",", output.fixture_alb_network_policy_source.source_cidrs) == join(",", sort([
+      for eni in data.aws_network_interface.fixture_alb : "${eni.private_ip}/32"
+    ]))
+    error_message = "The source list must be sorted. An unstable order re-diffs #3968's policy on every plan, and a permanent diff hides a real one."
+  }
+
+  assert {
+    # THE PORT THE POLICY RULE NAMES. 8080 is the container port; 80 is the ALB
+    # listener. They are different numbers and naming the listener produces a policy
+    # that blocks exactly the traffic under test.
+    condition = (
+      output.fixture_alb_network_policy_source.container_port == 8080 &&
+      output.fixture_alb_network_policy_source.alb_listener_port == var.fixture_alb_listener_port &&
+      output.fixture_alb_network_policy_source.container_port != output.fixture_alb_network_policy_source.alb_listener_port
+    )
+    error_message = "The policy rule's port must be the CONTAINER port (8080), published separately from the ALB listener port. #3968's policy already names 8080; a rule naming 80 would block the flow under test."
+  }
+
+  assert {
+    # The value must say which policy it belongs on. Without this, the obvious
+    # misreading is to add the rule to the ordinary gateway's policy, whose
+    # selectors #5836 requires preserved.
+    condition = (
+      strcontains(output.fixture_alb_network_policy_source.apply_to, "FIXTURE") &&
+      strcontains(output.fixture_alb_network_policy_source.apply_to, "NOT the ordinary")
+    )
+    error_message = "The output must name the FIXTURE policy explicitly and rule out the ordinary gateway's, which #5836 preserves."
+  }
+
+  assert {
+    # Run-bound, so a value captured from a previous run is visibly not this one's.
+    # A pasted stale address is a denial, and a denial here looks like a failed
+    # bootstrap rather than a stale artifact.
+    condition = (
+      output.fixture_alb_network_policy_source.run_nonce == var.run_nonce &&
+      output.fixture_alb_network_policy_source.alb_arn == data.aws_lb.fixture[0].arn
+    )
+    error_message = "The source observation must be bound to this run and this ALB."
+  }
+
+  assert {
+    # THE INTERFACES MUST BE FOUND BY THIS LOAD BALANCER'S IDENTITY.
+    #
+    # Asserted against the data source's own filter, and it is not redundant with
+    # the address assertions above: `mock_data` does not evaluate filters, so a
+    # mutation that changed this read to `subnet-id` (which would return EVERY
+    # interface in the ALB's subnets — the ordinary gateway's ALB, the nodes, the
+    # pods) returned the same mocked ids and no other assertion here noticed. The
+    # published set would then admit half the VPC while still being made of /32s.
+    #
+    # `ELB <arn_suffix>` is the description the ELB service assigns (verified
+    # read-only in dev: filtering on the ordinary ALB's suffix returned exactly its
+    # two interfaces). arn_suffix comes from the DISCOVERED load balancer, so the
+    # filter cannot be pointed elsewhere by a variable.
+    # Joined to a string before comparing: the filter's `values` is a list(string)
+    # and the literal is a tuple, and `==` across those reports a TYPE mismatch
+    # instead of a difference in content. Joining also pins that the filter carries
+    # EXACTLY this one value — `contains` would pass for a filter that also listed
+    # something wider.
+    condition = join(",", one([
+      for f in data.aws_network_interfaces.fixture_alb[0].filter : f.values
+      if f.name == "description"
+    ])) == "ELB ${data.aws_lb.fixture[0].arn_suffix}"
+    error_message = "The interfaces must be read by filtering on this load balancer's own 'ELB <arn_suffix>' description. A subnet-id filter would return every interface in the ALB's subnets — including the ORDINARY gateway's ALB and the cluster's pods — and the published /32s would then admit them."
+  }
+
+  assert {
+    # A reviewer must be able to re-derive it without Terraform, and the command
+    # must name THIS ALB — a generic describe-network-interfaces would return every
+    # ALB's addresses in the account.
+    condition = (
+      strcontains(output.fixture_alb_network_policy_source.verify, "describe-network-interfaces") &&
+      strcontains(output.fixture_alb_network_policy_source.verify, data.aws_lb.fixture[0].arn_suffix)
+    )
+    error_message = "The output must carry a read-only command that re-derives THESE addresses from THIS load balancer."
+  }
+}
+
+# EMPTY MUST REFUSE, NOT PUBLISH.
+#
+# This is the most important negative in the seam, because the empty case is the one
+# that looks handled. An ipBlock rule built from an empty list matches nothing, so
+# the fixture pod denies the edge exactly as if the rule were absent — while the
+# rendered policy contains an ingress rule and reads as configured. A reviewer
+# comparing the policy against this output would see two empty things agreeing.
+run "refuses_when_the_albs_traffic_source_cannot_be_observed" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_network_interfaces.fixture_alb[0]
+    values = {
+      ids = []
+    }
+  }
+
+  expect_failures = [terraform_data.run_binding_gate]
+}
+
+# The interfaces are matched by a SERVICE-ASSIGNED DESCRIPTION ("ELB <arn_suffix>"),
+# which is reliable in practice but is not a documented identity contract. If it ever
+# matches something else, publishing that address would have the fixture pod admit
+# traffic from an address this edge does not own — a widening, arrived at by
+# accident. The VPC check is the cheap guard.
+run "refuses_an_observed_interface_outside_the_expected_vpc" {
+  command = plan
+
+  variables {
+    fixture_edge_enabled = true
+  }
+
+  override_data {
+    target = data.aws_network_interface.fixture_alb["eni-fixture-b"]
+    values = {
+      private_ip = "10.9.9.9"
+      subnet_id  = "subnet-0999999999999999a"
+      vpc_id     = "vpc-08ba938f9cd8c684c"
     }
   }
 

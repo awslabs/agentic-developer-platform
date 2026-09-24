@@ -47,6 +47,7 @@ circular prerequisite where neither side created the ALB this edge forwards to.
 | fixture Deployment + Service | #3968 | `10-create-fixture.sh` |
 | fixture **internal ALB** | **this component** | `scripts/create-fixture-alb.sh` (step 1b) |
 | the trusted edge | this component | `scripts/fixture-lifecycle.sh` |
+| fixture **NetworkPolicy** | #3968 renders it | this component publishes the one fact it cannot know — the ALB's traffic source (step 4.5) |
 | ledger + teardown of k8s objects | #3968 | `ownership.py` / `90-cleanup-ledger.sh` |
 
 On this EKS Auto Mode cluster one Ingress is one ALB and changing IngressGroup
@@ -477,6 +478,91 @@ plan the real apply would refuse.
 
 If you genuinely need to change something, re-run `plan` and review what it writes.
 Do not edit the receipt; it is the record of what was reviewed, not a config file.
+
+---
+
+## 4.5 Hand #3968's fixture NetworkPolicy the ALB's traffic source
+
+**Do this before step 6, not after a failed step 6.** Skipping it produces a fixture
+that plans cleanly, reports its ALB targets healthy, and then refuses every request
+at the pod — which reads as "the protected worker failed its bootstrap", the exact
+conclusion Wave 2 exists to reach on its own merits.
+
+**Why it is needed.** #3968's `render_fixture.render_policies` gives the fixture
+gateway one ingress rule, and it admits sources **by namespace**:
+
+```yaml
+from:
+  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: adp-gateway}}
+  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: adp-agents}}
+ports: [{protocol: TCP, port: 8080}]
+```
+
+A `namespaceSelector` matches **pod** sources. With target-type `ip` the ALB connects
+from its **own** elastic network interfaces, which belong to the load balancer and to
+no pod and no namespace. So that rule admits exactly the sources a pure in-cluster
+harness uses, and denies the edge this component builds. Both sides are individually
+correct; the gap is in the composition, which is why it is a step here.
+
+**Read the source after apply:**
+
+```bash
+terraform output -json fixture_alb_network_policy_source
+```
+
+It publishes `source_cidrs` (one `/32` per interface), `container_port` (**8080**),
+`alb_listener_port` (80 — a *different* number), the `run_nonce`, the `alb_arn`, and a
+`verify` command that re-derives the same addresses with the AWS CLI alone:
+
+```bash
+aws ec2 describe-network-interfaces \
+  --filters Name=description,Values="ELB <fixture alb arn_suffix>" \
+  --query 'NetworkInterfaces[].PrivateIpAddress'
+```
+
+That description is how the ELB service labels an ALB's own interfaces, and it is what
+`main.tf` filters on — so the output and this command are reading the same fact, not
+two guesses. The apply **refuses** if the list comes back empty (an `ipBlock` matching
+nothing denies the edge while the policy reads as configured) or if any matched
+interface is outside `expected_vpc_id`.
+
+**Add ONE ingress rule — to the FIXTURE policy only:**
+
+```yaml
+- from:
+    - ipBlock: {cidr: <source_cidrs[0]>}
+    - ipBlock: {cidr: <source_cidrs[1]>}   # one entry per address
+  ports:
+    - {protocol: TCP, port: 8080}          # container_port, NOT alb_listener_port
+```
+
+### The four ways to get this wrong
+
+| Tempting fix | Why not |
+|---|---|
+| relax the **ordinary** gateway's policy | forbidden by #5836 (ordinary flags, routes and selectors are preserved) and it widens production's blast radius for a fixture |
+| `ipBlock: 0.0.0.0/0` on the fixture policy | admits the whole VPC and every other ALB in it — a wider allowance than the ordinary plane itself has |
+| the **subnet** CIDR | both ordinary gateway ALBs share `subnet-03ae2ea2ebdf611bb` with this one, so a subnet rule admits *production's* edge to the fixture |
+| another `namespaceSelector` | cannot work at any width: the source is not a pod |
+
+`port: 80` is the fifth: the ALB **listens** on 80 and **connects to the pod** on
+8080. A rule naming 80 blocks precisely the flow under test. The output carries both
+numbers under distinct names for that reason, and a test asserts they differ.
+
+### Ownership, and what this component does not do
+
+This component **observes**; #3968 **renders**. Nothing here creates, edits or reads a
+NetworkPolicy, and no file under `platform/scripts/operator/wave2` is touched — the
+two changes compose through that one output value. Neither side can widen the other:
+a rule built from this value admits exactly these addresses, on exactly the fixture
+gateway's pods, on exactly the container port.
+
+**Re-read it if the ALB is recreated.** The addresses are the ALB's *current*
+interfaces; one gained (a subnet or AZ added) makes the list stale. Staleness is safe
+in the direction that matters — a missing address is a denial, never an admission —
+but it is a denial that looks like a broken handshake, so re-run the output rather
+than trusting a value pasted from an earlier run. The `run_nonce` in the output is
+there to make a pasted stale value visibly not this run's.
 
 ---
 

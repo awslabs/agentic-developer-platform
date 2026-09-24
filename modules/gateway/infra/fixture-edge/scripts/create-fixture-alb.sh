@@ -700,6 +700,18 @@ cat <<EOF
 
   Recorded in the ledger as Ingress/$NAME (uid $UID_VALUE).
 
+  A SECURITY-GROUP PATH IS NOT THE WHOLE PATH. The fixture pod also enforces
+  #3968's NetworkPolicy, which admits ingress by namespaceSelector -- and with
+  target-type ip this ALB connects from its OWN interfaces, which are in no
+  namespace. So after the edge applies, read
+
+    terraform output -json fixture_alb_network_policy_source
+
+  and add its source_cidrs as ONE ipBlock ingress rule on the FIXTURE policy only,
+  on container_port 8080 (NOT the listener port). RUNBOOK.md step 4.5 has the
+  rule and the four ways to get it wrong. Skipping it gives healthy ALB targets and
+  a bootstrap that never completes.
+
   TEARDOWN ORDER -- DESTROY THE EDGE FIRST, THEN THIS INGRESS.
   An earlier revision of this note had it backwards. ../main.tf READS this ALB
   (data.aws_lb.fixture) to derive its DNS name, and Terraform RE-READS data sources

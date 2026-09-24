@@ -70,6 +70,105 @@ output "ssm_provenance_parameter_name" {
   value       = try(aws_ssm_parameter.fixture_provenance_secret[0].name, "")
 }
 
+# =============================================================================
+# THE NETWORKPOLICY SEAM WITH #3968 — AN OBSERVATION, NOT A POLICY CHANGE
+# =============================================================================
+# Root's blocker 6: #3968's fixture gateway policy allows ingress on 8080 only from
+# pods in adp-gateway / adp-agents via namespaceSelector, and ALB connections are
+# not namespace-selected pod sources. A narrow ALB source observation/output had to
+# be agreed with #3968, with no global relaxation of the ordinary policy.
+#
+# This output IS that agreed artifact, and its shape is chosen to make the wrong
+# thing hard:
+#
+#   * It publishes /32 addresses — the narrowest true statement of the source.
+#     NOT a subnet CIDR (which would admit the ordinary gateway's ALB: verified,
+#     both sit in subnet-03ae2ea2ebdf611bb), and not 0.0.0.0/0.
+#   * It is READ from the live load balancer's own network interfaces. Nothing
+#     here creates, edits or reads a NetworkPolicy, and this component touches no
+#     file under platform/scripts/operator/wave2 — the two changes compose through
+#     this value.
+#   * It is bound to the run, so a value captured from one run cannot be pasted
+#     into another's policy and quietly admit a stale address.
+#   * It is a REFUSAL when empty rather than an empty list, because an ipBlock that
+#     matches nothing denies the edge while reading as configured (see the
+#     precondition in main.tf).
+#
+# WHAT #3968 STILL OWNS, AND WHY THE SPLIT IS HERE
+# -----------------------------------------------
+# render_fixture.render_policies builds the policy; this component must not edit
+# it. What it needs from here is the one fact it cannot know: the source addresses
+# of an ALB that did not exist when the renderer ran. The composition is therefore
+# "this component observes, #3968 renders", which also means neither side can
+# silently widen the other: an ipBlock rule added from this value admits exactly
+# these addresses on exactly the fixture gateway's pods, and the ORDINARY gateway's
+# policy is not touched by either side.
+#
+# Addresses are not secret.
+output "fixture_alb_network_policy_source" {
+  description = <<-EOT
+    The traffic source #3968's fixture gateway NetworkPolicy must admit for the
+    trusted edge to reach the fixture pod, as /32 CIDRs.
+
+    WHY THIS IS NEEDED. The fixture gateway policy's only ingress rule admits pods
+    by namespaceSelector (adp-gateway, adp-agents). With target-type `ip` the ALB
+    connects from its OWN network interfaces, which belong to no pod and are in no
+    namespace, so that rule does not admit this edge. The plan applies, the ALB
+    reports its targets healthy, and the worker's bootstrap handshake never
+    completes — reported as "the protected worker failed", which is the very
+    question Wave 2 is answering.
+
+    HOW TO USE IT. Add ONE ingress rule to the FIXTURE gateway policy (the
+    run-scoped one #3968 renders — never the ordinary gateway's):
+
+      - from:
+          - ipBlock:
+              cidr: <each entry of source_cidrs, one rule entry per address>
+        ports:
+          - protocol: TCP
+            port: <container_port below>
+
+    Do NOT widen it to the subnet CIDR: both ordinary gateway ALBs share a subnet
+    with this one, so a subnet rule would admit production's edge to the fixture.
+
+    RE-READ THIS IF THE FIXTURE ALB IS RECREATED. These are the ALB's CURRENT
+    interfaces. An ALB that gains one (a subnet or AZ added) makes the list stale.
+    Staleness is safe in the direction that matters — a missing address is a denial,
+    not an admission — but it is a denial that looks like a broken handshake.
+
+    Addresses are not secret.
+  EOT
+  value = {
+    source_cidrs = try(local.fixture_alb_source_cidrs, [])
+    source_ips   = try(local.fixture_alb_source_ips, [])
+
+    # The port the policy rule must name. Read from the same place the Ingress
+    # template targets, so this cannot disagree with what the ALB actually connects
+    # to: the fixture Service maps 80 -> 8080 and the pods listen on 8080.
+    container_port = 8080
+
+    # The listener port, recorded separately. These two are DIFFERENT numbers and
+    # naming the wrong one produces a policy that blocks the flow under test: the
+    # ALB listens on ${var.fixture_alb_listener_port} and connects to the pod on
+    # 8080.
+    alb_listener_port = var.fixture_alb_listener_port
+
+    # Which policy this belongs on. Stated so the value cannot be applied to the
+    # ordinary gateway's policy by someone reading only the output.
+    apply_to = "the run-scoped FIXTURE gateway NetworkPolicy rendered by #3968's render_fixture.render_policies — NOT the ordinary gateway policy, whose selectors #5836 preserves"
+
+    # Run binding, so a value from another run is visibly not this one's.
+    run_nonce = var.run_nonce
+    alb_arn   = try(data.aws_lb.fixture[0].arn, "")
+
+    # How to re-derive it without Terraform, for a reviewer who wants to check.
+    verify = try(
+      "aws ec2 describe-network-interfaces --filters Name=description,Values='ELB ${data.aws_lb.fixture[0].arn_suffix}' --query 'NetworkInterfaces[].PrivateIpAddress'",
+      ""
+    )
+  }
+}
+
 output "ownership" {
   description = <<-EOT
     An INVENTORY RECEIPT of what this run's state owns — not a delete authority.

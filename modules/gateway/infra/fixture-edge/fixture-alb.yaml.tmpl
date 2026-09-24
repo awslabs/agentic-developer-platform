@@ -86,8 +86,18 @@ metadata:
     # With explicit frontend security groups, the controller does not manage the
     # backend rules by default. Enabling it lets the controller open the path from
     # this ALB to the fixture pods without any manual security-group edit.
+    #
+    # THIS IS SECURITY GROUPS ONLY. It does NOT satisfy the fixture pod's
+    # NetworkPolicy, which is a separate enforcement layer that the controller
+    # neither reads nor writes. #3968's fixture policy admits ingress by
+    # namespaceSelector, and an ALB is not a namespace-selected pod source, so an
+    # otherwise perfect security-group path still ends in a connection the pod
+    # drops. See RUNBOOK step 4.5 and ../main.tf's aws_network_interfaces read.
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
 
+    # target-type `ip` is why the NetworkPolicy source is the ALB's OWN addresses:
+    # the ALB connects directly to pod IPs from its own network interfaces rather
+    # than via a node, so the source the pod sees belongs to the load balancer.
     alb.ingress.kubernetes.io/target-type: ip
     # Port 80 only, matching the VPC Link's existing egress rule. A different port
     # would require opening the SHARED link security group, which is an ordinary-
