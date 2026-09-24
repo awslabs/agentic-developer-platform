@@ -185,6 +185,7 @@ def _row_from_report(
     *,
     bundle_revision: Measured,
     read_capture: Callable[[str], Mapping[str, Any]] | None = None,
+    expected_run_id: str | None = None,
 ) -> Measured:
     """One index row, derived from a prior evaluator run's verdict on a check."""
     if report is None:
@@ -256,6 +257,8 @@ def _row_from_report(
         return Refused(f"{acceptance_id}: report capture is {capture.get('mode')!r}, not live")
     if capture.get("bundle_revision") != bundle_revision:
         return Refused(f"{acceptance_id}: capture bundle_revision differs from the requested evidence revision")
+    if expected_run_id is not None and capture.get("run_id") != expected_run_id:
+        return Refused(f"{acceptance_id}: capture run_id differs from this fixture run")
     assets = capture.get("served_assets")
     if not isinstance(assets, Mapping) or assets.get("verified") is not True or assets.get("method") != "asset_manifest_match":
         return Refused(f"{acceptance_id}: live capture has no verified deployment asset manifest match")
@@ -313,7 +316,8 @@ def compile_index(
     for source in report_sources:
         for acceptance_id in source.acceptance_ids:
             row = _row_from_report(
-                source, acceptance_id, prior_report, bundle_revision=bundle_revision, read_capture=read_capture
+                source, acceptance_id, prior_report, bundle_revision=bundle_revision, read_capture=read_capture,
+                expected_run_id=str(fixture_identity.get("run_id") or "")
             )
             # A criterion claimed by both a consolidated artifact and a report-backed
             # check keeps the artifact's row: the artifact is the wave that made the

@@ -12525,6 +12525,7 @@ def collect_index(
         artifacts=artifacts,
         prior_report=prior_report(config) if report is None else report,
         read_capture=lambda path: {
+            "run_id": config["live_run_id"],
             "mode": "live", "bundle_revision": FRONTEND_REVISION,
             "served_assets": {"verified": True, "method": "asset_manifest_match"},
             "injected_conditions": [],
@@ -13637,3 +13638,15 @@ class TestTheRunbookDocumentsTheWaveFourArtifacts:
         # criterion has no stated route to acceptance at all.
         for family in ("AC-F3", "AC-P1", "AC-T1", "AC-A1", "AC-S1", "AC-F1"):
             assert family in runbook, family
+
+
+@pytest.mark.parametrize("recorded_run", [None, "another-run"])
+def test_browser_index_cannot_borrow_capture_from_another_run(tmp_path, recorded_run):
+    config = live_config(tmp_path)
+    capture = {"mode": "live", "bundle_revision": FRONTEND_REVISION, "run_id": recorded_run,
+               "served_assets": {"verified": True, "method": "asset_manifest_match"}, "injected_conditions": []}
+    row = _index._row_from_report(_index.ReportSource("W4-02", "S7", ("AC-F3",)),
+        "AC-F3", prior_report(config), bundle_revision=FRONTEND_REVISION,
+        read_capture=lambda path: capture, expected_run_id=config["live_run_id"])
+    assert _collector.is_refused(row)
+    assert "run_id" in row.reason
