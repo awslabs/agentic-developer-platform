@@ -3,15 +3,15 @@
   "org_id": "aws-e",
   "flow_slug": "task-api-5792",
   "intent_ref": "5792",
-  "description": "Six waves with issue-backed V0–V5 evaluations. Preserve all 84 original criteria; add eight V0 checks. V0 gates implementation start, then independent work may proceed in parallel. Each wave owns its test tooling; V1–V3 do not wait for T8. Criteria, evidence and failure behavior: docs/task-api/waves.md and GitHub #5792. Runtime runner/fixture bindings remain implementation work. Keep the existing acceptance gate unanswered, execution paused and policy unaccepted.",
-  "spec_revision": "a412def21751b4669485d9b0693bc9e4c9f5f092",
+  "description": "Owner accepted the design on 2026-09-24. Implement docs/task-api/implementation-design.md at spec_revision. T0 builds schemas, fixtures and checks; V0 verifies conformance. Keep all 92 criteria. Design gaps return to the owner; no per-story redesign or dependency on unfinished remote-control work. Preserve the unanswered gate, pause and proposed policy. Bind real evaluators when delivered. Deployment uses authorized engine bindings or the documented operator path.",
+  "spec_revision": "b5761a4a2502aceaa9133afef552b567a19cb46e",
   "design_history": null,
   "execution_policy": null,
   "proposed_execution_policy": {
     "limits": {
       "max_spend_usd": "250",
       "max_attempts_per_node": 3,
-      "max_concurrent_actions": 1,
+      "max_concurrent_actions": 3,
       "max_wall_clock_seconds": 86400
     },
     "org_id": "aws-e",
@@ -44,7 +44,7 @@
   "nodes": [
     {
       "kind": "story",
-      "title": "Task API T0: Freeze v1 contracts and close implementation design decisions",
+      "title": "Task API T0: Implement schemas, fixtures and conformance checks",
       "address": "task-api-5792/epic-5792/component-delivery/t0",
       "issue_ref": "5793",
       "evaluation": null
@@ -346,8 +346,8 @@
     {
       "epic_ref": "epic-5792",
       "wave_ref": "component-delivery",
-      "title": "Contracts and design",
-      "description": "Freeze the task API, lifecycle and data contracts, resolve implementation decisions, and establish the fixtures and evaluation manifest. V0 verifies the contract baseline."
+      "title": "Contract implementation",
+      "description": "Implement the agreed design as versioned schemas, fixtures and runnable contract checks. V0 verifies conformance and the evaluation manifest before component development."
     },
     {
       "epic_ref": "epic-5792",
@@ -384,7 +384,7 @@
     {
       "epic_ref": "epic-5792",
       "title": "Task API: external invocation and independent task agents",
-      "description": "External applications need to give ADP useful work and follow it through to a result without turning every request into a GitHub issue. This epic adds a Task API so a service can submit work, receive a stable task handle, observe live progress, provide follow-up input, request cancellation and retrieve the result. It must work for tenants with no GitHub integration.\n\nTasks will run through the existing ADP API Gateway, ingress Lambda, queue and worker infrastructure, using a separate task agent inside the existing worker image. Durable acceptance, idempotency, recoverable dispatch and retained progress let clients reconnect without losing accepted work or its history. Authentication, tenant isolation, model, budget and credential policies remain authoritative.\n\nThe delivery covers contracts, storage and APIs, worker execution, interaction and recovery, external integration, and release qualification. Each wave has an independent evaluation. Rollout must preserve accepted tasks and existing GitHub, Claude and Codex paths; retiring those paths is outside this epic."
+      "description": "External applications need to give ADP useful work and follow it through to a result without turning every request into a GitHub issue. This epic adds a Task API so a service can submit work, receive a stable task handle, observe live progress, provide follow-up input, request cancellation and retrieve the result. It must work for tenants with no GitHub integration.\n\nTasks will run through the existing ADP API Gateway, ingress Lambda, queue and worker infrastructure, using a separate task agent inside the existing worker image. Durable acceptance, idempotency, recoverable dispatch and retained progress let clients reconnect without losing accepted work or its history. Authentication, tenant isolation, model, budget and credential policies remain authoritative.\n\nThe delivery covers contracts, storage and APIs, worker execution, interaction and recovery, external integration, and release qualification. Each wave has an independent evaluation. Rollout must preserve accepted tasks and existing GitHub, Claude and Codex paths; retiring those paths is outside this epic.\n\nThe project owner accepted the design before engine execution. The engine implements and evaluates that design, returning any material design gap for review. The first wave builds schemas, fixtures and conformance tooling. Deployment uses supported, authorized engine bindings when ready, or the documented operator path. Unfinished adjacent remote-control work does not block delivery; release acceptance still requires actual deployment and live evaluation."
     }
   ]
 }

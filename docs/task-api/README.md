@@ -2,21 +2,22 @@
 
 **Decision date:** 2026-09-23
 
-**Status:** Architecture agreed with the project owner; implementation has not started.
+**Status:** Architecture and implementation contract accepted by the project owner on 2026-09-24. Plan refresh authorized; engine execution has not been approved.
 
 **Source baseline:** [`aws-e/adp` main at `3cb303b`](https://github.com/aws-e/adp/commit/3cb303b00ac50cf98586092c7e5d0119b8b822ce).
 
+**Implementation contract:** [implementation-design.md](implementation-design.md).
 **Validation plan:** [validation.md](validation.md). **Wave plan:** [waves.md](waves.md).
 
 **Delivery epic:** [#5792](https://github.com/aws-e/adp/issues/5792) in the
 [ADP Platform Roadmap](https://github.com/orgs/aws-e/projects/4), with 15 native
 child stories linked in section 12 and the validation plan.
 
-This document records the design agreed in the Task API discussion. Section 2
-contains the decisions of record. The detailed API, record layouts, module names
-and delivery slices below are implementation proposals that make those decisions
-concrete; they are not claims that every field or technology choice was separately
-approved. Section 13 identifies the remaining decisions before implementation.
+This document records the architecture agreed in the Task API discussion. Section
+2 contains D01–D18. The owner accepted the detailed [implementation contract](implementation-design.md)
+and all O1–O8 decisions on 2026-09-24. That contract takes precedence over earlier
+illustrative implementation details below. T0 implements its schemas, fixtures
+and checks; it does not choose the architecture. Section 13 maps the decisions.
 
 The document is the reference for the epic, GitHub-native child stories
 and separate validation stories. Creating that backlog does not start agent
@@ -69,7 +70,7 @@ contracts. Their eventual retirement is a later migration.
 | D03 | Use new agents named `agent-task-<persona>`. | Separate executable implementations; these are not prompt variants inside the existing Claude worker. |
 | D04 | Keep the same worker image/container. | Package the new code alongside existing runtimes and select it from the shared Python entrypoint. |
 | D05 | Preserve the existing agent implementations. | Do not modify the Claude Agent SDK agent code or Codex reviewer to implement task execution. |
-| D06 | Follow the separate-code precedent of `agent-codex-reviewer`. | Independently built code and dependencies, an allowlisted command, and a dedicated result path. The new agents' SDK/language is not yet selected. |
+| D06 | Follow the separate-code precedent of `agent-codex-reviewer`. | Independently built code and dependencies, an allowlisted command, and a dedicated result path. The independent TypeScript investigator selected in the implementation contract adds no agent SDK dependency. |
 | D07 | Host the Task API on the existing main ADP API Gateway. | Add task routes on the current public API surface; no new API Gateway is required. |
 | D08 | Reuse the Lambda behind webhook ingress. | The main API Gateway can invoke the same function through a new task route and scoped invoke permission. |
 | D09 | Put task requests on SQS. | API Gateway/Lambda does not directly launch or wait for an agent. Reuse SQS/KEDA and the worker assignment mechanism. |
@@ -81,7 +82,7 @@ contracts. Their eventual retirement is a later migration.
 | D15 | Keep task persistence and completion logic separate. | Task acceptance must be durable; existing best-effort webhook logging and GitHub completion semantics are not silently changed. |
 | D16 | Protect existing behavior during rollout. | Default task admission off, deploy worker support before publishing task messages, prove coexistence and rollback. |
 | D17 | Retire the older path only after the new path matures. | No automatic migration, consolidation, deletion or cutover in this delivery. |
-| D18 | Prepare a clear epic with independently owned child work and validation. | Freeze shared contracts first, then permit parallel implementation with explicit dependencies and acceptance evidence. |
+| D18 | Prepare a clear epic with independently owned child work and validation. | Complete design here, then implement shared contracts and permit development with explicit dependencies and acceptance evidence. |
 
 ## 3. Existing implementation and the extension points
 
@@ -115,13 +116,14 @@ human orchestration approvals from the Lambda.
 flowchart TD
     External[External application] -->|POST /v1/tasks| API[Existing main ADP API Gateway]
     API -->|Explicit task POST integration| Lambda[Existing ingress Lambda: new task handler]
-    Lambda -->|Durable acceptance and dispatch intent| Store[Existing DynamoDB request table]
+    Lambda -->|Authenticated acceptance request| Backend[Existing gateway backend: task module]
+    Backend -->|Atomic task metadata and dispatch intent| Store[Existing DynamoDB request table]
     Lambda -->|Authorized task envelope| Queue[Existing agent-submit SQS queue]
     Queue --> KEDA[Existing KEDA worker scheduling]
     KEDA --> Host[Same worker image: Python entrypoint]
     Host -->|agent-task persona| Agent[Separate task-agent implementation]
-    Agent -->|Run-authenticated updates and results| Backend[Existing gateway backend: task module]
-    Backend --> Store
+    Agent -->|Incremental process events| Host
+    Host -->|Run-authenticated updates and results| Backend
     External -->|Status, results and SSE| API
     API -->|Existing backend proxy| Backend
     Lambda -.-> Authority[Existing protected execution and identity mechanisms]
@@ -146,7 +148,7 @@ be additive after the HTTP task contract is established.
 
 ## 5. Code ownership and isolation
 
-Proposed locations, to be frozen by the contract-owning story:
+Implementation locations, with detailed contracts in [implementation-design.md](implementation-design.md):
 
 | Area | New code | Small shared changes allowed |
 |---|---|---|
@@ -188,8 +190,12 @@ traffic and dependency packaging; see [validation.md](validation.md).
 
 - **Task ID:** stable identity of the caller's requested work.
 - **Invocation/run ID:** one agent execution assigned to that task.
-- **Attempt/generation:** the currently authorized execution attempt, used to
-  reject stale reports and commands.
+- **Generation:** the registered worker generation, fenced on replacement.
+- **Runtime attempt ID:** opaque process-local execution identity, replaced on an
+  in-process retry; distinct from generation and provider session IDs.
+- **Command ID:** UUID identifying one input/control intent and its retries.
+- **Turn ID:** durable conversation/model-operation identity.
+- **Pod/Job UIDs:** internal workload-instance bindings, not public control targets.
 - **External reference:** caller correlation metadata; never authority or a
   substitute for an idempotency key.
 - **Correlation ID:** relates task runs/descendants where supported. A task can
@@ -208,7 +214,7 @@ request until execution exit is confirmed. Loss of heartbeat is unknown/stale
 execution, not completion. Keep task states separate from legacy status enums;
 define an explicit mapping if task runs are projected into Activity.
 
-### 6.2 Public routes (proposed v1 surface)
+### 6.2 Public routes (v1 overview)
 
 | Route | Behavior | Owner |
 |---|---|---|
@@ -239,9 +245,9 @@ Content-Type: application/json
 }
 ```
 
-`agent-task-investigator` is an illustrative persona, not a selected SDK or an
-already available agent. A tenant/workspace selector, if needed, is checked
-against authenticated membership; it never establishes identity from the body.
+`agent-task-investigator` is the selected first persona in the implementation
+contract, not an already available agent. V1 derives tenant and service ownership
+from authentication and does not accept a tenant/workspace selector in the body.
 
 ```json
 {
@@ -261,8 +267,8 @@ behavior in the client contract. Never return `202` for an unrecorded request.
 
 Follow-up messages do not silently modify an immutable original request or grant
 new credentials. A privileged approval requires a separately authorized decision
-contract. Whether that decision endpoint is needed for the first persona is an
-open scope detail. Messages/cancellation use a durable command channel that the
+contract; the selected investigator has no privileged operations and needs no
+such endpoint. Messages/cancellation use a durable command channel that the
 task worker consumes; exposing routes without a working delivery path is not
 completion of those capabilities.
 
@@ -288,12 +294,12 @@ neither a body-supplied service name nor a successful lookup proves the caller
 owns that identity. Reconcile it with the canonical service-principal model in
 [the existing identity design](../persona-model-mapping-approved-design.md).
 
-Short-lived service tokens through the existing identity system are the proposed
-default. The exact issuer/client-registration/scopes and Lambda validation or
-authorizer mechanism remain to be finalized. IAM/SigV4 can be an optional
-transport for AWS callers; external integrations must not require an agent pod's
-credentials. Do not invent a static API-key registry merely because an older
-design proposed one. No auth-NONE route implies anonymous task access.
+The implementation contract specifies Cognito client-credentials tokens, exact
+tenant-qualified canonical service alias resolution, per-operation task scopes
+and gateway-owned validation shared by Lambda admission and gateway reads/control.
+V1 does not add an external IAM adapter or static API-key registry. External
+integrations never require an agent pod's credentials. No auth-NONE route implies
+anonymous task access.
 
 Task permissions cover submit, read/events, input, cancellation and any privileged
 decisions separately. Resolve the same caller consistently in Lambda and gateway.
@@ -332,19 +338,20 @@ Use S3 for large inputs, outputs and artifacts, with authenticated references,
 integrity/version binding and coordinated retention. Observe DynamoDB's 400 KB
 item limit and all stricter gateway/queue payload limits.
 
-### 8.2 Record separation (proposed layout)
+### 8.2 Record separation (overview)
 
 | Record | Key/access pattern | Legacy exposure |
 |---|---|---|
 | Task metadata | Dedicated `TASK#<task_id>` partition and fixed metadata item; Task API knows its full key. | Kept out of invocation indexes initially. |
-| Run summary | Existing invocation lookup pattern; task ID links back to metadata. | Optional compatible Activity projection, after reader/authorization validation. |
+| Run history | Dedicated `TASK_RUN#<task_id>` partition; task ID links back to metadata. | No Activity projection in v1. |
 | Progress events | Separate `TASK_EVENTS#<task_id>` partition, ordered fixed-width sequence keys. | Omit legacy GSI key attributes so progress does not appear as new runs. |
 | Input/cancel commands | Dedicated task-command partition and stable command keys. | Not invocation/engine-command rows. |
 | Idempotency/dispatch intent | Dedicated namespaced records, conditionally written. | Not invocation rows. Recovery uses a defined bounded access pattern. |
 
-These are proposed logical keys; the storage story must freeze the concrete
-layout, including how the string sort-key field `arrived_at` is populated for
-non-invocation records. Real timestamps remain explicit event fields. Do not put
+These are overview access patterns. [Implementation contract section 6](implementation-design.md#6-storage-and-integrity)
+specifies the exact physical keys, sort-key encodings, sparse recovery index and
+writer boundary. V1 omits the optional Activity run projection. Real timestamps
+remain explicit event fields. Do not put
 progress under the invocation's `event_id`: the current detail lookup selects
 the newest item in that partition. Do not set `engine_command_status` on task
 records. A discriminator does not protect old consumers that ignore it.
@@ -360,14 +367,14 @@ scan is not acceptable.
 ### 8.3 Trust and retention
 
 Older workers can have table-wide `UpdateItem`. A separate Python writer or
-`record_type` does not stop them modifying new task items. The storage/authority
-stories must establish task-key write isolation, or verify task records against
-protected authority/integrity records before serving or executing them. Prove
+`record_type` does not stop them modifying new task items. The implementation contract
+requires explicit worker IAM denies, task-prefix checks in legacy gateway write
+adapters and gateway-only task writes before admission. Prove
 that a legacy worker cannot change task instructions, forge progress/completion,
-redirect result references or claim another task. An additive deny scoped to new
-task key namespaces is one candidate; it must not revoke existing run access or
-require turning a global legacy-worker flag on. This is a required design closure
-before task admission is enabled, not a claim that current permissions suffice.
+redirect result references or claim another task. The additive deny scoped to new
+task key namespaces must preserve existing run access without turning a global
+legacy-worker flag on. Its actual IAM proof is required before admission; current
+permissions alone do not establish this boundary.
 
 TTL is configured on `expires_at`; the old writer normally sets 30 days. Task
 retention is a per-record decision, not a table-wide TTL change. Active tasks,
@@ -384,9 +391,9 @@ acceptance protocol:
 2. Bind the normalized request digest to an idempotency key scoped to the
    authenticated tenant and principal. Same key/body returns the original task;
    same key/different body returns a conflict.
-3. Establish the required task/run authority, task metadata, initial event and
-   durable dispatch intent. Commit atomically where possible; otherwise use
-   explicit prepared/committed states so no incomplete assignment can execute.
+3. Have the gateway commit task/run authority, task metadata, initial event,
+   reservations and durable dispatch intent in one transaction across the existing
+   DynamoDB request/authority tables, as specified in the implementation contract.
 4. Publish the authorized envelope and record dispatch delivery. Return `202`
    once acceptance is durable and publication is recoverable. Report `accepted`
    while pending and `queued` only after confirmed publication.
@@ -394,11 +401,11 @@ acceptance protocol:
    dispatch ID and conditional leases. Recovery must not depend on the caller
    making another request. Queue delivery alone cannot claim execution started.
 
-The implementation story must specify and deploy the recovery wake-up mechanism.
-It may reuse the same Lambda on a restricted scheduled recovery invocation; no
-separate Lambda function is assumed. It must validate internal invocations
-independently of public request content. No untrusted request can select an
-internal recovery/authority operation through a body discriminator.
+The implementation contract specifies a 60-second scheduled recovery invocation
+through a source-scoped alias of the same Lambda. It validates internal invocation
+context independently of public request content. No untrusted request can select
+an internal recovery/authority operation through a body discriminator. This task
+recovery trigger is separate from the disabled orchestration/pricing schedules.
 
 Worker retries acquire or renew a protected assignment. Old attempts cannot
 publish new state after replacement. Persist terminal evidence/results before
@@ -410,7 +417,8 @@ its current envelopes and message-group behavior remain unchanged for old paths.
 ## 10. Progress, results and conversation
 
 Use one versioned event contract for live delivery and replay. Proposed fields:
-`event_id`, `schema_version`, `task_id`, `invocation_id`, `attempt`, `sequence`,
+`event_id`, `schema_version`, `task_id`, `invocation_id`, `generation`,
+`runtime_attempt_id`, `sequence`,
 `type`, `timestamp` and an allowlisted `data` payload. Proposed event kinds:
 
 ```text
@@ -425,9 +433,10 @@ activity and artifact references. Do not publish private model reasoning,
 credentials or unrestricted raw tool/terminal output. Heartbeats only show
 connectivity; they are not substantive progress or an invented percentage.
 
-The task process can report through an authenticated gateway client, or through
-a host that incrementally reads structured process events. Finalize this choice
-in the runtime contract. Copying the Codex host's `capture_output=True` and reading
+The task process reports incremental NDJSON events to the host, which validates
+and persists them through run-authenticated gateway adapters. The implementation
+contract defines this process channel and the separate durable turn/model-operation
+protocol for input consumption. Copying the Codex host's `capture_output=True` and reading
 stdout only at exit does not provide live updates.
 
 Persist accepted events before fan-out, assign task-level ordering, deduplicate
@@ -447,9 +456,9 @@ race-free.
 The current API Gateway streaming configuration has finite connection windows
 (the source config allows 15 minutes). Tasks outlive those connections. Verify
 end-to-end flush behavior, heartbeat interval and reconnect through the actual
-public path; HTTP 200 alone is not proof of streaming. A Redis live relay may be
-used if justified, but it cannot replace durable events. Reusing DynamoDB does
-not automatically provide an SSE endpoint or require enabling DynamoDB Streams.
+public path; HTTP 200 alone is not proof of streaming. V1 uses strongly consistent event queries on a one-second loop, with no Redis
+relay or DynamoDB Streams. Exact cursor, buffer, reconnect and revocation bounds
+are in the implementation contract.
 
 Polling returns the same task snapshot and result references. Signed outbound
 webhooks were discussed as an optional later delivery channel; they are not a
@@ -458,10 +467,9 @@ events should support them if later selected.
 
 ## 11. Deployment, coexistence and eventual retirement
 
-Proposed task-specific controls are admission enablement, worker readiness and
-read/stream capability. Exact configuration names are to be frozen. They must
-not depend on globally enabling legacy agent controls or changing the execution
-mode of existing personas.
+The implementation contract fixes task-specific admission, worker, read and
+recovery flags, readiness checks and pilot bounds. They do not depend on globally
+enabling legacy agent controls or changing the execution mode of existing personas.
 
 Deployment order:
 
@@ -500,12 +508,13 @@ paths. No immediate rewrite into one universal dispatcher is required.
 
 These are the story boundaries recorded in the epic; creating the stories does
 not dispatch agents. Each implementation story must name its tests, owned files, deployment
-effects and required later validation. The contract owner resolves shared-file
-changes so parallel agents do not redefine the same interface.
+effects and required later validation. The named implementation owners coordinate shared-file changes against the
+accepted design revision. Material design gaps return to this session; implementation
+agents must not redefine interfaces or launch per-story design workflows.
 
 | Slice | Scope / ownership | Dependencies |
 |---|---|---|
-| [T0 #5793](https://github.com/aws-e/adp/issues/5793) | Freeze v1 schema, auth/identity binding, record layout, event/command semantics and open decisions in section 13. Own shared fixtures. | This design. |
+| [T0 #5793](https://github.com/aws-e/adp/issues/5793) | Implement the accepted design as versioned schemas, fixtures and runnable conformance checks; own the evaluation manifest. No architecture selection. | This design. |
 | [T1 #5794](https://github.com/aws-e/adp/issues/5794) | Task persistence, protected ownership/input binding, idempotency and recoverable dispatch records in existing DynamoDB infrastructure. | T0/V0. |
 | [T2 #5795](https://github.com/aws-e/adp/issues/5795) | New task handler, external authentication/authorization integration and main API Gateway POST integration to existing Lambda. | T0/V0; integrate with T1 and T3. |
 | [T3 #5796](https://github.com/aws-e/adp/issues/5796) | Task-specific admission, SQS publisher/reconciler and execution-authority adapter. | T0/V0; integrate with T1. |
@@ -528,25 +537,25 @@ still gate acceptance. Validation blockers mark prerequisites to complete proof.
 The six waves and their independent V0-V5 evaluations are defined in [waves.md](waves.md). T0 supplies contract checks and the command/report manifest; component owners supply V1-V3 tooling in their own waves, and T8 supplies the external/live and rollout tooling. Detailed criteria are specified in [validation.md](validation.md).
 Do not close the epic merely because its implementation PRs merge.
 
-## 13. Remaining decisions and implementation-review gates
+## 13. Implementation decisions and review boundary
 
-The architecture above is agreed. The following were not separately selected in
-the conversation and must not be represented as already deployed or approved
-product choices. T0 records concrete answers before dependent implementation.
+[Implementation-design.md](implementation-design.md) records the accepted decisions
+for O1–O8: investigator/runtime, service authentication, record/IAM boundaries,
+recovery, task grants/model transport, process/input/SSE semantics, numeric limits
+and rollout. It incorporates the adjacent [remote-control design](../../doc/agent-remote-control/README.md),
+including separate worker generation and runtime attempt identities, service
+control authorization, durable turn receipts and truthful ambiguous handoff.
 
-| ID | Decision to finalize | Required outcome |
-|---|---|---|
-| O1 | First task persona, language, SDK and model compatibility. | A useful bounded external use case, independently implemented and validated through existing model policy. No requirement to alter Claude or Codex agents. |
-| O2 | External credential issuance/registration and shared principal resolution. | Exact short-lived token or IAM contract, scopes, canonical service mapping, revocation and Lambda/gateway parity. No new tenant directory. |
-| O3 | Table keys, authoritative task state and isolation from legacy writers. | Concrete records/index access, protected owner/input/event integrity, old-reader safety and IAM proof. Separate handler code alone is insufficient. |
-| O4 | Durable publication and recovery scheduling. | Atomic/prepared-state protocol, bounded automatic recovery, stable deduplication and a tested failure matrix. |
-| O5 | Run assignment/model/credential authority without GitHub fields. | Task-specific supported adapters and readiness requirements; no fake installation, human root or permissive fallback. |
-| O6 | Event transport, command consumption and reconnect contract. | Agent-to-host/API reporting choice, ordered replay/cursor semantics, input and cancellation receipts, loss/gap behavior. |
-| O7 | Numeric limits and retention. | Payload/event/buffer/subscription limits, task duration/spend, idempotency/replay horizons, active-task TTL and artifact retention. |
-| O8 | Shared-worker rollout and regression environment. | Task-capable consumer proof, old-message/new-message compatibility, bounded traffic, rollback and evidence targets. |
+The project owner accepted these decisions as one design on 2026-09-24 and
+authorized refreshing the plan. T0 encodes the accepted contract in schemas and
+tests; V0 independently checks conformance. Neither story owns choosing or
+amending this architecture. Any unsupported requirement or contradiction returns
+to the design session with evidence before dependent work.
 
-An inability to prove one of these within the reuse/isolation decisions must be
-raised as a design amendment. It must not silently become a new worker image,
-parallel tenant system, replacement table, GitHub fallback or broad legacy
-refactor. No implementation code, deployment or live acceptance is claimed by
-this document.
+The first wave is **Contract implementation**. [Story handoff text](story-handoff.md)
+and the authored graph apply that boundary. [The publication record](waves.md#plan-publication-status)
+identifies the live draft version/hash and preserved execution gate. No unfinished
+remote-control story blocks Task API delivery. Deployment uses supported engine
+bindings when ready, or the documented operator path; actual deployment and live
+evaluation remain required for release acceptance. Design acceptance does not
+start execution or claim runtime delivery.
