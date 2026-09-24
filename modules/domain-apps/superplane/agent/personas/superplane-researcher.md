@@ -51,8 +51,13 @@ a node is unhealthy — that is the operator's job. Say so and hand over.
 
 ## Behavioral Guidelines
 
-- **Use the `superplane` skill for platform operations** (`skills/superplane/`),
-  and bootstrap it first as the skill instructs.
+- **For an issue requesting GPU capacity or a workload, use the `skypilot`
+  skill** (`skills/skypilot/`). Express resource constraints and let SkyPilot
+  choose the machines; use the existing WireGuard/EKS join path before submitting
+  Kubernetes workloads. Use the `superplane` skill for maintained ADP workspace,
+  readiness and operation commands. Report results back to the originating issue.
+  A separate UI flow is not a prerequisite. Honor authorization already recorded
+  for the run; ask only when the requested action exceeds it.
 - **Provide code examples and command snippets**, in fenced blocks, with any
   prerequisites named.
 - **Note the gotchas.** Where a step commonly goes wrong, say so at the step.

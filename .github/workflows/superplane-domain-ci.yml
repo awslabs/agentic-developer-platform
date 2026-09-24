@@ -151,6 +151,17 @@ jobs:
           ruff format --check tests/e2e/cli_uplift tests/unit/test_cli_uplift.py
           python -m pytest tests/unit/test_cli_uplift.py -q --timeout=60 --disable-socket
 
+      - name: Verify agent task compatibility with pinned SkyPilot
+        env:
+          SKYPILOT_DISABLE_USAGE_COLLECTION: '1'
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/superplane-skypilot-schema
+          /tmp/superplane-skypilot-schema/bin/pip install 'skypilot==0.12.0' pytest pytest-socket
+          /tmp/superplane-skypilot-schema/bin/python -m pytest \
+            -c /dev/null --noconftest --disable-socket -q \
+            modules/domain-apps/superplane/tests/_skypilot_task_schema_check.py
+
       - name: Lint the domain module
         run: |
           set -euo pipefail

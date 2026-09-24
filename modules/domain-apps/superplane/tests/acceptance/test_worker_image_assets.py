@@ -43,9 +43,11 @@ not this lane's job.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -68,7 +70,7 @@ _DOMAIN_APPS = _REPO_ROOT / "modules" / "domain-apps"
 # happens to be in the source tree is in the image, and would pass unchanged if a
 # persona were deleted.
 _EXPECTED_PERSONAS = ("superplane-operator", "superplane-researcher")
-_EXPECTED_SKILLS = ("superplane",)
+_EXPECTED_SKILLS = ("superplane", "skypilot")
 
 
 @pytest.fixture(scope="module")
@@ -155,6 +157,37 @@ def test_superplane_skill_is_staged_into_the_image(
         f"{skill}/SKILL.md frontmatter name does not match its directory name — "
         f"the loader keys on the frontmatter, so they must agree"
     )
+
+
+def test_staged_skypilot_task_builder_runs_without_source_tree_imports(
+    staged_tree: Path, tmp_path: Path
+) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(staged_tree / "skills/skypilot/scripts/capacity_task.py"),
+            "--name",
+            "issue-123",
+            "--gpu",
+            "H100:1",
+            "--nodes",
+            "1",
+            "--disk-gb",
+            "100",
+            "--hold-seconds",
+            "600",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    request = json.loads(result.stdout)
+    assert request["resources"]["accelerators"] == {"H100": 1}
+    assert "instance_type" not in request["resources"]
+    assert "cloud" not in request["resources"]
+    assert (staged_tree / "skills/skypilot/references/eks-hybrid.md").is_file()
 
 
 def test_staged_superplane_persona_content_is_the_domain_pack_version(
