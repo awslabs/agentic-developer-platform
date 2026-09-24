@@ -278,6 +278,7 @@ jobs:
             test_store_reservations.py test_wave_dispatch.py test_revalidation.py test_human_control.py \
             test_run_services.py test_artifact_service.py \
             test_task_delivery.py test_task_routes.py \
+            test_abort_receipt.py test_abort_redelivery_refusal.py \
             test_knowledge_service.py test_knowledge_service_postgres.py; do
             test -f "tests/agentauth/$suite" || exit 1
           done
@@ -518,6 +519,18 @@ jobs:
         # required workflow, so a change re-enabling the refresh path for a
         # mediated run — handing back the exact credential mediation exists to
         # withhold — could merge green.
+        #
+        # The two abort suites are pinned here for #3963, and the pair is the point.
+        # control-abort-sentinel.test.ts holds the channel's "may lose an abort, may
+        # never invent one" direction; agent-worker-abort.test.ts holds the inverse —
+        # the run stops unconditionally while the *report* that it was deliberately
+        # stopped stays contingent on gateway-signed evidence. Between them they are
+        # the only place the ordering (record before cancel), the refusal to forward
+        # an unsigned operator reason, and the settle-to-`unknown` path are checked,
+        # and that last one already caught a real defect: `unknown` was missing from
+        # TERMINAL_STATUSES, so a failed-record abort silently leaked a `maxPending`
+        # slot. Unpinned, an abort that cancels but reports a clean stop it never
+        # achieved — the one outcome an operator cannot detect — merges green.
         run: |
           npx jest src/control-listener.test.ts src/control-envelope.test.ts src/control-revalidation.test.ts src/lib/githubTokenBroker.test.ts src/lib/runIdentity.test.ts \
             src/lib/artifactGateway.test.ts src/lib/gitArchiveGateway.test.ts src/lib/knowledgeBridge.test.ts \
@@ -526,6 +539,7 @@ jobs:
             src/token-init-guard.test.ts src/agent-worker-pause-gate.test.ts src/agent-worker-control-store-sync.test.ts \
             src/pause-attempt-fencing.test.ts \
             src/pause-output-race.test.ts src/control-deadline.test.ts \
+            src/control-abort-sentinel.test.ts src/agent-worker-abort.test.ts \
             --coverage \
             --collectCoverageFrom='src/control-listener.ts' \
             --collectCoverageFrom='src/control-state.ts' \
