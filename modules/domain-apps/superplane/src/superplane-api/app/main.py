@@ -226,9 +226,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Audit logging middleware (logs mutating API calls to events table)
-app.add_middleware(AuditMiddleware)
-
 # Quota enforcement middleware (adds headers + logging for quota 429s)
 app.add_middleware(QuotaEnforcementMiddleware)
 
@@ -238,6 +235,23 @@ app.add_middleware(
     requests_per_minute=settings.rate_limit_per_minute,
     window_seconds=60,
 )
+
+# Audit logging middleware. Issue #5673 (A17).
+#
+# ADDED LAST ON PURPOSE, AND THE ORDER IS THE FIX. `add_middleware` PREPENDS, so the
+# middleware added last is the OUTERMOST one and wraps every middleware added before it.
+#
+# This block used to sit above the two below, which made the rate limiter outermost and
+# the audit middleware inner. The rate limiter answers a 429 by returning a response
+# WITHOUT calling the rest of the stack, so those rejections never reached the audit layer
+# at all: a caller could stay entirely out of the audit trail by tripping the rate limit,
+# which is precisely the traffic pattern most worth recording. Outermost means a
+# short-circuit rejection from any inner middleware is still recorded.
+#
+# Verified by `tests/test_audit_middleware.py::TestMiddlewareOrdering`, which asserts the
+# position structurally so a future edit that moves this call fails a test rather than
+# silently reopening the hole.
+app.add_middleware(AuditMiddleware)
 
 
 @app.exception_handler(RequestValidationError)
