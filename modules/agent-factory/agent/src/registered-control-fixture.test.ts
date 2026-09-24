@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createServer } from 'net';
@@ -48,7 +48,18 @@ describe('registered control fixture with the real runtime and substituted SDK t
         expect(hooks.PreToolUse[0].timeout).toBeGreaterThan(60);
         const tool = { tool_name: 'Bash', tool_input: { command: 'sleep 2' }, tool_use_id: 'fixture-tool', session_id: 'fixture-session', cwd: dir };
         await hooks.PreToolUse[0].hooks[0]({ ...tool, hook_event_name: 'PreToolUse' }, 'fixture-tool', { signal: new AbortController().signal });
+        // The real runtime publishes a private checkpoint while the tool is
+        // admitted, before either its completion or the fixture's final report.
+        const progressPath = join(dir, 'runtime.json.progress.json');
+        const progressText = readFileSync(progressPath, 'utf8');
+        const progress = JSON.parse(progressText);
+        expect(progress).toMatchObject({ invocation_id: 'invocation-test', run_id: 'w2-test',
+          source_revision: 'a'.repeat(40), generation: 1, sdk_queries: 1, tool_starts: 1, active_tools: 1 });
+        expect(progressText).not.toContain(process.env.ADP_CONTROL_TOKEN);
+        expect(statSync(progressPath).mode & 0o777).toBe(0o600);
+        expect(existsSync(join(dir, 'runtime.json'))).toBe(false);
         await hooks.PostToolUse[0].hooks[0]({ ...tool, hook_event_name: 'PostToolUse', tool_response: 'done' }, 'fixture-tool', { signal: new AbortController().signal });
+        expect(JSON.parse(readFileSync(progressPath, 'utf8'))).toMatchObject({ sdk_queries: 1, tool_starts: 1, active_tools: 0 });
         if (withAssistant) yield { type: 'assistant', message: { content: [] } };
         if (fail) throw new Error('transport disconnected');
         yield { type: 'result', subtype: 'success', is_error: false };
@@ -63,6 +74,7 @@ describe('registered control fixture with the real runtime and substituted SDK t
     const report = JSON.parse(readFileSync(join(dir, 'runtime.json'), 'utf8'));
     expect(report.invocation_id).toBe('invocation-test');
     expect(report.native_acknowledged).toBe(true);
+    expect(report.counters).toEqual({ sdk_queries: 1, tool_starts: 1, active_tools: 0, counters_complete: true });
     const activeCounts = report.events.filter((event: { type: string }) => event.type === 'runtime_active_work').map((event: { count: number }) => event.count);
     expect(activeCounts).toContain(1);
     expect(activeCounts.at(-1)).toBe(0);

@@ -19,9 +19,31 @@ export async function runRegisteredControlFixture(): Promise<number> {
   }
   const events: Event[] = [];
   let droppedEvents = 0;
+  let sdkQueries = 0;
+  let toolStarts = 0;
+  let activeTools: number | null = 0;
+  let countersComplete = true;
+  let observationSequence = 0;
+  // Private, local-only observations for before/after rejection probes. Count
+  // admissions from the real pause gate; a tool cannot start without admission.
+  // Do not include listener credentials, command bodies, prompts or SDK output.
+  const snapshot = () => {
+    const progress = {
+      invocation_id: invocation, run_id: process.env.W2_FIXTURE_RUN_ID,
+      source_revision: process.env.ADP_CONTROL_FIXTURE_SOURCE_REVISION,
+      generation: Number(process.env.ADP_CONTROL_GENERATION),
+      observed_at: new Date().toISOString(), sequence: ++observationSequence,
+      sdk_queries: sdkQueries, tool_starts: toolStarts, active_tools: activeTools,
+      counters_complete: countersComplete,
+      dropped_events: droppedEvents,
+    };
+    writeFileSync(output + '.progress.tmp', JSON.stringify(progress), { mode: 0o600 });
+    renameSync(output + '.progress.tmp', output + '.progress.json');
+  };
   const record = (type: string, fields: Record<string, unknown> = {}) => {
     if (events.length === 2048) { events.shift(); droppedEvents++; }
     events.push({ type, at: new Date().toISOString(), ...fields });
+    snapshot();
   };
   const cwd = join(dirname(output), 'workspace');
   mkdirSync(cwd, { recursive: true });
@@ -41,6 +63,11 @@ export async function runRegisteredControlFixture(): Promise<number> {
   let sdkFailure = false;
   let exitCode = 1;
   const unsubscribe = runtime.adapter.subscribe(event => {
+    if (event.type === 'active_work') {
+      if (event.count === null || activeTools === null) countersComplete = false;
+      else toolStarts += Math.max(0, event.count - activeTools);
+      activeTools = event.count;
+    }
     record('runtime_' + event.type, {
       attempt_id: event.attemptId,
       ...(event.type === 'active_work' ? { count: event.count } : {}),
@@ -77,6 +104,7 @@ export async function runRegisteredControlFixture(): Promise<number> {
       cancellation: runtime.adapter.cancellationSource(),
       idleSuspended: () => runtime.gate.isPauseActive(),
       onAttemptHandle: async attempt => {
+        sdkQueries++;
         await attach(attempt);
         handle = attempt.session as NativeHandle;
         record('sdk_attempt_attached', { attempt: attempt.attemptNumber });
@@ -127,6 +155,8 @@ export async function runRegisteredControlFixture(): Promise<number> {
       native_requested: nativeRequested, native_acknowledged: nativeAcknowledged,
       result_seen: resultSeen, timed_out: timedOut, exit_code: exitCode,
       dropped_events: droppedEvents, cleanup_errors: cleanupErrors, events,
+      counters: { sdk_queries: sdkQueries, tool_starts: toolStarts, active_tools: activeTools,
+        counters_complete: countersComplete },
     };
     writeFileSync(output + '.tmp', JSON.stringify(report, null, 2), { mode: 0o600 });
     renameSync(output + '.tmp', output);

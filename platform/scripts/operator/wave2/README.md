@@ -459,6 +459,15 @@ exact dispatched source bundle, installs its lockfile dependencies and starts
 its process group on exit. Use disposable fixture infrastructure and foreground
 work only; keep ordinary control flags and allowlists unchanged.
 
+The registered fixture atomically writes `<output>.progress.json` with mode `0600`
+as runtime events occur. It records invocation/source/generation, SDK query
+attachments, cumulative positive changes in active tool admissions, current
+active work, and an observation sequence. These are local measurement inputs for
+before/after rejection probes; they do not establish rejection or acceptance by
+themselves. Unknown activity makes `counters_complete` false permanently. Reject
+incomplete counters or dropped events, and obtain accepted-command counts from
+the actual listener journal. The snapshot contains no credentials or SDK content.
+
 Use the authenticated handoff command above for each new invocation. While
 `registered-control` runs, collect live command responses and browser actions
 against that invocation. Use a separate invocation for abort so it cannot end the
