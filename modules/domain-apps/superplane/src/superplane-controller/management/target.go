@@ -187,7 +187,7 @@ func readOnlyWorkspaceRules(status authorizationv1.SubjectRulesReviewStatus) boo
 // Every observation reopens the exact projected read credential. It cannot use
 // the execution sidecar's credentials or a cached identity after revocation.
 func (m *Manager) workspaceClient(target Target) (*kubernetes.Clientset, *rest.Config, string) {
-	if !uuidPattern.MatchString(target.WorkspaceID) || len(validation.IsDNS1123Label(target.Namespace)) > 0 || target.Namespace == "" || m.config.ManagementAPIServer == "" {
+	if !uuidPattern.MatchString(target.WorkspaceID) || len(validation.IsDNS1123Label(target.Namespace)) > 0 || target.Namespace == "" {
 		return nil, nil, "registration_incomplete"
 	}
 	if m.config.WorkspaceCredentialsDir == "" {
@@ -198,6 +198,9 @@ func (m *Manager) workspaceClient(target Target) (*kubernetes.Clientset, *rest.C
 	data, err := os.ReadFile(filepath.Join(m.config.WorkspaceCredentialsDir, target.WorkspaceID+".kubeconfig"))
 	if err != nil || len(data) > 1<<20 {
 		return nil, nil, "credential_unavailable"
+	}
+	if m.config.ManagementAPIServer == "" {
+		return nil, nil, "registration_incomplete"
 	}
 	kubeconfig, err := clientcmd.Load(data)
 	if err != nil || len(kubeconfig.Clusters) != 1 || len(kubeconfig.AuthInfos) != 1 || len(kubeconfig.Contexts) != 1 {
