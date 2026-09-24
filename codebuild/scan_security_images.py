@@ -40,9 +40,21 @@ def scan(target, tool, output, root):
     image = target["image"]
     if image == "-":
         image = f"{tool}-scan-target:{target['name']}"
+        build_args = {}
+        for name, variable in target.get("build_arg_env", {}).items():
+            value = os.environ.get(variable, "")
+            if (not re.fullmatch(r"[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}", value)
+                    or value.endswith("sha256:" + "0" * 64)):
+                raise ValueError(f"{target['name']} requires reviewed digest-pinned {variable}")
+            build_args[name] = value
+        # Retain the exact base input in coverage provenance, including failures.
+        target["build_args"] = build_args
         prepare(target, root)
-        command(["docker", "build", "--no-cache", "--pull", "--quiet",
-                 "-f", target["dockerfile"], "-t", image, target["context"]], timeout=600)
+        options = [item for name, value in sorted(build_args.items())
+                   for item in ("--build-arg", f"{name}={value}")]
+        command(["docker", "build", "--no-cache", "--pull", "--quiet", *options,
+                 "-f", target["dockerfile"], "-t", image, target["context"]],
+                timeout=600, cwd=root)
     else:
         command(["docker", "pull", "--platform", "linux/amd64", image], timeout=600)
     try:
@@ -108,6 +120,7 @@ def main():
                 provenance = Path(temp) / (target["name"] + ".provenance.json")
                 provenance.write_text(json.dumps({
                     "artifact_sha256": artifact_sha256,
+                    "build_args": target.get("build_args", {}),
                     "digest": digest,
                     "name": target["name"],
                     "source_revision": report["commit"],
@@ -127,6 +140,7 @@ def main():
             except (subprocess.SubprocessError, OSError, ValueError) as exc:
                 result["error"] = str(exc)
                 print(f"ERROR: {target['name']}: {exc}", flush=True)
+            result["build_args"] = target.get("build_args", {})
             report["targets"].append(result)
         coverage = Path(temp) / "coverage.json"
         coverage.write_text(json.dumps(report, indent=2) + "\n")

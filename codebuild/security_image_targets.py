@@ -10,6 +10,10 @@ import yaml
 
 SUPERPLANE = Path("modules/domain-apps/superplane")
 BUILD_CONFIG = {
+    "modules/domain-apps/superplane/executor/Dockerfile": {
+        "context": ".",
+        "build_arg_env": {"PYTHON_IMAGE": "SECURITY_EXECUTOR_PYTHON_IMAGE"},
+    },
     "modules/agent-context/images/context-mcp/Dockerfile": {
         "prepare": [
             ["copy-tree", "modules/agent-context/door", "modules/agent-context/images/context-mcp/door"],
@@ -53,6 +57,7 @@ def discover(root: Path, scope: str = "all") -> list[dict]:
             "dockerfile": dockerfile,
             "context": build.get("context", str(Path(dockerfile).parent)),
             "prepare": build.get("prepare", []),
+            "build_arg_env": build.get("build_arg_env", {}),
             "image": "-",
             "required": dockerfile in required,
         })
