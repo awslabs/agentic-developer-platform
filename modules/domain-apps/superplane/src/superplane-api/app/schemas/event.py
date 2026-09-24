@@ -31,7 +31,7 @@ class EventResponse(BaseModel):
     outcome: str | None = Field(
         default=None,
         description=(
-            "'allowed' or 'denied'. Null on rows predating #5673, which recorded "
+            "'allowed', 'denied' or 'error'. Null on rows predating #5673, which recorded "
             "successes only -- null must not be read as 'allowed'."
         ),
     )

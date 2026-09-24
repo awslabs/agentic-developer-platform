@@ -1,0 +1,122 @@
+{
+  "agent-architect.yml/work": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value"
+    ]
+  },
+  "agent-developer.yml/work": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value"
+    ]
+  },
+  "agent-operations.yml/work": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value"
+    ]
+  },
+  "agent-pm.yml/orchestrate": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value"
+    ]
+  },
+  "agent-product.yml/work": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value"
+    ]
+  },
+  "agent-pt-superpower.yml/work": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value"
+    ]
+  },
+  "agent-reviewer.yml/work": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value"
+    ]
+  },
+  "credential-binding-flip.yml/flip": {
+    "authority": "existing-oidc",
+    "operations": [
+      "ssm put-parameter"
+    ]
+  },
+  "cyber-security-ci.yml/production-image": {
+    "authority": "runtime",
+    "operations": [
+      "codebuild batch-get-builds",
+      "codebuild start-build",
+      "codebuild stop-build",
+      "s3 cp",
+      "sts get-caller-identity"
+    ]
+  },
+  "e2e-chat-playwright.yml/e2e-chat": {
+    "authority": "existing-oidc",
+    "operations": [
+      "ssm get-parameter"
+    ]
+  },
+  "e2e-new-ui-playwright.yml/e2e-new-ui": {
+    "authority": "existing-oidc",
+    "operations": [
+      "ssm get-parameter"
+    ]
+  },
+  "eval-cli-uplift.yml/evaluate": {
+    "authority": "existing-oidc",
+    "operations": [
+      "ec2 describe-instances",
+      "sts get-caller-identity"
+    ]
+  },
+  "eval-cli-uplift.yml/recover": {
+    "authority": "existing-oidc",
+    "operations": [
+      "sts get-caller-identity"
+    ]
+  },
+  "gateway-ci.yml/build": {
+    "authority": "runtime",
+    "operations": [
+      "codebuild batch-get-builds",
+      "codebuild batch-get-projects",
+      "codebuild start-build",
+      "s3 cp",
+      "sts get-caller-identity"
+    ]
+  },
+  "malware-analysis-agent.yml/analyze": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value",
+      "sts get-caller-identity"
+    ]
+  },
+  "orchestration-live-tests.yml/qualification": {
+    "authority": "existing-oidc",
+    "operations": [
+      "sts get-caller-identity"
+    ]
+  },
+  "skill-agent.yml/run": {
+    "authority": "runtime",
+    "operations": [
+      "secretsmanager get-secret-value"
+    ]
+  },
+  "spawn-deploy-instance.yml/spawn": {
+    "authority": "runtime",
+    "operations": [
+      "dynamodb get-item",
+      "ecr describe-images",
+      "examples literal"
+    ]
+  }
+}

@@ -67,7 +67,7 @@ describe('update_draft — session scoping', () => {
     const keys = Object.keys(tool.inputSchema);
     expect(keys).not.toContain('session_id');
     expect(keys).not.toContain('sessionId');
-    expect(keys.sort()).toEqual(['constraints', 'intent', 'motivation', 'open_questions', 'outcomes']);
+    expect(keys.sort()).toEqual(['constraints', 'epic_display', 'intent', 'motivation', 'open_questions', 'outcomes', 'wave_display']);
   });
 });
 
@@ -158,4 +158,22 @@ describe('update_draft — panel notification', () => {
     expect(result.content[0].text).toContain('outcomes');
     expect(result.isError).toBeUndefined();
   });
+});
+
+
+it('persists model-chosen epic and wave descriptions in the session draft', async () => {
+  const store = new FakeDraftStore();
+  const epic = { title: 'External tasks', description: 'Services need a task lifecycle without GitHub. Preserve tenant isolation and durable acceptance.' };
+  const wave = { title: 'Task submission and dispatch', description: 'Implement durable submission and recoverable dispatch; qualify authorization and storage.' };
+  await getTool(store).handler({ intent: 'External invocation', epic_display: epic, wave_display: wave });
+  expect(store.writes[0].draft.epicDisplay).toEqual(epic);
+  expect(store.writes[0].draft.waveDisplay).toEqual(wave);
+  expect(store.writes[0].draft.openQuestions).toBeUndefined();
+});
+
+it.each(['epic_display', 'wave_display'])('rejects malformed %s without overwriting the draft', async field => {
+  const store = new FakeDraftStore();
+  const result = await getTool(store).handler({ [field]: { title: ' ', description: 'x'.repeat(3001) } });
+  expect(result.isError).toBe(true);
+  expect(store.writes).toHaveLength(0);
 });

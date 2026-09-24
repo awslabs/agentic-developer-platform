@@ -2,6 +2,122 @@
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
+# ---------------------------------------------------------------------------
+# Additional existing private capacity subnets (#5830)
+# ---------------------------------------------------------------------------
+# The cluster's original subnets can run out of private IP addresses, at which
+# point the CNI fails every new pod with "failed to assign an IP address to
+# container" and nothing new can be scheduled. Auto Mode's AWS-managed `default`
+# NodeClass draws its subnets from the cluster's own resourcesVpcConfig.subnetIds
+# (it exposes no subnetSelectorTerms and must not be edited), so widening the
+# cluster's subnet set is the supported way to give new nodes more addresses.
+# UpdateClusterConfig permits exactly that on a live cluster — same VPC, >= 2 AZs
+# — and the provider plans it as an in-place vpc_config update, not a rebuild.
+#
+# ADDITIVE by construction: var.private_subnet_ids is always the head of the
+# list, so the original subnets can never be dropped by this input, and an empty
+# map (the default) reproduces today's subnet set exactly.
+locals {
+  # Taken from the CHECKED data source, never from the raw variable. That is what
+  # puts the subnet postconditions below UPSTREAM of the cluster: the ids the
+  # cluster is planned with are produced by the read that checks them, so no plan
+  # can reach the cluster while skipping the checks. Consuming
+  # var.additional_private_subnet_ids_by_az here instead would leave both reads
+  # off the cluster's dependency graph, and a plan targeting only the cluster
+  # (which is how this change is rolled out) would prune them and accept an
+  # unchecked subnet in silence. The routing read is bound through the cluster's
+  # depends_on for the same reason.
+  additional_private_subnet_ids = [
+    for az in sort(keys(var.additional_private_subnet_ids_by_az)) :
+    data.aws_subnet.additional_private[az].id
+  ]
+
+  # Order matters for plan stability, not for behaviour: existing subnets first
+  # (so a diff reads as "+ added"), then additions in a deterministic AZ order.
+  cluster_subnet_ids = concat(var.private_subnet_ids, local.additional_private_subnet_ids)
+}
+
+# Read each supplied subnet and REFUSE the plan unless it is genuinely safe to
+# add. These are diagnostic observations in an issue until proven against the
+# live account, so every property the caller asserts is checked here rather than
+# trusted: a subnet pasted from another VPC, a public subnet, or one in an
+# unexpected zone each turn an additive capacity fix into an outage or a silent
+# loss of zone coverage. Data sources + postconditions, so this adds no managed
+# resource to the plan and fails during plan, before anything is applied.
+data "aws_subnet" "additional_private" {
+  for_each = var.additional_private_subnet_ids_by_az
+
+  id = each.value
+
+  lifecycle {
+    postcondition {
+      condition     = self.vpc_id == var.vpc_id
+      error_message = "additional_private_subnet_ids_by_az names a subnet that is not in this cluster's VPC; EKS cannot use a subnet from another VPC."
+    }
+
+    postcondition {
+      condition     = self.availability_zone == each.key
+      error_message = "additional_private_subnet_ids_by_az names a subnet that is not in the availability zone it is keyed by; fix the key or the subnet id rather than losing zone coverage."
+    }
+
+    postcondition {
+      condition     = !self.map_public_ip_on_launch
+      error_message = "additional_private_subnet_ids_by_az names a subnet that assigns public IPs on launch; cluster capacity subnets must be private."
+    }
+
+    postcondition {
+      # Empty list = check skipped (see private_subnet_availability_zones). When
+      # supplied, the added subnet must share a zone with existing capacity, so
+      # an addition widens the zones the cluster already runs in instead of
+      # introducing an unreviewed one.
+      condition     = length(var.private_subnet_availability_zones) == 0 || contains(var.private_subnet_availability_zones, self.availability_zone)
+      error_message = "additional_private_subnet_ids_by_az names a subnet in an availability zone this cluster has no existing private subnet in."
+    }
+
+    postcondition {
+      # EKS requires at least 6 available addresses in every subnet handed to a
+      # cluster (16 recommended), so a subnet below that is rejected by the API and
+      # would fail the update rather than relieve anything.
+      #
+      # POINT-IN-TIME ONLY. This is read at plan time and free addresses move on
+      # their own as pods come and go, so it catches an obviously unsuitable subnet
+      # -- it does NOT establish that capacity will still be there at apply. Recheck
+      # immediately before rollout: docs/runbooks/eks-pod-ip-exhaustion.md §5.4.
+      condition     = self.available_ip_address_count >= 6
+      error_message = "additional_private_subnet_ids_by_az names a subnet with fewer than the 6 available IP addresses EKS requires; pick one with comfortable headroom (16+)."
+    }
+  }
+}
+
+# Routing check, separate from the subnet read because it needs the subnet's
+# associated route table. A subnet whose default route is an internet gateway is
+# a public subnet however it is tagged, and a subnet with no 0.0.0.0/0 route at
+# all cannot pull images or reach the control plane, so nodes launched there
+# would fail to join instead of relieving the exhaustion.
+data "aws_route_table" "additional_private" {
+  for_each = var.additional_private_subnet_ids_by_az
+
+  subnet_id = each.value
+
+  lifecycle {
+    postcondition {
+      condition = length([
+        for route in self.routes : route
+        if route.cidr_block == "0.0.0.0/0" && route.nat_gateway_id != ""
+      ]) > 0
+      error_message = "additional_private_subnet_ids_by_az names a subnet whose route table has no 0.0.0.0/0 route via a NAT gateway; nodes there could not reach the control plane or pull images."
+    }
+
+    postcondition {
+      condition = length([
+        for route in self.routes : route
+        if route.cidr_block == "0.0.0.0/0" && route.gateway_id != ""
+      ]) == 0
+      error_message = "additional_private_subnet_ids_by_az names a subnet routed to an internet gateway; that is a public subnet and must not carry cluster capacity."
+    }
+  }
+}
+
 # KMS Key for EKS secrets encryption
 resource "aws_kms_key" "eks_secrets" {
   description             = "${var.name_prefix}-eks-secrets"
@@ -35,7 +151,10 @@ resource "aws_eks_cluster" "main" {
   }
 
   vpc_config {
-    subnet_ids              = var.private_subnet_ids
+    # var.private_subnet_ids plus any reviewed additional existing capacity
+    # subnets (#5830). Additive: the original subnets always remain. See the
+    # locals block at the top of this file.
+    subnet_ids              = local.cluster_subnet_ids
     endpoint_private_access = var.endpoint_private_access
     endpoint_public_access  = var.endpoint_public_access
     public_access_cidrs     = var.eks_public_access_cidrs
@@ -72,7 +191,12 @@ resource "aws_eks_cluster" "main" {
   # Enable logging
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
-  depends_on = [aws_kms_key.eks_secrets]
+  # The route-table read yields no value the cluster consumes, so unlike the
+  # subnet read it cannot enter the graph through subnet_ids. Without this edge a
+  # plan targeting only the cluster prunes it and applies an internet-gateway-routed
+  # or unrouted subnet unchecked. depends_on is what keeps its postconditions
+  # upstream of the cluster in a targeted plan (#5830).
+  depends_on = [aws_kms_key.eks_secrets, data.aws_route_table.additional_private]
 
   tags = merge(var.common_tags, {
     Name                                                   = "${var.name_prefix}-eks-cluster"
@@ -187,7 +311,8 @@ locals {
 }
 
 resource "aws_iam_role" "gateway_service_irsa" {
-  name = "${var.name_prefix}-role-gateway-service"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-role-gateway-service"
 
   # Trust policy allows the gateway service account to assume this role via IRSA.
   # Issue #33: The gateway pods may run in either the "bedrockgw" namespace
@@ -633,8 +758,9 @@ resource "aws_security_group_rule" "cluster_ingress_node_https" {
 
 # IAM role for the CloudWatch Observability addon (IRSA)
 resource "aws_iam_role" "cloudwatch_observability" {
-  count = var.enable_container_insights ? 1 : 0
-  name  = "${var.name_prefix}-role-cw-observability"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  count                = var.enable_container_insights ? 1 : 0
+  name                 = "${var.name_prefix}-role-cw-observability"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

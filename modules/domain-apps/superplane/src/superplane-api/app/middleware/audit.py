@@ -83,6 +83,7 @@ from app.services.audit import (
     HTTP_METHOD_TO_ACTION,
     OUTCOME_ALLOWED,
     OUTCOME_DENIED,
+    OUTCOME_ERROR,
     PRINCIPAL_UNRESOLVED,
     audit_write_failures,
     extract_resource_from_path,
@@ -142,23 +143,27 @@ class AuditMiddleware(BaseHTTPMiddleware):
         if not self._is_auditable(method, path):
             return await call_next(request)
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            # The server's outer error middleware has not produced its 500 yet.
+            # Record the attempt, then preserve the original exception/response policy.
+            await self._record_safely(
+                request, Response(status_code=500), method=method, path=path
+            )
+            raise
+        await self._record_safely(request, response, method=method, path=path)
+        return response
 
-        # From here, every exit either writes a row or counts a failure.
+    async def _record_safely(self, request, response, *, method, path):
         try:
             await self._record(request, response, method=method, path=path)
         except Exception:
-            # The catch-all is the failure policy: an audit fault must not become the
-            # caller's problem. `record_failure` is called with a fixed reason string --
-            # the exception is sent to the log via `exception()` for diagnosis but is
-            # never interpolated into the alerting line, so a database error carrying a
-            # connection string cannot reach it.
+            # SQL/driver exceptions can contain parameters or connection strings.
+            # Publish only the fixed failure classification.
             audit_write_failures.record_failure(
                 method=method, path=path, reason="persist_failed"
             )
-            logger.exception("audit persistence raised for %s %s", method, path)
-
-        return response
 
     @staticmethod
     def _is_auditable(method: str, path: str) -> bool:
@@ -184,7 +189,13 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # resolved. A 403 from the guard and a 200 from a handler are both facts about
         # what the server decided; conflating "unidentified" with "denied" would mislabel
         # a legitimate unauthenticated public call.
-        outcome = OUTCOME_DENIED if response.status_code >= 400 else OUTCOME_ALLOWED
+        outcome = (
+            OUTCOME_ERROR
+            if response.status_code >= 500
+            else OUTCOME_DENIED
+            if response.status_code >= 400
+            else OUTCOME_ALLOWED
+        )
 
         resource_type, resource_id = extract_resource_from_path(path)
         action = HTTP_METHOD_TO_ACTION.get(method, method.lower())
@@ -258,4 +269,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 legacy_org,
             )
 
-        return (PRINCIPAL_UNRESOLVED, None)
+        return (
+            str(legacy_principal) if legacy_principal else PRINCIPAL_UNRESOLVED,
+            None,
+        )

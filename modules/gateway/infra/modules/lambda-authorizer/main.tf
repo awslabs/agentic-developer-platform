@@ -397,7 +397,8 @@ resource "aws_lambda_function" "authorizer" {
 # =============================================================================
 
 resource "aws_iam_role" "authorizer" {
-  name = "${var.name_prefix}-api-authorizer-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-api-authorizer-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -535,7 +536,8 @@ resource "aws_api_gateway_authorizer" "main" {
 
 # IAM role for API Gateway to invoke the Lambda authorizer
 resource "aws_iam_role" "authorizer_invocation" {
-  name = "${var.name_prefix}-api-authorizer-invoke-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-api-authorizer-invoke-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

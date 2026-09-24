@@ -117,7 +117,7 @@ class ReleaseContracts(unittest.TestCase):
 
     def test_digest_uri_has_no_mutable_tag(self):
         uri = common.image_uri(self.manifest, 'chat-agent', '615296308642')
-        self.assertEqual(uri, '615296308642.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:' + 'd' * 64)
+        self.assertEqual(uri, '615296308642.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:' + 'd' * 64)
 
     def test_preproduction_requires_same_successfully_tested_manifest(self):
         digest = common.sha256(self.directory / 'manifest.json')
@@ -278,6 +278,13 @@ class ReleaseContracts(unittest.TestCase):
                         continue
                     self.assertIn('steps', job, 'job must define steps or call a reusable workflow')
                     self.assertIn('runs-on', job, 'executable job must select a self-hosted runner')
+                    if isinstance(job['runs-on'], dict):
+                        self.assertEqual(job['runs-on'], {
+                            'group': 'adp-deployment', 'labels': 'arc-runner-deployment',
+                        })
+                        self.assertTrue(str(job.get('environment', '')).startswith(('adp-deploy-', 'adp-build-')))
+                        self.assertIn("github.ref == 'refs/heads/main'", job.get('if', ''))
+                        continue
                     self.assertIn(
                         job['runs-on'],
                         allowed,

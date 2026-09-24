@@ -150,7 +150,8 @@ resource "aws_db_instance" "main" {
 
 # IAM role for RDS enhanced monitoring
 resource "aws_iam_role" "rds_enhanced_monitoring" {
-  name = "${var.name_prefix}-rds-enhanced-monitoring"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${var.name_prefix}-rds-enhanced-monitoring"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

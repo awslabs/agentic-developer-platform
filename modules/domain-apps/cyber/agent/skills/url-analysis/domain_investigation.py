@@ -16,11 +16,13 @@ from pathlib import Path
 
 from browser_client import investigation_request
 from browser_guard import DestinationRefused
-from case_contract import content_digest, digest, sanitize, utcnow
+from case_contract import Assessment, content_digest, digest, sanitize, utcnow
+from evidence_items import validate_inventory
 from research_case import (
     CASE_FILE,
     _inconclusive,
     assess_case,
+    collection_summary,
     new_case,
     save_case,
     verify_case,
@@ -114,6 +116,7 @@ def _accept(output, case, probe, packet):
         )
     previous_id = case["observations"][-1]["id"] if case["observations"] else None
     for raw in observations:
+        validate_inventory(raw)
         if raw.get("session_id") != sid or raw.get("content_sha256") != content_digest(
             raw
         ):
@@ -215,6 +218,14 @@ def _failure(output, case, probe, error):
     if hasattr(error, "reason_code"):
         probe["reason_code"] = error.reason_code
     case["assessment"] = _inconclusive(f"{probe['id']} failed; retain earlier evidence")
+    if not case["observations"]:
+        case["stop_reason"] = (
+            "Initial collection failed; no observation exists to assess"
+        )
+        case["assessment"] = _inconclusive(
+            f"No page evidence collected ({probe.get('reason_code', probe['error'])}). "
+            "Unavailable or blocked collection does not establish safety or maliciousness."
+        )
     save_case(output, case)
 
 
@@ -262,6 +273,13 @@ def start(
         _failure(output, case, probe, error)
         if packet and "lease" in locals():
             _close_after_failure(output, case, lease, request)
+        if (
+            isinstance(error, DestinationRefused)
+            and error.reason_code == "resolution_failed"
+        ):
+            # A recorded unavailable result is terminal; do not spend model turns
+            # creating findings or reviews for observations that do not exist.
+            return case
         raise
     return case
 
@@ -439,7 +457,44 @@ def profile(output, name, decision, *, request=investigation_request):
             if lease.get("session_token"):
                 _close_after_failure(output, case, lease, request)
             raise
-        return case
+    return case
+
+
+def finish(
+    output, assessment, reason, review_data=None, *, request=investigation_request
+):
+    """Validate before closing, so a malformed report cannot destroy the context."""
+    with _case(output) as case:
+        parsed = Assessment.model_validate(assessment)
+        parsed.validate_evidence(case["observations"])
+        if (
+            case["observations"]
+            and review_data is None
+            and (
+                not case["reviews"]
+                or case["reviews"][-1]["probe_id"] != case["probes"][-1]["id"]
+            )
+        ):
+            raise ValueError("Review the latest observation before finishing")
+    if review_data is not None and case["observations"]:
+        review(output, review_data)
+    close(output, reason, request=request)
+    return assess_case(output, parsed.model_dump())
+
+
+def assessment_contract(case=None):
+    result = {"assessment_schema": Assessment.model_json_schema()}
+    if case is not None:
+        result.update(
+            valid_evidence_ids=[o["id"] for o in case["observations"]],
+            evidence_items={
+                o["id"]: o.get("evidence_items", []) for o in case["observations"]
+            },
+            empty_evidence_assessment=_inconclusive(
+                "No page observations were captured"
+            ),
+        )
+    return result
 
 
 def status(case):
@@ -455,6 +510,13 @@ def status(case):
     return {
         "case_id": case["case_id"],
         "objective": case["objective"],
+        "collection": collection_summary(case),
+        "assessment": case["assessment"],
+        "assessment_required": bool(case["observations"]),
+        "terminal": bool(case.get("stop_reason")) and not view.get("session_open"),
+        "valid_evidence_ids": [o["id"] for o in case["observations"]],
+        "evidence_items": latest.get("evidence_items", []),
+        "corroboration": case.get("corroboration", []),
         "last_probe": case["probes"][-1],
         "latest_observation": {
             k: latest.get(k)
@@ -481,13 +543,25 @@ def status(case):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("schema", help="Print the complete assessment JSON Schema")
     p = commands.add_parser("start")
     p.add_argument("url")
     p.add_argument("--objective", required=True)
     p.add_argument("--case", required=True, type=Path)
     p.add_argument("--profile", choices=["desktop", "mobile"], default="desktop")
     p.add_argument("--scope", choices=["host", "observed_external"], default="host")
-    for command in ("review", "step", "close", "profile", "status", "assess", "verify"):
+    for command in (
+        "review",
+        "step",
+        "close",
+        "profile",
+        "status",
+        "assess",
+        "verify",
+        "finish",
+        "contract",
+        "corroborate",
+    ):
         p = commands.add_parser(command)
         p.add_argument("--case", required=True, type=Path)
         if command == "review":
@@ -502,11 +576,55 @@ def main(argv=None):
             p.add_argument("--seconds", type=int)
         if command == "profile":
             p.add_argument("name", choices=["desktop", "mobile"])
-        if command == "close":
+        if command in {"close", "finish"}:
             p.add_argument("--reason", required=True)
-        if command == "assess":
+        if command in {"assess", "finish"}:
             p.add_argument("--assessment", required=True, type=Path)
+        if command == "finish":
+            p.add_argument("--review", type=Path)
+        if command == "corroborate":
+            p.add_argument("--brand-reference", type=Path)
+            p.add_argument("--virustotal-url")
     args = parser.parse_args(argv)
+    if args.command == "schema":
+        print(json.dumps(assessment_contract(), indent=2))
+        return 0
+    if args.command == "contract":
+        with _case(args.case) as case:
+            print(json.dumps(assessment_contract(case), indent=2))
+        return 0
+    if args.command == "corroborate":
+        from corroboration import compare_brand, lookup_virustotal
+        from research_case import _validate_input
+
+        if not args.brand_reference and not args.virustotal_url:
+            raise ValueError(
+                "Supply a researcher-verified brand reference or an explicit reputation lookup URL"
+            )
+        with _case(args.case) as case:
+            records = []
+            if args.brand_reference:
+                records.append(
+                    compare_brand(case, json.loads(args.brand_reference.read_text()))
+                )
+            if args.virustotal_url:
+                _validate_input(args.virustotal_url)
+                if digest(args.virustotal_url) != case["subject_sha256"]:
+                    raise ValueError("Reputation lookup must use the exact case seed")
+                records.append(
+                    lookup_virustotal(
+                        args.virustotal_url, os.environ.get("CYBER_VT_API_KEY")
+                    )
+                )
+            if len(case.get("corroboration", [])) + len(records) > 10:
+                raise ValueError("Corroboration budget exhausted")
+            case.setdefault("corroboration", []).extend(records)
+            case["assessment"] = _inconclusive(
+                "Review new corroboration alongside the captured evidence"
+            )
+            save_case(args.case, case)
+            print(json.dumps(sanitize(status(case)), indent=2))
+        return 0
     if args.command == "start":
         result = start(
             args.case, args.url, args.objective, profile=args.profile, scope=args.scope
@@ -527,6 +645,13 @@ def main(argv=None):
         result = profile(args.case, args.name, json.loads(args.decision.read_text()))
     elif args.command == "assess":
         result = assess_case(args.case, json.loads(args.assessment.read_text()))
+    elif args.command == "finish":
+        result = finish(
+            args.case,
+            json.loads(args.assessment.read_text()),
+            args.reason,
+            json.loads(args.review.read_text()) if args.review else None,
+        )
     elif args.command == "verify":
         print(json.dumps({"verified_files": verify_case(args.case)}))
         return 0

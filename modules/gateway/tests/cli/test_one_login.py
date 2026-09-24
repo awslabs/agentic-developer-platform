@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import uuid
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,11 @@ def private_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Each test models a fresh CLI process with its own deployment selection.
     monkeypatch.setattr(cli.common, "_deployment", cli.common._UNRESOLVED)
+    monkeypatch.setattr(
+        cli,
+        "current_recovery_context",
+        lambda api=None: {"deployment_id": "test", "gateway": "test", "principal": "user", "tenant": "org"},
+    )
     return tmp_path
 
 
@@ -131,7 +137,7 @@ def test_selecting_a_workspace_stores_no_token(private_home) -> None:
     assert not (private_home / ".superplane").exists()
     written = files_under(private_home)
     assert written, "workspace use should persist the selection"
-    for path in written:
+    for path in (item for item in written if item.suffix == ".json"):
         contents = json.loads(path.read_text())
         assert contents == {"workspace": "ml-research"}
         assert TOKEN not in path.read_text()
@@ -140,9 +146,41 @@ def test_selecting_a_workspace_stores_no_token(private_home) -> None:
 def test_storing_a_provider_credential_leaves_no_local_copy(private_home, monkeypatch) -> None:
     """The provider value goes to the vault and is not persisted anywhere locally."""
     monkeypatch.setattr(cli, "read_provider_value", lambda from_stdin, prompt: PROVIDER_SECRET)
-    api = FakeApi({"/auth/credentials": {"id": "cred-123"}, cli.API_BASE + "/providers": {"ok": True}})
+    credential_id = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: uuid.UUID(credential_id))
+    api = FakeApi(
+        {
+            "/auth/credentials": {
+                "id": credential_id,
+                "service": "nebius",
+                "label": "nebius-research",
+                "credential_type": "api_key",
+                "scope": "user",
+            },
+            cli.API_BASE + cli.DOMAIN_CREDENTIALS: {
+                "id": "11111111-2222-4333-8444-555555555555",
+                "adp_credential_id": credential_id,
+                "name": "nebius-research",
+                "provider": "nebius",
+                "credential_type": "api_key",
+            },
+        }
+    )
 
-    cli.run(cli.parser().parse_args(["provider", "add", "--name", "nebius-research", "--provider", "nebius"]), api)
+    cli.run(
+        cli.parser().parse_args(
+            [
+                "provider",
+                "add",
+                "--name",
+                "nebius-research",
+                "--provider",
+                "nebius",
+                "--yes",
+            ]
+        ),
+        api,
+    )
 
     assert not secret_bearing_files(private_home, PROVIDER_SECRET)
     assert not secret_bearing_files(private_home, TOKEN)

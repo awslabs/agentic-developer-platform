@@ -27,6 +27,7 @@ PRINCIPAL_UNRESOLVED = "unresolved"
 
 OUTCOME_ALLOWED = "allowed"
 OUTCOME_DENIED = "denied"
+OUTCOME_ERROR = "error"
 
 
 class AuditWriteFailures:
@@ -111,7 +112,7 @@ async def log_event(
         user_id: Legacy actor column, retained for the non-middleware writers that
             already populate it. New middleware rows use `principal` instead.
         principal: WHO acted -- the verified subject, or PRINCIPAL_UNRESOLVED.
-        outcome: OUTCOME_ALLOWED or OUTCOME_DENIED.
+        outcome: OUTCOME_ALLOWED, OUTCOME_DENIED or OUTCOME_ERROR.
         action: Action verb (created, updated, deleted, read).
         resource_type: Type of resource (workspace, credential, etc.).
         resource_id: Optional UUID of the specific resource.

@@ -11,7 +11,8 @@
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "cyber_eks_cluster" {
-  name = "${local.name_prefix}-eks-cluster-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.name_prefix}-eks-cluster-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -56,7 +57,8 @@ resource "aws_iam_role_policy_attachment" "cyber_eks_networking_policy" {
 }
 
 resource "aws_iam_role" "cyber_eks_node" {
-  name = "${local.name_prefix}-eks-node-role"
+  permissions_boundary = var.automation_permissions_boundary_arn
+  name                 = "${local.name_prefix}-eks-node-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

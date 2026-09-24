@@ -72,8 +72,6 @@ class AccountResponse(BaseModel):
     name: str
     provider: str
     account_id: str
-    role_arn: str | None = None
-    external_id: str | None = None
     status: str
     adp_credential_ids: list[str] = Field(default_factory=list)
     irsa_role_arns: list[str] = Field(default_factory=list)

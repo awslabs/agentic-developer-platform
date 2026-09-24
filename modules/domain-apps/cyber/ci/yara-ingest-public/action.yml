@@ -21,31 +21,13 @@ runs:
               marker = uuid.uuid4().hex
               stream.write(f"{key}<<{marker}\n{os.environ[key]}\n{marker}\n")
       PYENV
-  - name: Install YARA + AWS CLI
-    run: |
-      set -e
-      # YARA + jq
-      if ! command -v yara >/dev/null 2>&1; then
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq yara jq
-      fi
-      # AWS CLI (ARC runner image may not ship with v2)
-      if ! command -v aws >/dev/null 2>&1; then
-        curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip
-        unzip -q /tmp/awscli.zip -d /tmp
-        sudo /tmp/aws/install
-        rm -rf /tmp/awscli.zip /tmp/aws
-      fi
-      yara --version
-      aws --version
-    shell: bash -e {0}
   - name: Clone upstream signature-base
     run: |
       git clone --depth 1 --branch master https://github.com/Neo23x0/signature-base.git /tmp/sig-base
       UPSTREAM_SHA=$(cd /tmp/sig-base && git rev-parse HEAD)
       echo "UPSTREAM_SHA=$UPSTREAM_SHA" >> "$GITHUB_ENV"
       echo "Upstream commit: $UPSTREAM_SHA"
-    shell: bash -e {0}
+    shell: bash
   - name: Check for changes since last ingestion
     id: check_changes
     run: |
@@ -61,7 +43,7 @@ runs:
         fi
       fi
       echo "skip=false" >> "$GITHUB_OUTPUT"
-    shell: bash -e {0}
+    shell: bash
   - name: Compile-test all rules
     if: steps.check_changes.outputs.skip != 'true'
     run: |
@@ -72,14 +54,14 @@ runs:
       COMPILE_FAILED=()
       VALID_COUNT=0
 
-      for rule in $(find "$RULES_DIR" -name "*.yar" -type f 2>/dev/null); do
+      while IFS= read -r -d '' rule; do
         if yara -w "$rule" /dev/null 2>/dev/null; then
           cp "$rule" "$VALID_DIR/"
           VALID_COUNT=$((VALID_COUNT + 1))
         else
           COMPILE_FAILED+=("$(basename "$rule")")
         fi
-      done
+      done < <(find "$RULES_DIR" -name "*.yar" -type f -print0)
 
       echo "Valid: $VALID_COUNT. Failed: ${#COMPILE_FAILED[@]}"
 
@@ -96,8 +78,8 @@ runs:
         echo "PROMOTE=false" >> "$GITHUB_ENV"
         exit 1
       fi
-    shell: bash -e {0}
-  - name: Canary validation — false-positive check
+    shell: bash
+  - name: "Canary validation \u2014 false-positive check"
     if: steps.check_changes.outputs.skip != 'true'
     run: |
       # Download canary-benign corpus from S3
@@ -145,7 +127,7 @@ runs:
         echo "PROMOTE=false" >> "$GITHUB_ENV"
         exit 1
       fi
-    shell: bash -e {0}
+    shell: bash
   - name: Build manifest + validation report
     if: steps.check_changes.outputs.skip != 'true'
     run: |
@@ -183,7 +165,7 @@ runs:
         '{canary_corpus_size: ($canary_count|tonumber), fp_threshold_pct: ($fp_threshold|tonumber),
           quarantined_rules: $quarantined, validation_passed: true}' \
         > /tmp/validation.json
-    shell: bash -e {0}
+    shell: bash
   - name: Upload to S3 (immutable prefix)
     if: steps.check_changes.outputs.skip != 'true'
     run: |
@@ -194,8 +176,8 @@ runs:
       aws s3 cp /tmp/validation.json "s3://$BUCKET/$DEST/validation.json" --region "$AWS_REGION"
 
       echo "Uploaded $RULE_COUNT rules to s3://$BUCKET/$DEST/"
-    shell: bash -e {0}
-  - name: Atomic promote — update current.json
+    shell: bash
+  - name: "Atomic promote \u2014 update current.json"
     if: steps.check_changes.outputs.skip != 'true'
     run: |
       jq -n --arg r "$TIMESTAMP" '{resolves_to: $r, promoted_at: (now|todateiso8601)}' \
@@ -203,32 +185,18 @@ runs:
 
       aws s3 cp /tmp/current.json "s3://$BUCKET/$RULES_PREFIX/current.json" --region "$AWS_REGION"
       echo "Promoted: $TIMESTAMP"
-    shell: bash -e {0}
+    shell: bash
   - name: Post summary
     if: always() && steps.check_changes.outputs.skip != 'true'
-    run: |
-      RULE_SIZE=$(du -sh /tmp/valid-rules 2>/dev/null | cut -f1 || echo "unknown")
-      PROMOTED="yes"
-      if [ "${PROMOTE:-}" = "false" ]; then
-        PROMOTED="NO (safety threshold exceeded)"
-      fi
-
-      cat >> "$GITHUB_STEP_SUMMARY" << EOF
-      ## YARA Public Ingestion — ${TIMESTAMP:-unknown}
-
-      | Metric | Value |
-      |--------|-------|
-      | Upstream commit | \`${UPSTREAM_SHA:-unknown}\` |
-      | Valid rules | ${RULE_COUNT:-0} |
-      | Compile-failed (skipped) | ${COMPILE_FAIL_COUNT:-0} |
-      | Canary-quarantined (>$MAX_FP_RULES_PCT% FP) | ${QUARANTINE_COUNT:-0} |
-      | Size | $RULE_SIZE |
-      | Promoted | $PROMOTED |
-      EOF
-    shell: bash -e {0}
+    run: "RULE_SIZE=$(du -sh /tmp/valid-rules 2>/dev/null | cut -f1 || echo \"unknown\")\nPROMOTED=\"yes\"\nif [\
+      \ \"${PROMOTE:-}\" = \"false\" ]; then\n  PROMOTED=\"NO (safety threshold exceeded)\"\nfi\n\ncat >> \"$GITHUB_STEP_SUMMARY\"\
+      \ << EOF\n## YARA Public Ingestion \u2014 ${TIMESTAMP:-unknown}\n\n| Metric | Value |\n|--------|-------|\n\
+      | Upstream commit | \\`${UPSTREAM_SHA:-unknown}\\` |\n| Valid rules | ${RULE_COUNT:-0} |\n| Compile-failed\
+      \ (skipped) | ${COMPILE_FAIL_COUNT:-0} |\n| Canary-quarantined (>$MAX_FP_RULES_PCT% FP) | ${QUARANTINE_COUNT:-0}\
+      \ |\n| Size | $RULE_SIZE |\n| Promoted | $PROMOTED |\nEOF\n"
+    shell: bash
   - name: No changes detected
     if: steps.check_changes.outputs.skip == 'true'
-    run: |
-      echo "## YARA Public Ingestion — No Changes" >> "$GITHUB_STEP_SUMMARY"
-      echo "Upstream commit \`$UPSTREAM_SHA\` matches last ingestion. Skipped." >> "$GITHUB_STEP_SUMMARY"
-    shell: bash -e {0}
+    run: "echo \"## YARA Public Ingestion \u2014 No Changes\" >> \"$GITHUB_STEP_SUMMARY\"\necho \"Upstream commit\
+      \ \\`$UPSTREAM_SHA\\` matches last ingestion. Skipped.\" >> \"$GITHUB_STEP_SUMMARY\"\n"
+    shell: bash

@@ -110,7 +110,7 @@ class DerivedNode:
 class DerivedWave:
     """A wave, its members, and where it sits in the real execution order."""
 
-    __slots__ = ("epic_ref", "node_addresses", "depends_on", "stage", "wave_ref")
+    __slots__ = ("epic_ref", "node_addresses", "depends_on", "stage", "wave_ref", "title", "description")
 
     def __init__(
         self,
@@ -120,10 +120,14 @@ class DerivedWave:
         stage: int | None,
         node_addresses: list[str],
         depends_on: list[str],
+        title: str | None = None,
+        description: str | None = None,
     ) -> None:
         self.epic_ref = epic_ref
         self.wave_ref = wave_ref
         self.stage = stage
+        self.title = title
+        self.description = description
         self.node_addresses = node_addresses
         self.depends_on = depends_on
 
@@ -251,11 +255,14 @@ def derive_waves(proposal: LoopProposal) -> list[DerivedWave]:
 
     wave_edges = _wave_dependency_edges(proposal, label_parts)
     stages = _longest_path_stages(labels_in_order, wave_edges)
+    metadata = {wave_label(item.epic_ref, item.wave_ref): item for item in proposal.wave_metadata}
 
     waves = [
         DerivedWave(
             epic_ref=label_parts[label][0],
             wave_ref=label_parts[label][1],
+            title=metadata[label].title if label in metadata else None,
+            description=metadata[label].description if label in metadata else None,
             stage=stages.get(label),
             node_addresses=members[label],
             depends_on=sorted(predecessor for predecessor, successor in wave_edges if successor == label),

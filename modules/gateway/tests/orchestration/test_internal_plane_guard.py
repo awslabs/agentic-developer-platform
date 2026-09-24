@@ -408,6 +408,8 @@ class TestOrchestrationRouterIsOperatorPlane:
             # escalation the sibling guard below exists to stop.
             ("/orchestration/flows", "GET"): "Permission.USAGE_READ",
             ("/orchestration/flows/{flow_id}/amendments", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/draft/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/draft/revise", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/plans", "GET"): "Permission.PLAN_APPROVE",
             # Read-only cost rollup. Reads usage_logs, never promotion state.
             ("/orchestration/flows/{flow_id}/cost", "GET"): "Permission.USAGE_READ",

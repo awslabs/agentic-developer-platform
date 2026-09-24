@@ -69,11 +69,58 @@ async def isolated_database(monkeypatch, installation_postgres_url):
         await admin.dispose()
 
 
-async def test_full_chain_lands_only_in_owned_schema(isolated_database):
+@pytest.mark.parametrize(
+    "initial_head",
+    [
+        None,
+        "017_add_workspace_bootstrap_reservations",
+        "019_workspace_operation_state",
+        "020_merge_workspace_cli",
+    ],
+)
+async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_head):
     admin, engine, url, role, schema, foreign = isolated_database
     observed = await installation.database_check(migrating=True)
     assert observed["schema"] == schema and observed["revision"] is None
     root = Path(__file__).resolve().parents[1]
+    if initial_head is not None:
+        previous = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", initial_head],
+            cwd=root,
+            env=dict(os.environ, DATABASE_URL=url, SUPERPLANE_DB_SCHEMA=schema),
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        assert previous.returncode == 0, previous.stderr
+    deployment_id = None
+    if initial_head == "020_merge_workspace_cli":
+        org_id, cluster_id, deployment_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO organizations (id, name) VALUES (:id, 'retained-org')"
+                ),
+                {"id": org_id},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO clusters (id, org_id, name) VALUES (:id, :org, 'retained-cluster')"
+                ),
+                {"id": cluster_id, "org": org_id},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO deployments (id, org_id, cluster_id, name, status, operation_request_json) "
+                    "VALUES (:id, :org, :cluster, 'retained-workload', 'Unknown', :request)"
+                ),
+                {
+                    "id": deployment_id,
+                    "org": org_id,
+                    "cluster": cluster_id,
+                    "request": '{"name":"retained-workload"}',
+                },
+            )
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
         cwd=root,
@@ -84,10 +131,47 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database):
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    # The head `alembic upgrade head` actually reached, so it advances with the chain:
-    # w6-10 (#5533) adds 017 for `workspace_bootstrap_reservations`; A17 (#5673) adds
-    # 018 for the audit trail's principal/outcome columns.
-    assert observed["revision"] == "018_add_event_principal_outcome"
+    assert observed["revision"] == "023_add_event_principal_outcome"
+    async with engine.connect() as conn:
+        assert (
+            await conn.execute(
+                text("SELECT to_regclass('workspace_bootstrap_reservations')")
+            )
+        ).scalar_one() is not None
+        columns = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns WHERE table_schema=:schema AND table_name='workspaces'"
+                    ),
+                    {"schema": schema},
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert {
+            "operation_id",
+            "provisioning_operation_id",
+            "teardown_operation_id",
+        } <= set(columns)
+        if deployment_id is not None:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT name, status, operation_request_json, operation_target_json, provider_uid "
+                        "FROM deployments WHERE id=:id"
+                    ),
+                    {"id": deployment_id},
+                )
+            ).one()
+            assert tuple(row) == (
+                "retained-workload",
+                "Unknown",
+                '{"name":"retained-workload"}',
+                None,
+                None,
+            )
     async with admin.connect() as conn:
         assert (
             await conn.execute(text(f'SELECT value FROM "{foreign}".sentinel'))
@@ -311,19 +395,42 @@ async def test_control_plane_bootstrap_then_workspace_activation(bootstrap_datab
     bootstrap, factory, config, _claims = bootstrap_database
     empty_config = {key: config[key] for key in ("org_id", "adp_org_id", "origin")}
     empty_config["control_plane_only"] = True
-    first = await bootstrap.bootstrap(empty_config, "short-lived", membership_reader=admin_membership)
+    first = await bootstrap.bootstrap(
+        empty_config, "short-lived", membership_reader=admin_membership
+    )
     assert first["workspace_id"] is None
     assert first["organization_grant"] == ORGANIZATION_ADMINISTER
-    assert await bootstrap.bootstrap(empty_config, "short-lived", membership_reader=admin_membership) == first
+    assert (
+        await bootstrap.bootstrap(
+            empty_config, "short-lived", membership_reader=admin_membership
+        )
+        == first
+    )
     async with factory() as session:
-        assert await session.scalar(select(func.count()).select_from(OrganizationGrantRecord)) == 1
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(OrganizationGrantRecord)
+            )
+            == 1
+        )
         assert await session.scalar(select(func.count()).select_from(Workspace)) == 0
-        assert await session.scalar(select(func.count()).select_from(WorkspaceGrantRecord)) == 0
+        assert (
+            await session.scalar(select(func.count()).select_from(WorkspaceGrantRecord))
+            == 0
+        )
     await bootstrap.bootstrap(config, "short-lived", membership_reader=admin_membership)
     async with factory() as session:
-        assert await session.scalar(select(func.count()).select_from(OrganizationGrantRecord)) == 1
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(OrganizationGrantRecord)
+            )
+            == 1
+        )
         assert await session.scalar(select(func.count()).select_from(Workspace)) == 1
-        assert await session.scalar(select(func.count()).select_from(WorkspaceGrantRecord)) == 1
+        assert (
+            await session.scalar(select(func.count()).select_from(WorkspaceGrantRecord))
+            == 1
+        )
 
 
 async def test_revoked_org_grant_is_not_restored_by_bootstrap(bootstrap_database):
@@ -342,13 +449,21 @@ async def test_revoked_org_grant_is_not_restored_by_bootstrap(bootstrap_database
         record.revoked_at = datetime.now(timezone.utc)
         await session.commit()
     with pytest.raises(ValueError, match="organization grant is revoked"):
-        await bootstrap.bootstrap(config, "short-lived", membership_reader=admin_membership)
+        await bootstrap.bootstrap(
+            config, "short-lived", membership_reader=admin_membership
+        )
     async with factory() as session:
-        assert (await session.scalar(select(OrganizationGrantRecord))).revoked_at is not None
+        assert (
+            await session.scalar(select(OrganizationGrantRecord))
+        ).revoked_at is not None
 
 
-@pytest.mark.parametrize("mutation", ["partial-workspace", "mode-string", "membership-loss"])
-async def test_empty_bootstrap_refuses_ambiguous_or_revoked_authority(bootstrap_database, mutation):
+@pytest.mark.parametrize(
+    "mutation", ["partial-workspace", "mode-string", "membership-loss"]
+)
+async def test_empty_bootstrap_refuses_ambiguous_or_revoked_authority(
+    bootstrap_database, mutation
+):
     from sqlalchemy import func, select
 
     from app.models.organization_grant import OrganizationGrantRecord
@@ -372,4 +487,34 @@ async def test_empty_bootstrap_refuses_ambiguous_or_revoked_authority(bootstrap_
     with pytest.raises(ValueError):
         await bootstrap.bootstrap(config, "short-lived", membership_reader=membership)
     async with factory() as session:
-        assert await session.scalar(select(func.count()).select_from(OrganizationGrantRecord)) == 0
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(OrganizationGrantRecord)
+            )
+            == 0
+        )
+
+
+async def test_audit_migration_preserves_unattributed_evidence_on_downgrade(isolated_database):
+    _, engine, url, _, schema, _ = isolated_database
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, DATABASE_URL=url, SUPERPLANE_DB_SCHEMA=schema)
+    upgraded = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=root, env=env, text=True, capture_output=True, timeout=60,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    event_id = uuid.uuid4()
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "INSERT INTO events (id, org_id, principal, outcome, action, resource_type, event_type) "
+            "VALUES (:id, NULL, 'unresolved', 'denied', 'created', 'workspace', 'api_call')"
+        ), {"id": event_id})
+    refused = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "022_deployment_namespace_quota"],
+        cwd=root, env=env, text=True, capture_output=True, timeout=60,
+    )
+    assert refused.returncode != 0
+    async with engine.connect() as conn:
+        assert (await conn.execute(text("SELECT principal, outcome FROM events WHERE id=:id"), {"id": event_id})).one() == ("unresolved", "denied")
+        assert (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one() == "023_add_event_principal_outcome"

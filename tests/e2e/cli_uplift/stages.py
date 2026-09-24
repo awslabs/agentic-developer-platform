@@ -96,6 +96,24 @@ def _deployment_discovery(http):
     return read
 
 
+def _superplane_probe(http):
+    """#5637: the domain mount check, read through the run's own transport.
+
+    Returns the STATUS, because an error status is the evidence here — 401 proves
+    the route forwards, 404 proves nothing is behind it. `expect=None` is what makes
+    `http.get` return a status instead of raising on a non-200.
+    """
+
+    def read(url):
+        try:
+            status, _document = http.get(url, expect=None)
+        except ports_module.PortError as exc:
+            raise preflight.PreflightError(str(exc)) from None
+        return status
+
+    return read
+
+
 def preflight_stage(cfg, ports):
     """Prove account, region, gateway, revision, served hashes and fixtures.
 
@@ -276,11 +294,27 @@ def preflight_stage(cfg, ports):
                 for case_id in ctx["matrix"]
             )
             else None,
+            # #5637. Validate the recovery prerequisite before E18 can allocate
+            # resources. A reachable gateway does not implement that producer.
+            superplane_available=preflight.check_superplane_domain(
+                cfg, record, probe=_superplane_probe(http)
+            )
+            if any(
+                cases.SUPERPLANE_DOMAIN in cases.BY_ID[case_id].requires
+                for case_id in ctx["matrix"]
+            )
+            else None,
         )
         record["fixture_classes"] = sorted(available)
         record["missing_fixtures"] = preflight.missing_fixture_report(cfg, available)
         blocked = cases.block_missing_fixtures(ctx["matrix"], available)
         record["blocked_cases"] = {k: v for k, v in sorted(blocked.items())}
+        if "E18" in blocked and not any(
+            selected(ctx, case_id) for case_id in ctx["matrix"]
+        ):
+            # The runner executes stages in order even when every case blocks.
+            # Stop this otherwise idle attempt before ec2/install_auth mutate.
+            raise StageError(cleanup.SUPERPLANE_RECOVERY_BLOCKER)
 
         if ctx["fault"] == "wrong_account":
             # Injection: prove a wrong-account run cannot go green.
@@ -719,6 +753,11 @@ JOURNEY_DRIVERS = {
     # multi-deployment case failed" without saying which half.
     "E16": "multi_deployment_concurrency",
     "E17": "multi_deployment_lifecycle",
+    # #5637. One purpose: the workspace/deploy/cost/events half and the credential
+    # half are one journey because the credential is registered INTO a workspace
+    # this run created, and splitting them would mean either creating two
+    # workspaces or making one case depend on the other's leftovers.
+    "E18": "superplane_domain",
 }
 
 # Which account a journey's resources live in, by kind. A journey reports

@@ -130,6 +130,9 @@ async def enforce_domain_authorization(
 
     scope, permission = requirement  # type: ignore[misc]
     caller = await domain_auth.require_verified_caller(request, credentials)
+    # Signature/policy verification established the actor even if tenant binding
+    # or the later grant check refuses this request. Never publish an unbound tenant.
+    request.state.audit_principal = caller.principal.subject
     from app.organization_binding import bind_caller
 
     caller = await bind_caller(db, caller)

@@ -1641,7 +1641,8 @@ Run GPU workloads (uses the same sign-in — no second token to manage):
     superplane node|cost|events|quota
                             Nodes, spend, recent activity and workspace quota
     superplane account|aws-onboard
-                            Register cloud accounts for Superplane
+                            Register connected cloud accounts by opaque ADP
+                            credential reference, list and deregister them
     superplane provider add Store a provider credential in ADP's vault (prompted)
 
 Configure agent persona models:
@@ -1661,6 +1662,8 @@ Follow autonomous delivery (AI-DLC flows):
                           Answer a decision the engine is waiting on
     flow create --file plan.json
                           Submit a prepared plan for approval
+    flow draft preview|save FLOW_ID --file plan.json
+                          Revise an unapproved draft using explicit version/hash bindings
 
   Administration:
     admin login           Sign in with a Cognito administrator account

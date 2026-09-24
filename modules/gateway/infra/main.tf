@@ -626,7 +626,8 @@ module "s3_chat_logs" {
 # =============================================================================
 
 module "rds" {
-  source = "./modules/rds"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/rds"
 
   environment             = var.environment
   name_prefix             = local.name_prefix
@@ -677,7 +678,8 @@ module "redis" {
 # =============================================================================
 
 module "cognito" {
-  source = "./modules/cognito"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/cognito"
 
   environment       = var.environment
   name_prefix       = local.name_prefix
@@ -969,7 +971,8 @@ resource "aws_ssm_parameter" "model_allowed_models_config" {
 # =============================================================================
 
 module "rds_bootstrap" {
-  source = "./modules/rds-bootstrap"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  source                              = "./modules/rds-bootstrap"
 
   name_prefix            = local.name_prefix
   namespace              = "bedrockgw"
@@ -997,8 +1000,9 @@ module "rds_bootstrap" {
 # =============================================================================
 
 module "budget_lambda" {
-  count  = var.enable_chat_logging ? 1 : 0
-  source = "./modules/budget-lambda"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_chat_logging ? 1 : 0
+  source                              = "./modules/budget-lambda"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -1092,8 +1096,9 @@ data "aws_security_group" "vpc_endpoints" {
 # only artifact that already carries the async stack plus the RDS CA bundle the
 # TLS path needs. See modules/orchestration-tick/main.tf for the full rationale.
 module "orchestration_tick" {
-  count  = var.enable_orchestration_tick ? 1 : 0
-  source = "./modules/orchestration-tick"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_orchestration_tick ? 1 : 0
+  source                              = "./modules/orchestration-tick"
 
   environment = var.environment
   name_prefix = "adp-${var.environment}"
@@ -1211,8 +1216,9 @@ module "orchestration_tick" {
 # =============================================================================
 
 module "api_gateway" {
-  count  = var.enable_api_gateway ? 1 : 0
-  source = "./modules/api-gateway"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_api_gateway ? 1 : 0
+  source                              = "./modules/api-gateway"
 
   # EAA runbook 5.1 — per-path source restrictions at the API edge. Empty by
   # default, in which case no resource policy is created at all.
@@ -1282,8 +1288,9 @@ module "api_gateway" {
 # =============================================================================
 
 module "lambda_authorizer" {
-  count  = var.enable_api_gateway ? 1 : 0
-  source = "./modules/lambda-authorizer"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_api_gateway ? 1 : 0
+  source                              = "./modules/lambda-authorizer"
 
   environment = var.environment
   name_prefix = local.name_prefix
@@ -1677,8 +1684,9 @@ data "aws_secretsmanager_secret" "github_oauth_for_broker" {
 }
 
 module "github_auth_broker" {
-  count  = var.enable_github_auth_broker ? 1 : 0
-  source = "./modules/github-auth-broker"
+  automation_permissions_boundary_arn = var.automation_permissions_boundary_arn
+  count                               = var.enable_github_auth_broker ? 1 : 0
+  source                              = "./modules/github-auth-broker"
 
   environment             = var.environment
   name_prefix             = local.name_prefix

@@ -163,37 +163,46 @@ Existing-App credentials come from `--credentials-file FILE` or
 
 These commands exist in the CLI; [server availability and examples](superplane.md)
 explain the domain API dependency. All operational leaf commands accept
-`--json`. For workspace-scoped commands, `--workspace NAME` overrides
-`adp superplane workspace use NAME`.
+`--json`. For workspace-scoped commands, `--workspace` overrides
+`adp superplane workspace use NAME` and accepts either the workspace name or its
+id; a name that matches more than one workspace is reported with the candidate
+ids rather than resolved to one of them.
+
+Workspace and deployment creates persist a non-secret operation receipt before
+delivery. An identical retry reuses that operation ID, including after successful
+completion, so lost output cannot cause a second resource. Failed, deleting and
+deleted operations keep their receipts and refuse identical creates; inspect the
+original resource before choosing a different name for an intentional new create.
+An older domain without the replay contract is refused before mutation.
 
 | Command | Required inputs | Optional inputs / defaults |
 |---|---|---|
-| `adp superplane workspace create` | `--name NAME` | `--isolation dedicated|namespace|research` (default `dedicated`), `--account ACCOUNT` (required for `research`), `--budget-daily USD`, `--budget-gpus COUNT` |
+| `adp superplane workspace create` | `--name NAME` | `--isolation dedicated|namespace|research` (default `dedicated`), `--account ACCOUNT` (required for `research`), `--budget-daily USD`, `--budget-gpus COUNT`, `--dry-run`, `--yes` |
 | `adp superplane workspace list` | None | None |
 | `adp superplane workspace use NAME` | Workspace name | Saves the selection locally |
-| `adp superplane workspace describe` | Selected workspace or `--workspace NAME` | None |
-| `adp superplane workspace kubeconfig` | Selected workspace or `--workspace NAME` | Returns Kubernetes access information |
-| `adp superplane node` | Selected workspace or `--workspace NAME` | Lists nodes; the command is `node`, without a `list` subcommand |
-| `adp superplane quota show` | Selected workspace or `--workspace NAME` | None |
-| `adp superplane quota set` | Selected workspace or `--workspace NAME`; at least one quota option | `--max-gpus COUNT`, `--max-cost-per-day USD`, `--max-nodes COUNT`, `--allowed-clouds aws,lambda` |
-| `adp superplane cost` | None | `--workspace NAME`; otherwise uses the selected workspace when present |
-| `adp superplane events` | None | `--workspace NAME`, `--limit COUNT` (default 50) |
-| `adp superplane deploy create` | `--model MODEL`; selected workspace or `--workspace NAME` | `--name NAME`, `--precision fp8|fp16|bf16` (default `fp16`) |
-| `adp superplane deploy list` | Selected workspace or `--workspace NAME` | None |
-| `adp superplane deploy delete` | `--name NAME`; selected workspace or `--workspace NAME` | Requests deployment deletion |
-| `adp superplane account onboard` | `--name NAME`, `--provider PROVIDER` | `--account-id ACCOUNT`; use `aws-onboard register` for AWS |
+| `adp superplane workspace describe` | Selected workspace or `--workspace WORKSPACE` | None |
+| `adp superplane workspace kubeconfig` | Selected workspace or `--workspace WORKSPACE` | Returns Kubernetes access information and the credential's expiry |
+| `adp superplane node` | Selected workspace or `--workspace WORKSPACE` | Lists nodes; the command is `node`, without a `list` subcommand |
+| `adp superplane quota show` | Selected workspace or `--workspace WORKSPACE` | None |
+| `adp superplane quota set` | Selected workspace or `--workspace WORKSPACE`; at least one quota option | `--max-gpus COUNT`, `--max-cost-per-day USD`, `--max-nodes COUNT`, `--allowed-clouds aws,lambda`, `--dry-run`, `--yes` |
+| `adp superplane cost` | None | `--org` for organization-wide cost, or `--workspace WORKSPACE`; `--start-date`, `--end-date` (ISO 8601). `--org` and `--workspace` are mutually exclusive |
+| `adp superplane events` | None | `--resource-type TYPE`, `--user USER_ID`, `--action ACTION`, `--event-type TYPE`, `--start-time`, `--end-time` (ISO 8601), `--limit COUNT` (1-500, default 50), `--offset COUNT`. There is no workspace filter |
+| `adp superplane deploy create` | `--model MODEL`, `--name NAME`; selected workspace or `--workspace WORKSPACE` | `--precision fp8|fp16|bf16|awq|int8` (default `fp16`), `--serving-framework vllm|sglang`, `--replicas COUNT`, `--gpu-per-replica COUNT`, `--tensor-parallel-size COUNT`, `--max-model-len TOKENS`, `--namespace NAMESPACE`, `--dry-run`, `--yes`. Omitted options take the server's default |
+| `adp superplane deploy list` | Selected workspace or `--workspace WORKSPACE` | `--namespace NAMESPACE` |
+| `adp superplane deploy delete` | `--name NAME`; selected workspace or `--workspace WORKSPACE` | `--namespace NAMESPACE`, `--dry-run`, `--yes`; requests deployment deletion |
+| `adp superplane account onboard` | `--name NAME`, `--provider aws`, `--account-id ACCOUNT`, `--credential-id ADP_CONNECTION_ID` | `--dry-run`, `--yes`; registers a verified caller-owned AWS connection through the server-side adapter |
 | `adp superplane account list` | None | None |
-| `adp superplane account delete ACCOUNT_ID` | Account ID | Requests deregistration |
-| `adp superplane aws-onboard register` | `--account-id ACCOUNT`, `--credential-id ADP_CONNECTION_ID` | `--name NAME` |
-| `adp superplane provider add` | `--name NAME`, `--provider PROVIDER` | `--type api_key|oauth_token|bearer|basic_auth|config_file` (default `api_key`), `--stdin` |
+| `adp superplane account delete ACCOUNT` | The registration's record id, or the cloud account ID or name it was registered under | `--dry-run`, `--yes`; requests deregistration |
+| `adp superplane aws-onboard register` | `--account-id ACCOUNT`, `--credential-id ADP_CONNECTION_ID` | `--name NAME`, `--dry-run`, `--yes`; retries converge on the existing matching registration |
+| `adp superplane provider add` | `--name NAME`, `--provider PROVIDER` (unless recovering) | `--type api_key|oauth_token|bearer|basic_auth|config_file` (default `api_key`), `--stdin`, `--recover ADP_CREDENTIAL_ID`, `--dry-run`, `--yes`; recovery reuses the recorded id and requests `--stdin` only when the vault confirms the first write is absent |
 | `adp superplane provider list` | None | None |
-| `adp superplane provider delete CREDENTIAL_ID` | Credential ID | Removes the provider registration and vault credential |
+| `adp superplane provider delete CREDENTIAL` | The registration's record id, or the ADP credential id it references | `--dry-run`, `--yes`; removes the provider registration and the vault credential |
 | `adp superplane org` | None | Prints a redirect to ADP organization settings; performs no administration |
 | `adp superplane user` | None | Prints a redirect to ADP user settings; performs no administration |
 
-The Superplane commands do not implement `--yes` or `--dry-run`. Mutating
-commands submit requests directly. A provider secret is read from a hidden
-prompt or stdin, never from a secret-valued command argument.
+Superplane mutations support `--dry-run` and require interactive confirmation
+or `--yes`. A provider secret is read from a hidden prompt or stdin, never from a
+secret-valued command argument.
 
 ## Installer options
 

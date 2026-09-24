@@ -21,7 +21,7 @@ THE THREE CHANGES, AND WHY EACH IS SHAPED THIS WAY
   not. NULL therefore means "a row written before this migration", which is the marker
   that keeps historical rows distinguishable from new ones.
 
-* `outcome` -- ALLOWED or DENIED. Deliberately NULLABLE with NO server default. A
+* `outcome` -- ALLOWED, DENIED or ERROR. Deliberately NULLABLE with NO server default. A
   default of 'allowed' would be the more convenient choice and is the wrong one: it
   would silently assert that every pre-existing row was an allowed attempt. They were
   all successes, so that happens to be true today, but it writes an inference into data
@@ -42,10 +42,8 @@ not reference `principal` or `outcome` and always supplies `org_id`, so it keeps
 unchanged against this schema. That ordering is deliberate: the migration can be applied
 ahead of the image, and a rollback to the previous image does not require reversing it.
 
-The DOWNGRADE IS LOSSY AND SAYS SO. Reversing `org_id` to NOT NULL cannot succeed while
-unattributed rows exist, so the downgrade deletes exactly those rows -- audit records of
-unauthenticated attempts. That is real evidence loss, which is why it is written
-explicitly here rather than left for a constraint violation to surface at 3am.
+Downgrade refuses if unattributed audit records exist. Preserve/export that evidence
+through a separately authorized operational procedure before restoring NOT NULL.
 """
 
 import sqlalchemy as sa
@@ -54,8 +52,8 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 # revision identifiers
-revision = "018_add_event_principal_outcome"
-down_revision = "017_add_workspace_bootstrap_reservations"
+revision = "023_add_event_principal_outcome"
+down_revision = "022_deployment_namespace_quota"
 branch_labels = None
 depends_on = None
 
@@ -79,16 +77,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Reverse the columns. DESTRUCTIVE: drops unattributed audit rows.
-
-    Restoring `org_id` NOT NULL is impossible while rows with a NULL tenant exist, and
-    those rows are the audit records of unauthenticated attempts. They are deleted here
-    because the older schema has no way to represent them -- the loss is inherent to
-    going back, not a shortcut taken by this function.
-    """
+    """Reverse only when no unattributed audit evidence would be lost."""
     op.drop_index("ix_events_principal_created_at", table_name="events")
 
-    op.execute("DELETE FROM events WHERE org_id IS NULL")
+    # Restoring NOT NULL must refuse while unattributed evidence exists.
+    # Export/preservation and cleanup require a separate operator decision.
     op.alter_column(
         "events",
         "org_id",

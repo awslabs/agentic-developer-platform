@@ -49,7 +49,7 @@ run_codebuild() {
             "plan agent-factory",
             "build adp-dev-agent-gateway tag=release-sha",
             "build adp-dev-chat-agent tag=release-sha-chat",
-            "script deploy-chat-scaledjob.sh image=registry.test/adp-agent-gateway:release-sha-chat",
+            "script deploy-chat-scaledjob.sh image=registry.test/adp-chat-agent:release-sha-chat",
         ])
         self.assertIn("tag=release-sha", result.stdout)
 

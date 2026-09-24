@@ -510,6 +510,7 @@ async def _drive(
     query_string: str = "",
     headers: list[tuple[bytes, bytes]] | None = None,
     body: bytes = b"",
+    downstream_error: Exception | None = None,
 ):
     """Run one request through the real `AuditMiddleware` against a stub downstream app.
 
@@ -533,6 +534,8 @@ async def _drive(
             request.state.caller = caller
         if legacy is not None:
             request.state.audit_org_id, request.state.audit_principal = legacy
+        if downstream_error is not None:
+            raise downstream_error
         return JSONResponse(status_code=status_code, content={})
 
     class _App:
@@ -572,3 +575,96 @@ async def _drive(
     start = next(m for m in sent if m["type"] == "http.response.start")
     captured["status_code"] = start["status"]
     return type("R", (), captured)
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_is_audited_before_it_propagates(monkeypatch):
+    org_id = await _seed_org()
+    with pytest.raises(RuntimeError, match="handler failed"):
+        await _drive(
+            monkeypatch,
+            method="POST",
+            path="/workspaces",
+            status_code=500,
+            caller=_caller(TEST_PRINCIPAL, org_id),
+            downstream_error=RuntimeError("handler failed"),
+        )
+    (row,) = await _events()
+    assert (row.principal, row.org_id, row.http_status, row.outcome) == (
+        TEST_PRINCIPAL,
+        org_id,
+        500,
+        "error",
+    )
+
+
+@pytest.mark.asyncio
+async def test_verified_actor_survives_a_refused_tenant_binding(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from app import domain_guard
+    from app import organization_binding
+
+    caller = _caller(TEST_PRINCIPAL, uuid.uuid4())
+    monkeypatch.setattr(
+        domain_guard.domain_auth,
+        "require_verified_caller",
+        AsyncMock(return_value=caller),
+    )
+    monkeypatch.setattr(
+        organization_binding,
+        "bind_caller",
+        AsyncMock(side_effect=HTTPException(403, "no binding")),
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/workspaces",
+            "headers": [],
+            "route": SimpleNamespace(path="/workspaces"),
+            "app": SimpleNamespace(state=SimpleNamespace(domain_policy=object())),
+        }
+    )
+    with pytest.raises(HTTPException):
+        await domain_guard.enforce_domain_authorization(
+            request, credentials=None, db=AsyncMock()
+        )
+    assert AuditMiddleware._resolve_identity(request) == (TEST_PRINCIPAL, None)
+
+
+@pytest.mark.asyncio
+async def test_actor_filter_uses_verified_principal_and_remains_tenant_scoped():
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from app.database import Base
+    from app.models.event import Event
+    from app.models.organization import Organization
+    from app.routers.events import list_events
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=[Organization.__table__, Event.__table__]))
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        org, other = uuid.uuid4(), uuid.uuid4()
+        async with factory() as db:
+            db.add_all([Organization(id=org, name="one"), Organization(id=other, name="two")])
+            await db.flush()
+            records = [
+                Event(org_id=org, principal="actor", action="created", resource_type="workspace", event_type="api_call"),
+                Event(org_id=other, principal="actor", action="created", resource_type="workspace", event_type="api_call"),
+                Event(org_id=org, principal="different", user_id="actor", action="created", resource_type="workspace", event_type="api_call"),
+                Event(org_id=org, user_id="actor", action="created", resource_type="workspace", event_type="api_call"),
+            ]
+            db.add_all(records)
+            await db.commit()
+            result = await list_events(
+                resource_type=None, user="actor", action=None, event_type=None,
+                start_time=None, end_time=None, limit=50, offset=0, org_id=org, db=db,
+            )
+            assert result.total == 2
+            assert {row.id for row in result.events} == {records[0].id, records[3].id}
+    finally:
+        await engine.dispose()

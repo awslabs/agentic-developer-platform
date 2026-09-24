@@ -58,9 +58,9 @@ resource "kubernetes_role_binding" "runner_deploy_gateway" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -112,9 +112,9 @@ resource "kubernetes_role_binding" "runner_gateway_evals" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -166,9 +166,9 @@ resource "kubernetes_role_binding" "runner_keda_manage_gateway_agents" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -219,9 +219,9 @@ resource "kubernetes_role_binding" "runner_readonly_arc_systems" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -272,9 +272,9 @@ resource "kubernetes_role_binding" "runner_deploy_agent_context" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -320,9 +320,9 @@ resource "kubernetes_role_binding" "runner_readonly_keda" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }
 
@@ -368,8 +368,8 @@ resource "kubernetes_cluster_role_binding" "runner_namespace_manage" {
   }
 
   subject {
-    kind      = "ServiceAccount"
-    name      = "github-runner-sa"
-    namespace = "arc-runners"
+    kind      = "Group"
+    name      = "adp:trusted-deployment"
+    api_group = "rbac.authorization.k8s.io"
   }
 }

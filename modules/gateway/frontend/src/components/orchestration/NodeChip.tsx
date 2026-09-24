@@ -32,6 +32,7 @@ export interface NodeChipProps {
   blockedBy?: string[];
   /** Direct dependencies, including completed steps, for inspecting the plan. */
   dependencies?: GraphNode[];
+  dependencyWaveTitle?: (node: GraphNode) => string;
   /**
    * Decision controls for this node (issue #4213), passed as a slot rather than
    * imported here. This chip stays presentational: it has no permission check, no
@@ -64,7 +65,7 @@ function reasonBadge(node: GraphNode): string | null {
   return null;
 }
 
-export function NodeChip({ node, blockedBy = [], dependencies, controls, execution }: NodeChipProps) {
+export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTitle, controls, execution }: NodeChipProps) {
   const display = toDisplayState(node);
   const current = isCurrentPosition(node);
   const badge = reasonBadge(node);
@@ -180,7 +181,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, controls, executi
                     <li key={dependency.id}>
                       <span className="block font-medium">{dependency.title}</span>
                       <span className="text-gray-500 dark:text-gray-400">
-                        {dependency.wave_ref} · {state ? DISPLAY_STATES[state].label : dependency.state}
+                        {dependencyWaveTitle?.(dependency) || dependency.wave_ref} · {state ? DISPLAY_STATES[state].label : dependency.state}
                       </span>
                     </li>
                   );
