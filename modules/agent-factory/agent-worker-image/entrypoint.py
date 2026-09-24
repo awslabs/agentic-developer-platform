@@ -3762,10 +3762,17 @@ def _handle_abort(
     durable ``aborted`` row existed (#3963 review finding 3). It does not always
     exist: ``update_invocation_status`` logs and returns on a refused status, an
     absent row, an unavailable transport or a gateway error. That row is the thing
-    the completion guard reads to refuse a redelivery, so when it is missing AND the
-    queue acknowledgement also fails, nothing stops the stopped run from executing
-    again. The caller needs to know which of those two worlds it is in, and it can
-    only know by being told whether the write was observed to land.
+    the legacy completion guard reads to refuse a redelivery, so when it is missing
+    AND the queue acknowledgement also fails, nothing on that path stops the stopped
+    run from executing again. The caller needs to know which of those two worlds it is
+    in, and it can only know by being told whether the write was observed to land.
+
+    On the protected path (``authority_enabled()``) the guard does not run at all —
+    ``use_completion_receipt`` requires ``not authority_enabled()`` — and a redelivery
+    is refused by ``bind`` instead, because the execution record is ACTIVE and already
+    bound. So this return value is load-bearing for the legacy path's rerun safety and
+    for *reporting* on both, which is why the row is still repaired after a confirmed
+    ack rather than treated as optional once the protected path is in play.
 
     Note what is deliberately NOT done here: the exit code does not change when the
     write fails. Exiting non-zero would launch the replacement pod this abort exists
@@ -3918,13 +3925,16 @@ def _finalize_abort_acknowledgement(
         return exit_code
     if terminal_persisted:
         # The message survives and will redeliver, but the durable `aborted` row was
-        # observed to land, so the completion guard reads it and refuses the
+        # observed to land, so the legacy completion guard reads it and refuses the
         # redelivered work. AGENT_EXIT_RETRYABLE is honest about this pod not having
         # finished handling the message.
         return AGENT_EXIT_RETRYABLE
-    # Neither the terminal row nor the acknowledgement landed. Nothing refuses the
-    # redelivery — the guard has no `aborted` status to read — so the run an operator
-    # stopped is queued to execute again. Say so as loudly as this process can.
+    # Neither the terminal row nor the acknowledgement landed, so on the legacy path
+    # nothing refuses the redelivery — the guard has no `aborted` status to read — and
+    # the run an operator stopped is queued to execute again. (On the protected path
+    # `bind` refuses it regardless, because the record is ACTIVE and already bound;
+    # that is a property of the binding lifecycle, not of this row, so it is not a
+    # reason to soften the message.) Say so as loudly as this process can.
     logger.error(
         "Abort finalization is unprotected: the terminal status did not persist AND "
         "the queue acknowledgement is unconfirmed, so the redelivered message has no "
@@ -3946,8 +3956,10 @@ def _acknowledge_abort(queue_url: str, region: str, receipt_handle: str) -> bool
     So the caller is told the truth. An unconfirmed acknowledgement is not
     reported as a successful abort, because the one thing an operator needs from an
     abort — that the work does not continue — has not been established. The
-    redelivery that follows is refused by the completion guard, which reads the
-    ``aborted`` status this run has already written.
+    redelivery that follows is refused by ``bind`` on the protected path (an ACTIVE,
+    already-bound record admits no second pod) and, on the legacy path, by the
+    completion guard reading the ``aborted`` status this run has already written —
+    which is why that write's *observed* result is what the caller acts on.
 
     Attempts are bounded, not indefinite: this runs inside the visibility timeout
     and a pod that retries forever holds the FIFO group for its whole lifetime.
@@ -3966,10 +3978,13 @@ def _acknowledge_abort(queue_url: str, region: str, receipt_handle: str) -> bool
             )
             if attempt < ABORT_ACK_ATTEMPTS:
                 time.sleep(ABORT_ACK_BACKOFF_SECONDS * attempt)
+    # Deliberately does NOT claim the row is terminal. This function does not know
+    # whether the terminal write landed — only the caller holds `terminal_persisted` —
+    # and the previous wording asserted it unconditionally, which read as reassurance
+    # in exactly the case (write failed AND ack failed) where it was untrue. The
+    # caller's branch says which world this is.
     logger.error(
-        "Abort acknowledgement unconfirmed after %d attempts — the message may redeliver. "
-        "The invocation row is already terminal (aborted), so the completion guard refuses "
-        "the redelivered work rather than re-running an aborted task",
+        "Abort acknowledgement unconfirmed after %d attempts — the message may redeliver",
         ABORT_ACK_ATTEMPTS,
     )
     return False

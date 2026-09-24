@@ -360,8 +360,13 @@ class BootstrapStore:
         # Redelivery after a failed terminal write AND a failed DeleteMessage — the
         # case that motivated the guard — is therefore refused by this line, with no
         # marker read at all. `tests/agentauth/test_abort_redelivery_refusal.py` drives
-        # exactly that flow end to end and asserts the 404, and it was mutation-checked
-        # against a build with the guard deleted: still 404, no credential, no binding.
+        # that flow with both failures injected at the transport under the shipped
+        # worker finalizer (a nonexistent events table, and a corrupted receipt handle
+        # that leaves the message genuinely enqueued), takes the redelivered MessageId
+        # through `TaskDelivery.acquire` into this method, and asserts the 404 plus no
+        # credential and no new BINDING row. Its paired control test writes a real
+        # `aborted` row through the same harness, so the injected failures are
+        # distinguishable from writes that were never attempted.
         #
         # What a guard here WOULD change is the aborting run's own finalization, and
         # only for the worse. The renewal thread re-presents its binding every 300s and

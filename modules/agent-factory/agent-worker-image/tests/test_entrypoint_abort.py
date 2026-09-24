@@ -621,10 +621,29 @@ class TestConfirmedAcknowledgement:
 
         assert entrypoint._acknowledge_abort("q", "us-east-1", "receipt") is False
 
-    def test_an_unconfirmed_acknowledgement_says_why_it_is_safe(self, monkeypatch, caplog):
-        # An operator reading this line needs to know both facts: the message may
-        # redeliver, and the redelivery will be refused. Either alone is alarming
-        # or misleading.
+    def test_an_unconfirmed_acknowledgement_does_not_claim_the_row_is_terminal(
+        self, monkeypatch, caplog
+    ):
+        """This log reports the redelivery risk and nothing it cannot know.
+
+        An earlier revision of this test (mine) asserted the opposite: that the line
+        also reassures the operator the redelivery *will* be refused because "the
+        invocation row is already terminal (aborted)". That was wrong, and the test
+        was pinning the error in place.
+
+        ``_acknowledge_abort`` is not told whether the terminal write landed —
+        ``terminal_persisted`` lives in the caller — so it cannot know the row is
+        terminal. It asserted so unconditionally, which made the reassurance appear in
+        precisely the case where it is false: terminal write failed AND ack failed,
+        the "unprotected" branch whose whole purpose is to say the run may execute
+        again. Two adjacent log lines then contradicted each other, and the
+        reassuring one came first.
+
+        So the contract is now negative as well as positive, because "says the useful
+        thing" and "does not say the unknowable thing" are separate properties and
+        only the pair prevents the regression. The caller's branch, which does hold
+        ``terminal_persisted``, is where the refusal claim legitimately lives.
+        """
         monkeypatch.setattr(
             entrypoint, "_delete_message", MagicMock(side_effect=RuntimeError("down"))
         )
@@ -632,7 +651,9 @@ class TestConfirmedAcknowledgement:
             entrypoint._acknowledge_abort("q", "us-east-1", "receipt")
 
         assert "redeliver" in caplog.text
-        assert "aborted" in caplog.text
+        assert str(entrypoint.ABORT_ACK_ATTEMPTS) in caplog.text
+        assert "already terminal" not in caplog.text
+        assert "refuses the redelivered work" not in caplog.text
 
 
 class TestTheTerminalStatusIsRetried:
