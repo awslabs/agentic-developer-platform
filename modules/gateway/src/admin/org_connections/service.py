@@ -31,6 +31,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from sqlalchemy import delete as sa_delete
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 
 from src.admin.installations.guards import InstallationClaimError, assert_installation_claimable_by
@@ -297,6 +298,14 @@ class OrgConnectionsService:
         org = await self._get_org(org_id)
         install_id_str = str(installation_id)
 
+        # Lock the row before the read-modify-write below. `github_installation_ids`
+        # is a JSON list rewritten wholesale, so two concurrent detaches in one org
+        # both read the same list, each drops its own id, and the later commit
+        # restores the id the earlier one removed — resurrecting a claim for an
+        # installation that was just detached. Taken here rather than in
+        # `_get_org`, which read-only callers share.
+        await self._db.scalar(select(Organization.id).where(Organization.id == org_id).with_for_update())
+
         old_github_ids = [str(i) for i in (org.github_installation_ids or [])]
         mapped = (
             (
@@ -335,7 +344,27 @@ class OrgConnectionsService:
         #    place while other installations remain — they are per-account, not
         #    per-installation, and clearing them early would make the survivors
         #    UNATTESTABLE and break their routing.
-        if not remaining:
+        #
+        #    "Nothing is connected" has to be asked of both stores. A personal
+        #    install is never appended to github_installation_ids (install_callback
+        #    appends only for account_type == "Organization"), so an org whose
+        #    remaining connections are all personal has an empty column and live
+        #    map rows. Deciding from the column alone nulls github_org_id out from
+        #    under them, which is precisely the UNATTESTABLE breakage this step is
+        #    trying to avoid.
+        surviving_map_rows = (
+            await self._db.execute(
+                select(sa_func.count())
+                .select_from(ChannelTenantMap)
+                .where(
+                    ChannelTenantMap.provider == "github",
+                    ChannelTenantMap.org_id == org_id,
+                    ChannelTenantMap.installation_id != install_id_str,
+                )
+            )
+        ).scalar_one()
+
+        if not remaining and not surviving_map_rows:
             org.github_org_id = None
             org.github_app_id = None
 

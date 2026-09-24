@@ -678,6 +678,59 @@ class TestOwnershipIsKeyedOnTheInstallation:
         remaining = (await db.execute(select(ChannelTenantMap.installation_id))).scalars().all()
         assert remaining == [str(INSTALL_B)]
 
+    async def test_a_surviving_personal_install_keeps_the_accounts_identity_fields(self, db: AsyncSession, index_spies):
+        """`github_org_id` must not be nulled while any installation is still connected.
+
+        The "is anything left?" test used to read only `github_installation_ids`.
+        A PERSONAL install never lands there — `install_callback` appends to that
+        column only for `account_type == "Organization"` — so a tenant whose
+        connections are all personal has an empty column and live map rows.
+        Disconnecting one of them therefore looked like "nothing left" and cleared
+        the account identity fields out from under the survivors, and
+        `resolve_installation_owner` refuses to attest a tenant with no
+        `github_org_id` (UNATTESTABLE). That is the loss of routing the guard was
+        written to prevent, caused by the guard consulting one of the two stores.
+        """
+        db.add(_org("org-1", installs=[]))
+        db.add(_map_row("org-1", INSTALL_A, scope_id="acct-a"))
+        db.add(_map_row("org-1", INSTALL_B, scope_id="acct-b"))
+        await db.commit()
+
+        await delete_connection(
+            installation_id=INSTALL_A,
+            caller_org_id="org-1",
+            db=db,
+            github_client=_gh(),
+            caller_is_admin=True,
+        )
+
+        org = (await db.execute(select(Organization).where(Organization.id == "org-1"))).scalar_one()
+        assert org.github_org_id == ACCOUNT_ID
+        assert org.github_app_id == "app-1"
+        # The named installation is still gone; only the survivor's attestability
+        # is preserved.
+        assert (await db.execute(select(ChannelTenantMap.installation_id))).scalars().all() == [str(INSTALL_B)]
+
+    async def test_the_last_installation_still_clears_the_identity_fields(self, db: AsyncSession, index_spies):
+        """The other side of the guard: with nothing left in EITHER store, clear.
+
+        Without this, widening the check to the map rows could silently turn the
+        clearing behaviour off altogether.
+        """
+        await _seed(db, installs=[str(INSTALL_A)], rows=[_map_row("org-1", INSTALL_A)])
+
+        await delete_connection(
+            installation_id=INSTALL_A,
+            caller_org_id="org-1",
+            db=db,
+            github_client=_gh(),
+            caller_is_admin=True,
+        )
+
+        org = (await db.execute(select(Organization).where(Organization.id == "org-1"))).scalar_one()
+        assert org.github_org_id is None
+        assert org.github_app_id is None
+
     async def test_a_cross_tenant_disconnect_is_refused(self, db: AsyncSession, index_spies):
         db.add(_org("org-1", installs=[]))
         db.add(_org("org-2", installs=[str(INSTALL_A)]))

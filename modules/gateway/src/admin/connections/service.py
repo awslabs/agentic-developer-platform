@@ -2748,6 +2748,7 @@ async def delete_connection(
                           Nothing was changed locally; the call is retryable.
     """
     from sqlalchemy import delete as sa_delete
+    from sqlalchemy import func as sa_func
     from sqlalchemy import select
 
     from src.admin.installations.resolver import OwnerState, resolve_installation_owner
@@ -2874,15 +2875,46 @@ async def delete_connection(
     #    sufficient to grant ownership (see `resolve_installation_owner`, which
     #    unions them), so a commit that dropped one and not the other would leave
     #    the installation fully routable while presenting as disconnected.
-    org = await db.get(Organization, caller_org_id)
+    # Lock the org row before the read-modify-write. `github_installation_ids` is a
+    # JSON list rewritten wholesale, so two concurrent disconnects in the same org
+    # both read ['A','B'], each removes its own id, and the second commit restores
+    # the id the first one revoked — a claim resurrected for an installation that
+    # is already uninstalled at GitHub and whose DDB rows are gone. `resolve_
+    # installation` then answers positively for it and the webhook Lambda
+    # re-registers the routing rows, which is exactly the self-undoing cycle the
+    # ordering below was written to close. Same lock `bot_identity` takes on this
+    # row for the same reason.
+    org = await db.scalar(select(Organization).where(Organization.id == caller_org_id).with_for_update())
     old_github_ids = [str(i) for i in (org.github_installation_ids or [])] if org else []
     remaining = [i for i in old_github_ids if i != scope_id]
+
+    # "Is anything left?" must be asked of BOTH authority stores, not just the org
+    # JSON column. A personal install (account_type != "Organization") never gets
+    # appended to github_installation_ids at all — `install_callback` only calls
+    # `_append_installation_id_to_org` for org installs — so a tenant whose
+    # connections are all personal has an empty column and N live map rows.
+    # Deciding from the column alone nulls github_org_id while those siblings are
+    # still connected, and `resolve_installation_owner` then returns UNATTESTABLE
+    # for every one of them (it refuses to attest a tenant with no github_org_id),
+    # which is the exact loss of routing the guard exists to prevent.
+    surviving_map_rows = (
+        await db.execute(
+            select(sa_func.count())
+            .select_from(ChannelTenantMap)
+            .where(
+                ChannelTenantMap.provider == "github",
+                ChannelTenantMap.org_id == caller_org_id,
+                ChannelTenantMap.installation_id != scope_id,
+            )
+        )
+    ).scalar_one()
+
     if org is not None:
         org.github_installation_ids = remaining
-        # Per-account, not per-installation: cleared only once nothing is left, or
-        # the surviving installations would become UNATTESTABLE and lose routing.
-        # Same rule as `org_connections.detach_github`.
-        if not remaining:
+        # Per-account, not per-installation: cleared only once nothing is left in
+        # EITHER store, or the surviving installations would become UNATTESTABLE
+        # and lose routing. Same rule as `org_connections.detach_github`.
+        if not remaining and not surviving_map_rows:
             org.github_org_id = None
             org.github_app_id = None
 

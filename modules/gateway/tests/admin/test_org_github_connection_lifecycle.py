@@ -367,6 +367,40 @@ class TestDetach:
         assert org.github_installation_ids == []
         assert await _github_rows(db_session, OWNER_ORG) == []
 
+    async def test_detach_keeps_identity_fields_while_a_map_only_install_survives(self, db_session: AsyncSession, index: AsyncMock):
+        """Step 3 must ask both stores whether anything is left.
+
+        A personal install is never written to ``github_installation_ids``
+        (``install_callback`` appends only for ``account_type == "Organization"``),
+        so an org can legitimately have an empty column and live
+        ``channel_tenant_map`` rows. Reading only the column made "nothing left"
+        true while a sibling was still connected, nulling ``github_org_id`` and
+        making the survivor UNATTESTABLE — the routing breakage the step's own
+        comment says it avoids.
+        """
+        await _mk_org(db_session, OWNER_ORG, installation_ids=[], github_org_id=FREE_ACCOUNT)
+        await _mk_binding(db_session, OWNER_ORG, installation_id=FREE_INSTALL, account_id=FREE_ACCOUNT)
+        await _mk_binding(db_session, OWNER_ORG, installation_id=VICTIM_INSTALL, account_id="77772")
+
+        svc = OrgConnectionsService(db_session, identity_index=index)
+        await svc.detach_github(OWNER_ORG, FREE_INSTALL)
+
+        org = await db_session.get(Organization, OWNER_ORG)
+        assert org.github_org_id == FREE_ACCOUNT
+        assert [r.installation_id for r in await _github_rows(db_session, OWNER_ORG)] == [str(VICTIM_INSTALL)]
+
+    async def test_detach_of_the_last_install_still_clears_identity_fields(self, db_session: AsyncSession, index: AsyncMock):
+        """The other half of the guard, so widening it cannot disable it."""
+        await _mk_org(db_session, OWNER_ORG, installation_ids=[str(FREE_INSTALL)], github_org_id=FREE_ACCOUNT)
+        await _mk_binding(db_session, OWNER_ORG, installation_id=FREE_INSTALL, account_id=FREE_ACCOUNT)
+
+        svc = OrgConnectionsService(db_session, identity_index=index)
+        await svc.detach_github(OWNER_ORG, FREE_INSTALL)
+
+        org = await db_session.get(Organization, OWNER_ORG)
+        assert org.github_org_id is None
+        assert org.github_app_id is None
+
     async def test_detach_removes_the_identity_index_row(self, db_session: AsyncSession, index: AsyncMock):
         """The stale-routing failure mode from the issue's impact analysis.
 
