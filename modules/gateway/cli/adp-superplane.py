@@ -864,14 +864,13 @@ def deploy(args, api):
             "precision": args.precision,
         }
         # Sent only when the user asked for them, so the server's own defaults
-        # (vllm, 1 replica, 1 GPU, namespace default) stay authoritative.
+        # (vllm, 1 replica, 1 GPU) stay authoritative.
         for key, value in (
             ("serving_framework", args.serving_framework),
             ("replicas", args.replicas),
             ("gpu_per_replica", args.gpu_per_replica),
             ("tensor_parallel_size", args.tensor_parallel_size),
             ("max_model_len", args.max_model_len),
-            ("namespace", args.namespace),
         ):
             if value is not None:
                 body[key] = value
@@ -902,26 +901,22 @@ def deploy(args, api):
         return common.envelope("ok", "superplane deploy create", created)
 
     if args.subcommand == "delete":
+        if not looks_like_uuid(args.id):
+            raise CliError("Use the deployment UUID returned by create or list.", "usage_error", 1)
         preview = mutation_guard(
             args,
             "superplane deploy delete",
-            {
-                "workspace_id": identifier,
-                "name": args.name,
-                "namespace": args.namespace,
-            },
-            f"Delete deployment {args.name!r} from workspace {identifier}?",
+            {"workspace_id": identifier, "deployment_id": args.id},
+            f"Delete deployment {args.id!r} from workspace {identifier}?",
         )
         if preview:
             return preview
-        progress(f"Deleting deployment {args.name}...")
-        api.request(
-            "DELETE",
-            query(f"{base}/{segment(args.name)}", {"namespace": args.namespace}),
-        )
-        return common.envelope("ok", "superplane deploy delete", {"deleted": args.name})
+        progress(f"Deleting deployment {args.id}...")
+        deleted = api.request("DELETE", f"{base}/{segment(args.id)}")
+        pending = str(deleted.get("status", "")).lower() != "deleted"
+        return common.envelope("pending" if pending else "ok", "superplane deploy delete", deleted)
 
-    result = api.request("GET", query(base, {"namespace": args.namespace}))
+    result = api.request("GET", base)
     return common.envelope("ok", "superplane deploy list", {"deployments": result.get("deployments") or []})
 
 
@@ -1788,14 +1783,11 @@ def parser():
     create_deploy.add_argument("--gpu-per-replica", type=int, dest="gpu_per_replica", help="1-8")
     create_deploy.add_argument("--tensor-parallel-size", type=int, dest="tensor_parallel_size", help="1-8")
     create_deploy.add_argument("--max-model-len", type=int, dest="max_model_len", help="Maximum context length")
-    create_deploy.add_argument("--namespace", help="Cluster namespace; defaults to the server's choice")
     list_deploy = leaf(deploy_subcommands, "list", help="List deployments")
     list_deploy.add_argument("--workspace")
-    list_deploy.add_argument("--namespace", help="Cluster namespace to list")
     delete_deploy = mutation(leaf(deploy_subcommands, "delete", help="Delete a deployment"))
-    delete_deploy.add_argument("--name", required=True)
+    delete_deploy.add_argument("--id", required=True, help="Deployment UUID returned by create or list")
     delete_deploy.add_argument("--workspace")
-    delete_deploy.add_argument("--namespace", help="Cluster namespace the deployment is in")
 
     account_command = commands.add_parser("account", help="Register, list and deregister cloud accounts")
     account_subcommands = account_command.add_subparsers(dest="subcommand", required=True)

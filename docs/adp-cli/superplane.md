@@ -137,18 +137,19 @@ adp superplane quota set --workspace research --max-gpus 1 \
   --max-nodes 1 --max-cost-per-day 25 --allowed-clouds aws
 ```
 
-`--name` is required: it is the deployment's name in the service and the handle
-`deploy delete` takes, and the service does not generate one. Use lowercase
+`--name` is required for creation; the service does not generate one.
+Deletion takes the deployment UUID returned by create or list. Use lowercase
 letters, digits and hyphens.
 
 Supported precision values are `fp16` (default), `bf16`, `fp8`, `awq` and `int8`.
 `--serving-framework vllm|sglang`, `--replicas`, `--gpu-per-replica`,
-`--tensor-parallel-size`, `--max-model-len` and `--namespace` are optional; each
+`--tensor-parallel-size` and `--max-model-len` are optional; each
 omitted option takes the service's own default rather than one chosen locally.
-To request deletion of that deployment:
+The service uses the workspace's recorded namespace. Missing namespace ownership
+requires reconciliation before deployment. To request deletion:
 
 ```bash
-adp superplane deploy delete --workspace research --name demo --yes
+adp superplane deploy delete --workspace research --id DEPLOYMENT_UUID --yes
 ```
 
 Stopping the local CLI does not cancel work already accepted by the service or

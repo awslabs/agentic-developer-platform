@@ -13,7 +13,7 @@ def test_create_operation_migration_is_the_single_head():
 
     scripts = ScriptDirectory.from_config(config)
 
-    assert scripts.get_heads() == ["021_deployment_identity"]
+    assert scripts.get_heads() == ["023_add_event_principal_outcome"]
     assert (
         scripts.get_revision("021_deployment_identity").down_revision
         == "020_merge_workspace_cli"
