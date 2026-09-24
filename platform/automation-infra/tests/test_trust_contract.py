@@ -272,6 +272,18 @@ def test_ordinary_cloud_operations_match_reviewed_inventory():
     expected = json.loads((AUTOMATION / 'ordinary-workflow-aws.json').read_text())
     assert ordinary_cloud_inventory() == expected
     for job, record in expected.items():
+        if job == 'superplane-executor-build.yml/build':
+            # PR #5596 added this explicit release workflow on main. Inventory
+            # its existing account/buildspec checks, shared CodeBuild action and
+            # read-only digest lookup. This records source behavior; it grants
+            # no AWS authority and does not permit ECR calls in other jobs.
+            assert record['authority'] == 'runtime'
+            assert set(record['operations']) == {
+                'sts get-caller-identity', 's3 cp',
+                'codebuild batch-get-projects', 'codebuild batch-get-builds',
+                'codebuild start-build', 'codebuild stop-build', 'ecr describe-images',
+            }
+            continue
         if record['authority'] == 'runtime' and job != 'spawn-deploy-instance.yml/spawn':
             assert set(record['operations']) <= {
                 'secretsmanager get-secret-value',  # exact retained GitHub transport inputs
