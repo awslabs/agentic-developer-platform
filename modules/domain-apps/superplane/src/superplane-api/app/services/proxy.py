@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 # STS token duration (15 minutes — minimum)
 TOKEN_DURATION_SECONDS = 900
+WORKSPACE_OWNER_LABEL = "superplane.io/workspace"
 
 
 class ProxyError(Exception):
@@ -383,7 +384,9 @@ def create_deployment_manifest(
     gpu_per_replica: int = 1,
     tensor_parallel_size: int = 1,
     max_model_len: int | None = None,
-    namespace: str = "default",
+    *,
+    namespace: str,
+    workspace_id: uuid.UUID | str,
 ) -> dict[str, Any]:
     """Generate a vLLM/SGLang K8s Deployment manifest.
 
@@ -445,6 +448,7 @@ def create_deployment_manifest(
             "labels": {
                 "app": name,
                 "superplane.io/component": "model-serving",
+                WORKSPACE_OWNER_LABEL: str(workspace_id),
                 "superplane.io/framework": serving_framework,
                 "superplane.io/model": model_name.replace("/", "--"),
             },
@@ -582,14 +586,14 @@ def apply_deployment_via_k8s(
 
 def list_deployments_via_k8s(
     apps_api: AppsV1Api,
-    namespace: str = "default",
-    label_selector: str = "superplane.io/component=model-serving",
+    *,
+    namespace: str,
+    workspace_id: uuid.UUID | str,
 ) -> list[dict[str, Any]]:
-    """List deployments from child cluster via K8s API.
-
-    Returns:
-        List of deployment info dicts.
-    """
+    """List only this workspace's model-serving objects in its recorded namespace."""
+    label_selector = (
+        f"superplane.io/component=model-serving,{WORKSPACE_OWNER_LABEL}={workspace_id}"
+    )
     try:
         dep_list = apps_api.list_namespaced_deployment(
             namespace=namespace,
@@ -600,6 +604,7 @@ def list_deployments_via_k8s(
             deployments.append(
                 {
                     "name": dep.metadata.name,
+                    "provider_uid": dep.metadata.uid,
                     "namespace": dep.metadata.namespace,
                     "replicas": dep.spec.replicas,
                     "ready_replicas": dep.status.ready_replicas or 0,
@@ -674,7 +679,10 @@ def delete_deployment_via_k8s(
         if expected_uid is not None:
             arguments["body"] = {"preconditions": {"uid": expected_uid}}
         apps_api.delete_namespaced_deployment(**arguments)
-        return {"name": name, "namespace": namespace, "status": "Deleted"}
+        # Kubernetes acknowledges asynchronous deletion before finalizers finish.
+        # Hold the allocation until a read proves the object is absent.
+        apps_api.read_namespaced_deployment(name=name, namespace=namespace)
+        return {"name": name, "namespace": namespace, "status": "Deleting"}
     except ApiException as exc:
         if exc.status == 404:
             if absent_ok:

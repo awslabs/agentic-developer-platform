@@ -143,7 +143,7 @@ async def test_full_chain_lands_only_in_owned_schema(isolated_database, initial_
     )
     assert result.returncode == 0, result.stderr
     observed = await installation.database_check(migrating=True)
-    assert observed["revision"] == "027_cli_bootstrap_foundation"
+    assert observed["revision"] == "028_deployment_namespace_quota"
     async with engine.connect() as conn:
         assert (
             await conn.execute(

@@ -187,9 +187,9 @@ An older domain without the replay contract is refused before mutation.
 | `adp superplane quota set` | Selected workspace or `--workspace WORKSPACE`; at least one quota option | `--max-gpus COUNT`, `--max-cost-per-day USD`, `--max-nodes COUNT`, `--allowed-clouds aws,lambda`, `--dry-run`, `--yes` |
 | `adp superplane cost` | None | `--org` for organization-wide cost, or `--workspace WORKSPACE`; `--start-date`, `--end-date` (ISO 8601). `--org` and `--workspace` are mutually exclusive |
 | `adp superplane events` | None | `--resource-type TYPE`, `--user USER_ID`, `--action ACTION`, `--event-type TYPE`, `--start-time`, `--end-time` (ISO 8601), `--limit COUNT` (1-500, default 50), `--offset COUNT`. There is no workspace filter |
-| `adp superplane deploy create` | `--model MODEL`, `--name NAME`; selected workspace or `--workspace WORKSPACE` | `--precision fp8|fp16|bf16|awq|int8` (default `fp16`), `--serving-framework vllm|sglang`, `--replicas COUNT`, `--gpu-per-replica COUNT`, `--tensor-parallel-size COUNT`, `--max-model-len TOKENS`, `--namespace NAMESPACE`, `--dry-run`, `--yes`. Omitted options take the server's default |
-| `adp superplane deploy list` | Selected workspace or `--workspace WORKSPACE` | `--namespace NAMESPACE` |
-| `adp superplane deploy delete` | `--name NAME`; selected workspace or `--workspace WORKSPACE` | `--namespace NAMESPACE`, `--dry-run`, `--yes`; requests deployment deletion |
+| `adp superplane deploy create` | `--model MODEL`, `--name NAME`; selected workspace or `--workspace WORKSPACE` | `--precision fp8|fp16|bf16|awq|int8` (default `fp16`), `--serving-framework vllm|sglang`, `--replicas COUNT`, `--gpu-per-replica COUNT`, `--tensor-parallel-size COUNT`, `--max-model-len TOKENS`, `--dry-run`, `--yes`. Omitted options take the server's default |
+| `adp superplane deploy list` | Selected workspace or `--workspace WORKSPACE` | Uses the workspace namespace |
+| `adp superplane deploy delete` | `--id DEPLOYMENT_UUID`; selected workspace or `--workspace WORKSPACE` | `--dry-run`, `--yes`; requests deployment deletion |
 | `adp superplane account onboard` | `--name NAME`, `--provider aws`, `--account-id ACCOUNT`, `--credential-id ADP_CONNECTION_ID` | `--dry-run`, `--yes`; registers a verified caller-owned AWS connection through the server-side adapter |
 | `adp superplane account list` | None | None |
 | `adp superplane account delete ACCOUNT` | The registration's record id, or the cloud account ID or name it was registered under | `--dry-run`, `--yes`; requests deregistration |

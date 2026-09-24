@@ -10,6 +10,10 @@ from app.middleware.auth import create_access_token
 from tests.conftest import async_session_test
 
 
+# Fixed workspace ids so manifest assertions can name an expected owner label.
+_WORKSPACE_A = uuid.UUID("11111111-1111-1111-1111-111111111111")
+
+
 def _auth_header(org_id: uuid.UUID | None = None) -> dict:
     """Create an Authorization header with a valid JWT."""
     if org_id is None:
@@ -53,7 +57,11 @@ class TestProxySchemas:
         assert req.replicas == 1
         assert req.gpu_per_replica == 1
         assert req.tensor_parallel_size == 1
-        assert req.namespace == "default"
+        # `namespace` is no longer a field at all (issue #5671, A15) — the server
+        # resolves it from the workspace record. Asserted as absent rather than
+        # deleted from this test, because a default reappearing here is exactly the
+        # regression that would hand namespace selection back to the caller.
+        assert not hasattr(req, "namespace")
 
     def test_released_deployment_body_gets_a_server_operation_id(self):
         from app.schemas.proxy import CreateDeploymentRequest
@@ -190,6 +198,8 @@ class TestProxyService:
             replicas=2,
             gpu_per_replica=1,
             tensor_parallel_size=1,
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         assert manifest["apiVersion"] == "apps/v1"
@@ -226,6 +236,8 @@ class TestProxyService:
             gpu_per_replica=4,
             tensor_parallel_size=4,
             max_model_len=8192,
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         container = manifest["spec"]["template"]["spec"]["containers"][0]
@@ -244,6 +256,8 @@ class TestProxyService:
             name="my-model",
             model_name="test/model",
             max_model_len=4096,
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         container = manifest["spec"]["template"]["spec"]["containers"][0]
@@ -256,6 +270,8 @@ class TestProxyService:
         manifest = create_deployment_manifest(
             name="my-model",
             model_name="test/model",
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         tolerations = manifest["spec"]["template"]["spec"]["tolerations"]
@@ -268,6 +284,8 @@ class TestProxyService:
         manifest = create_deployment_manifest(
             name="my-model",
             model_name="test/model",
+            namespace="ws-alpha",
+            workspace_id=_WORKSPACE_A,
         )
 
         container = manifest["spec"]["template"]["spec"]["containers"][0]
@@ -675,6 +693,7 @@ async def test_deployment_create_replay_applies_once(monkeypatch):
         id=workspace_id,
         org_id=org_id,
         name="workspace",
+        namespace_name="ws-test",
         isolation_mode="dedicated",
         status="Active",
         cluster_id=cluster.id,
@@ -687,7 +706,7 @@ async def test_deployment_create_replay_applies_once(monkeypatch):
     apply = MagicMock(
         return_value={
             "name": "llama-8b",
-            "namespace": "default",
+            "namespace": "ws-test",
             "replicas": 1,
             "status": "Created",
             "provider_uid": "provider-uid-1",

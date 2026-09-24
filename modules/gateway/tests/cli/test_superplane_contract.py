@@ -288,6 +288,8 @@ class Recorder:
                 "name": (body or {}).get("name"),
                 "status": "Active",
             }
+        if method == "DELETE" and "/deployments/" in base:
+            return {"name": "llama-8b", "status": "Deleted"}
         if method == "POST" and base.endswith("/deployments"):
             return {
                 "deployment_id": DOMAIN_RECORD,
@@ -356,6 +358,10 @@ def private_home(tmp_path, monkeypatch):
     That is the realistic state — `workspace use prod` records what the user typed
     — and it is the state in which the unresolved-name defect reached the server.
     """
+    for key in list(os.environ):
+        if key.startswith("ADP_DEPLOYMENT") or key in {"ADP_HOME", "ADP_LEGACY_CONFIG_DIR", "BG_CONFIG_DIR"}:
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(common, "_deployment", common._UNRESOLVED)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.setattr(common, "access_token", lambda: "synthetic-session-token")
@@ -451,7 +457,7 @@ COMMANDS = [
     (["events", "--resource-type", "workspace", "--limit", "10"], "events"),
     (["deploy", "list"], "deploy list"),
     (["deploy", "create", "--name", "llama-8b", "--model", "meta-llama/Llama-3-8B", "--yes"], "deploy create"),
-    (["deploy", "delete", "--name", "llama-8b", "--yes"], "deploy delete"),
+    (["deploy", "delete", "--id", DOMAIN_RECORD, "--yes"], "deploy delete"),
     (
         [
             "account",
@@ -1156,7 +1162,7 @@ def test_a_failed_resolution_stops_before_the_operation_it_was_for() -> None:
     """
     api = Recorder({("GET", cli.API_BASE + "/workspaces"): {"workspaces": [], "total": 0}})
     with pytest.raises(cli.CliError) as raised:
-        cli.run(cli.parser().parse_args(["deploy", "delete", "--name", "llama-8b", "--yes"]), api)
+        cli.run(cli.parser().parse_args(["deploy", "delete", "--id", DOMAIN_RECORD, "--yes"]), api)
     assert raised.value.code == "workspace_not_found"
     assert api.paths() == [("GET", cli.API_BASE + "/workspaces")], "nothing may be deleted after a failed resolution"
 
@@ -1364,7 +1370,7 @@ def test_a_secret_on_the_command_line_is_still_refused() -> None:
         ["workspace", "create", "--name", "preview", "--dry-run"],
         ["quota", "set", "--max-gpus", "1", "--dry-run"],
         ["deploy", "create", "--name", "preview", "--model", "model", "--dry-run"],
-        ["deploy", "delete", "--name", "preview", "--dry-run"],
+        ["deploy", "delete", "--id", DOMAIN_RECORD, "--dry-run"],
         ["account", "delete", ACCOUNT_NUMBER, "--dry-run"],
         ["provider", "add", "--name", "preview", "--provider", "nebius", "--dry-run"],
         ["provider", "delete", DOMAIN_RECORD, "--dry-run"],
@@ -1425,3 +1431,28 @@ def test_the_allowlist_is_not_widened_to_admit_the_retired_paths() -> None:
         ("POST", "/aws/accounts"),
     ):
         assert retired not in allowlist, f"{retired} must not be admitted to the allowlist"
+
+
+def test_deployment_delete_uses_uuid_and_reports_pending():
+    path = f"{cli.API_BASE}/workspaces/{WORKSPACE_ID}/deployments/{DOMAIN_RECORD}"
+    api, result = run(
+        ["deploy", "delete", "--id", DOMAIN_RECORD, "--yes"],
+        {("DELETE", path): {"name": "llama-8b", "status": "Deleting"}},
+    )
+    assert any(method == "DELETE" and target == path for method, target, _ in api.sent)
+    assert result["status"] == "pending"
+    with pytest.raises(cli.CliError, match="deployment UUID"):
+        run(["deploy", "delete", "--id", "llama-8b", "--yes"])
+
+
+@pytest.mark.parametrize(
+    "subcommand,flags",
+    [
+        ("create", ["--name", "llama-8b", "--model", "model"]),
+        ("list", []),
+        ("delete", ["--id", DOMAIN_RECORD]),
+    ],
+)
+def test_deployment_namespace_is_server_owned(subcommand, flags):
+    with pytest.raises(cli.CliError, match="unrecognized arguments"):
+        cli.parser().parse_args(["deploy", subcommand, *flags, "--namespace", "kube-system"])

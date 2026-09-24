@@ -47,6 +47,7 @@ class Deployment(Base):
     operation_request_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     operation_target_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    namespace: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_revision: Mapped[str | None] = mapped_column(String(100), nullable=True)
     precision: Mapped[str | None] = mapped_column(

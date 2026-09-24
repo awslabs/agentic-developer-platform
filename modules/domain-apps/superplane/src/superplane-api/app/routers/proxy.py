@@ -11,7 +11,7 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,11 @@ from app.schemas.proxy import (
     NodeListResponse,
 )
 from app.services.deployment_identity import bind_manifest
+from app.services.quota import reserve_deployment_gpus
+from app.services.workspace_namespace import (
+    NamespaceResolutionError,
+    resolve_workspace_namespace,
+)
 from app.services.proxy import (
     ProxyError,
     apply_deployment_via_k8s,
@@ -51,6 +56,13 @@ def _handle_proxy_error(exc: ProxyError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.message)
 
 
+def _namespace(workspace):
+    try:
+        return resolve_workspace_namespace(workspace)
+    except NamespaceResolutionError as exc:
+        raise HTTPException(409, "Workspace namespace ownership is unresolved") from exc
+
+
 def _operation_request(body: CreateDeploymentRequest) -> str:
     return json.dumps(
         body.model_dump(mode="json", exclude={"operation_id"}),
@@ -60,10 +72,12 @@ def _operation_request(body: CreateDeploymentRequest) -> str:
 
 
 def _deployment_create_response(deployment: Deployment) -> DeploymentCreateResponse:
-    request = json.loads(deployment.operation_request_json or "{}")
     return DeploymentCreateResponse(
         name=deployment.name,
-        namespace=request.get("namespace", "default"),
+        namespace=deployment.namespace
+        or json.loads(deployment.operation_target_json or "{}").get(
+            "namespace", "unresolved"
+        ),
         replicas=deployment.desired_replicas,
         status=deployment.status,
         deployment_id=deployment.id,
@@ -150,7 +164,7 @@ def _terminal_create_response(deployment):
     return None
 
 
-def _create_manifest(body):
+def _create_manifest(body, namespace, workspace_id):
     return create_deployment_manifest(
         name=body.name,
         model_name=body.model_name,
@@ -160,7 +174,8 @@ def _create_manifest(body):
         gpu_per_replica=body.gpu_per_replica,
         tensor_parallel_size=body.tensor_parallel_size,
         max_model_len=body.max_model_len,
-        namespace=body.namespace,
+        namespace=namespace,
+        workspace_id=workspace_id,
     )
 
 
@@ -217,6 +232,7 @@ async def create_deployment(
     body: CreateDeploymentRequest,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
+    request: Request = None,
 ) -> DeploymentCreateResponse:
     """Create a model deployment on the workspace's child cluster.
 
@@ -248,13 +264,13 @@ async def create_deployment(
         response = _terminal_create_response(existing)
         if response is not None:
             return response
+    namespace = _namespace(workspace)
     if existing is None:
-        target = json.loads(_deployment_target(workspace, cluster, body.namespace))
-        target["manifest"] = _create_manifest(body)
-        deployment = Deployment(
+        target = json.loads(_deployment_target(workspace, cluster, namespace))
+        target["manifest"] = _create_manifest(body, namespace, workspace_id)
+        deployment_kwargs = dict(
             cluster_id=cluster.id,
-            org_id=org_id,
-            workspace_id=workspace_id,
+            namespace=namespace,
             name=body.name,
             operation_id=body.operation_id,
             operation_request_json=operation_request,
@@ -268,11 +284,16 @@ async def create_deployment(
             gpu_per_replica=body.gpu_per_replica,
             tensor_parallel_size=body.tensor_parallel_size,
             max_model_len=body.max_model_len,
-            status="Pending",
         )
-        db.add(deployment)
         try:
-            await db.commit()
+            deployment = await reserve_deployment_gpus(
+                workspace_id,
+                org_id,
+                body.replicas * body.gpu_per_replica,
+                db,
+                deployment_kwargs=deployment_kwargs,
+                request=request,
+            )
         except IntegrityError:
             await db.rollback()
             existing = await _deployment_for_operation(
@@ -305,7 +326,7 @@ async def create_deployment(
     response = _terminal_create_response(deployment)
     if response is not None:
         return response
-    _require_deployment_target(deployment, workspace, cluster, body.namespace)
+    _require_deployment_target(deployment, workspace, cluster, _namespace(workspace))
     try:
         _, apps_api, _, _ = await get_k8s_clients(workspace_id, org_id, db)
     except ProxyError as exc:
@@ -336,7 +357,6 @@ async def create_deployment(
 @router.get("/{workspace_id}/deployments", response_model=DeploymentListResponse)
 async def list_deployments(
     workspace_id: uuid.UUID,
-    namespace: str = "default",
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> DeploymentListResponse:
@@ -345,7 +365,24 @@ async def list_deployments(
         _, apps_api, workspace, cluster = await get_k8s_clients(
             workspace_id, org_id, db
         )
-        deployments = list_deployments_via_k8s(apps_api, namespace=namespace)
+        deployments = list_deployments_via_k8s(
+            apps_api, namespace=_namespace(workspace), workspace_id=workspace_id
+        )
+
+        records = (await db.scalars(
+            select(Deployment).where(
+                Deployment.workspace_id == workspace_id,
+                Deployment.org_id == org_id,
+                Deployment.namespace == _namespace(workspace),
+                Deployment.provider_uid.is_not(None),
+                Deployment.status != "Deleted",
+            )
+        )).all()
+        by_uid = {record.provider_uid: record for record in records}
+        for item in deployments:
+            record = by_uid.get(item.pop("provider_uid", None))
+            if record is not None and record.name == item["name"]:
+                item["deployment_id"] = record.id
 
         return DeploymentListResponse(
             workspace_id=workspace_id,
@@ -362,8 +399,7 @@ async def list_deployments(
 )
 async def delete_deployment(
     workspace_id: uuid.UUID,
-    dep_id: str,
-    namespace: str = "default",
+    dep_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
 ) -> DeploymentDeleteResponse:
@@ -376,60 +412,25 @@ async def delete_deployment(
             workspace_id, org_id, db, for_update=True
         )
 
-        # Resolve deployment name: could be a UUID (DB record) or a K8s name
-        deployment_name = dep_id
-        dep_record = None
-        try:
-            dep_uuid = uuid.UUID(dep_id)
-            # Look up in DB to get the K8s deployment name
-            dep_result = await db.execute(
-                select(Deployment)
-                .where(
-                    Deployment.id == dep_uuid,
-                    Deployment.workspace_id == workspace_id,
-                    Deployment.org_id == org_id,
-                )
-                .with_for_update()
-                .execution_options(populate_existing=True)
+        dep_record = await db.scalar(
+            select(Deployment)
+            .where(
+                Deployment.id == dep_id,
+                Deployment.workspace_id == workspace_id,
+                Deployment.org_id == org_id,
             )
-            dep_record = dep_result.scalar_one_or_none()
-            if dep_record:
-                deployment_name = dep_record.name
-        except ValueError:
-            # Not a UUID — treat as K8s deployment name directly
-            pass
-
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if dep_record is None:
-            candidates = (
-                await db.scalars(
-                    select(Deployment)
-                    .where(
-                        Deployment.name == deployment_name,
-                        Deployment.workspace_id == workspace_id,
-                        Deployment.org_id == org_id,
-                    )
-                    .with_for_update()
-                    .execution_options(populate_existing=True)
-                )
-            ).all()
-            candidates = [
-                candidate
-                for candidate in candidates
-                if json.loads(candidate.operation_request_json or "{}").get(
-                    "namespace", "default"
-                )
-                == namespace
-            ]
-            live = [
-                candidate for candidate in candidates if candidate.status != "Deleted"
-            ]
-            if len(live) > 1:
-                raise HTTPException(
-                    409,
-                    "Deployment name has multiple operation records; use its deployment ID",
-                )
-            dep_record = live[0] if live else (candidates[0] if candidates else None)
-
+            raise HTTPException(404, "Deployment not found for this workspace")
+        if dep_record.operation_id is None or not dep_record.operation_target_json:
+            raise HTTPException(
+                409,
+                "Legacy deployment has no verified target; reconcile ownership before deletion",
+            )
+        namespace = _namespace(workspace)
+        deployment_name = dep_record.name
         expected_manifest = None
         if dep_record is not None and dep_record.operation_id is not None:
             _require_deployment_target(dep_record, workspace, cluster, namespace)
@@ -483,7 +484,7 @@ async def delete_deployment(
 
         # Update DB record if exists
         if dep_record:
-            dep_record.status = "Deleted"
+            dep_record.status = result["status"]
             await db.commit()
 
         return DeploymentDeleteResponse(**result)

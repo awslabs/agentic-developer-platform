@@ -99,6 +99,7 @@ async def runtime(isolated_database, monkeypatch):
                 name="workspace",
                 status="Active",
                 isolation_mode="dedicated",
+                namespace_name="ws-replay",
             )
         )
         await db.commit()
@@ -142,7 +143,7 @@ async def create(runtime, body=None):
 async def delete(runtime, deployment_id):
     async with runtime.factory() as db:
         return await proxy.delete_deployment(
-            runtime.workspace_id, str(deployment_id), "default", runtime.org_id, db
+            runtime.workspace_id, deployment_id, runtime.org_id, db
         )
 
 
