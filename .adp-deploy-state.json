@@ -3,7 +3,7 @@
   "account_id": "879318057152",
   "aws_profile": "embark1",
   "github_org": "aws-e",
-  "scope": "Scoped cyber URL researcher deployment; historical phases retained without revalidation",
+  "scope": "Epic and wave display metadata application rollout; historical phases retained without revalidation",
   "phases": {
     "gateway_backend": {
       "status": "complete",
@@ -202,12 +202,114 @@
       "deployment_record": "modules/domain-apps/cyber/docs/domain-investigation-deployment-2026-09-23.md",
       "top_level_adp_cli_updated": false,
       "ui_github_ingress_end_to_end_tested": false
+    },
+    "display_metadata": {
+      "status": "complete",
+      "source_sha": "de3227b36c7956c181cfd486876c90c19bec354e",
+      "pull_request": 5843,
+      "account_verified": true,
+      "automatic_deploy_blocker": "Required adp-deployment runner group missing for chat and worker; gateway startup failure",
+      "evidence_directory": "/private/tmp/adp-display-metadata-evidence-20260924",
+      "execution_remains_paused": true,
+      "builds": "complete",
+      "migration": "complete",
+      "frontend": "complete",
+      "gateway_backend": "complete",
+      "worker_images": "complete",
+      "tick_image": "complete_schedule_disabled",
+      "automation_followup": "adp-aht",
+      "draft_publication": "complete",
+      "draft_version": 3,
+      "execution_plan_hash": "40a150cd9f73865409e1a084be276ab93fc11b9701a28b764e8afc8307c6bdc9",
+      "flow_id": "1275a30d-a84d-4f98-9ddb-f461c5aeb2d1",
+      "cli_verified": true,
+      "github_epic_synchronized": true,
+      "mobile_header_followup_pr": 5845,
+      "mobile_header_status": "deployed_and_live_verified",
+      "beads_sync": "No Dolt remote configured",
+      "images": {
+        "gateway": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:b80ec5e6a3eb7fbe9a322eb10944ede161664e0705e5012c44ff2df9544a5f01",
+        "worker": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:a84b11df06393cc21a1564a1b475a00db8f4a1cdf715eadd1b2e8c4e44d06a18",
+        "chat": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:d0b87ac11e6f5e320fae321a1230554468422a7dfb8573dccc2ae13a6dcce799"
+      },
+      "build_ids": [
+        "adp-dev-gateway-build:6476469d-1c1e-4510-8965-d064b8a88798",
+        "adp-dev-agent-runtime:4d781998-9429-4a8d-98c7-89aeef342ac0",
+        "adp-dev-chat-agent:53b07e4c-6ff7-4d1a-8263-ce5888c8aa0c"
+      ],
+      "flow_verification": {
+        "draftVersion": 3,
+        "executionHashUnchanged": true,
+        "nodeIdentitiesAndStatesUnchanged": true,
+        "dependenciesUnchanged": true,
+        "waveMetadataVisible": 6,
+        "epicDescriptionVisible": true,
+        "paused": true,
+        "acceptanceGateUnanswered": true,
+        "allAttemptsZero": true,
+        "activePolicy": null
+      },
+      "smoke_assertions": [
+        {
+          "passed": true,
+          "reason": "token_valid"
+        },
+        {
+          "passed": true,
+          "reason": "access_status_ok"
+        },
+        {
+          "passed": true,
+          "reason": "connections_multi_tenant_ok"
+        }
+      ],
+      "migration_job_removed": true,
+      "worker_release_overlay": "docs/task-api/display-worker-image.json",
+      "hosted_agent_model_invocation_performed": false,
+      "frontend_source_sha": "8fd4a01c3ae1194d34464044516fda4b13bb8b45",
+      "browser_verification": {
+        "epicDescriptionVisible": true,
+        "allSixWaveNamesVisible": true,
+        "collapsedWaveDescriptionVisible": true,
+        "mobileNoHorizontalOverflow": true,
+        "flowSummaryUsesDisplayName": true,
+        "pageErrors": []
+      },
+      "frontend_verification": {
+        "source_sha": "8fd4a01c3ae1194d34464044516fda4b13bb8b45",
+        "index_sha256": "8d5038248996df3dcb8e31607b89b34210092e4d0bce5eb7bc31399d2322bdb5",
+        "live_index_matches_release": true
+      },
+      "verified_at": "2026-09-24T07:42:18.007594+00:00",
+      "prepull_rollouts": "complete",
+      "prepull_verification": {
+        "worker": {
+          "currentNumberScheduled": 26,
+          "desiredNumberScheduled": 26,
+          "numberAvailable": 26,
+          "numberMisscheduled": 0,
+          "numberReady": 26,
+          "observedGeneration": 5,
+          "updatedNumberScheduled": 26
+        },
+        "chat": {
+          "currentNumberScheduled": 26,
+          "desiredNumberScheduled": 26,
+          "numberAvailable": 26,
+          "numberMisscheduled": 0,
+          "numberReady": 26,
+          "observedGeneration": 161,
+          "updatedNumberScheduled": 26
+        }
+      },
+      "gateway_ready_replicas": 9,
+      "quality_gates": "All checks passed for PRs #5843 and #5845"
     }
   },
   "outputs": {
-    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway:54037213846dea7db40be8626cfca54dc3ea4fe5",
-    "deployed_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f",
-    "deployed_chat_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-gateway@sha256:b661bc05bfd3206ec2daef50b9d4d5fb1194ff2888df117d01ef91b76957e879",
+    "deployed_gateway_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-gateway@sha256:b80ec5e6a3eb7fbe9a322eb10944ede161664e0705e5012c44ff2df9544a5f01",
+    "deployed_worker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:a84b11df06393cc21a1564a1b475a00db8f4a1cdf715eadd1b2e8c4e44d06a18",
+    "deployed_chat_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-chat-agent@sha256:d0b87ac11e6f5e320fae321a1230554468422a7dfb8573dccc2ae13a6dcce799",
     "agent_models_url": "https://d1g6cal2ts4iis.cloudfront.net/settings/agent-models",
     "deployed_url_browser_broker_image": "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f",
     "url_browser_broker_endpoint": "http://url-analysis-browser-broker.adp-agents.svc.cluster.local:8765"
