@@ -200,7 +200,9 @@ def run_probe(run: Runner, flow: Flow) -> dict[str, Any]:
     """Execute one flow's probe inside its pod and record the raw outcome."""
     argv = [
         "kubectl", "exec", "-n", flow.namespace, flow.pod, "--",
-        "python3", "-c", IN_POD_PROBE,
+        # This stdlib-only probe must not load injected sitecustomize telemetry.
+        # Its resource detection/export can block before the socket timeout starts.
+        "python3", "-S", "-c", IN_POD_PROBE,
         flow.host, str(flow.port), str(flow.timeout),
     ]
     result = run(argv)
