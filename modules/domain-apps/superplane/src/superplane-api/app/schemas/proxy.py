@@ -73,6 +73,30 @@ class DeleteDeploymentRequest(BaseModel):
     plan_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
+class BatchOptions(BaseModel):
+    """Exact immutable invocation selected from an installed batch profile."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    image: str = Field(
+        pattern=r"^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$", max_length=512
+    )
+    command: list[str] = Field(min_length=1, max_length=32)
+    args: list[str] = Field(max_length=32)
+    gpu_count: int = Field(ge=1, le=8)
+    cpu: str = Field(pattern=r"^[1-9][0-9]{0,4}m?$")
+    memory: str = Field(pattern=r"^[1-9][0-9]{0,4}[MG]i$")
+
+
+class CreateBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: uuid.UUID
+    profile_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    approval_id: uuid.UUID | None = None
+    plan_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,50}$")
+    batch_options: BatchOptions
+
+
 class DeploymentInfo(BaseModel):
     deployment_id: uuid.UUID | None = None
     operation_id: str | None = None

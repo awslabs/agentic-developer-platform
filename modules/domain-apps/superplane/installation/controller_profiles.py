@@ -92,16 +92,29 @@ def policy(env):
                     "port",
                     "auth_secret",
                 }
-                and workload.get("kind") == "serving"
-                and profile.get("serving_auth_contract")
-                == "superplane-token-file-header-v1"
+                and workload.get("kind") in {"serving", "batch"}
                 and isinstance(workload.get("image"), str)
                 and re.fullmatch(
                     r"[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}", workload["image"]
                 )
-                and isinstance(workload.get("auth_secret"), str)
-                and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", workload["auth_secret"]),
-                "Each serving profile requires an immutable image and explicit compatible workspace auth Secret",
+                and (
+                    (
+                        workload["kind"] == "serving"
+                        and profile.get("serving_auth_contract")
+                        == "superplane-token-file-header-v1"
+                        and isinstance(workload.get("auth_secret"), str)
+                        and re.fullmatch(
+                            r"[a-z][a-z0-9-]{0,62}", workload["auth_secret"]
+                        )
+                    )
+                    or (
+                        workload["kind"] == "batch"
+                        and workload["auth_secret"] is None
+                        and workload["port"] is None
+                        and profile["serving_auth_contract"] is None
+                    )
+                ),
+                "Profiles require an immutable image; serving requires workspace authentication and batch cannot expose an endpoint",
             )
             require(
                 isinstance(profile.get("credential_reference"), dict)
@@ -109,15 +122,19 @@ def policy(env):
                 == {"credential_id", "credential_service", "credential_label"}
                 and isinstance(profile.get("model_options"), dict)
                 and set(profile["model_options"])
-                == {
-                    "model_name",
-                    "precision",
-                    "serving_framework",
-                    "replicas",
-                    "gpu_per_replica",
-                    "tensor_parallel_size",
-                    "max_model_len",
-                },
+                == (
+                    set()
+                    if workload["kind"] == "batch"
+                    else {
+                        "model_name",
+                        "precision",
+                        "serving_framework",
+                        "replicas",
+                        "gpu_per_replica",
+                        "tensor_parallel_size",
+                        "max_model_len",
+                    }
+                ),
                 "Profiles accept only opaque credential references and documented model options",
             )
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -192,7 +209,7 @@ def projection(env):
 # readiness, which require an actual approved API request and provider execution.
 VERIFY_PROGRAM = """import hashlib,json,os
 from pathlib import Path
-from superplane_executor.deployment_plan import build_deployment_preview
+from superplane_executor.deployment_plan import BATCH_FIELDS,build_deployment_preview
 path=os.environ.get("SUPERPLANE_CONTROLLER_PROFILES_FILE")
 if path:
     with Path(path).open("rb") as source: raw=source.read(262145)
@@ -206,7 +223,9 @@ for org_id,tenant in document["tenants"].items():
     for workspace_id,profiles in tenant["workspaces"].items():
         for profile_id,profile in profiles.items():
             target={key:profile[key] for key in ("cluster_id","cluster_arn","endpoint","namespace","provider_account_id")}
-            build_deployment_preview(org_id=org_id,workspace_id=workspace_id,request_id="67f38780-b5ca-5d73-99a3-3e91f43540cd",profile_id=profile_id,profile=profile,target=target,name="installation-validation",model_options=profile["model_options"])
+            kind=profile["workload"]["kind"]
+            batch={key:profile["workload"][key] for key in BATCH_FIELDS} if kind=="batch" else None
+            build_deployment_preview(org_id=org_id,workspace_id=workspace_id,request_id="67f38780-b5ca-5d73-99a3-3e91f43540cd",profile_id=profile_id,profile=profile,target=target,name="installation-validation",model_options=profile["model_options"],workload_kind=kind,batch_options=batch)
             count+=1
 assert count>0
 encoded=json.dumps(document,sort_keys=True,separators=(",",":"),allow_nan=False).encode()

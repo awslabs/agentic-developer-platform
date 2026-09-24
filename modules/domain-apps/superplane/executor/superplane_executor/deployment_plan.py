@@ -27,6 +27,7 @@ MODEL_FIELDS = frozenset(
         "max_model_len",
     }
 )
+BATCH_FIELDS = frozenset({"image", "command", "args", "gpu_count", "cpu", "memory"})
 REQUEST_FIELDS = frozenset(
     {
         "controller_plan",
@@ -157,6 +158,8 @@ def build_deployment_preview(
     target,
     name,
     model_options,
+    workload_kind="serving",
+    batch_options=None,
 ):
     """Build solely from explicit installed profile and canonical DB destination."""
     try:
@@ -167,14 +170,32 @@ def build_deployment_preview(
         ):
             raise ValueError("unsupported profile")
         if (
+            workload_kind not in {"serving", "batch"}
+            or profile["workload"].get("kind") != workload_kind
+        ):
+            raise ValueError("profile workload kind differs from requested lifecycle")
+        if workload_kind == "serving" and (
             set(model_options) != MODEL_FIELDS
             or model_options != profile["model_options"]
+            or batch_options is not None
         ):
             raise ValueError("model options differ from reviewed profile")
         # The current controller contract emits one serving replica. Do not
         # approve multiple replicas and silently run fewer than were requested.
-        if type(model_options["replicas"]) is not int or model_options["replicas"] != 1:
+        if workload_kind == "serving" and (
+            type(model_options["replicas"]) is not int or model_options["replicas"] != 1
+        ):
             raise ValueError("controller supports one serving replica")
+        if workload_kind == "batch" and (
+            model_options != {}
+            or profile["model_options"] != {}
+            or profile["serving_auth_contract"] is not None
+            or not isinstance(batch_options, dict)
+            or set(batch_options) != BATCH_FIELDS
+            or batch_options != {key: profile["workload"][key] for key in BATCH_FIELDS}
+            or not batch_options["command"]
+        ):
+            raise ValueError("batch invocation differs from reviewed profile")
         for key in (
             "cluster_id",
             "cluster_arn",
@@ -190,17 +211,21 @@ def build_deployment_preview(
         if "name" in workload:
             raise ValueError("profile cannot shadow request name")
         workload["name"] = name
-        if (
-            workload["kind"] != "serving"
-            or profile["serving_auth_contract"] != "superplane-token-file-header-v1"
+        if workload_kind == "serving" and (
+            profile["serving_auth_contract"] != "superplane-token-file-header-v1"
         ):
             raise ValueError("explicit compatible serving authentication required")
         physical_gpus = profile["physical_gpus"]
         if (
             type(physical_gpus) is not int
             or not 1 <= physical_gpus <= 128
-            or type(model_options["gpu_per_replica"]) is not int
-            or workload["gpu_count"] != model_options["gpu_per_replica"]
+            or (
+                workload_kind == "serving"
+                and (
+                    type(model_options["gpu_per_replica"]) is not int
+                    or workload["gpu_count"] != model_options["gpu_per_replica"]
+                )
+            )
             or not 1 <= workload["gpu_count"] <= physical_gpus
             or type(profile["max_runtime_seconds"]) is not int
             or not 1 <= profile["max_runtime_seconds"] <= 86400
@@ -252,6 +277,13 @@ def build_deployment_preview(
             ).hexdigest(),
         )
         document = {"name": name, "profile_id": profile_id, **model_options}
+        if workload_kind == "batch":
+            document = {
+                "name": name,
+                "profile_id": profile_id,
+                "kind": "batch",
+                **batch_options,
+            }
         destination = {**target, "controller_plan": data}
         parameters = {
             "controller_plan": compact(data),

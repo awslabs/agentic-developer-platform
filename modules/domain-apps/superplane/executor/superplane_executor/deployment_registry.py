@@ -5,6 +5,7 @@ import json
 from harness_jobs.identity import OperationRefused, decode_payload, payload_digest
 
 from .deployment_plan import (
+    BATCH_FIELDS,
     deployment_identity,
     document_digest,
     teardown_request,
@@ -69,18 +70,6 @@ async def registration_values(
             or parameters["controller_target_sha256"] != document_digest(target)
             or intent["namespace"] != intent["namespace_name"]
             or document["name"] != intent["name"]
-            or document["replicas"] != intent["desired_replicas"]
-            or any(
-                document[key] != intent[key]
-                for key in (
-                    "model_name",
-                    "precision",
-                    "serving_framework",
-                    "gpu_per_replica",
-                    "tensor_parallel_size",
-                    "max_model_len",
-                )
-            )
             or json.loads(parameters["controller_plan"]) != target["controller_plan"]
             or target["controller_plan"]["workload"]["name"] != intent["name"]
             or any(
@@ -103,6 +92,31 @@ async def registration_values(
             )
         ):
             raise ValueError("paid intent changed")
+        workload = target["controller_plan"]["workload"]
+        if workload["kind"] != intent["workload_kind"]:
+            raise ValueError("workload lifecycle changed")
+        model_fields = (
+            "model_name",
+            "precision",
+            "serving_framework",
+            "tensor_parallel_size",
+            "max_model_len",
+        )
+        if workload["kind"] == "serving":
+            if document["replicas"] != intent["desired_replicas"] or any(
+                document[key] != intent[key]
+                for key in (*model_fields, "gpu_per_replica")
+            ):
+                raise ValueError("serving request changed")
+        elif (
+            set(document) != BATCH_FIELDS | {"name", "profile_id", "kind"}
+            or document["kind"] != "batch"
+            or any(document[key] != workload[key] for key in BATCH_FIELDS)
+            or intent["desired_replicas"] != 1
+            or intent["gpu_per_replica"] != workload["gpu_count"]
+            or any(intent[key] is not None for key in model_fields)
+        ):
+            raise ValueError("batch request or quota reservation changed")
         validate_request(request, target, org_id=org_id, workspace_id=workspace_id)
         if request.action == "provision":
             if (

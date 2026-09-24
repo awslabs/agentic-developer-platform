@@ -12,6 +12,7 @@ from app.database import get_session
 from app.middleware.auth import get_current_org
 from app.models.deployment import Deployment
 from app.schemas.proxy import (
+    CreateBatchRequest,
     CreateDeploymentRequest,
     DeleteDeploymentRequest,
     DeploymentCreateResponse,
@@ -143,6 +144,7 @@ async def list_deployments(
                 Deployment.org_id == org_id,
                 Deployment.namespace == namespace,
                 Deployment.status != "Deleted",
+                Deployment.workload_kind == "serving",
             )
         )
     ).all()
@@ -201,3 +203,144 @@ async def delete_deployment(
         request, db, org_id, workspace_id, dep_id, body
     )
     return DeploymentDeleteResponse(**result)
+
+
+def batch_result(value):
+    """Admission progress is separate from Job completion and provider absence."""
+    return {
+        "job_id": value["deployment_id"],
+        "name": value["name"],
+        "namespace": value["namespace"],
+        "status": value["status"],
+        "operation_id": value["operation_id"],
+        "operation_state": value["operation_state"],
+        "provider_uid": value["provider_uid"],
+        "execution_outcome": "unknown",
+        "cleanup_status": "confirmed"
+        if value["status"] == "Deleted"
+        else "unconfirmed",
+        "observed_cost_micros": None,
+    }
+
+
+@router.get("/{workspace_id}/batch-profiles")
+async def batch_profiles(
+    workspace_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.controller_deployments import serving_catalog
+
+    return await serving_catalog(
+        request, db, org_id, workspace_id, workload_kind="batch"
+    )
+
+
+@router.post("/{workspace_id}/batch-jobs/preview")
+async def preview_batch(
+    workspace_id: uuid.UUID,
+    body: CreateBatchRequest,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    review = await deployment_operations.preview_create(db, org_id, workspace_id, body)
+    return {**review.public(str(workspace_id)), "job_id": review.deployment_id}
+
+
+@router.post("/{workspace_id}/batch-jobs", status_code=status.HTTP_201_CREATED)
+async def create_batch(
+    workspace_id: uuid.UUID,
+    body: CreateBatchRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    return batch_result(
+        await deployment_operations.create(request, db, org_id, workspace_id, body)
+    )
+
+
+@router.get("/{workspace_id}/batch-jobs")
+async def list_batch(
+    workspace_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    workspace, _ = await get_workspace_cluster(workspace_id, org_id, db)
+    namespace = resolve_workspace_namespace(workspace)
+    rows = (
+        await db.scalars(
+            select(Deployment)
+            .where(
+                Deployment.workspace_id == workspace_id,
+                Deployment.org_id == org_id,
+                Deployment.namespace == namespace,
+                Deployment.workload_kind == "batch",
+            )
+            .order_by(Deployment.created_at.desc(), Deployment.id)
+            .limit(101)
+        )
+    ).all()
+    owner = deployment_operations.composition(request) if rows else None
+    jobs = [
+        batch_result(await deployment_operations.progress(owner, db, row))
+        for row in rows[:100]
+    ]
+    return {
+        "workspace_id": str(workspace_id),
+        "jobs": jobs,
+        "truncated": len(rows) > 100,
+    }
+
+
+@router.get("/{workspace_id}/batch-jobs/{job_id}")
+async def get_batch(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    workspace, cluster = await get_workspace_cluster(workspace_id, org_id, db)
+    intent = await deployment_operations.intent_for(
+        db, org_id, workspace_id, job_id, workload_kind="batch"
+    )
+    deployment_operations.require_target(intent, workspace, cluster)
+    return batch_result(
+        await deployment_operations.progress(
+            deployment_operations.composition(request), db, intent
+        )
+    )
+
+
+@router.post("/{workspace_id}/batch-jobs/{job_id}/teardown-preview")
+async def preview_batch_teardown(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    body: DeleteDeploymentRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    review = await deployment_operations.preview_delete(
+        request, db, org_id, workspace_id, job_id, body, workload_kind="batch"
+    )
+    return {**review.public(str(workspace_id)), "job_id": review.deployment_id}
+
+
+@router.delete("/{workspace_id}/batch-jobs/{job_id}")
+async def delete_batch(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    body: DeleteDeploymentRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    return batch_result(
+        await deployment_operations.delete(
+            request, db, org_id, workspace_id, job_id, body, workload_kind="batch"
+        )
+    )

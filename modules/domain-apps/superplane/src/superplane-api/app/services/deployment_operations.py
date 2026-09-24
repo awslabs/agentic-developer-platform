@@ -17,6 +17,7 @@ from superplane_executor.deployment_registry import registration_values
 from app.config import settings
 from app.models.controller_deployment import ControllerDeploymentOperation
 from app.models.deployment import Deployment
+from app.schemas.proxy import CreateBatchRequest
 from app.services.controller_deployments import (
     admit_controller_deployment,
     preview_controller_deployment,
@@ -46,6 +47,13 @@ def composition(request):
 
 
 def request_document(body):
+    if isinstance(body, CreateBatchRequest):
+        return {
+            "name": body.name,
+            "profile_id": body.profile_id,
+            "kind": "batch",
+            **body.batch_options.model_dump(),
+        }
     return {
         "name": body.name,
         "profile_id": body.profile_id,
@@ -68,7 +76,13 @@ async def preview_create(db, org_id, workspace_id, body):
         request_id=body.operation_id,
         profile_id=body.profile_id,
         name=body.name,
-        model_options={key: getattr(body, key) for key in MODEL_FIELDS},
+        model_options={}
+        if isinstance(body, CreateBatchRequest)
+        else {key: getattr(body, key) for key in MODEL_FIELDS},
+        workload_kind="batch" if isinstance(body, CreateBatchRequest) else "serving",
+        batch_options=body.batch_options.model_dump()
+        if isinstance(body, CreateBatchRequest)
+        else None,
     )
 
 
@@ -92,6 +106,7 @@ def stored_preview(deployment):
             != document_digest(document)
             or request.parameters["controller_target_sha256"] != document_digest(target)
             or target["namespace"] != deployment.namespace
+            or target["controller_plan"]["workload"]["kind"] != deployment.workload_kind
         ):
             raise ValueError("original intent changed")
         return DeploymentPreview(str(deployment.id), request, document, target)
@@ -141,9 +156,13 @@ async def create(request, db, org_id, workspace_id, body):
         .execution_options(populate_existing=True)
     )
     document = request_document(body)
+    batch = isinstance(body, CreateBatchRequest)
+    replicas = 1 if batch else body.replicas
+    gpu_count = body.batch_options.gpu_count if batch else body.gpu_per_replica
     if intent is not None:
         if (
             intent.workspace_id != workspace_id
+            or intent.workload_kind != ("batch" if batch else "serving")
             or intent.operation_request_json != compact(document)
             or intent.controller_approval_id != str(body.approval_id)
         ):
@@ -175,22 +194,30 @@ async def create(request, db, org_id, workspace_id, body):
         intent = await reserve_deployment_gpus(
             workspace_id,
             org_id,
-            body.replicas * body.gpu_per_replica,
+            replicas * gpu_count,
             db,
             deployment_kwargs={
                 "id": uuid.UUID(review.deployment_id),
                 "cluster_id": cluster.id,
                 "namespace": namespace,
                 "name": body.name,
+                "workload_kind": "batch" if batch else "serving",
                 "operation_id": body.operation_id,
                 "operation_request_json": compact(review.deployment_request),
                 "operation_target_json": compact(review.deployment_target),
                 "controller_request_payload": encode_payload(review.request),
                 "controller_approval_id": str(body.approval_id),
-                "desired_replicas": body.replicas,
-                **{
-                    key: getattr(body, key) for key in MODEL_FIELDS if key != "replicas"
-                },
+                "desired_replicas": replicas,
+                "gpu_per_replica": gpu_count,
+                **(
+                    {}
+                    if batch
+                    else {
+                        key: getattr(body, key)
+                        for key in MODEL_FIELDS
+                        if key not in {"replicas", "gpu_per_replica"}
+                    }
+                ),
             },
             request=request,
         )
@@ -216,7 +243,15 @@ async def create(request, db, org_id, workspace_id, body):
     return await progress(owner, db, intent)
 
 
-async def intent_for(db, org_id, workspace_id, deployment_id, *, for_update=False):
+async def intent_for(
+    db,
+    org_id,
+    workspace_id,
+    deployment_id,
+    *,
+    for_update=False,
+    workload_kind="serving",
+):
     intent = await db.scalar(
         select(Deployment)
         .where(
@@ -232,15 +267,19 @@ async def intent_for(db, org_id, workspace_id, deployment_id, *, for_update=Fals
             Deployment.workspace_id == workspace_id,
         )
     )
-    if intent is None:
+    if intent is None or intent.workload_kind != workload_kind:
         raise ProvisioningRefused("deployment is not available in this workspace")
     return intent
 
 
-async def preview_delete(request, db, org_id, workspace_id, deployment_id, body):
+async def preview_delete(
+    request, db, org_id, workspace_id, deployment_id, body, *, workload_kind="serving"
+):
     owner = composition(request)
     workspace, cluster = await get_workspace_cluster(workspace_id, org_id, db)
-    intent = await intent_for(db, org_id, workspace_id, deployment_id)
+    intent = await intent_for(
+        db, org_id, workspace_id, deployment_id, workload_kind=workload_kind
+    )
     original = stored_preview(intent)
     require_target(intent, workspace, cluster)
     async with owner.operation_connect() as connection:
@@ -285,7 +324,9 @@ async def preview_delete(request, db, org_id, workspace_id, deployment_id, body)
     )
 
 
-async def delete(request, db, org_id, workspace_id, deployment_id, body):
+async def delete(
+    request, db, org_id, workspace_id, deployment_id, body, *, workload_kind="serving"
+):
     owner = composition(request)
     if body is None or not body.approval_id or not body.plan_revision:
         raise ProvisioningRefused(
@@ -294,10 +335,23 @@ async def delete(request, db, org_id, workspace_id, deployment_id, body):
     workspace, cluster = await get_workspace_cluster(
         workspace_id, org_id, db, for_update=True
     )
-    intent = await intent_for(db, org_id, workspace_id, deployment_id, for_update=True)
+    intent = await intent_for(
+        db,
+        org_id,
+        workspace_id,
+        deployment_id,
+        for_update=True,
+        workload_kind=workload_kind,
+    )
     require_target(intent, workspace, cluster)
     review = await preview_delete(
-        request, db, org_id, workspace_id, deployment_id, body
+        request,
+        db,
+        org_id,
+        workspace_id,
+        deployment_id,
+        body,
+        workload_kind=workload_kind,
     )
     await admit_controller_deployment(
         owner,
@@ -353,7 +407,8 @@ async def progress(owner, db, intent):
                 selected.allocation_id,
                 selected.source_operation_id or selected.operation_id,
             )
-        prefix = f"kubernetes:Deployment:{intent.namespace}:{intent.name}:"
+        kind = "Job" if intent.workload_kind == "batch" else "Deployment"
+        prefix = f"kubernetes:{kind}:{intent.namespace}:{intent.name}:"
         uids = {
             row["provider_reference"][len(prefix) :]
             for row in references

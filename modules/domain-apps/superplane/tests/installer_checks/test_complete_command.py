@@ -570,7 +570,7 @@ def test_one_command_reaches_all_four_services_and_public_verification(
     # from the same lock the receipt is built from would pass for any value at all.
     # Advanced to 017 by w6-10 (#5533).
     assert (
-        installer.receipt["migration"]["schema"] == "031_controller_deployment_registry"
+        installer.receipt["migration"]["schema"] == "032_batch_workload_kind"
     )
     assert set(
         installer.receipt["private_verification"]["authenticated_observation_delivery"]
