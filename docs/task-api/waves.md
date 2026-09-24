@@ -103,14 +103,16 @@ The GitHub epic and all 15 native children carry this wave plan. The existing
 ADP flow `1275a30d-a84d-4f98-9ddb-f461c5aeb2d1` (`task-api-5792`) was updated
 through `adp flow draft preview` and `adp flow draft save` on 2026-09-24, using the
 inert revision support merged in [#5829](https://github.com/aws-e/adp/pull/5829).
-The authored document is [flow-proposal.json](flow-proposal.json). Its new epic
-and wave display metadata is prepared for a wording-only revision; the live
-publication state below still refers to version 2 until that revision is saved.
+The authored document is [flow-proposal.json](flow-proposal.json). The epic
+explanation and all six wave names and purposes were published as a metadata-only
+revision after [#5843](https://github.com/aws-e/adp/pull/5843) was deployed. The
+GitHub epic carries the same explanation and wave purposes. This revision changes
+no node definitions, dependencies, proposed policy, criteria or evaluator bindings.
 
-The current draft is **version 2**, hash
+The current draft is **version 3**, hash
 `40a150cd9f73865409e1a084be276ab93fc11b9701a28b764e8afc8307c6bdc9`.
 Its six waves contain nine implementation stories and six issue-backed
-evaluations, plus the original acceptance gate. Version 1 remains readable;
+evaluations, plus the original acceptance gate. Versions 1 and 2 remain readable;
 nine removed graph addresses are superseded history. The gate, T0 and V1–V5
 retain their original node identities. All 84 original criteria and eight V0
 criteria are unchanged.
@@ -118,7 +120,7 @@ criteria are unchanged.
 Live readback verified that the flow remains paused, its original gate
 `32acf998-58b8-4fb6-906b-fab8461712b9` remains unanswered, every attempt count is
 zero, and there is no active execution policy. The scheduler remains disabled.
-The CLI identifies version 2 as proposed, with no accepted version. Saving this
+The CLI identifies version 3 as proposed, with no accepted version. Saving this
 draft did not approve execution or launch work.
 
 The proposed policy remains unaccepted and all runtime evaluation specifications
@@ -127,3 +129,29 @@ expiry and bind the actual implemented evaluation tooling through its human
 acceptance path. Broader guided planning remains tracked in
 [#5331](https://github.com/aws-e/adp/issues/5331); post-acceptance amendment
 interaction is owned by [#5329](https://github.com/aws-e/adp/issues/5329).
+
+## Display release record
+
+The display capability was built from merge `de3227b36c7956c181cfd486876c90c19bec354e`
+and deployed to dev account `879318057152` through the documented operator path.
+Gateway, orchestration tick, AI-DLC worker and hosted planning worker images are
+recorded in [the deployment state](../../.adp-deploy-state.json). The frontend and
+served CLI were verified against their release sources. The mobile account-header
+fix in [#5845](https://github.com/aws-e/adp/pull/5845), merge
+`8fd4a01c3ae1194d34464044516fda4b13bb8b45`, was deployed separately to the frontend.
+Live desktop and mobile checks verified the epic explanation, all wave names and
+collapsed descriptions, the flow-list caption and no horizontal overflow at 390px.
+No new AI-DLC plan was run as part of verification.
+
+The [worker image overlay](display-worker-image.json) retains the
+immutable AI-DLC image for a future reviewed infrastructure plan. It is release
+evidence outside the automatically applied Terraform directories; this release
+changed existing workload images and did not apply infrastructure.
+
+Automatic publishing remains blocked by the unperformed protected-automation
+cutover following #5767: chat and worker jobs report a missing `adp-deployment`
+runner group, while the gateway workflow reports a startup failure before jobs.
+Follow [the separate rollout procedure](../../platform/automation-infra/README.md)
+to restore that path. The operator deployment did not change runner, IAM, secret,
+or engine transport configuration. Both orchestration and pricing schedules
+remain disabled.
