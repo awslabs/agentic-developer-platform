@@ -66,6 +66,15 @@ class KubernetesWorkloadVerifier:
         self._authority_flag = authority_flag
         self._gateway_token_path = gateway_token_path
 
+    @property
+    def exit_retention(self):
+        from src.agentauth.exit_retention import PodExitRetention
+
+        return PodExitRetention(
+            client=self._client, namespace=self._namespace,
+            service_account=self._service_account, token_path=self._gateway_token_path,
+        )
+
     @classmethod
     def in_cluster(cls, *, chat: bool = False) -> KubernetesWorkloadVerifier:
         # Fixed service DNS and the mounted cluster CA; neither comes from a

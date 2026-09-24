@@ -100,14 +100,44 @@ def abort_supported():
 
 
 @pytest.fixture
-async def abort_context(queued_context, abort_supported):
+async def abort_context(queued_context, abort_supported, tmp_path):
     """A queued abort from a delegated initiator, ready to revalidate."""
     ctx = queued_context
+    import httpx
+
+    from src.agentauth.exit_retention import PodExitRetention
+
+    token_path = tmp_path / "gateway-token"
+    token_path.write_text("gateway-token")
+    target_pod = ctx.runtime.workloads.verify(ctx.target_headers["X-Adp-Workload-Token"])
+    ctx.retained_metadata = {"name": target_pod.name, "uid": target_pod.uid, "resourceVersion": "1"}
+    ctx.retention_http_status = 200
+
+    def kubernetes(request):
+        assert request.url.path == f"/api/v1/namespaces/{target_pod.namespace}/pods/{target_pod.name}"
+        if ctx.retention_http_status != 200:
+            return httpx.Response(ctx.retention_http_status)
+        if request.method == "PATCH":
+            operations = json.loads(request.content)
+            assert operations[:2] == [
+                {"op": "test", "path": "/metadata/uid", "value": target_pod.uid},
+                {"op": "test", "path": "/metadata/resourceVersion", "value": "1"},
+            ]
+            for operation in operations[2:]:
+                ctx.retained_metadata[operation["path"].split("/")[-1]] = operation["value"]
+        return httpx.Response(200, json={"metadata": ctx.retained_metadata, "spec": {"serviceAccountName": target_pod.service_account}})
+
+    ctx.retention_client = httpx.Client(base_url="https://kubernetes.default.svc", transport=httpx.MockTransport(kubernetes))
+    ctx.runtime.workloads.exit_retention = PodExitRetention(
+        client=ctx.retention_client, namespace=target_pod.namespace,
+        service_account=target_pod.service_account, token_path=token_path,
+    )
     grant = ctx.store._read("TENANT#tenant", f"GRANT#{ctx.child.invocation}#1")
     grant["allowed_actions"]["SS"].append("abort")
     ctx.store.client.put_item(TableName=ctx.store.table, Item=grant)
     ctx.control_grant = ctx.store.live_grant(invocation_id=ctx.child.invocation, tenant_id="tenant", attempt=1, now=datetime.now(UTC))
-    return ctx
+    yield ctx
+    ctx.retention_client.close()
 
 
 @pytest.fixture
@@ -385,6 +415,11 @@ class TestOrderingIntentBeforeReceipt:
         response = await revalidate(ctx, abort_request(ctx))
         assert response.status_code == 503, response.text
         assert "abort_receipt" not in response.text
+        # The request may have committed before the connection failed. Keep
+        # evidence until recovery can read the durable marker after pod exit.
+        from src.agentauth.exit_retention import FINALIZER
+
+        assert FINALIZER in ctx.retained_metadata["finalizers"]
 
     async def test_an_acceptance_for_a_superseded_attempt_is_refused(self, abort_context):
         """A stale acceptance must not be signed for an attempt it never reached.
@@ -434,3 +469,25 @@ class TestOrderingIntentBeforeReceipt:
         response = await revalidate(ctx, stale)
         assert response.status_code == 404, response.text
         assert read_marker(ctx) is None
+
+
+@pytest.mark.parametrize("status", [403, 404, 409, 503])
+async def test_abort_has_no_receipt_or_marker_when_retention_fails(abort_context, status):
+    ctx = abort_context
+    ctx.retention_http_status = status
+    response = await revalidate(ctx, abort_request(ctx))
+    assert response.status_code == 503
+    assert "abort_receipt" not in response.json()
+    row = ctx.store._read("TENANT#tenant", f"EXEC#{ctx.target_invocation}")
+    assert "abort_command_id" not in row
+
+
+async def test_abort_receipt_requires_retained_exact_pod(abort_context):
+    from src.agentauth.exit_retention import FINALIZER, INVOCATION, TENANT
+
+    ctx = abort_context
+    response = await revalidate(ctx, abort_request(ctx))
+    assert response.status_code == 200, response.text
+    assert FINALIZER in ctx.retained_metadata["finalizers"]
+    assert ctx.retained_metadata["annotations"][INVOCATION] == ctx.target_invocation
+    assert ctx.retained_metadata["annotations"][TENANT] == "tenant"

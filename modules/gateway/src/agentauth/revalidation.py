@@ -22,8 +22,9 @@ from src.agentauth.envelope import (
     sign_envelope,
     verify_envelope,
 )
+from src.agentauth.exit_retention import ExitRetentionError
 from src.agentauth.grants import LIVE_CONTROL_ACTIONS, AgentAction
-from src.agentauth.store import AbortIntentConflictError
+from src.agentauth.store import AbortIntentConflictError, AuthorityStoreError
 
 # ``AuthorityStoreError`` is deliberately *not* handled here. It means the store
 # was unreachable, which is not an answer about this command. Letting it escape
@@ -39,7 +40,7 @@ class RevalidationRequest(BaseModel):
     body_base64: str = Field(max_length=4 * ((MAX_REQUEST_BYTES + 2) // 3))
 
 
-async def _accept_abort(runtime, body, *, target, generation, raw: bytes) -> dict:
+async def _accept_abort(runtime, body, *, target, pod, generation, raw: bytes) -> dict:
     """Persist durable abort intent, then mint the receipt that proves it (#3963).
 
     This is the answer to "how does a finalizing supervisor know an abort was
@@ -76,6 +77,17 @@ async def _accept_abort(runtime, body, *, target, generation, raw: bytes) -> dic
     # `verify_envelope` has already required the signed `body_digest` to equal the
     # digest of these exact bytes, so hashing them here records the digest the
     # gateway *signed over* rather than an independent claim about them.
+    # Retain the authenticated target before intent or receipt. On an ambiguous
+    # store failure, recovery reads protected state after exit before releasing;
+    # removing retention here could lose evidence for a committed write.
+    try:
+        await run_in_threadpool(
+            runtime.workloads.exit_retention.retain,
+            name=pod.name, uid=pod.uid,
+            invocation_id=target.invocation_id, tenant_id=target.tenant_id,
+        )
+    except ExitRetentionError as exc:
+        raise AuthorityStoreError("abort exit evidence could not be retained") from exc
     marker = await run_in_threadpool(
         runtime.store.authority.record_abort_intent,
         invocation_id=target.invocation_id,
@@ -121,7 +133,7 @@ async def revalidate_command(runtime, body, *, context):
     extends a proof or enables a runtime verb. The worker must hand off within
     one second of starting this request, without caching an approval.
     """
-    _, target, _, _ = context
+    pod, target, _, _ = context
     config = os.environ if runtime.env is None else runtime.env
     try:
         raw = base64.b64decode(body.body_base64, validate=True)
@@ -169,7 +181,7 @@ async def revalidate_command(runtime, body, *, context):
             if datetime.now(UTC) >= proof.expires_at:
                 raise ValueError
             if body.action is AgentAction.ABORT:
-                return await _accept_abort(runtime, body, target=target, generation=generation, raw=raw)
+                return await _accept_abort(runtime, body, target=target, pod=pod, generation=generation, raw=raw)
             return {"allowed": True, "command_id": body.command_id, "generation": generation, "max_round_trip_ms": 1000}
         invocation, attempt = proof.principal.rsplit("#", 1)
         caller_record = await run_in_threadpool(runtime.store.authority.load_execution, invocation_id=invocation, tenant_id=target.tenant_id)
@@ -200,7 +212,7 @@ async def revalidate_command(runtime, body, *, context):
             raise ValueError
         runtime.dispatcher.policy.require_supported(body.action)
         if body.action is AgentAction.ABORT:
-            return await _accept_abort(runtime, body, target=target, generation=generation, raw=raw)
+            return await _accept_abort(runtime, body, target=target, pod=pod, generation=generation, raw=raw)
         return {"allowed": True, "command_id": body.command_id, "generation": generation, "max_round_trip_ms": 1000}
     except AbortIntentConflictError:
         # Durable intent could not be established for this attempt. Refuse rather
