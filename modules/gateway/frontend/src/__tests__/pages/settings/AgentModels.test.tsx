@@ -540,10 +540,13 @@ describe('Agent Models page — issue #5422', () => {
   });
 
   it('saves and resets a row from server responses without optimistic state', async () => {
+    const user = userEvent.setup();
     render(<AgentModels />);
     const row = await screen.findByTestId('persona-row-brand-new-persona');
-    fireEvent.click(within(row).getByRole('radio', { name: /Haiku 4.5/ }));
-    fireEvent.click(within(row).getByRole('button', { name: 'Save' }));
+    await user.click(within(row).getByRole('radio', { name: /Haiku 4.5/ }));
+    await waitFor(() => expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked());
+    await waitFor(() => expect(within(row).getByRole('button', { name: 'Save' })).toBeEnabled());
+    await user.click(within(row).getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(selfApi.setPreference).toHaveBeenCalledWith(
       'brand-new-persona',
@@ -553,7 +556,7 @@ describe('Agent Models page — issue #5422', () => {
     expect(await within(row).findByText('Your choice')).toBeInTheDocument();
     expect(within(row).getByRole('radio', { name: /Haiku 4.5/ })).toBeChecked();
 
-    fireEvent.click(within(row).getByRole('button', { name: 'Reset' }));
+    await user.click(within(row).getByRole('button', { name: 'Reset' }));
     await waitFor(() => expect(selfApi.resetPreference).toHaveBeenCalledWith(
       'brand-new-persona',
       1,
@@ -561,7 +564,7 @@ describe('Agent Models page — issue #5422', () => {
     expect(await within(row).findByText('Default for this persona (not ready)')).toBeInTheDocument();
     expect(screen.queryByText(/platform default/i)).not.toBeInTheDocument();
     expect(within(row).getByRole('button', { name: 'Reset' })).toBeDisabled();
-    fireEvent.click(within(row).getByRole('button', { name: 'Reset' }));
+    await user.click(within(row).getByRole('button', { name: 'Reset' }));
     expect(selfApi.resetPreference).toHaveBeenCalledTimes(1);
   });
 
