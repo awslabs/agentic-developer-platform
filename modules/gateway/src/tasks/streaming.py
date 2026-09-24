@@ -58,6 +58,9 @@ from src.tasks.limits import (
     SSE_HEARTBEAT_INTERVAL_SECONDS,
     SSE_MAX_BUFFERED_BYTES,
     SSE_MAX_BUFFERED_FRAMES,
+    SSE_MAX_STREAMS_PER_ENVIRONMENT,
+    SSE_MAX_STREAMS_PER_PRINCIPAL,
+    SSE_MAX_STREAMS_PER_TASK,
     SSE_POLL_INTERVAL_SECONDS,
     STREAM_AUTHORIZATION_RECHECK_SECONDS,
 )
@@ -342,6 +345,66 @@ class BoundedFrameBuffer:
     def drain(self) -> list[bytes]:
         frames, self.frames, self.buffered_bytes = self.frames, [], 0
         return frames
+
+
+class StreamRegistry:
+    """Concurrent-stream accounting for the three fixed SSE caps.
+
+    The caps exist because an SSE reader is the cheapest expensive thing a client
+    can ask for: one HTTP request holds a server task, a polling loop and a buffer
+    for up to ten minutes. Without a bound, a client that opens streams in a loop
+    costs the gateway far more than it costs the client.
+
+    In-process by design for v1, and that limitation is stated rather than hidden:
+    with more than one gateway replica these caps are per-replica, so the
+    environment-wide cap of 32 is enforced per pod rather than per environment. The
+    design fixes no cross-replica coordination mechanism for v1, and inventing a
+    shared counter here would be an architecture decision this story may not make.
+    The caps still do their real job — bounding what one pod will hold open — and
+    the gap is recorded for the evaluation lane that measures a deployed
+    environment rather than left for someone to discover.
+    """
+
+    def __init__(self) -> None:
+        self.per_task: dict[str, int] = {}
+        self.per_principal: dict[str, int] = {}
+        self.total = 0
+
+    def acquire(self, *, task_id: str, principal_id: str) -> None:
+        """Reserve a slot, or refuse with the limit that was reached.
+
+        ``429`` rather than ``503``: the caller is over a limit, and the condition
+        clears when its own streams close. Which of the three caps was hit is named
+        in the message because all three are the caller's own resource use — this
+        discloses nothing about other tenants, and a client told only "too many
+        streams" cannot tell whether closing its own connections will help.
+        """
+        if self.total >= SSE_MAX_STREAMS_PER_ENVIRONMENT:
+            raise errors.rate_limited("This environment is at its concurrent Task API stream limit.")
+        if self.per_task.get(task_id, 0) >= SSE_MAX_STREAMS_PER_TASK:
+            raise errors.rate_limited("This task is at its concurrent stream limit.")
+        if self.per_principal.get(principal_id, 0) >= SSE_MAX_STREAMS_PER_PRINCIPAL:
+            raise errors.rate_limited("This principal is at its concurrent stream limit.")
+
+        self.per_task[task_id] = self.per_task.get(task_id, 0) + 1
+        self.per_principal[principal_id] = self.per_principal.get(principal_id, 0) + 1
+        self.total += 1
+
+    def release(self, *, task_id: str, principal_id: str) -> None:
+        """Return a slot, deleting keys at zero.
+
+        Keys are removed rather than left at zero so the dictionaries track live
+        streams instead of growing once per task ever streamed — a long-lived pod
+        would otherwise accumulate an entry for every task it has served, which is
+        a slow leak in the thing that exists to prevent exhaustion.
+        """
+        for counter, key in ((self.per_task, task_id), (self.per_principal, principal_id)):
+            remaining = counter.get(key, 0) - 1
+            if remaining > 0:
+                counter[key] = remaining
+            else:
+                counter.pop(key, None)
+        self.total = max(0, self.total - 1)
 
 
 def resume_cursor_for(task_id: str, sequence: int) -> str | None:

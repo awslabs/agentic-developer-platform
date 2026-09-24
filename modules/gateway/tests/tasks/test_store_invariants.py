@@ -33,7 +33,7 @@ ATTEMPT = "a1b2c3d4-e5f6-4718-9a2b-3c4d5e6f7081"
 OTHER_ATTEMPT = "b2c3d4e5-f6a7-4829-ab3c-4d5e6f708192"
 NOW = "2026-09-24T14:43:20Z"
 
-PROGRESS = {"message": "Analyzing the failing test", "stage": "investigate"}
+PROGRESS = {"message": "Analyzing the failing test", "stage": "analysis"}
 
 
 def make_store(**overrides) -> InMemoryTaskStore:
@@ -218,7 +218,7 @@ def test_a_repeated_report_with_different_content_conflicts() -> None:
     store = make_store()
     append(store, report_id="r1")
     with pytest.raises(ReportConflictError):
-        append(store, report_id="r1", data={"message": "something else", "stage": "investigate"})
+        append(store, report_id="r1", data={"message": "something else", "stage": "analysis"})
 
 
 def test_report_idempotency_tolerates_key_reordering() -> None:

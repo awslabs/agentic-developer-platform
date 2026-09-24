@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from src.tasks.events import PROTECTED_EVENT_TYPES, TaskEvent, format_cursor
@@ -392,22 +392,3 @@ class InMemoryTaskStore:
         if record.storage_key not in self.blobs:
             raise TaskStoreError("artifact bytes are absent")
         return self.blobs[record.storage_key]
-
-
-@dataclass
-class StreamRegistry:
-    """Concurrent-stream accounting for the three fixed SSE caps.
-
-    In-process by design for v1, and that limitation is stated rather than
-    hidden: with more than one gateway replica these caps are per-replica, so the
-    environment-wide cap of 32 is enforced per pod. The design fixes no
-    cross-replica coordination mechanism for v1, and inventing a shared counter
-    here would be an architecture decision this story is explicitly not allowed
-    to make. The caps still do their real job — bounding what one pod will hold
-    open — and the gap is recorded for the evaluation lane that measures the
-    deployed environment.
-    """
-
-    per_task: dict[str, int] = field(default_factory=dict)
-    per_principal: dict[str, int] = field(default_factory=dict)
-    total: int = 0

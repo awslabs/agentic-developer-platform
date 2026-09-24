@@ -61,6 +61,16 @@ UNIT_MODULES = [
     "src.agentauth.run_services",
     "src.agentauth.knowledge_service",
     "src.agentauth.task_routes",
+    # #5799: Task API v1 read, streaming, artifact and host-reporting surface.
+    # Mounted always and gated inside by ADP_TASK_API_READ_ENABLED /
+    # ADP_TASK_API_WORKER_ENABLED (both default false, design section 11), which is
+    # the repo's mount-always/503-when-disabled pattern: conditional registration
+    # would make a disabled surface return 404, indistinguishable from a routing
+    # mistake, and would leave the routes unimported and so unexercised by the
+    # app's own startup.
+    "src.tasks.routes",
+    "src.tasks.artifacts",
+    "src.tasks.report_routes",
     "src.agentauth.artifact_service",
     "src.agentauth.cyber_jobs",
     "src.orchestration.shared_review",

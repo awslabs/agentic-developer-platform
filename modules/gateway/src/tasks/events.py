@@ -134,6 +134,60 @@ REQUIRED_EVENT_DATA: dict[str, tuple[str, ...]] = {
     "history.gap": ("omitted_from_cursor", "omitted_to_cursor", "omitted_report_ids", "reason"),
 }
 
+#: Closed value sets from ``events.schema.json#/$defs/event_data``, resolved through
+#: the ``$ref``s in ``common.schema.json`` and ``results.schema.json``. Enforced
+#: because presence checks are not enough: an event whose *keys* are all permitted
+#: but whose ``stage`` is a word the contract does not define is a durable record
+#: that fails validation for every consumer who checks it against the schema —
+#: including the SSE clients this surface exists to serve. A producer inventing its
+#: own stage vocabulary would be discovered only when someone validated the stream,
+#: which is exactly the drift the frozen contract is meant to prevent.
+#:
+#: Mirrored here rather than read from ``docs/`` at runtime for the same reason
+#: ``limits.py`` mirrors ``limits.json``: the gateway image does not contain the
+#: contract tree, so a runtime read would pass in a test run and raise in the pod.
+#: ``test_event_data_matches_contract.py`` asserts the mirror both ways — equal
+#: values, and no enum in the schema left unmirrored — because the duplication is
+#: only defensible while it is checked.
+EVENT_DATA_ENUMS: dict[str, frozenset[str]] = {
+    "status": frozenset({"accepted", "queued", "running", "waiting_for_input", "cancel_requested", "completed", "failed", "cancelled"}),
+    "stage": frozenset({"evidence_inventory", "analysis", "clarification", "synthesis"}),
+    "command_status": frozenset({"accepted", "consumed", "rejected", "cancelled"}),
+    "handoff": frozenset({"not_started", "prepared", "sent", "confirmed", "unknown"}),
+    "outcome": frozenset({"completed", "failed", "cancelled"}),
+    "execution_health": frozenset({"healthy", "unknown", "stopped"}),
+    "queue_ack_status": frozenset({"pending", "confirmed", "unknown"}),
+    "error_code": frozenset(
+        {
+            "admission_recovery_exhausted",
+            "deadline_exceeded",
+            "model_outcome_unknown",
+            "model_access_denied",
+            "budget_exceeded",
+            "authority_revoked",
+            "invalid_agent_output",
+            "protocol_violation",
+            "process_failed",
+            "recovery_exhausted",
+            "cancelled_by_client",
+            "cancellation_stop_unconfirmed",
+            "event_budget_exhausted",
+            "storage_unavailable",
+        }
+    ),
+}
+
+#: Data keys the contract constrains as positive integers
+#: (``common.schema.json#/$defs/task_version`` and ``turn_number``). A zero or
+#: negative one is a fence value no real record can match, so a client comparing
+#: against it would silently never see agreement.
+EVENT_DATA_POSITIVE_INTEGERS = ("version", "turn_number")
+
+#: Data keys the contract constrains as 1..4000-character strings. An over-long
+#: value that reached a durable event would be unreadable by a validating consumer
+#: forever, and a committed event cannot be withdrawn.
+EVENT_DATA_BOUNDED_STRINGS = ("message", "prompt")
+
 #: Fixed values the contract pins per kind. A host reporting
 #: ``task.completed`` with ``outcome: "failed"`` is describing two different
 #: outcomes in one record; refusing it here keeps the durable history internally
@@ -283,6 +337,24 @@ def validate_event_data(event_type: str, data: dict) -> None:
     missing = [key for key in REQUIRED_EVENT_DATA.get(event_type, ()) if key not in data]
     if missing:
         raise ValueError(f"event data for {event_type} requires: {', '.join(missing)}")
+
+    # Values, not just keys. A permitted key holding an undefined value produces a
+    # durable event that no schema-checking consumer can accept; refusing it at the
+    # boundary keeps the contract's closed vocabularies actually closed.
+    for key, permitted in EVENT_DATA_ENUMS.items():
+        if key in data and data[key] not in permitted:
+            raise ValueError(f"event data {key} is not one of the values the contract defines")
+    for key in EVENT_DATA_POSITIVE_INTEGERS:
+        value = data.get(key)
+        # ``bool`` is excluded explicitly because it is a subclass of ``int``, so
+        # ``True`` would otherwise pass as the integer 1.
+        if key in data and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
+            raise ValueError(f"event data {key} must be a positive integer")
+    for key in EVENT_DATA_BOUNDED_STRINGS:
+        value = data.get(key)
+        if key in data and (not isinstance(value, str) or not 1 <= len(value) <= 4000):
+            raise ValueError(f"event data {key} must be a string of 1 to 4000 characters")
+
     for key, expected in FIXED_EVENT_DATA.get(event_type, {}).items():
         if data.get(key) != expected:
             raise ValueError(f"event data {key} for {event_type} must be {expected}")

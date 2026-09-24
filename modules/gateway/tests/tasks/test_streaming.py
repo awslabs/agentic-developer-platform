@@ -87,7 +87,7 @@ def emit(store: InMemoryTaskStore, count: int = 1, *, event_type="progress.updat
             task_id=TASK,
             report_id=None,
             event_type=event_type,
-            data=data if data is not None else {"message": f"step {index}", "stage": "investigate"},
+            data=data if data is not None else {"message": f"step {index}", "stage": "analysis"},
             producer_timestamp=None,
             timestamp=NOW,
         )

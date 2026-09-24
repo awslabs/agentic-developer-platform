@@ -104,6 +104,16 @@ def prerequisite_unavailable(message: str = "A required Task API dependency is u
     return TaskApiError(503, "prerequisite_unavailable", message, retry_after_ms=1000)
 
 
+def rate_limited(message: str) -> TaskApiError:
+    """429 with a retry delay, for a caller over its own concurrency bound.
+
+    Retryable because the condition is the caller's own resource use and clears
+    when it releases what it holds — unlike a scope refusal, which no amount of
+    retrying resolves.
+    """
+    return TaskApiError(429, "rate_limited", message, retry_after_ms=1000)
+
+
 def payload_too_large(message: str) -> TaskApiError:
     return TaskApiError(413, "payload_too_large", message)
 

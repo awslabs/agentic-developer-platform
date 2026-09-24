@@ -31,7 +31,7 @@ def make_event(**overrides) -> events.TaskEvent:
         "sequence": 5,
         "type": "progress.updated",
         "timestamp": "2026-09-24T14:43:20Z",
-        "data": {"message": "Analyzing the failing test", "stage": "investigate"},
+        "data": {"message": "Analyzing the failing test", "stage": "analysis"},
     }
     return events.TaskEvent(**{**base, **overrides})
 
@@ -197,7 +197,7 @@ def test_unknown_data_keys_are_refused() -> None:
     reasoning cannot ride along into a client-visible history.
     """
     with pytest.raises(ValueError, match="not permitted"):
-        events.validate_event_data("progress.updated", {"message": "m", "stage": "s", "raw_model_reasoning": "..."})
+        events.validate_event_data("progress.updated", {"message": "m", "stage": "analysis", "raw_model_reasoning": "..."})
 
 
 def test_missing_required_keys_are_refused_per_kind() -> None:
@@ -222,6 +222,37 @@ def test_unknown_event_kind_is_refused() -> None:
         events.validate_event_data("task.exploded", {})
 
 
+#: One contract-legal value per data key, used to build a valid example of every
+#: declared kind. Enum-constrained keys draw from the enum itself so this table
+#: cannot drift out of agreement with it.
+SAMPLE_DATA = {
+    "version": 3,
+    "turn_number": 1,
+    "message": "Correlating 503 responses against pool acquisition timeouts.",
+    "stage": "analysis",
+    "command_id": "cmd_1",
+    "turn_id": "turn_1",
+    "input_request_id": "req_1",
+    "prompt": "Which environment?",
+    "artifact_id": "art_7c1e4d92-5a6b-4c8d-9e01-2f3a4b5c6d70",
+    "content_sha256": "a" * 64,
+    "error_code": "runtime_error",
+    "reason": "retention",
+    "omitted_from_cursor": f"{TASK}:6",
+    "omitted_to_cursor": f"{TASK}:7",
+    "omitted_report_ids": [],
+}
+
+
+def sample_for(kind: str, key: str):
+    """A value the contract permits for ``key`` on ``kind``."""
+    if key in events.FIXED_EVENT_DATA.get(kind, {}):
+        return events.FIXED_EVENT_DATA[kind][key]
+    if key in events.EVENT_DATA_ENUMS:
+        return sorted(events.EVENT_DATA_ENUMS[key])[0]
+    return SAMPLE_DATA[key]
+
+
 def test_every_declared_kind_has_a_validatable_example() -> None:
     """No kind may be unreachable through its own validator.
 
@@ -229,12 +260,57 @@ def test_every_declared_kind_has_a_validatable_example() -> None:
     listed in ``EVENT_TYPES`` required a key outside ``EVENT_DATA_KEYS``, that
     kind could never be reported at all, and the failure would only appear the
     first time a producer tried to emit it.
+
+    The example is built from values the contract actually permits, not from
+    placeholders. Placeholders would pass a validator that only checked which keys
+    were present, so they would hide exactly the class of bug this asserts against:
+    a kind whose required keys cannot be satisfied with any legal value.
     """
     for kind in events.EVENT_TYPES:
         required = events.REQUIRED_EVENT_DATA.get(kind, ())
         assert set(required) <= events.EVENT_DATA_KEYS, kind
-        data = {key: events.FIXED_EVENT_DATA.get(kind, {}).get(key, "x") for key in required}
-        events.validate_event_data(kind, data)
+        events.validate_event_data(kind, {key: sample_for(kind, key) for key in required})
+
+
+@pytest.mark.parametrize("key", sorted(events.EVENT_DATA_ENUMS))
+def test_closed_vocabularies_refuse_an_undefined_value(key: str) -> None:
+    """A permitted key holding an invented value is still a refusal.
+
+    Every one of these keys is an enum in ``events.schema.json``. Accepting a value
+    outside it would commit a durable event that no schema-checking consumer can
+    read — including the SSE clients this surface exists to serve — and the drift
+    would surface only when someone validated the stream. Parametrized over the whole
+    table so a key added without its value set cannot pass unnoticed.
+    """
+    with pytest.raises(ValueError, match=f"event data {key} is not one of"):
+        events.validate_event_data("progress.updated", {"message": "m", "stage": "analysis", key: "definitely-not-in-the-enum"})
+
+
+@pytest.mark.parametrize("value", [0, -1, "3", 1.5, True], ids=["zero", "negative", "string", "float", "bool"])
+def test_positive_integer_fields_refuse_non_positive_integers(value) -> None:
+    """``version`` is a positive integer; a zero or a numeric string is not one.
+
+    ``version`` participates in optimistic concurrency, so a zero or a string that
+    merely looks numeric is a fence value no real record can ever match — a client
+    comparing against it would silently never see agreement. ``True`` is included
+    because it is an ``int`` in Python and passes a naive ``isinstance`` check.
+    """
+    with pytest.raises(ValueError, match="version must be a positive integer"):
+        events.validate_event_data("task.accepted", {"status": "accepted", "version": value})
+
+
+def test_message_length_is_bounded_at_the_contract_limit() -> None:
+    """4000 characters is the contract's bound, and an empty message is not a message.
+
+    The bound is enforced here rather than at storage because an over-long message
+    that reached a durable event would be unreadable by a validating consumer
+    forever, and there is no way to withdraw a committed event.
+    """
+    events.validate_event_data("progress.updated", {"message": "m" * 4000, "stage": "analysis"})
+    with pytest.raises(ValueError, match="1 to 4000 characters"):
+        events.validate_event_data("progress.updated", {"message": "m" * 4001, "stage": "analysis"})
+    with pytest.raises(ValueError, match="1 to 4000 characters"):
+        events.validate_event_data("progress.updated", {"message": "", "stage": "analysis"})
 
 
 # -- SSE framing -----------------------------------------------------------
@@ -308,5 +384,5 @@ def test_frame_data_is_single_line_json() -> None:
     newline were emitted raw, the remainder would be parsed as a separate SSE
     field — a content-dependent framing break. ``json.dumps`` escapes it.
     """
-    raw = events.encode_event(make_event(data={"message": "line one\nline two", "stage": "investigate"}))
+    raw = events.encode_event(make_event(data={"message": "line one\nline two", "stage": "analysis"}))
     assert len([line for line in raw.decode().strip().split("\n") if line.startswith("data: ")]) == 1
