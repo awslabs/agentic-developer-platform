@@ -815,7 +815,7 @@ class TestCostService:
 
     @pytest.mark.asyncio
     async def test_get_workspace_cost_no_cluster(self):
-        """Returns zero cost when workspace has no cluster."""
+        """Absent node observations do not establish zero cost."""
         from app.services.cost import get_workspace_cost
 
         mock_workspace = MagicMock()
@@ -833,5 +833,6 @@ class TestCostService:
             org_id=uuid.uuid4(),
             db=mock_db,
         )
-        assert result["total_cost_usd"] == "0.00"
+        assert result["total_cost_usd"] is None
+        assert result["estimate_status"] == "unavailable"
         assert result["workspace_name"] == "test-ws"
