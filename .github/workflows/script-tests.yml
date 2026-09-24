@@ -91,6 +91,12 @@ on:
       - '.github/scripts/tests/test_platform_mixed_state_export.py'
       - '.github/scripts/tests/fixtures/platform-mixed-state-5831/**'
       - 'docs/runbooks/platform-aws-provider-floor.md'
+      # The step-4 preservation guard for that migration (#5831). It is the gate in
+      # front of a state-WRITING apply, so its refusal legs are the safety property:
+      # the snippet it replaced printed counts and exited 0 regardless, which reads
+      # as a gate while stopping nothing. Needs no terraform binary.
+      - 'platform/scripts/refresh_only_migration_guard.py'
+      - '.github/scripts/tests/test_refresh_only_migration_guard.py'
       # The cross-module tag agreement for the shared CI runner access entry is
       # asserted against BOTH declarations, so an edit to either side must
       # re-run the gate. No workflow here runs `terraform test`, so the tftest
@@ -196,6 +202,12 @@ on:
       - '.github/scripts/tests/test_platform_mixed_state_export.py'
       - '.github/scripts/tests/fixtures/platform-mixed-state-5831/**'
       - 'docs/runbooks/platform-aws-provider-floor.md'
+      # The step-4 preservation guard for that migration (#5831). It is the gate in
+      # front of a state-WRITING apply, so its refusal legs are the safety property:
+      # the snippet it replaced printed counts and exited 0 regardless, which reads
+      # as a gate while stopping nothing. Needs no terraform binary.
+      - 'platform/scripts/refresh_only_migration_guard.py'
+      - '.github/scripts/tests/test_refresh_only_migration_guard.py'
       # The cross-module tag agreement for the shared CI runner access entry is
       # asserted against BOTH declarations, so an edit to either side must
       # re-run the gate. No workflow here runs `terraform test`, so the tftest
@@ -284,6 +296,7 @@ jobs:
             tests/test_report_finalization.py \
             tests/test_verify_scoped_plan.py \
             tests/test_platform_provider_constraint.py \
+            tests/test_refresh_only_migration_guard.py \
             tests/test_security_scan_tool_invocations.py \
             -v --tb=short --timeout=60
 

@@ -247,75 +247,173 @@ Each step is read-only until step 5, which is **root-operated** and writes state
 only. Do not compress these steps; the ordering is what keeps the migration
 reviewable.
 
-**1. Preserve.** Snapshot the state and record the upgrade inputs before
-anything else, so every later claim of preservation has a baseline to compare
-against.
+**Two rules that apply to every step below.**
+
+*Use the retained inputs, never Terraform's defaults.* `environments/dev/platform.tfvars`
+deliberately leaves account-specific values unassigned so the repository stays
+portable, and `platform-infra-apply.yml` supplies them at run time. A bare
+`terraform plan` therefore does **not** plan the deployment you reviewed — it
+plans a different one, with defaults substituted for the retained values. Every
+plan command below passes the same `-var-file` arguments and the same prepared
+inputs. `platform/scripts/upgrade-state.py prepare` is the canonical producer of
+those inputs: it reads the live deployment and writes the retained values that
+must not be lost.
+
+*Keep state and plans in a private directory.* Both carry resource attribute
+values, including secrets. `upgrade-state.py prepare` creates its task directory
+mode `700` and its files mode `600`; put the snapshot and the plans in that same
+directory. Do not use a predictable world-readable path such as
+`/tmp/migrate.tfplan` — on a shared runner any local user can read it.
+
+**0. Establish the task directory and confirm the account.** Everything keys off
+the account the active profile resolves, so confirm it before planning rather than
+after. A migration reviewed against one account and applied to another is not a
+reviewed migration.
 
 ```bash
-terraform state pull > /tmp/pre-migration.tfstate
-python3 -c "import json;s=json.load(open('/tmp/pre-migration.tfstate'));print('serial',s['serial'],'resources',len(s['resources']))"
+export AWS_PROFILE=embark1          # the mapped profile for the target account
+export ADP_ACCOUNT=879318057152     # the intended target
+export TASK_DIR="$HOME/.adp/migrate-5831"
+mkdir -p -m 700 "$TASK_DIR" && chmod 700 "$TASK_DIR"
+
+# Refuse to continue if the active credentials are not the intended account.
+CALLER=$(aws sts get-caller-identity --query Account --output text)
+aws sts get-caller-identity --query Arn --output text
+[ "$CALLER" = "$ADP_ACCOUNT" ] || { echo "WRONG ACCOUNT: $CALLER"; return 1; }
 ```
 
-**2. Resolve the reviewed provider.** `init` so the constraint resolves to a
-6.42.0+ provider. Discard any plan file saved before this point — a saved plan is
-bound to the provider that produced it (Section 3).
-
-**3. Generate the migration plan, read-only.** A full-scope `-refresh-only` plan.
-`-refresh-only` is the operative flag: it proposes **no resource changes at all**,
-only state reconciliation, so it normalises schema across the resources a
-targeted plan would leave stale.
+**1. Preserve, and retain the inputs.** Snapshot the state and produce the
+retained configuration before anything else, so every later claim of preservation
+has a baseline, and so the plans in steps 3 and 6 use the reviewed values.
 
 ```bash
-terraform plan -refresh-only -out=/tmp/migrate.tfplan
-terraform show -json /tmp/migrate.tfplan > /tmp/migrate.json
+python3 platform/scripts/upgrade-state.py prepare \
+  --directory "$TASK_DIR" --account "$ADP_ACCOUNT" --environment dev --region us-east-1
+
+cd platform/infra
+terraform state pull > "$TASK_DIR/pre-migration.tfstate"
+chmod 600 "$TASK_DIR/pre-migration.tfstate"
+python3 -c "import json,os;s=json.load(open(os.environ['TASK_DIR']+'/pre-migration.tfstate'));print('serial',s['serial'],'managed',sum(1 for r in s['resources'] if r.get('mode')=='managed'))"
 ```
 
-**4. Inspect before applying anything.** This is the review the whole exercise
-exists to protect. Confirm all three properties hold:
+`prepare` writes `platform.tfvars.json` into `$TASK_DIR`, carrying the retained
+values — the EKS public-access CIDRs, the existing cluster-admin principal ARNs,
+and the ECR repository encryption settings. Those matter here specifically: EKS
+access-entry `principal_arn` is ForceNew and ECR encryption is immutable, so
+planning without them proposes destroying a human operator's cluster access or
+replacing repositories.
+
+**2. Resolve the reviewed provider.** `init` against the real backend so the
+constraint resolves to a 6.42.0+ provider. Discard any plan file saved before this
+point — a saved plan is bound to the provider that produced it (Section 3).
 
 ```bash
-python3 - <<'PY'
-import json
-plan = json.load(open('/tmp/migrate.json'))
-pre = json.load(open('/tmp/pre-migration.tfstate'))
-changes = [c for c in plan.get('resource_changes', [])
-           if c['change']['actions'] != ['no-op']]
-drift = plan.get('resource_drift', [])
-print('resource changes (must be 0):', len(changes))
-print('drift entries proposing delete (must be 0):',
-      sum(1 for d in drift if 'delete' in d['change']['actions']))
-print('managed resources in pre-migration state:', len(pre['resources']))
-PY
+terraform init -reconfigure -input=false \
+  -backend-config="../../environments/dev/backend.tfvars" \
+  -backend-config="bucket=adp-terraform-state-${ADP_ACCOUNT}"
+terraform version   # confirm the AWS provider is >= 6.42.0
 ```
 
-- **No resource changes.** A `-refresh-only` plan that proposes creating,
-  updating or destroying anything is not a state migration; stop and re-review.
-- **No drift deletions.** A drift entry proposing `delete` means Terraform did
-  not find the resource in the account. Applying that removes it from state.
-- **Every managed address and ID still present.** Compare the addresses in the
-  plan against the snapshot from step 1. Root verified all **136** managed
-  addresses and IDs preserved on the real state.
+**3. Generate the migration plan, read-only.** A full-scope `-refresh-only` plan,
+with the committed var file *and* the retained inputs. `-refresh-only` is the
+operative flag: it proposes **no resource changes at all**, only state
+reconciliation, so it normalises schema across the resources a targeted plan would
+leave stale.
+
+```bash
+terraform plan -refresh-only -input=false \
+  -var-file="../../environments/dev/platform.tfvars" \
+  -var-file="$TASK_DIR/platform.tfvars.json" \
+  -out="$TASK_DIR/migrate.tfplan"
+chmod 600 "$TASK_DIR/migrate.tfplan"
+
+terraform show -json "$TASK_DIR/migrate.tfplan" > "$TASK_DIR/migrate.json"
+echo "show exit: $?"     # step 4 needs this value; a failed export is not "no changes"
+chmod 600 "$TASK_DIR/migrate.json"
+```
+
+**4. Inspect before applying anything — with a check that refuses.** This is the
+review the whole exercise exists to protect, so it must be enforced rather than
+eyeballed:
+
+```bash
+python3 ../../platform/scripts/refresh_only_migration_guard.py \
+  --plan-file "$TASK_DIR/migrate.tfplan" \
+  --plan-json "$TASK_DIR/migrate.json" \
+  --show-exit-code 0 \
+  --preserved-snapshot "$TASK_DIR/pre-migration.tfstate" \
+  --expect-resources 136
+echo "guard exit: $?"    # 0 = safe to apply THIS file; 1 = refused, do not apply
+```
+
+The guard **exits non-zero** on any of: a proposed create/update/delete, a drift
+entry proposing `delete`, a managed address present before and absent after, a
+changed `id`/`arn`/`name`, an address in the snapshot missing from the plan, a
+managed-resource count other than the one asserted, or a failed/truncated export.
+Pass `--expect-resources` with the count established for the state under review
+(136 at the time of writing); omit it if that count is not yet established rather
+than guessing a value.
+
+**Why it reads the saved plan file and not just the JSON.** A `-refresh-only`
+plan's `planned_values` **can be empty**, precisely because it proposes no
+resource changes — so comparing `planned_values` against `prior_state` would
+compare nothing to nothing and pass. Preservation is instead read from the two
+state documents the saved plan carries internally: `tfstate-prev` (before) and
+`tfstate` (the migration's result). That is the artifact pair in which the real
+migration was observed to preserve all 136 managed resources with `id`/`arn`/`name`
+unchanged. Schema-version differences between them are expected and permitted —
+raising them is the point.
+
+**What the guard does not establish:** it reads a saved plan, so it tells you what
+that plan would do to state. It makes no AWS call and cannot confirm the resources
+exist in the account; the drift leg is Terraform's observation, passed through. A
+pass means "safe to apply *this file*", not "safe to apply a freshly generated
+one".
 
 **5. Apply the saved refresh-only plan — root only.** Apply *that exact saved
 file*, never a freshly generated one, so what was reviewed is what is applied.
 This writes **state only**; it makes no cloud change.
 
 ```bash
-terraform apply /tmp/migrate.tfplan
+terraform apply "$TASK_DIR/migrate.tfplan"
 ```
 
-**6. Now the targeted rollout plan.** Generate a fresh targeted plan and export
-it. With the schema normalised, the export succeeds and the scoped-plan guard can
-read it.
+**6. Now the targeted rollout plan.** Generate a fresh targeted plan with the same
+retained inputs and export it. With the schema normalised, the export succeeds and
+the scoped-plan guard can read it.
 
-**What was verified where.** Steps 1–4's commands were executed against the
-synthetic fixture, credential-free, and the step-4 script was confirmed
-*discriminating*: run against a full-scope plan it reports a non-zero change
-count, i.e. it refuses the plan an operator must not apply. The `-refresh-only`
-plan and export against the **real** backend were verified by root, who observed
-all 136 managed addresses and IDs preserved, no drift deletions and no resource
-changes. Step 5 has **not** been executed by anyone at the time of writing: no
-state write has occurred.
+```bash
+terraform plan -input=false \
+  -var-file="../../environments/dev/platform.tfvars" \
+  -var-file="$TASK_DIR/platform.tfvars.json" \
+  -target=module.eks.aws_eks_cluster.main \
+  -out="$TASK_DIR/scoped.tfplan"
+terraform show -json "$TASK_DIR/scoped.tfplan" > "$TASK_DIR/scoped.json"
+```
+
+Then enforce the narrow resource-action scope with
+`.github/scripts/verify_scoped_plan.py` before any apply.
+
+**7. Clean up.** The task directory holds state and plans.
+
+```bash
+shred -u "$TASK_DIR"/*.tfplan "$TASK_DIR"/*.tfstate "$TASK_DIR"/*.json 2>/dev/null || rm -f "$TASK_DIR"/*
+```
+
+**What was verified where — read this before citing any of it as evidence.**
+
+| Step | Who ran it | What was established |
+|---|---|---|
+| 3 — `-refresh-only` generation and export | **root**, against the real backend | The plan generates and its JSON exports; all 136 managed resources and IDs preserved; no drift deletions; no resource changes |
+| 4 — the guard's logic | worker, offline | Refuses resource loss, identity change, an ordinary full plan, a refreshed deletion, a failed/truncated export, a plan missing its state members, and a snapshot/count mismatch; passes the preserved no-change case |
+| 5 — the apply | **nobody** | Not executed. No state write has occurred |
+
+The worker did **not** execute step 3. A `-refresh-only` plan cannot be produced
+offline: it exists to query the provider, so without credentials it fails with
+`AuthFailure` rather than planning. What the worker ran were ordinary plans with
+`-refresh=false` against a synthetic fixture, plus the guard against synthetic
+saved-plan files. The real `-refresh-only` generation and export are root's
+observation; root has **not** applied it.
 
 ### 5c — Why not an ordinary full apply
 
@@ -368,7 +466,8 @@ property so it cannot be relaxed silently.
 
 ## Section 6 — The regression guards
 
-Two suites, covering the two defects in Section 1 and Section 5a respectively.
+Three suites: the two defects in Section 1 and Section 5a, plus the step-4
+preservation guard.
 
 ### 6a — `test_platform_mixed_state_export.py`
 
@@ -394,8 +493,31 @@ it, not that a test performed it.
 cd .github/scripts && pytest tests/test_platform_mixed_state_export.py -v
 ```
 
-The Terraform-dependent legs skip cleanly when no `terraform` binary is present;
-the fixture-integrity and runbook assertions still run.
+The Terraform-dependent legs skip when no `terraform` binary is present **and CI is
+not set**; the fixture-integrity and runbook assertions still run. Under `CI`, a
+missing binary *or* a failed `terraform init` is a **failure**, not a skip —
+otherwise dropping the workflow's `setup-terraform` step, or a provider that stops
+resolving, would report green having exercised only the fixture's shape. Both
+branches were verified by injection: pointing the fixture at a nonexistent
+provider source makes `init` fail, and the suite then errors with `CI` set and
+skips with it unset.
+
+### 6c — `test_refresh_only_migration_guard.py`
+
+Covers `platform/scripts/refresh_only_migration_guard.py`, the step-4 check. The
+suite's purpose is the **refusals**: each prohibited condition asserts a non-zero
+exit, because the snippet this guard replaced printed counts and exited 0 whatever
+they were, while the text around it claimed it refused an unsafe plan. A check that
+cannot fail is worse than no check — it reads as a gate, so it is trusted.
+
+Fixtures are synthetic saved-plan ZIPs built in the test, for the reason given in
+Section 5b: a real `-refresh-only` plan cannot be generated offline. So this suite
+establishes the guard's logic, not the safety of any particular real plan. It needs
+no `terraform` binary, makes no AWS call, and writes no state.
+
+```bash
+cd .github/scripts && pytest tests/test_refresh_only_migration_guard.py -v
+```
 
 ### 6b — `test_platform_provider_constraint.py`
 
