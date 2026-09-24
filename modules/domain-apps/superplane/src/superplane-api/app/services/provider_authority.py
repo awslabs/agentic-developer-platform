@@ -57,3 +57,23 @@ def set_provider_authority_validator(
 
 def get_provider_authority_validator() -> ProviderAuthorityValidator | None:
     return _validator
+
+
+def uninstall_provider_authority_validator(
+    validator: ProviderAuthorityValidator,
+) -> bool:
+    """Remove `validator` if it is the installed one. Returns whether it was.
+
+    Identity-scoped for the reason given at
+    `credential_evidence.uninstall_credential_evidence_reader`: a shutdown must
+    release only its own registration. Here the consequence is sharper than a
+    missing reader, because `set_` above does not refuse an overwrite — an
+    unconditional clear on shutdown would leave the port empty while another
+    composition believed it held it, and the next request would answer 503 with
+    nothing in the logs saying why.
+    """
+    global _validator
+    if _validator is not validator:
+        return False
+    _validator = None
+    return True

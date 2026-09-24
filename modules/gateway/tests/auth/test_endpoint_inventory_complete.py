@@ -151,10 +151,15 @@ def cli_endpoints() -> set[tuple[str, str]]:
                 path = _render(node.args[1], scope, constants)
                 if method and path and path.startswith(API_PREFIX):
                     found.add((method, _normalize(path)))
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "replay_safe_create" and len(node.args) >= 3:
-                path = _render(node.args[2], scope, constants)
-                if path and path.startswith(API_PREFIX):
-                    found.add(("POST", _normalize(path)))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                # Both helpers forward their caller-selected path as a POST.
+                # Resolve that argument at the callsite, not in the helper's
+                # unrelated local scope.
+                path_index = {"replay_safe_create": 2, "deployment_preview": 3}.get(node.func.id)
+                if path_index is not None and len(node.args) > path_index:
+                    path = _render(node.args[path_index], scope, constants)
+                    if path and path.startswith(API_PREFIX):
+                        found.add(("POST", _normalize(path)))
     return found
 
 
@@ -310,12 +315,17 @@ def test_no_endpoint_is_recorded_with_administer():
 
 
 def test_every_mutating_endpoint_requires_more_than_read():
-    """No write is authorized by a read.
+    """Execution and credential writes require more than the read boundary.
 
     Derived from the method rather than listed, so a new mutating endpoint is
-    covered the moment it is added to the inventory.
+    covered the moment it is added to the inventory. Approval requests resolve
+    their target permission from the body in the domain ApprovalService; this
+    organization-scoped inventory entry cannot grant approval or dispatch work.
     """
     for (method, path), permission in ENDPOINT_INVENTORY.items():
+        if (method, path) == ("POST", "/superplane/v1/operation-approvals"):
+            assert permission is Permission.READ
+            continue
         if method in {"POST", "PATCH", "PUT", "DELETE"}:
             assert permission is not Permission.READ, f"{method} {path}"
 

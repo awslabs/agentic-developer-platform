@@ -209,12 +209,13 @@ export function classify(error: unknown, endpoint: EndpointName): Unavailable {
  * for malformed-response assertions, and the failure mode being prevented is a
  * screen that renders `undefined` as though it were data.
  */
-async function call<T>(
+export async function call<T>(
   guard: ScopeGuard,
   endpoint: EndpointName,
   params: Record<string, string>,
   body: unknown,
   parse: (raw: unknown) => T | null,
+  query?: Record<string, string>,
 ): Promise<Outcome<T>> {
   const declaration = ENDPOINTS[endpoint];
   if (!declaration.served) {
@@ -225,7 +226,7 @@ async function call<T>(
 
   const generation = guard.current();
   const { signal, done } = guard.signal();
-  const path = resolvePath(declaration, params);
+  const path = resolvePath(declaration, params) + (query ? `?${new URLSearchParams(query).toString()}` : '');
 
   try {
     const raw =
@@ -702,7 +703,7 @@ export function previewWorkspace(
  * "response this version does not understand" path in `call`, instead of handing
  * the UI a receipt whose recover button cannot work.
  */
-function parseApprovalRequest(raw: unknown): Record<string, unknown> | null {
+export function parseApprovalRequest(raw: unknown): Record<string, unknown> | null {
   if (!isRecord(raw) || typeof raw.workspace_id !== 'string' ||
       (raw.action !== 'provision' && raw.action !== 'teardown') ||
       typeof raw.idempotency_key !== 'string' || !isRecord(raw.parameters) ||
@@ -814,7 +815,7 @@ export function decideApproval(guard: ScopeGuard, approvalId: string, result: 'a
 
 export function parseOperationState(raw: unknown): OperationState {
   if (raw === 'pending') return 'accepted';
-  return raw === 'accepted' || raw === 'running' || raw === 'succeeded' || raw === 'failed'
+  return raw === 'accepted' || raw === 'running' || raw === 'succeeded' || raw === 'failed' || raw === 'cancelled'
     ? raw : 'unknown';
 }
 

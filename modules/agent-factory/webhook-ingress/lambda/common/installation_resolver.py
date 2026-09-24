@@ -91,7 +91,10 @@ def resolve_installation_for_tenant(org_id: str) -> int | None:
             )
             return None
 
-        return int(installation_id)
+        from common.installation_revocation import admit_installation
+
+        canonical, _ = admit_installation(table, int(installation_id), org_id=org_id)
+        return int(installation_id) if canonical else None
 
     except Exception as e:
         logger.error(
@@ -162,10 +165,21 @@ def _forward_scan_fallback(table, org_id: str) -> int | None:
 
         installation_id = int(installation_id_str)
 
+        from common.installation_revocation import (
+            admit_installation,
+            put_active_installation,
+        )
+
+        canonical, _ = admit_installation(table, installation_id, org_id=org_id)
+        if canonical is None:
+            return None
+
         # Write-through: create the reverse row so future lookups are O(1)
         try:
-            table.put_item(
-                Item={
+            put_active_installation(
+                table,
+                installation_id,
+                {
                     "identity_type": "org_installation",
                     "identity_value": org_id,
                     "installation_id": installation_id,
@@ -173,7 +187,7 @@ def _forward_scan_fallback(table, org_id: str) -> int | None:
                     "auto_registered": True,
                 },
                 # Only write if no row exists (avoid race with concurrent writes)
-                ConditionExpression="attribute_not_exists(identity_type)",
+                condition="attribute_not_exists(identity_type)",
             )
             logger.info(
                 "resolve_installation_for_tenant: forward-scan self-healed — "
@@ -182,13 +196,15 @@ def _forward_scan_fallback(table, org_id: str) -> int | None:
                 installation_id,
             )
         except Exception as write_exc:  # noqa: BLE001
-            # Write-through is best-effort; the resolution still succeeds
+            # A failed guarded write may mean revocation won the race; deny.
             logger.warning(
                 "resolve_installation_for_tenant: forward-scan self-heal "
-                "write-through failed for org_id=%r: %s (resolution still succeeds)",
+                "write-through failed for org_id=%r: %s (resolution denied)",
                 org_id,
                 write_exc,
             )
+
+            return None
 
         return installation_id
 

@@ -556,3 +556,87 @@ def test_pr_checkout_transport_failure_remains_retryable(worker, monkeypatch):
         entrypoint.main()
     ack.assert_not_called()
     assert executions == []
+
+
+def test_aborted_delivery_is_not_re_executed(worker):
+    """An operator's abort is terminal to this guard — Issue #3963 (S4).
+
+    This is the pairing that makes the abort finalizer's honest "unconfirmed
+    acknowledgement" outcome safe rather than a hole. That path can legitimately
+    end without deleting the queue message, which means the message redelivers;
+    what must not follow is the work running again, because restarting it is
+    precisely what the abort existed to prevent.
+
+    Asserted as behaviour against the real conditional writes, not by reading the
+    expression: what matters is that a row carrying `aborted` refuses the work
+    before the Node agent is launched, and that it does so without disturbing the
+    outcome an operator can already see.
+    """
+    client, envelope, executions, _, ack, _ = worker
+    seed(client, envelope, "aborted")
+
+    assert entrypoint.main() == 0
+
+    assert executions == []
+    ack.assert_called_once()
+    assert row(client, envelope)["status"] == {"S": "aborted"}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
+
+
+def test_aborted_row_is_recognised_as_completed_without_losing_its_outcome(delivery):
+    """The guard's own answer, at the seam the worker calls.
+
+    `aborted` is checked distinctly from `complete` rather than folded in with it,
+    because the two are different facts about the run — and the promotion to a
+    durable receipt must not overwrite the status or summary an operator reads.
+    """
+    client, envelope = delivery
+    seed(client, envelope, completion.ABORTED_STATUS)
+
+    assert completion.is_delivery_completed(envelope) is True
+
+    assert row(client, envelope)["status"] == {"S": "aborted"}
+    assert row(client, envelope)["summary"] == {"S": "existing outcome"}
+    assert row(client, envelope)["delivery_completed"] == {"BOOL": True}
+
+
+def test_abort_between_the_two_checks_defers_rather_than_claiming_the_row(delivery, monkeypatch):
+    """An abort landing mid-check must not be overwritten — Issue #3963 (S4).
+
+    The counterpart to `test_completion_between_checks_defers_then_skips`, for the
+    abort status. The first write establishes "already finished"; the second claims
+    the row as unfinished. Between them, another actor can finalize the run — and
+    for an abort that window is real, because the abort finalizer writes its
+    terminal status from a different process than the one reading this guard.
+
+    If the second write did not also exclude `aborted`, it would succeed here and
+    stamp `delivery_completed = false` onto a row an operator just aborted,
+    re-opening it for execution. Instead the guard refuses to conclude anything and
+    the queue message is preserved, so the next delivery re-reads the row and sees
+    the abort. This is the branch a source-text assertion cannot distinguish: the
+    clause is only observable through this race.
+    """
+    client, envelope = delivery
+    writes = MagicMock()
+
+    def abort_arrives_between_checks(**request):
+        if writes.update_item.call_count == 2:
+            client.update_item(
+                TableName=request["TableName"],
+                Key=request["Key"],
+                UpdateExpression="SET #status = :aborted",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={":aborted": {"S": completion.ABORTED_STATUS}},
+            )
+        return client.update_item(**request)
+
+    writes.update_item.side_effect = abort_arrives_between_checks
+    monkeypatch.setattr(completion, "_get_client", lambda: writes)
+
+    with pytest.raises(completion.InvocationCompletionError):
+        completion.is_delivery_completed(envelope)
+
+    assert row(client, envelope)["status"] == {"S": "aborted"}
+    assert "delivery_completed" not in row(client, envelope)
+    # The redelivery this defers to now reads the abort and refuses the work.
+    assert completion.is_delivery_completed(envelope) is True

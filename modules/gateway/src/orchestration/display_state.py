@@ -75,6 +75,7 @@ ENGINE_TO_DISPLAY: dict[NodeState, DisplayState | None] = {
     NodeState.AWAITING_MERGE: DisplayState.IN_PROGRESS,
     NodeState.AWAITING_GATE: DisplayState.GATE,
     NodeState.PASSED: DisplayState.COMPLETE,
+    NodeState.WAIVED: DisplayState.COMPLETE,  # Concluded by exception, never a test PASS
     NodeState.REJECTED_AT_GATE: DisplayState.STALLED,
     NodeState.FAILED: DisplayState.STALLED,
     NodeState.HALTED: DisplayState.STALLED,

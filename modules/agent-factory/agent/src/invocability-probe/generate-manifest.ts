@@ -20,6 +20,7 @@ import {
 } from './request-shape';
 
 const DEFAULT_MODELS = [
+  'global.anthropic.claude-opus-5-5',
   'global.anthropic.claude-opus-5',
   'global.anthropic.claude-opus-4-8',
   'global.anthropic.claude-opus-4-7',

@@ -381,7 +381,7 @@ Once the platform is running, ongoing changes are deployed via GitHub Actions:
 | Module | Workflow | Trigger |
 |--------|----------|---------|
 | Platform infra | `platform-infra-apply.yml` | Manual dispatch after PR merge |
-| Gateway infra | `gateway-infra-apply.yml` | Manual dispatch after PR merge |
+| Gateway infra | `gateway-infra-apply.yml` | Dispatch on main with required `reviewed_source_sha` matching the exact reviewed run commit |
 | Gateway backend | `gateway-deploy.yml` | Push to main (`src/`, `Dockerfile`, `k8s/`) |
 | Gateway frontend | (included in gateway-deploy) | Push to main (`frontend/`) |
 | Agent Factory infra | `agent-factory-infra-apply.yml` | Manual dispatch after PR merge |

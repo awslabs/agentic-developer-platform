@@ -23,6 +23,7 @@ identity, and GitHub integration.
 | `docs/` | Architecture, researcher workflows, and deployment records |
 
 Start with [domain investigations](docs/domain-investigations.md),
+[the GitHub team demo](docs/github-url-demo.md),
 [research case output](docs/url-researcher-cases.md), or
 [the architecture](docs/architecture.md). The
 [ownership and migration guide](docs/component-ownership.md) explains the platform

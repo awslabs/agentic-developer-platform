@@ -15,7 +15,7 @@
  */
 
 import { HttpResponse, http } from 'msw';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { server } from '@/mocks/server';
 import {
@@ -47,6 +47,7 @@ import {
 import { DOMAIN_BASE, ENDPOINTS } from '@superplane-ui/contract';
 
 import { connectionResponse, expectedBindBody, vaultCredentialRow, validationResponse } from './vault-fixtures';
+import { withoutOnboardingEndpoints } from './endpoint-fixtures';
 
 /** `apiClient` prepends `/api`, so MSW must match that full path. */
 const API = (path: string) => `/api${DOMAIN_BASE}${path}`;
@@ -75,6 +76,9 @@ beforeEach(() => {
 });
 
 describe('unserved endpoints are never requested', () => {
+  let restoreDeployment: () => void;
+  beforeEach(() => { restoreDeployment = withoutOnboardingEndpoints(); });
+  afterEach(() => { restoreDeployment(); });
   /**
    * Each unserved operation, with the endpoint name it must report.
    *
@@ -203,10 +207,15 @@ describe('failure classification', () => {
     expect(missingResource.reason).toBe('unknown');
     expect(missingResource.detail).toMatch(/does not exist/i);
 
-    const notDeployed = classify({ status: 404, message: '' }, 'previewWorkspace');
-    expect(notDeployed.reason).toBe('not-deployed');
-    expect(notDeployed.capability).toBe(ENDPOINTS.previewWorkspace.capability);
-    expect(notDeployed.detail).not.toMatch(/#\d+/);
+    const restoreDeployment = withoutOnboardingEndpoints();
+    try {
+      const notDeployed = classify({ status: 404, message: '' }, 'previewWorkspace');
+      expect(notDeployed.reason).toBe('not-deployed');
+      expect(notDeployed.capability).toBe(ENDPOINTS.previewWorkspace.capability);
+      expect(notDeployed.detail).not.toMatch(/#\d+/);
+    } finally {
+      restoreDeployment();
+    }
   });
 
   it('treats a missing status as unreachable rather than as an unknown server refusal', async () => {
@@ -813,7 +822,7 @@ describe('operation receipts, parsed so a lost reply stays recoverable', () => {
   it('preserves each state the contract declares', () => {
     // The inverse of the test above: mapping everything to `unknown` would satisfy
     // it while making the parser useless.
-    for (const state of ['accepted', 'running', 'succeeded', 'failed'] as const) {
+    for (const state of ['accepted', 'running', 'succeeded', 'failed', 'cancelled'] as const) {
       expect(parseOperationReceipt({ ...WIRE_RECEIPT, state })?.state).toBe(state);
     }
   });
@@ -850,7 +859,10 @@ describe('operation receipts, parsed so a lost reply stays recoverable', () => {
 });
 
 describe('BYOC adoption and operation lookup are refused, not faked', () => {
-  // These three endpoints are not served at this revision. The tests assert the
+  let restoreDeployment: () => void;
+  beforeEach(() => { restoreDeployment = withoutOnboardingEndpoints(); });
+  afterEach(() => { restoreDeployment(); });
+  // Model an older deployment without these endpoints. The tests assert the
   // refusal is LOCAL -- no request is issued -- because a request that 404s at the
   // proxy is indistinguishable from a missing workspace, which sends the user
   // hunting for a resource instead of a capability.
@@ -884,11 +896,8 @@ describe('BYOC adoption and operation lookup are refused, not faked', () => {
     }
   });
 
-  it('the parsers are ready for the endpoints they will serve once deployed', () => {
-    // The refusals above are the current state, not the end state. Asserting the
-    // parsers work independently of the transport means enabling these routes is a
-    // contract change and not a fresh implementation -- and it stops the parser
-    // above from being dead code nothing exercises.
+  it('parsing remains independent of deployment route availability', () => {
+    // An unavailable transport must not change receipt interpretation.
     expect(ENDPOINTS.adoptWorkspace.served).toBe(false);
     expect(ENDPOINTS.getOperation.served).toBe(false);
     expect(ENDPOINTS.recoverOperation.served).toBe(false);

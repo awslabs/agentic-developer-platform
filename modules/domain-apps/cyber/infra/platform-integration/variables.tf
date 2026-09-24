@@ -35,3 +35,9 @@ variable "broker_image" {
   default     = ""
   description = "Override with the separately built cyber browser image digest after verifying it. Empty preserves the recorded deployed image."
 }
+
+variable "session_owner_routing" {
+  type        = bool
+  default     = false
+  description = "Enable with matching new broker and worker images: balance new sessions and route existing capabilities to their owning pod."
+}

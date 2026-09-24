@@ -10,11 +10,17 @@ mostly about the *seams* rather than about any one mechanism:
   exact bytes that will be forwarded — the property
   ``modules/agent-factory/agent/src/control-envelope.ts`` verifies at the far end.
 
-``TestSupportedVerbPath`` reaches the signing path by patching
-``SUPPORTED_AGENT_ACTIONS``. That is deliberate and it is the only way to cover
-it: no live-control verb is supported in this deployment, so the signing code
-would otherwise ship untested and be exercised for the first time by whichever
-story enables a verb.
+``TestSupportedVerbPath`` used to reach the signing path by patching
+``SUPPORTED_AGENT_ACTIONS``, which was the only way to cover it while no
+live-control verb was supported. PAUSE has since shipped in the real set (ABORT
+with #3963, STEER with #3965), so the patch is gone: the signing tests now run
+against the deployed constant, which is what makes them evidence about this
+deployment rather than about a configuration no environment has.
+
+``TestUnsupportedVerbsStay501`` now runs the other way round, and patches. It has
+to: its subject is a verb the deployment does *not* implement, and there is no
+longer one to borrow. See that class's docstring for why the two directions are
+consistent rather than contradictory.
 """
 
 from __future__ import annotations
@@ -410,9 +416,32 @@ class TestTwoWorkersSharingOneRole:
 
 
 class TestUnsupportedVerbsStay501:
-    @pytest.mark.parametrize("action", [AgentAction.STEER, AgentAction.ABORT])
-    def test_an_authorized_live_control_verb_is_501(self, action):
+    """The boundary between "may ask" and "can be done", with no verb left to borrow.
+
+    ABORT was parametrized here alongside STEER until #3963; STEER carried the
+    class alone until #3965 implemented it. Every live-control verb is now
+    supported, so the two tests below are the first here that have to *withhold*
+    a verb with ``monkeypatch`` — a reversal of the module docstring's rule, and
+    the reason is worth stating.
+
+    That rule exists so the *signing* tests read the deployed constant: a signing
+    test passing only under a patched set would be evidence about a configuration
+    no environment runs. This class asserts the opposite thing — the refusal — and
+    its subject is a verb that by definition is not in the deployed set. Pinning
+    it to whichever verb happens to be unimplemented is what made this class die
+    twice. Patching keeps the mechanism covered continuously, including for
+    whatever verb is added next, and the shipped set is still pinned exactly (once)
+    in ``test_policy.py``.
+    """
+
+    @pytest.mark.parametrize("action", [AgentAction.PAUSE, AgentAction.RESUME, AgentAction.STEER, AgentAction.ABORT])
+    def test_an_authorized_live_control_verb_is_501(self, action, monkeypatch):
         """The hard boundary: authorization ships, behaviour does not."""
+        monkeypatch.setattr(
+            policy_module,
+            "SUPPORTED_AGENT_ACTIONS",
+            frozenset(policy_module.SUPPORTED_AGENT_ACTIONS - {action}),
+        )
         adapter, _ = build_adapter(
             grants={"inv-coordinator#1": grant(allowed_actions=frozenset({AgentAction.MONITOR, action}))},
             targets={"run-developer-7": target()},
@@ -442,7 +471,7 @@ class TestUnsupportedVerbsStay501:
 
         assert exc.value.status_code == REFUSED_STATUS
 
-    def test_a_malformed_body_is_still_501_for_an_unbuilt_verb(self):
+    def test_a_malformed_body_is_still_501_for_an_unbuilt_verb(self, monkeypatch):
         """Body checks sit below the 501, so an unbuilt verb never reports body rules.
 
         The inverse of the human path's W1-05 ordering, and deliberately so:
@@ -450,6 +479,11 @@ class TestUnsupportedVerbsStay501:
         body is only ever inspected to bind an envelope, which an unbuilt verb
         never gets.
         """
+        monkeypatch.setattr(
+            policy_module,
+            "SUPPORTED_AGENT_ACTIONS",
+            frozenset(policy_module.SUPPORTED_AGENT_ACTIONS - {AgentAction.STEER}),
+        )
         adapter, _ = build_adapter(
             grants={"inv-coordinator#1": grant(allowed_actions=frozenset({AgentAction.STEER}))},
             targets={"run-developer-7": target()},
@@ -472,21 +506,88 @@ class TestUnsupportedVerbsStay501:
 
 
 @pytest.fixture
-def pause_supported(monkeypatch):
-    """Enable PAUSE for the signing tests only.
+def pause_supported():
+    """Assert PAUSE is really supported, rather than patching it in.
 
-    Patched rather than left to a future story so the signing path is covered
-    now. Nothing outside this fixture changes ``SUPPORTED_AGENT_ACTIONS``, and
-    ``test_policy.py`` asserts its real value is unchanged.
+    This was a ``monkeypatch`` while PAUSE was unimplemented. It shipped in #5222
+    and the patch outlived its reason — which is worse than harmless, because a
+    patched set means these signing tests would keep passing if PAUSE were removed
+    from the real constant and the live route began answering 501. Reading the
+    shipped value makes the fixture fail in that case, which is the point.
     """
-    monkeypatch.setattr(
-        policy_module,
-        "SUPPORTED_AGENT_ACTIONS",
-        frozenset({AgentAction.MONITOR, AgentAction.PAUSE}),
+    assert AgentAction.PAUSE in policy_module.SUPPORTED_AGENT_ACTIONS, (
+        "SUPPORTED_AGENT_ACTIONS no longer contains PAUSE, so prepare_command would refuse before "
+        "signing and these tests would cover nothing. Fix the constant, do not patch it here."
     )
 
 
 class TestSupportedVerbPath:
+    def test_abort_signs_an_envelope_through_the_shipped_policy(self):
+        """#3963: ABORT reaches the signing path with nothing patched.
+
+        Deliberately takes no ``*_supported`` fixture. The point is that the
+        deployed ``SUPPORTED_AGENT_ACTIONS`` admits ABORT, so if the constant were
+        reverted this test fails at ``require_supported`` — which no amount of
+        fixture arrangement inside this file could hide. The grant must still
+        convey ABORT explicitly: enabling a verb deployment-wide is not the same as
+        granting it to a caller, and ``LIVE_CONTROL_ACTIONS`` keeps MONITOR from
+        implying it.
+        """
+        adapter, _ = build_adapter(
+            grants={"inv-coordinator#1": grant(allowed_actions=frozenset({AgentAction.MONITOR, AgentAction.ABORT}))},
+            targets={"run-developer-7": target()},
+        )
+
+        prepared = adapter.prepare_command(
+            credential_token=credential(),
+            target_run_id="run-developer-7",
+            action=AgentAction.ABORT,
+            request_body=COMMAND_BODY,
+        )
+
+        assert prepared.envelope is not None
+        verified = verify_envelope(
+            prepared.envelope,
+            public_keys=PUBLIC_KEYS,
+            expected_run_id="run-developer-7",
+            expected_generation=3,
+            expected_action="abort",
+            expected_command_id="cmd-0001",
+            request_body=COMMAND_BODY,
+            now=NOW,
+        )
+        # The action is bound into the envelope, so a signed abort cannot be
+        # replayed as any other verb even though both are now supported.
+        assert verified.action == "abort"
+        assert verified.target_generation == 3
+        assert verified.body_digest == body_digest(COMMAND_BODY)
+
+    def test_an_abort_grant_does_not_come_from_monitor(self):
+        """The verb being deployed does not grant it — the split in #5028 holds.
+
+        Paired with the test above because the two together are the actual
+        contract: enabling ABORT widened what a *granted* caller may do and
+        nothing else. Without this, "abort is supported now" would be
+        indistinguishable from "abort is available to anyone who can monitor".
+        """
+        adapter, _ = build_adapter(
+            grants={"inv-coordinator#1": grant(allowed_actions=frozenset({AgentAction.MONITOR}))},
+            targets={"run-developer-7": target()},
+        )
+
+        with pytest.raises(PolicyError) as exc:
+            adapter.prepare_command(
+                credential_token=credential(),
+                target_run_id="run-developer-7",
+                action=AgentAction.ABORT,
+                request_body=COMMAND_BODY,
+            )
+
+        # 404, not 501: the verb exists, this caller simply has no authority for
+        # it, and saying 501 would misreport a permission problem as a missing
+        # feature.
+        assert exc.value.status_code == REFUSED_STATUS
+
     def test_signs_an_envelope_bound_to_the_resolved_facts(self, pause_supported):
         """AC5: what the listener will check is what the gateway asserted."""
         adapter, _ = build_adapter(

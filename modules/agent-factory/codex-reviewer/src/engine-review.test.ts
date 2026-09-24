@@ -19,12 +19,16 @@ const blocked: EngineVerdict = { ...approved, verdict: "request_changes", findin
 
 async function fixture(t: test.TestContext, trackedLearning = false) {
   const directory = await mkdtemp(join(tmpdir(), "codex-engine-test-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const workspace = join(directory, "work");
   const remote = join(directory, "remote.git");
   await mkdir(workspace);
   const git = async (...args: string[]) => (await exec("git", args, { cwd: workspace })).stdout.trim();
   await git("init", "--initial-branch=story");
+  // Keep automatic Git maintenance inside the awaited Git process so it cannot
+  // race fixture teardown while rewriting objects/pack.
+  await git("config", "gc.autoDetach", "false");
+  await git("config", "maintenance.autoDetach", "false");
   await git("config", "user.name", "Reviewer Test");
   await git("config", "user.email", "reviewer@example.test");
   await writeFile(join(workspace, "code.txt"), "old behavior\n");
@@ -38,6 +42,8 @@ async function fixture(t: test.TestContext, trackedLearning = false) {
   await git("commit", "-m", "story implementation");
   const sha = await git("rev-parse", "HEAD");
   await git("init", "--bare", remote);
+  await git("--git-dir", remote, "config", "gc.autoDetach", "false");
+  await git("--git-dir", remote, "config", "maintenance.autoDetach", "false");
   await git("push", remote, "HEAD:refs/heads/story");
   await git("config", `url.${remote}.insteadOf`, "https://x-access-token@github.com/org/repo.git");
   const pr = { number: 7, state: "open", title: "Story", body: "Implement the story", html_url: "https://github.com/org/repo/pull/7",
@@ -120,6 +126,38 @@ test("failed functional or security inspection never publishes a repaired tree",
   assert.equal(result.sha, state.sha);
   assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
 });
+
+for (const newWhitespace of [false, true]) {
+  test(`base merge preserves upstream whitespace while ${newWhitespace ? "rejecting" : "publishing"} the repair delta`, async t => {
+    const state = await fixture(t);
+    await state.git("checkout", "-b", "main");
+    await writeFile(join(state.workspace, "base-evidence.md"), "upstream evidence \n");
+    await state.git("add", "base-evidence.md");
+    await state.git("commit", "-m", "upstream fixture with existing whitespace");
+    state.pr.base.sha = await state.git("rev-parse", "HEAD");
+    await state.git("checkout", "story");
+    state.pr.mergeable = false;
+    state.envelope.cycle.action = "repair";
+    const run = () => runEngineReview(state.envelope, state.runtime, {
+      github: state.github,
+      review: async () => approved,
+      fix: async () => {
+        await writeFile(join(state.workspace, "code.txt"), "repaired behavior\n");
+        if (newWhitespace) await writeFile(join(state.workspace, "new-repair.txt"), "new whitespace \n");
+      },
+    });
+    if (newWhitespace) {
+      await assert.rejects(run(), /diff --cached --check/);
+      assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), state.sha);
+    } else {
+      const result = await run();
+      assert.equal(result.report.verdict, "approve");
+      assert.equal(await state.git("--git-dir", state.remote, "rev-parse", "story"), result.sha);
+      assert.equal(await state.git("rev-parse", "HEAD^2"), state.pr.base.sha);
+      assert.equal(await readFile(join(state.workspace, "base-evidence.md"), "utf8"), "upstream evidence \n");
+    }
+  });
+}
 
 test("an inspected repair stages a tracked deletion under a now ignored directory", async t => {
   const state = await fixture(t, true);
@@ -410,4 +448,20 @@ test("one reviewer fixes story and CI, publishes its evidence, merges, and repor
   assert.equal(repairs, 2);
   assert.equal(merges, 1);
   assert.equal(result.repair_base_sha, state.sha);
+});
+
+test("stalled checkpoint review uses the latest story and preserves the saved commit", async t => {
+  const f = await fixture(t);
+  f.envelope.cycle.recovery = { source: "checkpoint", prior_run_id: "previous-worker", checkpoint_sha: f.sha };
+  const prompts: string[] = [];
+  const github = { ...f.github, getIssue: async () => ({ number: 42, title: "Updated story",
+    body: "Owner clarification: preserve accepted inputs", html_url: "url" }) };
+  const result = await runEngineReview(f.envelope, f.runtime, { github,
+    review: async prompt => { prompts.push(prompt); return approved; },
+    fix: async () => { throw new Error("Already valid work does not need rewriting"); } });
+  assert.equal(result.sha, f.sha);
+  assert.ok(prompts[0]?.includes("stalled-story recovery"));
+  assert.ok(prompts[0]?.includes("Owner clarification: preserve accepted inputs"));
+  assert.ok(prompts[0]?.includes("do not restart from main"));
+  assert.equal(await f.git("rev-parse", "HEAD"), f.sha);
 });

@@ -63,7 +63,7 @@ def test_case_retains_provenance_and_does_not_automatically_clear(tmp_path):
     out = tmp_path / "case"
     new_case(out, URL)
     case = add_probe(out, URL, capture=bundle)
-    assert case["assessment"]["verdict"] == "inconclusive"
+    assert case["assessment"]["verdict"] is None
     assert (out / "obs-001.png").read_bytes() == PNG
     assert "screenshot_base64" not in (out / "case.json").read_text()
     assert "private-value" not in (out / "case.json").read_text()
@@ -76,7 +76,7 @@ def test_case_retains_provenance_and_does_not_automatically_clear(tmp_path):
     assert assessed["assessment"]["verdict"] == "no_adverse_behavior_observed"
 
 
-def test_failed_followup_keeps_old_evidence_and_invalidates_clearance(tmp_path):
+def test_failed_followup_keeps_evidence_and_allows_model_reassessment(tmp_path):
     out = tmp_path / "case"
     new_case(out, URL)
     add_probe(out, URL, capture=bundle)
@@ -89,21 +89,24 @@ def test_failed_followup_keeps_old_evidence_and_invalidates_clearance(tmp_path):
     assert len(case["observations"]) == 1
     assert (out / "obs-001.png").exists()
     assert case["probes"][-1]["status"] == "failed"
-    assert case["assessment"]["verdict"] == "inconclusive"
-    with pytest.raises(ValueError, match="Incomplete probes"):
-        assess_case(out, assessment())
+    assert case["assessment"]["verdict"] is None
+    assert (
+        assess_case(out, assessment())["assessment"]["verdict"]
+        == "no_adverse_behavior_observed"
+    )
 
 
 @pytest.mark.parametrize("status", ["partial", "failed"])
-def test_incomplete_capture_cannot_be_cleared(tmp_path, status):
+def test_incomplete_capture_does_not_veto_model_verdict(tmp_path, status):
     out = tmp_path / "case"
     new_case(out, URL)
     add_probe(out, URL, capture=lambda *args, **kwargs: bundle(status=status))
-    with pytest.raises(ValueError, match="Incomplete collection"):
-        assess_case(out, assessment())
+    result = assess_case(out, assessment())
+    assert result["assessment"]["verdict"] == "no_adverse_behavior_observed"
+    assert result["collection"]["coverage"] == "partial"
 
 
-def test_unknown_evidence_and_unsupported_variation_are_rejected(tmp_path):
+def test_unknown_evidence_is_rejected_but_finding_meaning_is_model_owned(tmp_path):
     out = tmp_path / "case"
     new_case(out, URL)
     add_probe(out, URL, capture=bundle)
@@ -111,8 +114,10 @@ def test_unknown_evidence_and_unsupported_variation_are_rejected(tmp_path):
         assess_case(out, assessment(ids=["invented"]))
     data = assessment("suspicious")
     data["findings"][0]["kind"] = "content_variation"
-    with pytest.raises(ValueError, match="two observations"):
-        assess_case(out, data)
+    assert (
+        assess_case(out, data)["assessment"]["findings"][0]["kind"]
+        == "content_variation"
+    )
 
 
 def test_different_subject_and_excess_probes_are_rejected(tmp_path):
@@ -205,7 +210,7 @@ def test_false_completeness_is_rejected(tmp_path, field, value):
     data["observations"][0][field] = value
     case = add_probe(out, URL, capture=lambda *a, **k: data)
     assert case["probes"][0]["status"] == "failed"
-    assert case["assessment"]["verdict"] == "inconclusive"
+    assert case["assessment"]["verdict"] is None
 
 
 def test_changed_artifact_prevents_assessment(tmp_path):

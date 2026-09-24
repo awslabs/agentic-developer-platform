@@ -600,6 +600,7 @@ async def test_handler_exception_is_audited_before_it_propagates(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_verified_actor_survives_a_refused_tenant_binding(monkeypatch):
+    from contextlib import aclosing
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from fastapi import HTTPException
@@ -628,10 +629,12 @@ async def test_verified_actor_survives_a_refused_tenant_binding(monkeypatch):
             "app": SimpleNamespace(state=SimpleNamespace(domain_policy=object())),
         }
     )
-    with pytest.raises(HTTPException):
-        await domain_guard.enforce_domain_authorization(
-            request, credentials=None, db=AsyncMock()
-        )
+    async with aclosing(
+        domain_guard.enforce_domain_authorization(request, credentials=None, db=AsyncMock())
+    ) as guard:
+        with pytest.raises(HTTPException) as denied:
+            await guard.__anext__()
+    assert denied.value.status_code == 403
     assert AuditMiddleware._resolve_identity(request) == (TEST_PRINCIPAL, None)
 
 

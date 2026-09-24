@@ -1,0 +1,23 @@
+{
+  "$fixture": {
+    "description": "409 idempotency_conflict: the same key was reused with a different body. Code and HTTP status agree, and the message carries no task content.",
+    "schema": "errors.schema.json#/$defs/error_response",
+    "expect": "valid",
+    "owner": "T1",
+    "criteria": [
+      "T0-AC02",
+      "T1-AC01",
+      "V0-02",
+      "V1-04"
+    ]
+  },
+  "schema_version": "1.0",
+  "code": "idempotency_conflict",
+  "message": "The supplied Idempotency-Key was already used for a different request body.",
+  "request_id": "req-01JC9K8T0C3D",
+  "http_status": 409,
+  "details": {
+    "task_id": "tsk_3d5f8a10-2b4c-4e6f-9a81-7c3e5d9f1b20",
+    "current_status": "running"
+  }
+}

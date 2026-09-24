@@ -178,9 +178,13 @@ class Installer:
     def network_environment(self):
         # Discovery must not mutate user input: resume/rollback bind that exact
         # input, while rendered policies and probes need the resolved address.
-        if self.cluster_dns_ip is None:
-            return self.env
-        return dict(self.env, cluster_dns_ip=self.cluster_dns_ip)
+        result = dict(self.env)
+        if self.cluster_dns_ip is not None:
+            result["cluster_dns_ip"] = self.cluster_dns_ip
+        endpoint = self.receipt.get("management_api_server")
+        if endpoint:
+            result["management_api_server"] = endpoint
+        return result
 
     def write_manifests(self):
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -247,6 +251,7 @@ class Installer:
             cluster["arn"] == expected_arn and cluster["status"] == "ACTIVE",
             "Wrong or inactive management cluster",
         )
+        self.receipt["management_api_server"] = cluster["endpoint"]
         self.cluster_dns_ip = verify_cluster_dns(self.env, cluster)
         dns_configuration = {
             "cluster_arn": cluster["arn"],
@@ -302,12 +307,25 @@ class Installer:
         if verify_source:
             self.verify_image_sources()
 
+    @property
+    def image_components(self):
+        return (
+            (*COMPONENTS[:-1], "superplane-executor", COMPONENTS[-1])
+            if self.env.get("execution")
+            else COMPONENTS
+        )
+
     def verify_image_sources(self):
         evidence = {}
-        for name in COMPONENTS[:-1]:
+        for name in self.image_components[:-1]:
             revision = self.lock["image_sources"][name]["source_revision"]
             if revision == self.lock["source_revision"]:
                 continue
+            if name == "superplane-executor":
+                require(
+                    revision == self.lock["source_revision"],
+                    "Executor must be built from the exact release revision, including shared contracts",
+                )
             path = "modules/domain-apps/superplane/src/" + name
             trees = [
                 self.commands.call(
@@ -329,7 +347,7 @@ class Installer:
     def images(self):
         if self.env.get("image_execution") == "cluster":
             return self.cluster_images()
-        for name in COMPONENTS[:-1]:
+        for name in self.image_components[:-1]:
             source = self.lock["image_sources"][name]
             data = self.json(
                 self.aws(
@@ -436,11 +454,45 @@ class Installer:
             and self.json(controller).get(
                 "controller_management"
                 if self.control_plane_only
-                else "governed_provisioning"
+                else "governed_execution_supported"
             )
             is True,
             "Production controller lacks B's governed execution adapter; direct provisioning is not a fallback",
         )
+        self.controller_profiles()
+
+    def controller_profiles(self, probe=None):
+        from .controller_profiles import VERIFY_PROGRAM, policy, verify_result
+
+        encoded = policy(self.env)
+        if encoded is None:
+            return
+        values = {"SUPERPLANE_INSTALLATION_PROFILES": encoded}
+        if probe is not None:
+            result = probe.run(
+                "superplane-api", ["python", "-c", VERIFY_PROGRAM], values=values
+            )
+        else:
+            result = self.commands.call(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network=none",
+                    "--entrypoint",
+                    "python",
+                    "--env",
+                    "SUPERPLANE_INSTALLATION_PROFILES",
+                    image(self.lock, "superplane-api"),
+                    "-c",
+                    VERIFY_PROGRAM,
+                ],
+                env=dict(os.environ, **values),
+                allow_failure=True,
+            )
+        require(result.returncode == 0, "Pinned API image refused controller profiles")
+        self.receipt["controller_profiles"] = verify_result(self.json(result), self.env)
+        self.save()
 
     def management_probe_environment(self):
         return {
@@ -454,7 +506,7 @@ class Installer:
         }
 
     def cluster_images(self):
-        for name in COMPONENTS[:-1]:
+        for name in self.image_components[:-1]:
             source = self.lock["image_sources"][name]
             result = self.json(
                 self.aws(
@@ -544,11 +596,12 @@ class Installer:
                 and self.json(controller).get(
                     "controller_management"
                     if self.control_plane_only
-                    else "governed_provisioning"
+                    else "governed_execution_supported"
                 )
                 is True,
                 "Controller image lacks the selected runtime integration",
             )
+            self.controller_profiles(probe)
 
     def secrets(self):
         for kind, name in self.env["secrets"].items():
@@ -647,7 +700,7 @@ class Installer:
                 selected[0].get("submitter_id") if selected else None
             )
             scopes = ["budget_monitor/global"] if component == "monitor" else []
-            if component == "controller" and self.control_plane_only:
+            if component == "controller":
                 scopes = [f"controller_management/{self.env['org_id']}"]
             require(
                 selected[0].get("lease_scopes", []) == scopes,
@@ -693,6 +746,9 @@ class Installer:
                     "eks", "describe-cluster", "--name", self.env["workspace_cluster"]
                 )
             )["cluster"]
+            from .controller_profiles import verify_cluster_profiles
+
+            verify_cluster_profiles(self.env, cluster)
             selected_kube = workspace["clusters"][0]["cluster"]
             require(
                 set(selected_kube) <= {"server", "certificate-authority-data"},
@@ -766,13 +822,56 @@ class Installer:
             "An existing workspace controller must complete its explicit handover before installation",
         )
         credential = self.secret_values["workspace_access"]["kubeconfig"]
-        for verb, resource in (
-            ("list", "nodes"),
-            ("watch", "pods"),
-            ("watch", "nodepools.superplane.ai"),
-            ("watch", "superplanenodes.superplane.ai"),
-            ("create", "leases.coordination.k8s.io"),
-            ("update", "leases.coordination.k8s.io"),
+        # The manager must not receive the executor's mutation credential.
+        # This creates only Kubernetes's virtual self-permission review.
+        from .execution import read_only_workspace_rules
+
+        with tempfile.TemporaryDirectory(dir=self.directory) as directory:
+            review = Path(directory) / "selfsubjectrulesreview.json"
+            review.write_text(
+                json.dumps(
+                    {
+                        "apiVersion": "authorization.k8s.io/v1",
+                        "kind": "SelfSubjectRulesReview",
+                        "spec": {"namespace": self.env["workspace_namespace"]},
+                    }
+                )
+            )
+            result = self.json(
+                self.commands.call(
+                    [
+                        "kubectl",
+                        "--kubeconfig",
+                        "/dev/stdin",
+                        "--request-timeout=30s",
+                        "create",
+                        "-f",
+                        str(review),
+                        "-o",
+                        "json",
+                    ],
+                    data=credential,
+                )
+            )
+        require(
+            read_only_workspace_rules(result.get("status")),
+            "Workspace manager credential must have verifiable read-only permissions without Secret access",
+        )
+        namespace_scope = ["-n", self.env["workspace_namespace"]]
+        for verb, resource, scope in (
+            ("get", "namespaces", ["--resource-name", self.env["workspace_namespace"]]),
+            ("list", "nodes", []),
+            ("watch", "pods", namespace_scope),
+            ("get", "pods", namespace_scope),
+            ("list", "pods", namespace_scope),
+            ("get", "pods/log", namespace_scope),
+            ("get", "deployments.apps", namespace_scope),
+            ("list", "replicasets.apps", namespace_scope),
+            ("get", "jobs.batch", namespace_scope),
+            ("list", "nodepools.superplane.ai", []),
+            ("watch", "nodepools.superplane.ai", []),
+            ("list", "superplanenodes.superplane.ai", namespace_scope),
+            ("watch", "superplanenodes.superplane.ai", namespace_scope),
         ):
             result = self.commands.call(
                 [
@@ -784,8 +883,7 @@ class Installer:
                     "can-i",
                     verb,
                     resource,
-                    "-n",
-                    self.env["workspace_namespace"],
+                    *scope,
                 ],
                 data=credential,
             )
@@ -1423,7 +1521,21 @@ class Installer:
                     "superplane-workspace-access",
                     self.env["namespace"],
                     "workspace_access",
-                    {"kubeconfig": "kubeconfig"},
+                    {self.env["workspace_id"] + ".kubeconfig": "kubeconfig"},
+                )
+            )
+        if not self.control_plane_only:
+            mappings.append(
+                (
+                    "superplane-workspace-observations",
+                    self.env["namespace"],
+                    "observation",
+                    {
+                        self.env["workspace_id"]
+                        + ".credential": "controller-credential",
+                        self.env["workspace_id"]
+                        + ".signing-key": "controller-signing-key",
+                    },
                 )
             )
         for namespace in (self.env["namespace"], self.env["skypilot_namespace"]):
@@ -1865,6 +1977,23 @@ class Installer:
 
     def private_services(self):
         namespace = self.env["namespace"]
+        from .controller_profiles import VERIFY_PROGRAM, projection, verify_result
+
+        profiles = projection(self.env)
+        if profiles is not None:
+            result = self.kube(
+                "exec",
+                "deployment/superplane-api",
+                "-n",
+                namespace,
+                "--",
+                "python",
+                "-c",
+                VERIFY_PROGRAM,
+            )
+            self.receipt["controller_profiles"] = verify_result(
+                self.json(result), self.env
+            )
 
         def service_get(name, port, path):
             program = (
@@ -1958,6 +2087,8 @@ class Installer:
             "monitor_authenticated_receiver_read": True,
             "controller_manager_ready": True,
             "workspace_execution_ready": not self.control_plane_only,
+            "controller_profiles_validated": profiles is not None,
+            "serving_workload_ready": False,
             "skypilot_authenticated_health": True,
             "skypilot_database": skypilot_database,
             "database": database,

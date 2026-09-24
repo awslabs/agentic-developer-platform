@@ -141,8 +141,30 @@ export interface ControlListenerConfig {
    * Invoked *through* the journal's delivery gate rather than directly, so an
    * envelope-bearing command is revalidated against the gateway first. The
    * executor itself must therefore settle the command it is handed.
+   *
+   * `reason` is the operator's own words, already length-bounded by payload
+   * validation, and `null` when none was supplied. It exists for `abort`
+   * (Issue #3963), whose terminal outcome quotes it back in the closing comment;
+   * verbs that do not use it ignore the argument.
+   *
+   * `instruction` is the steering text (Issue #3965), `null` for every other
+   * verb. It is passed as a *separate* parameter rather than folded into
+   * `reason` because the two have opposite trust handling: `reason` is quoted
+   * back into an operator-facing comment, while `instruction` crosses into a
+   * model prompt and must be wrapped as untrusted input first. Merging them
+   * would make it possible to route steering text down the quoting path, or an
+   * abort reason down the prompt path, by changing one call site.
+   *
+   * Validation is the only place that has seen the request body — the journal
+   * deliberately does not store instruction text, because `CommandRecord` is
+   * re-projected to the browser — so if it is not carried here it is gone.
    */
-  executor?: (action: ControlAction, commandId: string) => Promise<void>;
+  executor?: (
+    action: ControlAction,
+    commandId: string,
+    reason: string | null,
+    instruction: string | null,
+  ) => Promise<void>;
 
   /**
    * This run's own id — Issue #5028.
@@ -493,7 +515,9 @@ export class ControlListener {
         authority_reference_id: authorization.envelope.authorityReferenceId,
       });
       queuedAuthorization = { envelope: req.headers[ENVELOPE_HEADER] as string, action,
-        command_id: validation.commandId, body_base64: raw.toString('base64') };
+        command_id: validation.commandId, body_base64: raw.toString('base64'),
+        principal: authorization.envelope.principal,
+        authorityKind: authorization.envelope.authorityKind ?? 'delegated_grant' };
     }
 
     const outcome = this.config.store.submit(action, validation.commandId, fingerprintPayload(payload), queuedAuthorization);
@@ -522,7 +546,8 @@ export class ControlListener {
         // journal is the durable record, and the dashboard polls state, so the
         // outcome reaches the operator either way.
         this.writeJson(res, 202, { command: outcome.record, state: this.config.store.snapshot().state });
-        this.deliveryTail = this.deliveryTail.then(() => this.applyAccepted(action, validation.commandId));
+        this.deliveryTail = this.deliveryTail.then(() =>
+          this.applyAccepted(action, validation.commandId, validation.reason, validation.instruction));
         return;
     }
   }
@@ -547,8 +572,31 @@ export class ControlListener {
    * the truth for a run whose harness cannot perform the verb, and it keeps the
    * pending cap doing its job. Auto-rejecting here instead would silently drain
    * the queue and disable the 429 backpressure the cap exists to provide.
+   *
+   * **`steer` takes neither branch — Issue #3965.** Both of the paths above mark
+   * the command `delivered` before the executor runs, because for pause, resume
+   * and abort the executor *is* the effect: the moment it starts, the run is
+   * being paused or stopped. Steering is the one verb where acceptance and
+   * delivery are genuinely separated in time — the instruction has to wait for a
+   * point at which the harness can take input, which may be twenty minutes away
+   * in the middle of a long tool call. Marking it `delivered` here would place
+   * the acknowledgement at enqueue time, which is precisely the overclaim the
+   * story forbids: the dashboard would report an instruction as handed to the
+   * model while it sat in a queue.
+   *
+   * It would also move the authority re-check to the wrong moment. Running
+   * `deliverAuthorized` now would validate the grant at acceptance and then
+   * deliver against that stale decision later, so a revocation during the wait
+   * would have no effect. So the steering executor is invoked directly, leaves
+   * the command `pending`, and the delivery pump calls `deliverAuthorized`
+   * itself immediately before the physical handoff.
    */
-  private async applyAccepted(action: ControlAction, commandId: string): Promise<void> {
+  private async applyAccepted(
+    action: ControlAction,
+    commandId: string,
+    reason: string | null,
+    instruction: string | null = null,
+  ): Promise<void> {
     const executor = this.config.executor;
     if (!executor) {
       // Nothing to apply it with. Logged, not settled — see above.
@@ -564,12 +612,21 @@ export class ControlListener {
       // rejection would surface as an unhandled rejection and could take the
       // worker down over a control command.
       const run = () => {
-        void store.executeDelivered(commandId, () => executor(action, commandId)).catch((err: unknown) => {
+        void store.executeDelivered(commandId, () => executor(action, commandId, reason, instruction)).catch((err: unknown) => {
           this.log('warn', 'control executor failed', { action, command_id: commandId,
             detail: (err as Error)?.message ?? String(err) });
           store.settle(commandId, 'rejected', 'control executor failed');
         });
       };
+      // Issue #3965: steering is handed over while still `pending`, and the pump
+      // owns both the journal transition and the authority re-check. Not wrapped
+      // in `executeDelivered` either — that helper holds a pending-cap slot for
+      // the executor's lifetime, and this executor returns as soon as the
+      // instruction is queued, which is not when the command finishes.
+      if (action === 'steer') {
+        await executor(action, commandId, reason, instruction);
+        return;
+      }
       // `deliverAuthorized` returns false when the re-check fails, having already
       // settled the command `rejected`. Nothing more to do on that path.
       if (this.requiresEnvelope(action)) {
@@ -660,7 +717,7 @@ export class ControlListener {
   private validatePayload(
     action: ControlAction,
     payload: Record<string, unknown>,
-  ): { ok: true; commandId: string } | { ok: false; detail: string } {
+  ): { ok: true; commandId: string; reason: string | null; instruction: string | null } | { ok: false; detail: string } {
     const allowed = action === 'steer' ? ['command_id', 'instruction'] : ['command_id', 'reason'];
     for (const key of Object.keys(payload)) {
       if (!allowed.includes(key)) {
@@ -681,14 +738,25 @@ export class ControlListener {
       if (instruction.length > MAX_INSTRUCTION_CHARS) {
         return { ok: false, detail: 'instruction is too long' };
       }
+      // Returned rather than discarded — Issue #3965. Until this story the text
+      // was validated here and then dropped, which was harmless only while
+      // `steer` answered 501: the moment the verb is implemented, dropping it
+      // would accept an instruction and deliver an empty one.
+      return { ok: true, commandId, reason: null, instruction };
     } else if (payload.reason !== undefined) {
       const reason = payload.reason;
       if (typeof reason !== 'string' || reason.length > MAX_REASON_CHARS) {
         return { ok: false, detail: 'reason is invalid' };
       }
+      // Returned so the executor can carry it into the abort record and from
+      // there into the operator-facing closing comment — Issue #3963. Validation
+      // is the only place that has seen the body, and the journal's own `reason`
+      // field is the command's *outcome* annotation, not the request, so there is
+      // nowhere else to read it back from.
+      return { ok: true, commandId, reason, instruction: null };
     }
 
-    return { ok: true, commandId };
+    return { ok: true, commandId, reason: null, instruction: null };
   }
 
   /**

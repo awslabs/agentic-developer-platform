@@ -29,14 +29,14 @@ def source(tmp_path):
     # The production stager also vendors the maintained bootstrap/runtime
     # packages. Keep its real filesystem inputs in this offline fixture.
     for package in (
-        "auth", "contracts", "infra/account-factory", "infra/account-provisioning",
-        "workspace_bootstrap", "workspace_provisioning",
+        "auth", "contracts", "infra/account-factory", "infra/account-provisioning", "infra/workspaces",
+        "workspace_bootstrap", "workspace_provisioning", "executor",
     ):
         shutil.copytree(ROOT / SUPERPLANE / package, module / package)
     shutil.copyfile(ROOT / SUPERPLANE / "pyproject.toml", module / "pyproject.toml")
-    (module / "infra/workspaces").mkdir(parents=True)
-    shutil.copyfile(ROOT / SUPERPLANE / "infra/workspaces/outputs.tf",
-                    module / "infra/workspaces/outputs.tf")
+    (module / "src/superplane-controller/deploy").mkdir(parents=True)
+    shutil.copyfile(ROOT / SUPERPLANE / "src/superplane-controller/deploy/crds.yaml",
+                    module / "src/superplane-controller/deploy/crds.yaml")
     shutil.copytree(ROOT / "modules/harness/jobs", tmp_path / "modules/harness/jobs")
     shutil.copytree(ROOT / SUPERPLANE / "src/superplane-api/scripts",
                     module / "src/superplane-api/scripts")
@@ -45,7 +45,14 @@ def source(tmp_path):
 
 def test_inventory_covers_all_source_components_and_pinned_runtime(source):
     targets = discover(source, "superplane")
-    assert len(targets) == 4
+    assert len(targets) == 5
+    assert {target["dockerfile"] for target in targets} == {
+        str(SUPERPLANE / "src/superplane-api/Dockerfile"),
+        str(SUPERPLANE / "src/superplane-controller/Dockerfile"),
+        str(SUPERPLANE / "src/superplane-platform-monitor/Dockerfile"),
+        str(SUPERPLANE / "executor/Dockerfile"),
+        "-",
+    }
     assert all(target["required"] for target in targets)
     external = [target for target in targets if target["dockerfile"] == "-"]
     lock = yaml.safe_load((source / SUPERPLANE / "releases/superplane.lock.yaml").read_text())
@@ -53,7 +60,7 @@ def test_inventory_covers_all_source_components_and_pinned_runtime(source):
     legacy = source / "modules/agent-factory/gateway"
     legacy.mkdir(parents=True)
     (legacy / "Dockerfile").write_text("FROM scratch\n")
-    assert len(discover(source, "superplane")) == 4
+    assert len(discover(source, "superplane")) == 5
     assert next(t for t in discover(source) if t["dockerfile"].endswith("gateway/Dockerfile"))["context"] == "modules/agent-factory"
 
 
@@ -155,8 +162,12 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
                     ("account_provisioning", "creation_runner.py"),
                     ("superplane_bootstrap", "workspace.py"),
                     ("workspace_provisioning", "preview.py"),
+                    ("superplane_executor", "inventory.py"),
                 ):
                     assert (context / "vendor" / package.replace("_", "-") / package / sentinel).is_file()
+                runtime_data = context / "vendor/workspace-provisioning/workspace_provisioning/_data"
+                for relative in ("workspaces/.terraform.lock.hcl", "workspaces/scripts/apply_workspace_plan.py", "crds.yaml"):
+                    assert (runtime_data / relative).is_file()
             if failure == "build" and context.name == "superplane-controller":
                 raise subprocess.CalledProcessError(1, args)
         if args[:3] == ["docker", "image", "inspect"]:
@@ -173,8 +184,8 @@ def test_scan_stages_api_publishes_coverage_and_fails_on_missing_results(source,
     monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: None)
     assert runner.main() == (0 if failure is None else 1)
     report = reports[0]
-    assert report["expected"] == 4
-    assert report["succeeded"] == {None: 4, "build": 3, "invalid_output": 0}[failure]
+    assert report["expected"] == 5
+    assert report["succeeded"] == {None: 5, "build": 4, "invalid_output": 0}[failure]
     assert any(call[:3] == ["docker", "pull", "--platform"] for call in calls)
     uploads = [call for call in calls if call[:3] == ["aws", "s3", "cp"]]
     assert len(uploads) == report["succeeded"] * 3 + 1
@@ -192,7 +203,7 @@ def test_any_missing_target_fails_even_above_the_old_half_coverage_threshold(sou
     """Coverage is all-or-nothing.
 
     The 2026-09-21 run reported success on 8/17 Grype images because the build
-    passed at >=50% coverage. Here 3 of 4 targets succeed -- comfortably over
+    passed at >=50% coverage. Here 4 of 5 targets succeed -- comfortably over
     that old threshold -- and the run must still fail and name the missing one.
     """
     monkeypatch.chdir(source)
@@ -222,7 +233,7 @@ def test_any_missing_target_fails_even_above_the_old_half_coverage_threshold(sou
     monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: None)
     assert runner.main() == 1
     report = reports[0]
-    assert (report["succeeded"], report["expected"]) == (3, 4)
+    assert (report["succeeded"], report["expected"]) == (4, 5)
     failed = [item for item in report["targets"] if item["status"] != "succeeded"]
     assert [item["name"] for item in failed] == ["superplane-skypilot-api"]
 

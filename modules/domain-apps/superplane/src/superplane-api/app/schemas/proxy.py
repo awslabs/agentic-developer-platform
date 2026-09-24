@@ -37,6 +37,9 @@ class CreateDeploymentRequest(BaseModel):
     """POST /workspaces/{id}/deployments — create a model deployment."""
 
     operation_id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    profile_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    approval_id: uuid.UUID | None = None
+    plan_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     name: str = Field(
         ..., min_length=1, max_length=255, pattern="^[a-z0-9][a-z0-9-]*[a-z0-9]$"
     )
@@ -63,8 +66,49 @@ class CreateDeploymentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CancelWorkloadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: str = Field(min_length=1, max_length=255)
+
+
+class DeleteDeploymentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: uuid.UUID
+    approval_id: uuid.UUID | None = None
+    plan_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+
+class BatchOptions(BaseModel):
+    """Exact immutable invocation selected from an installed batch profile."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    image: str = Field(
+        pattern=r"^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$", max_length=512
+    )
+    command: list[str] = Field(min_length=1, max_length=32)
+    args: list[str] = Field(max_length=32)
+    gpu_count: int = Field(ge=1, le=8)
+    cpu: str = Field(pattern=r"^[1-9][0-9]{0,4}m?$")
+    memory: str = Field(pattern=r"^[1-9][0-9]{0,4}[MG]i$")
+
+
+class CreateBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_id: uuid.UUID
+    profile_id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    approval_id: uuid.UUID | None = None
+    plan_revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]{0,50}$")
+    batch_options: BatchOptions
+
+
 class DeploymentInfo(BaseModel):
     deployment_id: uuid.UUID | None = None
+    operation_id: str | None = None
+    operation_state: str | None = None
+    cancellation_requested: bool = False
+    cleanup_status: str = "unconfirmed"
+    provider_uid: str | None = None
     """Single deployment info."""
 
     name: str
@@ -85,6 +129,11 @@ class DeploymentCreateResponse(BaseModel):
     replicas: int
     status: str
     deployment_id: uuid.UUID | None = None
+    operation_id: str | None = None
+    operation_state: str | None = None
+    cancellation_requested: bool = False
+    cleanup_status: str = "unconfirmed"
+    provider_uid: str | None = None
 
 
 class DeploymentListResponse(BaseModel):
@@ -100,7 +149,11 @@ class DeploymentDeleteResponse(BaseModel):
 
     name: str
     namespace: str
-    status: str = "Deleted"
+    status: str = "Deleting"
+    operation_id: str | None = None
+    operation_state: str | None = None
+    cancellation_requested: bool = False
+    cleanup_status: str = "unconfirmed"
 
 
 # --- Heartbeat schemas ---
@@ -177,6 +230,19 @@ class HeartbeatResponse(BaseModel):
 # --- Cost schemas ---
 
 
+class CostEstimateInfo(BaseModel):
+    """Recorded node estimates are distinct from reconciled provider charges."""
+
+    cost_basis: str = "recorded_node_rates"
+    cost_scope: str = "workspace_cluster"
+    estimate_status: str = "unavailable"
+    known_subtotal_usd: str = "0.00"
+    observed_cost_usd: str | None = None
+    cost_reconciliation: str = "unavailable"
+    unestimated_node_count: int = 0
+    checked_at: str | None = None
+
+
 class CostNodeDetail(BaseModel):
     """Cost detail for a single node."""
 
@@ -186,9 +252,9 @@ class CostNodeDetail(BaseModel):
     gpu_count: int | None = None
     cloud: str | None = None
     region: str | None = None
-    hourly_cost_usd: str
-    hours_running: str
-    total_cost_usd: str
+    hourly_cost_usd: str | None = None
+    hours_running: str | None = None
+    total_cost_usd: str | None = None
     status: str
     created_at: str | None = None
     terminated_at: str | None = None
@@ -201,29 +267,29 @@ class CostPeriod(BaseModel):
     end: str | None = None
 
 
-class CostResponse(BaseModel):
+class CostResponse(CostEstimateInfo):
     """GET /workspaces/{id}/cost response."""
 
     workspace_id: str
     workspace_name: str
-    total_cost_usd: str
+    total_cost_usd: str | None = None
     currency: str = "USD"
     node_count: int = 0
     nodes: list[CostNodeDetail] = Field(default_factory=list)
-    breakdown_by_gpu: dict[str, str] = Field(default_factory=dict)
-    breakdown_by_cloud: dict[str, str] = Field(default_factory=dict)
+    breakdown_by_gpu: dict[str, str | None] = Field(default_factory=dict)
+    breakdown_by_cloud: dict[str, str | None] = Field(default_factory=dict)
     period: CostPeriod = Field(default_factory=CostPeriod)
 
 
 # --- Org cost schemas ---
 
 
-class OrgWorkspaceCost(BaseModel):
+class OrgWorkspaceCost(CostEstimateInfo):
     """Cost summary for a single workspace within an org cost response."""
 
     workspace_id: str
     workspace_name: str
-    total_cost_usd: str
+    total_cost_usd: str | None = None
     node_count: int = 0
     status: str | None = None
     budget_max_daily_usd: str | None = None
@@ -243,16 +309,16 @@ class BudgetAlertInfo(BaseModel):
     created_at: str | None = None
 
 
-class OrgCostResponse(BaseModel):
+class OrgCostResponse(CostEstimateInfo):
     """GET /orgs/cost response — org-level cost aggregation."""
 
     org_id: str
-    total_cost_usd: str
+    total_cost_usd: str | None = None
     currency: str = "USD"
     workspace_count: int = 0
     workspaces: list[OrgWorkspaceCost] = Field(default_factory=list)
-    breakdown_by_gpu: dict[str, str] = Field(default_factory=dict)
-    breakdown_by_cloud: dict[str, str] = Field(default_factory=dict)
+    breakdown_by_gpu: dict[str, str | None] = Field(default_factory=dict)
+    breakdown_by_cloud: dict[str, str | None] = Field(default_factory=dict)
     active_alerts: list[BudgetAlertInfo] = Field(default_factory=list)
     period: CostPeriod = Field(default_factory=CostPeriod)
 
@@ -260,12 +326,12 @@ class OrgCostResponse(BaseModel):
 # --- Budget status schemas ---
 
 
-class BudgetInfo(BaseModel):
+class BudgetInfo(CostEstimateInfo):
     """Current budget configuration and usage."""
 
     max_daily_usd: str | None = None
     max_gpus: int | None = None
-    current_daily_cost_usd: str = "0.00"
+    current_daily_cost_usd: str | None = None
     current_active_gpus: int = 0
     daily_budget_used_pct: str | None = None
 

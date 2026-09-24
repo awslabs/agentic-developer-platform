@@ -32,13 +32,18 @@ Usage:
     DATABASE_URL=postgresql+asyncpg://... \
     python backfill_member_org_ids.py
 
-Note on a user with NO memberships: the queries below only return users who
-hold at least one TenantMembership, so a single-user run for someone whose last
-membership was just revoked reports "no memberships" and exits without writing.
-That is intentional — clearing the attribute is the revoking path's job (it
-calls project_member_org_ids, which writes an empty list), and readers treat a
-missing/empty attribute as NOT eligible, so the fail-closed direction holds
-either way.
+Memberships count only through proven GitHub identity bindings, matching
+project_member_org_ids. All identity keys remain repair targets, including
+unproven or membershipless accounts: they receive an empty list so stale access
+is removed. If every identity row was deleted, --provider-user-id explicitly
+targets that orphaned projection for clearing; a sweep cannot discover a key
+that no longer exists in Postgres.
+
+Only existing DDB rows are updated. An absent row already satisfies an empty
+clear; a nonempty projection with no identity row is incomplete and needs the
+identity-owning provisioning path. Validation and operational failures exit
+nonzero, including partial writes. Both tables are attempted and reported so
+rerunning safely completes a partially successful clear.
 
 Environment variables:
     DATABASE_URL: Postgres connection string (required)
@@ -53,9 +58,13 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.shared.identity.verification import PROVEN_METHODS  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -75,15 +84,15 @@ async def get_users_with_memberships(
 ) -> list[dict]:
     """Query Postgres for users with their membership org_ids and GitHub identity.
 
-    With no filter, returns every user holding at least one TenantMembership.
-    `provider_user_id` / `user_id` narrow it to a single user for targeted repair.
+    With no filter, returns every GitHub identity key, even when no proven
+    membership remains. `provider_user_id` / `user_id` select keys to repair.
 
     The grouping is by provider_user_id (not by the user_identities row) on
     purpose: `user_identities` is unique per (provider, provider_user_id, org_id),
     so one GitHub account legitimately has N rows — one per org. Grouping by the
     row would emit N partial org lists for the same DDB key and the last write
     would win with only one org in it. Grouping by the identity value aggregates
-    every membership the account holds into the single list the key expects.
+    every membership held through a proven identity into the list the key expects.
     (The aggregation happens in Python rather than via `array_agg` so the query
     is portable to the SQLite test suite; the emitted rows are identical.)
 
@@ -91,12 +100,12 @@ async def get_users_with_memberships(
     rows for the same reason: it selects *which account* to rebuild, and the
     rebuild must still see that account's full membership set.
     """
-    from sqlalchemy import text
+    from sqlalchemy import bindparam, text
     from sqlalchemy.ext.asyncio import create_async_engine
 
     engine = create_async_engine(db_url)
 
-    params: dict[str, str] = {}
+    params = {"proven_methods": sorted(PROVEN_METHODS)}
     filter_sql = ""
     if provider_user_id:
         filter_sql = "AND ui.provider_user_id = :provider_user_id"
@@ -115,10 +124,11 @@ async def get_users_with_memberships(
             ui.provider,
             tm.tenant_id
         FROM user_identities ui
-        JOIN tenant_memberships tm ON tm.user_id = ui.user_id
+        LEFT JOIN tenant_memberships tm
+          ON tm.user_id = ui.user_id AND ui.verification_method IN :proven_methods
         WHERE ui.provider = 'github'
         {filter_sql}
-    """)
+    """).bindparams(bindparam("proven_methods", expanding=True))
 
     async with engine.connect() as conn:
         result = await conn.execute(query, params)
@@ -127,11 +137,18 @@ async def get_users_with_memberships(
     await engine.dispose()
 
     # Aggregate to one entry per (provider, provider_user_id) — the DDB key.
-    # The inner join guarantees every emitted key holds >= 1 membership, which
-    # is what the previous SQL's `HAVING count(...) > 0` asserted.
+    # The outer join keeps empty/unproven keys in the repair set. Putting the
+    # proof filter in WHERE instead would silently skip the stale lists that
+    # most need clearing. An explicit account target also survives full removal.
     grouped: dict[tuple[str, str], set[str]] = {}
+    if provider_user_id:
+        grouped[(provider_user_id, "github")] = set()
     for row in rows:
-        grouped.setdefault((row[0], row[1]), set()).add(row[2])
+        if not row[0]:
+            continue
+        org_ids = grouped.setdefault((row[0], row[1]), set())
+        if row[2]:
+            org_ids.add(row[2])
 
     return [
         {
@@ -144,7 +161,7 @@ async def get_users_with_memberships(
 
 
 def update_old_table(client, provider_user_id: str, member_org_ids: list[str], dry_run: bool) -> bool:
-    """Update member_org_ids on the old identity-index table."""
+    """Update an existing row; return False only when it is already absent."""
     key = {
         "identity_type": {"S": "github_user"},
         "identity_value": {"S": provider_user_id},
@@ -164,18 +181,20 @@ def update_old_table(client, provider_user_id: str, member_org_ids: list[str], d
             Key=key,
             UpdateExpression="SET member_org_ids = :orgs, updated_at = :now",
             ExpressionAttributeValues=expression_values,
+            ConditionExpression="attribute_exists(#pk) AND attribute_exists(#sk)",
+            ExpressionAttributeNames={"#pk": "identity_type", "#sk": "identity_value"},
         )
         return True
     except ClientError as e:
-        if e.response["Error"]["Code"] == "ValidationException":
-            # Row doesn't exist — skip (user may not have old-table row)
-            logger.warning("Old table row not found for github_user|%s — skipping", provider_user_id)
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # The condition tests existence only. A schema/validation rejection
+            # is a failed write, not evidence that the stale row is absent.
             return False
         raise
 
 
 def update_new_table(client, provider_user_id: str, member_org_ids: list[str], dry_run: bool) -> bool:
-    """Update member_org_ids on the v2 user-identity-index table."""
+    """Update an existing row; return False only when it is already absent."""
     key = {
         "provider": {"S": "github"},
         "provider_user_id": {"S": provider_user_id},
@@ -195,11 +214,12 @@ def update_new_table(client, provider_user_id: str, member_org_ids: list[str], d
             Key=key,
             UpdateExpression="SET member_org_ids = :orgs, updated_at = :now",
             ExpressionAttributeValues=expression_values,
+            ConditionExpression="attribute_exists(#pk) AND attribute_exists(#sk)",
+            ExpressionAttributeNames={"#pk": "provider", "#sk": "provider_user_id"},
         )
         return True
     except ClientError as e:
-        if e.response["Error"]["Code"] == "ValidationException":
-            logger.warning("V2 table row not found for github|%s — skipping", provider_user_id)
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return False
         raise
 
@@ -238,7 +258,7 @@ async def main():
         provider_user_id=args.provider_user_id,
         user_id=args.user_id,
     )
-    logger.info("Found %d users with TenantMembership rows", len(users))
+    logger.info("Found %d GitHub account projections to reconcile", len(users))
 
     if not users:
         if single_user:
@@ -246,9 +266,8 @@ async def main():
             # know the target was not found rather than read "complete" and
             # assume the row is now correct.
             logger.error(
-                "No GitHub identity with a TenantMembership matched %s — nothing written. "
-                "If the user's memberships were just revoked, an empty projection is the "
-                "correct end state and readers already treat it as not eligible.",
+                "No GitHub identity matched %s — nothing written. "
+                "For a fully deleted user, use --provider-user-id to clear the account's projection.",
                 scope,
             )
             sys.exit(1)
@@ -261,27 +280,53 @@ async def main():
     # Process each user
     success_count = 0
     error_count = 0
+    partial_count = 0
+    absent_count = 0
 
-    for user in users:
+    for processed, user in enumerate(users, start=1):
         provider_user_id = user["provider_user_id"]
         member_org_ids = user["member_org_ids"]
 
-        try:
-            update_old_table(ddb_client, provider_user_id, member_org_ids, args.dry_run)
-            update_new_table(ddb_client, provider_user_id, member_org_ids, args.dry_run)
+        completed = []
+        for table_name, update_table in [(IDENTITY_INDEX_TABLE, update_old_table), (USER_IDENTITY_INDEX_TABLE, update_new_table)]:
+            try:
+                updated = update_table(ddb_client, provider_user_id, member_org_ids, args.dry_run)
+                if updated:
+                    outcome = "dry_run" if args.dry_run else "updated"
+                    complete = True
+                else:
+                    absent_count += 1
+                    # No row is already the desired revoked state. A nonempty
+                    # projection needs an existing identity row from its owner;
+                    # this membership-only repair must not invent a bare one.
+                    complete = not member_org_ids
+                    outcome = "already_absent" if complete else "missing"
+                completed.append(complete)
+                log = logger.info if complete else logger.error
+                log("Membership reconciliation account=%s table=%s outcome=%s", provider_user_id, table_name, outcome)
+            except Exception:
+                completed.append(False)
+                logger.exception("Membership reconciliation account=%s table=%s outcome=error", provider_user_id, table_name)
+                # Still attempt the other table: a partial clear is safe, but
+                # must exit nonzero so a retry repairs the incomplete copy.
+
+        if all(completed):
             success_count += 1
-        except Exception:
-            logger.exception("Failed to backfill user %s", provider_user_id)
+        else:
             error_count += 1
+            if any(completed):
+                partial_count += 1
 
         # Throttle to avoid DDB throughput issues
-        if not args.dry_run and success_count % 25 == 0:
+        if not args.dry_run and processed % 25 == 0:
             await asyncio.sleep(0.1)
 
     logger.info(
-        "Reconciliation complete: %d succeeded, %d failed, %d total",
+        "Reconciliation complete: %d succeeded, %d failed (%d partial), %d absent table rows, %d total",
         success_count,
         error_count,
+        partial_count,
+        absent_count,
         len(users),
     )
     # Non-zero on any failure so a CI/runbook caller can't treat a partial

@@ -43,6 +43,10 @@ class UserIdentityItem(TypedDict, total=False):
     provider_username: str | None
     user_kind: str | None
     bot_kind: str | None
+    # Issue #5664 (A10): provenance of the Postgres link this row projects. Read by
+    # the webhook resolver to decide whether resolving a sender also entitles the
+    # caller to act as them. Absent on rows written before the projection landed.
+    verification_method: str | None
     updated_at: str
     ttl: int
 
@@ -81,6 +85,7 @@ class UserIdentityIndexClient:
         member_org_ids: list[str] | None = None,
         user_kind: str | None = None,
         bot_kind: str | None = None,
+        verification_method: str | None = None,
     ) -> bool:
         """Write a user identity to the new DDB table.
 
@@ -88,6 +93,11 @@ class UserIdentityIndexClient:
         Issue #3134: Optional member_org_ids stores the user's tenant memberships.
         Issue #780: Optional user_kind/bot_kind mark a bot identity — see
         update_user_core_attrs for the field contract.
+        Issue #5664 (A10): Optional verification_method projects the Postgres
+        provenance column so the webhook resolver can distinguish a
+        provider-confirmed link from a self-asserted one. Note this is a PutItem
+        (full overwrite), so omitting it on a row that had one DOES drop it — the
+        caller that owns member_org_ids owns the complete row state.
         Returns True if write succeeded, False if all retries exhausted.
         """
         if provider not in SUPPORTED_PROVIDERS:
@@ -111,6 +121,9 @@ class UserIdentityIndexClient:
 
         if bot_kind is not None:
             item["bot_kind"] = {"S": bot_kind}
+
+        if verification_method is not None:
+            item["verification_method"] = {"S": verification_method}
 
         # Issue #3134: member_org_ids as a DDB List attribute
         if member_org_ids is not None:
@@ -152,6 +165,7 @@ class UserIdentityIndexClient:
         provider_username: str | None = None,
         user_kind: str | None = None,
         bot_kind: str | None = None,
+        verification_method: str | None = None,
     ) -> bool:
         """Update core attrs on a user identity row using SET semantics (UpdateItem).
 
@@ -164,6 +178,10 @@ class UserIdentityIndexClient:
         not None) — mirrors the same fields on the old-table client so a bot
         identity written here resolves identically regardless of which table
         the webhook Lambda's identity_resolver reads.
+
+        Issue #5664 (A10): verification_method is set when the caller knows the
+        link's provenance and left untouched otherwise, so an unrelated identity
+        update cannot blank a value the backfill established.
 
         Returns True if update succeeded, False if all retries exhausted.
         """
@@ -190,6 +208,10 @@ class UserIdentityIndexClient:
         if bot_kind is not None:
             set_parts.append("bot_kind = :bkind")
             expression_values[":bkind"] = {"S": bot_kind}
+
+        if verification_method is not None:
+            set_parts.append("verification_method = :vmethod")
+            expression_values[":vmethod"] = {"S": verification_method}
 
         update_expression = "SET " + ", ".join(set_parts)
 

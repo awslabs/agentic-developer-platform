@@ -38,6 +38,7 @@ export type NodeEngineState =
   | 'awaiting_merge'
   | 'awaiting_gate'
   | 'passed'
+  | 'waived'
   | 'rejected_at_gate'
   | 'failed'
   | 'halted'
@@ -63,7 +64,7 @@ export interface AggregateCostFigure extends CostFigure {
 /** A persisted worker observation; successful exit is not review approval. */
 export interface StoryActivity {
   invocation_id: string;
-  persona: 'developer' | 'reviewer';
+  persona: 'developer' | 'reviewer' | 'agent-codex-reviewer';
   status: string;
   liveness: 'live' | 'unverifiable' | 'exited';
 }
@@ -97,6 +98,14 @@ export interface DeliveryProgress {
 }
 
 export interface GraphNode {
+  evaluation_waiver?: {
+    decision_id: string;
+    actor_id: string;
+    created_at: string;
+    reason: string;
+    criterion_ids: string[];
+    plan_version: number;
+  } | null;
   id: string;
   epic_ref: string;
   wave_ref: string;

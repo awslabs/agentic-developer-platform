@@ -9,11 +9,11 @@ from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from evidence_items import checked_item, partial_evidence_usable
+from evidence_items import checked_item
 from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "url-research/1"
-COLLECTOR_VERSION = "1.2.0"
+COLLECTOR_VERSION = "1.3.0"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
@@ -66,7 +66,7 @@ class Contract(BaseModel):
 class EvidenceReference(Contract):
     observation_id: str = Field(pattern=r"^obs-[0-9]{3}$")
     item_id: str = Field(
-        pattern=r"^(text|form|script|network|redirect|download|screenshot)-[0-9]{3}$"
+        pattern=r"^(text|form|script|network|redirect|download|screenshot|warning)-[0-9]{3}$"
     )
 
 
@@ -78,124 +78,98 @@ class Finding(Contract):
         "redirect",
         "content_variation",
         "benign_context",
+        "threat_warning",
+        "coverage_limitation",
         "other",
     ]
     statement: str = Field(min_length=1, max_length=2000)
-    basis: Literal["observation", "hypothesis"]
-    evidence_ids: list[str] = Field(min_length=1, max_length=10)
+    basis: Literal["observation", "reported", "hypothesis"]
+    evidence_ids: list[str] = Field(default_factory=list, max_length=10)
+    source_ids: list[str] = Field(default_factory=list, max_length=10)
     evidence_refs: list[EvidenceReference] = Field(default_factory=list, max_length=30)
+
+
+class IncidentReport(Contract):
+    source: str = Field(min_length=1, max_length=300)
+    reported_at: str = Field(min_length=1, max_length=100)
+    summary: str = Field(min_length=1, max_length=4000)
+
+
+class ContextFinding(Contract):
+    statement: str = Field(min_length=1, max_length=2000)
+    source_ids: list[str] = Field(min_length=1, max_length=10)
+    basis: Literal["reported", "hypothesis"]
+
+
+class ContextAssessment(Contract):
+    # Read older reports without imposing a second, weaker verdict vocabulary.
+    risk: (
+        Literal[
+            "clean", "suspicious", "malicious", "inconclusive", "no_specific_concern"
+        ]
+        | None
+    ) = None
+    findings: list[ContextFinding] = Field(default_factory=list, max_length=20)
+    limitations: list[str] = Field(min_length=1, max_length=20)
 
 
 class Assessment(Contract):
     verdict: Literal[
-        "no_adverse_behavior_observed", "suspicious", "malicious", "inconclusive"
+        "clean",
+        "no_specific_concern",
+        "no_adverse_behavior_observed",
+        "suspicious",
+        "malicious",
+        "inconclusive",
     ]
     findings: list[Finding] = Field(default_factory=list, max_length=30)
     limitations: list[str] = Field(default_factory=list, max_length=30)
     recommended_actions: list[str] = Field(default_factory=list, max_length=20)
     assessor: str = Field(min_length=1, max_length=200)
+    confidence: Literal["high", "medium", "low"] | None = None
     model_version: str = Field(default="", max_length=200)
+    context_assessment: ContextAssessment | None = None
+
+    def validate_context(self, records):
+        """Check source references only; the model evaluates their meaning and quality."""
+        known = {r["id"] for r in records if "id" in r}
+        for finding in self.findings:
+            if not finding.evidence_ids and not finding.source_ids:
+                raise ValueError("Finding requires an observation or source reference")
+            if not set(finding.source_ids) <= known:
+                raise ValueError("Finding cites an unknown source ID")
+        for finding in (
+            self.context_assessment.findings if self.context_assessment else []
+        ):
+            if not set(finding.source_ids) <= known:
+                raise ValueError("Context finding cites an unknown source ID")
 
     def validate_evidence(self, observations: list[dict]) -> None:
+        """Check reference existence and integrity without adjudicating the verdict."""
         by_id = {o["id"]: o for o in observations}
         for finding in self.findings:
             if not set(finding.evidence_ids) <= by_id.keys():
                 raise ValueError("Finding cites an unknown observation")
-            cited_observations = [by_id[i] for i in finding.evidence_ids]
             for ref in finding.evidence_refs:
                 if ref.observation_id not in finding.evidence_ids:
                     raise ValueError(
                         "Item references must belong to cited observations"
                     )
                 checked_item(by_id[ref.observation_id], ref.item_id)
-            if finding.kind == "redirect" and not any(
-                r.get("kind") in {"http", "navigation"}
-                for o in cited_observations
-                for r in o.get("redirects", [])
-            ):
-                raise ValueError(
-                    "Redirect findings require observed navigation/redirect evidence; form actions are configuration"
-                )
-            if finding.kind == "download_offer" and not any(
-                o.get("downloads") for o in cited_observations
-            ):
-                raise ValueError("Download findings require a captured download offer")
-            if finding.kind == "content_variation":
-                cited = [by_id[i] for i in set(finding.evidence_ids)]
-                if len(cited) < 2 or len({o["subject_sha256"] for o in cited}) != 1:
-                    raise ValueError(
-                        "Variation requires two observations of the same input"
-                    )
-                if (
-                    len(
-                        {
-                            o.get("content_sha256")
-                            for o in cited
-                            if o.get("content_sha256")
-                        }
-                    )
-                    < 2
-                ):
-                    raise ValueError("Variation requires different captured content")
-        if self.verdict != "inconclusive":
-            if not any(f.basis == "observation" for f in self.findings):
-                raise ValueError("An assessment requires evidence-linked findings")
-            for finding in self.findings:
-                for observation_id in finding.evidence_ids:
-                    observation = by_id[observation_id]
-                    if observation["status"] == "complete":
-                        continue
-                    if (
-                        self.verdict == "no_adverse_behavior_observed"
-                        or not partial_evidence_usable(observation)
-                    ):
-                        raise ValueError(
-                            "Incomplete collection supports only an inconclusive assessment"
-                        )
-                    refs = [
-                        r
-                        for r in finding.evidence_refs
-                        if r.observation_id == observation_id
-                    ]
-                    if not refs:
-                        raise ValueError(
-                            "Partial observations require intact, specific evidence_refs"
-                        )
-                    kinds = {checked_item(observation, r.item_id)["kind"] for r in refs}
-                    if finding.kind == "credential_collection" and not kinds & {
-                        "form",
-                        "script",
-                        "network",
-                    }:
-                        raise ValueError(
-                            "Credential findings require form, script, or network evidence"
-                        )
-                    if finding.kind == "brand_impersonation" and not kinds & {
-                        "text",
-                        "screenshot",
-                    }:
-                        raise ValueError(
-                            "Brand findings require captured text or screenshot evidence"
-                        )
-                    if finding.kind in {"redirect", "download_offer"} and (
-                        {"redirect": "redirect", "download_offer": "download"}[
-                            finding.kind
-                        ]
-                        not in kinds
-                    ):
-                        raise ValueError(
-                            "Cite the specific redirect or download evidence item"
-                        )
-                    if not self.limitations:
-                        raise ValueError(
-                            "An adverse verdict with partial coverage must state limitations"
-                        )
-        if self.verdict == "no_adverse_behavior_observed" and (
-            not observations or any(o["status"] != "complete" for o in observations)
-        ):
-            raise ValueError("A partial or failed probe cannot support clearance")
 
 
 def content_digest(observation: dict) -> str:
     content = {k: observation.get(k) for k in ("visible_text", "forms", "frames")}
     return digest(json.dumps(content, sort_keys=True, ensure_ascii=False))
+
+
+def assessment_schema():
+    """New assessments use four labels; the reader still accepts legacy records."""
+    schema = Assessment.model_json_schema()
+    schema["properties"]["verdict"]["enum"] = [
+        "clean",
+        "suspicious",
+        "malicious",
+        "inconclusive",
+    ]
+    return schema

@@ -67,6 +67,9 @@ on:
       # an edit re-runs the gate that guards it — otherwise those assertions
       # only hold for the commit that introduced them.
       - '.github/workflows/platform-infra-apply.yml'
+      # Exact reviewed-source admission and its sole automatic caller.
+      - '.github/workflows/gateway-infra-apply.yml'
+      - '.github/workflows/gateway-deploy.yml'
       - 'platform/infra/modules/eks/main.tf'
       # The AWS provider floor the constraint guard asserts against (#5831).
       # `required_providers` is resolved by `init`, so no `terraform test` can
@@ -178,6 +181,9 @@ on:
       # an edit re-runs the gate that guards it — otherwise those assertions
       # only hold for the commit that introduced them.
       - '.github/workflows/platform-infra-apply.yml'
+      # Exact reviewed-source admission and its sole automatic caller.
+      - '.github/workflows/gateway-infra-apply.yml'
+      - '.github/workflows/gateway-deploy.yml'
       - 'platform/infra/modules/eks/main.tf'
       # The AWS provider floor the constraint guard asserts against (#5831).
       # `required_providers` is resolved by `init`, so no `terraform test` can
@@ -295,6 +301,7 @@ jobs:
             tests/test_nightly_triage_wiring.py \
             tests/test_report_finalization.py \
             tests/test_verify_scoped_plan.py \
+            tests/test_gateway_infra_reviewed_source.py \
             tests/test_platform_provider_constraint.py \
             tests/test_refresh_only_migration_guard.py \
             tests/test_security_scan_tool_invocations.py \

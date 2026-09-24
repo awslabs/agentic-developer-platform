@@ -172,7 +172,7 @@ class TestRegistryMatchesTheCode:
             / "app"
             / "services"
             / "provisioning.py",
-            after_line=226,
+            after_line=int(port("operation_facade").declared_at.rsplit(":", 1)[1]),
         )
         assert adapter_side and api_side
         assert adapter_side != api_side, (

@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -21,6 +22,9 @@ from app.database import Base
 class Deployment(Base):
     __tablename__ = "deployments"
     __table_args__ = (
+        CheckConstraint(
+            "workload_kind IN ('serving','batch')", name="ck_deployments_workload_kind"
+        ),
         UniqueConstraint(
             "org_id",
             "operation_id",
@@ -41,11 +45,18 @@ class Deployment(Base):
         UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    workload_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="serving", server_default="serving"
+    )
     operation_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
     operation_request_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     operation_target_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    controller_request_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    controller_approval_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     provider_uid: Mapped[str | None] = mapped_column(String(255), nullable=True)
     namespace: Mapped[str | None] = mapped_column(String(255), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

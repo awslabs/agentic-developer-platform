@@ -393,7 +393,7 @@ async def build_model_catalogue(
 
         # Gate 5: Invocability evidence
         evidence: ModelInvocabilityEvidence | None = None
-        if account_id and region:
+        if account_id and region and model.compatibility_class == COMPATIBILITY_CLASS_CLAUDE:
             shape_sha = compute_request_shape_sha256(model.canonical_model_id)
             evidence = await lookup_evidence(
                 db,
@@ -649,6 +649,12 @@ async def validate_selection(
         return SelectionRejection(
             reason="probing_disabled",
             message=("No effective destination resolved for this caller. Model selection requires destination-specific invocability evidence."),
+        )
+
+    if catalogue_entry.compatibility_class != COMPATIBILITY_CLASS_CLAUDE:
+        return SelectionRejection(
+            reason="probing_disabled",
+            message="Protected selection requires an SDK-generated probe contract for this harness.",
         )
 
     shape_sha = compute_request_shape_sha256(resolved)

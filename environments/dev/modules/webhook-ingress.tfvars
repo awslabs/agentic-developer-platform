@@ -25,6 +25,23 @@ gateway_authority_managed_policies = true
 # Saved persona preferences resolve before dispatch; worker authority stays independent.
 persona_model_mapping_enabled = true
 
-# Cyber domain investigations (#5808, #5810), retaining deployed worker repairs.
+# Evidence-led cyber analyst (#5917), preserving deployed worker source.
 # Worker and browser broker share this digest; protected-worker migration stays off.
-agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:7cd991c4b1498295bfa331da8deb367d4a02bba0e12b0075d73b61c7f9ced08f"
+agent_image = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:9b07180e2304cd075bfb5d3309f010b8a458f2973a7cf034c0ef82a79b3900f4"
+
+# The matching broker and worker support session-owner capabilities.
+domain_app_images = {
+  cyber-browser = "879318057152.dkr.ecr.us-east-1.amazonaws.com/adp-agent-runtime@sha256:073918cf6405bae0158957588eb6acb8c6f3485d04e08fb091659066827b4e24"
+}
+
+domain_app_settings = {
+  cyber = {
+    common_crawl_partitions = "CC-MAIN-2026-39,CC-MAIN-2026-34,CC-MAIN-2026-30,CC-MAIN-2026-25,CC-MAIN-2026-21,CC-MAIN-2026-17"
+    session_owner_routing   = "true"
+  }
+}
+
+# Task API T4 was OOMKilled at 8Gi during worker regression tests (2026-09-24).
+# Reserve additional node capacity as well as raising the per-worker ceiling.
+agent_worker_memory_request = "8Gi"
+agent_worker_memory_limit   = "16Gi"

@@ -194,7 +194,21 @@ def test_preserved_adopted_resources_are_not_owned_teardown_obligations():
     assert plan.completes_teardown
 
 
-def test_shared_cluster_scoped_grants_are_preserved_not_revoked():
+def test_owned_controller_cluster_rbac_also_prevents_completion():
+    plan = compose_retirement_plan(
+        inventory(
+            cluster_ownership="adopted",
+            remove_namespace=False,
+            components=(
+                component("owned-controller-role", kind="ClusterRole", namespace=""),
+            ),
+        )
+    )
+    assert plan.cluster_rbac_remaining
+    assert not plan.completes_teardown
+
+
+def test_cluster_scoped_grants_remain_unresolved_without_exact_cleanup_authority():
     shared = OwnedGrant(
         {
             "kind": "kubernetes",
@@ -212,13 +226,20 @@ def test_shared_cluster_scoped_grants_are_preserved_not_revoked():
         },
         {"uid": "rb-uid"},
     )
-    plan = compose_retirement_plan(inventory(grants=(shared, scoped)))
+    plan = compose_retirement_plan(
+        inventory(
+            cluster_ownership="adopted", remove_namespace=False, grants=(shared, scoped)
+        )
+    )
     revocations = [step for step in plan.steps if step.operation_kind == REVOKE_GRANT]
     assert len(revocations) == 1
     assert "rb-uid" in revocations[0].target
     assert any(
-        "shared" in entry and "other workspaces" in entry for entry in plan.preserved
+        "shared" in entry and "teardown remains incomplete" in entry
+        for entry in plan.preserved
     )
+    assert plan.cluster_rbac_remaining
+    assert not plan.completes_teardown
 
 
 def test_an_adopted_prerequisite_is_preserved_and_an_owned_one_is_revoked():

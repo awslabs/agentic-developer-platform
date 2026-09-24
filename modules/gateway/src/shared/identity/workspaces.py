@@ -10,6 +10,7 @@ workspace access.
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.shared.identity.verification import PROVEN_METHODS
 from src.shared.models.base import utcnow
 from src.shared.models.onboarding import TenantMembership
 from src.shared.models.organization import Team, TeamMembership, User
@@ -59,7 +60,11 @@ async def linked_user_ids(db: AsyncSession, user: User, *, username: str = "") -
     # account id remains the immutable identity proof.
     provider, _, provider_user_id = username.partition("_")
     if provider.lower() == "github" and provider_user_id.isascii() and provider_user_id.isdigit():
-        predicates.append((UserIdentity.provider == "github") & (UserIdentity.provider_user_id == provider_user_id))
+        predicates.append(
+            (UserIdentity.provider == "github")
+            & (UserIdentity.provider_user_id == provider_user_id)
+            & UserIdentity.verification_method.in_(PROVEN_METHODS)
+        )
     if not predicates:
         return {user.id}
     rows = await db.scalars(
@@ -158,6 +163,7 @@ async def link_login_to_workspace(db: AsyncSession, source: User, target: User) 
             if existing.user_id != user.id:
                 raise ValueError("This login is already assigned to a different account in the organization")
             existing.verification_method = PLACEMENT_VERIFICATION
+            existing.verified_at = utcnow()
         else:
             db.add(
                 UserIdentity(

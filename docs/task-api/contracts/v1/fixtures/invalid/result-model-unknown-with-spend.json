@@ -1,0 +1,20 @@
+{
+  "$fixture": {
+    "description": "An unknown model outcome reporting a definite dollar figure. Unknown spend stays null; a number here would silently under- or over-report the pilot's cost while looking authoritative to the budget checks.",
+    "schema": "results.schema.json#/$defs/task_error",
+    "expect": "invalid",
+    "reason": "code model_outcome_unknown requires provider_outcome unknown and total_usd null",
+    "violates": ["identity-and-lifecycle.json#/lifecycle/invariants/LC-08", "results.schema.json#/$defs/task_error"],
+    "owner": "T3",
+    "criteria": ["T0-AC03", "V0-04", "V3-10"]
+  },
+  "schema_version": "1.0",
+  "outcome": "failed",
+  "code": "model_outcome_unknown",
+  "message": "A model request may have been sent with no durable result.",
+  "committed_at": "2026-09-24T15:06:02Z",
+  "child_exit_confirmed": true,
+  "provider_outcome": "confirmed",
+  "recovery_required": false,
+  "total_usd": 0.04
+}

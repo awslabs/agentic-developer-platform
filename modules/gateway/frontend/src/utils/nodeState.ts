@@ -120,6 +120,7 @@ export function toDisplayState(node: Pick<GraphNode, 'state' | 'stalled' | 'disp
 export function engineStateToDisplayState(state: NodeEngineState): DisplayState | null {
   switch (state) {
     case 'passed':
+    case 'waived':
       return 'complete';
     case 'running':
     case 'awaiting_merge':

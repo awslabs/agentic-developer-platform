@@ -8,7 +8,7 @@ from harness_jobs import apply, current_version, downgrade
 from harness_jobs.allocation import lock_allocation
 from harness_jobs.execution import OperationExecutor
 from harness_jobs.identity import ContractViolation, OperationRefused
-from harness_jobs.schema import UPGRADES
+from harness_jobs.schema import SCHEMA_VERSION, UPGRADES
 
 from .conftest import requires_postgres
 from .test_inventory_postgres import (
@@ -95,7 +95,8 @@ async def test_v6_inflight_call_blocks_new_operation_seal_until_accounted(pool, 
                 "UPDATE harness_provider_call_intent SET stage=$1, outcome='unknown'",
                 stage,
             )
-        assert await apply(c) == 7
+        assert await apply(c, target=7) == 7
+        assert await apply(c) == SCHEMA_VERSION
         assert (
             await c.fetchval("SELECT allocation_id FROM harness_provider_call_intent")
             == ALLOCATION
@@ -202,7 +203,8 @@ async def test_interrupted_upgrade_binds_existing_and_interleaved_v6_calls(
             await c.execute(sql)
         await legacy_insert(c, old.operation_id, "during")
         assert await current_version(c) == 6
-        assert await apply(c) == 7
+        assert await apply(c, target=7) == 7
+        assert await apply(c) == SCHEMA_VERSION
         assert (
             await c.fetchval(
                 "SELECT count(*) FROM harness_provider_call_intent "
@@ -250,3 +252,70 @@ async def test_corrupt_legacy_payload_prevents_activation_and_rolling_insert(poo
         # The compatibility trigger was installed before the failed backfill.
         with pytest.raises(asyncpg.RaiseError, match="digest"):
             await legacy_insert(c, old.operation_id, "after")
+
+
+@pytest.mark.parametrize(
+    "provider,kind",
+    [
+        ("superplane-kubernetes", "delete-controller-component"),
+        ("superplane-kubernetes", "revoke-grant"),
+        ("superplane-aws", "revoke-grant"),
+        ("superplane-aws", "revoke-network-prerequisite"),
+        ("superplane-terraform", "apply-reviewed-destroy"),
+        ("superplane-governance", "block-governed-admission"),
+        ("superplane-governance", "drain-governed-workloads"),
+        ("superplane-registry", "unregister-workspace"),
+    ],
+)
+async def test_v9_updates_existing_database_retirement_fence_without_losing_history(
+    pool, provider, kind
+):
+    import asyncpg
+
+    record, lease = await leased(pool)
+    async with pool.acquire() as c:
+        await downgrade(c, target=8)
+        await c.execute(
+            "INSERT INTO harness_allocation_seal "
+            "(org_id,workspace_id,allocation_id,sealed_revision,operation_id,"
+            "attempt_id,executor_id,fence_token) VALUES($1,$2,$3,'sealed',$4,$5,$6,$7)",
+            lease.org_id,
+            lease.workspace_id,
+            ALLOCATION,
+            lease.operation_id,
+            lease.attempt_id,
+            lease.holder,
+            lease.fence_token,
+        )
+
+        async def insert(key, actual_provider=provider, actual_kind=kind):
+            await c.execute(
+                "INSERT INTO harness_provider_call_intent "
+                "(idempotency_key,operation_id,org_id,workspace_id,job_id,attempt_id,"
+                "fence_token,provider,operation_kind,target,stage) "
+                "SELECT $2,operation_id,org_id,workspace_id,job_id,attempt_id,"
+                "1,$3,$4,'approved-target','intended' FROM harness_operations "
+                "WHERE operation_id=$1",
+                record.operation_id,
+                key,
+                actual_provider,
+                actual_kind,
+            )
+
+        with pytest.raises(asyncpg.RaiseError, match="sealed or quarantined"):
+            await insert("v8-refused")
+        assert await apply(c) == SCHEMA_VERSION
+        await insert("reviewed-retirement")
+        assert await c.fetchval("SELECT generation FROM harness_allocation_epoch") > 0
+        with pytest.raises(asyncpg.RaiseError, match="sealed or quarantined"):
+            await insert("unknown-action", actual_kind="apply-unreviewed-destroy")
+        with pytest.raises(asyncpg.RaiseError, match="sealed or quarantined"):
+            await insert("foreign-provider", actual_provider="unreviewed-provider")
+        await downgrade(c, target=8)
+        assert (
+            await c.fetchval("SELECT count(*) FROM harness_provider_call_intent") == 1
+        )
+        with pytest.raises(asyncpg.RaiseError, match="sealed or quarantined"):
+            await insert("rollback-refused")
+        assert await apply(c) == SCHEMA_VERSION
+        assert await c.fetchval("SELECT count(*) FROM harness_allocation_seal") == 1

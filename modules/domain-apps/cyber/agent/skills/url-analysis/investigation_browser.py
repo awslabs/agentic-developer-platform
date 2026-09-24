@@ -16,10 +16,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 from case_capture import recorded_browser
 from case_contract import redact_url, sanitize
+from runtime_limits import (
+    LEASE_SECONDS,
+    NAVIGATION_SECONDS,
+    STARTUP_SECONDS,
+    ACTION_SECONDS,
+)
 from denylist import DenylistResult, canonical_hostname
 
 MAX_STEPS = 12
-LEASE_SECONDS = 300
 MAX_SESSIONS = 4
 LINK_SELECTOR = "a[href]"
 CONTROL_SELECTOR = 'summary,button[type="button"][aria-expanded],[role="tab"]'
@@ -31,7 +36,20 @@ ELEMENTS = """selector => Array.from(document.querySelectorAll(selector)).slice(
 
 
 class InvestigationError(ValueError):
-    pass
+    def __init__(
+        self,
+        message,
+        *,
+        code="invalid_investigation",
+        retry_after=None,
+        cleanup=None,
+        browser_start_unattempted=False,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.retry_after = retry_after
+        self.cleanup = cleanup
+        self.browser_start_unattempted = browser_start_unattempted
 
 
 def validate_start(payload):
@@ -47,21 +65,27 @@ def validate_start(payload):
     from research_case import _validate_input
 
     _validate_input(url)
-    if payload.get("scope", "host") not in {"host", "observed_external"}:
+    if payload.get("scope", "observed_external") not in {"host", "observed_external"}:
         raise InvestigationError("scope must be host or observed_external")
     if payload.get("profile", "desktop") not in {"desktop", "mobile"}:
         raise InvestigationError("profile must be desktop or mobile")
     return {
         "url": url,
         "profile": payload.get("profile", "desktop"),
-        "scope": payload.get("scope", "host"),
+        "scope": payload.get("scope", "observed_external"),
     }
 
 
 class BrowserInvestigation:
     """Owned entirely by one actor thread, including while the agent reasons."""
 
-    def __init__(self, request, playwright, recorder_factory=recorded_browser):
+    def __init__(
+        self,
+        request,
+        playwright,
+        recorder_factory=recorded_browser,
+        on_observation=None,
+    ):
         self.request = validate_start(request)
         self.host = canonical_hostname(urlsplit(request["url"]).hostname)
         p = urlsplit(request["url"])
@@ -70,12 +94,32 @@ class BrowserInvestigation:
         self.closed = False
         self.candidates = {}
         self.view_id = ""
+
+        def checkpoint(observation, manifest):
+            if on_observation:
+                on_observation(
+                    {
+                        "schema_version": "domain-investigation/1",
+                        "view_id": "",
+                        "observations": [observation],
+                        "manifest": manifest,
+                        "choices": [],
+                        "external_leads": [],
+                        "steps_used": self.steps,
+                        "max_steps": MAX_STEPS,
+                        "session_open": True,
+                    }
+                )
+
         self.recorder = recorder_factory(
             {
                 **self.request,
                 "wait_seconds": 0,
-                "timeout_ms": 30000,
+                "timeout_ms": NAVIGATION_SECONDS * 1000,
+                "_screenshots": False,
+                "_capture_frames": False,
                 "_navigation_check": self.navigation_check,
+                "_on_observation": checkpoint if on_observation else None,
             },
             playwright,
         )
@@ -165,6 +209,7 @@ class BrowserInvestigation:
             "action",
             "candidate_id",
             "seconds",
+            "url",
         }:
             raise InvestigationError("Unsupported action fields")
         if self.closed or self.steps >= MAX_STEPS:
@@ -172,8 +217,13 @@ class BrowserInvestigation:
         if payload.get("view_id") != self.view_id:
             raise InvestigationError("Stale browser view; do not replay an old action")
         action = payload.get("action")
-        if any(
-            "challenge_or_interstitial" in o.get("errors", [])
+        if action != "screenshot" and any(
+            {
+                "challenge_or_interstitial",
+                "human_verification_challenge",
+                "threat_warning",
+            }
+            & set(o.get("errors", []))
             for o in self.last["observations"]
         ):
             raise InvestigationError(
@@ -192,21 +242,36 @@ class BrowserInvestigation:
 
             def perform(session):
                 return session.click_observed(selector, index, expected)
-        elif action == "root":
-            target = self.root
+
+        elif action in {"root", "navigate"}:
+            target = self.root if action == "root" else payload.get("url")
+            if not isinstance(target, str) or not self.navigation_check(target).allowed:
+                raise InvestigationError(
+                    "Navigation URL is invalid or outside the authorized scope"
+                )
 
             def perform(session):
                 return session.goto(
-                    self.root, wait_until="domcontentloaded", timeout=30000
+                    target,
+                    wait_until="domcontentloaded",
+                    timeout=NAVIGATION_SECONDS * 1000,
                 )
+
+        elif action == "screenshot":
+
+            def perform(session):
+                return None
+
         elif action == "back":
 
             def perform(session):
                 return session.go_back()
+
         elif action == "scroll":
 
             def perform(session):
                 return session.scroll_view()
+
         elif action == "wait":
             seconds = payload.get("seconds")
             if type(seconds) is not int or not 1 <= seconds <= 15:
@@ -214,9 +279,10 @@ class BrowserInvestigation:
 
             def perform(session):
                 return session.wait_for_timeout(seconds * 1000)
+
         else:
             raise InvestigationError(
-                "Action must be follow, expand, root, back, scroll or wait"
+                "Action must be follow, expand, root, navigate, screenshot, back, scroll or wait"
             )
         self.steps += 1
         start = len(self.result["observations"])
@@ -313,7 +379,7 @@ class _Actor:
         except queue.Full:
             raise InvestigationError("A browser action is already pending")
         try:
-            return future.result(timeout=45)
+            return future.result(timeout=ACTION_SECONDS)
         except TimeoutError:
             # Do not replay an uncertain action. Managed service timeout is the
             # backstop if a browser/driver failure prevents prompt cleanup.
@@ -322,8 +388,11 @@ class _Actor:
 
 
 class InvestigationManager:
-    def __init__(self, factory=BrowserInvestigation):
+    def __init__(self, factory=BrowserInvestigation, *, actor_factory=None):
+        from isolated_browser import ProcessActor
+
         self.factory = factory
+        self.actor_factory = actor_factory or ProcessActor
         self.actors = {}
         self.lock = threading.Lock()
 
@@ -345,12 +414,20 @@ class InvestigationManager:
                     break
                 del self.actors[retired]
             if sum(not a.ended.is_set() for a in self.actors.values()) >= MAX_SESSIONS:
-                raise InvestigationError("Broker investigation capacity is busy")
+                raise InvestigationError(
+                    "Broker investigation capacity is busy",
+                    code="capacity_busy",
+                    retry_after=5,
+                    browser_start_unattempted=True,
+                )
             token = secrets.token_urlsafe(32)
-            actor = _Actor(payload, self.factory, lambda actor: None)
+            actor = self.actor_factory(payload, self.factory, lambda actor: None)
             self.actors[token] = actor
+        if hasattr(actor, "initial"):
+            packet = actor.initial()
+            return {**packet, "session_token": token, "lease_seconds": LEASE_SECONDS}
         try:
-            packet = actor.ready.result(timeout=45)
+            packet = actor.ready.result(timeout=STARTUP_SECONDS)
         except TimeoutError:
             actor.deadline = 0
             raise InvestigationError("Browser startup timed out")
@@ -373,6 +450,27 @@ class InvestigationManager:
         with self.lock:
             actors = list(self.actors.values())
         for actor in actors:
-            actor.deadline = 0
+            if hasattr(actor, "abort"):
+                actor.abort()
+            else:
+                actor.deadline = 0
         for actor in actors:
             actor.thread.join(timeout=5)
+
+    def capacity(self):
+        with self.lock:
+            active = sum(not actor.ended.is_set() for actor in self.actors.values())
+        return {
+            "active_sessions": active,
+            "max_sessions": MAX_SESSIONS,
+            "accepting_starts": active < MAX_SESSIONS,
+        }
+
+    def cancel(self, token):
+        with self.lock:
+            actor = self.actors.get(token)
+        if actor:
+            if hasattr(actor, "abort"):
+                actor.abort()
+            else:
+                actor.deadline = 0

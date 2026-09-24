@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.middleware.auth import create_access_token
-from tests.conftest import async_session_test
 
 
 # Fixed workspace ids so manifest assertions can name an expected owner label.
@@ -669,94 +668,23 @@ class TestDeploymentEndpoints:
 
 
 @pytest.mark.asyncio
-async def test_deployment_create_replay_applies_once(monkeypatch):
-    from fastapi import HTTPException
+async def test_deployment_create_requires_governed_composition_before_database_or_provider():
+    from types import SimpleNamespace
 
-    from app.models.cluster import Cluster
-    from app.models.deployment import Deployment
-    from app.models.organization import Organization
-    from app.models.workspace import Workspace
     from app.routers import proxy
     from app.schemas.proxy import CreateDeploymentRequest
+    from app.services.provisioning import ProvisioningUnavailable
 
-    org_id = uuid.uuid4()
-    workspace_id = uuid.uuid4()
-    cluster = Cluster(
-        id=uuid.uuid4(),
-        org_id=org_id,
-        workspace_id=workspace_id,
-        name="cluster",
-        endpoint="https://workspace.example.invalid",
-        eks_cluster_arn="arn:aws:eks:us-east-1:123456789012:cluster/workspace",
-    )
-    workspace = Workspace(
-        id=workspace_id,
-        org_id=org_id,
-        name="workspace",
-        namespace_name="ws-test",
-        isolation_mode="dedicated",
-        status="Active",
-        cluster_id=cluster.id,
-    )
-    body = CreateDeploymentRequest(
-        operation_id=uuid.uuid4(), name="llama-8b", model_name="model"
-    )
-    apps_api = object()
-    get_clients = AsyncMock(return_value=(object(), apps_api, workspace, cluster))
-    apply = MagicMock(
-        return_value={
-            "name": "llama-8b",
-            "namespace": "ws-test",
-            "replicas": 1,
-            "status": "Created",
-            "provider_uid": "provider-uid-1",
-        }
-    )
-    monkeypatch.setattr(proxy, "get_k8s_clients", get_clients)
-    monkeypatch.setattr(proxy, "apply_deployment_via_k8s", apply)
-
-    async with async_session_test() as db:
-        db.add(Organization(id=org_id, name=f"org-{org_id}", billing_plan="enterprise"))
-        await db.commit()
-        db.add(workspace)
-        db.add(cluster)
-        await db.commit()
-
-        first = await proxy.create_deployment(workspace_id, body, org_id, db)
-        second = await proxy.create_deployment(workspace_id, body, org_id, db)
-
-        assert first.deployment_id == second.deployment_id
-        assert apply.call_count == 1
-        assert get_clients.await_count == 1
-
-        # A request ID is org-unique, but it cannot be replayed through another
-        # workspace's authorized route, even with identical request fields.
-        with pytest.raises(HTTPException) as crossed:
-            await proxy.create_deployment(uuid.uuid4(), body, org_id, db)
-        assert crossed.value.status_code == 409
-        assert get_clients.await_count == 1
-
-        deployment = await db.get(Deployment, first.deployment_id)
-        deployment.status = "Unknown"
-        await db.commit()
-        resumed = await proxy.create_deployment(workspace_id, body, org_id, db)
-        assert resumed.deployment_id == first.deployment_id
-        assert apply.call_count == 2
-        assert get_clients.await_count == 2
-
-        conflict = body.model_copy(update={"model_name": "different"})
-        with pytest.raises(HTTPException) as raised:
-            await proxy.create_deployment(workspace_id, conflict, org_id, db)
-        assert raised.value.status_code == 409
-        assert apply.call_count == 2
-
-        deployment.status = "Failed"
-        await db.commit()
-        with pytest.raises(HTTPException) as failed:
-            await proxy.create_deployment(workspace_id, body, org_id, db)
-        assert failed.value.status_code == 409
-        assert failed.value.detail["error"] == "create_operation_failed"
-        assert apply.call_count == 2
+    db = AsyncMock()
+    with pytest.raises(ProvisioningUnavailable, match="governed controller"):
+        await proxy.create_deployment(
+            uuid.uuid4(),
+            CreateDeploymentRequest(name="model", model_name="example/model"),
+            uuid.uuid4(),
+            db,
+            request=SimpleNamespace(),
+        )
+    assert db.mock_calls == []
 
 
 class TestHeartbeatEndpoint:
@@ -887,7 +815,7 @@ class TestCostService:
 
     @pytest.mark.asyncio
     async def test_get_workspace_cost_no_cluster(self):
-        """Returns zero cost when workspace has no cluster."""
+        """Absent node observations do not establish zero cost."""
         from app.services.cost import get_workspace_cost
 
         mock_workspace = MagicMock()
@@ -905,5 +833,6 @@ class TestCostService:
             org_id=uuid.uuid4(),
             db=mock_db,
         )
-        assert result["total_cost_usd"] == "0.00"
+        assert result["total_cost_usd"] is None
+        assert result["estimate_status"] == "unavailable"
         assert result["workspace_name"] == "test-ws"

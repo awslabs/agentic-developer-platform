@@ -1,26 +1,21 @@
-"""Proxy endpoints — nodes and deployments on child clusters.
+"""Workspace observations and governed controller deployment operations."""
 
-Routes:
-    GET  /workspaces/{id}/nodes                     # List nodes
-    POST /workspaces/{id}/deployments               # Create deployment
-    GET  /workspaces/{id}/deployments               # List deployments
-    DELETE /workspaces/{id}/deployments/{dep_id}     # Delete deployment
-"""
-
-import json
-import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.routing import APIRoute
+from harness_jobs.identity import OperationRefused
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
 from app.middleware.auth import get_current_org
 from app.models.deployment import Deployment
 from app.schemas.proxy import (
+    CancelWorkloadRequest,
+    CreateBatchRequest,
     CreateDeploymentRequest,
+    DeleteDeploymentRequest,
     DeploymentCreateResponse,
     DeploymentDeleteResponse,
     DeploymentInfo,
@@ -28,170 +23,46 @@ from app.schemas.proxy import (
     NodeInfo,
     NodeListResponse,
 )
-from app.services.deployment_identity import bind_manifest
-from app.services.quota import reserve_deployment_gpus
+from app.services import deployment_operations
+from app.services.provisioning import ProvisioningRefused, ProvisioningUnavailable
 from app.services.workspace_namespace import (
     NamespaceResolutionError,
     resolve_workspace_namespace,
 )
 from app.services.proxy import (
     ProxyError,
-    apply_deployment_via_k8s,
-    create_deployment_manifest,
-    delete_deployment_via_k8s,
-    get_deployment_uid_via_k8s,
     get_k8s_clients,
     get_workspace_cluster,
-    list_deployments_via_k8s,
     list_nodes_via_k8s,
 )
 
-logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/workspaces", tags=["proxy"])
+class DeploymentRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def governed(request):
+            try:
+                return await handler(request)
+            except (
+                ProvisioningRefused,
+                OperationRefused,
+                NamespaceResolutionError,
+            ) as error:
+                raise HTTPException(409, str(error)) from None
+            except ProvisioningUnavailable as error:
+                raise HTTPException(503, str(error)) from None
+            except ProxyError as error:
+                raise _handle_proxy_error(error) from None
+
+        return governed
 
 
-def _handle_proxy_error(exc: ProxyError) -> HTTPException:
-    """Convert ProxyError to HTTPException."""
+router = APIRouter(prefix="/workspaces", tags=["proxy"], route_class=DeploymentRoute)
+
+
+def _handle_proxy_error(exc):
     return HTTPException(status_code=exc.status_code, detail=exc.message)
-
-
-def _namespace(workspace):
-    try:
-        return resolve_workspace_namespace(workspace)
-    except NamespaceResolutionError as exc:
-        raise HTTPException(409, "Workspace namespace ownership is unresolved") from exc
-
-
-def _operation_request(body: CreateDeploymentRequest) -> str:
-    return json.dumps(
-        body.model_dump(mode="json", exclude={"operation_id"}),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _deployment_create_response(deployment: Deployment) -> DeploymentCreateResponse:
-    return DeploymentCreateResponse(
-        name=deployment.name,
-        namespace=deployment.namespace
-        or json.loads(deployment.operation_target_json or "{}").get(
-            "namespace", "unresolved"
-        ),
-        replicas=deployment.desired_replicas,
-        status=deployment.status,
-        deployment_id=deployment.id,
-    )
-
-
-async def _deployment_for_operation(
-    db: AsyncSession,
-    org_id: uuid.UUID,
-    workspace_id: uuid.UUID,
-    body: CreateDeploymentRequest,
-    operation_request: str,
-    *,
-    for_update: bool = False,
-) -> Deployment | None:
-    query = (
-        select(Deployment)
-        .where(
-            Deployment.org_id == org_id,
-            Deployment.operation_id == body.operation_id,
-        )
-        .execution_options(populate_existing=True)
-    )
-    if for_update:
-        query = query.with_for_update()
-    deployment = await db.scalar(query)
-    if deployment is None:
-        return None
-    if (
-        deployment.workspace_id != workspace_id
-        or deployment.operation_request_json != operation_request
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Operation ID was already used for a different deployment request",
-        )
-    return deployment
-
-
-def _deployment_target(workspace, cluster, namespace: str) -> str:
-    """Pin the server-resolved destination before creating anything remotely."""
-    return json.dumps(
-        {
-            "cluster_id": str(cluster.id),
-            "cluster_arn": cluster.eks_cluster_arn,
-            "endpoint": cluster.endpoint,
-            "namespace": namespace,
-            "workspace_namespace": workspace.namespace_name,
-            "workspace_name": workspace.name,
-            "cloud_account_id": str(workspace.aws_account_id)
-            if workspace.aws_account_id
-            else None,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _require_deployment_target(deployment, workspace, cluster, namespace):
-    recorded = json.loads(deployment.operation_target_json or "{}")
-    manifest = recorded.pop("manifest", None)
-    if (
-        deployment.cluster_id != cluster.id
-        or not isinstance(manifest, dict)
-        or recorded != json.loads(_deployment_target(workspace, cluster, namespace))
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="Deployment destination is missing or changed; refusing to replay against another target",
-        )
-
-
-def _terminal_create_response(deployment):
-    if deployment.status == "Failed":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "create_operation_failed",
-                "message": "Deployment operation failed; inspect the deployment and use a new operation ID for a new request",
-            },
-        )
-    if deployment.status not in {"Pending", "Unknown"}:
-        return _deployment_create_response(deployment)
-    return None
-
-
-def _create_manifest(body, namespace, workspace_id):
-    return create_deployment_manifest(
-        name=body.name,
-        model_name=body.model_name,
-        precision=body.precision,
-        serving_framework=body.serving_framework,
-        replicas=body.replicas,
-        gpu_per_replica=body.gpu_per_replica,
-        tensor_parallel_size=body.tensor_parallel_size,
-        max_model_len=body.max_model_len,
-        namespace=namespace,
-        workspace_id=workspace_id,
-    )
-
-
-def _bound_deployment_manifest(deployment):
-    # A retry after an API release must use the original image/defaults, not
-    # regenerate a different request under the original idempotency key.
-    return bind_manifest(
-        json.loads(deployment.operation_target_json)["manifest"],
-        org_id=deployment.org_id,
-        workspace_id=deployment.workspace_id,
-        operation_id=deployment.operation_id,
-        deployment_id=deployment.id,
-    )
-
-
-# --- Node endpoints ---
 
 
 @router.get("/{workspace_id}/nodes", response_model=NodeListResponse)
@@ -219,7 +90,27 @@ async def list_workspace_nodes(
         raise _handle_proxy_error(exc)
 
 
-# --- Deployment endpoints ---
+@router.post("/{workspace_id}/deployments/preview")
+async def preview_deployment(
+    workspace_id: uuid.UUID,
+    body: CreateDeploymentRequest,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    review = await deployment_operations.preview_create(db, org_id, workspace_id, body)
+    return review.public(str(workspace_id))
+
+
+@router.get("/{workspace_id}/deployment-profiles")
+async def deployment_profiles(
+    workspace_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.controller_deployments import serving_catalog
+
+    return await serving_catalog(request, db, org_id, workspace_id)
 
 
 @router.post(
@@ -233,125 +124,9 @@ async def create_deployment(
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
     request: Request = None,
-) -> DeploymentCreateResponse:
-    """Create a model deployment on the workspace's child cluster.
-
-    Generates a vLLM/SGLang K8s Deployment manifest and applies it to the child cluster.
-    Also records the deployment in the control plane database.
-    """
-    operation_request = _operation_request(body)
-    existing = await _deployment_for_operation(
-        db, org_id, workspace_id, body, operation_request
-    )
-    if existing is not None:
-        response = _terminal_create_response(existing)
-        if response is not None:
-            return response
-
-    try:
-        workspace, cluster = await get_workspace_cluster(
-            workspace_id, org_id, db, for_update=True
-        )
-    except ProxyError as exc:
-        raise _handle_proxy_error(exc)
-
-    # The workspace lock also excludes deletion and registration replacement.
-    # Another request may have completed while this one waited for that lock.
-    existing = await _deployment_for_operation(
-        db, org_id, workspace_id, body, operation_request, for_update=True
-    )
-    if existing is not None:
-        response = _terminal_create_response(existing)
-        if response is not None:
-            return response
-    namespace = _namespace(workspace)
-    if existing is None:
-        target = json.loads(_deployment_target(workspace, cluster, namespace))
-        target["manifest"] = _create_manifest(body, namespace, workspace_id)
-        deployment_kwargs = dict(
-            cluster_id=cluster.id,
-            namespace=namespace,
-            name=body.name,
-            operation_id=body.operation_id,
-            operation_request_json=operation_request,
-            operation_target_json=json.dumps(
-                target, sort_keys=True, separators=(",", ":")
-            ),
-            model_name=body.model_name,
-            precision=body.precision,
-            serving_framework=body.serving_framework,
-            desired_replicas=body.replicas,
-            gpu_per_replica=body.gpu_per_replica,
-            tensor_parallel_size=body.tensor_parallel_size,
-            max_model_len=body.max_model_len,
-        )
-        try:
-            deployment = await reserve_deployment_gpus(
-                workspace_id,
-                org_id,
-                body.replicas * body.gpu_per_replica,
-                db,
-                deployment_kwargs=deployment_kwargs,
-                request=request,
-            )
-        except IntegrityError:
-            await db.rollback()
-            existing = await _deployment_for_operation(
-                db, org_id, workspace_id, body, operation_request
-            )
-            if existing is None:
-                raise
-            response = _terminal_create_response(existing)
-            if response is not None:
-                return response
-            deployment = existing
-        else:
-            await db.refresh(deployment)
-    else:
-        deployment = existing
-
-    # The intent is committed before credentials/provider I/O. Reacquire the
-    # canonical rows after that commit and never adopt a changed destination.
-    try:
-        workspace, cluster = await get_workspace_cluster(
-            workspace_id, org_id, db, for_update=True
-        )
-    except ProxyError as exc:
-        raise _handle_proxy_error(exc)
-    deployment = await _deployment_for_operation(
-        db, org_id, workspace_id, body, operation_request, for_update=True
-    )
-    if deployment is None:
-        raise HTTPException(409, "Deployment intent disappeared before execution")
-    response = _terminal_create_response(deployment)
-    if response is not None:
-        return response
-    _require_deployment_target(deployment, workspace, cluster, _namespace(workspace))
-    try:
-        _, apps_api, _, _ = await get_k8s_clients(workspace_id, org_id, db)
-    except ProxyError as exc:
-        raise _handle_proxy_error(exc)
-
-    manifest = _bound_deployment_manifest(deployment)
-    try:
-        result = apply_deployment_via_k8s(
-            apps_api, manifest, expected_uid=deployment.provider_uid
-        )
-    except ProxyError as exc:
-        deployment.status = "Unknown"
-        await db.commit()
-        raise _handle_proxy_error(exc)
-
-    deployment.status = result["status"]
-    deployment.provider_uid = result["provider_uid"]
-    await db.commit()
-    return DeploymentCreateResponse(
-        name=result["name"],
-        namespace=result["namespace"],
-        replicas=result["replicas"],
-        status=result["status"],
-        deployment_id=deployment.id,
-    )
+):
+    result = await deployment_operations.create(request, db, org_id, workspace_id, body)
+    return DeploymentCreateResponse(**result)
 
 
 @router.get("/{workspace_id}/deployments", response_model=DeploymentListResponse)
@@ -359,134 +134,348 @@ async def list_deployments(
     workspace_id: uuid.UUID,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
-) -> DeploymentListResponse:
-    """List model deployments on the workspace's child cluster."""
-    try:
-        _, apps_api, workspace, cluster = await get_k8s_clients(
-            workspace_id, org_id, db
-        )
-        deployments = list_deployments_via_k8s(
-            apps_api, namespace=_namespace(workspace), workspace_id=workspace_id
-        )
-
-        records = (await db.scalars(
+    request: Request = None,
+):
+    workspace, _ = await get_workspace_cluster(workspace_id, org_id, db)
+    namespace = resolve_workspace_namespace(workspace)
+    records = (
+        await db.scalars(
             select(Deployment).where(
                 Deployment.workspace_id == workspace_id,
                 Deployment.org_id == org_id,
-                Deployment.namespace == _namespace(workspace),
-                Deployment.provider_uid.is_not(None),
+                Deployment.namespace == namespace,
                 Deployment.status != "Deleted",
+                Deployment.workload_kind == "serving",
             )
-        )).all()
-        by_uid = {record.provider_uid: record for record in records}
-        for item in deployments:
-            record = by_uid.get(item.pop("provider_uid", None))
-            if record is not None and record.name == item["name"]:
-                item["deployment_id"] = record.id
-
-        return DeploymentListResponse(
-            workspace_id=workspace_id,
-            deployments=[DeploymentInfo(**d) for d in deployments],
-            total=len(deployments),
         )
-    except ProxyError as exc:
-        raise _handle_proxy_error(exc)
+    ).all()
+    owner = (
+        deployment_operations.composition(request)
+        if any(row.controller_request_payload for row in records)
+        else None
+    )
+    items = []
+    for row in records:
+        if row.controller_request_payload:
+            value = await deployment_operations.progress(owner, db, row)
+        else:
+            value = {
+                "name": row.name,
+                "namespace": namespace,
+                "deployment_id": row.id,
+                "status": row.status,
+                "replicas": row.desired_replicas,
+                "ready_replicas": row.actual_replicas,
+                "provider_uid": row.provider_uid,
+            }
+        items.append(DeploymentInfo(**value))
+    return DeploymentListResponse(
+        workspace_id=workspace_id, deployments=items, total=len(items)
+    )
+
+
+@router.post("/{workspace_id}/deployments/{dep_id}/teardown-preview")
+async def preview_deployment_teardown(
+    workspace_id: uuid.UUID,
+    dep_id: uuid.UUID,
+    body: DeleteDeploymentRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    review = await deployment_operations.preview_delete(
+        request, db, org_id, workspace_id, dep_id, body
+    )
+    return review.public(str(workspace_id))
 
 
 @router.delete(
-    "/{workspace_id}/deployments/{dep_id}",
-    response_model=DeploymentDeleteResponse,
+    "/{workspace_id}/deployments/{dep_id}", response_model=DeploymentDeleteResponse
 )
 async def delete_deployment(
     workspace_id: uuid.UUID,
     dep_id: uuid.UUID,
+    body: DeleteDeploymentRequest,
+    request: Request,
     org_id: uuid.UUID = Depends(get_current_org),
     db: AsyncSession = Depends(get_session),
-) -> DeploymentDeleteResponse:
-    """Delete a deployment from the workspace's child cluster.
+):
+    result = await deployment_operations.delete(
+        request, db, org_id, workspace_id, dep_id, body
+    )
+    return DeploymentDeleteResponse(**result)
 
-    dep_id can be either the deployment name (string) or a UUID from the DB.
-    """
-    try:
-        workspace, cluster = await get_workspace_cluster(
-            workspace_id, org_id, db, for_update=True
-        )
 
-        dep_record = await db.scalar(
+def batch_result(value):
+    """Admission progress is separate from Job completion and provider absence."""
+    return {
+        "job_id": value["deployment_id"],
+        "name": value["name"],
+        "namespace": value["namespace"],
+        "status": value["status"],
+        "operation_id": value["operation_id"],
+        "source_operation_id": value.get("source_operation_id"),
+        "operation_state": value["operation_state"],
+        "provider_uid": value["provider_uid"],
+        "execution_outcome": "unknown",
+        "cleanup_status": value["cleanup_status"],
+        "cancellation_requested": value["cancellation_requested"],
+        "observed_cost_micros": None,
+    }
+
+
+@router.get("/{workspace_id}/batch-profiles")
+async def batch_profiles(
+    workspace_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.controller_deployments import serving_catalog
+
+    return await serving_catalog(
+        request, db, org_id, workspace_id, workload_kind="batch"
+    )
+
+
+@router.post("/{workspace_id}/batch-jobs/preview")
+async def preview_batch(
+    workspace_id: uuid.UUID,
+    body: CreateBatchRequest,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    review = await deployment_operations.preview_create(db, org_id, workspace_id, body)
+    return {**review.public(str(workspace_id)), "job_id": review.deployment_id}
+
+
+@router.post("/{workspace_id}/batch-jobs", status_code=status.HTTP_201_CREATED)
+async def create_batch(
+    workspace_id: uuid.UUID,
+    body: CreateBatchRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    return batch_result(
+        await deployment_operations.create(request, db, org_id, workspace_id, body)
+    )
+
+
+@router.get("/{workspace_id}/batch-jobs")
+async def list_batch(
+    workspace_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    workspace, _ = await get_workspace_cluster(workspace_id, org_id, db)
+    namespace = resolve_workspace_namespace(workspace)
+    rows = (
+        await db.scalars(
             select(Deployment)
             .where(
-                Deployment.id == dep_id,
                 Deployment.workspace_id == workspace_id,
                 Deployment.org_id == org_id,
+                Deployment.namespace == namespace,
+                Deployment.workload_kind == "batch",
             )
-            .with_for_update()
-            .execution_options(populate_existing=True)
+            .order_by(Deployment.created_at.desc(), Deployment.id)
+            .limit(101)
         )
-        if dep_record is None:
-            raise HTTPException(404, "Deployment not found for this workspace")
-        if dep_record.operation_id is None or not dep_record.operation_target_json:
-            raise HTTPException(
-                409,
-                "Legacy deployment has no verified target; reconcile ownership before deletion",
-            )
-        namespace = _namespace(workspace)
-        deployment_name = dep_record.name
-        expected_manifest = None
-        if dep_record is not None and dep_record.operation_id is not None:
-            _require_deployment_target(dep_record, workspace, cluster, namespace)
-            expected_manifest = _bound_deployment_manifest(dep_record)
-            if dep_record.status == "Deleted":
-                return DeploymentDeleteResponse(
-                    name=deployment_name, namespace=namespace, status="Deleted"
-                )
-            # Commit the tombstone intent before deletion. A lost reply cannot
-            # let a create retry resurrect the workload on a replacement worker.
-            dep_record.status = "Deleting"
-            await db.commit()
-            workspace, cluster = await get_workspace_cluster(
-                workspace_id, org_id, db, for_update=True
-            )
-            await db.refresh(dep_record, with_for_update=True)
-            _require_deployment_target(dep_record, workspace, cluster, namespace)
+    ).all()
+    owner = deployment_operations.composition(request) if rows else None
+    jobs = [
+        batch_result(await deployment_operations.progress(owner, db, row))
+        for row in rows[:100]
+    ]
+    return {
+        "workspace_id": str(workspace_id),
+        "jobs": jobs,
+        "truncated": len(rows) > 100,
+    }
 
-        _, apps_api, _, _ = await get_k8s_clients(workspace_id, org_id, db)
-        if expected_manifest is not None and dep_record.provider_uid is None:
-            observed_uid = get_deployment_uid_via_k8s(apps_api, expected_manifest)
-            if observed_uid is None:
-                dep_record.status = "Deleted"
-                await db.commit()
-                return DeploymentDeleteResponse(
-                    name=deployment_name, namespace=namespace, status="Deleted"
-                )
-            # A create reply may have been lost before its UID was recorded.
-            # Persist the UID before deletion so a lost delete reply cannot make
-            # the next worker adopt a replacement with copied annotations.
-            dep_record.provider_uid = observed_uid
-            await db.commit()
-            workspace, cluster = await get_workspace_cluster(
-                workspace_id, org_id, db, for_update=True
-            )
-            await db.refresh(dep_record, with_for_update=True)
-            _require_deployment_target(dep_record, workspace, cluster, namespace)
-            if dep_record.status == "Deleted":
-                return DeploymentDeleteResponse(
-                    name=deployment_name, namespace=namespace, status="Deleted"
-                )
-        # Delete from child cluster
-        result = delete_deployment_via_k8s(
-            apps_api,
-            deployment_name,
-            namespace=namespace,
-            expected_uid=dep_record.provider_uid if dep_record is not None else None,
-            expected_manifest=expected_manifest,
-            absent_ok=dep_record is not None and dep_record.operation_id is not None,
+
+@router.get("/{workspace_id}/batch-jobs/{job_id}")
+async def get_batch(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    workspace, cluster = await get_workspace_cluster(workspace_id, org_id, db)
+    intent = await deployment_operations.intent_for(
+        db, org_id, workspace_id, job_id, workload_kind="batch"
+    )
+    deployment_operations.require_target(intent, workspace, cluster)
+    return batch_result(
+        await deployment_operations.progress(
+            deployment_operations.composition(request), db, intent
         )
+    )
 
-        # Update DB record if exists
-        if dep_record:
-            dep_record.status = result["status"]
-            await db.commit()
 
-        return DeploymentDeleteResponse(**result)
-    except ProxyError as exc:
-        raise _handle_proxy_error(exc)
+@router.post("/{workspace_id}/batch-jobs/{job_id}/teardown-preview")
+async def preview_batch_teardown(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    body: DeleteDeploymentRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    review = await deployment_operations.preview_delete(
+        request, db, org_id, workspace_id, job_id, body, workload_kind="batch"
+    )
+    return {**review.public(str(workspace_id)), "job_id": review.deployment_id}
+
+
+@router.delete("/{workspace_id}/batch-jobs/{job_id}")
+async def delete_batch(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    body: DeleteDeploymentRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    return batch_result(
+        await deployment_operations.delete(
+            request, db, org_id, workspace_id, job_id, body, workload_kind="batch"
+        )
+    )
+
+
+@router.post("/{workspace_id}/batch-jobs/{job_id}/cancellation")
+async def cancel_batch(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    body: CancelWorkloadRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_cancellation import cancel
+
+    result = await cancel(
+        request, db, org_id, workspace_id, job_id, body.operation_id, kind="batch"
+    )
+    return {**result, "job_id": result["deployment_id"]}
+
+
+@router.post("/{workspace_id}/deployments/{dep_id}/cancellation")
+async def cancel_deployment(
+    workspace_id: uuid.UUID,
+    dep_id: uuid.UUID,
+    body: CancelWorkloadRequest,
+    request: Request,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_cancellation import cancel
+
+    return await cancel(
+        request, db, org_id, workspace_id, dep_id, body.operation_id, kind="serving"
+    )
+
+
+@router.get("/{workspace_id}/batch-jobs/{job_id}/observation")
+async def observe_batch(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    logs: bool = False,
+    pod_uid: str | None = Query(
+        default=None, min_length=1, max_length=255, pattern="^[a-zA-Z0-9-]+$"
+    ),
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_observations import observe
+
+    response.headers["Cache-Control"] = "no-store"
+    return await observe(
+        request,
+        db,
+        org_id,
+        workspace_id,
+        job_id,
+        kind="batch",
+        logs=logs,
+        pod_uid=pod_uid,
+    )
+
+
+@router.get("/{workspace_id}/deployments/{dep_id}/observation")
+async def observe_serving(
+    workspace_id: uuid.UUID,
+    dep_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    logs: bool = False,
+    pod_uid: str | None = Query(
+        default=None, min_length=1, max_length=255, pattern="^[a-zA-Z0-9-]+$"
+    ),
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_observations import observe
+
+    response.headers["Cache-Control"] = "no-store"
+    return await observe(
+        request,
+        db,
+        org_id,
+        workspace_id,
+        dep_id,
+        kind="serving",
+        logs=logs,
+        pod_uid=pod_uid,
+    )
+
+
+@router.get("/{workspace_id}/batch-jobs/{job_id}/result")
+async def get_batch_result(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.batch_results import read
+
+    response.headers["Cache-Control"] = "no-store"
+    return await read(request, db, org_id, workspace_id, job_id)
+
+
+@router.get("/{workspace_id}/batch-jobs/{job_id}/accounting")
+async def batch_accounting(
+    workspace_id: uuid.UUID,
+    job_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_accounting import accounting
+
+    response.headers["Cache-Control"] = "no-store"
+    return await accounting(request, db, org_id, workspace_id, job_id, kind="batch")
+
+
+@router.get("/{workspace_id}/deployments/{dep_id}/accounting")
+async def serving_accounting(
+    workspace_id: uuid.UUID,
+    dep_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    org_id: uuid.UUID = Depends(get_current_org),
+    db: AsyncSession = Depends(get_session),
+):
+    from app.services.workload_accounting import accounting
+
+    response.headers["Cache-Control"] = "no-store"
+    return await accounting(request, db, org_id, workspace_id, dep_id, kind="serving")

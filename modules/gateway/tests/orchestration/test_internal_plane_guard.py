@@ -56,6 +56,10 @@ INTERNAL_ROUTE_MODULES = (
     # Its reads and writes are confined to credential ownership, delegation and
     # the credential-delivery audit trail.
     "src.internal.vault_evidence_routes",
+    # Reads one existing paid lease after run/pod and scope verification. No
+    # admission, approval mutation or release-promotion state is reachable.
+    "src.internal.controller_execution_routes",
+    "src.internal.domain_operation_routes",
 )
 
 # The full internal-plane surface as of this change, as (path, method) pairs.
@@ -85,6 +89,27 @@ EXPECTED_INTERNAL_ROUTES = {
     # Same delivery authority checks, with version metadata only and no new
     # access to release-promotion state.
     ("/internal/v1/credential-delivery/preflight", "POST"),
+    ("/internal/v1/controller-execution/authority", "POST"),
+    ("/internal/v1/controller-execution/producer-readiness", "POST"),
+    ("/internal/v1/controller-execution/dispatch", "POST"),
+    ("/internal/v1/controller-execution/task/acquire", "POST"),
+    ("/internal/v1/controller-execution/bootstrap", "POST"),
+    ("/internal/v1/controller-execution/task/heartbeat", "POST"),
+    ("/internal/v1/controller-execution/task/ack", "POST"),
+    ("/internal/v1/controller-execution/task/status", "POST"),
+    ("/internal/v1/controller-execution/verify-run", "POST"),
+    ("/internal/v1/controller-execution/renew", "POST"),
+    ("/internal/v1/controller-execution/lease", "POST"),
+    ("/internal/v1/controller-execution/recovery/scope", "POST"),
+    ("/internal/v1/controller-execution/recovery/authority", "POST"),
+    ("/internal/v1/controller-execution/recovery/observe", "POST"),
+    ("/internal/v1/controller-execution/recovery/inventory", "POST"),
+    # Original-claim-bound lifecycle observations only. The domain reads saved
+    # artifacts and provider facts; this route has no promotion-state access.
+    ("/internal/v1/controller-execution/recovery/lifecycle", "POST"),
+    ("/internal/v1/controller-execution/recovery/account-creation", "POST"),
+    ("/internal/v1/controller-execution/recovery/bootstrap", "POST"),
+    ("/internal/v1/controller-execution/recovery/settlement", "POST"),
 }
 
 # Promotion state: the tables and models this guard protects. A reference to any
@@ -465,8 +490,14 @@ class TestOrchestrationRouterIsOperatorPlane:
             ("/orchestration/flows/{flow_id}/continuation/accept", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/evaluation/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/evaluation/accept", "POST"): "Permission.PLAN_APPROVE",
+            # Human owner exceptions use the same approval boundary; never internal routes.
+            ("/orchestration/flows/{flow_id}/evaluation-waiver/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/evaluation-waiver/accept", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/append/preview", "POST"): "Permission.PLAN_APPROVE",
             ("/orchestration/flows/{flow_id}/append/accept", "POST"): "Permission.PLAN_APPROVE",
+            # Dependency edits read the accepted plan and require its human owner.
+            ("/orchestration/flows/{flow_id}/wave-dependencies/preview", "POST"): "Permission.PLAN_APPROVE",
+            ("/orchestration/flows/{flow_id}/wave-dependencies/accept", "POST"): "Permission.PLAN_APPROVE",
             # Financial supplements retain plan approval and additionally require
             # platform administration, budget update and authenticated humanity.
             ("/orchestration/flows/{flow_id}/budget/preview", "POST"): "Permission.PLAN_APPROVE",

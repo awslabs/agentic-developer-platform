@@ -14,6 +14,11 @@ from app.models.credential import (  # noqa: F401
     CredentialAuditLog,
 )
 from app.models.cloud_account import CloudAccount  # noqa: F401
+from app.models.lifecycle import (  # noqa: F401
+    WorkspaceLifecycleArtifact,
+    WorkspaceLifecycleEffect,
+    WorkspaceLifecycleControlOperation,
+)
 from app.models.reconcile_lock import ReconcileLock  # noqa: F401
 from app.models.observation import (  # noqa: F401
     ObservationReceipt,
@@ -36,3 +41,9 @@ from app.models.bootstrap import (  # noqa: F401
     WorkspaceBootstrapAuthority,
     WorkspaceBootstrapReadToken,
 )
+from app.models.operation_budget import OperationBudgetReservation  # noqa: F401
+from app.models.operation_approval import OperationApproval, OperationSettlementReceipt  # noqa: F401
+
+from app.models.controller_execution import ControllerExecution  # noqa: F401
+
+from app.models.controller_deployment import ControllerDeploymentOperation  # noqa: F401

@@ -131,7 +131,7 @@ from .identity import MAX_ALLOCATION_ID_LENGTH
 # returned. That is the safe direction, but it fails quietly as "nothing to release"
 # rather than loudly as "the schema is behind", which is exactly what
 # `check_schema_version` exists to convert into the latter.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 
 class SupportsExecute(Protocol):
@@ -1461,6 +1461,20 @@ CREATE TABLE IF NOT EXISTS harness_allocation_discovery (
     PRIMARY KEY (org_id, workspace_id, allocation_id, provider, provider_ref)
 )
 """
+
+
+def _read_only_sql(*, legacy=False):
+    return " OR ".join(
+        "(r.provider='"
+        + provider
+        + "' AND lower(r.operation_kind) = ANY(ARRAY["
+        + ",".join("'" + kind + "'" for kind in sorted(kinds))
+        + "]))"
+        for provider, kinds in sorted(_READ_ONLY_ACTIONS.items())
+        if not legacy or provider in {"aws", "gcp"}
+    )
+
+
 _ALLOCATION_EPOCH_TRIGGER_FUNCTION = """
 CREATE OR REPLACE FUNCTION harness_advance_allocation_epoch() RETURNS trigger AS $$
 DECLARE r record;
@@ -1479,14 +1493,10 @@ END
 $$ LANGUAGE plpgsql
 """.replace(
     "__READ_ONLY__",
-    " OR ".join(
-        "(r.provider='"
-        + provider
-        + "' AND lower(r.operation_kind) = ANY(ARRAY["
-        + ",".join("'" + kind + "'" for kind in sorted(kinds))
-        + "]))"
-        for provider, kinds in sorted(_READ_ONLY_ACTIONS.items())
-    ),
+    _read_only_sql(),
+)
+_V7_ALLOCATION_EPOCH_TRIGGER_FUNCTION = _ALLOCATION_EPOCH_TRIGGER_FUNCTION.replace(
+    _read_only_sql(), _read_only_sql(legacy=True)
 )
 
 _ALLOCATION_EPOCH_TRIGGER = """
@@ -1494,6 +1504,7 @@ CREATE OR REPLACE TRIGGER harness_provider_call_allocation_epoch
 AFTER INSERT OR UPDATE OR DELETE ON harness_provider_call_intent
 FOR EACH ROW EXECUTE FUNCTION harness_advance_allocation_epoch()
 """
+
 
 # Bind both v6 history and rolling v6 writes before publishing version 7. The
 # trigger installation takes PostgreSQL's table lock and waits for earlier writers;
@@ -1503,6 +1514,19 @@ FOR EACH ROW EXECUTE FUNCTION harness_advance_allocation_epoch()
 # Reproduce identity.payload_digest's length-prefixed UTF-8 hash, including Python's
 # Unicode codepoint ordering (C collation over UTF-8). Never trust a JSON selector
 # without checking the approved digest. JSONB rejects escaped NUL on conversion.
+def _non_creating_sql(*, legacy=False):
+    return " OR ".join(
+        "(NEW.provider='"
+        + provider
+        + "' AND lower(NEW.operation_kind) = ANY(ARRAY["
+        + ",".join("'" + kind + "'" for kind in sorted(kinds))
+        + "]))"
+        for actions in (_READ_ONLY_ACTIONS, _REMOVAL_ACTIONS)
+        for provider, kinds in sorted(actions.items())
+        if not legacy or provider in {"aws", "gcp"}
+    )
+
+
 _PROVIDER_CALL_BINDING_FUNCTION = (
     """
 CREATE OR REPLACE FUNCTION harness_bind_provider_allocation() RETURNS trigger AS $$
@@ -1602,16 +1626,11 @@ $$ LANGUAGE plpgsql
     )
     .replace(
         "__NON_CREATING__",
-        " OR ".join(
-            "(NEW.provider='"
-            + provider
-            + "' AND lower(NEW.operation_kind) = ANY(ARRAY["
-            + ",".join("'" + kind + "'" for kind in sorted(kinds))
-            + "]))"
-            for actions in (_READ_ONLY_ACTIONS, _REMOVAL_ACTIONS)
-            for provider, kinds in sorted(actions.items())
-        ),
+        _non_creating_sql(),
     )
+)
+_V7_PROVIDER_CALL_BINDING_FUNCTION = _PROVIDER_CALL_BINDING_FUNCTION.replace(
+    _non_creating_sql(), _non_creating_sql(legacy=True)
 )
 _PROVIDER_CALL_BINDING_TRIGGER = """
 CREATE OR REPLACE TRIGGER harness_provider_call_allocation_binding
@@ -1672,15 +1691,88 @@ UPGRADES: dict[int, tuple[str, ...]] = {
             "ALTER TABLE harness_allocation_enumeration ADD COLUMN IF NOT EXISTS "
             "allocation_generation bigint NOT NULL DEFAULT -1"
         ),
-        _ALLOCATION_EPOCH_TRIGGER_FUNCTION,
+        _V7_ALLOCATION_EPOCH_TRIGGER_FUNCTION,
         _ALLOCATION_EPOCH_TRIGGER,
-        _PROVIDER_CALL_BINDING_FUNCTION,
+        _V7_PROVIDER_CALL_BINDING_FUNCTION,
         _PROVIDER_CALL_BINDING_TRIGGER,
         _PROVIDER_CALL_ALLOCATION_BACKFILL,
     ),
+    8: (
+        "ALTER TABLE harness_operation_leases "
+        "ADD COLUMN IF NOT EXISTS closed_holder text, "
+        "ADD COLUMN IF NOT EXISTS closed_attempt_id text",
+        """CREATE TABLE IF NOT EXISTS harness_recovery_claim_bindings (
+            operation_id text NOT NULL REFERENCES harness_operations(operation_id),
+            fence_token bigint NOT NULL,
+            org_id text NOT NULL, workspace_id text NOT NULL,
+            holder text NOT NULL, attempt_id text NOT NULL, subject text NOT NULL,
+            PRIMARY KEY(operation_id, fence_token)
+        )""",
+        """CREATE TABLE IF NOT EXISTS harness_recovery_settlements (
+            receipt_id text PRIMARY KEY,
+            operation_id text NOT NULL UNIQUE
+                REFERENCES harness_operations(operation_id),
+            org_id text NOT NULL,
+            workspace_id text NOT NULL,
+            job_id text NOT NULL,
+            attempt_id text NOT NULL,
+            claim_holder text NOT NULL,
+            claim_attempt_id text NOT NULL,
+            claim_fence_token bigint NOT NULL,
+            payload_digest text NOT NULL CHECK (length(payload_digest)=64),
+            accounting jsonb NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+            delivered_at timestamptz
+        )""",
+        """CREATE INDEX IF NOT EXISTS harness_recovery_settlements_pending_idx
+           ON harness_recovery_settlements(org_id, workspace_id, created_at)
+           WHERE delivered_at IS NULL""",
+        """CREATE OR REPLACE FUNCTION harness_recovery_receipt_immutable()
+        RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+            IF TG_OP = 'DELETE' THEN
+                RAISE EXCEPTION 'recovery settlement receipts are immutable';
+            END IF;
+            IF (to_jsonb(NEW) - 'delivered_at') IS DISTINCT FROM
+               (to_jsonb(OLD) - 'delivered_at') OR
+               (OLD.delivered_at IS NOT NULL AND
+                NEW.delivered_at IS DISTINCT FROM OLD.delivered_at)
+            THEN RAISE EXCEPTION 'recovery settlement receipts are immutable';
+            END IF;
+            RETURN NEW;
+        END $$""",
+        "DROP TRIGGER IF EXISTS harness_recovery_receipt_immutable "
+        "ON harness_recovery_settlements",
+        """CREATE TRIGGER harness_recovery_receipt_immutable
+           BEFORE UPDATE OR DELETE ON harness_recovery_settlements
+           FOR EACH ROW EXECUTE FUNCTION harness_recovery_receipt_immutable()""",
+        """CREATE TABLE IF NOT EXISTS harness_recovery_scan_cursors (
+            org_id text NOT NULL,
+            workspace_id text NOT NULL,
+            consumer text NOT NULL,
+            after_operation_id text NOT NULL DEFAULT '',
+            PRIMARY KEY (org_id, workspace_id, consumer)
+        )""",
+    ),
+    # Refresh already installed trigger bodies. Changing Python's effect map or
+    # the historical v7 entry alone cannot upgrade an existing v8 database.
+    9: (_ALLOCATION_EPOCH_TRIGGER_FUNCTION, _PROVIDER_CALL_BINDING_FUNCTION),
 }
 
 DOWNGRADES: dict[int, tuple[str, ...]] = {
+    # Restore v8's exact action fence without deleting durable calls or evidence.
+    # Drain Superplane retirement first; old code cannot execute these adapters.
+    9: (_V7_ALLOCATION_EPOCH_TRIGGER_FUNCTION, _V7_PROVIDER_CALL_BINDING_FUNCTION),
+    # Export and settle outstanding receipts first: removing the outbox loses the
+    # durable link between a closed operation and the owning ledger's obligation.
+    8: (
+        "DROP TABLE IF EXISTS harness_recovery_scan_cursors",
+        "DROP TABLE IF EXISTS harness_recovery_settlements",
+        "DROP FUNCTION IF EXISTS harness_recovery_receipt_immutable()",
+        "DROP TABLE IF EXISTS harness_recovery_claim_bindings",
+        "ALTER TABLE harness_operation_leases "
+        "DROP COLUMN IF EXISTS closed_holder, "
+        "DROP COLUMN IF EXISTS closed_attempt_id",
+    ),
     # Rolling back to v6 drops allocation membership and every provider-report
     # attestation. The hazard is the same shape as `DOWNGRADES[4]`'s and points the same
     # way: what is lost is the record of things that may still be BILLING.

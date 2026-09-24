@@ -42,6 +42,8 @@ import { CreateWorkspaceFlow } from './CreateWorkspaceFlow';
 import { LifecycleProposalPanel } from './LifecycleProposalPanel';
 import { ProviderConnectionPanel } from './ProviderConnectionPanel';
 import { ReadinessPanel } from './ReadinessPanel';
+import { ServingPanel } from './ServingPanel';
+import { BatchPanel } from './BatchPanel';
 import {
   ScopeGuard,
   getCapabilities,
@@ -99,7 +101,7 @@ function canBeginOnboarding(role: AdminRole | undefined): boolean {
 
 type LoadState =
   | { phase: 'loading' }
-  | { phase: 'loaded'; workspaces: WorkspaceSummary[] }
+  | { phase: 'loaded'; orgId: string; workspaces: WorkspaceSummary[] }
   | { phase: 'failed'; unavailable: Unavailable };
 
 export function OnboardingView() {
@@ -219,7 +221,7 @@ export function OnboardingView() {
     }
     if (!listing.ok) return;
 
-    setState({ phase: 'loaded', workspaces: listing.value.workspaces });
+    setState({ phase: 'loaded', orgId, workspaces: listing.value.workspaces });
 
     // Capability discovery is a separate, independently-failing request. It tells
     // us whether a create can be submitted safely; its absence disables create
@@ -258,7 +260,7 @@ export function OnboardingView() {
       return;
     }
     setCreateBlocked(null);
-  }, []);
+  }, [orgId]);
 
   useEffect(() => {
     const guard = new ScopeGuard();
@@ -304,7 +306,7 @@ export function OnboardingView() {
     // rebuilds the guard and reloads, and the old guard's replies are discarded.
   }, [orgId, load, store]);
 
-  const workspaces = state.phase === 'loaded' ? state.workspaces : [];
+  const workspaces = state.phase === 'loaded' && state.orgId === orgId ? state.workspaces : [];
   const selected = useMemo(
     () => workspaces.find((workspace) => workspace.id === selectedId) ?? null,
     [workspaces, selectedId],
@@ -357,7 +359,7 @@ export function OnboardingView() {
     );
   }, [selected, providerObservation, now]);
 
-  if (state.phase === 'loading') {
+  if (state.phase === 'loading' || state.phase === 'loaded' && state.orgId !== orgId) {
     return (
       <div className="p-6">
         <Header />
@@ -429,6 +431,8 @@ export function OnboardingView() {
             onSelect={setSelectedId}
           />
           <ReadinessPanel report={readiness} workspaceName={selected?.display_name} />
+          {selected && <ServingPanel workspaceId={selected.id} scope={scope} store={store} />}
+          {selected && <BatchPanel workspaceId={selected.id} scope={scope} store={store} />}
           {ENDPOINTS.listLifecycleProposals.served && selected && <LifecycleProposalPanel
             key={`${scope.orgId}:${selected.id}`}
             workspaceId={selected.id} scope={scope} store={store} mayManage={mayOnboard}

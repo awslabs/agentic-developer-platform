@@ -6,11 +6,22 @@ Tasks will run through the existing ADP API Gateway, ingress Lambda, queue and w
 
 The delivery covers contracts, storage and APIs, worker execution, interaction and recovery, external integration, and release qualification. Each wave has an independent evaluation. Rollout must preserve accepted tasks and existing GitHub, Claude and Codex paths; retiring those paths is outside this epic.
 
+## Design before execution
+
+The owner accepted the [implementation contract](implementation-design.md) and
+all O1–O8 decisions on 2026-09-24 before engine execution. T0 implements schemas, fixtures
+and conformance checks against the accepted design revision; V0 verifies them.
+Design gaps return to this session. No story may silently change architecture or
+acceptance limits, or start a separate AI-DLC design workflow for this epic.
+
+[Story handoff text](story-handoff.md) supplies the corresponding issue changes.
+Design acceptance and plan publication do not approve the execution gate.
+
 ## Wave plan and evaluation ownership
 
 | Wave | Implementation stories | Evaluation |
 |---|---|---|
-| 1 — Contracts and design | [T0 #5793](https://github.com/aws-e/adp/issues/5793) | [V0 #5821](https://github.com/aws-e/adp/issues/5821) |
+| 1 — Contract implementation | [T0 #5793](https://github.com/aws-e/adp/issues/5793) | [V0 #5821](https://github.com/aws-e/adp/issues/5821) |
 | 2 — API and persistence | [T1 #5794](https://github.com/aws-e/adp/issues/5794), [T2 #5795](https://github.com/aws-e/adp/issues/5795), [T3 #5796](https://github.com/aws-e/adp/issues/5796), [T6 #5799](https://github.com/aws-e/adp/issues/5799) | [V1 #5802](https://github.com/aws-e/adp/issues/5802) |
 | 3 — Worker execution | [T4 #5797](https://github.com/aws-e/adp/issues/5797), [T5 #5798](https://github.com/aws-e/adp/issues/5798) | [V2 #5803](https://github.com/aws-e/adp/issues/5803) |
 | 4 — Interaction and recovery | [T7 #5800](https://github.com/aws-e/adp/issues/5800) | [V3 #5804](https://github.com/aws-e/adp/issues/5804) |
@@ -31,7 +42,7 @@ Display metadata preserves the stable wave references used by node addresses.
 
 | Display name | Purpose | Stable wave ref |
 |---|---|---|
-| Contracts and design | Freeze the task API, lifecycle and data contracts, resolve implementation decisions, and establish the fixtures and evaluation manifest. V0 verifies the contract baseline. | `component-delivery` |
+| Contract implementation | Implement the agreed design as versioned schemas, fixtures and runnable contract checks. V0 verifies conformance and the evaluation manifest before component development. | `component-delivery` |
 | API and persistence | Build durable task storage, authenticated submission, recoverable dispatch, and status/progress reporting. V1 qualifies contracts, authorization and storage. | `validation-v1` |
 | Worker execution | Implement the task worker entrypoint and independent task agent in the existing worker image. V2 verifies task isolation and compatibility with the existing worker path. | `validation-v2` |
 | Interaction and recovery | Deliver follow-up input and cancellation to running tasks. V3 qualifies failure recovery, durable streaming and control behavior across the integrated components. | `validation-v3` |
@@ -55,7 +66,7 @@ These definitions do not activate an execution policy, approve a flow gate or au
 
 ### [T0 #5793](https://github.com/aws-e/adp/issues/5793)
 
-Publish the versioned schema/positive-invalid-legacy fixtures, coverage manifest and evaluation command/report format. Implement the V0 contract validator now; register later runtime/live commands as planned until their owning stories provide them. Resolve the exact tooling paths during T0 and keep that manifest versioned.
+Publish the versioned schema/positive-invalid-legacy fixtures, coverage manifest and evaluation command/report format. Implement the V0 contract validator now; register later runtime/live commands as planned until their owning stories provide them. Use the tooling paths specified in implementation-design.md section 12 and keep the manifest versioned.
 
 ### [T1 #5794](https://github.com/aws-e/adp/issues/5794)
 
@@ -93,23 +104,56 @@ Own the external client, environment/readiness/admission inventory, bounded live
 
 A wave label groups related work; it does not erase cross-component integration requirements or force unrelated implementation into a serial queue. The graph has one evaluation per wave. All evaluations are GitHub-native children with independent evidence requirements.
 
-The graph stores issue references and the proposed machine-evaluation intent. No runtime evaluation specification is fabricated for a workflow or fixture that has not been implemented. T0 defines the versioned manifest and contract validator; each subsequent wave supplies its own real checks. Bind the implemented runner revision, fixture definition and permitted environment before enabling machine execution. Criteria are defined now; implementation and measured PASS evidence are later work.
+The graph stores issue references and the proposed machine-evaluation intent. No runtime evaluation specification is fabricated for a workflow or fixture that has not been implemented. T0 implements the versioned manifest and contract validator from the accepted design; each subsequent wave supplies its own real checks. Bind the implemented runner revision, fixture definition and permitted environment before enabling machine execution. Criteria are defined now; implementation and measured PASS evidence are later work.
 
 The applied draft revision preserves the acceptance gate address and its unanswered decision. It assigns T0 and V0 to `component-delivery`, and the remaining five waves to `validation-v1` through `validation-v5`. Old graph addresses remain as superseded history, with nine implementation stories and six issue-backed evaluations in the current plan.
 
-## Proposal publication status
+## Plan publication status
 
-The GitHub epic and all 15 native children carry this wave plan. The existing
+The project owner accepted the implementation design on 2026-09-24. The existing
+flow was refreshed through `adp flow draft preview` and `adp flow draft save`, with
+version 3 and its hash as preconditions for draft v4. A subsequent owner-requested
+settings revision used version 4 and its hash as preconditions for draft v5. The authored [proposal](flow-proposal.json)
+now pins accepted design revision `b5761a4a2502aceaa9133afef552b567a19cb46e`. GitHub epic #5792 and all 15 native
+child issues have the same design handoff; T0 implements contracts and V0 checks
+conformance. No unfinished adjacent remote-control story is a dependency.
+
+**Current published draft: version 5.** Execution plan hash:
+`26cdbf9329fff74c42f484abd2e286f648a8dc08d80fb5651355465742f477f8`.
+Full proposal hash reviewed before save:
+`6c6e1aad22e061843b80bb4a9463f409771fe114e60c8ede8dee231411506e8c`.
+
+Readback verified nine implementation stories, six unbound evaluations, all
+existing node identities/dependencies, and all 92 acceptance criteria retained.
+The original acceptance gate remains unanswered, execution is paused, all attempts
+are zero and the active policy is null. The owner requested a maximum of three
+concurrent actions and budget enforcement off for this development flow. Draft v5
+sets `max_concurrent_actions` to 3. The separate live flow budget control is off
+at revision 1; global enforcement remains on, and usage/cost recording continues.
+The USD 250 value remains in the proposed policy but is not enforced while this
+flow override is off. Other policy bounds and expiry were retained. The Task API
+product and qualification budget requirements in the accepted design are unchanged.
+No execution, evaluator binding, scheduler change or deployment was authorized by
+this refresh. Deployment may use supported engine bindings or the documented
+operator path; live evaluation is still required for release acceptance.
+
+The sanitized [publication evidence](plan-publication.json) records the version,
+hashes and verification facts. Historical publication details follow.
+
+### Previous draft version 3
+
+The GitHub epic and all 15 native children carry the previous six-wave plan. The existing
 ADP flow `1275a30d-a84d-4f98-9ddb-f461c5aeb2d1` (`task-api-5792`) was updated
 through `adp flow draft preview` and `adp flow draft save` on 2026-09-24, using the
 inert revision support merged in [#5829](https://github.com/aws-e/adp/pull/5829).
-The authored document is [flow-proposal.json](flow-proposal.json). The epic
+The authored document is [flow-proposal.json](flow-proposal.json); it now contains
+the subsequent local design-handoff proposal, which has not been saved live. The epic
 explanation and all six wave names and purposes were published as a metadata-only
 revision after [#5843](https://github.com/aws-e/adp/pull/5843) was deployed. The
-GitHub epic carries the same explanation and wave purposes. This revision changes
+GitHub epic carries that published explanation and wave purposes. That display revision changed
 no node definitions, dependencies, proposed policy, criteria or evaluator bindings.
 
-The current draft is **version 3**, hash
+The previous published draft was **version 3**, hash
 `40a150cd9f73865409e1a084be276ab93fc11b9701a28b764e8afc8307c6bdc9`.
 Its six waves contain nine implementation stories and six issue-backed
 evaluations, plus the original acceptance gate. Versions 1 and 2 remain readable;

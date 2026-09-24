@@ -31,7 +31,56 @@ def _auth_header(org_id: uuid.UUID | None = None) -> dict:
 
 
 def _create_body(name: str, **values) -> dict:
-    return {"operation_id": str(uuid.uuid4()), "name": name, **values}
+    return {
+        "operation_id": str(uuid.uuid4()),
+        "name": name,
+        "plan_revision": "a" * 64,
+        **values,
+    }
+
+
+@pytest.fixture(autouse=True)
+def route_preview(monkeypatch):
+    """Isolate route semantics from real preview/admission PostgreSQL suites.
+
+    The legacy JWT fixtures carry only an org, so these mock-facade tests explicitly
+    supply a named test principal. Strict domain callers retain their verified
+    context. No production default or authorization check is weakened.
+    """
+    from app.adapters import operation_authority_source as authority
+    from app.services import onboarding
+    from app.schemas.workspace import CreateWorkspaceRequest
+
+    actual = authority.acting_principal
+    scope = {"caller": None}
+    monkeypatch.setattr(
+        authority, "acting_principal", lambda: actual() or scope["caller"]
+    )
+
+    async def preview(db, org_id, body: CreateWorkspaceRequest):
+        scope["caller"] = authority.ActingPrincipal(
+            "route-test-requester", str(org_id), ""
+        )
+        parameters = {
+            "workspace_name": body.name,
+            "isolation_mode": body.isolation_mode,
+        }
+        if body.account:
+            parameters["aws_account_id"] = body.account
+        return {
+            "revision": "a" * 64,
+            "workspace_id": str(onboarding.workspace_id_for(org_id, body.operation_id)),
+            "approval_request": {
+                "workspace_id": str(
+                    onboarding.workspace_id_for(org_id, body.operation_id)
+                ),
+                "action": "provision",
+                "idempotency_key": str(body.operation_id),
+                "parameters": parameters,
+            },
+        }
+
+    monkeypatch.setattr(onboarding, "preview", preview)
 
 
 class TestCreateWorkspace:
@@ -302,11 +351,17 @@ class TestWorkspaceModel:
 class _MockOperationFacade:
     """A stand-in for B's authorized-operation facade. **A mock, and recorded as one.**
 
-    Named and flagged explicitly (``is_mock``) for the reason U17a's contract gives:
-    B's facade does not exist in ADP (there is no ``modules/harness/jobs/``), so a
-    green run here closes no live criterion — it establishes that this API refuses
-    to provision without an authorized operation and that no dispatch or PAT
-    remains, which is exactly what this story's acceptance is.
+    Named and flagged explicitly (``is_mock``) for the reason U17a's contract gives,
+    and the reason survives the change in what exists. It used to be "B's facade does
+    not exist in ADP (there is no ``modules/harness/jobs/``)". Since #5535 it does
+    exist and is composed for any deployment that configures an operation store — but
+    it is not what these tests drive. A green run here still closes no live criterion:
+    it establishes that this API refuses to provision without an authorized operation
+    and that no dispatch or PAT remains, which is exactly what this story's acceptance
+    is.
+
+    The flag is what `TestTheFacadeIsAMock` reads to check that claim is still true of
+    the process, rather than assuming it from the package's absence.
     """
 
     is_mock = True
@@ -536,28 +591,10 @@ class TestProvisioningGoesThroughTheFacade:
             "/workspaces", json=request_body, headers=_auth_header(org_id)
         )
 
-        assert response.status_code == 201
-        assert response.json()["id"] == str(workspace_id)
-        assert facade.open_calls == [
-            {
-                "action": prov.PROVISION,
-                "workspace_id": str(workspace_id),
-                "org_id": str(org_id),
-                "permission": prov.REQUIRED_PERMISSION,
-                "parameters": {
-                    "workspace_name": "ws-crash-window",
-                    "isolation_mode": "dedicated",
-                    "idempotency_key": request_body["operation_id"],
-                },
-            }
-        ]
-
-        replay = await client.post(
-            "/workspaces", json=request_body, headers=_auth_header(org_id)
-        )
-        assert replay.status_code == 201
-        assert len(facade.open_calls) == 1
-        assert facade.progress_calls == [request_body["operation_id"]]
+        assert response.status_code == 503
+        assert "original request" in response.json()["detail"]
+        assert facade.open_calls == []
+        assert facade.progress_calls == []
 
     @pytest.mark.asyncio
     async def test_create_passes_shape_not_identity(self, client, facade, org_id):
@@ -764,9 +801,12 @@ class TestAsyncProgressAndFailure:
             "/workspaces", json=_create_body("ws-fail"), headers=_auth_header(org_id)
         )
 
-        assert response.status_code == 409
-        assert response.json()["detail"]["error"] == "create_operation_failed"
-        assert "reported failure" in response.json()["detail"]["message"]
+        # The accepted operation still gets a durable workspace receipt. Its
+        # terminal failure is explicit; 201 does not claim successful execution.
+        assert response.status_code == 201
+        assert response.json()["status"] == "Failed"
+        assert response.json()["operation_state"] == prov.STATE_FAILED
+        assert response.json()["provisioning_operation_id"]
 
     @pytest.mark.asyncio
     async def test_unknown_is_not_treated_as_failure(self, client, facade, org_id):
@@ -848,9 +888,8 @@ class TestFailsClosedWithoutAFacade:
                 )
                 == 0
             )
-        from app.routers.health import capabilities
-
-        assert "create-operation-id-v1" not in (await capabilities())["features"]
+        capabilities = await client.get("/capabilities", headers=_auth_header(org_id))
+        assert "create-operation-id-v1" not in capabilities.json()["features"]
 
         facade = _MockOperationFacade()
         prov.set_operation_facade(facade)
@@ -886,7 +925,7 @@ class TestFailsClosedWithoutAFacade:
         assert fetched.json()["status"] == status_before
 
     @pytest.mark.asyncio
-    async def test_refusal_surfaces_as_400(self, client, facade, org_id):
+    async def test_refused_admission_creates_no_workspace(self, client, facade, org_id):
         """A caller-caused refusal is a 400, and the row is not left provisioning."""
         facade._raises = prov.ProvisioningRefused("identity asserted")
         body = _create_body("ws-refused")
@@ -894,13 +933,11 @@ class TestFailsClosedWithoutAFacade:
 
         response = await client.post("/workspaces", json=body, headers=headers)
 
-        assert response.status_code == 400
+        assert response.status_code == 403
         facade._raises = None
         replay = await client.post("/workspaces", json=body, headers=headers)
-        assert replay.status_code == 409
-        assert replay.json()["detail"]["error"] == "create_operation_failed"
-        assert "failed" in replay.json()["detail"]["message"].lower()
-        assert len(facade.open_calls) == 1
+        assert replay.status_code == 201
+        assert len(facade.open_calls) == 2
 
     @pytest.mark.asyncio
     async def test_refused_teardown_restores_status(self, client, facade, org_id):
@@ -1158,24 +1195,49 @@ class TestTheFacadeIsAMock:
     def test_the_double_is_declared_a_mock(self):
         assert _MockOperationFacade.is_mock is True
 
-    @pytest.mark.asyncio
-    async def test_installed_shared_sources_do_not_authorize_an_unconfigured_facade(
-        self,
-    ):
-        """Packaging lifecycle sources does not establish live execution authority."""
-        previous = prov.get_operation_facade()
-        prov.set_operation_facade(None)
-        try:
-            with pytest.raises(prov.ProvisioningUnavailable):
-                await prov.start_provision(
-                    operation_id="unconfigured-operation",
-                    workspace_id="unconfigured-workspace",
-                    org_id="unconfigured-org",
-                    workspace_name="unconfigured",
-                    isolation_mode="dedicated",
-                )
-        finally:
-            prov.set_operation_facade(previous)
+    def test_no_real_operation_facade_is_exercised_by_these_tests(self):
+        """The transition this test watched for has happened. Retargeted, third time.
+
+        Its history is the point. It began as "``modules/harness/jobs/`` does not
+        exist", which fired when #5525 landed the shared store; it was retargeted to
+        "``harness_jobs`` is not importable from this app", on the stated reasoning
+        that importability is the first point at which the package could become a
+        dependency. #5535 makes it one deliberately: the package is staged into the
+        image, `app/adapters/harness_operation_facade.py` adapts it, and
+        `app/composition.py` installs it for any deployment that configures an
+        operation store. So the old assertion is now asserting the absence of the
+        feature, and its message would send a reader to "revisit the mocked facade"
+        over a change that was the intended one.
+
+        What the class still needs, and what this now asserts, is the claim the
+        docstring above actually makes: **nothing in this file is live evidence.**
+        That was previously true by the package's absence — a property of the
+        repository — and is now true by what these tests install, which is a property
+        they have to state. The failure it catches is real and is newly possible: a
+        composed production facade leaking into this offline suite would make these
+        tests exercise `harness_jobs` against whatever `DATABASE_URL` points at, and
+        a passing run would then be quoted as live acceptance of provisioning.
+
+        Deliberately NOT retargeted to "the production adapter is importable".
+        Asserting the feature exists from a mocked suite is how a green offline run
+        starts reading as deployment evidence, which is the exact confusion this
+        class exists to prevent. Packaging is asserted where it can be checked
+        honestly — `tests/test_auth.py` for the image's dependency, and
+        `tests/test_composition.py` for which adapter a configured deployment gets.
+        """
+        from app.adapters.harness_operation_facade import HarnessOperationFacade
+
+        installed = prov.get_operation_facade()
+        assert not isinstance(installed, HarnessOperationFacade), (
+            "a production HarnessOperationFacade is installed while this offline "
+            "suite runs; every provisioning result in this file would be exercising "
+            "the real operation store. This run is not live evidence either way — "
+            "find what composed it and scope that to its own test."
+        )
+        assert installed is None or getattr(installed, "is_mock", False) is True, (
+            f"an undeclared facade {type(installed).__name__} is installed; only a "
+            "mock recorded as one may be used here."
+        )
 
 
 # ===========================================================================

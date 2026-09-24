@@ -42,6 +42,7 @@ from src.auth.org_id_resolver import resolve_effective_org_id
 from src.shared.database import get_db
 from src.shared.schemas.auth import TokenContext
 
+from . import service as connection_service
 from .schemas import (
     AppStatusResponse,
     ConnectionsListResponse,
@@ -140,11 +141,16 @@ async def github_install_start(
     The caller redirects to install_url to start the GitHub App install flow.
     """
     try:
+        if current_user.account_type != "human":
+            raise HTTPException(status_code=403, detail="A signed-in human identity is required")
         return await install_start(
             cognito_sub=current_user.user_id,
-            user_id=current_user.user_id,
+            org_id=current_user.org_id,
+            cognito_username=current_user.cognito_username,
             db=db,
         )
+    except connection_service.SetupAuthorityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
         # Issue #2700: install_start raises a deliberate HTTPException(503,
         # "GitHub App not configured…") when the slug can't be resolved. The
@@ -245,6 +251,12 @@ async def github_install_callback(
         logger.warning("install-callback unresolved user jti=%s: %s", state, exc)
         return _redirect_error("unauthorized", "Installation link was not issued for a known user.")
 
+    except connection_service.SetupAuthorityError as exc:
+        return _redirect_error("github_control_required", str(exc))
+
+    except HTTPException as exc:
+        return _redirect_error("github_verification_unavailable", str(exc.detail))
+
     except PermissionError as exc:
         logger.warning("install-callback cross-tenant conflict installation_id=%d: %s", installation_id, exc)
         return _redirect_error("tenant_conflict", str(exc))
@@ -281,8 +293,8 @@ async def get_connections(
 
         login, memberships = await memberships_for_login(db, current_user.user_id, username=current_user.cognito_username)
         member_tenant_ids = list(memberships) or None
-        active = memberships.get(current_user.org_id)
-        pg_user_id = active[0].id if active else (login.id if login else None)
+        active = memberships.get(effective_org_id)
+        pg_user_id = active[0].id if active else None
         # The signed token, not another session's is_active flag, pins this
         # request's workspace until the frontend refreshes its credentials.
 
@@ -327,23 +339,16 @@ async def disconnect_github(
     tenant ownership (unchanged) AND (workspace admin OR the user who installed
     the connection). Non-admin installers can manage their own connection.
     """
-    from sqlalchemy import select
-
-    from src.shared.models.organization import User
+    from src.shared.identity.workspaces import workspace_user
 
     try:
-        # Resolve the caller's Postgres user ID from their Cognito sub.
-        # Same pattern as get_connections (Issue #3021).
-        pg_user_id: str | None = None
-        try:
-            user_stmt = select(User.id).where(User.cognito_sub == current_user.user_id)
-            pg_user_id = (await db.execute(user_stmt)).scalar_one_or_none()
-        except Exception as exc:
-            logger.debug("disconnect_github: could not resolve PG user_id: %s", exc)
+        effective_org_id = await resolve_effective_org_id(current_user, db)
+        caller = await workspace_user(db, current_user.user_id, effective_org_id, username=current_user.cognito_username)
+        pg_user_id = caller.id if caller else None
 
         return await delete_connection(
             installation_id=installation_id,
-            caller_org_id=current_user.org_id,
+            caller_org_id=effective_org_id,
             db=db,
             caller_user_id=pg_user_id,
             caller_is_admin=current_user.is_admin,
@@ -383,6 +388,8 @@ async def github_app_register_start(
     Platform-admin only. Returns a manifest to POST to GitHub, or
     'already_registered' if an App already exists for this deployment.
     """
+    if current_user.account_type != "human":
+        raise HTTPException(status_code=403, detail="A signed-in human identity is required")
     try:
         access.require_platform_admin(current_user)
     except AccessDeniedError:
@@ -398,9 +405,11 @@ async def github_app_register_start(
             app_name=body.app_name,
             visibility=body.visibility,
             cognito_sub=current_user.user_id,
-            user_id=current_user.user_id,
+            cognito_username=current_user.cognito_username,
             db=db,
         )
+    except connection_service.SetupAuthorityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -451,6 +460,14 @@ async def github_app_register_callback(
     except NonceAlreadyConsumedError as exc:
         logger.warning("register-app-callback replayed state jti=%s: %s", state, exc)
         return _redirect_error("state_replayed", "Registration link already used. Please start a new registration.")
+
+    except connection_service.SetupAuthorityError as exc:
+        # Issue #5664: the state token was valid but the principal it was issued to
+        # may not replace the deployment's shared App/webhook/sign-in secrets — or
+        # an App is already registered. Logged with a greppable event name because
+        # this is the containment for the credential-replacement path.
+        logger.warning("event=register_app_callback_denied jti=%s reason=%s", state, exc)
+        return _redirect_error("not_authorized", str(exc))
 
     except HTTPException as exc:
         logger.error("register-app-callback HTTP error: %s", exc.detail)

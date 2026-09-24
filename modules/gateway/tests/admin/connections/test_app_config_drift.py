@@ -43,6 +43,7 @@ GOOD_PERMISSIONS = {
     "pull_requests": "write",
     "checks": "write",
     "metadata": "read",
+    "members": "read",
 }
 GOOD_EVENTS = [
     "issues",

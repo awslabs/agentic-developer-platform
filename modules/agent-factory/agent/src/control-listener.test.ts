@@ -242,7 +242,8 @@ test('HTTP admission retains the exact proof for online delivery and blocks revo
     expect(store.markDelivered(UUID_A)).toBe(false);
     expect(await store.deliverAuthorized(UUID_A, effect)).toBe(false);
     expect(revalidate).toHaveBeenCalledWith({ envelope, action: 'pause', command_id: UUID_A,
-      body_base64: Buffer.from(body).toString('base64') }, GENERATION);
+      body_base64: Buffer.from(body).toString('base64'), principal: 'inv-coordinator#1',
+      authorityKind: 'delegated_grant' }, GENERATION);
     expect(effect).not.toHaveBeenCalled();
     expect(store.lookup(UUID_A).status).toBe('rejected');
     allowed = true;
@@ -269,6 +270,7 @@ test('signed pause and resume preserve acceptance order across delayed revalidat
     currentAttempt: () => unitAttempt,
     activeWorkCount: () => gate.activeToolCount(),
     subscribe: (listener) => gate.subscribe(event => listener({ ...event, attemptId: unitAttempt })),
+    isCancelled: () => false,
   }, store });
   const listener = new ControlListener({
     bindAddress: '127.0.0.1', port: await freePort(), token: TOKEN,
@@ -280,6 +282,9 @@ test('signed pause and resume preserve acceptance order across delayed revalidat
       await applyControlCommand({ action, commandId, store, adapter: {
         requestPause: (options) => gate.requestPause(options),
         resumeFromPause: async () => { await gate.resume(); },
+        // Unused: this case drives pause/resume only. Abort's own executor
+        // behaviour is covered in `agent-worker-abort.test.ts` (#3963).
+        cancel: () => {},
       } });
     },
   });
@@ -1824,6 +1829,7 @@ test.each([60_000, 1])('bounds delivered pauses through the signed listener and 
         await applyControlCommand({ action, commandId, store, adapter: {
           requestPause: options => gate.requestPause(options),
           resumeFromPause: async () => { await gate.resume(); },
+          cancel: () => {},
         } });
       } finally { liveExecutors -= 1; }
     },
@@ -1931,4 +1937,28 @@ test('reserves only one resume during delayed signed delivery, with retries repl
     }
     expect(store.snapshot().commands).toHaveLength(2);
   } finally { release(false); await listener.stop(); }
+});
+
+
+test.each(['human_session', 'delegated_grant'] as const)('steer attribution comes only from the verified %s envelope', async (authorityKind) => {
+  const store = makeStore({ supported: new Set<ControlAction>(['steer']) });
+  const { listener, port } = await startListener(store);
+  try {
+    const body = JSON.stringify({ command_id: UUID_A, instruction: 'change approach' });
+    const claims = { principal: 'verified-actor-123', authority_kind: authorityKind,
+      ...(authorityKind === 'human_session' ? { grant_id: undefined, revocation_epoch: undefined,
+        authority_reference_id: undefined } : {}) };
+    const reply = await request(port, 'POST', '/agent/steer', {
+      body, envelope: envelopeFor('steer', UUID_A, body, claims),
+    });
+    expect(reply.status).toBe(202);
+    expect(store.steeringOrigin(UUID_A)).toEqual({ principal: 'verified-actor-123', authorityKind });
+    expect(JSON.stringify(store.snapshot())).not.toContain('verified-actor-123');
+    const spoofed = JSON.stringify({ command_id: UUID_B, instruction: 'change approach', actor: 'forged-human' });
+    const refused = await request(port, 'POST', '/agent/steer', {
+      body: spoofed, envelope: envelopeFor('steer', UUID_B, spoofed, claims),
+    });
+    expect(refused.status).toBe(400);
+    expect(store.steeringOrigin(UUID_B)).toBeNull();
+  } finally { await listener.stop(); }
 });

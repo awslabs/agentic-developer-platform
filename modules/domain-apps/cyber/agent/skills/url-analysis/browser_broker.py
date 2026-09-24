@@ -12,9 +12,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from browser_guard import DEFAULT_REGION, DestinationRefused, open_guarded_browser
 from case_capture import collect_case, validate_options
 from case_contract import MAX_RESPONSE_BYTES
-from browser_guard import DEFAULT_REGION, DestinationRefused, open_guarded_browser
 from denylist import DenylistResult, scrub_url_credentials
 
 logger = logging.getLogger(__name__)
@@ -188,12 +188,33 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if payload.get("retry_after_seconds"):
+            self.send_header("Retry-After", str(payload["retry_after_seconds"]))
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            logger.info("browser broker caller disconnected before response delivery")
+            return False
 
     def do_GET(self) -> None:
-        if self.path == "/healthz":
-            self._write_json(HTTPStatus.OK, {"status": "ok"})
+        if self.path in {"/healthz", "/readyz"}:
+            manager = getattr(self.server, "investigation_manager", None)
+            capacity = (
+                manager.capacity()
+                if manager
+                else {"accepting_starts": True, "active_sessions": 0}
+            )
+            status = (
+                HTTPStatus.OK
+                if self.path == "/healthz" or capacity["accepting_starts"]
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
+            self._write_json(
+                status,
+                {"status": "ok" if status == HTTPStatus.OK else "busy", **capacity},
+            )
             return
         self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
@@ -226,7 +247,13 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
                 if token:
                     manager.request({"session_token": token, "action": "close"})
                 raise InvestigationError("Investigation response budget exceeded")
-            self._write_json(HTTPStatus.OK, response)
+            raw_token = result.get("session_token") or payload.get("session_token")
+            if operation == "start" and os.environ.get("URL_ANALYSIS_SESSION_OWNER"):
+                result["session_token"] = (
+                    os.environ["URL_ANALYSIS_SESSION_OWNER"] + "~" + raw_token
+                )
+            if not self._write_json(HTTPStatus.OK, response) and raw_token:
+                manager.cancel(raw_token)
         except DestinationRefused as error:
             self._write_json(
                 HTTPStatus.FORBIDDEN,
@@ -234,6 +261,31 @@ class BrowserBrokerHandler(BaseHTTPRequestHandler):
                     "error": "destination_refused",
                     "reason": error.reason,
                     "reason_code": error.reason_code,
+                    "browser_start_unattempted": error.browser_start_unattempted,
+                },
+            )
+        except InvestigationError as error:
+            status = (
+                HTTPStatus.SERVICE_UNAVAILABLE
+                if error.code in {"capacity_busy", "action_pending"}
+                else (
+                    HTTPStatus.GATEWAY_TIMEOUT
+                    if error.code.endswith("timeout")
+                    else (
+                        HTTPStatus.BAD_GATEWAY
+                        if error.code == "worker_failed"
+                        else HTTPStatus.BAD_REQUEST
+                    )
+                )
+            )
+            self._write_json(
+                status,
+                {
+                    "error": error.code,
+                    "message": str(error)[:500],
+                    "retry_after_seconds": error.retry_after,
+                    "cleanup": error.cleanup,
+                    "browser_start_unattempted": error.browser_start_unattempted,
                 },
             )
         except (ValueError, TypeError) as error:

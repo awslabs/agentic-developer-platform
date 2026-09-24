@@ -199,9 +199,20 @@ class AgentRunStateReader:
             state=status,
             available=available,
             reason=None if available else _unavailable_reason(registered=registered, expired=expired, terminal=terminal),
-            # Empty, and it must stay empty while ``SUPPORTED_AGENT_ACTIONS`` holds
-            # MONITOR alone. Advertising a verb the deployment refuses with 501
-            # would have a coordinator plan work it cannot do.
+            # Deliberately empty, and NOT derived from ``SUPPORTED_AGENT_ACTIONS``.
+            #
+            # The original reason was that the set held MONITOR alone, so there was
+            # nothing to advertise. That stopped being true with #5222 (pause,
+            # resume) and #3963 (abort), and the field is still empty — on purpose,
+            # because deployment support is only one of the three inputs a
+            # capability claim needs. The other two are the target pod's own
+            # advertised verbs and its current availability, and this reader has
+            # neither: it projects one events row and never speaks to the pod.
+            # Reporting ``{"abort": True}`` from deployment support alone would tell
+            # a coordinator a specific run can be aborted on the strength of a
+            # global constant, which is exactly the over-advertisement the human
+            # path's three-way intersection in ``control_service`` exists to
+            # prevent. An empty map reads as "ask, and find out", which is honest.
             capabilities={},
             updated_at=_optional_str(row.get("updated_at")) or _optional_str(row.get("arrived_at")),
         )

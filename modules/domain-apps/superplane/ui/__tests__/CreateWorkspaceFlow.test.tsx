@@ -2,12 +2,10 @@
  * Review-then-submit creation — #5730 AC-02 (one operation identity across
  * refresh, timeout and repeated submit) and AC-04 (actionable blocked states).
  *
- * The create and preview endpoints are unserved on the current baseline, so these
- * tests drive BOTH worlds: the blocked path as it behaves today, and the full
- * journey with the endpoints forced served. Testing only today's blocked path
- * would leave the idempotency logic — the part that prevents spending twice —
- * entirely unexercised until #5535 lands, which is exactly when a defect in it
- * would become expensive.
+ * These tests explicitly model both an older deployment without onboarding
+ * routes and a deployment serving the full journey. This preserves unavailable
+ * route coverage while exercising the idempotency logic that prevents spending
+ * twice when the routes are available.
  */
 
 import { HttpResponse, http } from 'msw';
@@ -26,6 +24,7 @@ import {
   type OnboardingPlan,
 } from '@superplane-ui/contract';
 import { memoryReceiptStore, readReceipt, type ReceiptStore } from '@superplane-ui/operations';
+import { withoutOnboardingEndpoints } from './endpoint-fixtures';
 
 const API = (path: string) => `/api${DOMAIN_BASE}${path}`;
 const SCOPE = { deploymentId: 'dev', orgId: 'org-a' };
@@ -62,7 +61,7 @@ const PLAN: OnboardingPlan = {
  *
  * `served` is a deployment fact, not a behaviour under test — the contract test
  * separately pins it against the real proxy allowlist, so flipping it here cannot
- * hide drift. This lets the journey be exercised before #5535 ships it.
+ * hide drift. Each journey declares the routes its deployment provides.
  */
 function withServed(names: Array<keyof typeof ENDPOINTS>) {
   const saved = names.map((name) => [name, ENDPOINTS[name].served] as const);
@@ -77,11 +76,13 @@ function withServed(names: Array<keyof typeof ENDPOINTS>) {
 }
 
 let restore: (() => void) | null = null;
+let restoreDeployment: () => void;
 let store: ReceiptStore;
 let guard: ScopeGuard;
 let keyCounter: number;
 
 beforeEach(() => {
+  restoreDeployment = withoutOnboardingEndpoints();
   window.sessionStorage.setItem('cognito_access_token', 'test-token');
   store = memoryReceiptStore();
   guard = new ScopeGuard();
@@ -91,6 +92,7 @@ beforeEach(() => {
 afterEach(() => {
   restore?.();
   restore = null;
+  restoreDeployment();
 });
 
 const mintKey = () => {
@@ -121,7 +123,7 @@ async function reachReview(user: ReturnType<typeof userEvent.setup>) {
 
 describe('AC-04: refusing to submit what cannot be submitted safely', () => {
   it('blocks the plan request when the preview route is not served', async () => {
-    // Today's real baseline. No request is issued — MSW runs with
+    // An explicitly unavailable deployment. No request is issued — MSW runs with
     // onUnhandledRequest: 'error', so an attempt would fail this test loudly.
     const user = userEvent.setup();
     renderFlow();

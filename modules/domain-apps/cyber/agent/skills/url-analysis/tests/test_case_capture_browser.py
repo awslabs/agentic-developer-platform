@@ -20,7 +20,8 @@ class ManagedClient:
         self.stopped = False
 
     def start(self, **kwargs):
-        assert kwargs["session_timeout_seconds"] == 300
+        from runtime_limits import LEASE_SECONDS
+        assert kwargs["session_timeout_seconds"] == LEASE_SECONDS
         return "fixture-session"
 
     def generate_ws_headers(self):

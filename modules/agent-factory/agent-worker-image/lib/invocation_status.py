@@ -121,8 +121,26 @@ def update_status(
     error_message: str | None = None,
     skip_reason: str | None = None,
     stop_reason: str | None = None,
-) -> None:
+) -> bool:
     """Update the invocation row's status. Fail-soft: logs and returns on error.
+
+    Returns ``True`` only when the write is known to have landed, and ``False`` on
+    every path that did not persist one — a refused status, a missing table or row
+    key, an exception from either transport, or a row that never became visible.
+
+    The return value is new in #3963 and the fail-soft contract is unchanged: this
+    still never raises, and every existing caller ignores the result, so nothing
+    that treated a lost status transition as survivable starts failing. It exists
+    because one caller must not treat it as survivable. The abort finalizer relies
+    on the terminal ``aborted`` row to refuse a redelivery of the run an operator
+    stopped, and "I called the fail-soft writer" is not evidence that row exists.
+    Reporting a clean abort while the row is absent is the case where the stopped
+    run silently starts again.
+
+    A ``True`` here means this process observed the write succeed, not that the row
+    can never be overwritten afterwards. That is the honest bound: it is what lets
+    the caller distinguish "persisted" from "attempted", which is the distinction
+    it was previously missing.
 
     Args:
         event_id: The envelope message_id (PK of the webhook-events row).
@@ -177,7 +195,7 @@ def update_status(
             status,
             sorted(ALLOWED_WRITE_STATUSES),
         )
-        return
+        return False
 
     if authority_enabled():
         # The gateway derives the row key from the protected execution record, so
@@ -199,21 +217,22 @@ def update_status(
                 },
             )
             logger.info("Updated invocation status via gateway: status=%s", status)
+            return True
         except StatusGatewayError as exc:
             # No DynamoDB fallback: see the module docstring.
             logger.warning("Failed to update invocation status via gateway (non-fatal): %s", exc)
         except Exception:
             logger.warning("Failed to update invocation status via gateway (non-fatal)")
-        return
+        return False
 
     table = _table_name or os.environ.get("WEBHOOK_EVENTS_TABLE", "")
     if not table:
         logger.debug("WEBHOOK_EVENTS_TABLE not set; skipping status update")
-        return
+        return False
 
     if not event_id or not arrived_at:
         logger.debug("Missing event_id or arrived_at; skipping status update")
-        return
+        return False
 
     try:
         now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -288,7 +307,7 @@ def update_status(
                     ConditionExpression="attribute_exists(event_id)",
                 )
                 logger.info("Updated invocation status: event_id=%s status=%s", event_id, status)
-                return
+                return True
             except _get_client().exceptions.ConditionalCheckFailedException:
                 if attempt < max_attempts - 1:
                     logger.info(
@@ -307,6 +326,9 @@ def update_status(
                     )
     except Exception as exc:
         logger.warning("Failed to update invocation status (non-fatal): %s", exc)
+    # Reached when the row never became visible, or when any step above raised.
+    # Both mean no status transition persisted, so neither may report one.
+    return False
 
 
 # ---------------------------------------------------------------------------

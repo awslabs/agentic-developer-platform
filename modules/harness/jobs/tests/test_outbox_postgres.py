@@ -87,6 +87,22 @@ async def test_admitted_operation_is_claimable_and_delivered_once(connection):
     assert await outbox.pending_count(connection) == 0
 
 
+async def test_registration_filter_never_consumes_undeliverable_attempts(connection):
+    admitted = await admit_paid(OperationStore(), connection, principal(), request())
+    outbox, executor = DispatchOutbox(), RecordingExecutor()
+    for selection in ((), ("other-operation",)):
+        result = await outbox.drain_once(connection, executor, operation_ids=selection)
+        assert result.handled == 0
+    assert (
+        await connection.fetchval("SELECT attempts FROM harness_dispatch_outbox") == 0
+    )
+    result = await outbox.drain_once(
+        connection, executor, operation_ids=(admitted.record.operation_id,)
+    )
+    assert result.delivered == 1
+    assert len(executor.seen) == 1
+
+
 async def test_the_envelope_carries_no_connection_or_credential(connection):
     """Design requirement 3: workers see a description, not a database.
 

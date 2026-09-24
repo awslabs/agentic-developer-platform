@@ -605,9 +605,37 @@ variable "domain_app_images" {
   }
 }
 
+variable "domain_app_settings" {
+  type        = map(map(string))
+  default     = {}
+  description = "Application-owned deployment settings passed through platform composition."
+}
+
 # This controls only pull_request event reviews, not mentions, labels or engine work.
 variable "github_auto_pr_review_enabled" {
   description = "Automatically review agent PRs from GitHub PR events. Keep disabled when the engine owns reviewer dispatch. Explicit issue triggers remain available."
   type        = bool
   default     = false
+}
+
+variable "agent_worker_memory_request" {
+  description = "Memory reserved for each agent worker, including its subprocesses and tests."
+  type        = string
+  default     = "4Gi"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*(Mi|Gi)$", var.agent_worker_memory_request))
+    error_message = "agent_worker_memory_request must be a positive Mi or Gi memory quantity."
+  }
+}
+
+variable "agent_worker_memory_limit" {
+  description = "Memory limit for each agent worker, including its subprocesses and tests."
+  type        = string
+  default     = "8Gi"
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*(Mi|Gi)$", var.agent_worker_memory_limit))
+    error_message = "agent_worker_memory_limit must be a positive Mi or Gi memory quantity."
+  }
 }

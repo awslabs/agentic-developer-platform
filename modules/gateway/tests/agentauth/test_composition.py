@@ -179,12 +179,25 @@ class TestStateReaderProjects:
         assert (view.available, view.reason) == (False, "run generation has advanced")
         assert view.generation == 5
 
-    def test_capabilities_stay_empty_while_no_verb_is_supported(self, events):
+    def test_capabilities_stay_empty_even_for_supported_verbs(self, events):
+        """Not a stale assertion: it is stronger now that verbs ARE supported.
+
+        This read used to be empty for the trivial reason that
+        ``SUPPORTED_AGENT_ACTIONS`` held MONITOR alone. PAUSE/RESUME (#5222) and
+        ABORT (#3963) have since shipped, so an implementation that derived this
+        map from deployment support would now advertise three verbs — for a run
+        this reader has never contacted. It must not: deployment support is one of
+        three inputs, and the other two (the pod's own claim and its availability)
+        are not visible here.
+        """
+        from src.agentauth.policy import SUPPORTED_AGENT_ACTIONS
+
+        # Guard against this test quietly reverting to the trivial case.
+        assert len(SUPPORTED_AGENT_ACTIONS) > 1, "the deployment supports more than MONITOR; this test covers that case"
+
         put_row(events)
         reader = state_reader(events)
 
-        # Advertising a verb the deployment refuses with 501 would have a
-        # coordinator plan work it cannot do.
         assert reader.read_state(run_id="run-a", generation=3).capabilities == {}
 
     def test_missing_run_reads_as_none(self, events):

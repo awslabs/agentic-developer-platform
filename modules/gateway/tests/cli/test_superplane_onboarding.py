@@ -42,6 +42,22 @@ HELPER = CLI / "adp-superplane-onboarding.py"
 CONTRACT = REPO / "modules/domain-apps/superplane/ui/contract.ts"
 PROXY_ROUTES = REPO / "modules/gateway/src/domain_proxy/superplane_routes.json"
 
+# Explicit older-deployment fixture. Production flags are independently checked
+# against the actual gateway allowlist by the contract tests below.
+ONBOARDING_ENDPOINTS = (
+    "adoptWorkspace",
+    "previewWorkspace",
+    "getOperation",
+    "recoverOperation",
+    "requestApproval",
+    "getApproval",
+    "decideApproval",
+    "listLifecycleProposals",
+    "previewLifecycleProposal",
+    "continueLifecycleProposal",
+)
+UNAVAILABLE_ROUTE_SETUP = f"for name in {ONBOARDING_ENDPOINTS!r}:\n    helper.ENDPOINTS[name] = dict(helper.ENDPOINTS[name], served=False)\n"
+
 
 def token_for_org(org="org-a"):
     claims = base64.urlsafe_b64encode(json.dumps({"sub": "test-principal", "custom:org_id": org}).encode()).decode().rstrip("=")
@@ -227,6 +243,19 @@ def gateway():
     server = RecordingGateway()
     yield server
     server.close()
+
+
+@pytest.fixture
+def unavailable_onboarding_routes(adp_bin: Path):
+    """Disable routes only in the copied install, retaining front-door coverage."""
+    helper = adp_bin / "adp-superplane-onboarding.py"
+    source = helper.read_text()
+    main_guard = 'if __name__ == "__main__":'
+    assert source.count(main_guard) == 1
+    setup = UNAVAILABLE_ROUTE_SETUP.replace("helper.ENDPOINTS", "ENDPOINTS")
+    helper.write_text(source.replace(main_guard, setup + "\n" + main_guard))
+    yield
+    helper.write_text(source)
 
 
 @pytest.fixture
@@ -424,7 +453,7 @@ class TestTheCliAndTheBrowserAgreeOnTheApi:
                 pair = (declared["method"], normalise(declared["path"]))
                 assert pair not in proxy, f"{name} is reported unavailable but the proxy forwards {pair}"
 
-    def test_every_unserved_endpoint_explains_its_capability_in_users_terms(self) -> None:
+    def test_every_declared_unavailable_diagnostic_explains_its_capability_in_users_terms(self) -> None:
         """Diagnostics name the capability, never an internal identifier.
 
         "Blocked on #1234" tells the person at the terminal nothing they can act
@@ -433,7 +462,7 @@ class TestTheCliAndTheBrowserAgreeOnTheApi:
         and the endpoint name, both asserted elsewhere.
         """
         for name, declared in endpoints_of_helper().items():
-            if declared["served"]:
+            if declared["served"] and "capability" not in declared:
                 continue
             capability = declared.get("capability") or ""
             assert capability, f"{name} is unavailable but names no capability"
@@ -603,6 +632,7 @@ UNAVAILABLE_VERBS = [
 ]
 
 
+@pytest.mark.usefixtures("unavailable_onboarding_routes")
 class TestAnUnavailableCapabilityIsReportedWithoutBeingAttempted:
     @pytest.mark.parametrize("argv,endpoint", UNAVAILABLE_VERBS, ids=[e for _, e in UNAVAILABLE_VERBS])
     def test_it_exits_four_and_names_the_endpoint(self, onboarding, argv, endpoint) -> None:
@@ -649,6 +679,7 @@ class TestAnUnavailableCapabilityIsReportedWithoutBeingAttempted:
         assert any("operation identity" in line for line in detail["unknown"])
 
 
+@pytest.mark.usefixtures("unavailable_onboarding_routes")
 class TestACreateIsRefusedRatherThanRiskingADuplicate:
     def test_it_will_not_submit_when_idempotency_cannot_be_confirmed(self, onboarding) -> None:
         """Fail-closed, and nothing sent.
@@ -1359,6 +1390,7 @@ class TestOperationReceiptsSurviveAndStayScoped:
         assert [r["state"] for r in receipts.values()] == ["unknown"]
         assert "failed" not in result.stdout
 
+    @pytest.mark.usefixtures("unavailable_onboarding_routes")
     def test_a_receipt_is_still_reported_when_the_server_cannot_be_asked(self, onboarding) -> None:
         """The local receipt is the point of persisting it.
 
@@ -1387,6 +1419,7 @@ class TestOperationReceiptsSurviveAndStayScoped:
         keys = {r["idempotency_key"] for r in document(result)["detail"]["receipts"].values()}
         assert keys == {"mine"}, keys
 
+    @pytest.mark.usefixtures("unavailable_onboarding_routes")
     def test_another_organizations_receipt_is_not_recoverable_by_key(self, onboarding) -> None:
         """Scope isolation holds on direct lookup, not only on listing.
 
@@ -1531,30 +1564,27 @@ class TestTheCreatePathOnceTheEndpointsAreServed:
     WHY THIS CLASS EXISTS
     ---------------------
     Mutation testing found that five safety properties of the create path were
-    unverified by the tests above, and the cause was not a missing assertion: at
-    this revision `previewWorkspace` is unserved, so `create` refuses before it
+    unverified by unavailable-route tests, and the cause was not a missing assertion:
+    with `previewWorkspace` unserved, `create` refuses before it
     ever reaches the idempotency gate, the receipt write, or the code that records
     a lost reply as `unknown`. Every test that went through `adp superplane
     onboarding create` returned at the first guard, so deleting the gate, opening
     the fail-closed capability check, reordering the receipt write after the
     request, and collapsing `unknown` into `failed` all left the suite green.
 
-    Unreachable code with no test is code that will be wrong on the day it becomes
-    reachable — and the day it becomes reachable is the day it starts spending
-    money. So these tests set the served flags to the state a deployment with those
-    routes enabled will have, and drive the same `main()` through a real process:
+    These tests explicitly select each deployment's served routes and drive the
+    same `main()` through a real process:
     real argv, real serialization, real stdout, real state file on disk. The only
     thing substituted is the deployment's route availability, which is exactly the
     variable under test.
     """
 
-    # Imports the shipped helper and flips the named endpoints to served before
-    # calling the real main(). Nothing about parsing, request building, receipt
-    # writing or output is bypassed.
+    # Imports the shipped helper, disables onboarding routes, then enables only
+    # the named endpoints before calling the real main(). Parsing, request
+    # building, receipt writing and output are unchanged.
     DRIVER = (
         "import sys, adp_common\n"
-        "helper = adp_common.load_provider('adp-superplane-onboarding.py')\n"
-        "for name in sys.argv[1].split(','):\n"
+        "helper = adp_common.load_provider('adp-superplane-onboarding.py')\n" + UNAVAILABLE_ROUTE_SETUP + "for name in sys.argv[1].split(','):\n"
         "    helper.ENDPOINTS[name] = dict(helper.ENDPOINTS[name], served=True)\n"
         "sys.exit(helper.main(sys.argv[2:]))\n"
     )
@@ -2076,8 +2106,7 @@ class TestConcurrentCommandsCannotMintTwoIdentities:
 
     DRIVER = (
         "import sys, adp_common\n"
-        "helper = adp_common.load_provider('adp-superplane-onboarding.py')\n"
-        "for name in sys.argv[1].split(','):\n"
+        "helper = adp_common.load_provider('adp-superplane-onboarding.py')\n" + UNAVAILABLE_ROUTE_SETUP + "for name in sys.argv[1].split(','):\n"
         "    helper.ENDPOINTS[name] = dict(helper.ENDPOINTS[name], served=True)\n"
         "sys.exit(helper.main(sys.argv[2:]))\n"
     )
@@ -2424,6 +2453,14 @@ class TestSavedLifecycleJourney:
     BASE = "/superplane/v1/workspaces/ws-lifecycle/lifecycle-proposals/artifact-plan"
     REVISION = "a" * 64
 
+    def test_completed_workspace_has_no_next_approval_plan(self, onboarding):
+        path = "/superplane/v1/workspaces/ws-lifecycle/lifecycle-proposals"
+        onboarding.gateway.reply("GET", path, 200, {"workspace_id": "ws-lifecycle", "proposals": []})
+        result = self.run(onboarding, self.SERVED, ["lifecycle", "list", "--workspace", "ws-lifecycle", "--json"])
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert document(result)["detail"]["proposals"] == []
+        assert not [row for row in onboarding.gateway.received if row["method"] == "POST"]
+
     def proposal(self, body):
         request_id = body["operation_id"]
         return {
@@ -2572,6 +2609,7 @@ class TestSavedLifecycleJourney:
         assert state_file(onboarding.home) == {}
         assert not [r for r in onboarding.gateway.received if r["path"].startswith("/api/superplane/")]
 
+    @pytest.mark.usefixtures("unavailable_onboarding_routes")
     def test_unserved_lifecycle_fails_before_any_request(self, onboarding):
         result = onboarding(self.args("plan"))
         assert result.returncode == 4

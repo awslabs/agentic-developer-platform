@@ -76,6 +76,11 @@ done
 mkdir -p "${TARGET}/harness-operation"
 cp -f "${REPO_ROOT}/modules/harness/jobs/harness_jobs/identity.py" "${TARGET}/harness-operation/identity.py"
 
+# The paid-domain Gateway composes the canonical lease/fencing implementation.
+# Stage the package from its owner; never duplicate its SQL/claim algorithms.
+mkdir -p "${TARGET}/harness-jobs/harness_jobs"
+find "${REPO_ROOT}/modules/harness/jobs/harness_jobs" -maxdepth 1 -name '*.py' -type f -exec cp -f {} "${TARGET}/harness-jobs/harness_jobs/" \;
+
 # The README explains the no-install rule the staged copy depends on; keep it with
 # the copy so a reader inside the image is not left guessing.
 if [[ -f "${SOURCE}/README.md" ]]; then

@@ -385,6 +385,34 @@ def test_the_namespaced_permissions_are_not_granted_cluster_wide():
     assert "superplanenodes" in role_resources
 
 
+def test_workload_reader_is_provisioned_only_in_the_workspace_namespace():
+    runner = _Scripted({"apply": "{}"})
+    _access(runner).establish_controller_rbac(NAMESPACE, CONTROLLER_SERVICE_ACCOUNT)
+    objects = _rbac_objects(runner)
+    role = objects["Role"]
+    assert role["metadata"]["namespace"] == NAMESPACE
+    by_resource = {
+        (rule["apiGroups"][0], resource): set(rule["verbs"])
+        for rule in role["rules"]
+        for resource in rule["resources"]
+    }
+    assert by_resource[("", "pods")] == {"get", "list", "watch"}
+    assert by_resource[("", "pods/log")] == {"get"}
+    assert by_resource[("apps", "deployments")] == {"get"}
+    assert by_resource[("apps", "replicasets")] == {"list"}
+    assert by_resource[("batch", "jobs")] == {"get"}
+    for resource in ("pods", "pods/log", "deployments", "replicasets", "jobs"):
+        assert all(
+            resource not in rule["resources"]
+            for rule in objects["ClusterRole"]["rules"]
+        )
+    assert not any(
+        resource in {"secrets", "pods/exec", "services/proxy", "*"}
+        for _, resource in by_resource
+    )
+    assert all(verbs <= {"get", "list", "watch"} for verbs in by_resource.values())
+
+
 def test_the_observer_can_list_each_crd_in_its_declared_api_scope():
     from pathlib import Path
 

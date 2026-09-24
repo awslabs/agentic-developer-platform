@@ -5,7 +5,10 @@ description = "Approved Superplane workspace planning and lifecycle composition"
 requires-python = ">=3.12"
 # Sibling source distributions are installed from the same reviewed checkout by
 # stage-domain-auth.sh, never resolved as public package-index replacements.
-dependencies = []
+dependencies = ["pydantic>=2.7,<3", "superplane-contracts"]
+
+[project.optional-dependencies]
+worker = ["boto3>=1.35", "kubernetes>=31,<32"]
 
 [build-system]
 requires = ["setuptools>=68.0"]
@@ -13,3 +16,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["workspace_provisioning"]
+
+[tool.setuptools.package-data]
+workspace_provisioning = ["_data/workspaces/*", "_data/workspaces/scripts/*", "_data/crds.yaml"]

@@ -1,4 +1,8 @@
-mock_provider "aws" {}
+mock_provider "aws" {
+  mock_resource "aws_iam_policy" {
+    defaults = { arn = "arn:aws:iam::123456789012:policy/mock-boundary" }
+  }
+}
 mock_provider "kubernetes" {}
 
 variables {
@@ -45,5 +49,36 @@ run "independent_browser_release" {
   assert {
     condition     = jsondecode(aws_iam_role.url_analysis_browser_broker.assume_role_policy).Statement[0].Condition.StringEquals["oidc.eks.us-east-1.amazonaws.com/id/test:sub"] == "system:serviceaccount:custom-agents:url-analysis-browser-broker-sa"
     error_message = "The IRSA trust must follow the configured namespace."
+  }
+}
+
+run "archive_first_isolated_browser_release" {
+  # Both providers are mocked. Apply resolves generated ARNs for the IAM assertion.
+  command = apply
+  variables {
+    common_crawl_partitions = ["CC-MAIN-2026-39", "CC-MAIN-2026-34"]
+    session_owner_routing   = true
+  }
+  assert {
+    condition = one([
+      for statement in jsondecode(aws_iam_role_policy.worker_common_crawl[0].policy).Statement :
+      toset(statement.Resource) == toset([
+        "arn:aws:s3:::commoncrawl/crawl-data/CC-MAIN-2026-39/segments/*/warc/*.warc.gz",
+        "arn:aws:s3:::commoncrawl/crawl-data/CC-MAIN-2026-34/segments/*/warc/*.warc.gz"
+      ]) && statement.Action == ["s3:GetObject"] if try(statement.Sid, "") == "ReadSelectedArchivePages"
+    ])
+    error_message = "Archived page reads must be read-only and scoped to the configured Common Crawl partitions."
+  }
+  assert {
+    condition     = aws_athena_workgroup.common_crawl[0].configuration[0].enforce_workgroup_configuration && aws_athena_workgroup.common_crawl[0].configuration[0].bytes_scanned_cutoff_per_query == 1073741824
+    error_message = "Historical lookups must enforce a per-query scan limit."
+  }
+  assert {
+    condition     = aws_glue_catalog_table.common_crawl[0].parameters["projection.crawl.type"] == "injected" && output.worker_environment.CYBER_CC_CRAWLS == "CC-MAIN-2026-39,CC-MAIN-2026-34"
+    error_message = "Every lookup must constrain explicitly configured crawl partitions."
+  }
+  assert {
+    condition     = kubernetes_service.url_analysis_browser_broker.spec[0].session_affinity == "None" && kubernetes_deployment.url_analysis_browser_broker.spec[0].template[0].spec[0].container[0].readiness_probe[0].http_get[0].path == "/readyz"
+    error_message = "New session admission must use available replicas instead of worker-IP affinity."
   }
 }

@@ -55,7 +55,9 @@ def test_gateway_manifest_is_the_sdk_generated_artifact():
     sdk_manifest = Path(__file__).parents[3] / "agent-factory/agent/src/invocability-probe/request-shape-manifest.json"
     parsed = json.loads(gateway_manifest.read_text())
     assert parsed == json.loads(sdk_manifest.read_text())
-    assert set(parsed["models"]) == {model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE}
+    assert set(parsed["models"]) == {
+        model.canonical_model_id for model in PLATFORM_MODEL_CATALOGUE if model.compatibility_class == "claude-agent-sdk"
+    }
 
 
 @pytest.mark.asyncio

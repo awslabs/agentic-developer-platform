@@ -15,7 +15,7 @@ from browser_broker import BrowserBrokerHandler
 from browser_client import BrowserBrokerError, investigation_request
 from browser_guard import DestinationRefused, PinnedResponse, open_guarded_browser
 from case_capture import recorded_browser
-from investigation_browser import BrowserInvestigation, InvestigationManager
+from investigation_browser import BrowserInvestigation, InvestigationManager, _Actor
 from research_case import assess_case, verify_case
 
 
@@ -85,7 +85,7 @@ def live_fixture(monkeypatch, tmp_path):
     factory = partial(
         BrowserInvestigation, recorder_factory=partial(recorded_browser, opener=opener)
     )
-    manager = InvestigationManager(factory=factory)
+    manager = InvestigationManager(factory=factory, actor_factory=_Actor)
     server = ThreadingHTTPServer(("127.0.0.1", 0), BrowserBrokerHandler)
     server.investigation_manager = manager
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -178,10 +178,10 @@ def test_agent_selected_link_preserves_state_and_exact_link_then_revises_hypothe
         request=request,
     )
     assert not c["observations"][0]["forms"]
-    assert c["browser_view"]["external_leads"][0]["url"] == "https://external.test/lead"
+    assert any(
+        x["url"] == "https://external.test/lead" for x in c["browser_view"]["choices"]
+    )
     assert not any("payload.exe" in x["url"] for x in c["browser_view"]["choices"])
-    with pytest.raises(ValueError, match="Review the latest"):
-        cli.step(output, "root", decision(c), request=request)
     review(c, output)
     chosen = next(
         x for x in c["browser_view"]["choices"] if "verification" in x["text"]
@@ -332,7 +332,7 @@ def test_step_budget_closes_context(live_fixture, monkeypatch):
         )
 
 
-def test_unconfirmed_start_is_retained_and_allows_only_inconclusive(tmp_path):
+def test_unconfirmed_start_is_reported_without_vetoing_assessment(tmp_path):
     output = tmp_path / "unknown"
 
     def unavailable(operation, payload):
@@ -349,8 +349,9 @@ def test_unconfirmed_start_is_retained_and_allows_only_inconclusive(tmp_path):
         "Startup outcome unknown; service lease is the cleanup backstop",
         request=unavailable,
     )
-    with pytest.raises(ValueError, match="cleanup"):
-        assess_case(output, {"verdict": "suspicious", "assessor": "fixture"})
+    assessed = assess_case(output, {"verdict": "suspicious", "assessor": "fixture"})
+    assert assessed["assessment"]["verdict"] == "suspicious"
+    assert assessed["browser_cleanup"] == "unknown"
     c = assess_case(
         output,
         {
@@ -385,28 +386,32 @@ def test_failed_profile_start_does_not_claim_previous_context_cleanup(
     c = json.loads((output / "case.json").read_text())
     assert clients[0].stopped and c["sessions"][0]["cleanup_status"] == "stopped"
     assert c["unconfirmed_browser_start"]
-    with pytest.raises(ValueError, match="cleanup"):
-        assess_case(
-            output,
-            {
-                "verdict": "suspicious",
-                "assessor": "fixture",
-                "findings": [
-                    {
-                        "kind": "other",
-                        "basis": "observation",
-                        "statement": "Known prior observation",
-                        "evidence_ids": ["obs-001"],
-                    }
-                ],
-            },
-        )
+    cli.close(output, "Report earlier evidence and the failed profile", request=request)
+    assessed = assess_case(
+        output,
+        {
+            "verdict": "suspicious",
+            "assessor": "fixture",
+            "findings": [
+                {
+                    "kind": "other",
+                    "basis": "observation",
+                    "statement": "Known prior observation",
+                    "evidence_ids": ["obs-001"],
+                }
+            ],
+        },
+    )
+    assert assessed["assessment"]["verdict"] == "suspicious"
+    assert assessed["browser_cleanup"] == "unknown"
 
 
-def test_explicit_external_scope_follows_observed_lead(live_fixture):
+@pytest.mark.parametrize("scope", [None, "observed_external"])
+def test_default_and_explicit_external_scope_follow_observed_lead(live_fixture, scope):
     request, transport, clients = live_fixture
     p = request(
-        "start", {"url": "https://public.test/seed", "scope": "observed_external"}
+        "start",
+        {"url": "https://public.test/seed", **({"scope": scope} if scope else {})},
     )
     token = p["session_token"]
     try:
@@ -491,6 +496,45 @@ def test_close_queued_at_expiry_gets_the_known_cleanup_result():
         release.set()
         actor.deadline = 0
         actor.thread.join(timeout=5)
+
+
+def test_skipped_corroboration_preserves_saved_findings(
+    live_fixture, tmp_path, monkeypatch
+):
+    request, _, _ = live_fixture
+    output = tmp_path / "corroboration-case"
+    c = cli.start(output, "https://public.test/seed", "Inspect", request=request)
+    cli.close(output, "Enough evidence", request=request)
+    assessment = {
+        "verdict": "inconclusive",
+        "assessor": "fixture",
+        "findings": [
+            {
+                "kind": "other",
+                "basis": "observation",
+                "statement": "The page offers account verification",
+                "evidence_ids": [c["observations"][0]["id"]],
+            }
+        ],
+    }
+    assess_case(output, assessment)
+    before = json.loads((output / "case.json").read_text())["assessment"]
+    monkeypatch.setattr(
+        "corroboration.lookup_virustotal",
+        lambda *args: {"status": "skipped", "reason": "No credential"},
+    )
+    cli.main(
+        [
+            "corroborate",
+            "--case",
+            str(output),
+            "--virustotal-url",
+            "https://public.test/seed",
+        ]
+    )
+    after = json.loads((output / "case.json").read_text())
+    assert after["assessment"] == before
+    assert after["corroboration"][-1]["status"] == "skipped"
 
 
 def test_selected_new_window_link_reuses_context_and_records_adaptation(

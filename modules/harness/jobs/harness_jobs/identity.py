@@ -184,6 +184,9 @@ _FORBIDDEN_PREFIXES = (
 # in a schema-qualified query and in an idempotency key, so a value containing a
 # quote or a NUL is refused at construction rather than escaped at every use.
 _IDENTIFIER = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+# ADP's MAC-verified run principal is <invocation_id>#<attempt>. Keep tenant
+# identifiers unchanged; only authenticated subjects may carry that separator.
+_SUBJECT = re.compile(r"\A(?=.{1,128}\Z)[A-Za-z0-9][A-Za-z0-9._:-]*(?:#[1-9][0-9]*)?\Z")
 
 
 class ContractViolation(ValueError):
@@ -303,7 +306,8 @@ class ResolvedPrincipal:
     def __post_init__(self) -> None:
         for name in ("org_id", "workspace_id", "subject"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not _IDENTIFIER.match(value):
+            pattern = _SUBJECT if name == "subject" else _IDENTIFIER
+            if not isinstance(value, str) or not pattern.match(value):
                 raise ContractViolation(
                     f"{name} must be a short identifier of letters, digits, "
                     f"'.', '_', ':' or '-'; got {value!r}"

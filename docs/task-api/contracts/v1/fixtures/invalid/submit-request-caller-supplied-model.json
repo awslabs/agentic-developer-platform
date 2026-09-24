@@ -1,0 +1,16 @@
+{
+  "$fixture": {
+    "description": "A caller selecting its own model. Model binding is resolved server-side from the pilot configuration; a caller-chosen model would let a client route spend and capability outside the approved boundary.",
+    "schema": "public-api.schema.json#/$defs/submit_request",
+    "expect": "invalid",
+    "reason": "model_id is not a permitted request property; model binding is resolved by the gateway",
+    "violates": ["decisions.json#/O1", "identity-and-lifecycle.json#/canonical_principal/caller_supplied_fields_rejected"],
+    "owner": "T2",
+    "criteria": ["T0-AC02", "V0-01", "V2-05"]
+  },
+  "schema_version": "1.0",
+  "persona": "agent-task-investigator",
+  "instructions": "Investigate the checkout-api 503 spike.",
+  "model_id": "global.anthropic.claude-opus-4-5-20251101-v1:0",
+  "inputs": {}
+}

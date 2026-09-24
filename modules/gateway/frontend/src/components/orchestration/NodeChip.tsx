@@ -79,7 +79,9 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
     .trim();
 
   // `superseded` and unknown states get no segment in the bar, and no fill here.
-  const style = display ? DISPLAY_STATES[display] : null;
+  const style = node.state === 'waived'
+    ? { label: 'Waived by owner approval', glyph: '↷', fill: '#e5e7eb', text: '#374151' }
+    : display ? DISPLAY_STATES[display] : null;
   const isQueued = display === 'queued';
   const waiting = dependencies?.filter((dependency) => toDisplayState(dependency) !== 'complete') ?? [];
 
@@ -129,6 +131,15 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
           {/* The projected state, as text. The fill is a second channel, never
               the only one. */}
           {style && node.kind !== 'story' && <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">{style.label}</p>}
+          {node.state === 'waived' && (
+            <div className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+              <p>Independent evaluation was not run.</p>
+              {node.evaluation_waiver && <>
+                <p>{node.evaluation_waiver.reason}</p>
+                <p>Recorded {new Date(node.evaluation_waiver.created_at).toLocaleString()} · Plan v{node.evaluation_waiver.plan_version}</p>
+              </>}
+            </div>
+          )}
           {node.kind === 'story' && <StoryJourney node={node} execution={execution} />}
           {node.configuration_problem && <p className="mt-1 text-sm text-amber-700">{node.configuration_problem}</p>}
           {resultSummary && !node.binding_hold && !node.delivery_progress && <p className="mt-1 text-sm">{resultSummary}</p>}
@@ -136,7 +147,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
             {node.issue_url && (
               <a href={node.issue_url} target="_blank" rel="noreferrer" className="text-blue-600 underline">View issue and evidence</a>
             )}
-            {node.run_id && (
+            {node.run_id && node.kind !== 'story' && (
               <Link to={`/activity?id=${encodeURIComponent(node.run_id)}`} className="text-blue-600 underline">View run</Link>
             )}
 
@@ -181,7 +192,7 @@ export function NodeChip({ node, blockedBy = [], dependencies, dependencyWaveTit
                     <li key={dependency.id}>
                       <span className="block font-medium">{dependency.title}</span>
                       <span className="text-gray-500 dark:text-gray-400">
-                        {dependencyWaveTitle?.(dependency) || dependency.wave_ref} · {state ? DISPLAY_STATES[state].label : dependency.state}
+                        {dependencyWaveTitle?.(dependency) || dependency.wave_ref} · {dependency.state === 'waived' ? 'Waived by owner approval' : state ? DISPLAY_STATES[state].label : dependency.state}
                       </span>
                     </li>
                   );

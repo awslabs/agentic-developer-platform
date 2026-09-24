@@ -19,11 +19,13 @@
 set -euo pipefail
 component="${1:?component required}"
 case "$component" in
-  superplane-api|superplane-controller|superplane-platform-monitor) ;;
+  superplane-api|superplane-controller|superplane-platform-monitor|superplane-executor) ;;
   *) echo "Unknown Superplane component" >&2; exit 1 ;;
 esac
 [[ "${ORIGIN_REVISION:-}" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid origin revision" >&2; exit 1; }
-[[ "${SOURCE_PATH:-}" == "src/$component" ]] || { echo "Invalid source scope" >&2; exit 1; }
+expected_source="src/$component"
+[[ "$component" != "superplane-executor" ]] || expected_source="executor"
+[[ "${SOURCE_PATH:-}" == "$expected_source" ]] || { echo "Invalid source scope" >&2; exit 1; }
 [[ "${ECR_REPO:-}" == "adp-$component" ]] || { echo "Invalid ECR scope" >&2; exit 1; }
 [[ "${ACCOUNT_ID:-}" =~ ^[0-9]{12}$ ]] || { echo "Invalid target account" >&2; exit 1; }
 [[ "${AWS_REGION:-}" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || { echo "Invalid region" >&2; exit 1; }
@@ -42,6 +44,16 @@ context="$maintained_root/$SOURCE_PATH"
 # The reference snapshot is read-only evidence and must never become a build context.
 [[ "$context" != *"ai-super-plane"* ]] || { echo "Refusing to build from the reference snapshot" >&2; exit 1; }
 
+build_context="$context"
+build_options=()
+if [[ "$component" == "superplane-executor" ]]; then
+  [[ "${PYTHON_IMAGE:-}" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { echo "Executor requires an explicitly reviewed digest-pinned Python 3.12 image" >&2; exit 1; }
+  # The trusted service consumes two maintained shared packages. Its Dockerfile
+  # copies only these three directories from the repository-root context.
+  build_context="."
+  build_options=(--file "$context/Dockerfile" --build-arg "PYTHON_IMAGE=$PYTHON_IMAGE")
+fi
+
 # Sibling packages are generated build inputs and absent from a clean checkout.
 # Stage before touching AWS or Docker so missing maintained source fails locally.
 if [[ "$component" == "superplane-api" ]]; then
@@ -56,10 +68,11 @@ tag="$REGISTRY/$ECR_REPO:$IMAGE_TAG"
 # the source was transferred from (what never changes unless someone re-transfers). Collapse
 # them and a reader can no longer tell an ADP change from a re-tag of the same code.
 docker build \
+  "${build_options[@]}" \
   --label "org.opencontainers.image.revision=$IMAGE_TAG" \
   --label "org.opencontainers.image.source=$maintained_root/$SOURCE_PATH" \
   --label "com.adp.superplane.origin.repository=${ORIGIN_REPOSITORY:-unset}" \
   --label "com.adp.superplane.origin.revision=$ORIGIN_REVISION" \
-  -t "$tag" "$context"
+  -t "$tag" "$build_context"
 docker push "$tag"
 aws ecr describe-images --repository-name "$ECR_REPO" --image-ids "imageTag=$IMAGE_TAG" --region "$AWS_REGION" --query 'imageDetails[0].imageDigest' --output text

@@ -126,6 +126,13 @@ class AgentRuntime:
         is authorized can keep ignoring the result — refusal is still an
         exception.
         """
+        from src.agentauth.grants import AUTHORITY_PAID_DOMAIN_OPERATION
+
+        if grant.authority.kind == AUTHORITY_PAID_DOMAIN_OPERATION:
+            from src.internal.domain_operation_runtime import validate_paid_execution
+
+            await validate_paid_execution(record, grant, store=self.store)
+            return None
         if grant.authority.kind in {AUTHORITY_GITHUB_EVENT, AUTHORITY_SERVICE_POLICY}:
             return None
         if grant.authority.kind not in {AUTHORITY_GATE_DECISION, AUTHORITY_REPLAN_REQUEST}:

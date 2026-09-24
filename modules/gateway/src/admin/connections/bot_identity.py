@@ -81,6 +81,10 @@ async def seed_bot_identity(
                     user_kind="bot",
                     bot_kind=user.bot_kind,
                     member_org_ids=member_org_ids,
+                    # #5664 (A10): matches the UserIdentity row _ensure_bot_user
+                    # writes. This is the platform's own GitHub App bot, seeded by
+                    # the install callback rather than claimed by a user.
+                    verification_method="admin_manual",
                 )
                 if not success:
                     logger.warning("bot-identity seed: identity-index write failed for %s org=%s; retry the install callback", bot_login, org_id)

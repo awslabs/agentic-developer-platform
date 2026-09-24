@@ -46,7 +46,7 @@ class TestVocabulary:
     """The declared vocabulary itself (R-N2, R-N2c)."""
 
     def test_declared_states(self):
-        assert len(NodeState) == 10
+        assert len(NodeState) == 11
 
     def test_states_are_the_declared_spellings(self):
         # Downstream stories and ACs cite these exact strings; a rename here is
@@ -58,6 +58,7 @@ class TestVocabulary:
             "awaiting_gate",
             "awaiting_merge",
             "passed",
+            "waived",
             "rejected_at_gate",
             "failed",
             "halted",
@@ -106,8 +107,8 @@ class TestTransitionTable:
         behind it, which no derived check can see.
         """
         assert {state: set(successors) for state, successors in LEGAL_TRANSITIONS.items()} == {
-            NodeState.PENDING: {NodeState.READY, NodeState.AWAITING_MERGE, NodeState.SUPERSEDED},
-            NodeState.READY: {NodeState.RUNNING, NodeState.AWAITING_MERGE, NodeState.SUPERSEDED},
+            NodeState.PENDING: {NodeState.READY, NodeState.AWAITING_MERGE, NodeState.SUPERSEDED, NodeState.WAIVED},
+            NodeState.READY: {NodeState.RUNNING, NodeState.AWAITING_MERGE, NodeState.SUPERSEDED, NodeState.WAIVED},
             NodeState.RUNNING: {
                 NodeState.AWAITING_MERGE,
                 NodeState.AWAITING_GATE,
@@ -124,6 +125,7 @@ class TestTransitionTable:
                 NodeState.SUPERSEDED,
             },
             NodeState.PASSED: {NodeState.SUPERSEDED},
+            NodeState.WAIVED: {NodeState.SUPERSEDED},
             NodeState.REJECTED_AT_GATE: {NodeState.READY},
             NodeState.FAILED: {NodeState.READY, NodeState.RUNNING},
             NodeState.HALTED: {NodeState.READY},
@@ -183,6 +185,7 @@ class TestTerminalStates:
     def test_expected_membership(self):
         assert set(TERMINAL_STATES) == {
             NodeState.PASSED,
+            NodeState.WAIVED,
             NodeState.REJECTED_AT_GATE,
             NodeState.FAILED,
             NodeState.HALTED,
@@ -343,5 +346,5 @@ class TestSmokeTest:
     """The mechanical check issue #4193 and the wave-1 evaluation both run."""
 
     def test_smoke_assertion(self):
-        assert len(NodeState) == 10
+        assert len(NodeState) == 11
         assert NodeState("halted") in TERMINAL_STATES

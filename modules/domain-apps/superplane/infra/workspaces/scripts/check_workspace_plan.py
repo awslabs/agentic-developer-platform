@@ -172,6 +172,7 @@ UNBOUNDED_COMPONENTS = [
         "(variables.tf refuses never-expire), so this is bounded in TIME but not in volume."
     ),
     "NAT gateway data processing — charged per GB, driven by the workspace's egress volume.",
+    "Private STS interface endpoint data processing — charged per GB; hourly AZ charges are bounded.",
     "Inter-AZ and internet data transfer.",
     (
         "EBS snapshots and any volume a WORKLOAD creates (PersistentVolumeClaims). The node "
@@ -357,6 +358,8 @@ def _require(change: dict, values: dict, field: str, why: str):
 # AWS VPC public IPv4 pricing, us-east-1, reviewed 2026-09-20:
 # https://aws.amazon.com/vpc/pricing/ — in-use and idle addresses are $0.005/hour.
 PUBLIC_IPV4_HOURLY_USD = 0.005
+# https://aws.amazon.com/privatelink/pricing/ (us-east-1, reviewed 2026-09-24).
+INTERFACE_ENDPOINT_AZ_HOURLY_USD = 0.01
 
 
 def _estimate(
@@ -469,6 +472,40 @@ def _estimate(
                 "NAT gateway (hourly only; data processing is unbounded)",
                 f"1 gateway x ${NAT_GATEWAY_HOURLY_USD:.3f}/hour x {HOURS_PER_MONTH} hours",
                 NAT_GATEWAY_HOURLY_USD * HOURS_PER_MONTH,
+            )
+
+        elif resource_type == "aws_vpc_endpoint":
+            if values.get("vpc_endpoint_type") != "Interface":
+                raise WorkspaceOwnershipError(
+                    "Only reviewed interface endpoint pricing is available"
+                )
+            subnets = values.get("subnet_ids")
+            if (
+                isinstance(subnets, list)
+                and subnets
+                and all(isinstance(value, str) and value for value in subnets)
+            ):
+                ceiling = len(set(subnets))
+            else:
+                # The ownership guard confines every endpoint subnet to this plan.
+                # All resulting owned subnets give a conservative AZ bound even if
+                # Terraform has not resolved the cardinality of its computed IDs.
+                ceiling = len(
+                    {
+                        item["address"]
+                        for item in plan.get("resource_changes", [])
+                        if leaf_type_and_name(item["address"])[0] == "aws_subnet"
+                        and _priced_after_apply(item["change"]["actions"])
+                    }
+                )
+            if ceiling < 1:
+                raise WorkspaceOwnershipError(
+                    "Private STS endpoint subnet ceiling is unknown"
+                )
+            line(
+                "Private STS interface endpoint (hourly; data processing excluded)",
+                f"At most {ceiling} endpoint AZs x ${INTERFACE_ENDPOINT_AZ_HOURLY_USD:.2f}/hour x {HOURS_PER_MONTH} hours",
+                ceiling * INTERFACE_ENDPOINT_AZ_HOURLY_USD * HOURS_PER_MONTH,
             )
 
         elif resource_type == "aws_kms_key":

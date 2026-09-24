@@ -59,6 +59,12 @@ from src.knowledge.github_app_service import (
 )
 from src.shared.config import get_settings
 from src.shared.database import get_db
+from src.shared.identity.providers import is_linkable_provider
+from src.shared.identity.verification import (
+    CHANNEL_PLACEMENT,
+    DELIVERY_SHARED_CHANNEL,
+    IDENTIFYING_METHODS,
+)
 from src.shared.models.audit import AuditLog
 from src.shared.models.base import new_uuid
 from src.shared.models.organization import Organization, User
@@ -114,6 +120,12 @@ class ResolveUserRequest(BaseModel):
     provider: str
     provider_user_id: str
     channel_context: str | None = None
+    # Optional tenant scope (#5664, A10). `user_identities` is unique per tenant,
+    # so one external account may legitimately hold rows in several. Supplying the
+    # tenant the inbound event is for narrows the lookup to it; omitting it means
+    # an account linked in more than one tenant is refused as ambiguous rather
+    # than silently resolved to whichever row the database returned first.
+    org_id: str | None = None
 
 
 class ResolveUserResponse(BaseModel):
@@ -121,6 +133,18 @@ class ResolveUserResponse(BaseModel):
     org_id: str
     team_id: str
     is_shadow: bool
+    # How the link this answer rests on was established (#5664, A10).
+    #
+    # A 200 does NOT mean "proven". The lookup filters to IDENTIFYING_METHODS, which
+    # deliberately includes the unproven `channel_placement` rows the
+    # auto-provision path creates, because this endpoint answers "which platform
+    # user is this account" rather than "may this account act". A caller that grants
+    # authority MUST read this field and apply `is_proven` to it; inferring proof
+    # from the status code is the bug this field exists to prevent.
+    #
+    # Empty string means a caller is talking to a gateway that predates the field:
+    # unknown provenance, which is not proof.
+    verification_method: str = ""
 
 
 class ResolveUserNotFoundResponse(BaseModel):
@@ -134,6 +158,7 @@ class ResolveInstallationRequest(BaseModel):
 
 
 class ResolveInstallationResponse(BaseModel):
+    revocation_checked: bool = True
     tenant_id: str
     # Issue #2724 (slice B): provenance of the owning organization row — which
     # path created it ("operator" | "register_flow" | "install_autocreate").
@@ -254,6 +279,25 @@ async def issue_magic_link(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> IssueMagicLinkResponse:
+    # Closed provider allowlist, checked before any state is written (#5664, A10).
+    #
+    # This is the OTHER writer into the shared `magic_link_nonces` table, and it
+    # took `provider` from the request body with no validation at all. The internal
+    # plane is authenticated, but that only means the caller is an ADP Lambda — it
+    # does not make an arbitrary namespace safe to mint into, and the
+    # `github_app_register` namespace is the sole authenticator on the callback that
+    # overwrites the deployment's shared GitHub App credentials. A compromised or
+    # simply buggy ingest caller must not be able to reach it, so both nonce
+    # minters now enforce the same allowlist.
+    if not is_linkable_provider(body.provider):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unsupported_provider",
+                "message": "That identity provider is not supported for linking.",
+            },
+        )
+
     secret = _get_magic_link_secret()
     if not secret:
         raise HTTPException(
@@ -277,6 +321,13 @@ async def issue_magic_link(
         target_user_id=None,
         expires_at=result["expires_at"],
         db=db,
+        # Recorded honestly (#5664, A10): the ingest caller posts this link back
+        # into the conversation the triggering message arrived in, which for a
+        # public channel or an issue thread is readable by everyone there. That is
+        # channel access, not proof of account ownership, so confirming a link
+        # delivered this way yields an UNPROVEN identity row. Mislabelling it
+        # `provider_dm` here is exactly the escalation this column prevents.
+        delivery_method=DELIVERY_SHARED_CHANNEL,
     )
 
     magic_link_url = _build_magic_link_url(result["token"])
@@ -330,13 +381,55 @@ async def resolve_user(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ):
-    # 1. Check user_identities
+    # 1. Check user_identities — trust-aware, and tenant-scoped when the caller
+    #    supplies a tenant (#5664, A10).
+    #
+    # Two defects were combined here. The lookup accepted ANY verification method,
+    # so a row a user had simply asserted about themselves resolved exactly like
+    # one the provider confirmed — and this endpoint's answer decides which
+    # platform user an inbound event acts as. And `scalar_one_or_none()` raises
+    # MultipleResultsFound on legitimate data: the unique index is per tenant
+    # (provider, provider_user_id, org_id), so one external account may hold rows
+    # in several tenants. That surfaced as an unhandled 500.
+    #
+    # Ambiguity is now an explicit refusal. Picking any one row would be guessing
+    # which tenant an event belongs to, and the safe answer to "which of these
+    # is it?" is to decline rather than to choose.
+    #
+    # The filter is IDENTIFYING_METHODS, not PROVEN_METHODS. This endpoint answers
+    # "which platform user is this account", which an auto-provisioned channel
+    # placement legitimately answers even though it proves nothing — and filtering
+    # it out would make every subsequent resolve miss, re-provisioning a shadow user
+    # and re-issuing a magic link on every inbound message. The authority decision
+    # is made by the CALLER from `verification_method` in the response, which is
+    # reported truthfully below; it is not implied by having resolved at all.
     stmt = select(UserIdentity).where(
         UserIdentity.provider == body.provider,
         UserIdentity.provider_user_id == body.provider_user_id,
+        UserIdentity.verification_method.in_(IDENTIFYING_METHODS),
     )
-    result = await db.execute(stmt)
-    identity = result.scalar_one_or_none()
+    if body.org_id:
+        stmt = stmt.where(UserIdentity.org_id == body.org_id)
+
+    candidates = (await db.execute(stmt)).scalars().all()
+
+    if len(candidates) > 1:
+        logger.warning(
+            "Ambiguous identity resolution provider=%s provider_user_id=%s org_id=%r matches=%d",
+            body.provider,
+            body.provider_user_id,
+            body.org_id,
+            len(candidates),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "ambiguous_identity",
+                "message": ("This provider identity resolves to more than one tenant. Supply org_id to disambiguate."),
+            },
+        )
+
+    identity = candidates[0] if candidates else None
 
     if identity is not None:
         # Fetch the user row for org/team info
@@ -349,6 +442,7 @@ async def resolve_user(
                 org_id=user.org_id,
                 team_id=user.team_id,
                 is_shadow=user.is_shadow,
+                verification_method=identity.verification_method or "",
             )
 
     # 2. Check channel_tenant_map for auto-provisioning
@@ -372,6 +466,11 @@ async def resolve_user(
     tenant_map = map_result.scalar_one_or_none()
 
     if tenant_map is not None:
+        if body.org_id and tenant_map.org_id != body.org_id:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "channel_tenant_mismatch", "message": "Channel does not belong to the requested organization."},
+            )
         # Auto-provision a shadow user
         shadow = User(
             id=new_uuid(),
@@ -382,7 +481,25 @@ async def resolve_user(
         )
         db.add(shadow)
 
-        # Create the identity link
+        # Create the identity link.
+        #
+        # #5664 (A10): this is `channel_placement`, an UNPROVEN method. It used to
+        # say `admin_manual`, which is in PROVEN_METHODS, and that was the second
+        # half of the finding: an administrator mapped the workspace to the tenant
+        # via channel_tenant_map — an accountable act, but a fact about the
+        # WORKSPACE. The account id itself arrived in this request's body and
+        # nobody verified it. Labelling that as an administrator's assertion about
+        # a specific account manufactured proof out of a routing decision.
+        #
+        # The previous slice left the mislabel in place because relabelling it
+        # unproven would have made every subsequent resolve miss the trust filter
+        # and re-issue a magic link forever. That is now handled at the seam rather
+        # than by mislabelling: resolution filters on IDENTIFYING_METHODS (which
+        # includes this value, so the row keeps routing) while everything that
+        # mints authority asks `is_proven` (which refuses it). The flow is
+        # preserved; only the unearned authority claim is withdrawn.
+        #
+        # `verified_at` stays NULL — nothing was verified.
         link = UserIdentity(
             org_id=tenant_map.org_id,
             user_id=shadow.id,
@@ -390,7 +507,7 @@ async def resolve_user(
             provider=body.provider,
             provider_user_id=body.provider_user_id,
             provider_username=None,
-            verification_method="admin_manual",
+            verification_method=CHANNEL_PLACEMENT,
         )
         db.add(link)
 
@@ -424,6 +541,10 @@ async def resolve_user(
                 "org_id": shadow.org_id,
                 "team_id": shadow.team_id,
                 "is_shadow": True,
+                # Stated for the same reason as the 200 path (#5664, A10): the
+                # reader should read provenance, not infer it from the status code.
+                # The value matches the row written just above.
+                "verification_method": link.verification_method or "",
             },
         )
 
@@ -450,6 +571,9 @@ async def resolve_user(
         target_user_id=None,
         expires_at=result_token["expires_at"],
         db=db,
+        # Same in-channel delivery as /issue-magic-link above, so the same honest
+        # label. See the note there.
+        delivery_method=DELIVERY_SHARED_CHANNEL,
     )
 
     magic_link_url = _build_magic_link_url(result_token["token"])
@@ -511,6 +635,8 @@ async def resolve_installation(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(verify_internal_or_irsa),
 ) -> ResolveInstallationResponse:
+    from src.admin.installations.resolver import OwnerState, resolve_installation_owner
+
     installation_id = (body.installation_id or "").strip()
     if not installation_id:
         raise HTTPException(
@@ -518,6 +644,18 @@ async def resolve_installation(
             detail={"error": "not_found", "message": "Unknown installation"},
         )
 
+    if installation_id.isdecimal():
+        owner, state = await resolve_installation_owner(int(installation_id), db=db)
+        if state is OwnerState.REVOKED:
+            raise HTTPException(status_code=410, detail={"error": "installation_revoked"})
+        if state is not OwnerState.RESOLVED or owner is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "No proven installation owner"})
+        org = await db.get(Organization, owner.tenant_id)
+        if org is not None:
+            return ResolveInstallationResponse(tenant_id=org.id, created_via=org.created_via or "operator")
+
+    # Retain nonnumeric legacy identifiers for compatibility; real provider IDs
+    # above always use canonical ownership and durable revocation.
     # Postgres query intent: organizations WHERE :iid = ANY(github_installation_ids)
     # (backed by the GIN index ix_organizations_github_installation_ids on
     # Postgres, migration 005). We fetch candidate orgs and match in Python so

@@ -34,9 +34,12 @@ asserted for **equality**. A permission absent from that set is evaluated
 *globally*, which for approval authority means cross-org gate approval. Equality
 means the next permission added without a deliberate scoping decision fails CI.
 
-And **R-O3f**: the per-run pause/steer/abort seam answers 501. A control that
+And **R-O3f**: the per-run pause/steer/abort seam refuses any verb the deployment
+has not implemented, with a 501 rather than a silent success. A control that
 appears to pause a run without doing so is worse than no control, because an
-operator who believes a run is paused stops watching it.
+operator who believes a run is paused stops watching it. As of #3965 all four
+verbs are implemented, so the 501 case here is driven by a stubbed service — the
+rung still has to exist for the verb added next.
 
 Session and app fixtures mirror `test_read_api.py`, including its two pysqlite
 hooks.
@@ -828,10 +831,10 @@ class TestRO3fDeclaredSeam:
         service.authorize_command.assert_called_once()
 
     def test_only_implemented_verbs_are_advertised_as_supported(self):
-        """Pause/resume have signed transport; steer/abort remain unavailable."""
+        """All four verbs now have transport; steer got its queue in #3965."""
         from src.activity.control_service import SUPPORTED_ACTIONS
 
-        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume"})
+        assert SUPPORTED_ACTIONS == frozenset({"pause", "resume", "steer", "abort"})
 
     @pytest.mark.parametrize("action", ["pause", "resume", "steer", "abort"])
     def test_all_four_verbs_are_routed(self, app_with_router, action):

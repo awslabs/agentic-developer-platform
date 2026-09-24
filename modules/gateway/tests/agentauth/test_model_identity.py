@@ -150,3 +150,11 @@ async def test_budget_cannot_replace_protected_binding_in_any_legacy_mode(contex
     assert await service._resolve_run_scope(context, None) is context._protected_run_binding
     with pytest.raises(RunBindingError):
         await service._resolve_run_scope(context, "sibling")
+
+
+async def test_paid_domain_worker_has_no_model_authority(context, runtime):
+    runtime.authenticate("credential", "pod")[3].authority.kind = "paid_domain_operation"
+    sent, consumed = await call(context, PROOF)
+    assert sent[0]["status"] == 403
+    assert consumed == []
+    assert context._protected_run_binding is None

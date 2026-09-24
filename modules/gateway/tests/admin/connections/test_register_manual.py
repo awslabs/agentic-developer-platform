@@ -261,6 +261,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",
@@ -358,6 +359,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",
@@ -442,6 +444,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",
@@ -522,6 +525,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",
@@ -595,6 +599,7 @@ class TestRegisterAppManualService:
             "name": "Test",
             "permissions": {
                 "metadata": "read",
+                "members": "read",
                 # Missing contents, issues, pull_requests, checks
             },
             "events": [
@@ -676,6 +681,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",
@@ -752,6 +758,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",
@@ -833,6 +840,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",
@@ -896,6 +904,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",
@@ -961,6 +970,7 @@ class TestRegisterAppManualService:
                 "pull_requests": "write",
                 "checks": "write",
                 "metadata": "read",
+                "members": "read",
             },
             "events": [
                 "issues",

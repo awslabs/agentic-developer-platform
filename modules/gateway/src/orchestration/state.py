@@ -41,6 +41,7 @@ class NodeState(StrEnum):
     AWAITING_MERGE = "awaiting_merge"  # Worker finished; merged code/checks not yet verified
     AWAITING_GATE = "awaiting_gate"  # Execution finished; human decision required
     PASSED = "passed"  # Accepted (gate approved, or evaluation green)
+    WAIVED = "waived"  # Human exception; no evaluation was executed
     REJECTED_AT_GATE = "rejected_at_gate"  # Human refused; successors stay pending
     FAILED = "failed"  # Execution failed
     HALTED = "halted"  # Defect-cycle bound exhausted (R-Q9c)
@@ -76,11 +77,13 @@ _HUMAN_ONLY = frozenset({ActorKind.HUMAN})
 # plan amendment is normal operation, not an exception path.
 LEGAL_TRANSITIONS: dict[NodeState, dict[NodeState, frozenset[ActorKind]]] = {
     NodeState.PENDING: {
+        NodeState.WAIVED: _HUMAN_ONLY,  # Explicit unexecuted-evaluation exception
         NodeState.AWAITING_MERGE: _HUMAN_ONLY,  # Verified historical delivery, no worker
         NodeState.READY: _ENGINE_OR_HUMAN,  # Predecessors satisfied
         NodeState.SUPERSEDED: _ENGINE_OR_HUMAN,  # Amendment
     },
     NodeState.READY: {
+        NodeState.WAIVED: _HUMAN_ONLY,  # Explicit unexecuted-evaluation exception
         NodeState.AWAITING_MERGE: _HUMAN_ONLY,  # Verified historical delivery, no worker
         NodeState.RUNNING: _ENGINE_OR_HUMAN,  # Dispatch
         NodeState.SUPERSEDED: _ENGINE_OR_HUMAN,  # Amendment
@@ -109,6 +112,9 @@ LEGAL_TRANSITIONS: dict[NodeState, dict[NodeState, frozenset[ActorKind]]] = {
     },
     # --- Terminal-to-the-engine states. Every remaining edge is human-only,
     # --- which is exactly what makes TERMINAL_STATES derivable below.
+    NodeState.WAIVED: {
+        NodeState.SUPERSEDED: _HUMAN_ONLY,
+    },
     NodeState.PASSED: {
         NodeState.SUPERSEDED: _HUMAN_ONLY,  # Only via explicit re-plan
     },
@@ -161,7 +167,9 @@ class TransitionResult:
     rejection_reason: str | None = None
 
 
-def transition(from_state: NodeState, to_state: NodeState, *, actor_kind: ActorKind, reason: str) -> TransitionResult:
+def transition(
+    from_state: NodeState, to_state: NodeState, *, actor_kind: ActorKind, reason: str, stalled_review_authorized: bool = False
+) -> TransitionResult:
     """Guard one node state change. Every engine state change goes through here.
 
     Args:
@@ -169,6 +177,9 @@ def transition(from_state: NodeState, to_state: NodeState, *, actor_kind: ActorK
         to_state: The state being requested.
         actor_kind: Who is attempting it. Human-only edges reject `SERVICE`.
         reason: Why, for the decision record. Carried through verbatim.
+        stalled_review_authorized: Internal proof flag set only after recovery
+            verifies an engine stall, worker exit, policy, pause and limits. It
+            permits FAILED -> RUNNING for review; never READY or a halt override.
 
     Returns:
         A `TransitionResult`. On success `allowed` is True and `new_state` is
@@ -196,6 +207,11 @@ def transition(from_state: NodeState, to_state: NodeState, *, actor_kind: ActorK
             reason=reason,
             rejection_reason=f"no legal transition from '{from_state}' to '{to_state}'",
         )
+
+    # Only a verified recovery decision may restore a timed-out review lane.
+    # Ordinary failures and all halted/ready transitions keep their old rules.
+    if stalled_review_authorized and actor_kind is ActorKind.SERVICE and from_state is NodeState.FAILED and to_state is NodeState.RUNNING:
+        permitted_actors = _ENGINE_OR_HUMAN
 
     if actor_kind not in permitted_actors:
         allowed_names = ", ".join(sorted(actor.value for actor in permitted_actors))

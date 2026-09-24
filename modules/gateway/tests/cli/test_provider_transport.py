@@ -819,11 +819,11 @@ def test_a_credential_still_bound_to_an_account_is_refused_by_the_domain(gateway
     [
         (200, {"name": "dep-1", "status": "Deleted"}, "ok"),
         (200, {"name": "dep-1", "status": "Deleting"}, "pending"),
-        (204, None, "pending"),
+        (204, None, "uncertain"),
     ],
 )
 def test_the_other_delete_verbs_work_over_the_real_transport(gateway, deployment_status, payload, expected) -> None:
-    """UUID deletes survive bodyless replies and report pending state honestly."""
+    """Approved UUID deletes preserve their body and do not infer success without evidence."""
     account_record = "33333333-4444-5555-6666-777777777777"
     deployment_record = "44444444-5555-6666-7777-888888888888"
     gateway.route("DELETE", f"/api{cli.API_BASE}/accounts/{account_record}", 204)
@@ -831,14 +831,37 @@ def test_the_other_delete_verbs_work_over_the_real_transport(gateway, deployment
     gateway.route("DELETE", target, deployment_status, payload)
 
     account = cli.run(cli.parser().parse_args(["account", "delete", account_record, "--yes"]), _api(gateway))
-    deployment = cli.run(
-        cli.parser().parse_args(["deploy", "delete", "--id", deployment_record, "--workspace", WORKSPACE, "--yes"]),
-        _api(gateway),
+    args = cli.parser().parse_args(
+        [
+            "deploy",
+            "delete",
+            "--id",
+            deployment_record,
+            "--workspace",
+            WORKSPACE,
+            "--operation-id",
+            "77777777-8888-4999-aaaa-bbbbbbbbbbbb",
+            "--approval-id",
+            "88888888-9999-4aaa-bbbb-cccccccccccc",
+            "--plan-revision",
+            "a" * 64,
+            "--yes",
+        ]
     )
-
     assert account["status"] == "ok"
-    assert deployment["status"] == expected
+    if expected == "uncertain":
+        with pytest.raises(common.CliError) as raised:
+            cli.run(args, _api(gateway))
+        assert raised.value.code == "teardown_delivery_uncertain"
+    else:
+        deployment = cli.run(args, _api(gateway))
+        assert deployment["status"] == expected
     assert target in gateway.paths("DELETE")
+    assert next(row["body"] for row in gateway.seen if row["path"] == target) == {
+        "operation_id": args.operation_id,
+        "approval_id": args.approval_id,
+        "plan_revision": args.plan_revision,
+    }
 
 
 def test_account_delete_resolves_the_cloud_number_to_the_record_uuid(gateway) -> None:

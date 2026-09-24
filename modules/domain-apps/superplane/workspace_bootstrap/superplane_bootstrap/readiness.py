@@ -88,6 +88,12 @@ SYSTEM_NAMESPACE = "kube-system"
 REQUIRED_CONTROLLER_PERMISSIONS: tuple[tuple[str, str], ...] = (
     ("list", "nodes"),
     ("watch", "pods"),
+    ("get", "pods"),
+    ("list", "pods"),
+    ("get", "pods/log"),
+    ("get", "deployments.apps"),
+    ("list", "replicasets.apps"),
+    ("get", "jobs.batch"),
     ("list", "nodepools.superplane.ai"),
     ("watch", "nodepools.superplane.ai"),
     ("list", "superplanenodes.superplane.ai"),

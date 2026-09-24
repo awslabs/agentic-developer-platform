@@ -103,7 +103,11 @@ async def effective_shared_retry(session, plan, policy):
     if type(data.get("plan_version")) is not int or data["plan_version"] > plan.version:
         raise RetryIncreaseError("retry_receipt_unverifiable")
     if data["plan_version"] < plan.version:
-        return policy  # A later graph acceptance requires its own approval.
+        from .plan_lineage import receipt_plan
+
+        plan = await receipt_plan(session, plan, data)
+        if plan is None:
+            return policy  # General plan changes still require a fresh approval.
     original = ExecutionPolicy.model_validate(plan.plan_document["execution_policy"])
     if (
         decision.actor_kind != "human"

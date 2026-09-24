@@ -1,0 +1,26 @@
+{
+  "$fixture": {
+    "description": "An input command durably accepted but not yet consumed. It has no turn assignment and no confirmed handoff, which keeps 'accepted' visibly distinct from 'consumed' (V3-07).",
+    "schema": "commands.schema.json#/$defs/command_receipt",
+    "expect": "valid",
+    "owner": "T7",
+    "criteria": [
+      "T0-AC02",
+      "T7-AC01",
+      "V0-04",
+      "V3-07"
+    ]
+  },
+  "schema_version": "1.0",
+  "command_id": "c3d4e5f6-0718-493a-bc4d-5e6f70819203",
+  "kind": "input",
+  "status": "accepted",
+  "handoff": "not_started",
+  "command_sequence": 1,
+  "turn_id": null,
+  "turn_number": null,
+  "accepted_at": "2026-09-24T14:45:20Z",
+  "consumed_at": null,
+  "authority_expires_at": "2026-09-24T15:00:20Z",
+  "reason": null
+}

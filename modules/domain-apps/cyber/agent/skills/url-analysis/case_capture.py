@@ -259,6 +259,36 @@ def recorded_browser(request: dict, playwright, *, opener=None):
         )
         download.cancel()
 
+    def checkpoint(observation):
+        callback = request.get("_on_observation")
+        if callback is None:
+            return
+        partial = copy.deepcopy(observation)
+        partial.update(
+            status="partial",
+            network_requests=copy.deepcopy(network),
+            redirects=copy.deepcopy(redirects),
+            downloads=copy.deepcopy(downloads),
+            timeline=copy.deepcopy(timeline),
+            blocked_requests=session.refusals.copy(),
+            connections=session.guard.connections.copy(),
+            transport_errors=copy.deepcopy(session.guard.transport_errors),
+            dropped_events=dropped.copy(),
+        )
+        partial["errors"] = partial["errors"] + ["capture_in_progress"]
+        partial["evidence_items"] = build_evidence_items(partial)
+        partial["evidence_sha256"] = inventory_digest(partial)
+        partial["content_sha256"] = content_digest(partial)
+        callback(
+            sanitize(partial),
+            sanitize(
+                {
+                    **{k: v for k, v in result.items() if k != "observations"},
+                    "cleanup_status": "open",
+                }
+            ),
+        )
+
     def snapshot(action):
         _navigation_refusal(session)
         o = {
@@ -273,45 +303,78 @@ def recorded_browser(request: dict, playwright, *, opener=None):
             "status": "partial",
             "errors": errors.copy(),
             "frames": [],
+            "frame_capture_status": "requested"
+            if request.get("_capture_frames", True)
+            else "not_requested",
             "screenshot_base64": "",
             "screenshot_sha256": "",
         }
+        checkpoint(o)
         try:
             data = sanitize(session.evaluate(PAGE_DATA))
             o.update(data)
-            for frame in session.frames[1:6]:
-                try:
-                    o["frames"].append(
-                        sanitize({"url": frame.url, **frame.evaluate(PAGE_DATA)})
-                    )
-                except Exception as exc:
-                    o["errors"].append(f"frame_capture:{type(exc).__name__}")
-            png = session.screenshot(full_page=False, timeout=10000)
-            if not png.startswith(b"\x89PNG") or len(png) > 5 * 1024 * 1024:
-                raise ValueError("Screenshot is not a bounded PNG")
-            o["screenshot_base64"] = base64.b64encode(png).decode()
-            o["screenshot_sha256"] = digest(png)
-            if (
-                200 <= status < 400
-                and o.get("visible_text", "").strip()
-                and not o["errors"]
-            ):
-                o["status"] = "complete"
         except Exception as exc:
-            o["errors"].append(f"capture:{type(exc).__name__}")
+            o["errors"].append(f"dom_capture:{type(exc).__name__}")
+        checkpoint(o)
+        if request.get("_screenshots", True) or action == "screenshot":
+            from runtime_limits import SCREENSHOT_SECONDS
+
+            try:
+                png = session.screenshot(
+                    full_page=False, timeout=SCREENSHOT_SECONDS * 1000
+                )
+                if not png.startswith(b"\x89PNG") or len(png) > 5 * 1024 * 1024:
+                    raise ValueError("Screenshot is not a bounded PNG")
+                o["screenshot_base64"] = base64.b64encode(png).decode()
+                o["screenshot_sha256"] = digest(png)
+            except Exception as exc:
+                o["errors"].append(f"screenshot_capture:{type(exc).__name__}")
+        else:
+            o["screenshot_status"] = "not_requested"
+        checkpoint(o)
+        for frame in (
+            session.frames[1:6] if request.get("_capture_frames", True) else []
+        ):
+            try:
+                o["frames"].append(
+                    sanitize({"url": frame.url, **frame.evaluate(PAGE_DATA)})
+                )
+            except Exception as exc:
+                o["errors"].append(f"frame_capture:{type(exc).__name__}")
+        if (
+            200 <= status < 400
+            and o.get("visible_text", "").strip()
+            and not o["errors"]
+        ):
+            o["status"] = "complete"
         # A challenge page is an observation of the challenge, not the destination.
         text = (o.get("page_title", "") + " " + o.get("visible_text", "")).lower()
-        if any(
+        warning_terms = [
+            s for s in ("deceptive site ahead", "suspected phishing") if s in text
+        ]
+        if warning_terms:
+            o["interstitial"] = {
+                "kind": "threat_warning",
+                "source": "captured_page_text",
+                "matched_terms": warning_terms,
+                "provider_verified": False,
+                "limitation": "Page-displayed warning; neither provider identity nor hidden page behavior is independently verified.",
+            }
+            o["errors"].append("threat_warning")
+            o["status"] = "partial"
+        elif any(
             s in text
             for s in (
                 "verify you are human",
                 "checking your browser",
-                "deceptive site ahead",
-                "suspected phishing",
                 "captcha",
             )
         ):
-            o["errors"].append("challenge_or_interstitial")
+            o["interstitial"] = {
+                "kind": "human_verification",
+                "source": "captured_page_text",
+            }
+            o["errors"].append("human_verification_challenge")
             o["status"] = "partial"
         _navigation_refusal(session)
         o.update(
@@ -323,6 +386,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
                     "timeline": copy.deepcopy(timeline),
                     "blocked_requests": session.refusals.copy(),
                     "connections": session.guard.connections.copy(),
+                    "transport_errors": copy.deepcopy(session.guard.transport_errors),
                     "dropped_events": dropped.copy(),
                 }
             )
@@ -381,7 +445,7 @@ def recorded_browser(request: dict, playwright, *, opener=None):
             response = session.goto(
                 request["url"],
                 wait_until="domcontentloaded",
-                timeout=min(request["timeout_ms"], 30000),
+                timeout=request["timeout_ms"],
             )
             status = response.status if response else status
         except Exception as exc:
@@ -400,11 +464,13 @@ def recorded_browser(request: dict, playwright, *, opener=None):
             manual_navigation = (
                 "back"
                 if command["action"] == "back"
-                else command["target_url"]
-                if command["action"] in {"follow", "root"}
-                else None
+                else (
+                    command["target_url"]
+                    if command["action"] in {"follow", "root", "navigate"}
+                    else None
+                )
             )
-            if command["action"] in {"follow", "root"}:
+            if command["action"] in {"follow", "root", "navigate"}:
                 subject = digest(command["target_url"])
             before_url = session.url
             try:

@@ -1544,6 +1544,7 @@ class TestOuterStatesUnchanged:
             "awaiting_merge",
             "awaiting_gate",
             "passed",
+            "waived",
             "rejected_at_gate",
             "failed",
             "halted",
@@ -1552,7 +1553,7 @@ class TestOuterStatesUnchanged:
 
     def test_terminal_node_states_are_untouched(self):
         assert state_module.TERMINAL_STATES == frozenset(
-            {NodeState.PASSED, NodeState.REJECTED_AT_GATE, NodeState.FAILED, NodeState.HALTED, NodeState.SUPERSEDED}
+            {NodeState.PASSED, NodeState.WAIVED, NodeState.REJECTED_AT_GATE, NodeState.FAILED, NodeState.HALTED, NodeState.SUPERSEDED}
         )
 
     def test_the_human_only_gate_transitions_are_untouched(self):

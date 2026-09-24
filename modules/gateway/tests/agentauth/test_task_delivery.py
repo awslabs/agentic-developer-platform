@@ -215,3 +215,50 @@ def test_slow_journal_write_cannot_use_a_stale_effect_lease(tasks, monkeypatch, 
     with pytest.raises(TaskDeliveryError, match=refusal):
         tasks.delivery.maintain("pod-one", acknowledge=True)
     delete.assert_not_called()
+
+
+def test_ack_retains_transport_receipt_without_reusable_credentials(tasks, monkeypatch):
+    import hashlib
+
+    tasks.delivery.acquire("pod-one")
+    assigned = tasks.delivery.read("pod-one")
+    delete = Mock(wraps=tasks.sqs.delete_message)
+    monkeypatch.setattr(tasks.sqs, "delete_message", delete)
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    tombstone = tasks.delivery.read("pod-one")
+    assert tombstone["sqs_message_id"] == assigned["sqs_message_id"]
+    assert tombstone["sqs_message_id"]
+    assert tombstone["receipt_handle_sha256"] == hashlib.sha256(assigned["receipt"].encode()).hexdigest()
+    assert tombstone["ack_attempts"] == 1
+    assert tombstone["sqs_request_id"]
+    assert tombstone["sqs_http_status"] == 200
+    assert tombstone["sqs_retry_attempts"] == 0
+    assert tombstone["acknowledged_at"] == tasks.now[0]
+    assert not {"receipt", "body", "queue_url"} & tombstone.keys()
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    delete.assert_called_once_with(QueueUrl=tasks.queue, ReceiptHandle=assigned["receipt"])
+    assert tasks.delivery.read("pod-one") == tombstone
+    # Consume the actual SQS response-derived tombstone through the operator reader.
+    import runpy
+    from pathlib import Path
+
+    collector = runpy.run_path(str(Path(__file__).resolve().parents[4] / "platform/scripts/operator/wave3/collect_ack_receipt.py"))
+    receipt = collector["acknowledgement_receipt"](
+        tombstone, invocation_id=assigned["invocation_id"], sqs_message_id=assigned["sqs_message_id"], pod_uid="pod-one"
+    )
+    assert receipt["delete_calls"] == 1 and receipt["delete_succeeded"] is True
+    assert assigned["receipt"] not in json.dumps(receipt)
+
+
+def test_uncertain_ack_attempt_is_not_rewritten_as_one_clean_delete(tasks, monkeypatch):
+    tasks.delivery.acquire("pod-one")
+    delete = tasks.sqs.delete_message
+    monkeypatch.setattr(tasks.sqs, "delete_message", Mock(side_effect=BotoCoreError()))
+    with pytest.raises(TaskDeliveryError, match="unavailable"):
+        tasks.delivery.maintain("pod-one", acknowledge=True)
+    assert tasks.delivery.read("pod-one")["ack_attempts"] == 1
+    assert "sqs_request_id" not in tasks.delivery.read("pod-one")
+    tasks.now[0] += 21
+    monkeypatch.setattr(tasks.sqs, "delete_message", delete)
+    tasks.delivery.maintain("pod-one", acknowledge=True)
+    assert tasks.delivery.read("pod-one")["ack_attempts"] == 2

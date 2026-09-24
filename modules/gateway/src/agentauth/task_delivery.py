@@ -7,6 +7,7 @@ or another assignment, and acknowledgement never grants it another task.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -120,6 +121,7 @@ class TaskDelivery:
                 "state": "assigned",
                 "body": body,
                 "receipt": receipt,
+                "sqs_message_id": message.get("MessageId"),
                 "queue_url": self.queue_url,
                 "invocation_id": envelope["message_id"],
                 "envelope_digest": digest,
@@ -171,7 +173,14 @@ class TaskDelivery:
         elif previous["state"] != "assigned":
             raise TaskDeliveryError("finished")
         reservation = self.save(
-            pod_uid, {**previous, "state": "acking" if acknowledge else "heartbeating", "operation_until": now + _OP_SECONDS}, previous
+            pod_uid,
+            {
+                **previous,
+                "state": "acking" if acknowledge else "heartbeating",
+                "operation_until": now + _OP_SECONDS,
+                **({"ack_attempts": int(previous.get("ack_attempts", 0)) + 1} if acknowledge else {}),
+            },
+            previous,
         )
         # The conditional write may wait. Never use an entry-time lease after it.
         self._live(reservation)
@@ -179,10 +188,27 @@ class TaskDelivery:
             raise TaskDeliveryError("busy")
         try:
             if acknowledge:
-                self.sqs.delete_message(QueueUrl=previous["queue_url"], ReceiptHandle=previous["receipt"])
+                response = self.sqs.delete_message(QueueUrl=previous["queue_url"], ReceiptHandle=previous["receipt"])
                 # Retain a tombstone without task body or receipt. No second task
                 # may be received by the same workload after acknowledgement.
-                self.save(pod_uid, {"state": "acknowledged", "invocation_id": previous["invocation_id"]}, reservation)
+                metadata = response.get("ResponseMetadata", {})
+                self.save(
+                    pod_uid,
+                    {
+                        "state": "acknowledged",
+                        "invocation_id": previous["invocation_id"],
+                        "sqs_message_id": previous.get("sqs_message_id"),
+                        "receipt_handle_sha256": hashlib.sha256(previous["receipt"].encode()).hexdigest(),
+                        # Reservations count conservatively: a crash before the SDK
+                        # call can increase this count without a transport attempt.
+                        "ack_attempts": reservation["ack_attempts"],
+                        "acknowledged_at": int(self.clock()),
+                        "sqs_request_id": metadata.get("RequestId"),
+                        "sqs_http_status": metadata.get("HTTPStatusCode"),
+                        "sqs_retry_attempts": metadata.get("RetryAttempts"),
+                    },
+                    reservation,
+                )
             else:
                 self.sqs.change_message_visibility(
                     QueueUrl=previous["queue_url"], ReceiptHandle=previous["receipt"], VisibilityTimeout=VISIBILITY_SECONDS

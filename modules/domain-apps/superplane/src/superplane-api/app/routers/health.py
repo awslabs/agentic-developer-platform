@@ -8,19 +8,8 @@ from app.config import settings
 from app.database import get_session
 from app.management import management_only
 from app.schemas.health import HealthResponse
-from app.services.provisioning import get_operation_facade
 
 router = APIRouter()
-
-
-@router.get("/capabilities")
-async def capabilities():
-    return {
-        "version": 1,
-        "features": ["create-operation-id-v1"]
-        if get_operation_facade() is not None
-        else [],
-    }
 
 
 @router.get("/readyz")

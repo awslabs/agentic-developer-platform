@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Self
 from urllib.parse import urlsplit
 
+from runtime_limits import LEASE_SECONDS, NAVIGATION_SECONDS
 from denylist import (
     REASON_SCHEME_NOT_ALLOWED,
     DenylistConfig,
@@ -37,7 +38,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_REGION = "us-east-1"
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 30
 DEFAULT_RESPONSE_TIMEOUT_SECONDS = 30
-DEFAULT_ANALYSIS_TIMEOUT_SECONDS = 300
+
+DEFAULT_ANALYSIS_TIMEOUT_SECONDS = LEASE_SECONDS
 DEFAULT_MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 DEFAULT_MAX_ANALYSIS_BYTES = 100 * 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
@@ -112,6 +114,7 @@ class DestinationRefused(Exception):
         super().__init__(f"destination refused for {safe_url}: {result.reason}")
         self.url = safe_url
         self.result = result
+        self.browser_start_unattempted = False
 
     @property
     def reason(self) -> str:
@@ -451,6 +454,7 @@ class NavigationGuard:
     refusals: list[dict[str, str | bool]] = field(default_factory=list)
     read_only: bool = False
     connections: list[dict] = field(default_factory=list)
+    transport_errors: list[dict] = field(default_factory=list)
     connections_dropped: int = 0
     refusals_dropped: int = 0
     navigation_check: object = None
@@ -553,6 +557,17 @@ class NavigationGuard:
                 scrub_url_credentials(url),
                 type(error).__name__,
             )
+            if len(self.transport_errors) < 200:
+                diagnostic = {
+                    "url": scrub_url_credentials(url),
+                    "error_type": type(error).__name__,
+                }
+                if isinstance(error, ssl.SSLCertVerificationError):
+                    diagnostic.update(
+                        tls_verify_code=error.verify_code,
+                        tls_verify_message=error.verify_message,
+                    )
+                self.transport_errors.append(diagnostic)
             route.abort("connectionfailed")
             return
 
@@ -659,7 +674,9 @@ class GuardedBrowserSession:
         return self._page.goto(url, **kwargs)
 
     def go_back(self):
-        return self._page.go_back(wait_until="domcontentloaded", timeout=30000)
+        return self._page.go_back(
+            wait_until="domcontentloaded", timeout=NAVIGATION_SECONDS * 1000
+        )
 
     def click_observed(self, selector: str, index: int, expected: dict):
         """Only broker-owned selectors and inspected elements enter this facade."""
@@ -738,7 +755,11 @@ def open_guarded_browser(
     navigation_check=None,
 ) -> GuardedBrowserSession:
     """Create and return the only supported URL-analysis browser interface."""
-    vetted = vet_destination(url, config)
+    try:
+        vetted = vet_destination(url, config)
+    except DestinationRefused as error:
+        error.browser_start_unattempted = True
+        raise
 
     if client_factory is None:
         from bedrock_agentcore.tools.browser_client import BrowserClient

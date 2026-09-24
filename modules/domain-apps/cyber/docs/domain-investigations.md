@@ -1,7 +1,8 @@
 # Agent-directed domain investigations
 
 The researcher supplies a seed URL and a question. The existing cyber agent
-inspects evidence, forms a hypothesis, chooses a useful next browser action, and
+queries Common Crawl through Athena, records an initial hypothesis, then
+inspects live evidence, chooses a useful next browser action, and
 revises its assessment from the result. It can explore multiple pages in one
 browser context. The broker executes individual actions and enforces boundaries;
 it does not choose the route or instantiate another model.
@@ -14,6 +15,9 @@ Follow relevant pages within this domain and cite the evidence.”
 
 | Stage | Agent decision | Evidence retained |
 | --- | --- | --- |
+| Archive context | Examine historical index coverage and metadata | Query ID, crawl partitions, sampled records and limitations |
+| Selected archived pages | Choose indexed captures whose content answers a question | S3 WARC range, original payload, extracted text/forms/scripts, dates and hashes |
+| Initial hypothesis | Identify a question to test against the current site | Source-linked hypothesis before any browser lease starts |
 | Seed | Identify unanswered questions from the landing page | Initial screenshot, DOM, forms, scripts, links, requests |
 | Review | Support, refute or revise a hypothesis | Concise explanation and actual observation IDs |
 | Next action | Select a relevant observed link/control, root, back, scroll or wait | Research question, reason and expected signal before execution |
@@ -27,11 +31,11 @@ keeps exact destinations private, so query redaction does not break link navigat
 Cookies, session storage and history survive between decisions. A profile change
 creates a new context and retains both sets of evidence in the same case.
 
-The default navigation scope is the supplied hostname and its subdomains. Other
-public hosts may supply subresources through the guarded transport. Related
-external navigation requires the researcher to request `observed_external`
-scope; otherwise those links remain leads. Private destinations remain prohibited
-in either mode. Forms, credentials, downloads and challenge bypass are excluded.
+The default `observed_external` scope allows the model to follow relevant observed
+links and redirects across public hosts, including sibling hosts. The researcher
+can explicitly select `host` to restrict navigation to the seed hostname and its
+subdomains. Private destinations remain prohibited in either mode. Forms,
+credentials, downloads and challenge bypass remain excluded from this transport.
 Supported controls are observed disclosure elements and tabs, not arbitrary
 selectors or JavaScript supplied by the agent.
 
@@ -41,8 +45,11 @@ The full workflow and JSON review/decision shapes are in the
 [agent skill](../agent/skills/url-analysis/SKILL.md).
 
 ```bash
-python /app/skills/url-analysis/domain_investigation.py start "$SEED_URL" \
+python /app/skills/url-analysis/domain_investigation.py prepare "$SEED_URL" \
   --case "$CASE_DIR" --objective "$RESEARCH_QUESTION"
+python /app/skills/url-analysis/domain_investigation.py hypothesize \
+  --case "$CASE_DIR" --hypothesis "$HYPOTHESIS_FILE"
+python /app/skills/url-analysis/domain_investigation.py browse --case "$CASE_DIR"
 python /app/skills/url-analysis/domain_investigation.py review \
   --case "$CASE_DIR" --review "$REVIEW_FILE"
 python /app/skills/url-analysis/domain_investigation.py step follow \
@@ -62,9 +69,10 @@ outside run artifacts. The capability is removed after confirmed close. The repo
 contains session IDs and cleanup outcomes, never the capability or CDP endpoints.
 
 The broker exposes `/v1/investigation/start`, `/step` and `/close` over its existing
-internal service. Each lease runs on one owning thread because Playwright's sync
-API is thread-affine. Service `ClientIP` affinity routes a worker's steps to the
-owning replica. The broker Pod opts out of voluntary Karpenter consolidation to
+internal service. Each lease runs in one supervised process, keeping Playwright's
+sync API on that process's main thread. With owner routing enabled, new sessions
+are balanced across available replicas and subsequent steps use a private
+capability naming their owner. The broker Pod opts out of voluntary Karpenter consolidation to
 avoid disrupting active contexts. Unexpected replica loss still fails closed;
 the managed 300-second session timeout is the cleanup backstop. Legacy `/v1/capture`
 and `/v1/analyze` operations remain compatible.
@@ -77,13 +85,21 @@ relationships between observations/pages. The HTML/Markdown reports show finding
 and the investigation narrative alongside screenshots and evidence. File hashes,
 indicator CSV and provenance are retained. Long target URLs wrap in the HTML report.
 
-A declared form action is configuration, not observed transmission. Manual link
-navigation is identified separately from site redirects. Adverse findings on a
-partial page require intact, hash-checked evidence item references, explicit
-coverage limitations and confirmed cleanup; no-adverse requires
-all steps/observations complete and describes only the tested views. Counterevidence
-and legitimate identity-provider relationships must be considered. Semantic accuracy
-still requires researcher review; reference validation cannot prove every sentence.
+The model owns the overall verdict from Common Crawl, browser observations and
+other sourced context. Report structure, reference existence and artifact hashes
+are checked; finding semantics, evidence sufficiency and verdicts are not
+adjudicated by application code. Partial captures, HTTP errors and unconfirmed
+cleanup remain visible without forcing an inconclusive result. Cleanup is always
+attempted and its outcome is reported separately.
+
+Use `no_specific_concern`, `suspicious`, `malicious` or `inconclusive` for the overall
+assessment. The existing `no_adverse_behavior_observed` label remains available for
+browser-limited conclusions. An archive-only assessment must state that live page
+behavior was not verified. Index rows and selectively retrieved archived page
+content have separate source IDs.
+A declared form action is configuration, not observed transmission. The model
+must consider counterevidence and state uncertainty; reference checks do not prove
+that a claim is correct.
 
 The CLI persists locally. The agent must use the existing run-artifact publisher
 and verify success before claiming durable delivery. No new UI or automatic case
@@ -113,8 +129,10 @@ measurement of threat-detection accuracy. They used a real Bedrock model and loc
 guarded Chromium, not the deployed UI/GitHub entrypoint. No public Lambda fixture
 is permitted or needed. Fixture CI stays on `arc-runner-org` without AWS credentials.
 
-Release requires the updated broker image and Service affinity before workers
-receive the new skill. Build one immutable runtime, roll out the backward-compatible
-broker first, then pin new workers to the same digest. Preserve running jobs and the
+Release requires matching broker and worker code before enabling owner routing.
+The compatibility mode retains `ClientIP` affinity until that coordinated change.
+Drain existing investigations before changing routing. Preserve running jobs and the
 separate protected-worker migration hold. Follow the canonical deployment guide
 and use only reviewed scoped saved plans for the relevant resources.
+See [Common Crawl setup and runtime recovery](common-crawl-investigation.md) for
+the archive configuration, query bounds and isolated-process acceptance requirements.

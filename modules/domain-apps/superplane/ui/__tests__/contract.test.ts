@@ -88,10 +88,11 @@ describe('gateway allowlist agreement', () => {
     expect(nowServed).toEqual([]);
   });
 
-  it('names a user-facing capability for every endpoint it refuses to call', () => {
+  it('names a user-facing capability for every declared unavailable diagnostic', () => {
     // An unserved endpoint with no `capability` produces a diagnostic that says
     // only "not available", which gives the reader nothing to act on.
-    for (const name of unservedEndpoints()) {
+    for (const name of Object.keys(ENDPOINTS) as EndpointName[]) {
+      if (ENDPOINTS[name].served && ENDPOINTS[name].capability === undefined) continue;
       expect(ENDPOINTS[name].capability, name).toBeTruthy();
     }
   });
@@ -101,7 +102,7 @@ describe('gateway allowlist agreement', () => {
     // backlog. A story number is unusable to an operator without repository
     // access, and it dates badly once the story closes. Stable technical
     // identifiers live on `reason`/`endpoint`, which automation reads instead.
-    for (const name of unservedEndpoints()) {
+    for (const name of Object.keys(ENDPOINTS) as EndpointName[]) {
       const capability = ENDPOINTS[name].capability ?? '';
       expect(capability, name).not.toMatch(/#\d+/);
       expect(capability, name).not.toMatch(/\b(story|ticket|issue|epic|backlog|jira)\b/i);
@@ -177,7 +178,7 @@ describe('idempotency transport', () => {
 });
 
 describe('unavailability reporting', () => {
-  it('reports an unserved endpoint as not-deployed, explained by capability', () => {
+  it('formats an unavailable-route diagnostic with its capability', () => {
     const unavailable = unavailableFor('previewWorkspace');
     // The stable pair automation branches on.
     expect(unavailable.reason).toBe('not-deployed');
@@ -192,22 +193,10 @@ describe('unavailability reporting', () => {
     expect(unavailable.detail).toContain('/workspaces/preview');
   });
 
-  it('names approval, adopt, preview and operation status as unserved today', () => {
-    // A deliberately brittle list. These five are the gap between what the
-    // onboarding journeys need and what the baseline serves, and if one of them
-    // silently starts or stops being served the UI's honesty depends on noticing.
-    expect(unservedEndpoints().sort()).toEqual([
-      'adoptWorkspace',
-      'continueLifecycleProposal',
-      'decideApproval',
-      'getApproval',
-      'getOperation',
-      'listLifecycleProposals',
-      'previewLifecycleProposal',
-      'previewWorkspace',
-      'recoverOperation',
-      'requestApproval',
-    ]);
+  it('marks every mapped onboarding route served after API composition', () => {
+    // The independent allowlist checks above verify these flags against the
+    // actual gateway boundary; capability advertisement is checked separately.
+    expect(unservedEndpoints()).toEqual([]);
   });
 });
 

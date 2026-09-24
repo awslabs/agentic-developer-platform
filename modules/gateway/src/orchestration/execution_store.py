@@ -384,7 +384,10 @@ async def _live_authority_conflict(
         return "accepted_plan_ambiguous"
     current_version = plans[0].version if plans else 0
     if current_version != identity.accepted_plan_version:
-        return "accepted_plan_version_mismatch"
+        from .plan_lineage import ancestor_plan
+
+        if not plans or await ancestor_plan(session, plans[0], identity.accepted_plan_version, node_id=identity.node_id) is None:
+            return "accepted_plan_version_mismatch"
     return None
 
 

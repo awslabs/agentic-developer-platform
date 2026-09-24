@@ -91,20 +91,90 @@ no frontend check at all, which is worse than no coverage because the check name
 The equivalent CLI surface is `adp superplane onboarding`, covered by
 `modules/gateway/tests/cli/test_superplane_onboarding.py`.
 
-## What is honestly not available yet
+## Route availability and live acceptance
 
-Five endpoints this feature needs are absent from the proxy allowlist at this revision, and
-`agent/issue-5535` (which owns them) does not yet add them:
+All mapped onboarding endpoints are mounted by the composed API, included in the gateway
+allowlist and recorded in the permission inventory. Both client contracts mark these routes
+served. Deployment feature gates, advertised capabilities, authorization and approval checks
+remain independent requirements; a served route does not establish workspace readiness.
 
-| Endpoint | Consequence |
-|----------|-------------|
-| `capabilities` | Capability reporting is unavailable, so create is refused rather than risking an unidempotent submit |
-| `previewWorkspace` | No reviewable plan, so creation cannot proceed past review |
-| `adoptWorkspace` | BYOC adoption is reported unavailable and sends no request |
-| `getOperation`, `recoverOperation` | Operation lookup and recovery are reported unavailable |
+Unavailable-deployment tests explicitly disable the relevant routes in test fixtures and
+continue asserting that no request is sent. Separate contract tests compare the shipped flags
+with the real proxy allowlist in both directions. Production paths use no fixture or demo
+fallbacks.
 
-These are surfaced as an honest `unavailable` state. **There are no fixture or demo fallbacks in
-production paths** — a synthesised success here would be a claim that infrastructure exists when
-it does not. When the routes land, the `served` flags flip; the create path is already
-implemented and tested against that state by
-`TestTheCreatePathOnceTheEndpointsAreServed` in the CLI suite and by the flow tests here.
+Live acceptance still requires the deployed release to complete an authorized onboarding
+journey, preserve its operation identity and report verified workspace readiness. Remote CI
+does not substitute for that demonstration or for browser layout verification.
+
+## Serving workload operations
+
+`ServingPanel.tsx` uses the maintained deployment preview, create, list and
+UUID-scoped teardown routes. Profile discovery checks current workspace grants,
+canonical target/credential bindings, the maintained plan producer and dispatcher
+readiness before enabling submission. The form selects validated model options
+from this catalog. Teardown review remains available to an authorized caller even
+when the original serving profile is no longer installed. The review renders the plan carried by the exact approval request,
+including its immutable workload image, target, resource ceiling, runtime and
+maximum additional cost. Approval is checked again immediately before submission.
+
+Create and stop have separate durable request receipts, scoped to deployment,
+organization and workspace. Receipts contain identifiers and a payload fingerprint,
+not model inputs, images or credential values. A lost reply retains its identity;
+saved requests recover their operation status by idempotency key without re-entering
+model inputs or replaying a mutation. Reviewing the same inputs can also recover
+the approval and retry that same request.
+Lists refresh every ten seconds; inaccessible results are removed and late results
+from a previous workspace are discarded. Operation success, missing list entries
+and accepted stop requests never establish provider absence or cost settlement.
+
+`ServingPanel.test.tsx` covers lost replies/reload, original-resource stop requests,
+changed plans, revoked and mismatched approvals, cross-workspace responses, and
+read-only views. These are remote CI transport-fixture tests. The isolated
+Chromium checks below cover browser layout. Live serving acceptance, bounded logs,
+result links, endpoint access and reconciled workload costs remain required for complete #5731 delivery.
+
+`Superplane UI Browser CI`, called by Gateway CI, starts the maintained Vite
+frontend on loopback and renders this component in Chromium with fixture HTTP
+responses. It checks keyboard submission, review/approval/stop interaction and
+horizontal overflow at 360px and 1280px, and uploads screenshots plus a fixture
+receipt. Browser requests outside the loopback origin are refused. This is
+isolated browser evidence, not a deployed onboarding or serving demonstration.
+Tailwind explicitly scans the domain UI so its classes are included in the
+shipped frontend bundle.
+
+## Batch operations
+
+`BatchPanel` consumes the governed batch profile and Job routes. Users select a
+fixed immutable image/invocation, review the exact resource/runtime/cost envelope,
+obtain approval and submit. The shared workload action rechecks the current plan
+and approval before admission and persists a `batch:<workspace>:...` receipt
+separate from serving receipts. Reload can recover accepted operations without
+re-entering the invocation. A stop uses the original Job UUID and its separately
+approved teardown plan.
+
+The list is bounded to 100 with an explicit truncation message. Wrong-workspace
+and late responses are refused; revoked access clears displayed rows. Job outcome,
+logs, results and observed cost remain unavailable until those backend contracts
+are composed. A terminal operation is not reported as verified cleanup. In-flight
+cancellation has a separate action from the stop button.
+
+The isolated Chromium CI entry exercises serving and batch separately with
+fixture HTTP transports, keyboard operation and 360/1280px screenshots. This is
+browser evidence, not live workload acceptance.
+
+
+## Cancellation
+
+Both workload lists expose cancellation only when the server advertises current
+cancellation authority. The action addresses the displayed original operation;
+a retry after a lost reply uses those same IDs and creates no new request identity.
+Revoked access disables retries and workspace changes discard late replies.
+Cancellation acknowledgement never marks resources absent. Only the backend's
+`CancelledBeforeDispatch` outcome is displayed as not needing workload cleanup;
+other cancellations remain pending reconciliation. Keyboard cancellation is
+included in the isolated Chromium scenarios for both workload kinds.
+
+Workload rows offer current status and bounded Pod log windows when the API advertises observation support. Current READ authorization, original resource identity and a current manager lease are required. These observations do not establish endpoint acceptance, cleanup or reconciled cost. See `executor/WORKLOAD-OBSERVATIONS.md` for limits and read credential requirements.
+
+The workload budget view shows original/stop reservation ceilings, held amounts, ledger freshness and workspace reservation capacity. Values use exact USD millionths; estimated and provider-reconciled cost remain unavailable until supported evidence exists. Historical allocation counts are not live presence or cleanup proof. See `executor/WORKLOAD-ACCOUNTING.md`.

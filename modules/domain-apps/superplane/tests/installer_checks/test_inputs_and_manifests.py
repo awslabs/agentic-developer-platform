@@ -42,8 +42,9 @@ def test_supported_input_and_four_service_runtime(environment, release):
         assert deployment["spec"]["strategy"] == {"type": "Recreate"}
     controller = deployments["superplane-controller"]["spec"]["template"]["spec"]
     env = {x["name"]: x.get("value") for x in controller["containers"][0]["env"]}
-    assert env["KUBECONFIG"] == "/workspace/kubeconfig"
-    assert env["EKS_CLUSTER_NAME"] == environment["workspace_cluster"]
+    assert env["SUPERPLANE_WORKSPACE_CREDENTIALS_DIR"] == "/workspace"
+    assert "KUBECONFIG" not in env and "SKYPILOT_SERVICE_TOKEN" not in env
+    assert controller["containers"][0]["args"] == ["--management-only"]
     assert not any(
         d["kind"]
         in {"ClusterRole", "ClusterRoleBinding", "Ingress", "PersistentVolume"}
@@ -52,6 +53,35 @@ def test_supported_input_and_four_service_runtime(environment, release):
     monitor = str(deployments["superplane-platform-monitor"])
     assert "DATABASE_URL" not in monitor
     assert "OBSERVATION_CREDENTIAL" in monitor
+
+
+@pytest.mark.parametrize("management_only", [False, True])
+def test_api_liveness_and_readiness_are_probed_separately(
+    environment, release, management_only
+):
+    """Issue #5535: liveness is process health; readiness is control-plane health.
+
+    Two endpoints in the app are worth nothing if the manifest points both probes at
+    the same one. They must differ in both directions:
+
+    * readiness on `/health` would report an API with an unreachable management
+      database as ready, and Kubernetes would send it traffic it cannot serve;
+    * liveness on `/readyz` would have Kubernetes kill and restart the pod whenever
+      the database was briefly unreachable — turning a dependency blip into a crash
+      loop for a fault no restart can fix, and removing the capacity that would
+      serve requests once the dependency recovered.
+
+    Parametrized over both modes because a control-plane-only installation is the
+    case where the distinction matters most: it has no workspaces, so readiness must
+    resolve from the management surface alone.
+    """
+    docs = render(environment, release, control_plane_only=management_only)
+    deployments = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Deployment"}
+    api = deployments["superplane-api"]["spec"]["template"]["spec"]["containers"][0]
+
+    assert api["readinessProbe"]["httpGet"]["path"] == "/readyz"
+    assert api["livenessProbe"]["httpGet"]["path"] == "/health"
+    assert api["startupProbe"]["httpGet"]["path"] == "/health"
 
 
 @pytest.mark.parametrize("management_only", [False, True])
@@ -192,8 +222,9 @@ def test_actual_44_char_workspace_cluster_name_is_accepted(
     deployments = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Deployment"}
     controller = deployments["superplane-controller"]["spec"]["template"]["spec"]
     env_vars = {x["name"]: x.get("value") for x in controller["containers"][0]["env"]}
-    # The actual cluster name must propagate to the controller's EKS_CLUSTER_NAME env var.
-    assert env_vars["EKS_CLUSTER_NAME"] == ACTUAL_WORKSPACE_CLUSTER
+    # The durable registry supplies target identity; no ambient cluster selector.
+    assert env_vars["SUPERPLANE_WORKSPACE_CREDENTIALS_DIR"] == "/workspace"
+    assert "EKS_CLUSTER_NAME" not in env_vars
 
 
 @pytest.mark.parametrize(
@@ -355,6 +386,8 @@ def _cp_only_environment(environment):
     ):
         env.pop(key, None)
     env.pop("controller_ownership", None)
+    env.pop("execution", None)
+    env.pop("controller_profiles", None)
     # Remove workspace_access from secrets; only database and observation required.
     env["secrets"] = {
         k: v for k, v in env["secrets"].items() if k != "workspace_access"
@@ -394,7 +427,11 @@ def test_control_plane_only_renders_management_controller(environment, release):
     pod = controller["spec"]["template"]["spec"]
     assert pod["containers"][0]["args"] == ["--management-only"]
     assert pod["automountServiceAccountToken"] is False
-    assert not any("workspace" in volume["name"] for volume in pod["volumes"])
+    assert all(
+        volume["secret"]["optional"]
+        for volume in pod["volumes"]
+        if "workspace" in volume["name"]
+    )
     # API and monitor must still be present.
     assert "superplane-api" in names
     assert "superplane-platform-monitor" in names
@@ -405,11 +442,11 @@ def test_control_plane_only_render_has_no_workspace_references(environment, rele
     env = _cp_only_environment(environment)
     docs = render(env, release, control_plane_only=True)
     serialized = yaml.safe_dump_all(docs)
-    # workspace-access volume/secret must not appear
-    assert "workspace-access" not in serialized
-    # workspace_cluster, workspace_id and cluster_id must not appear since they
-    # are not present in the stripped environment.
-    assert "superplane-workspace-access" not in serialized
+    # Optional named projections permit later registration without making
+    # credentials a prerequisite for healthy zero-target startup.
+    assert "optional: true" in serialized
+    assert environment["workspace_id"] not in serialized
+    assert environment["cluster_id"] not in serialized
 
 
 def test_cli_mode_reaches_exact_bootstrap_payload(tmp_path, environment, release):

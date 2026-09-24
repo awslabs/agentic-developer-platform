@@ -31,13 +31,13 @@ not exist", which sends the operator hunting for a missing resource instead of a
 missing route. So an endpoint the proxy does not serve is reported as
 *unavailable* without a request being sent at all.
 
-WHAT IS DELIBERATELY NOT AVAILABLE YET
---------------------------------------
-Capability reporting, plan preview, cluster adoption and durable operation
-lookup are not served at this revision. Every verb that needs one of them says
-so, names the capability in the user's terms, and exits 4 (`unavailable`) rather
-than 5 (`failed`): the environment is missing a feature, nothing was attempted
-and nothing broke. A script must be able to tell those apart.
+ROUTE AVAILABILITY AND DEPLOYMENT CAPABILITIES
+--------------------------------------------
+All mapped onboarding routes are mounted, allowlisted and inventoried by the
+composed API. Route availability alone does not confirm the deployment's
+capabilities or authorize submission: the reviewed plan, advertised operation
+identity and server approval checks still apply. Missing support exits 4
+(`unavailable`); a failed request exits 5 (`failed`).
 
 SECRETS
 -------
@@ -93,6 +93,31 @@ ENDPOINTS = {
     "listWorkspaces": {"method": "GET", "path": "/workspaces", "served": True},
     "getWorkspace": {"method": "GET", "path": "/workspaces/{workspace_id}", "served": True},
     "createWorkspace": {"method": "POST", "path": "/workspaces", "served": True},
+    # Shared route vocabulary for the browser's operational surface. A served
+    # route does not install a CLI command or establish workload readiness.
+    "batchResult": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/result", "served": True},
+    "batchAccounting": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/accounting", "served": True},
+    "servingAccounting": {"method": "GET", "path": "/workspaces/{workspace_id}/deployments/{dep_id}/accounting", "served": True},
+    "observeBatchJob": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/observation", "served": True},
+    "observeDeployment": {"method": "GET", "path": "/workspaces/{workspace_id}/deployments/{dep_id}/observation", "served": True},
+    "cancelBatchJob": {"method": "POST", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/cancellation", "served": True},
+    "cancelDeployment": {"method": "POST", "path": "/workspaces/{workspace_id}/deployments/{dep_id}/cancellation", "served": True},
+    "batchProfiles": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-profiles", "served": True},
+    "listBatchJobs": {"method": "GET", "path": "/workspaces/{workspace_id}/batch-jobs", "served": True},
+    "previewBatchJob": {"method": "POST", "path": "/workspaces/{workspace_id}/batch-jobs/preview", "served": True},
+    "createBatchJob": {"method": "POST", "path": "/workspaces/{workspace_id}/batch-jobs", "served": True},
+    "previewBatchTeardown": {"method": "POST", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}/teardown-preview", "served": True},
+    "deleteBatchJob": {"method": "DELETE", "path": "/workspaces/{workspace_id}/batch-jobs/{job_id}", "served": True},
+    "listDeployments": {"method": "GET", "path": "/workspaces/{workspace_id}/deployments", "served": True},
+    "servingProfiles": {"method": "GET", "path": "/workspaces/{workspace_id}/deployment-profiles", "served": True},
+    "previewDeployment": {"method": "POST", "path": "/workspaces/{workspace_id}/deployments/preview", "served": True},
+    "createDeployment": {"method": "POST", "path": "/workspaces/{workspace_id}/deployments", "served": True},
+    "previewDeploymentTeardown": {
+        "method": "POST",
+        "path": "/workspaces/{workspace_id}/deployments/{dep_id}/teardown-preview",
+        "served": True,
+    },
+    "deleteDeployment": {"method": "DELETE", "path": "/workspaces/{workspace_id}/deployments/{dep_id}", "served": True},
     "registerConnection": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/provider-connections",
@@ -117,43 +142,43 @@ ENDPOINTS = {
     "listLifecycleProposals": {
         "method": "GET",
         "path": "/workspaces/{workspace_id}/lifecycle-proposals",
-        "served": False,
+        "served": True,
         "capability": "listing the next workspace lifecycle plan",
     },
     "previewLifecycleProposal": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/preview",
-        "served": False,
+        "served": True,
         "capability": "reviewing the next recorded workspace plan",
     },
     "continueLifecycleProposal": {
         "method": "POST",
         "path": "/workspaces/{workspace_id}/lifecycle-proposals/{artifact_id}/continue",
-        "served": False,
+        "served": True,
         "capability": "continuing an approved workspace lifecycle plan",
     },
     "requestApproval": {
         "method": "POST",
         "path": "/operation-approvals",
-        "served": False,
+        "served": True,
         "capability": "requesting approval for a reviewed operation",
     },
     "getApproval": {
         "method": "GET",
         "path": "/operation-approvals/{approval_id}",
-        "served": False,
+        "served": True,
         "capability": "reading a requested operation approval",
     },
     "decideApproval": {
         "method": "POST",
         "path": "/operation-approvals/{approval_id}/decision",
-        "served": False,
+        "served": True,
         "capability": "deciding an operation approval",
     },
     "adoptWorkspace": {
         "method": "POST",
         "path": "/workspaces/adopt",
-        "served": False,
+        "served": True,
         "capability": "adopting an existing cluster you already operate",
     },
     "capabilities": {
@@ -165,19 +190,19 @@ ENDPOINTS = {
     "previewWorkspace": {
         "method": "POST",
         "path": "/workspaces/preview",
-        "served": False,
+        "served": True,
         "capability": "reviewing the exact plan, capacity and cost before anything is created",
     },
     "getOperation": {
         "method": "GET",
         "path": "/operations/{operation_id}",
-        "served": False,
+        "served": True,
         "capability": "tracking a submitted operation through to completion",
     },
     "recoverOperation": {
         "method": "GET",
         "path": "/operations/by-idempotency/{idempotency_key}",
-        "served": False,
+        "served": True,
         "capability": "recovering the result of a submission whose reply was lost",
     },
 }
@@ -489,7 +514,7 @@ def same_scope(left, right):
     return left.get("deployment_id") == right.get("deployment_id") and left.get("org_id") == right.get("org_id")
 
 
-TERMINAL_STATES = ("succeeded", "failed")
+TERMINAL_STATES = ("succeeded", "failed", "cancelled")
 
 # The busy message for the receipt lock. Names what is being protected, because
 # "a lock is held" tells the operator nothing about whether it is safe to wait.
@@ -1342,7 +1367,7 @@ def lifecycle_observation(command, intent, receipt, observed, workspace_id):
         key: observed.get(key) for key in ("request_id", "workspace_id", "provisioning_operation_id", "state", "phase", "observed_at", "retryable")
     }
     state = observed.get("state")
-    if state not in ("accepted", "running", "succeeded", "failed"):
+    if state not in ("accepted", "running", "succeeded", "failed", "cancelled"):
         state = "unknown"
     saved = record_observation(intent, receipt, state, observed["provisioning_operation_id"], workspace_id)
     return common.envelope(
@@ -1692,7 +1717,7 @@ def observed_state(raw):
 def submission_result(intent, receipt, result):
     """Record what the reply established, and report it without overstating it."""
     state = result.get("operation_state", observed_state(result)) if isinstance(result, dict) else "unknown"
-    if state not in ("accepted", "running", "succeeded", "failed", "unknown"):
+    if state not in ("accepted", "running", "succeeded", "failed", "cancelled", "unknown"):
         state = "unknown"
     updated = record_observation(
         intent,
@@ -1864,7 +1889,7 @@ def operation_command(args, api):
         raise CliError("The response names a different request. The receipt was retained.", "invalid_response", 4)
     if match:
         state = observed.get("state")
-        if state not in ("accepted", "running", "succeeded", "failed"):
+        if state not in ("accepted", "running", "succeeded", "failed", "cancelled"):
             state = "unknown"
         key = next(key for key, receipt in receipts.items() if receipt is match)
         prefix = receipt_key(scope, "")

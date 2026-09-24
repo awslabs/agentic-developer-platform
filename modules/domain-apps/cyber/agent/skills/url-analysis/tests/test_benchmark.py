@@ -58,8 +58,13 @@ def results():
     ]
 
 
-def test_metrics_preserve_unavailable_and_abstained_cases_in_denominators():
-    value = score(manifest(), results(), "holdout")
+@pytest.mark.parametrize(
+    "negative", ["no_specific_concern", "no_adverse_behavior_observed"]
+)
+def test_metrics_preserve_unavailable_and_abstained_cases_in_denominators(negative):
+    cases = results()
+    cases[4]["verdict"] = negative
+    value = score(manifest(), cases, "holdout")
     assert value["precision"] == 0.5
     assert value["recall_all_phishing"] == 1 / 3
     assert value["recall_reachable_phishing"] == 0.5
@@ -124,3 +129,12 @@ def test_dataset_operations_refuse_local_execution_and_local_paths(monkeypatch):
     ):
         with pytest.raises(ValueError):
             s3_location(uri)
+
+
+def test_model_failure_is_pending_separately_from_inconclusive():
+    cases = results()
+    cases[1].update(verdict=None, evidence_valid=False, model_failure=True)
+    value = score(manifest(), cases, "holdout")
+    assert value["inconclusive_rate"] == 1 / 6
+    assert value["assessment_pending_rate"] == 1 / 6
+    assert value["recall_all_phishing"] == 1 / 3

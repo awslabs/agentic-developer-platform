@@ -79,7 +79,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from src.shared.models.organization import Organization
-from src.shared.models.vault import ChannelTenantMap, InstallationOwnershipConflict
+from src.shared.models.vault import ChannelTenantMap, InstallationOwnershipConflict, InstallationRevocation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -100,6 +100,7 @@ class OwnerState(StrEnum):
 
     RESOLVED = "resolved"
     NOT_FOUND = "not_found"
+    REVOKED = "revoked"
     #: More than one tenant claims this installation. Fail CLOSED — this is the
     #: pre-migration duplicate state and the quarantined state, and guessing a
     #: winner would silently re-home a customer.
@@ -186,6 +187,10 @@ async def resolve_installation_owner(
         answer, which is exactly the trust this layer exists to withhold.
     """
     scope_id = str(installation_id)
+
+    revocation = await db.get(InstallationRevocation, scope_id, populate_existing=True)
+    if revocation is not None and revocation.restored_at is None:
+        return None, OwnerState.REVOKED
 
     # A quarantined installation is ambiguous by definition: migration 026 found
     # more than one tenant claiming it and deliberately did not pick a winner.

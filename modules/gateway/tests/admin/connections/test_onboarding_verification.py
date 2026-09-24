@@ -504,12 +504,12 @@ async def test_no_nonce_dispatch_is_logged(db_session: AsyncSession, caplog):
 
 @pytest.mark.asyncio
 async def test_missing_github_client_is_logged_at_error(db_session: AsyncSession, caplog):
-    """Without App credentials the nonce path silently attaches the install to
-    the caller's own tenant instead of the org's. That was unlogged.
-    """
+    """Missing App credentials are reported and cannot silently attach a tenant."""
     from datetime import UTC, datetime, timedelta
 
-    from src.admin.connections.service import install_callback
+    from fastapi import HTTPException
+
+    from src.admin.connections.service import _setup_context, install_callback
     from src.shared.models.organization import Organization, User
     from src.shared.models.vault import MagicLinkNonce
 
@@ -529,6 +529,7 @@ async def test_missing_github_client_is_logged_at_error(db_session: AsyncSession
             jti="jti-4016",
             provider="github_install",
             provider_user_id="sub-1",
+            channel_context=_setup_context(kind="install", org_id="tenant-acme"),
             target_user_id="user-pg-1",
             expires_at=datetime.now(UTC) + timedelta(minutes=10),
         )
@@ -541,13 +542,16 @@ async def test_missing_github_client_is_logged_at_error(db_session: AsyncSession
         patch(f"{SERVICE}._write_installation_identity_index", new=AsyncMock()),
         patch("src.admin.connections.tenant_secret.seed_tenant_github_app_secret", new=AsyncMock()),
     ):
-        await install_callback(
-            installation_id=93005,
-            setup_action="install",
-            state="jti-4016",
-            db=db_session,
-            github_client=None,
-        )
+        with pytest.raises(HTTPException) as denied:
+            await install_callback(
+                installation_id=93005,
+                setup_action="install",
+                state="jti-4016",
+                db=db_session,
+                github_client=None,
+            )
+        assert denied.value.status_code == 503
+        assert (await db_session.get(MagicLinkNonce, "jti-4016")).consumed_at is None
 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert any("install_callback_no_github_client" in r.getMessage() for r in errors)
